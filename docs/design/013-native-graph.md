@@ -249,6 +249,16 @@ the interpreter.
   retired values went: a library does not assert on its host's behaviour,
   and `retired_len()`/`epoch_stalls()` are what a host polls. The paths in
   the bullet above are as they were when #15 landed.
+- **Landed (arc-lend E2): the comparison benchmark.** `crates/arc-lend/compare`
+  (`arc-lend-compare`, unpublished) measures `ArcLend` against `arc-swap`
+  (best config, `IndependentStrategy`, and the naive misuse), `basedrop`,
+  `left-right`, `Mutex` and `RwLock`: reader tails, reader allocations and
+  frees, publisher latency, retained memory, and publish cost. The method and
+  one recorded run are in `crates/arc-lend/BENCHMARKS.md`. No `ArcLend` reader
+  allocated or freed. It lost on readers sharing one cell (one cache line of
+  slots), on nested lends, on publisher tails when a reader is preempted
+  mid-lend, and in the parked-loan staircase. E3 (registered per-reader slots)
+  targets those, and re-runs the same harness.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is

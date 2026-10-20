@@ -1,0 +1,39 @@
+[package]
+name = "arc-lend-compare"
+version = "0.0.0"
+edition = "2021"
+description = "Tail-latency, allocation and retained-memory comparison of arc-lend against arc-swap, basedrop, left-right and locks"
+license = "MIT OR Apache-2.0"
+# A measuring harness, never a library anyone depends on. It lives in its own
+# member so `arc-lend` keeps a small dev-dependency list: the contenders below
+# are dependencies of this crate's bench target only.
+publish = false
+
+[lints]
+workspace = true
+
+# The library is the instrument: the counting allocator, the drop-counted
+# payload, the percentile summary and the machine description. It names no
+# contender, so `tests/instruments.rs` can check the instrument on its own.
+[dependencies]
+# Per-operation latencies go into an HDR histogram; percentiles are read from
+# it. No default features: those are (de)serialization and a sync recorder,
+# neither of which the harness uses.
+hdrhistogram = { version = "=7.6.0", default-features = false }
+
+# The contenders, pinned exact so a re-run measures the same code. The cited
+# file and line numbers in `benches/compare/contenders.rs` are at these
+# versions.
+[dev-dependencies]
+arc-lend = { path = ".." }
+arc-swap = "=1.9.3"
+basedrop = "=0.1.3"
+left-right = "=0.11.8"
+# Pins each reader and the publisher to its own core where the OS allows
+# (Linux, Windows; a no-op that reports failure elsewhere).
+core_affinity = "=0.8.3"
+
+[[bench]]
+name = "compare"
+path = "benches/compare/main.rs"
+harness = false

@@ -1,0 +1,825 @@
+# arc-lend: comparison benchmark
+
+How `arc-lend` compares with `arc-swap`, `basedrop`, `left-right`, `Mutex`
+and `RwLock` on what a deadline thread cares about: reader tail latency,
+what a reader allocates and frees, how long the publisher takes while
+readers are reading, and how much retired memory a parked reader holds.
+arc-lend loses several of these, and the losses are reported with the wins.
+
+The harness is the `arc-lend-compare` crate beside this file
+([`compare/`](compare/)). Every number below is copied by script from one
+recorded run, whose raw output is committed as
+[`compare/results/2026-10-20-vm-xeon-4vcpu.txt`](compare/results/2026-10-20-vm-xeon-4vcpu.txt).
+No figure was edited by hand.
+
+> **Read these numbers as indicative.** The run was on a shared cloud VM
+> (4 vCPUs, the CPU reports the `hypervisor` flag) while other jobs ran:
+> the load average went from 0.93 to 3.24 during the run. Medians are
+> stable to a few nanoseconds between runs, but every max, and most p99.99
+> figures, are scheduler noise from the host: a millisecond max appears in
+> almost every row, for every contender, including the timer-only row. With
+> four vCPUs, the four-reader rows put five threads on four cores whenever a
+> publisher runs, so one reader shares core 0 with the publisher. Re-run on
+> real hardware before quoting a tail: `just bench-compare` (see
+> [Reproduce](#reproduce)).
+
+## Summary
+
+What arc-lend wins:
+
+- **No reader allocated or freed, in any scenario, measured.** The same
+  holds for arc-swap in its best configuration, basedrop and left-right.
+  Naive arc-swap (store and drop) freed values on its readers in every
+  scenario with a publisher (section 2, 4 and 5).
+- **A fresh reader thread does not allocate** (section 1). arc-swap's first
+  load on a new thread allocates a debt node unless a free one is left
+  over; prewarming closes it.
+- **One reader is as fast as any**: 47 ns p50 per block, against 51 ns for
+  arc-swap and 53 ns for left-right, on a 29 ns timer floor (section 2.1).
+- **A held loan never blocks the publisher** (sections 4 and 6).
+  left-right's writer is blocked by a read held across two publishes, and
+  the locks' writers by any held read.
+- **A publish is cheap**: about 125-132 ns with no reader reading, against
+  545-567 ns for arc-swap (whose graveyard sweep or debt walk is counted),
+  but behind basedrop (99 ns) and the locks (86-87 ns) (section 7.1).
+
+What arc-lend loses:
+
+- **Readers of one cell contend.** All of a cell's hazard slots are on one
+  cache line and every lend claims from slot 0, so the reader p50 rises with
+  the reader count: 137, 197 and 300 ns at 2, 3 and 4 readers with no
+  publisher, while arc-swap and left-right stay at 51-53 ns (section 2.1).
+  At four readers it is behind `RwLock` (186 ns).
+- **A flat-out publisher slows the reader**: 120 ns p50 at one reader,
+  against 51 ns for arc-swap (section 2.4).
+- **Nested reads are slow, and past the slot count share the slots across
+  readers**: on one reader, 8 nested reads take 356 ns p50 per block
+  against 191 ns for arc-swap, with no overflow (every lend scans from slot
+  0, so the k-th nested lend fails k − 1 CASes first: quadratic in the
+  depth). 8 nested reads on each of 4 readers overflow and take 5539 ns,
+  against 191 ns for arc-swap, whose 8 slots are per thread (section 5).
+- **The publisher waits on a reader that is preempted mid-lend.** With 2
+  or more readers its p99.9 reaches hundreds of microseconds (681.0 µs at
+  2 readers and 1 kHz, against 7663 ns for arc-swap), and when a reader
+  shares the publisher's core it reaches tens of milliseconds (section 3).
+  basedrop's `replace` spins the same way and shows the same tails.
+- **Parked loans in every slot and epoch pin every later publish**: memory
+  grew to 20001 live values over 20000 publishes, where arc-swap and
+  basedrop held 13 (section 6). This is the documented limit
+  (`docs::limitations`), reached here on purpose.
+- **Freeing a long retired list is quadratic**: the publish that releases
+  30100 pinned values takes 169.9 ms, against 2462.0 µs to free them from a
+  `Vec` (section 7.2).
+
+**Best-config arc-swap showed no failure here.** With a graveyard on the
+writer and a prewarmed reader, it never freed or allocated on a reader. Its
+readers matched arc-lend's at one reader and beat them with more readers
+and with nested reads, and its writer never waited on a reader. The
+difference is
+where the guarantee lives: arc-swap is safe on a deadline thread by a
+protocol its users keep (prewarm every reader thread, never drop a replaced
+`Arc` on the writer while a guard may hold it, never hold more than 8
+guards), and the naive rows show what happens when they do not. arc-lend
+makes the first two a property of the type; the third it handles worse.
+
+## Method
+
+A custom harness (`compare/benches/compare/main.rs`), not criterion:
+criterion reports means, and a deadline thread cares about the tail.
+
+- **A block** is one read (`lend()`, `load()`, `get()`, `enter()`, `lock()`
+  or `read()`), a sum over the 16-`u64` payload, and the drop of the read.
+  Each block is timed with `Instant` and recorded in an HDR histogram
+  (`hdrhistogram` 7.6.0, 1 ns to 100 s, three significant figures). Tables
+  print p50, p99, p99.9, p99.99 and the max.
+- **`Instant`, not `rdtsc`:** portable (the bench builds for Windows and
+  macOS), and on Linux with the `tsc` clocksource it reads the TSC through
+  the vDSO. The timer's own cost is the first table: a figure at the timer
+  floor measured nothing.
+- **Allocations and frees** are counted by a global allocator that counts
+  only threads that have called `begin_counting` (a per-thread flag and
+  per-thread counters). A *free on the reader* is a call into the global
+  allocator from a reader thread during its measured window.
+- **Values freed on the reader** are counted by the payload's own
+  destructor, so the two columns cross-check: a payload dropped on a reader
+  frees its array and its `Arc`, two frees.
+- **Live payloads** (section 6) are counted by the payload's constructor
+  and destructor; every run ends with 0 live.
+- **Threads are pinned** with `core_affinity` 0.8.3: the publisher on core
+  0, readers from core 1, wrapping.
+- **Rates:** the publisher runs idle, at 1 kHz or 100 kHz (paced to a
+  deadline by sleeping, then spinning for the last 300 µs or less, so a
+  late publish is not made up), or flat out.
+- **Reader counts:** 1, 2, 3 and 4. The brief asks for 1, 2, 4 and N
+  (cores − 1); on this 4-vCPU machine N is 3.
+- **Section 1** runs in a child process of its own. arc-swap's debt nodes
+  are process-wide and never freed, so the dozens of threads that section
+  spawns would otherwise leave nodes that every later `store` walks, and
+  other sections' threads would leave free nodes that hide the first-load
+  allocation.
+
+### The machine
+
+| | |
+|---|---|
+| cpu | Intel(R) Xeon(R) Processor @ 2.10GHz |
+| logical cores | 4 |
+| virtual machine | yes: the CPU reports the `hypervisor` flag |
+| os | Ubuntu 24.04.5 LTS (linux x86_64) |
+| kernel | 6.18.44-fc-v139 |
+| rustc | rustc 1.99.1 (58cf8f9c3 2026-10-13) |
+| profile | release |
+| clocksource | tsc |
+| thread pinning | yes: publisher on core 0, readers from core 1, wrapping (4 cores visible to core_affinity) |
+| reader counts | 1, 2, 3, 4 (N = logical cores − 1) |
+| run length per cell | 1500 ms (section 2), 1000 ms (section 5) |
+| load average at start | 0.93 1.48 0.81 |
+
+### Timer overhead
+
+`Instant::now()` twice and a histogram record, with nothing between: the floor under every latency below.
+
+| | p50 | p99 | p99.9 | p99.99 | max |
+|---|---:|---:|---:|---:|---:|
+| timer only | 29 ns | 39 ns | 58 ns | 3125 ns | 270.8 µs |
+
+### The contenders
+
+Versions: `arc-swap` 1.9.3, `basedrop` 0.1.3, `left-right` 0.11.8, each
+pinned exact in `compare/Cargo.toml`; `arc-lend` from this tree. Each
+configuration is in code (`compare/benches/compare/contenders.rs`), with
+the source line in the contender's crate that justifies it.
+
+| contender | configuration |
+|---|---|
+| arc-lend | ArcLend<T> defaults (SLOTS=8, EPOCHS=4); lend() per block; no prewarm |
+| arc-swap best | DefaultStrategy; load() guard dropped in the block (≤8 per thread); reader prewarmed; writer swaps into a graveyard dropped on the writer at strong_count==1 |
+| arc-swap independent | IndependentStrategy (an alias of DefaultStrategy in 1.9.3); otherwise as arc-swap best |
+| arc-swap naive (misuse) | realistic misuse, not arc-swap's recommendation: store() drops the old Arc; load() per block; no prewarm |
+| basedrop | SharedCell<T>; get() per block; replace() + Collector::collect() on the publisher after every publish |
+| left-right | one ReadHandle per reader; enter() per block; append(new) + publish() |
+| Mutex<Arc<T>> | lock() per block, read through the guard; writer swaps under the lock, drops the old Arc after |
+| RwLock<Arc<T>> | read() per block, read through the guard; writer swaps under write(), drops the old Arc after |
+
+- **arc-swap best** is `DefaultStrategy`, as arc-swap documents, plus our
+  writer and prewarm discipline: `load()` guards dropped in the block and never
+  more than 8 per thread (`DEBT_SLOT_CNT`, `src/debt/fast.rs:23`), each
+  reader thread prewarmed with one load, and the writer keeping replaced
+  `Arc`s until their strong count is 1, so a guard that `store` promotes
+  (`src/strategy/hybrid.rs:199-206`) is never the last owner.
+- **arc-swap independent** uses `IndependentStrategy`, which in 1.9.3 is a
+  doc-hidden alias of `DefaultStrategy` (`src/strategy/mod.rs:139-141`).
+  Its rows measure the same code as the best rows, so the gap between the
+  two is a direct gauge of run-to-run noise. For example, section 3's four
+  readers at 100 kHz show 43498 publishes and a 42.2 µs p99 for one and
+  72159 publishes and a 2189 ns p99 for the other.
+- **arc-swap naive** is labelled misuse: it is what code that treats
+  `ArcSwap` as a drop-in `RwLock<Arc<T>>` does, and not what arc-swap
+  recommends for a deadline thread.
+- **Firewheel's `ArcGc` is excluded.** It is not a cell: it is a pointer
+  type whose values Firewheel hands to the audio thread through its own
+  event queue, so there is no `load`/`store` to compare without building a
+  queue around it. It would also pull `firewheel-core` (about ten crates,
+  including a proc-macro crate and `audioadapter`) into the workspace for
+  one row.
+
+## 1. First read on a fresh thread (adversarial case 3)
+
+Allocations and frees on the new thread during its first read, and that read's latency. *Pool grows*: 8 new threads, each kept alive after its first read (allocations summed, worst latency). *Restart*: one thread reads and exits, then a new one reads. *Prewarmed*: a new thread reads once before the counted read. Counted through Rust's global allocator only.
+
+| contender | grows: allocs | grows: frees | grows: worst first read | restart: allocs | restart: first read | prewarmed: allocs | prewarmed: read |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 0 | 0 | 855 ns | 0 | 226 ns | 0 | 75 ns |
+| arc-swap best | 8 | 0 | 2927 ns | 0 | 400 ns | 0 | 127 ns |
+| arc-swap independent | 7 | 0 | 3952 ns | 0 | 647 ns | 0 | 153 ns |
+| arc-swap naive (misuse) | 7 | 0 | 4701 ns | 0 | 517 ns | 0 | 146 ns |
+| basedrop | 0 | 0 | 411 ns | 0 | 169 ns | 0 | 119 ns |
+| left-right | 0 | 0 | 478 ns | 0 | 174 ns | 0 | 80 ns |
+| Mutex<Arc<T>> | 0 | 0 | 361 ns | 0 | 173 ns | 0 | 115 ns |
+| RwLock<Arc<T>> | 0 | 0 | 345 ns | 0 | 114 ns | 0 | 83 ns |
+
+- arc-swap allocates on a new thread's first load: one debt node per
+  thread when a pool grows. The best row reads 8 and the others 7 because
+  a node left free by an exited thread in the same process is reused
+  (`src/debt/list.rs:169`, `:223-228`), so the count depends on the
+  process's history. The *restart* column shows that reuse: 0. Prewarming
+  closes it: 0 on the counted read.
+- arc-lend, basedrop, left-right and the locks allocate nothing on a new
+  reader thread. (left-right's `ReadHandle` allocates when it is made, on
+  the thread that makes it; the harness makes it before the reader starts,
+  as a host would.)
+- arc-lend's first read on a growing pool was slower than the others'
+  (855 ns worst against 345-478 ns for the non-arc-swap rows), with no
+  allocation; single samples on a VM, so read it as unexplained, not as a
+  finding.
+
+## 2. Reader latency, allocations and frees
+
+One block is one read, a sum of the 16-element payload, and the drop. Latencies are per block, all readers merged. *allocs*/*frees* are calls into the global allocator made on reader threads during the measured window; *values freed on reader* counts payload destructors that ran on a reader.
+
+### 2.1. No publisher
+
+| contender | readers | blocks | p50 | p99 | p99.9 | p99.99 | max | allocs | frees | values freed on reader |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 14333915 | 47 ns | 69 ns | 96 ns | 5855 ns | 1317.9 µs | 0 | 0 | 0 |
+| arc-swap best | 1 | 14632320 | 51 ns | 71 ns | 106 ns | 4331 ns | 1888.3 µs | 0 | 0 | 0 |
+| arc-swap independent | 1 | 14888192 | 51 ns | 69 ns | 106 ns | 3567 ns | 2406.4 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 1 | 14622869 | 51 ns | 71 ns | 100 ns | 4151 ns | 922.6 µs | 0 | 0 | 0 |
+| basedrop | 1 | 13672861 | 58 ns | 81 ns | 112 ns | 5963 ns | 2019.3 µs | 0 | 0 | 0 |
+| left-right | 1 | 14638940 | 53 ns | 70 ns | 88 ns | 3669 ns | 828.9 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 1 | 15996746 | 47 ns | 49 ns | 66 ns | 3059 ns | 138.0 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 1 | 15827643 | 47 ns | 59 ns | 77 ns | 3189 ns | 384.0 µs | 0 | 0 | 0 |
+| arc-lend | 2 | 15924295 | 137 ns | 275 ns | 362 ns | 13.6 µs | 785.9 µs | 0 | 0 | 0 |
+| arc-swap best | 2 | 29760092 | 51 ns | 71 ns | 91 ns | 3805 ns | 1727.5 µs | 0 | 0 | 0 |
+| arc-swap independent | 2 | 29651831 | 51 ns | 68 ns | 95 ns | 3639 ns | 7118.8 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 2 | 28417291 | 51 ns | 72 ns | 115 ns | 4855 ns | 8429.6 µs | 0 | 0 | 0 |
+| basedrop | 2 | 6556381 | 414 ns | 536 ns | 3549 ns | 18.3 µs | 1010.2 µs | 0 | 0 | 0 |
+| left-right | 2 | 29222486 | 53 ns | 70 ns | 87 ns | 3661 ns | 474.1 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 2 | 14028346 | 142 ns | 315 ns | 2635 ns | 23.9 µs | 3430.4 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 2 | 15767864 | 136 ns | 270 ns | 404 ns | 13.6 µs | 3534.8 µs | 0 | 0 | 0 |
+| arc-lend | 3 | 15203364 | 197 ns | 676 ns | 3203 ns | 18.4 µs | 2652.2 µs | 0 | 0 | 0 |
+| arc-swap best | 3 | 43278883 | 51 ns | 72 ns | 145 ns | 6475 ns | 2375.7 µs | 0 | 0 | 0 |
+| arc-swap independent | 3 | 43275505 | 51 ns | 72 ns | 142 ns | 4703 ns | 2488.3 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 3 | 43589103 | 51 ns | 71 ns | 128 ns | 4287 ns | 2383.9 µs | 0 | 0 | 0 |
+| basedrop | 3 | 8864178 | 441 ns | 581 ns | 4159 ns | 21.4 µs | 3432.4 µs | 0 | 0 | 0 |
+| left-right | 3 | 41906869 | 53 ns | 76 ns | 110 ns | 5067 ns | 2316.3 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 3 | 9494045 | 317 ns | 1489 ns | 12.3 µs | 40.3 µs | 4137.0 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 3 | 21128324 | 146 ns | 325 ns | 2423 ns | 16.5 µs | 4354.0 µs | 0 | 0 | 0 |
+| arc-lend | 4 | 13986005 | 300 ns | 1156 ns | 3757 ns | 23.5 µs | 13.3 ms | 0 | 0 | 0 |
+| arc-swap best | 4 | 57739637 | 51 ns | 70 ns | 137 ns | 4107 ns | 1905.7 µs | 0 | 0 | 0 |
+| arc-swap independent | 4 | 57784763 | 51 ns | 73 ns | 119 ns | 4687 ns | 2062.3 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 4 | 57610216 | 51 ns | 71 ns | 136 ns | 4439 ns | 4853.8 µs | 0 | 0 | 0 |
+| basedrop | 4 | 10370782 | 497 ns | 787 ns | 4747 ns | 27.0 µs | 7888.9 µs | 0 | 0 | 0 |
+| left-right | 4 | 57426921 | 53 ns | 74 ns | 129 ns | 4127 ns | 1300.5 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 4 | 7313359 | 527 ns | 3359 ns | 20.6 µs | 55.6 µs | 8437.8 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 4 | 22441307 | 186 ns | 566 ns | 1278 ns | 16.5 µs | 26.0 ms | 0 | 0 | 0 |
+
+- One reader: every cell is within a few nanoseconds of the others (47-58
+  ns p50) on a 29 ns timer floor. arc-lend is at 47 ns.
+- More readers: arc-swap and left-right stay at 51-53 ns p50. arc-lend
+  rises to 137, 197 and 300 ns: its readers contend on one cache line of
+  slots. basedrop (414-497 ns) and `Mutex` (142-527 ns) are worse;
+  `RwLock` (136-186 ns) is better than arc-lend at three and four readers.
+- No contender allocates or frees on a reader here. Naive arc-swap's 0
+  allocations in this section are not a first-load figure: its reader
+  threads reuse debt nodes that earlier runs in this process left free.
+  Section 1 measures the first load in a fresh process.
+
+### 2.2. Publisher at 1 kHz
+
+| contender | readers | blocks | p50 | p99 | p99.9 | p99.99 | max | allocs | frees | values freed on reader |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 14689073 | 47 ns | 68 ns | 139 ns | 3903 ns | 2065.4 µs | 0 | 0 | 0 |
+| arc-swap best | 1 | 14289270 | 51 ns | 72 ns | 112 ns | 4219 ns | 2070.5 µs | 0 | 0 | 0 |
+| arc-swap independent | 1 | 14218567 | 51 ns | 72 ns | 123 ns | 5559 ns | 1995.8 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 1 | 14229133 | 51 ns | 71 ns | 148 ns | 12.8 µs | 5128.2 µs | 0 | 8 | 4 |
+| basedrop | 1 | 13532044 | 58 ns | 86 ns | 170 ns | 5411 ns | 1785.9 µs | 0 | 0 | 0 |
+| left-right | 1 | 14067992 | 53 ns | 76 ns | 144 ns | 5315 ns | 2134.0 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 1 | 15247852 | 47 ns | 66 ns | 93 ns | 4017 ns | 2756.6 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 1 | 15322124 | 47 ns | 65 ns | 85 ns | 3645 ns | 709.6 µs | 0 | 0 | 0 |
+| arc-lend | 2 | 16114613 | 130 ns | 266 ns | 370 ns | 13.9 µs | 1903.6 µs | 0 | 0 | 0 |
+| arc-swap best | 2 | 29768970 | 51 ns | 70 ns | 102 ns | 3555 ns | 3045.4 µs | 0 | 0 | 0 |
+| arc-swap independent | 2 | 29440203 | 51 ns | 70 ns | 122 ns | 3641 ns | 1238.0 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 2 | 29223430 | 51 ns | 70 ns | 143 ns | 4463 ns | 12.3 ms | 0 | 8 | 4 |
+| basedrop | 2 | 7128130 | 380 ns | 448 ns | 3281 ns | 17.5 µs | 1597.4 µs | 0 | 0 | 0 |
+| left-right | 2 | 28226626 | 53 ns | 76 ns | 128 ns | 3875 ns | 3280.9 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 2 | 15904181 | 120 ns | 255 ns | 436 ns | 19.4 µs | 1221.6 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 2 | 16415545 | 126 ns | 248 ns | 383 ns | 13.0 µs | 3113.0 µs | 0 | 0 | 0 |
+| arc-lend | 3 | 15394701 | 205 ns | 652 ns | 2773 ns | 17.1 µs | 4517.9 µs | 0 | 0 | 0 |
+| arc-swap best | 3 | 43725849 | 51 ns | 70 ns | 206 ns | 4367 ns | 4081.7 µs | 0 | 0 | 0 |
+| arc-swap independent | 3 | 42512483 | 51 ns | 73 ns | 199 ns | 4747 ns | 2693.1 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 3 | 43682117 | 51 ns | 71 ns | 142 ns | 4475 ns | 12.8 ms | 0 | 22 | 11 |
+| basedrop | 3 | 9177889 | 421 ns | 573 ns | 3795 ns | 22.0 µs | 4091.9 µs | 0 | 0 | 0 |
+| left-right | 3 | 42829567 | 53 ns | 74 ns | 137 ns | 4159 ns | 2535.4 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 3 | 9284767 | 320 ns | 1465 ns | 13.2 µs | 42.3 µs | 17.2 ms | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 3 | 22201830 | 140 ns | 306 ns | 726 ns | 15.8 µs | 3086.3 µs | 0 | 0 | 0 |
+| arc-lend | 4 | 13897867 | 304 ns | 1155 ns | 3849 ns | 24.9 µs | 8073.2 µs | 0 | 0 | 0 |
+| arc-swap best | 4 | 54133187 | 51 ns | 73 ns | 198 ns | 7951 ns | 2496.5 µs | 0 | 0 | 0 |
+| arc-swap independent | 4 | 53657963 | 51 ns | 73 ns | 165 ns | 9503 ns | 4106.2 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 4 | 54410191 | 51 ns | 73 ns | 165 ns | 6343 ns | 1731.6 µs | 0 | 334 | 167 |
+| basedrop | 4 | 8830540 | 470 ns | 1072 ns | 5567 ns | 34.1 µs | 8040.4 µs | 0 | 0 | 0 |
+| left-right | 4 | 52696163 | 53 ns | 77 ns | 164 ns | 9511 ns | 7274.5 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 4 | 7542144 | 418 ns | 3677 ns | 25.6 µs | 168.3 µs | 3360.8 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 4 | 22917121 | 161 ns | 585 ns | 2687 ns | 24.1 µs | 3452.9 µs | 0 | 0 | 0 |
+
+- Medians as in 2.1. arc-swap naive now frees on its readers (8 to 334
+  frees, half of them payloads), every other contender none.
+
+### 2.3. Publisher at 100 kHz
+
+| contender | readers | blocks | p50 | p99 | p99.9 | p99.99 | max | allocs | frees | values freed on reader |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 14398702 | 47 ns | 253 ns | 434 ns | 6967 ns | 1341.4 µs | 0 | 0 | 0 |
+| arc-swap best | 1 | 13797862 | 51 ns | 303 ns | 498 ns | 11.4 µs | 3608.6 µs | 0 | 0 | 0 |
+| arc-swap independent | 1 | 14040917 | 51 ns | 288 ns | 505 ns | 4531 ns | 11.3 ms | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 1 | 13856283 | 51 ns | 324 ns | 450 ns | 6031 ns | 1476.6 µs | 0 | 512 | 256 |
+| basedrop | 1 | 13542551 | 58 ns | 276 ns | 366 ns | 4843 ns | 1189.9 µs | 0 | 0 | 0 |
+| left-right | 1 | 13507625 | 53 ns | 353 ns | 494 ns | 5091 ns | 663.0 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 1 | 14435803 | 47 ns | 244 ns | 365 ns | 5491 ns | 2629.6 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 1 | 13974557 | 48 ns | 257 ns | 447 ns | 7059 ns | 3534.8 µs | 0 | 0 | 0 |
+| arc-lend | 2 | 14896118 | 139 ns | 437 ns | 618 ns | 21.4 µs | 2019.3 µs | 0 | 0 | 0 |
+| arc-swap best | 2 | 28242880 | 51 ns | 298 ns | 612 ns | 4595 ns | 872.4 µs | 0 | 0 | 0 |
+| arc-swap independent | 2 | 27228095 | 51 ns | 286 ns | 602 ns | 7679 ns | 2146.3 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 2 | 26496215 | 51 ns | 290 ns | 734 ns | 7439 ns | 3622.9 µs | 0 | 1026 | 513 |
+| basedrop | 2 | 7143288 | 380 ns | 491 ns | 3265 ns | 18.0 µs | 1295.4 µs | 0 | 0 | 0 |
+| left-right | 2 | 27061521 | 53 ns | 357 ns | 564 ns | 5535 ns | 8339.5 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 2 | 14160682 | 129 ns | 685 ns | 2805 ns | 26.3 µs | 4014.1 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 2 | 14894690 | 133 ns | 435 ns | 864 ns | 18.2 µs | 1564.7 µs | 0 | 0 | 0 |
+| arc-lend | 3 | 14804381 | 204 ns | 726 ns | 2969 ns | 19.5 µs | 4587.5 µs | 0 | 0 | 0 |
+| arc-swap best | 3 | 38939985 | 51 ns | 310 ns | 663 ns | 6955 ns | 3235.8 µs | 0 | 0 | 0 |
+| arc-swap independent | 3 | 38132753 | 52 ns | 307 ns | 583 ns | 11.6 µs | 11.9 ms | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 3 | 37098332 | 58 ns | 303 ns | 671 ns | 8415 ns | 4534.3 µs | 0 | 1600 | 800 |
+| basedrop | 3 | 9077731 | 413 ns | 726 ns | 4359 ns | 27.2 µs | 12.6 ms | 0 | 0 | 0 |
+| left-right | 3 | 39255172 | 53 ns | 371 ns | 623 ns | 6123 ns | 3063.8 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 3 | 8602300 | 322 ns | 1941 ns | 17.6 µs | 58.4 µs | 1701.9 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 3 | 17728299 | 149 ns | 692 ns | 2289 ns | 32.2 µs | 5271.6 µs | 0 | 0 | 0 |
+| arc-lend | 4 | 14441038 | 274 ns | 1113 ns | 3447 ns | 20.3 µs | 6721.5 µs | 0 | 0 | 0 |
+| arc-swap best | 4 | 36401290 | 61 ns | 153 ns | 771 ns | 35.6 µs | 15.9 ms | 0 | 0 | 0 |
+| arc-swap independent | 4 | 46980780 | 51 ns | 132 ns | 435 ns | 5271 ns | 9609.2 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 4 | 50688897 | 51 ns | 131 ns | 423 ns | 3941 ns | 8020.0 µs | 0 | 436 | 218 |
+| basedrop | 4 | 9187959 | 470 ns | 920 ns | 4603 ns | 27.0 µs | 9576.4 µs | 0 | 0 | 0 |
+| left-right | 4 | 48981818 | 53 ns | 92 ns | 507 ns | 6463 ns | 22.5 ms | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 4 | 8083264 | 376 ns | 2775 ns | 21.6 µs | 145.8 µs | 9371.6 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 4 | 21908794 | 149 ns | 542 ns | 1246 ns | 18.1 µs | 8151.0 µs | 0 | 0 | 0 |
+
+- Every contender's p99 rises to 244-353 ns at one reader, from
+  cache misses on a value that keeps changing. arc-lend's is the lowest of
+  the lock-free cells at one reader (253 ns) and its p50 the same as at
+  idle; with more readers its contention costs as in 2.1.
+- arc-swap naive frees on its readers in every row (up to 1600 frees);
+  best config none.
+
+### 2.4. Publisher at flat out (adversarial case 4)
+
+| contender | readers | blocks | p50 | p99 | p99.9 | p99.99 | max | allocs | frees | values freed on reader |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 6741123 | 120 ns | 450 ns | 533 ns | 13.2 µs | 1042.4 µs | 0 | 0 | 0 |
+| arc-swap best | 1 | 9370997 | 51 ns | 415 ns | 633 ns | 11.8 µs | 1360.9 µs | 0 | 0 | 0 |
+| arc-swap independent | 1 | 9292074 | 51 ns | 424 ns | 668 ns | 11.6 µs | 1946.6 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 1 | 9006054 | 51 ns | 519 ns | 743 ns | 12.3 µs | 904.2 µs | 0 | 1708 | 854 |
+| basedrop | 1 | 7324461 | 72 ns | 354 ns | 528 ns | 13.1 µs | 1539.1 µs | 0 | 0 | 0 |
+| left-right | 1 | 5487976 | 136 ns | 501 ns | 1531 ns | 17.1 µs | 6201.3 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 1 | 5896950 | 228 ns | 393 ns | 1117 ns | 28.7 µs | 3407.9 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 1 | 5625628 | 290 ns | 459 ns | 2689 ns | 20.7 µs | 1364.0 µs | 0 | 0 | 0 |
+| arc-lend | 2 | 10271054 | 212 ns | 579 ns | 1052 ns | 14.8 µs | 611.3 µs | 0 | 0 | 0 |
+| arc-swap best | 2 | 19788099 | 51 ns | 448 ns | 760 ns | 11.5 µs | 2953.2 µs | 0 | 0 | 0 |
+| arc-swap independent | 2 | 20479549 | 51 ns | 435 ns | 779 ns | 12.0 µs | 1995.8 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 2 | 19413057 | 51 ns | 458 ns | 802 ns | 11.5 µs | 5107.7 µs | 0 | 3196 | 1598 |
+| basedrop | 2 | 6702140 | 386 ns | 629 ns | 3735 ns | 19.2 µs | 3000.3 µs | 0 | 0 | 0 |
+| left-right | 2 | 12077579 | 131 ns | 526 ns | 2421 ns | 16.7 µs | 1696.8 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 2 | 4581676 | 482 ns | 2227 ns | 18.5 µs | 48.5 µs | 5275.6 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 2 | 6065505 | 416 ns | 820 ns | 14.9 µs | 43.6 µs | 4122.6 µs | 0 | 0 | 0 |
+| arc-lend | 3 | 11067273 | 298 ns | 972 ns | 3829 ns | 24.6 µs | 2818.0 µs | 0 | 0 | 0 |
+| arc-swap best | 3 | 29802606 | 51 ns | 452 ns | 815 ns | 12.7 µs | 1654.8 µs | 0 | 0 | 0 |
+| arc-swap independent | 3 | 28876293 | 52 ns | 478 ns | 939 ns | 13.7 µs | 3641.3 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 3 | 28904740 | 52 ns | 458 ns | 857 ns | 13.2 µs | 2226.2 µs | 0 | 4178 | 2089 |
+| basedrop | 3 | 7782195 | 461 ns | 958 ns | 5471 ns | 27.4 µs | 9101.3 µs | 0 | 0 | 0 |
+| left-right | 3 | 18167495 | 144 ns | 533 ns | 2675 ns | 18.0 µs | 2893.8 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 3 | 5480104 | 342 ns | 9727 ns | 28.7 µs | 73.2 µs | 2547.7 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 3 | 8196240 | 436 ns | 1360 ns | 20.1 µs | 49.6 µs | 4206.6 µs | 0 | 0 | 0 |
+| arc-lend | 4 | 13645458 | 293 ns | 1135 ns | 3571 ns | 22.9 µs | 13.0 ms | 0 | 0 | 0 |
+| arc-swap best | 4 | 43620492 | 51 ns | 413 ns | 663 ns | 11.3 µs | 8896.5 µs | 0 | 0 | 0 |
+| arc-swap independent | 4 | 43701604 | 51 ns | 428 ns | 719 ns | 10.4 µs | 8265.7 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 4 | 43746169 | 51 ns | 404 ns | 688 ns | 11.0 µs | 8106.0 µs | 0 | 2836 | 1418 |
+| basedrop | 4 | 9200825 | 477 ns | 941 ns | 4215 ns | 21.8 µs | 8028.2 µs | 0 | 0 | 0 |
+| left-right | 4 | 55584984 | 53 ns | 77 ns | 209 ns | 4851 ns | 6000.6 µs | 0 | 0 | 0 |
+| Mutex<Arc<T>> | 4 | 6338690 | 443 ns | 4375 ns | 38.6 µs | 306.9 µs | 6221.8 µs | 0 | 0 | 0 |
+| RwLock<Arc<T>> | 4 | 14468877 | 213 ns | 1202 ns | 7899 ns | 56.6 µs | 7995.4 µs | 0 | 0 | 0 |
+
+- This is adversarial case 4, a heavy writer during reads. Best-config
+  arc-swap's reader p50 stays at 51 ns, its p99 rises to 413-452 ns and its
+  p99.9 to 633-815 ns, and it never allocates or frees: no failure.
+- arc-lend loses here at one reader: 120 ns p50, against 51 ns. Its p99
+  (450 ns) and p99.9 (533 ns) are close to arc-swap's.
+- With four readers, left-right's readers look fast (53 ns) because its
+  writer barely runs (7652 publishes in section 3): it waits for readers
+  on a shared core.
+- arc-swap naive frees on its readers in every row (1708-4178 frees).
+
+## 3. Publisher latency, with readers mid-read
+
+Per publish (the payload is built before the clock starts; the time includes any upkeep the configuration does, such as a graveyard sweep or `collect`). Same runs as section 2.
+
+| contender | readers | publisher | publishes | p50 | p99 | p99.9 | p99.99 | max |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 1 kHz | 1461 | 1075 ns | 2989 ns | 37.7 µs | 183.4 µs | 183.4 µs |
+| arc-swap best | 1 | 1 kHz | 1494 | 1279 ns | 2665 ns | 22.4 µs | 29.8 µs | 29.8 µs |
+| arc-swap independent | 1 | 1 kHz | 1497 | 1171 ns | 2709 ns | 33.8 µs | 51.9 µs | 51.9 µs |
+| arc-swap naive (misuse) | 1 | 1 kHz | 1498 | 1110 ns | 2665 ns | 12.1 µs | 43.8 µs | 43.8 µs |
+| basedrop | 1 | 1 kHz | 1493 | 705 ns | 1562 ns | 9247 ns | 43.2 µs | 43.2 µs |
+| left-right | 1 | 1 kHz | 1501 | 928 ns | 2487 ns | 6159 ns | 995.3 µs | 995.3 µs |
+| Mutex<Arc<T>> | 1 | 1 kHz | 1501 | 618 ns | 1227 ns | 170.2 µs | 396.0 µs | 396.0 µs |
+| RwLock<Arc<T>> | 1 | 1 kHz | 1491 | 499 ns | 1422 ns | 50.3 µs | 51.8 µs | 51.8 µs |
+| arc-lend | 2 | 1 kHz | 1495 | 1566 ns | 27.0 µs | 681.0 µs | 722.4 µs | 722.4 µs |
+| arc-swap best | 2 | 1 kHz | 1499 | 1280 ns | 2485 ns | 7663 ns | 302.8 µs | 302.8 µs |
+| arc-swap independent | 2 | 1 kHz | 1496 | 1574 ns | 2745 ns | 6055 ns | 80.6 µs | 80.6 µs |
+| arc-swap naive (misuse) | 2 | 1 kHz | 1501 | 1644 ns | 2955 ns | 5143 ns | 5267 ns | 5267 ns |
+| basedrop | 2 | 1 kHz | 1501 | 1008 ns | 4483 ns | 308.2 µs | 388.9 µs | 388.9 µs |
+| left-right | 2 | 1 kHz | 1496 | 918 ns | 2713 ns | 13.4 µs | 15.7 µs | 15.7 µs |
+| Mutex<Arc<T>> | 2 | 1 kHz | 1495 | 693 ns | 46.7 µs | 382.5 µs | 404.7 µs | 404.7 µs |
+| RwLock<Arc<T>> | 2 | 1 kHz | 1498 | 655 ns | 4463 ns | 18.5 µs | 30.3 µs | 30.3 µs |
+| arc-lend | 3 | 1 kHz | 1500 | 2129 ns | 8983 ns | 641.0 µs | 4089.9 µs | 4089.9 µs |
+| arc-swap best | 3 | 1 kHz | 1498 | 1588 ns | 3475 ns | 16.5 µs | 18.7 µs | 18.7 µs |
+| arc-swap independent | 3 | 1 kHz | 1467 | 1562 ns | 4227 ns | 14.7 µs | 21.0 µs | 21.0 µs |
+| arc-swap naive (misuse) | 3 | 1 kHz | 1459 | 1645 ns | 2977 ns | 27.5 µs | 29.5 µs | 29.5 µs |
+| basedrop | 3 | 1 kHz | 1482 | 1343 ns | 34.8 µs | 2908.2 µs | 3442.7 µs | 3442.7 µs |
+| left-right | 3 | 1 kHz | 1488 | 950 ns | 2961 ns | 429.6 µs | 1478.7 µs | 1478.7 µs |
+| Mutex<Arc<T>> | 3 | 1 kHz | 1468 | 929 ns | 114.4 µs | 1539.1 µs | 16.8 ms | 16.8 ms |
+| RwLock<Arc<T>> | 3 | 1 kHz | 1500 | 1052 ns | 17.4 µs | 53.4 µs | 96.0 µs | 96.0 µs |
+| arc-lend | 4 | 1 kHz | 513 | 2043 ns | 26.0 ms | 37.0 ms | 37.0 ms | 37.0 ms |
+| arc-swap best | 4 | 1 kHz | 1462 | 1509 ns | 2803 ns | 5759 ns | 6367 ns | 6367 ns |
+| arc-swap independent | 4 | 1 kHz | 1468 | 1413 ns | 2997 ns | 7531 ns | 12.1 µs | 12.1 µs |
+| arc-swap naive (misuse) | 4 | 1 kHz | 1472 | 1467 ns | 3563 ns | 4907 ns | 5291 ns | 5291 ns |
+| basedrop | 4 | 1 kHz | 357 | 1124 ns | 29.0 ms | 41.0 ms | 41.0 ms | 41.0 ms |
+| left-right | 4 | 1 kHz | 1462 | 788 ns | 2265 ns | 3997 ns | 4471 ns | 4471 ns |
+| Mutex<Arc<T>> | 4 | 1 kHz | 1470 | 966 ns | 450.0 µs | 1537.0 µs | 2566.1 µs | 2566.1 µs |
+| RwLock<Arc<T>> | 4 | 1 kHz | 1438 | 916 ns | 224.1 µs | 6000.6 µs | 6021.1 µs | 6021.1 µs |
+| arc-lend | 1 | 100 kHz | 148210 | 668 ns | 1443 ns | 14.6 µs | 45.3 µs | 476.9 µs |
+| arc-swap best | 1 | 100 kHz | 147187 | 996 ns | 1541 ns | 17.6 µs | 51.3 µs | 1600.5 µs |
+| arc-swap independent | 1 | 100 kHz | 149117 | 1099 ns | 1602 ns | 17.4 µs | 29.1 µs | 109.1 µs |
+| arc-swap naive (misuse) | 1 | 100 kHz | 145387 | 1000 ns | 1579 ns | 20.3 µs | 38.8 µs | 299.8 µs |
+| basedrop | 1 | 100 kHz | 146942 | 521 ns | 848 ns | 13.4 µs | 40.9 µs | 1184.8 µs |
+| left-right | 1 | 100 kHz | 147573 | 659 ns | 972 ns | 14.6 µs | 39.2 µs | 653.8 µs |
+| Mutex<Arc<T>> | 1 | 100 kHz | 146853 | 361 ns | 693 ns | 18.8 µs | 57.3 µs | 607.7 µs |
+| RwLock<Arc<T>> | 1 | 100 kHz | 141943 | 390 ns | 702 ns | 22.7 µs | 102.1 µs | 763.4 µs |
+| arc-lend | 2 | 100 kHz | 143472 | 889 ns | 6315 ns | 46.8 µs | 475.6 µs | 1982.5 µs |
+| arc-swap best | 2 | 100 kHz | 147418 | 1358 ns | 2095 ns | 17.4 µs | 35.0 µs | 327.9 µs |
+| arc-swap independent | 2 | 100 kHz | 146590 | 1335 ns | 2477 ns | 18.8 µs | 52.5 µs | 1541.1 µs |
+| arc-swap naive (misuse) | 2 | 100 kHz | 147534 | 1339 ns | 4019 ns | 18.9 µs | 39.5 µs | 137.2 µs |
+| basedrop | 2 | 100 kHz | 148096 | 680 ns | 1941 ns | 17.4 µs | 72.9 µs | 706.6 µs |
+| left-right | 2 | 100 kHz | 141381 | 740 ns | 1541 ns | 18.5 µs | 99.9 µs | 8323.1 µs |
+| Mutex<Arc<T>> | 2 | 100 kHz | 141886 | 764 ns | 5783 ns | 52.0 µs | 333.1 µs | 2496.5 µs |
+| RwLock<Arc<T>> | 2 | 100 kHz | 145936 | 425 ns | 1621 ns | 32.3 µs | 95.3 µs | 993.3 µs |
+| arc-lend | 3 | 100 kHz | 141349 | 1288 ns | 6339 ns | 35.6 µs | 462.8 µs | 5648.4 µs |
+| arc-swap best | 3 | 100 kHz | 146307 | 1539 ns | 4079 ns | 21.1 µs | 75.3 µs | 1551.4 µs |
+| arc-swap independent | 3 | 100 kHz | 141933 | 1520 ns | 4435 ns | 32.7 µs | 140.8 µs | 1912.8 µs |
+| arc-swap naive (misuse) | 3 | 100 kHz | 145944 | 1422 ns | 4061 ns | 21.6 µs | 74.9 µs | 216.8 µs |
+| basedrop | 3 | 100 kHz | 139306 | 834 ns | 4715 ns | 30.6 µs | 538.1 µs | 5931.0 µs |
+| left-right | 3 | 100 kHz | 145508 | 778 ns | 1522 ns | 16.9 µs | 181.6 µs | 2809.9 µs |
+| Mutex<Arc<T>> | 3 | 100 kHz | 141562 | 1042 ns | 16.1 µs | 67.3 µs | 284.9 µs | 1847.3 µs |
+| RwLock<Arc<T>> | 3 | 100 kHz | 141799 | 736 ns | 5067 ns | 59.1 µs | 247.8 µs | 4169.7 µs |
+| arc-lend | 4 | 100 kHz | 31409 | 1362 ns | 6595 ns | 9248.8 µs | 22.9 ms | 35.4 ms |
+| arc-swap best | 4 | 100 kHz | 43498 | 1421 ns | 42.2 µs | 637.4 µs | 4636.7 µs | 8273.9 µs |
+| arc-swap independent | 4 | 100 kHz | 72159 | 1432 ns | 2189 ns | 18.3 µs | 4032.5 µs | 12.4 ms |
+| arc-swap naive (misuse) | 4 | 100 kHz | 73069 | 1412 ns | 2325 ns | 14.8 µs | 4034.6 µs | 5812.2 µs |
+| basedrop | 4 | 100 kHz | 46377 | 877 ns | 4535 ns | 649.2 µs | 24.0 ms | 56.0 ms |
+| left-right | 4 | 100 kHz | 51204 | 716 ns | 1182 ns | 4001.8 µs | 5460.0 µs | 25.4 ms |
+| Mutex<Arc<T>> | 4 | 100 kHz | 77633 | 767 ns | 26.4 µs | 1102.8 µs | 2824.2 µs | 4784.1 µs |
+| RwLock<Arc<T>> | 4 | 100 kHz | 69436 | 529 ns | 2879 ns | 112.4 µs | 5566.5 µs | 6119.4 µs |
+| arc-lend | 1 | flat out | 2094099 | 659 ns | 862 ns | 6059 ns | 21.6 µs | 1041.9 µs |
+| arc-swap best | 1 | flat out | 1493547 | 865 ns | 1361 ns | 13.1 µs | 21.3 µs | 873.5 µs |
+| arc-swap independent | 1 | flat out | 1501936 | 881 ns | 1349 ns | 12.7 µs | 23.4 µs | 420.1 µs |
+| arc-swap naive (misuse) | 1 | flat out | 1407237 | 959 ns | 1452 ns | 13.2 µs | 24.4 µs | 342.8 µs |
+| basedrop | 1 | flat out | 2992044 | 399 ns | 757 ns | 4167 ns | 25.0 µs | 1801.2 µs |
+| left-right | 1 | flat out | 1837084 | 693 ns | 1195 ns | 12.0 µs | 35.8 µs | 6189.1 µs |
+| Mutex<Arc<T>> | 1 | flat out | 3148360 | 370 ns | 754 ns | 12.1 µs | 35.7 µs | 1048.6 µs |
+| RwLock<Arc<T>> | 1 | flat out | 3214182 | 373 ns | 543 ns | 5803 ns | 30.2 µs | 1394.7 µs |
+| arc-lend | 2 | flat out | 1523674 | 828 ns | 2861 ns | 12.4 µs | 23.2 µs | 388.4 µs |
+| arc-swap best | 2 | flat out | 1188897 | 1139 ns | 1700 ns | 13.5 µs | 27.3 µs | 1445.9 µs |
+| arc-swap independent | 2 | flat out | 1097464 | 1207 ns | 1880 ns | 16.4 µs | 36.4 µs | 3074.0 µs |
+| arc-swap naive (misuse) | 2 | flat out | 1140679 | 1164 ns | 1771 ns | 15.6 µs | 33.8 µs | 4309.0 µs |
+| basedrop | 2 | flat out | 2736369 | 388 ns | 1314 ns | 5211 ns | 25.8 µs | 933.4 µs |
+| left-right | 2 | flat out | 1426041 | 973 ns | 1766 ns | 14.4 µs | 52.9 µs | 1696.8 µs |
+| Mutex<Arc<T>> | 2 | flat out | 1755583 | 605 ns | 2553 ns | 24.8 µs | 56.4 µs | 5226.5 µs |
+| RwLock<Arc<T>> | 2 | flat out | 2416078 | 488 ns | 1213 ns | 18.2 µs | 54.7 µs | 1433.6 µs |
+| arc-lend | 3 | flat out | 900180 | 1212 ns | 5327 ns | 20.3 µs | 81.2 µs | 2525.2 µs |
+| arc-swap best | 3 | flat out | 1014910 | 1342 ns | 2199 ns | 14.8 µs | 21.0 µs | 1687.6 µs |
+| arc-swap independent | 3 | flat out | 950888 | 1385 ns | 3629 ns | 18.6 µs | 52.2 µs | 2521.1 µs |
+| arc-swap naive (misuse) | 3 | flat out | 966089 | 1368 ns | 2379 ns | 20.0 µs | 60.4 µs | 1822.7 µs |
+| basedrop | 3 | flat out | 1848562 | 490 ns | 3033 ns | 16.0 µs | 62.6 µs | 3045.4 µs |
+| left-right | 3 | flat out | 1324856 | 995 ns | 3141 ns | 15.2 µs | 77.6 µs | 2063.4 µs |
+| Mutex<Arc<T>> | 3 | flat out | 1145333 | 746 ns | 12.1 µs | 32.4 µs | 102.7 µs | 7233.5 µs |
+| RwLock<Arc<T>> | 3 | flat out | 1572060 | 669 ns | 2887 ns | 37.1 µs | 79.7 µs | 4139.0 µs |
+| arc-lend | 4 | flat out | 165909 | 1315 ns | 5535 ns | 2592.8 µs | 14.5 ms | 28.6 ms |
+| arc-swap best | 4 | flat out | 497581 | 1332 ns | 2137 ns | 18.9 µs | 4038.7 µs | 8028.2 µs |
+| arc-swap independent | 4 | flat out | 487318 | 1369 ns | 2033 ns | 18.0 µs | 4034.6 µs | 16.0 ms |
+| arc-swap naive (misuse) | 4 | flat out | 499297 | 1348 ns | 2014 ns | 17.9 µs | 4028.4 µs | 8048.6 µs |
+| basedrop | 4 | flat out | 651286 | 482 ns | 2637 ns | 12.1 µs | 4026.4 µs | 36.0 ms |
+| left-right | 4 | flat out | 7652 | 795 ns | 4001.8 µs | 5017.6 µs | 8007.7 µs | 8007.7 µs |
+| Mutex<Arc<T>> | 4 | flat out | 616199 | 604 ns | 13.9 µs | 423.9 µs | 1641.5 µs | 3774.5 µs |
+| RwLock<Arc<T>> | 4 | flat out | 345907 | 943 ns | 7519 ns | 93.7 µs | 5603.3 µs | 7135.2 µs |
+
+- At one reader and flat out, arc-lend's publish p50 (659 ns) is below
+  arc-swap best's (865 ns) and left-right's (693 ns), behind basedrop's
+  (399 ns) and the locks' (370-373 ns). At 1 kHz it is behind left-right
+  too (1075 ns against 928 ns).
+- arc-lend loses the tails once readers share the cell. Its publisher
+  waits for a reader between claiming a slot and announcing it, and for a
+  reader between registering on an epoch and loading. If that reader is
+  preempted, the publisher spins until it runs again. In these runs only
+  the first wait can occur: every reader holds one loan and there are at
+  most four, so no lend overflows into an epoch and the seal has no
+  registered reader to wait for. At 2 readers and
+  1 kHz the p99.9 is 681.0 µs (arc-swap best 7663 ns); at 3 readers it is
+  641.0 µs with a 4089.9 µs max (arc-swap best 16.5 µs and 18.7 µs).
+- The 1 kHz rows hold about 1500 publishes, so p99.9 is about the
+  second-worst sample and p99.99 is the max. The sub-millisecond
+  comparisons at 2 and 3 readers rest on one or two events each.
+- At four readers, where one reader shares core 0 with the publisher, the
+  spin can last many scheduler time slices: the backoff's `yield_now`
+  need not run the preempted reader next (a scheduler that balances CPU
+  time, as Linux's does, can keep running the publisher while the reader has
+  had more CPU than it). arc-lend made 513 of about 1500
+  publishes at 1 kHz with a 37.0 ms max, and 165909 flat out against
+  497581 for arc-swap best. basedrop, whose `replace` spins on readers mid-
+  `get` (`src/shared_cell.rs:117`), shows the same (357 publishes, 41.0 ms),
+  and left-right, which waits for readers to leave the old copy, made 7652
+  flat out.
+- arc-swap's writer never waits on readers: its p99.9 stays under 25 µs
+  at up to three readers.
+
+## 4. A store while the reader holds its read (adversarial case 1)
+
+500 rounds. In each, the reader takes a read and holds it; the publisher publishes; the reader then drops its read. A contender whose writer waits for readers cannot complete the store while the read is held: the reader gives up after 2 ms and drops it, and the store completes after. *frees*, *values freed on reader*: on the reader thread, all rounds.
+
+| contender | stores completed while held | reader allocs | reader frees | values freed on reader | publish p50 | p99 | p99.9 | p99.99 | max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 500 | 0 | 0 | 0 | 390 ns | 597 ns | 1589 ns | 1589 ns | 1589 ns |
+| arc-swap best | 500 | 0 | 0 | 0 | 839 ns | 1083 ns | 23.9 µs | 23.9 µs | 23.9 µs |
+| arc-swap independent | 500 | 0 | 0 | 0 | 848 ns | 1184 ns | 17.5 µs | 17.5 µs | 17.5 µs |
+| arc-swap naive (misuse) | 500 | 0 | 1000 | 500 | 805 ns | 1112 ns | 4555 ns | 4555 ns | 4555 ns |
+| basedrop | 500 | 0 | 0 | 0 | 379 ns | 567 ns | 4763 ns | 4763 ns | 4763 ns |
+| left-right | 500 | 0 | 0 | 0 | 488 ns | 715 ns | 2481 ns | 2481 ns | 2481 ns |
+| Mutex<Arc<T>> | 0 | 0 | 0 | 0 | 2063.4 µs | 2797.6 µs | 4591.6 µs | 4591.6 µs | 4591.6 µs |
+| RwLock<Arc<T>> | 0 | 0 | 0 | 0 | 2073.6 µs | 2514.9 µs | 9101.3 µs | 9101.3 µs | 9101.3 µs |
+
+- arc-swap naive frees on the reader in every round: 500 payloads, 1000
+  frees. The store pays the held guard's debt with an owned count
+  (`src/debt/mod.rs:81`), drops its own `Arc`, and the guard's drop is the
+  last.
+- Best config closes it: the graveyard keeps the replaced `Arc` until its
+  count is 1, so the guard is never the last owner. It is a protocol the
+  writer keeps, not a property of the type; forget it and the naive row is
+  what happens.
+- arc-lend, basedrop and left-right complete every store with no free on
+  the reader. (left-right's `publish` waits only for readers of the copy it
+  is about to write, which the held read is not on.) The locks cannot
+  publish while the read is held: their publish takes the full 2 ms hold.
+
+## 5. Nested reads past the slot count (adversarial case 2)
+
+Each block holds *depth* reads of the cell at once (summing each), then drops them all. arc-swap has 8 debt slots **per thread** (`DEBT_SLOT_CNT`), past which a load takes an owned count on the shared `Arc`; arc-lend has 8 hazard slots **per cell**, shared by every reader, past which a lend takes the overflow epoch path. Locks are left out: a nested lock on one thread deadlocks. Latency is per block of *depth* reads.
+
+| contender | depth | readers | publisher | blocks | p50 | p99 | p99.9 | p99.99 | max | allocs | frees | values freed on reader |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | 8 | 1 | no publisher | 2308866 | 356 ns | 482 ns | 3743 ns | 25.4 µs | 736.8 µs | 0 | 0 | 0 |
+| arc-swap best | 8 | 1 | no publisher | 3896435 | 191 ns | 280 ns | 418 ns | 19.7 µs | 896.5 µs | 0 | 0 | 0 |
+| arc-swap independent | 8 | 1 | no publisher | 3708975 | 191 ns | 275 ns | 453 ns | 22.6 µs | 258.4 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 8 | 1 | no publisher | 3865535 | 191 ns | 272 ns | 2687 ns | 18.4 µs | 168.8 µs | 0 | 0 | 0 |
+| basedrop | 8 | 1 | no publisher | 2914561 | 274 ns | 365 ns | 3691 ns | 24.3 µs | 686.1 µs | 0 | 0 | 0 |
+| left-right | 8 | 1 | no publisher | 7288997 | 80 ns | 136 ns | 220 ns | 12.6 µs | 1980.4 µs | 0 | 0 | 0 |
+| arc-lend | 8 | 1 | flat out | 855644 | 1046 ns | 2121 ns | 15.2 µs | 36.6 µs | 2028.5 µs | 0 | 0 | 0 |
+| arc-swap best | 8 | 1 | flat out | 2274074 | 243 ns | 1070 ns | 3885 ns | 21.9 µs | 964.1 µs | 0 | 0 | 0 |
+| arc-swap independent | 8 | 1 | flat out | 2154097 | 253 ns | 1103 ns | 4707 ns | 29.4 µs | 1760.3 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 8 | 1 | flat out | 2184779 | 195 ns | 1153 ns | 4435 ns | 22.3 µs | 826.4 µs | 0 | 5714 | 2857 |
+| basedrop | 8 | 1 | flat out | 1251069 | 522 ns | 2157 ns | 11.3 µs | 31.7 µs | 688.1 µs | 0 | 0 | 0 |
+| left-right | 8 | 1 | flat out | 2762086 | 251 ns | 925 ns | 2953 ns | 16.8 µs | 610.3 µs | 0 | 0 | 0 |
+| arc-lend | 8 | 4 | no publisher | 687306 | 5539 ns | 11.2 µs | 30.9 µs | 182.8 µs | 2437.1 µs | 0 | 0 | 0 |
+| arc-swap best | 8 | 4 | no publisher | 14753783 | 191 ns | 287 ns | 2805 ns | 19.5 µs | 3125.2 µs | 0 | 0 | 0 |
+| arc-swap independent | 8 | 4 | no publisher | 15536250 | 191 ns | 285 ns | 2689 ns | 18.8 µs | 7557.1 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 8 | 4 | no publisher | 15114734 | 191 ns | 291 ns | 2613 ns | 19.6 µs | 2332.7 µs | 0 | 0 | 0 |
+| basedrop | 8 | 4 | no publisher | 859600 | 4411 ns | 8911 ns | 30.3 µs | 177.4 µs | 11.2 ms | 0 | 0 | 0 |
+| left-right | 8 | 4 | no publisher | 27746923 | 81 ns | 150 ns | 247 ns | 13.3 µs | 5484.5 µs | 0 | 0 | 0 |
+| arc-lend | 8 | 4 | flat out | 640124 | 5419 ns | 11.0 µs | 31.1 µs | 2531.3 µs | 9101.3 µs | 0 | 0 | 0 |
+| arc-swap best | 8 | 4 | flat out | 11287258 | 191 ns | 998 ns | 3113 ns | 20.2 µs | 6815.7 µs | 0 | 0 | 0 |
+| arc-swap independent | 8 | 4 | flat out | 11162279 | 191 ns | 1078 ns | 3283 ns | 20.8 µs | 8036.4 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 8 | 4 | flat out | 10984838 | 191 ns | 1068 ns | 3209 ns | 24.7 µs | 8044.5 µs | 0 | 8596 | 4298 |
+| basedrop | 8 | 4 | flat out | 729055 | 4583 ns | 9663 ns | 32.9 µs | 4024.3 µs | 8028.2 µs | 0 | 0 | 0 |
+| left-right | 8 | 4 | flat out | 28084809 | 80 ns | 155 ns | 316 ns | 12.4 µs | 5636.1 µs | 0 | 0 | 0 |
+| arc-lend | 16 | 1 | no publisher | 942940 | 965 ns | 1297 ns | 13.5 µs | 26.1 µs | 2111.5 µs | 0 | 0 | 0 |
+| arc-swap best | 16 | 1 | no publisher | 1354517 | 665 ns | 860 ns | 6023 ns | 20.1 µs | 102.2 µs | 0 | 0 | 0 |
+| arc-swap independent | 16 | 1 | no publisher | 1320466 | 665 ns | 911 ns | 9927 ns | 30.8 µs | 2494.5 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 16 | 1 | no publisher | 1253039 | 666 ns | 950 ns | 11.8 µs | 33.9 µs | 4771.8 µs | 0 | 0 | 0 |
+| basedrop | 16 | 1 | no publisher | 1600280 | 523 ns | 722 ns | 5855 ns | 31.8 µs | 2312.2 µs | 0 | 0 | 0 |
+| left-right | 16 | 1 | no publisher | 5914391 | 115 ns | 207 ns | 290 ns | 13.2 µs | 1482.8 µs | 0 | 0 | 0 |
+| arc-lend | 16 | 1 | flat out | 333810 | 2843 ns | 5551 ns | 21.0 µs | 40.5 µs | 239.9 µs | 0 | 0 | 0 |
+| arc-swap best | 16 | 1 | flat out | 666420 | 1342 ns | 2585 ns | 16.0 µs | 42.1 µs | 1767.4 µs | 0 | 0 | 0 |
+| arc-swap independent | 16 | 1 | flat out | 602991 | 1481 ns | 2835 ns | 19.3 µs | 48.5 µs | 1956.9 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 16 | 1 | flat out | 335665 | 1710 ns | 19.4 µs | 35.6 µs | 100.0 µs | 1343.5 µs | 0 | 174218 | 87109 |
+| basedrop | 16 | 1 | flat out | 658235 | 1259 ns | 3789 ns | 16.7 µs | 33.5 µs | 194.2 µs | 0 | 0 | 0 |
+| left-right | 16 | 1 | flat out | 1952704 | 335 ns | 1183 ns | 5563 ns | 31.1 µs | 279.0 µs | 0 | 0 | 0 |
+| arc-lend | 16 | 4 | no publisher | 318037 | 11.6 µs | 27.4 µs | 47.1 µs | 224.1 µs | 1938.4 µs | 0 | 0 | 0 |
+| arc-swap best | 16 | 4 | no publisher | 847363 | 4431 ns | 9807 ns | 33.7 µs | 81.6 µs | 9715.7 µs | 0 | 0 | 0 |
+| arc-swap independent | 16 | 4 | no publisher | 894359 | 4175 ns | 8343 ns | 28.6 µs | 152.3 µs | 9895.9 µs | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 16 | 4 | no publisher | 845540 | 4459 ns | 8935 ns | 25.0 µs | 165.8 µs | 2578.4 µs | 0 | 0 | 0 |
+| basedrop | 16 | 4 | no publisher | 382867 | 10.2 µs | 21.3 µs | 40.2 µs | 207.2 µs | 5185.5 µs | 0 | 0 | 0 |
+| left-right | 16 | 4 | no publisher | 22942425 | 115 ns | 216 ns | 334 ns | 13.9 µs | 945.2 µs | 0 | 0 | 0 |
+| arc-lend | 16 | 4 | flat out | 313709 | 11.3 µs | 25.1 µs | 65.1 µs | 3668.0 µs | 8044.5 µs | 0 | 0 | 0 |
+| arc-swap best | 16 | 4 | flat out | 1096203 | 2801 ns | 6735 ns | 25.9 µs | 2103.3 µs | 8028.2 µs | 0 | 0 | 0 |
+| arc-swap independent | 16 | 4 | flat out | 1016571 | 3135 ns | 6851 ns | 22.4 µs | 4022.3 µs | 13.0 ms | 0 | 0 | 0 |
+| arc-swap naive (misuse) | 16 | 4 | flat out | 1008033 | 3115 ns | 13.8 µs | 36.6 µs | 1321.0 µs | 8036.4 µs | 0 | 85878 | 42939 |
+| basedrop | 16 | 4 | flat out | 393181 | 8679 ns | 18.9 µs | 61.9 µs | 4032.5 µs | 9953.3 µs | 0 | 0 | 0 |
+| left-right | 16 | 4 | flat out | 20341717 | 118 ns | 238 ns | 366 ns | 15.9 µs | 5292.0 µs | 0 | 0 | 0 |
+
+- arc-swap's slow path past 8 guards is visible: 16 nested loads cost 665
+  ns on one reader, against 191 ns for 8 (3.5 times the cost for twice the
+  loads), and 4431 ns with four readers sharing the `Arc`'s count. Best
+  config does not close this case: its rule is to stay at 8 or fewer.
+- arc-lend is worse in every row. On one reader at depth 8 nothing
+  overflows (8 reads, 8 slots), yet a block costs 356 ns against
+  arc-swap's 191 ns: every lend scans the slots from slot 0
+  (`src/lend.rs`, `lend`), so the k-th nested lend fails k − 1 CASes
+  before it claims one, quadratic in the depth. Its 8 hazard slots belong
+  to the cell, not the thread, so 4 readers holding 8 reads each overflow at depth 8
+  (5539 ns, against arc-swap's 191 ns), and at depth 16 it takes 11.6 µs
+  (arc-swap 4431 ns).
+- left-right is fastest: a nested `enter()` on one handle is a counter
+  increment.
+- No contender but naive arc-swap frees on its readers.
+
+## 6. Retained memory
+
+Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher makes 20000 publishes flat out. *Staircase*: one reader takes 12 nested reads, one more after each of the first publishes (8 fill arc-lend's slots, the next 4 park an overflow loan in each epoch), and holds them all. A parked reader lets go once every publish is done, or once the publisher has made no progress for 200 ms (it is waiting for the reader). *live after*: once the readers are gone and the writer has published once more and settled.
+
+| contender | scenario | live @25% | @50% | @75% | @100% | max live | publishes done at release | live after | publish p50 | publish max | reader frees | values freed on reader |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| arc-lend | no parked read | 1 | 1 | 1 | 1 | 2 | – | 1 | 853 ns | 61.9 µs | 0 | 0 |
+| arc-swap best | no parked read | 1 | 1 | 1 | 1 | 3 | – | 1 | 1141 ns | 29.1 µs | 0 | 0 |
+| arc-swap independent | no parked read | 1 | 1 | 1 | 1 | 2 | – | 1 | 1172 ns | 33.6 µs | 0 | 0 |
+| arc-swap naive (misuse) | no parked read | 1 | 1 | 1 | 1 | 2 | – | 1 | 1109 ns | 36.2 µs | 36 | 18 |
+| basedrop | no parked read | 1 | 1 | 1 | 1 | 3 | – | 1 | 407 ns | 24.4 µs | 0 | 0 |
+| left-right | no parked read | 2 | 2 | 2 | 2 | 2 | – | 2 | 978 ns | 73.0 µs | 0 | 0 |
+| Mutex<Arc<T>> | no parked read | 1 | 1 | 1 | 1 | 1 | – | 1 | 702 ns | 50.8 µs | 0 | 0 |
+| RwLock<Arc<T>> | no parked read | 1 | 1 | 1 | 1 | 1 | – | 1 | 489 ns | 60.4 µs | 0 | 0 |
+| arc-lend | one parked read | 2 | 2 | 2 | 2 | 3 | 20000 | 1 | 671 ns | 29.3 µs | 0 | 0 |
+| arc-swap best | one parked read | 2 | 2 | 2 | 2 | 3 | 20000 | 1 | 931 ns | 56.5 µs | 0 | 0 |
+| arc-swap independent | one parked read | 2 | 2 | 2 | 2 | 3 | 20000 | 1 | 906 ns | 27.5 µs | 0 | 0 |
+| arc-swap naive (misuse) | one parked read | 2 | 2 | 2 | 2 | 3 | 20000 | 1 | 860 ns | 27.3 µs | 24 | 12 |
+| basedrop | one parked read | 2 | 2 | 2 | 2 | 4 | 20000 | 1 | 464 ns | 23.5 µs | 0 | 0 |
+| left-right | one parked read | 2 | 2 | 2 | 2 | 2 | 1 | 2 | 713 ns | 200.0 ms | 0 | 0 |
+| Mutex<Arc<T>> | one parked read | 1 | 1 | 1 | 1 | 1 | 0 | 1 | 358 ns | 200.3 ms | 0 | 0 |
+| RwLock<Arc<T>> | one parked read | 1 | 1 | 1 | 1 | 1 | 0 | 1 | 510 ns | 200.3 ms | 0 | 0 |
+| arc-lend | staircase of 12 parked reads | 5001 | 10001 | 15001 | 20001 | 20001 | 20000 | 1 | 47.2 µs | 2830.3 µs | 0 | 0 |
+| arc-swap best | staircase of 12 parked reads | 13 | 13 | 13 | 13 | 13 | 20000 | 1 | 650 ns | 37.5 µs | 0 | 0 |
+| arc-swap independent | staircase of 12 parked reads | 13 | 13 | 13 | 13 | 13 | 20000 | 1 | 690 ns | 50.3 µs | 0 | 0 |
+| arc-swap naive (misuse) | staircase of 12 parked reads | 13 | 13 | 13 | 13 | 13 | 20000 | 1 | 679 ns | 60.4 µs | 24 | 12 |
+| basedrop | staircase of 12 parked reads | 13 | 13 | 13 | 13 | 13 | 20000 | 1 | 120 ns | 35.1 µs | 0 | 0 |
+| left-right | staircase of 12 parked reads | 2 | 2 | 2 | 2 | 2 | 1 | 2 | 143 ns | 2202.0 ms | 0 | 0 |
+
+- **No parked read:** every cell keeps 1-3 values alive (left-right 2, its
+  two copies).
+- **One parked read:** arc-lend, arc-swap and basedrop keep 2-4 alive and
+  complete all 20000 publishes. left-right's writer, `Mutex` and `RwLock`
+  are blocked by the parked read until the harness gives up after 200 ms
+  (1, 0 and 0 publishes done).
+- **Staircase of 12 parked reads (arc-lend's worst case, and its loss):** 8
+  reads fill arc-lend's slots and one overflow loan parks in each of the 4
+  epochs. Every later retired value is then pinned, so the live count grows
+  by one per publish to 20001, and each publish rescans the growing list
+  (47.2 µs p50). arc-swap and basedrop keep 13 (the 12 held plus the
+  current one); left-right's writer is blocked. All of it is freed once the
+  reads drop (1 live after). This is the limit `docs::limitations`
+  describes; the rule "never park a loan across blocks" keeps a host out of
+  it.
+
+## 7. Publish cost
+
+### 7.1. Against reader handles registered
+
+20000 publishes on one thread, no reader reading, with *registered* reader handles alive. A handle is a left-right `ReadHandle` (registered with the writer, which scans them on publish) and a clone of the shared cell for every other contender, so today only left-right's cost can depend on it. arc-lend's E3 registered readers will (each publish scans the slot list up to its high-water mark); re-run this table then.
+
+| contender | registered | p50 | p99 | p99.9 | p99.99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| arc-lend | 1 | 132 ns | 155 ns | 2837 ns | 13.1 µs | 21.7 µs |
+| arc-lend | 10 | 130 ns | 162 ns | 280 ns | 13.8 µs | 24.8 µs |
+| arc-lend | 100 | 125 ns | 150 ns | 267 ns | 12.2 µs | 28.8 µs |
+| arc-lend | 1000 | 125 ns | 176 ns | 427 ns | 6315 ns | 22.2 µs |
+| arc-swap best | 1 | 545 ns | 720 ns | 4455 ns | 20.3 µs | 40.4 µs |
+| arc-swap best | 10 | 545 ns | 573 ns | 4831 ns | 22.4 µs | 35.4 µs |
+| arc-swap best | 100 | 560 ns | 577 ns | 4283 ns | 18.4 µs | 28.9 µs |
+| arc-swap best | 1000 | 567 ns | 715 ns | 4683 ns | 23.3 µs | 58.7 µs |
+| arc-swap independent | 1 | 567 ns | 679 ns | 5379 ns | 17.4 µs | 28.2 µs |
+| arc-swap independent | 10 | 567 ns | 783 ns | 5899 ns | 42.4 µs | 54.8 µs |
+| arc-swap independent | 100 | 567 ns | 750 ns | 4947 ns | 25.3 µs | 32.1 µs |
+| arc-swap independent | 1000 | 567 ns | 763 ns | 4017 ns | 19.8 µs | 63.6 µs |
+| arc-swap naive (misuse) | 1 | 561 ns | 799 ns | 4459 ns | 19.2 µs | 31.4 µs |
+| arc-swap naive (misuse) | 10 | 561 ns | 596 ns | 6439 ns | 21.1 µs | 79.9 µs |
+| arc-swap naive (misuse) | 100 | 562 ns | 760 ns | 4311 ns | 20.8 µs | 26.9 µs |
+| arc-swap naive (misuse) | 1000 | 559 ns | 578 ns | 3849 ns | 19.7 µs | 40.8 µs |
+| basedrop | 1 | 99 ns | 118 ns | 545 ns | 11.1 µs | 18.5 µs |
+| basedrop | 10 | 99 ns | 122 ns | 171 ns | 13.1 µs | 19.3 µs |
+| basedrop | 100 | 99 ns | 136 ns | 259 ns | 14.6 µs | 15.9 µs |
+| basedrop | 1000 | 99 ns | 130 ns | 242 ns | 5063 ns | 14.8 µs |
+| left-right | 1 | 143 ns | 185 ns | 401 ns | 20.9 µs | 37.9 µs |
+| left-right | 10 | 156 ns | 168 ns | 387 ns | 19.0 µs | 31.7 µs |
+| left-right | 100 | 315 ns | 542 ns | 3637 ns | 20.3 µs | 31.0 µs |
+| left-right | 1000 | 2343 ns | 5167 ns | 19.4 µs | 31.7 µs | 66.6 µs |
+| Mutex<Arc<T>> | 1 | 86 ns | 106 ns | 140 ns | 11.2 µs | 29.1 µs |
+| Mutex<Arc<T>> | 10 | 86 ns | 106 ns | 185 ns | 3063 ns | 17.6 µs |
+| Mutex<Arc<T>> | 100 | 86 ns | 119 ns | 271 ns | 29.3 µs | 38.0 µs |
+| Mutex<Arc<T>> | 1000 | 86 ns | 122 ns | 246 ns | 3867 ns | 11.6 µs |
+| RwLock<Arc<T>> | 1 | 87 ns | 107 ns | 160 ns | 10.5 µs | 17.1 µs |
+| RwLock<Arc<T>> | 10 | 87 ns | 117 ns | 230 ns | 16.2 µs | 37.8 µs |
+| RwLock<Arc<T>> | 100 | 87 ns | 126 ns | 225 ns | 16.1 µs | 41.2 µs |
+| RwLock<Arc<T>> | 1000 | 87 ns | 116 ns | 265 ns | 11.6 µs | 21.9 µs |
+
+- Only left-right's publish grows with the readers it knows of (143 ns at
+  1 handle, 2343 ns at 1000): it scans every registered handle. Every other
+  cell's handles are clones of one shared cell, so the cost is flat.
+- With no reader reading, arc-lend's publish (125-132 ns) is a quarter of
+  arc-swap's (545-567 ns, which includes the graveyard sweep or the debt
+  walk), and behind basedrop (99 ns) and the locks (86-87 ns).
+
+### 7.2. arc-lend: against retired values pinned
+
+Retired values pinned by parked loans in every slot and epoch (the epoch-stall state, `docs::limitations`). *pinned publish*: 100 publishes while that many are pinned (each adds one). *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's `remove(i)` (refinement P2).
+
+| pinned | epoch stalls | pinned publish p50 | p99 | p99.9 | p99.99 | max | retired at release | release publish | plain free |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 145 ns | 333 ns | 1332 ns | 1332 ns | 1332 ns | 0 | 180 ns | 78 ns |
+| 100 | 189 | 1219 ns | 1782 ns | 1787 ns | 1787 ns | 1787 ns | 200 | 24.1 µs | 14.1 µs |
+| 1000 | 1089 | 4835 ns | 8027 ns | 11.3 µs | 11.3 µs | 11.3 µs | 1100 | 216.6 µs | 67.2 µs |
+| 10000 | 10089 | 47.7 µs | 96.4 µs | 120.3 µs | 120.3 µs | 120.3 µs | 10100 | 18.2 ms | 764.1 µs |
+| 30000 | 30089 | 175.1 µs | 243.1 µs | 251.1 µs | 251.1 µs | 251.1 µs | 30100 | 169.9 ms | 2462.0 µs |
+
+_Finished in 250 s. Load average at the end: 3.24 2.44 1.37. Live payloads at exit: 0._
+
+- A publish while values are pinned grows linearly with the pinned count
+  (175.1 µs p50 at 30000), because every publish filters the whole retired
+  list.
+- The release publish grows quadratically: 18.2 ms for 10100 values and
+  169.9 ms for 30100, against 764.1 µs and 2462.0 µs to free the same
+  values from a `Vec`. The difference is the retired list's `remove(i)`.
+
+## What the next change (E3) should move
+
+E3 replaces anonymous `lend()` and the epoch fallback with registered
+per-reader slots on a growable list, lent through `Reader::lend(&mut self)`.
+The harness's `Contender::read` takes `&Self::Reader`, and the nesting
+scenarios call it again inside the closure on the same handle, so the
+re-run needs a mapping, planned here so that it is like for like:
+
+- **Depth 1** (sections 1 to 4): one registered `Reader` per reader
+  thread, lent through `&mut`; `Contender::read` takes `&mut Self::Reader`
+  then, with one handle per thread, as now.
+- **Nesting** (section 5) and **the staircase** (section 6): one registered
+  `Reader` per nesting level on each thread. The bound under test then
+  becomes one value pinned per registered `Reader`.
+
+The same command re-runs every table. Expected:
+
+- **Section 2:** arc-lend's multi-reader p50 should flatten toward its
+  one-reader figure, since readers stop contending on one line of slots.
+- **Section 3:** the publisher still has to wait for a reader between
+  claiming and announcing, so check whether the tails under preemption
+  shrink; a publisher that spins on a descheduled reader is the cause of
+  today's millisecond tails.
+- **Section 5:** nested lends should no longer overflow into a shared
+  epoch at four readers; the cost past each reader's own slots is E3's to
+  report.
+- **Section 6:** the staircase should stay bounded, like arc-swap's and
+  basedrop's.
+- **Section 7.1:** arc-lend's publish will scan the registered list, so its
+  row should start to depend on the handle count, like left-right's. The
+  axis (1, 10, 100, 1000) is a constant in `main.rs`.
+- **Section 7.2:** the epoch-stall state goes away. The quadratic release
+  (refinement P2) is separate and should be fixed on its own.
+
+## How the harness was checked
+
+The measuring parts were broken on purpose, one at a time, and the
+output checked. Each is recorded in a comment beside the code.
+
+- **The reader flag** (`begin_counting` never sets it): arc-swap naive's
+  section 4 row read 0 frees and 0 values freed on the reader, and its
+  section 1 "grows: allocs" read 0.
+- **arc-lend's reader allocates** (a `Box::new(0u64)` in its read): arc-lend's
+  section 2 "allocs" and "frees" equalled its block counts, and section 4
+  read 5 and 5 in the smoke run. The table catches a reader that allocates.
+- **The payload's drop counter** (the bump skipped): arc-swap naive's
+  section 4 row read 10 frees but 0 values freed on the reader.
+- **Timing** (`t0` taken after the read): every reader p50 fell to the
+  timer-overhead row's figure.
+- **The instrument's own tests** (`compare/tests/instruments.rs`, in the
+  ordinary test suite) check that a counting thread's free is counted,
+  that another thread's allocations are not, that a payload counts its
+  drop, that a promoted arc-swap guard frees on the reader, and that an
+  arc-lend loan does not. Their mutations are in the file.
+
+## Reproduce
+
+```bash
+# The full run, about four minutes here. Output is Markdown on stdout.
+just bench-compare | tee crates/arc-lend/compare/results/$(date +%F)-<host>.txt
+
+# The smoke run CI does: tiny counts, checks only that it runs.
+just bench-compare --test
+```
+
+`just bench-compare` is
+`cargo bench --locked -p arc-lend-compare --bench compare -- <args>`.
+Close other work first, and on Linux check `cat
+/sys/devices/system/clocksource/clocksource0/current_clocksource` is `tsc`.
+To regenerate this file from a new run, splice its tables in by heading
+rather than editing numbers by hand.
+
+## Not done
+
+- **rtsan** was not tried. `rtsan-standalone` needs a recent LLVM, and the
+  allocation counter already shows the property it would check for
+  allocations and frees.
+- **Firewheel's `ArcGc`**: excluded, for the reasons under
+  [The contenders](#the-contenders).
+- **Real hardware:** one run, on a shared VM.
+- **Future work:** comparisons against tutti's `SeqCell` and `PosRing`, and
+  against `triple_buffer` for the one-reader case.

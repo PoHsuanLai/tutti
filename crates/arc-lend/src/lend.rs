@@ -458,11 +458,15 @@ impl<T, const SLOTS: usize, const EPOCHS: usize> ArcLend<T, SLOTS, EPOCHS> {
     /// thread that must not block or free.
     ///
     /// Swaps the value in, then frees every retired value no reader can still
-    /// hold, including the outgoing one if nobody is reading it. It may spin
-    /// briefly on a reader caught mid-lend (a handful of instructions on the
-    /// reader's side; the spin backs off to `yield_now`), and it takes a mutex
-    /// that serializes publishers. Both costs (the wait and the free) belong
-    /// to the caller, which is the entire point: neither reaches a reader.
+    /// hold, including the outgoing one if nobody is reading it. It spins on
+    /// a reader caught mid-lend, between claiming its slot and announcing
+    /// (a handful of instructions on the reader's side; the spin backs off to
+    /// `yield_now`), for as long as that reader is descheduled there: the
+    /// wait is unbounded, and is milliseconds when a reader is preempted at
+    /// that point (`BENCHMARKS.md`, section 3). It never waits on a held
+    /// loan. It also takes a mutex that serializes publishers. Both costs
+    /// (the wait and the free) belong to the caller, which is the entire
+    /// point: neither reaches a reader.
     ///
     /// A retired value that a reader *is* holding is not waited for; it stays
     /// retired and is freed by the next publish after the reader lets go, or

@@ -68,7 +68,9 @@
 //!    (starting at the new value's sequence number), swap it into the epoch
 //!    word — which returns how many readers registered in the outgoing epoch —
 //!    and seal the outgoing epoch once all of those readers have loaded
-//!    (spinning on the publisher's thread; each is a few instructions from done).
+//!    (spinning on the publisher's thread; each is a few instructions from done,
+//!    but the spin lasts as long as such a reader stays descheduled there,
+//!    which is unbounded: `BENCHMARKS.md`, section 3).
 //!    The sealed epoch pins `[its start, the new value]`;
 //! 5. read every reader slot, spinning past one that is `CLAIMED` (a reader
 //!    between claim and announce), and free — after dropping the lock — every

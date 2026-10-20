@@ -479,7 +479,7 @@ mod midi_soundfont_audio {
 
 /// A note from the hardware MIDI input, routed by a rule, sounds: the input
 /// node's channel port is wired to the synth's event input (`MidiRouteRule`
-/// → `EventFeeds` → an event edge), rendered through the graph.
+/// → the session's feeds → an event edge), rendered through the graph.
 ///
 /// # Mutation
 ///

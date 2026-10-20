@@ -17,7 +17,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::prelude::*;
-// `GraphNode` is not imported here: the prelude carries it, because
+// `SessionNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
 use tutti_core::transport::Transport;
 use tutti_core::{Hz, Q};

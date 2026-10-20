@@ -1,7 +1,8 @@
 //! Spawning a sampler voice as an ECS-owned graph node.
 //!
 //! One [`VoiceNode`] per entity, wired like any other node — it goes in as a
-//! [`GraphNode`] (`spawn_audio_node` / `insert_and_bind`, the path every
+//! [`SessionNode`](crate::graph::SessionNode) (`spawn_audio_node` /
+//! `insert_and_bind`, the path every
 //! node takes), [`PortSources`](crate::graph::PortSources) on a sink
 //! names it as a source, and the `On<Remove, AudioNode>` observer takes it
 //! back out. Its controls are typed: a [`VoiceNodeHandle`] (gain as a param
@@ -10,11 +11,12 @@
 //!
 //! # One node per voice, or a pool
 //!
-//! The sampler also ships a [`VoicePool`] that mixes many voices behind one
+//! The sampler also ships a [`VoicePool`](tutti_sampler::VoicePool) that mixes many voices behind one
 //! node, for a host whose model is *a track owns its clips*. A host whose model
 //! is a graph of nodes with edges spawns one voice per entity instead: a source
 //! **is** a node, with its own placement, its own gain, and its own outgoing
-//! connection. Both are [`GraphNode`]s.
+//! connection. Both are [`SessionNode`](crate::graph::SessionNode)s (the
+//! session's impls: a voice's gain addressed by its `ParamSet`).
 //!
 //! A voice node removed from the graph
 //! ([`reconcile_node_despawn`](crate::graph::reconcile_node_despawn)) is
@@ -37,11 +39,10 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::ChannelLayout;
-use tutti_graph::ParamSet;
-use tutti_sampler::{DiskVoice, MemorySource, Voice, VoiceNode, VoiceNodeHandle, VoicePool};
+use tutti_sampler::{Voice, VoiceNode, VoiceNodeHandle};
 
 use crate::graph::insert_and_bind;
-use crate::graph::{GraphNode, NodeControls};
+use crate::graph::NodeControls;
 
 /// Marks an entity whose audio node is a sampler voice.
 ///
@@ -62,30 +63,6 @@ pub struct SamplerVoice;
 /// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`]
 /// (or `spawn_audio_node`), which is every voice this crate builds.
 pub type VoiceCommands = NodeControls<VoiceNodeHandle>;
-
-/// A voice as a graph node: its params (the gain) addressed by its
-/// set, so an [`AudioParam`](crate::graph::AudioParam) on the entity writes
-/// the cell the node reads and a fork starts from the gain as set.
-impl GraphNode for VoiceNode {
-    fn params(controls: &VoiceNodeHandle) -> Option<ParamSet> {
-        Some(controls.params().clone())
-    }
-}
-
-/// A pool as a graph node; its controls are its
-/// [`VoicePoolHandle`](tutti_sampler::VoicePoolHandle).
-impl GraphNode for VoicePool {}
-
-/// A bare clip reader as a graph node, its gain addressed by its set.
-impl GraphNode for MemorySource {
-    fn params(controls: &ParamSet) -> Option<ParamSet> {
-        Some(controls.clone())
-    }
-}
-
-/// A streamed voice as a graph node; its controls are its
-/// [`DiskVoiceControls`](tutti_sampler::DiskVoiceControls).
-impl GraphNode for DiskVoice {}
 
 /// `Commands` extension that spawns a [`VoiceNode`] on a new entity.
 ///

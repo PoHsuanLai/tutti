@@ -16,7 +16,9 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use std::sync::Arc;
 
-use crate::graph::{engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use crate::graph::{
+    engine_ready, AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems,
+};
 use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
 
 /// A parsed `.sf2` as a loadable asset.
@@ -233,17 +235,14 @@ pub fn soundfont_playback_system(
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
-    dirty: Option<ResMut<GraphDirty>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
-    // `TuttiSoundFontPlugin` is `pub` and separately addable, but `GraphDirty`
-    // is `GraphReconcilePlugin`'s and the graph is `build_into`'s. A promotion
-    // with nowhere to promote into waits instead of panicking — the pending
-    // task is untouched, so it retries.
-    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+    // `TuttiSoundFontPlugin` is `pub` and separately addable, but the graph
+    // is `build_into`'s. A promotion with nowhere to promote into waits
+    // instead of panicking — the pending task is untouched, so it retries.
+    let Some(mut graph) = graph else {
         return;
     };
-    let mut edited = false;
 
     for (entity, mut pending_unit) in pending.iter_mut() {
         let Some(result) = block_on(future::poll_once(&mut pending_unit.task)) else {
@@ -261,9 +260,9 @@ pub fn promote_pending_soundfonts(
         // Inserted as a graph node: a MIDI event input (so a
         // `MidiSourceInstall` plays through a clip node), a fork, and a node
         // that follows the graph's rate on a device restart (`Node::prepare`).
-        let controls = crate::graph::GraphNode::captured(&unit);
+        // The insert edits the session, so the frame's commit sends it.
+        let controls = CapturedControls::default();
         let (id, ()) = graph.insert(unit);
-        edited = true;
 
         // `AudioNode` is the whole binding: node teardown
         // (`reconcile_node_despawn`) keys on its removal.
@@ -271,12 +270,6 @@ pub fn promote_pending_soundfonts(
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
             .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, id));
-    }
-
-    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
-    // anchored before that phase).
-    if edited {
-        dirty.0 = true;
     }
 }
 
@@ -290,9 +283,9 @@ pub struct TuttiSoundFontPlugin;
 impl Plugin for TuttiSoundFontPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlaySoundFont>();
-        // `promote_pending_soundfonts` stages graph edits and sets GraphDirty
-        // rather than committing inline, so anchor the chain before the Commit
-        // phase where `commit_graph` flushes it.
+        // `promote_pending_soundfonts` stages graph edits rather than
+        // committing inline, so anchor the chain before the Commit phase
+        // where `commit_graph` sends them.
         app.init_asset::<SoundFontAsset>()
             .register_asset_loader(SoundFontAssetLoader)
             .add_systems(

@@ -385,8 +385,8 @@ impl AudioPumpAppExt for App {
         self.add_message::<PumpFinished>();
         self.add_observer(finalize_removed_pumps::<S>);
         // Deliberately not in a `GraphReconcileSystems` phase and not gated on
-        // `engine_ready`: a pump touches no graph topology and sets no
-        // `GraphDirty`, and a file→WAV pump is valid with no audio device at
+        // `engine_ready`: a pump touches no graph topology and edits no
+        // session, and a file→WAV pump is valid with no audio device at
         // all. Gating it would tie offline work to a live callback.
         self.add_systems(Update, drain_audio_pumps::<S>)
     }

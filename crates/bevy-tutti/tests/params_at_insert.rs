@@ -2,7 +2,7 @@
 //! modulation lane's knob is the node's own cell.
 //!
 //! A lane finds a native param's knob through the node's `ParamSet`, which
-//! the insertion keeps by key (`GraphNode::params`, `set_node_params`).
+//! the insertion keeps by key (`SessionNode::params`, `set_node_params`).
 //! These pin it at the insertion paths themselves — `spawn_audio_node`,
 //! `insert_audio_node`, `crossfade_audio_node` — rather than at a fixture
 //! that addresses by hand, because a path that forgot to would leave every

@@ -27,7 +27,7 @@ use crate::export::request::{
     ExportTarget, PreparedGraph,
 };
 use crate::graph::resources::ExportRefused;
-use crate::graph::runtime::PendingExport;
+use tutti_session::PendingExport;
 use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Starts the oldest pending [`ExportRequest`], if nothing is already running.
@@ -284,7 +284,7 @@ impl NodeNames {
         {
             nodes.insert(entity, *node);
             by_key.insert(
-                crate::graph::runtime::key(*node),
+                node.key(),
                 (entity, name.map(|n| n.as_str().to_owned())),
             );
         }
@@ -463,7 +463,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tutti_core::transport::{MetronomeMode, OfflineTimeline, OfflineTimelineConfig};
     use tutti_core::{Beat, Bpm, ChannelLayout, MotionEvent, SampleRate};
-    use tutti_cpal::{AudioEngine, ManualStreamDriver, OutputSpec};
+    use tutti_cpal::{ManualStreamDriver, OutputSpec};
     use tutti_export::{ExportConfig, RenderConfig};
 
     const RATE: f64 = 48_000.0;
@@ -501,16 +501,16 @@ mod tests {
         let mut app = App::new();
         let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
-        build_on(
-            &plugin,
-            &mut app,
-            AudioEngine::from_spec(OutputSpec::new(
-                SampleRate(RATE),
-                ChannelLayout::STEREO,
-                tutti_cpal::cpal::SampleFormat::F32,
-            )),
-            |engine, state| engine.start_with(state, driver),
-        )
+        build_on(&plugin, &mut app, |builder| {
+            builder.build_device_on(
+                OutputSpec::new(
+                    SampleRate(RATE),
+                    ChannelLayout::STEREO,
+                    tutti_cpal::cpal::SampleFormat::F32,
+                ),
+                driver,
+            )
+        })
         .expect("builds with no device");
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((

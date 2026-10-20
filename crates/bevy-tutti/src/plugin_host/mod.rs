@@ -261,8 +261,9 @@ impl Plugin for TuttiHostingPlugin {
                 // Ordered after the poll so a plugin declared dead this frame is
                 // not asked for state it can no longer produce.
                 plugin_state_snapshot.after(plugin_health_poll),
-                // Before `Compensate`, because it works by raising `GraphDirty`
-                // and that phase reads the flag; after `plugin_health_poll`, so
+                // Before `Compensate`, because it works by editing the session
+                // (its latency) and that phase reads the edit flag; after
+                // `plugin_health_poll`, so
                 // a plugin declared dead this frame is not compensated for on
                 // its way out of the graph.
                 plugin_latency_poll

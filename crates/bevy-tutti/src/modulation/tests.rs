@@ -47,7 +47,7 @@ fn app() -> (App, AudioSide) {
 
 fn spawn<N>(app: &mut App, node: N) -> Entity
 where
-    N: crate::graph::GraphNode,
+    N: crate::graph::SessionNode,
     N::Controls: Send + Sync + 'static,
 {
     let entity = app.world_mut().commands().spawn_audio_node(node).id();
@@ -85,7 +85,7 @@ fn sent(app: &App) -> Arc<tutti_graph::Plan> {
 fn idle(app: &App) -> bool {
     !app.world()
         .resource::<AudioGraphRes>()
-        .has_uncommitted_edit()
+        .is_edited()
 }
 
 /// A cutoff probe (knob 500, range `0..=1000`) on output 0, a sine at

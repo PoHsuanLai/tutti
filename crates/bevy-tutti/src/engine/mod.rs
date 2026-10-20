@@ -6,8 +6,9 @@
 //! transaction and inserts every subsystem as a Bevy resource directly into the
 //! `App`, with no intermediate bundle struct to destructure.
 //!
-//! The device *driver* types are re-exported so a host reaches the whole engine
-//! through `bevy_tutti` without naming the device crate. Mic capture and
+//! The session's [`Device`] (the `!Send` stream handle, held as a non-send
+//! resource) and the device listing are re-exported so a host reaches the
+//! whole engine through `bevy_tutti` without naming the device crate. Mic capture and
 //! recording are not here — they are the live I/O edge, and live in `crate::io`
 //! (compiled with the `audio-io` feature).
 
@@ -22,7 +23,8 @@ pub use device_state::AudioDeviceState;
 pub use restart::{restart_device, restart_device_on, DeviceRestart};
 pub use state::AudioEngineState;
 
-pub use tutti_cpal::{DeviceInfo, TuttiDriver};
+pub use tutti_cpal::{DeviceInfo, DeviceSelector};
+pub use tutti_session::Device;
 
 // The mic/record API is not here: it is the live I/O edge, not engine
 // bootstrap, so it lives in `crate::io` — one adapter module per engine crate.

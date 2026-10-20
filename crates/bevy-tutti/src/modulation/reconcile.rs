@@ -31,7 +31,7 @@ use super::declare::{
 };
 use crate::graph::commit::commit_and_publish;
 use crate::graph::latency::{ChannelCompensation, GraphLatency};
-use crate::graph::{AudioGraphRes, GraphDirty};
+use crate::graph::AudioGraphRes;
 
 /// The app's modulation as applied: the reconciler, and what its last apply
 /// left unresolved or refused.
@@ -169,18 +169,6 @@ impl std::fmt::Display for ModulationRefused {
     }
 }
 
-/// What the adapter asks of the app's entities while it applies: the
-/// `ModHost` seam, in entities (`AudioGraphRes::modulate` turns it into one).
-pub(crate) trait ModEntities {
-    /// The node bound to `entity`.
-    fn node(&self, entity: Entity) -> Option<AudioNode>;
-    /// Plugin parameter `id`'s value on `entity`: `None` while its values
-    /// are not read yet, `Some(None)` for a parameter it does not list.
-    fn plugin_value(&self, entity: Entity, id: u32) -> Option<Option<f32>>;
-    /// What feeds source `source`'s node.
-    fn feed(&self, source: Entity) -> Option<Feed>;
-}
-
 /// Everything the adapter reads off the world.
 #[derive(SystemParam)]
 pub struct Declared<'w, 's> {
@@ -290,12 +278,23 @@ impl Declared<'_, '_> {
     }
 }
 
-impl ModEntities for Declared<'_, '_> {
-    fn node(&self, entity: Entity) -> Option<AudioNode> {
+impl Declared<'_, '_> {
+    /// The node bound to `entity`.
+    fn node_of(&self, entity: Entity) -> Option<AudioNode> {
         self.nodes.get(entity).ok().copied()
     }
+}
 
-    fn plugin_value(&self, entity: Entity, id: u32) -> Option<Option<f32>> {
+/// The session's view of the app's keys while it applies (design 015
+/// §4.6): every key this adapter mints is an entity's bits
+/// (`Entity::to_bits`), decoded here and nowhere else.
+impl tutti_session::ModKeys for Declared<'_, '_> {
+    fn node(&self, target: u64) -> Option<AudioNode> {
+        self.node_of(Entity::try_from_bits(target)?)
+    }
+
+    fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>> {
+        let entity = Entity::try_from_bits(target)?;
         #[cfg(feature = "plugin")]
         if let Ok(values) = self.plugins.get(entity) {
             return values.get(id);
@@ -306,12 +305,12 @@ impl ModEntities for Declared<'_, '_> {
         Some(None)
     }
 
-    fn feed(&self, source: Entity) -> Option<Feed> {
-        let (_, source) = self.sources.get(source).ok()?;
+    fn feed(&self, source: SourceKey) -> Option<Feed> {
+        let (_, source) = self.sources.get(Entity::try_from_bits(source.0)?).ok()?;
         match source.kind.feed()? {
-            ModFeed::Audio(entity) => Some(Feed::Audio(self.node(entity)?.key())),
+            ModFeed::Audio(entity) => Some(Feed::Audio(self.node_of(entity)?.key())),
             ModFeed::Events { entity, port } => Some(Feed::Events(EventOut {
-                node: self.node(entity)?.key(),
+                node: self.node_of(entity)?.key(),
                 port,
             })),
         }
@@ -386,14 +385,12 @@ pub fn reconcile(
     declared: Declared,
     graph: Option<ResMut<AudioGraphRes>>,
     mut state: ResMut<ModulationState>,
-    mut dirty: ResMut<GraphDirty>,
     mut refused: MessageWriter<ModulationRefused>,
 ) {
-    // `engine_ready` reads a state a host may insert without an engine.
+    // `engine_ready` reads a state a host may insert without an engine. What
+    // the apply stages edits the session, which the frame's commit sends.
     let Some(mut graph) = graph else { return };
-    if apply(&declared, &mut graph, &mut state, &mut refused) {
-        dirty.0 = true;
-    }
+    apply(&declared, &mut graph, &mut state, &mut refused);
 }
 
 /// After the frame's commit: re-applies while a target is unresolved (its
@@ -403,12 +400,11 @@ pub fn reconcile(
 /// Its commits go through `commit_and_publish`, as `commit_graph`'s do, so
 /// [`GraphLatency`] and [`ChannelCompensation`] describe the plan sent.
 ///
-/// **A host's own staged edit is committed early here, and only here:**
-/// while a target is unresolved and the graph holds an edit no frame commit
-/// sent (a node the host inserted through `AudioGraphRes` after this
-/// frame's `commit_graph`), it is committed now, since a target resolves
-/// only from a committed plan. With every target resolved, a host's staged
-/// edit waits for its own commit as before.
+/// While the frame's own commit is still waiting (refused for now: the
+/// session's edit flag is still set), nothing here runs: its nodes are not in
+/// a plan yet. A host's edit made through `AudioGraphRes` after this frame's
+/// `commit_graph` sets the same flag, so it too waits for the next frame's
+/// commit.
 #[allow(
     clippy::too_many_arguments,
     reason = "a Bevy system: one parameter per resource it reads"
@@ -418,27 +414,21 @@ pub fn after_commit(
     declared: Declared,
     graph: Option<ResMut<AudioGraphRes>>,
     mut state: ResMut<ModulationState>,
-    mut dirty: ResMut<GraphDirty>,
     mut refused: MessageWriter<ModulationRefused>,
-    table: Option<Res<ChannelCompensation>>,
-    mut total: Option<ResMut<GraphLatency>>,
+    table: Option<ResMut<ChannelCompensation>>,
+    total: Option<ResMut<GraphLatency>>,
 ) {
     let Some(mut graph) = graph else { return };
     // Nothing to resolve while the frame's own commit waits (refused for
-    // now): its nodes are not in a plan yet.
-    if !state.unresolved_targets.is_empty() && !dirty.0 {
-        let commit = if graph.has_uncommitted_edit() {
-            // A node staged outside the frame's commit (a host's own insert
-            // through `AudioGraphRes`): commit it, and re-apply next frame.
-            true
-        } else {
-            apply(&declared, &mut graph, &mut state, &mut refused)
-        };
-        if commit && !commit_and_publish(&mut graph, table.as_deref(), total.as_mut()) {
-            dirty.0 = true;
-        }
+    // now): its nodes are not in a plan yet. A commit refused here leaves
+    // the flag set for the next frame's.
+    if !state.unresolved_targets.is_empty()
+        && !graph.is_edited()
+        && apply(&declared, &mut graph, &mut state, &mut refused)
+    {
+        commit_and_publish(&mut graph, table, total);
     }
-    if state.modulation.resyncs_owed() > 0 && !dirty.0 {
+    if state.modulation.resyncs_owed() > 0 && !graph.is_edited() {
         graph.send_mod_resyncs(&mut state.modulation);
     }
 }

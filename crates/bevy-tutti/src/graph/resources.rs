@@ -137,11 +137,6 @@ impl AudioGraphRes {
         self.write()
     }
 
-    /// The session, read, for this crate.
-    pub(crate) fn session_ref(&self) -> MutexGuard<'_, Session> {
-        self.read()
-    }
-
     /// The resource over a built `session` ([`build_into`](crate::engine::build_into)).
     pub(crate) fn from_session(session: Session) -> Self {
         Self(Mutex::new(session))
@@ -198,11 +193,6 @@ impl AudioGraphRes {
     /// taken, commits wait for its second half.
     pub fn set_sample_rate(&mut self, rate: SampleRate) {
         self.write().graph().set_sample_rate(rate);
-    }
-
-    /// Whether a re-prepare is between its two commits.
-    pub(crate) fn is_repreparing(&self) -> bool {
-        self.read().graph_ref().is_repreparing()
     }
 
     // --- Nodes ---
@@ -565,6 +555,7 @@ impl AudioGraphRes {
 
     /// The compensation of the plan last sent to the audio thread: the
     /// per-channel pre-roll and the total.
+    #[cfg(test)]
     pub(crate) fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
         self.read().graph_ref().sent_compensation()
     }
@@ -638,6 +629,7 @@ impl AudioGraphRes {
     /// case), and for good when the graph does not compile (logged; the next
     /// edit tries again). A changed global output count needs nothing
     /// special: it is part of the spec the commit compiles.
+    #[cfg_attr(not(feature = "modulation"), allow(dead_code))]
     pub(crate) fn commit(&mut self) -> bool {
         self.write().commit() == Committed::Sent
     }

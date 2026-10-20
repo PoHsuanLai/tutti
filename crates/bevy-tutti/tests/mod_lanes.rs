@@ -67,7 +67,7 @@ fn app(outputs: usize) -> (App, AudioSide) {
 /// Spawns `node` the ordinary way and returns its entity.
 fn spawn<N>(app: &mut App, node: N) -> Entity
 where
-    N: bevy_tutti::graph::GraphNode,
+    N: bevy_tutti::graph::SessionNode,
     N::Controls: Send + Sync + 'static,
 {
     let entity = app.world_mut().commands().spawn_audio_node(node).id();

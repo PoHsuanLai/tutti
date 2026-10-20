@@ -17,7 +17,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, GraphNode, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
+    AudioConfig, AudioGraphRes, GraphReconcilePlugin, SessionNode, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
@@ -128,7 +128,7 @@ impl IntoNode for Tap {
     }
 }
 
-impl GraphNode for Tap {}
+impl SessionNode for Tap {}
 
 /// A tap entity, inserted as a graph node, and what it hears.
 fn spawn_tap(app: &mut App) -> (Entity, Seen) {

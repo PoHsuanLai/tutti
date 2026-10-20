@@ -112,12 +112,13 @@ mod tests {
         app
     }
 
-    /// An entity whose `AudioNode` is not a hosted plugin must not raise the
-    /// flag — every node in the graph carries `AudioNode`, so a poll that did
-    /// not require a shadow would mark the graph dirty every frame forever and
+    /// An entity whose `AudioNode` is not a hosted plugin must not edit the
+    /// session — every node in the graph carries `AudioNode`, so a poll that
+    /// did not require a shadow would mark the graph edited every frame
+    /// forever and
     /// re-run compensation on a graph nothing had changed.
     #[test]
-    fn a_non_plugin_node_never_marks_the_graph_dirty() {
+    fn a_non_plugin_node_never_marks_the_graph_edited() {
         let mut app = test_app();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();

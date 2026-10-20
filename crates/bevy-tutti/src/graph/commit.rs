@@ -68,6 +68,7 @@ pub fn commit_graph(
 /// plan) and mirrors the figures into `table` and `total`: a commit made
 /// outside [`commit_graph`] (modulation's re-apply). Returns whether the plan
 /// went out.
+#[cfg(feature = "modulation")]
 pub(crate) fn commit_and_publish(
     graph: &mut AudioGraphRes,
     table: Option<ResMut<ChannelCompensation>>,

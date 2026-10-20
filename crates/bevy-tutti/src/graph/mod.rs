@@ -72,3 +72,6 @@ pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
 pub use tutti_session::{
     AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, ReplaceRefused, SessionNode,
 };
+
+#[cfg(test)]
+mod tests;

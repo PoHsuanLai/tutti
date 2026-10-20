@@ -28,7 +28,7 @@ mod graph_reconcile {
 
     use bevy_tutti::graph::{
         commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, AudioGraphRes,
-        GraphDirty, GraphReconcileSystems, SpawnAudioNode,
+        GraphReconcileSystems, SpawnAudioNode,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::{AudioNode, Hz};
@@ -45,7 +45,6 @@ mod graph_reconcile {
     fn test_app() -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
-        app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
             bevy_app::Update,
@@ -181,10 +180,10 @@ mod graph_reconcile {
     fn late_despawn_converges_within_one_frame() {
         // An `AudioNode` entity despawned by a system running *after* the
         // Commit phase (here: `Last`) must still have its graph node removed
-        // and the graph converge (dirty cleared) within one trailing frame.
+        // and the graph converge (the edit sent) within one trailing frame.
         //
         // The `On<Remove, AudioNode>` observer fires at command-flush, so the
-        // graph.remove + dirty happen the same frame the despawn flushes; the
+        // graph.remove (an edit) happens the same frame the despawn flushes; the
         // next frame's Commit-phase `commit_graph` coalesces the edit.
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
@@ -219,7 +218,7 @@ mod graph_reconcile {
         );
 
         // Frame A: the late despawn flushes at end of `Last`; the
-        // On<Remove> observer removes the graph node and sets dirty there.
+        // On<Remove> observer removes the graph node, editing the session.
         app.update();
         // Frame B: Commit phase coalesces the pending edit → converged.
         app.update();
@@ -230,15 +229,15 @@ mod graph_reconcile {
             "late-despawned node removed from graph"
         );
         assert!(
-            !app.world().resource::<GraphDirty>().0,
-            "graph converged: dirty flag cleared after one trailing frame"
+            !app.world().resource::<AudioGraphRes>().is_edited(),
+            "graph converged: the edit was sent after one trailing frame"
         );
     }
 
     #[test]
     fn sampler_volume_change_writes_through() {
         // Only verifies the dispatch path: a Changed<Volume> on a
-        // sampler-like entity sets the dirty flag. Real sampler
+        // sampler-like entity edits the session. Real sampler
         // construction needs an asset, which is beyond a unit test here.
         // The dispatch arm itself is covered by the example.
     }
@@ -293,7 +292,8 @@ mod audio_param {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, AudioParam, AudioParamAppExt, GraphNode, GraphReconcilePlugin, TransportRes,
+        AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
+        SessionNode, TransportRes,
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
@@ -334,10 +334,11 @@ mod audio_param {
         app.add_plugins(TuttiModulationPlugin);
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
-        // Captured before it goes in, as every insertion path does: a
-        // `ParamNode`'s controls are its `ParamSet`, addressed on the node so an
-        // `AudioParam` writes through it (what `spawn_audio_node` does).
-        let controls = unit.captured();
+        // Bound as every insertion path binds (a node that is not a plugin
+        // captures nothing): a `ParamNode`'s controls are its `ParamSet`,
+        // addressed on the node so an `AudioParam` writes through it (what
+        // `spawn_audio_node` does).
+        let controls = CapturedControls::default();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             let (node, params) = graph.insert(unit);

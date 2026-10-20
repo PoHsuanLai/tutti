@@ -13,7 +13,7 @@
 //! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`), or an in-process VST2 plugin's meter (`CapturedControls::for_plugin_meter`) | plugin meter bind and latency poll |
 //!
 //! (A node's params need no capture: its controls are its `ParamSet`, which
-//! the insert addresses by key, [`GraphNode::params`](crate::graph::GraphNode::params).)
+//! the insert addresses by key, [`SessionNode::params`](crate::graph::SessionNode::params).)
 //!
 //! Every one holds only state the node shares with the graph's copy (the
 //! plugin's controls), so the component reaches the
@@ -29,8 +29,8 @@
 //! a host that calls [`AudioGraphRes::replace`](crate::graph::AudioGraphRes::replace)
 //! directly bypasses both the capture and the guard, and the entity keeps
 //! driving the outgoing node's controls. Go through `crossfade_audio_node`, or
-//! capture ([`GraphNode::captured`](crate::graph::GraphNode::captured)) and
-//! [`bind`](CapturedControls::bind) yourself.
+//! capture (`CapturedControls::for_plugin` for a plugin, the default for
+//! any other node) and [`bind`](CapturedControls::bind) yourself.
 //!
 //! When the node goes (its `AudioNode` is removed, or the entity despawned) the
 //! captured components go with it — `drop_captured` runs from the removal
@@ -42,8 +42,7 @@
 //! [`crossfade_audio_node`](crate::graph::crossfade_audio_node) (which replaces
 //! the node, so re-captures), the soundfont promotion and the plugin load. A
 //! host that inserts a node itself and binds `AudioNode` by hand does the same
-//! with [`GraphNode::captured`](crate::graph::GraphNode::captured) and
-//! [`bind`](CapturedControls::bind).
+//! with a [`CapturedControls`] and [`bind`](CapturedControls::bind).
 
 use bevy_ecs::prelude::*;
 

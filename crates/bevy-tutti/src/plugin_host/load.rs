@@ -37,7 +37,7 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
 
-use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls};
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
@@ -268,13 +268,11 @@ pub fn plugin_load_start(
 pub fn plugin_load_promote(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
-    dirty: Option<ResMut<GraphDirty>>,
     mut pending: Query<(Entity, &PluginRequest, &mut PendingPlugin)>,
 ) {
-    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+    let Some(mut graph) = graph else {
         return;
     };
-    let mut edited = false;
 
     for (entity, request, mut slot) in pending.iter_mut() {
         let Some(result) = block_on(future::poll_once(&mut slot.task)) else {
@@ -324,7 +322,6 @@ pub fn plugin_load_promote(
                         (id, CapturedControls::for_plugin_meter(meter))
                     }
                 };
-                edited = true;
 
                 // After the saved state: its values are what a modulation
                 // lane's knob starts at.
@@ -366,10 +363,7 @@ pub fn plugin_load_promote(
                 result: outcome,
             });
     }
-
-    // Stage only; the Commit-phase `commit_graph` coalesces this with whatever
-    // else edited the graph on this frame.
-    if edited {
-        dirty.0 = true;
-    }
+    // Staged only: the inserts edit the session, and the Commit-phase
+    // `commit_graph` sends them with whatever else edited the graph this
+    // frame.
 }

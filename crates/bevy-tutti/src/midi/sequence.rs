@@ -2,7 +2,8 @@
 //!
 //! A [`MidiSourceInstall`] names a target entity and the events to play at it.
 //! [`rebuild`] compiles those into a [`MidiClipNode`] of the target's own,
-//! wired to its MIDI event input ([`EventFeeds`]): a synth, a SoundFont
+//! wired to its MIDI event input (the session's feeds,
+//! `AudioGraphRes::set_feed`): a synth, a SoundFont
 //! player or a plugin inserted as a graph node
 //! ([`spawn_audio_node`](crate::graph::SpawnAudioNode), a plugin load). The
 //! clip reads the block's `Env`, so its notes land on their frames through
@@ -47,9 +48,7 @@ use std::collections::{HashMap, HashSet};
 
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
 
-use crate::graph::{
-    engine_ready, AudioGraphRes, EventFeeds, EventWiring, GraphDirty, GraphReconcileSystems,
-};
+use crate::graph::{engine_ready, AudioGraphRes, EventWiring, GraphReconcileSystems};
 use tutti_core::AudioNode;
 
 /// Declares events for the synth (or plugin) on `target` to play.
@@ -75,7 +74,7 @@ impl MidiSourceInstall {
     }
 }
 
-/// The sequencer's name among a target's [`EventFeeds`].
+/// The sequencer's name among the feeds of a target's node.
 const SEQUENCER: &str = "sequencer";
 
 /// The clip node playing each target that has an event input: its node and
@@ -101,14 +100,12 @@ impl SequencedClips {
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
     changed: Query<Entity, Changed<MidiSourceInstall>>,
-    // A target rebound to a new node (a crossfade, a respawn) keeps its clip:
-    // the event wiring re-derives its edge. One rebound to a node with no
+    // A target rebound to a new node (a respawn) keeps its clip: the event
+    // wiring moves its node's feeds onto the new one. One rebound to a node with no
     // event input loses its clip here.
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut clips: ResMut<SequencedClips>,
-    mut feeds: ResMut<EventFeeds>,
-    mut graph_dirty: ResMut<GraphDirty>,
     graph: Option<ResMut<AudioGraphRes>>,
     nodes: Query<&AudioNode>,
 ) {
@@ -146,7 +143,8 @@ pub fn rebuild(
         .collect();
 
     // A clip whose target lost its event input (no node, or one without):
-    // its node goes, and there is nothing left for it to silence.
+    // its node goes (and with it, from every feed), and there is nothing
+    // left for it to silence.
     let gone: Vec<Entity> = clips
         .0
         .keys()
@@ -156,9 +154,7 @@ pub fn rebuild(
     for target in gone {
         if let Some((node, _)) = clips.0.remove(&target) {
             graph.remove(node);
-            graph_dirty.0 = true;
         }
-        feeds.remove(target, SEQUENCER);
     }
 
     // A clip no install names any more plays nothing from the next block,
@@ -178,8 +174,10 @@ pub fn rebuild(
             None => {
                 let (clip, controls) = graph.insert(MidiClipNode::new(events));
                 clips.0.insert(target, (clip, controls));
-                feeds.set(target, SEQUENCER, vec![clip.into()]);
-                graph_dirty.0 = true;
+                // `playable`: the target has a node.
+                if let Ok(&sink) = nodes.get(target) {
+                    graph.set_feed(sink, SEQUENCER, vec![clip.into()]);
+                }
             }
         }
     }
@@ -191,7 +189,6 @@ pub struct MidiSequencePlugin;
 impl Plugin for MidiSequencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SequencedClips>();
-        app.init_resource::<EventFeeds>();
         app.add_systems(
             Update,
             rebuild

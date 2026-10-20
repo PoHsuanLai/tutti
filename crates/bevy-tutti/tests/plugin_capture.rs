@@ -45,7 +45,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
+    AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
     MetronomeRes, TransportRes,
 };
 use bevy_tutti::plugin_host::{
@@ -153,12 +153,14 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
 
     // Idle frames after the load leave the graph clean: the poll compares
     // the plugin's declared latency with the editor's own figure, and while
-    // the two agree it raises nothing, so nothing is recompiled or
+    // the two agree it edits nothing, so nothing is recompiled or
     // republished frame after frame. Observed between the poll and the
-    // commit (which clears the flag), by a probe system (`record_dirty`).
+    // commit (which clears the session's edit flag), by a probe system
+    // (`record_dirty`).
     //
-    // Mutation (run): raise `GraphDirty` in the poll whether or not the
-    // figure moved → the probe sees it set → fails.
+    // Mutation (run): the session's `refresh_node_latency` marking the graph
+    // edited before it compares the figures → the probe sees it set →
+    // fails.
     app.init_resource::<DirtySeen>();
     app.add_systems(
         Update,
@@ -172,7 +174,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     assert_eq!(
         app.world().resource::<DirtySeen>().0,
         0,
-        "an unchanged plugin latency marked the graph dirty"
+        "an unchanged plugin latency marked the graph edited"
     );
 
     // A latency change after load — what a plugin's `latency.changed`
@@ -200,7 +202,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     // refuses one past `MAX_NODE_LATENCY` outright, and the poll would not
     // ask again until the plugin's figure moved.
     //
-    // Mutation (run): dropping the clamp in `clamp_latency` → the editor
+    // Mutation (run): dropping the clamp in the session's `clamp_latency` → the editor
     // refuses the figure, the graph keeps 364 and this fails.
     app.world()
         .get::<PluginShadow>(entity)
@@ -217,16 +219,16 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     );
 }
 
-/// Frames on which `GraphDirty` was set between the latency poll and the
-/// commit.
+/// Frames on which the session's edit flag was set between the latency poll
+/// and the commit.
 #[derive(bevy_ecs::prelude::Resource, Default)]
 struct DirtySeen(usize);
 
 fn record_dirty(
-    dirty: bevy_ecs::prelude::Res<GraphDirty>,
+    graph: bevy_ecs::prelude::Res<AudioGraphRes>,
     mut seen: bevy_ecs::prelude::ResMut<DirtySeen>,
 ) {
-    if dirty.0 {
+    if graph.is_edited() {
         seen.0 += 1;
     }
 }

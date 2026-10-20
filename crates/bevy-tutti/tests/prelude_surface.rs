@@ -64,7 +64,7 @@ fn _surface_compiles() {
     // The incomplete-forward rule applied to itself. A previous pass added
     // `TransportRes::timeline()` returning `Arc<dyn Timeline>` without
     // re-exporting `Timeline`, so a host could call the method but not write a
-    // function whose signature mentions it. `GraphNode` is the same: without
+    // function whose signature mentions it. `SessionNode` is the same: without
     // it a host cannot write a generic spawn helper at all.
     fn _timeline(t: &TransportRes) -> Arc<dyn Timeline> {
         t.timeline()
@@ -73,7 +73,7 @@ fn _surface_compiles() {
     // wrapper a plain node goes in.
     fn _spawn<N>(commands: &mut Commands, node: N)
     where
-        N: GraphNode,
+        N: SessionNode,
         N::Controls: Send + Sync + 'static,
     {
         commands.spawn_audio_node(node);

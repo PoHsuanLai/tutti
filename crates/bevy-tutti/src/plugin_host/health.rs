@@ -187,8 +187,8 @@ impl PluginHealth {
 ///
 /// Removing `AudioNode` is the whole teardown: the `On<Remove, AudioNode>`
 /// observers take the node out of the graph and the sender off the MIDI bus.
-/// This system does not touch either, which is why it needs neither
-/// `AudioGraphRes` nor `GraphDirty`.
+/// This system does not touch either, which is why it needs no
+/// `AudioGraphRes`.
 pub fn plugin_health_poll(
     mut commands: Commands,
     mut plugins: Query<(Entity, &PluginEmitter, &mut PluginHealth)>,

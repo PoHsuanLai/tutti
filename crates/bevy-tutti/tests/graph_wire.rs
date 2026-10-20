@@ -25,7 +25,7 @@ mod graph_wire {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
+        AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
         PortSource, PortSources,
     };
     use bevy_tutti::AudioEngineState;
@@ -470,17 +470,24 @@ mod graph_wire {
     /// A rebuild that finds the engine already agreeing writes nothing — it does not
     /// re-set ports that already hold the declared source.
     ///
-    /// This is what the diff buys: marking `GraphDirty` for an unchanged port
+    /// This is what the diff buys: editing the session for an unchanged port
     /// would force a commit the frame did not need.
     ///
-    /// Driven by adding a *second, unrelated* node, which dirties the rebuild via
-    /// `Added<AudioNode>` without changing any existing declaration. Without the
-    /// diff, every already-correct port is rewritten and the frame is dirtied.
+    /// Driven by marking the sink's `PortSources` changed with the same
+    /// declaration, which runs the rebuild without changing anything it
+    /// declares. (A second, unrelated node would run it too, but its insert is
+    /// itself an edit, and the flag would say nothing about the rebuild.)
+    /// Without the diff, every already-correct port is rewritten and the
+    /// session is edited.
     ///
     /// The flag has to be sampled **between** the rebuild and `commit_graph`, which
     /// clears it in the `Commit` set — reading it after `update()` returns shows
     /// `false` whether or not the rebuild wrote, which is how a first version of
     /// this test passed against a deliberately un-diffed rebuild.
+    ///
+    /// Mutation (run): `topology::apply` writing every declared port, not
+    /// only those that differ → the session is edited before the commit →
+    /// fails.
     #[test]
     fn a_rebuild_that_changes_nothing_writes_nothing() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -494,13 +501,14 @@ mod graph_wire {
             .insert(PortSources::from(osc));
         app.update();
 
-        // Sample GraphDirty after the rebuild and before the commit clears it.
+        // Sample the edit flag after the rebuild and before the commit clears
+        // it.
         let dirtied = Arc::new(AtomicBool::new(false));
         let probe = dirtied.clone();
         app.add_systems(
             Update,
-            (move |dirty: Res<GraphDirty>| {
-                if dirty.0 {
+            (move |graph: Res<AudioGraphRes>| {
+                if graph.is_edited() {
                     probe.store(true, Ordering::SeqCst);
                 }
             })
@@ -508,14 +516,17 @@ mod graph_wire {
             .before(GraphReconcileSystems::Commit),
         );
 
-        // A new node elsewhere: the rebuild runs, but nothing it already wired has
-        // changed.
-        spawn_node(&mut app, Osc::sine(Hz(880.0)));
+        // The same declaration, marked changed: the rebuild runs, but nothing
+        // it already wired has changed.
+        app.world_mut()
+            .get_mut::<PortSources>(filt)
+            .expect("declared")
+            .set_changed();
         app.update();
 
         assert!(
             !dirtied.load(Ordering::SeqCst),
-            "a rebuild whose declarations all match the engine must not dirty the \
+            "a rebuild whose declarations all match the engine must not edit the \
              graph — re-writing a correct port discards the cached node order and \
              forces a commit the frame did not need"
         );
@@ -575,8 +586,8 @@ mod graph_wire {
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(graph.outputs(), 6);
         assert!(
-            !app.world().resource::<GraphDirty>().0,
-            "the commit consumed the dirty flag rather than panicking on the arity change"
+            !app.world().resource::<AudioGraphRes>().is_edited(),
+            "the commit consumed the edit rather than panicking on the arity change"
         );
     }
 

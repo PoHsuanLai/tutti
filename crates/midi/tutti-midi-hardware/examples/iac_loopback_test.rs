@@ -12,11 +12,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_hardware::{HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId};
+use tutti_midi_hardware::{
+    HardwareMidiDrain, HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId,
+};
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
+    // The audio side's drain: what a `MidiInputNode` would own.
+    let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
     let io = MidiSession::new(pm.clone());
 
     let inputs = io.inputs();
@@ -42,7 +46,7 @@ fn main() {
     thread::sleep(Duration::from_millis(200));
 
     // Drain anything buffered from before the test started.
-    pm.cycle_start_read_all_inputs(512, |_, _| {});
+    drain.cycle_start_read_all_inputs(512, |_, _| {});
 
     // --- Send a message, read back exactly one, hand it to `check`. ---
     //
@@ -50,11 +54,11 @@ fn main() {
     // `Other` catch-all); on the way back in, `event.message()` decodes to a
     // `MidiMessage`. The app speaks messages at both ends — the port and codec
     // handle the wire form, and the MIDI-1-vs-2 distinction never surfaces.
-    let roundtrip = |label: &str, msg: MidiMessage, check: &dyn Fn(MidiMessage) -> bool| {
+    let mut roundtrip = |label: &str, msg: MidiMessage, check: &dyn Fn(MidiMessage) -> bool| {
         io.send(&[MidiEvent::try_from(msg).expect("message is encodable")]);
         thread::sleep(Duration::from_millis(100));
         let mut first: Option<MidiEvent> = None;
-        pm.cycle_start_read_all_inputs(512, |_, ev| {
+        drain.cycle_start_read_all_inputs(512, |_, ev| {
             if first.is_none() {
                 first = Some(ev);
             }
@@ -135,7 +139,7 @@ fn main() {
     thread::sleep(Duration::from_millis(200));
     let mut count = 0usize;
     let mut all_note_on = true;
-    pm.cycle_start_read_all_inputs(512, |_, ev| {
+    drain.cycle_start_read_all_inputs(512, |_, ev| {
         count += 1;
         all_note_on &= ev.message().is_note_on();
     });

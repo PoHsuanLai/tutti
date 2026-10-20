@@ -166,6 +166,11 @@ pub struct Bound {
     /// The free-running sample counter the plugin's transport carries:
     /// frames this node has rendered, monotonic across a re-prepare.
     steady: transport_source::SteadyTime,
+    /// The node's meter cell (its controls' [`PluginMeter::cell`]), taken at
+    /// bind: the one cell the node reads the project meter from, once per
+    /// block. Installing or clearing a meter publishes into it; nothing
+    /// swaps it.
+    meter: Arc<tutti_core::MeterSlotCell>,
     /// The meter the transport snapshot reads when none is installed on the
     /// controls: built once here, on the control thread, because building a
     /// `MeterMap` allocates.
@@ -447,6 +452,7 @@ impl PluginClient<Unbound> {
             self.params.iter().copied(),
             self.controls.delivery_counters(),
         );
+        let meter = self.controls.meter.cell();
         let Self {
             bridge,
             descriptor,
@@ -486,6 +492,7 @@ impl PluginClient<Unbound> {
                 pending: BlockPayload::default(),
                 out_events: MidiEventVec::new(),
                 steady: transport_source::SteadyTime::default(),
+                meter,
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),
                 params,
@@ -650,7 +657,7 @@ impl<S> PluginClient<S> {
     ///
     /// The transport itself needs no install: the node reads it from each
     /// block. See [`PluginControls::set_meter`].
-    pub fn set_meter(&self, meter: Arc<tutti_core::ArcLend<MeterMap>>) {
+    pub fn set_meter(&self, meter: tutti_core::ProjectMeter) {
         self.controls.set_meter(meter);
     }
 

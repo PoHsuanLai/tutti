@@ -381,7 +381,14 @@ impl ControlLaneNode {
     /// range as they are now in cells of its own, the same address, and no
     /// piece in flight (doc 014 §5.6). Control thread.
     pub fn fork_fresh(&self) -> Self {
-        let s = &*self.shared;
+        Self::fresh_over(&self.shared, &self.make, self.native)
+    }
+
+    /// [`fork_fresh`](Self::fork_fresh) from a lane's parts, for the fork
+    /// source, which keeps the parts rather than a lane: it reads only the
+    /// control side (`Shared::last`, the knob, the range), never the cell
+    /// the lane reads per block, so it needs no read state of its own.
+    fn fresh_over(s: &Shared, make: &Arc<MakeSegment>, native: bool) -> Self {
         let program = Arc::clone(&s.last.lock().unwrap_or_else(|e| e.into_inner()).1);
         let knob = s
             .knob
@@ -394,7 +401,7 @@ impl ControlLaneNode {
                 RangeSource::Own(RangeCell::new(lo, hi))
             }
         };
-        Self::build(program, knob, range, Arc::clone(&self.make), self.native)
+        Self::build(program, knob, range, Arc::clone(make), native)
     }
 }
 
@@ -1031,12 +1038,21 @@ impl Node for ControlLaneNode {
     }
 }
 
-/// A lane's fork source: [`ControlLaneNode::fork_fresh`] at the gather.
-struct LaneFork(ControlLaneNode);
+/// A lane's fork source: [`ControlLaneNode::fork_fresh`] at the gather,
+/// from the lane's parts. It holds no lane, so no per-block read state.
+struct LaneFork {
+    shared: Arc<Shared>,
+    make: Arc<MakeSegment>,
+    native: bool,
+}
 
 impl ForkSource for LaneFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        Ok(Forked::new(Box::new(self.0.fork_fresh())))
+        Ok(Forked::new(Box::new(ControlLaneNode::fresh_over(
+            &self.shared,
+            &self.make,
+            self.native,
+        ))))
     }
 }
 
@@ -1047,14 +1063,11 @@ impl IntoNode for ControlLaneNode {
 
     fn into_parts(self) -> NodeParts<LaneControls> {
         let controls = self.controls();
-        let fork = LaneFork(Self {
+        let fork = LaneFork {
             shared: Arc::clone(&self.shared),
             make: Arc::clone(&self.make),
             native: self.native,
-            walk: fresh_walk(),
-            seen: fresh_seen(),
-            scratch: Vec::new(),
-        });
+        };
         NodeParts {
             node: Box::new(self),
             controls,

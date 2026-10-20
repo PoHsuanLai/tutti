@@ -150,7 +150,7 @@ pub fn plugin_bind_meter(
     let Some(metronome) = metronome else {
         return;
     };
-    let meter = metronome.0.meter_cell();
+    let meter = metronome.0.project_meter();
 
     for (entity, node, shadow) in unbound.iter() {
         // `None` means the shadow was captured for a node this entity no longer

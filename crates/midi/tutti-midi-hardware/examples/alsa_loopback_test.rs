@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_hardware::{HardwareMidiInputs, MidiEvent, MidiSession};
+use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiEvent, MidiSession};
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
@@ -29,6 +29,8 @@ fn pick(list: &[tutti_midi_hardware::EndpointInfo]) -> Option<&tutti_midi_hardwa
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
+    // The audio side's drain: what a `MidiInputNode` would own.
+    let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
     let io = MidiSession::new(pm.clone());
 
     let inputs = io.inputs();
@@ -45,7 +47,7 @@ fn main() {
     thread::sleep(Duration::from_millis(200));
 
     // Drain anything buffered before the test.
-    pm.cycle_start_read_all_inputs(512, |_, _| {});
+    drain.cycle_start_read_all_inputs(512, |_, _| {});
 
     let mut failures = 0usize;
 
@@ -53,7 +55,7 @@ fn main() {
         assert_eq!(io.send(&[sent]), 1, "the session accepted the event");
         thread::sleep(Duration::from_millis(150));
         let mut first = None;
-        pm.cycle_start_read_all_inputs(512, |_, ev| {
+        drain.cycle_start_read_all_inputs(512, |_, ev| {
             if first.is_none() {
                 first = Some(ev);
             }
@@ -97,7 +99,7 @@ fn main() {
     thread::sleep(Duration::from_millis(250));
     let mut count = 0usize;
     let mut all_on = true;
-    pm.cycle_start_read_all_inputs(512, |_, ev| {
+    drain.cycle_start_read_all_inputs(512, |_, ev| {
         count += 1;
         all_on &= ev.message().is_note_on();
     });

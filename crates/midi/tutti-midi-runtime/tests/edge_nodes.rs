@@ -105,17 +105,17 @@ fn block(exec: &mut Executor, len: usize) {
 }
 
 /// A wire that hands out one scripted batch per poll.
-struct Wire(Mutex<std::collections::VecDeque<Vec<MidiEvent>>>);
+struct Wire(std::collections::VecDeque<Vec<MidiEvent>>);
 
 impl Wire {
-    fn new(batches: Vec<Vec<MidiEvent>>) -> Arc<Self> {
-        Arc::new(Self(Mutex::new(batches.into())))
+    fn new(batches: Vec<Vec<MidiEvent>>) -> Box<Self> {
+        Box::new(Self(batches.into()))
     }
 }
 
 impl MidiIn for Wire {
-    fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
-        let batch = self.0.lock().unwrap().pop_front().unwrap_or_default();
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        let batch = self.0.pop_front().unwrap_or_default();
         let n = batch.len().min(buffer.len());
         buffer[..n].copy_from_slice(&batch[..n]);
         n

@@ -159,7 +159,9 @@ mod midi_out_device {
 mod midi_hardware_frame_offset {
     use std::time::{Duration, Instant};
 
-    use tutti_midi_hardware::HardwareMidiInputs;
+    use std::sync::Arc;
+
+    use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
@@ -174,10 +176,10 @@ mod midi_hardware_frame_offset {
     /// `frame_offset`.
     ///
     /// Both instants are the test's: `push` takes the arrival stamp explicitly,
-    /// and `cycle_start_read_all_inputs_at` takes the block start. So the age is
+    /// and the drain's read takes the block start. So the age is
     /// exactly [`AGE`] and nothing in between can change it.
     fn offset_at(sample_rate: Option<f64>) -> u32 {
-        let inputs = HardwareMidiInputs::new(256);
+        let inputs = Arc::new(HardwareMidiInputs::new(256));
         if let Some(rate) = sample_rate {
             inputs.set_sample_rate(rate);
         }
@@ -195,8 +197,8 @@ mod midi_hardware_frame_offset {
         // The drain hands each event to a visitor rather than returning a slice, so
         // nothing borrows into the audio-thread-only scratch.
         let mut seen: Vec<MidiEvent> = Vec::new();
-        inputs
-            .cycle_start_read_all_inputs_at(NFRAMES, block_start, |_port, event| seen.push(event));
+        let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
+        drain.cycle_start_read_all_inputs_at(NFRAMES, block_start, |_port, event| seen.push(event));
         assert_eq!(seen.len(), 1, "exactly the event we pushed");
         seen[0].frame_offset
     }

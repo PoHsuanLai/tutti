@@ -7,7 +7,6 @@
 //! note expression, reached here through capability accessors.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::error::Result;
 use crate::host::discovery::record::PluginRole;
@@ -262,8 +261,9 @@ impl Plugin {
     }
 
     /// Gives the plugin the project meter, for the time signature and bar of
-    /// the transport it is told. Pass the cell the host publishes meter edits
-    /// into, and an edit reaches the running plugin with nothing re-installed.
+    /// the transport it is told. The node's meter follows the project meter
+    /// the host publishes edits to, so an edit reaches the running plugin
+    /// with nothing re-installed.
     ///
     /// The transport itself needs no install: every plugin node reads it from
     /// each block's graph context once it is in a graph (the transport its
@@ -272,7 +272,7 @@ impl Plugin {
     /// Returns `false` if the plugin declared it does not want a transport
     /// snapshot.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_meter(&self, meter: Arc<tutti_core::ArcLend<tutti_core::MeterMap>>) -> bool {
+    pub fn set_meter(&self, meter: tutti_core::ProjectMeter) -> bool {
         if !self.accepts(Features::TRANSPORT) {
             return false;
         }
@@ -307,7 +307,7 @@ impl Plugin {
     pub fn set_transport_source(
         &mut self,
         reader: tutti_core::transport::Transport,
-        meter: Arc<tutti_core::ArcLend<tutti_core::meter::MeterMap>>,
+        meter: tutti_core::ProjectMeter,
     ) -> bool {
         let _ = reader;
         self.set_meter(meter)

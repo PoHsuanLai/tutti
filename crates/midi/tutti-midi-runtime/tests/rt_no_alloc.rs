@@ -6,8 +6,6 @@
 //! Mutation (run): a `Vec::new()` + push per block in `MidiInputNode::process`
 //! → the gate panics.
 
-use std::sync::Arc;
-
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
@@ -26,7 +24,7 @@ fn note_on(ch: u8, note: u8) -> MidiEvent {
 struct Busy;
 
 impl MidiIn for Busy {
-    fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         for (i, slot) in buffer.iter_mut().take(4).enumerate() {
             *slot = note_on(i as u8 * 3, 60).with_frame_offset(40 - 10 * i as u32);
         }
@@ -37,7 +35,7 @@ impl MidiIn for Busy {
 #[test]
 fn the_border_nodes_process_without_allocating() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    ed.insert(NodeKey(1), "in", MidiInputNode::new(Some(Arc::new(Busy))));
+    ed.insert(NodeKey(1), "in", MidiInputNode::new(Some(Box::new(Busy))));
     let keys = ed.insert(NodeKey(2), "keys", MidiQueueNode::new());
     let clock = ed.insert(NodeKey(3), "clock", ClockNode::new());
     let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());

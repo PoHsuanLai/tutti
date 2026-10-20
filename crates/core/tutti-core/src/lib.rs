@@ -35,10 +35,11 @@ pub use engine::{Engine, GraphEngineError, DEFAULT_BLOCK_CAPACITY, MAX_ROOT_CHAN
 
 pub mod transport;
 pub use transport::{
-    ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MetronomeMode,
-    MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull,
-    RenderClock, ScheduleFull, Then, Timeline, Transport, TransportClock, TransportCommand,
-    TransportSettings, TransportState, SCHEDULE_CAPACITY,
+    ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MeterSlot,
+    MeterSlotCell, MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline,
+    OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock, ScheduleFull, Then, Timeline,
+    Transport, TransportClock, TransportCommand, TransportSettings, TransportState,
+    SCHEDULE_CAPACITY,
 };
 // The time a scheduled command names, and the engine's frame clock. Homed in
 // `tutti-types` so the graph's `Editor::schedule` and the transport's

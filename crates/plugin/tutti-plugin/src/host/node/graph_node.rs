@@ -127,6 +127,7 @@ impl Node for PluginClient<Bound> {
         let n_out = c.outputs.min(io.output_count()).min(MAX_PORTS);
         let Bound {
             io: batcher,
+            meter,
             default_meter,
             pending,
             out_events,
@@ -136,12 +137,10 @@ impl Node for PluginClient<Bound> {
         } = &mut c.state;
         out_events.clear();
 
-        // One meter read per block, never per chunk. A nested read (the
-        // slot, then the meter cell it holds), one reader slot in each cell:
-        // see `PluginMeter`.
-        let meter_slot = c.controls.meter.lend();
-        let meter_ref = meter_slot.as_ref().map(|m| m.lend());
-        let meter = meter_ref.as_deref().unwrap_or(default_meter);
+        // One meter read per block, never per chunk: the node's own cell,
+        // fixed at bind (see `PluginMeter`).
+        let installed = meter.lend();
+        let meter = installed.as_deref().unwrap_or(default_meter);
 
         let events = if io.event_input_count() > 0 {
             io.events(0)

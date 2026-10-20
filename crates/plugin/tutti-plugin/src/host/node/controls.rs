@@ -31,8 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
-use tutti_core::meter::MeterMap;
-use tutti_core::{ArcLend, SampleRate, Samples};
+use tutti_core::{ProjectMeter, SampleRate, Samples};
 use tutti_plugin_types::PluginTail;
 use tutti_types::Latency;
 
@@ -209,10 +208,10 @@ impl PluginControls {
     }
 
     /// Give the node the project meter, for the signature and bar it tells
-    /// the plugin. Pass the cell the host publishes meter edits into, and an
-    /// edit reaches the running plugin with nothing re-installed. Replaces any
-    /// meter installed before.
-    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
+    /// the plugin. The node's meter follows it, so an edit the host
+    /// publishes there reaches the running plugin with nothing re-installed.
+    /// Replaces any meter installed before.
+    pub fn set_meter(&self, meter: ProjectMeter) {
         self.meter.set_meter(meter);
     }
 
@@ -293,7 +292,7 @@ pub(super) fn lock_tail(tail: &Mutex<PluginTail>) -> std::sync::MutexGuard<'_, P
 /// built, wherever that is: a source the host installs on the live node
 /// afterwards does not reach the fork.
 pub(super) struct ForkedSources {
-    meter: Option<Arc<ArcLend<MeterMap>>>,
+    meter: Option<ProjectMeter>,
 }
 
 impl ForkedSources {
@@ -354,13 +353,13 @@ mod tests {
     /// does not reach it.
     ///
     /// Mutation: drop the meter copy from `ForkedSources::install` → fails.
-    /// Mutation (run): `sources_now` keeping the live cell (`Arc::clone(&self.meter)`)
+    /// Mutation (run): `sources_now` keeping the live slot (`self.meter.clone()`)
     /// and `install` reading it then → the fork gets the later meter → fails.
     #[test]
     fn a_fork_gets_the_live_meter() {
         let live = controls();
-        let meter = Arc::new(ArcLend::new(MeterMap::default()));
-        live.set_meter(Arc::clone(&meter));
+        let meter = ProjectMeter::new(MeterMap::default());
+        live.set_meter(meter.clone());
         let fork = PluginControls::new(
             Samples(0),
             PluginTail::default(),
@@ -368,12 +367,9 @@ mod tests {
             false,
         );
         let gathered = live.sources_now();
-        live.set_meter(Arc::new(ArcLend::new(MeterMap::default())));
+        live.set_meter(ProjectMeter::new(MeterMap::default()));
         gathered.install(&fork);
-        let shared_meter = fork
-            .meter
-            .installed()
-            .is_some_and(|m| Arc::ptr_eq(&m, &meter));
+        let shared_meter = fork.meter.installed().is_some_and(|m| m.ptr_eq(&meter));
         assert!(shared_meter, "the fork reads the live node's meter");
     }
 

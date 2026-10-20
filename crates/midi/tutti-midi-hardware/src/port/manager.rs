@@ -1,16 +1,22 @@
-//! [`HardwareMidiInputs`] — every open input port, and the per-block drain the
-//! audio thread calls.
+//! [`HardwareMidiInputs`] — every open input port — and [`HardwareMidiDrain`],
+//! the per-block drain the audio thread calls.
 //!
-//! One manager holds N input rings. `cycle_start_read_all_inputs` fans them all
-//! in for one block, converting each event's arrival `Instant` into a
-//! `frame_offset` within that block. Everything on that path is RT-safe: bounded
-//! work, no locks, no allocation, and no free.
+//! One manager holds N input rings. A drain's `cycle_start_read_all_inputs`
+//! fans them all in for one block, converting each event's arrival `Instant`
+//! into a `frame_offset` within that block. Everything on that path is
+//! RT-safe: bounded work, no locks, no allocation, and no free.
+//!
+//! The manager is shared (`Arc`); a drain is owned by the one node that polls
+//! it (a `MidiInputNode`), built on the control thread with
+//! [`HardwareMidiDrain::new`]. Its scratch and its read of the published port
+//! set are its own, so the audio thread reads nothing through the shared
+//! manager but atomics.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_core::{ArcLend, AudioThreadCell, RtVec, SampleRate};
+use tutti_core::{ArcLend, RtVec, SampleRate};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
@@ -115,29 +121,20 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 /// removed and no new one has taken its place yet.
 type PortSlots = Vec<Option<Arc<HardwareMidiInput>>>;
 
-/// The drain's per-block state.
+/// The drain state every [`HardwareMidiDrain`] of one manager shares.
 ///
-/// `events` is touched **only** from the audio callback, one borrow at a time,
-/// so it is an [`AudioThreadCell`]. `sample_rate` is written by the control
-/// side and read by the drain, so it is an atomic (the `f64`'s bits), read
-/// once per block. `draining` marks a drain in progress, so one re-entered
-/// from its own visitor is refused rather than clearing the events the outer
-/// one is still handing out. All three are `Sync` on their own; the type
-/// derives it with no hand-written `unsafe impl`.
-///
-/// One buffer, not two: the timestamp → `frame_offset` conversion needs only
-/// the rate, `nframes` and the block start, all known before the first pop, so
-/// each event is converted as it leaves its ring and stored once, already
-/// timed. The drained events reach the caller through a visitor rather than a
-/// borrowed slice, copied out one at a time, so nothing holds a borrow of the
-/// scratch while the visitor runs.
-struct CycleScratch {
+/// `sample_rate` is written by the control side and read by the drain, so it
+/// is an atomic (the `f64`'s bits), read once per block. `draining` marks a
+/// drain in progress, so a second drain of the same manager started while one
+/// runs (from the first's visitor, or a second node on another worker) is
+/// refused rather than contending for a port's ring. Both are `Sync` on their
+/// own; the type derives it with no hand-written `unsafe impl`.
+struct DrainShared {
     sample_rate: AtomicU64,
     draining: AtomicBool,
-    events: AudioThreadCell<RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>>,
 }
 
-/// Clears [`CycleScratch::draining`] when the drain ends, however it ends: a
+/// Clears [`DrainShared::draining`] when the drain ends, however it ends: a
 /// visitor that panics must not leave every later drain refused.
 struct Draining<'a>(&'a AtomicBool);
 
@@ -147,12 +144,11 @@ impl Drop for Draining<'_> {
     }
 }
 
-impl CycleScratch {
+impl DrainShared {
     fn new() -> Self {
         Self {
             sample_rate: AtomicU64::new(SampleRate::SR_44K1.get().to_bits()),
             draining: AtomicBool::new(false),
-            events: AudioThreadCell::new(RtVec::new()),
         }
     }
 
@@ -164,54 +160,56 @@ impl CycleScratch {
     fn sample_rate(&self) -> SampleRate {
         SampleRate(f64::from_bits(self.sample_rate.load(Ordering::Relaxed)))
     }
+}
 
-    /// Drain `input_ports`' active rings into `events`, converting arrival
-    /// timestamps to sample-accurate `frame_offset`s, and return how many were
-    /// taken. RT-safe (lock-free, no heap allocation).
-    ///
-    /// `buffer_start` is when this block began — the instant every event's age
-    /// is measured back from. Taken as a parameter rather than read from the
-    /// clock here: it is the *only* input to the conversion a caller does not
-    /// otherwise control, so passing it is what makes the arithmetic below
-    /// checkable at all. See
-    /// [`cycle_start_read_all_inputs_at`](HardwareMidiInputs::cycle_start_read_all_inputs_at).
-    fn read_inputs(&self, input_ports: &PortSlots, nframes: usize, buffer_start: Instant) -> usize {
-        // Once per block: a rate the control side changes mid-drain applies
-        // from the next one.
-        let sample_rate = self.sample_rate();
-        let nframes_u32 = nframes as u32;
-        let frame_offset = |arrival: Instant| {
-            let delta = buffer_start.saturating_duration_since(arrival);
-            let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
-            let offset = nframes_u32.saturating_sub(samples_ago);
-            if offset >= nframes_u32 {
-                nframes_u32.saturating_sub(1)
-            } else {
-                offset
-            }
-        };
-
-        // Each port gets the headroom left by the ports before it, so the
-        // total can never exceed the scratch's capacity and no push is refused.
-        let mut events = self.events.borrow_mut();
-        events.clear();
-        for port in input_ports.iter().flatten() {
-            let headroom = events.remaining();
-            if headroom == 0 {
-                break;
-            }
-            if !port.is_active() {
-                continue;
-            }
-            let id = port.id();
-            port.drain_limited(headroom, |arrival, mut event| {
-                event.frame_offset = frame_offset(arrival);
-                let stored = events.push((id, event));
-                debug_assert!(stored, "the drain is limited to the headroom");
-            });
+/// Drain `input_ports`' active rings into `events`, converting arrival
+/// timestamps to sample-accurate `frame_offset`s at `sample_rate`, and return
+/// how many were taken. RT-safe (lock-free, no heap allocation).
+///
+/// `buffer_start` is when this block began — the instant every event's age
+/// is measured back from. Taken as a parameter rather than read from the
+/// clock here: it is the *only* input to the conversion a caller does not
+/// otherwise control, so passing it is what makes the arithmetic below
+/// checkable at all. See
+/// [`cycle_start_read_all_inputs_at`](HardwareMidiDrain::cycle_start_read_all_inputs_at).
+fn read_inputs(
+    events: &mut RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>,
+    input_ports: &PortSlots,
+    sample_rate: SampleRate,
+    nframes: usize,
+    buffer_start: Instant,
+) -> usize {
+    let nframes_u32 = nframes as u32;
+    let frame_offset = |arrival: Instant| {
+        let delta = buffer_start.saturating_duration_since(arrival);
+        let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
+        let offset = nframes_u32.saturating_sub(samples_ago);
+        if offset >= nframes_u32 {
+            nframes_u32.saturating_sub(1)
+        } else {
+            offset
         }
-        events.len()
+    };
+
+    // Each port gets the headroom left by the ports before it, so the
+    // total can never exceed the scratch's capacity and no push is refused.
+    events.clear();
+    for port in input_ports.iter().flatten() {
+        let headroom = events.remaining();
+        if headroom == 0 {
+            break;
+        }
+        if !port.is_active() {
+            continue;
+        }
+        let id = port.id();
+        port.drain_limited(headroom, |arrival, mut event| {
+            event.frame_offset = frame_offset(arrival);
+            let stored = events.push((id, event));
+            debug_assert!(stored, "the drain is limited to the headroom");
+        });
     }
+    events.len()
 }
 
 /// What the control side last published, and the next generation to hand out.
@@ -223,19 +221,20 @@ struct Published {
     next_generation: u64,
 }
 
-/// Every open hardware MIDI input, and the per-block drain over them.
+/// Every open hardware MIDI input.
 ///
 /// A backend creates one port per connection with
 /// [`create_input_port`](Self::create_input_port) and pushes into the
 /// [`InputProducerHandle`] it returns from the driver's own thread; the audio
-/// thread calls [`cycle_start_read_all_inputs`] once per block to take what
-/// arrived. When the connection closes, [`remove_input_port`] retires the port
+/// thread drains what arrived once per block through a [`HardwareMidiDrain`]
+/// over these inputs ([`cycle_start_read_all_inputs`]), owned by the node
+/// that reads. When the connection closes, [`remove_input_port`] retires the port
 /// and frees its slot for the next one, so hot-plug cycles do not grow the set.
 ///
 /// Cheap to share: hold it in an `Arc` and hand clones to the session and the
 /// audio graph.
 ///
-/// [`cycle_start_read_all_inputs`]: HardwareMidiInputs::cycle_start_read_all_inputs
+/// [`cycle_start_read_all_inputs`]: HardwareMidiDrain::cycle_start_read_all_inputs
 /// [`remove_input_port`]: HardwareMidiInputs::remove_input_port
 pub struct HardwareMidiInputs {
     /// The port set, published to the audio thread's drain. An [`ArcLend`]
@@ -253,9 +252,10 @@ pub struct HardwareMidiInputs {
     /// drain never takes it.
     published: Mutex<Published>,
     fifo_size: usize,
-    /// The drain's state. Every field here is `Sync` on its own, so the
-    /// manager derives `Sync` rather than asserting it by hand.
-    scratch: CycleScratch,
+    /// What every drain of this manager shares: the rate and the in-progress
+    /// flag. Every field here is `Sync` on its own, so the manager derives
+    /// `Sync` rather than asserting it by hand.
+    shared: DrainShared,
 }
 
 impl HardwareMidiInputs {
@@ -273,7 +273,7 @@ impl HardwareMidiInputs {
                 next_generation: 0,
             }),
             fifo_size,
-            scratch: CycleScratch::new(),
+            shared: DrainShared::new(),
         }
     }
 
@@ -285,7 +285,7 @@ impl HardwareMidiInputs {
     /// rate does not drop events; it places them at the wrong offset within the
     /// block, which reads as timing jitter rather than as an error.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        self.scratch.set_sample_rate(sample_rate);
+        self.shared.set_sample_rate(sample_rate);
     }
 
     /// Runs `change` on a copy of the port set and publishes the copy, as one
@@ -402,13 +402,28 @@ impl HardwareMidiInputs {
         self.input_ports.retired_len()
     }
 
-    /// The port vec for `port_type`. Only [`PortType::Input`] is backed by an
+    /// The port set last published, as the control side recorded it: what
+    /// every control-side query reads. Never the cell the drain reads: a
+    /// query takes the lock every change takes, so it sees the set as of the
+    /// last change, and it is a control-side call (it may wait on a change in
+    /// progress), from any thread but the audio thread's drain.
+    fn published_slots(&self) -> Arc<PortSlots> {
+        Arc::clone(
+            &self
+                .published
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .slots,
+        )
+    }
+
+    /// The port set for `port_type`. Only [`PortType::Input`] is backed by an
     /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
     /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
     /// empty / no-op).
-    fn ports_of(&self, port_type: PortType) -> Option<&ArcLend<PortSlots>> {
+    fn ports_of(&self, port_type: PortType) -> Option<Arc<PortSlots>> {
         match port_type {
-            PortType::Input => Some(&self.input_ports),
+            PortType::Input => Some(self.published_slots()),
             PortType::Output => None,
         }
     }
@@ -416,13 +431,13 @@ impl HardwareMidiInputs {
     /// The live port `id` names, if any: a stale id names none.
     fn port(&self, port_type: PortType, id: PortId) -> Option<Arc<HardwareMidiInput>> {
         self.ports_of(port_type)?
-            .lend()
             .get(id.index)
             .and_then(Option::clone)
             .filter(|port| port.id() == id)
     }
 
     /// A snapshot of one port, or `None` when `id` names no live port.
+    /// Control side, as every query here: see `published_slots`.
     ///
     /// Always `None` for [`PortType::Output`]: outputs are not backed here.
     pub fn get_port_info(&self, port_type: PortType, id: PortId) -> Option<PortInfo> {
@@ -440,7 +455,6 @@ impl HardwareMidiInputs {
             return Vec::new();
         };
         ports
-            .lend()
             .iter()
             .flatten()
             .map(|port| PortInfo::of(port, port_type))
@@ -451,7 +465,7 @@ impl HardwareMidiInputs {
     /// drain walks each block. Bounded by the most ports ever open at once.
     #[cfg(test)]
     pub(crate) fn slot_count(&self) -> usize {
-        self.input_ports.lend().len()
+        self.published_slots().len()
     }
 
     /// Sets whether the drain reads the port `id` names. Returns `false`, and
@@ -477,22 +491,73 @@ impl HardwareMidiInputs {
         self.port(port_type, id)
             .is_some_and(|port| port.is_active())
     }
+}
+
+impl Default for HardwareMidiInputs {
+    fn default() -> Self {
+        Self::new(2048)
+    }
+}
+
+/// One node's drain of a [`HardwareMidiInputs`]: what the audio thread calls
+/// once per block to take every active port's events.
+///
+/// Built on the control thread ([`new`](Self::new)) and owned by the one node
+/// that polls it (a `MidiInputNode` takes it as its `MidiIn`). Its scratch
+/// and its read of the published port set are its own, so nothing the audio
+/// thread reads is reached through the shared manager but its atomics.
+///
+/// A drain is polled through `&mut self`, so it cannot be re-entered from its
+/// own visitor:
+///
+/// ```compile_fail
+/// # use std::sync::Arc;
+/// # use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
+/// let mut drain = HardwareMidiDrain::new(Arc::new(HardwareMidiInputs::new(16)));
+/// drain.cycle_start_read_all_inputs(512, |_, _| {
+///     drain.cycle_start_read_all_inputs(512, |_, _| {});
+/// });
+/// ```
+///
+/// A *second* drain of the same manager started while one runs (from the
+/// first's visitor, or on another worker) drains nothing and returns 0: one
+/// drain at a time takes a manager's events.
+pub struct HardwareMidiDrain {
+    inputs: Arc<HardwareMidiInputs>,
+    /// The block's drained events, already timed. One buffer, not two: the
+    /// timestamp → `frame_offset` conversion needs only the rate, `nframes`
+    /// and the block start, all known before the first pop, so each event is
+    /// converted as it leaves its ring and stored once. The events reach the
+    /// caller through a visitor, copied out one at a time.
+    events: RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>,
+}
+
+impl HardwareMidiDrain {
+    /// A drain of `inputs`, for one node. Control thread.
+    pub fn new(inputs: Arc<HardwareMidiInputs>) -> Self {
+        Self {
+            inputs,
+            events: RtVec::new(),
+        }
+    }
+
+    /// The manager this drains.
+    pub fn inputs(&self) -> &Arc<HardwareMidiInputs> {
+        &self.inputs
+    }
 
     /// Drains all active input port rings for this block, converting arrival
     /// timestamps to sample-accurate `frame_offset`s, and hand each event to
     /// `visit` with the [`PortId`] of the port it came from. Returns how many
     /// were visited.
     ///
-    /// RT-safe (lock-free, no heap allocation, no free). A visitor rather than
-    /// a returned slice: the events live in audio-thread-only scratch, and
-    /// lending a borrow into it out of a `&self` method is the one shape that
-    /// would need an `UnsafeCell`. `visit` is free to touch this manager — no
-    /// borrow of the scratch is held while it runs — but a drain started from
-    /// inside `visit` drains nothing and returns 0: the outer drain still has
-    /// events to hand out from the same scratch, and the next block takes
-    /// whatever arrived meanwhile. Audio thread only: one drain at a time.
+    /// RT-safe (lock-free, no heap allocation, no free). `visit` is free to
+    /// touch the manager (its queries take the control side's lock, so not
+    /// from a real audio callback), but a second drain of the same manager
+    /// started from inside `visit` drains nothing and returns 0; the next
+    /// block takes whatever arrived meanwhile. Audio thread only.
     pub fn cycle_start_read_all_inputs(
-        &self,
+        &mut self,
         nframes: usize,
         visit: impl FnMut(PortId, MidiEvent),
     ) -> usize {
@@ -520,58 +585,52 @@ impl HardwareMidiInputs {
     /// A real caller uses [`cycle_start_read_all_inputs`](Self::cycle_start_read_all_inputs),
     /// which supplies `Instant::now()`. Both are RT-safe.
     pub fn cycle_start_read_all_inputs_at(
-        &self,
+        &mut self,
         nframes: usize,
         buffer_start: Instant,
         mut visit: impl FnMut(PortId, MidiEvent),
     ) -> usize {
-        if self.scratch.draining.swap(true, Ordering::Relaxed) {
-            // Re-entered from the visitor of a drain in progress: refilling
-            // the scratch would drop the events the outer drain has yet to
-            // hand out.
+        let shared = &self.inputs.shared;
+        if shared.draining.swap(true, Ordering::Relaxed) {
+            // Another drain of this manager is in progress (this one's
+            // visitor started it, or another node runs on another worker):
+            // the ports' rings are its until it ends.
             return 0;
         }
-        let _draining = Draining(&self.scratch.draining);
+        let _draining = Draining(&shared.draining);
 
         // One borrow of the port set for the drain, so a hotplug publishing a
         // new set mid-read leaves this one intact; the borrow cannot free it
         // when it drops, whatever was published meanwhile. Events are copied
         // into the scratch by value (`MidiEvent: Copy`), so nothing borrows
-        // from the snapshot past it.
-        let input_ports = self.input_ports.lend();
-        self.scratch
-            .read_inputs(&input_ports, nframes, buffer_start);
-        let mut visited = 0;
-        loop {
-            // Re-borrow per event rather than across the visitor, so `visit`
-            // may reach back into this manager. Stop at the scratch's end
-            // rather than at a count taken before the visits.
-            let Some(&(port, event)) = self.scratch.events.borrow().get(visited) else {
-                break;
-            };
+        // from the snapshot past it. The borrow is held to the drain's end:
+        // a port removed while the drain runs is freed by the control side
+        // afterwards (`collect`), never by this borrow's drop.
+        let input_ports = self.inputs.input_ports.lend();
+        read_inputs(
+            &mut self.events,
+            &input_ports,
+            shared.sample_rate(),
+            nframes,
+            buffer_start,
+        );
+        for &(port, event) in self.events.iter() {
             visit(port, event);
-            visited += 1;
         }
-        visited
+        self.events.len()
     }
 }
 
-impl Default for HardwareMidiInputs {
-    fn default() -> Self {
-        Self::new(2048)
-    }
-}
-
-impl tutti_midi_types::MidiIn for HardwareMidiInputs {
+impl tutti_midi_types::MidiIn for HardwareMidiDrain {
     /// Drains every connected hardware input for this block into `buffer`.
     ///
     /// `block_size` drives the timestamp → `frame_offset` conversion (it is the
-    /// block's `nframes`). RT-safe: the events already sit in the manager's
-    /// internal scratch, so this is a bounded copy with no allocation.
+    /// block's `nframes`). RT-safe: a bounded copy out of the drain's own
+    /// scratch, with no allocation.
     ///
     /// A full `buffer` drops the overflow — the drain is destructive at the
     /// ring, so by the time there is no room the events are already out of it.
-    fn poll_block(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let mut written = 0usize;
         self.cycle_start_read_all_inputs(block_size, |_port, event| {
             if written < buffer.len() {
@@ -585,7 +644,7 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
 
 impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let input_ports = self.input_ports.lend();
+        let input_ports = self.published_slots();
 
         f.debug_struct("HardwareMidiInputs")
             .field(
@@ -597,6 +656,14 @@ impl core::fmt::Debug for HardwareMidiInputs {
     }
 }
 
+impl core::fmt::Debug for HardwareMidiDrain {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HardwareMidiDrain")
+            .field("inputs", &self.inputs)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,10 +671,16 @@ mod tests {
 
     /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
     /// below can index and count without threading a closure through each.
-    fn drain_cycle(manager: &HardwareMidiInputs, nframes: usize) -> Vec<(PortId, MidiEvent)> {
+    fn drain_cycle(manager: &Arc<HardwareMidiInputs>, nframes: usize) -> Vec<(PortId, MidiEvent)> {
         let mut out = Vec::new();
-        manager.cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));
+        HardwareMidiDrain::new(Arc::clone(manager))
+            .cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));
         out
+    }
+
+    /// A drain of `manager`, as a node would hold.
+    fn drain_of(manager: &Arc<HardwareMidiInputs>) -> HardwareMidiDrain {
+        HardwareMidiDrain::new(Arc::clone(manager))
     }
 
     fn now() -> Instant {
@@ -616,7 +689,7 @@ mod tests {
 
     #[test]
     fn test_create_ports() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let input_id = manager.create_input_port("Test Input").port_id();
         assert_eq!(input_id.index(), 0);
@@ -639,7 +712,7 @@ mod tests {
     /// Four ports of 256 events each offer 1024, four times the cap.
     #[test]
     fn cycle_read_is_capped_across_ports() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
         for port in 0..4 {
             let mut handle = manager.create_input_port(format!("Input {port}"));
             for _ in 0..256 {
@@ -665,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_list_ports() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let id1 = manager.create_input_port("Input 1").port_id();
         let id2 = manager.create_input_port("Input 2").port_id();
@@ -678,7 +751,7 @@ mod tests {
 
     #[test]
     fn test_port_active_state() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let port_id = manager.create_input_port("Test").port_id();
         assert!(manager.is_port_active(PortType::Input, port_id));
@@ -698,7 +771,7 @@ mod tests {
     /// port attribution the single-port drain cannot assert.
     #[test]
     fn manager_tags_drained_events_with_their_port_id() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let mut producer_handle = manager.create_input_port("Input");
         let input_id = producer_handle.port_id();
@@ -721,7 +794,7 @@ mod tests {
 
     #[test]
     fn test_inactive_ports_ignored() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let mut producer_handle = manager.create_input_port("Input");
         let input_id = producer_handle.port_id();
@@ -737,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_multiple_input_ports() {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
 
         let mut handle1 = manager.create_input_port("Input 1");
         let mut handle2 = manager.create_input_port("Input 2");
@@ -838,7 +911,7 @@ mod tests {
     /// `Instant::now()` inside the drain, the age is whatever the scheduler made
     /// it, and the only assertion available is a band.
     fn offset_for(sample_rate: f64, nframes: usize, age: core::time::Duration) -> u32 {
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
         manager.set_sample_rate(sample_rate);
         let mut handle = manager.create_input_port("Input");
 
@@ -851,7 +924,8 @@ mod tests {
         ));
 
         let mut seen = Vec::new();
-        manager.cycle_start_read_all_inputs_at(nframes, block_start, |_, e| seen.push(e));
+        drain_of(&manager)
+            .cycle_start_read_all_inputs_at(nframes, block_start, |_, e| seen.push(e));
         assert_eq!(seen.len(), 1, "exactly the event pushed");
         seen[0].frame_offset
     }
@@ -935,7 +1009,7 @@ mod tests {
     fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
         use core::time::Duration;
 
-        let manager = HardwareMidiInputs::new(256);
+        let manager = Arc::new(HardwareMidiInputs::new(256));
         let mut handle = manager.create_input_port("Input");
         let block_start = Instant::now();
         let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
@@ -943,7 +1017,7 @@ mod tests {
         // Untouched: the 44100 placeholder. 1 ms is 44 samples.
         assert!(handle.push(note, block_start - Duration::from_millis(1)));
         let mut seen = Vec::new();
-        manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
+        drain_of(&manager).cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
         assert_eq!(
             seen[0].frame_offset, 980,
             "the placeholder rate puts a 1 ms-old event at 1024 - 44"
@@ -953,7 +1027,7 @@ mod tests {
         manager.set_sample_rate(48_000.0);
         assert!(handle.push(note, block_start - Duration::from_millis(1)));
         let mut seen = Vec::new();
-        manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
+        drain_of(&manager).cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
         assert_eq!(
             seen[0].frame_offset, 976,
             "at 48 kHz the same event belongs 4 frames earlier -- the 8.8% the \
@@ -975,7 +1049,7 @@ mod tests {
     /// index check and the slot bound.
     #[test]
     fn hot_plug_cycles_reuse_freed_slots() {
-        let manager = HardwareMidiInputs::new(16);
+        let manager = Arc::new(HardwareMidiInputs::new(16));
         let mut interior = manager.create_input_port("Interior").port_id();
         let anchor = manager.create_input_port("Anchor").port_id();
         assert_eq!((interior.index(), anchor.index()), (0, 1));
@@ -1023,12 +1097,12 @@ mod tests {
     /// reference still upgrades.
     #[test]
     fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
-        let manager = HardwareMidiInputs::new(16);
+        let manager = Arc::new(HardwareMidiInputs::new(16));
         let mut handle = manager.create_input_port("Gone");
         let id = handle.port_id();
         assert!(handle.push(MidiEvent::noop(), now()));
         let port = {
-            let slots = manager.input_ports.lend();
+            let slots = manager.published_slots();
             Arc::downgrade(slots[0].as_ref().expect("the port is live"))
         };
         drop(handle);
@@ -1053,7 +1127,7 @@ mod tests {
     /// manager. Run it under miri to check the claim directly.
     #[test]
     fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
-        let manager = HardwareMidiInputs::new(4);
+        let manager = Arc::new(HardwareMidiInputs::new(4));
         let mut handle = manager.create_input_port("Orphan");
         assert!(manager.remove_input_port(handle.port_id()));
         drop(manager);
@@ -1070,20 +1144,21 @@ mod tests {
         );
     }
 
-    /// A drain re-entered from its own visitor hands out nothing, and the
-    /// outer drain still hands out every event, in order. The visitor may also
-    /// touch the rest of the manager (list, toggle, read the rate).
+    /// A second drain of the manager started from a drain's visitor hands out
+    /// nothing, and the outer drain still hands out every event, in order.
+    /// The visitor may also touch the rest of the manager (list, toggle, set
+    /// the rate). (The *same* drain cannot be re-entered at all: it is polled
+    /// through `&mut self`, which `HardwareMidiDrain`'s `compile_fail`
+    /// doctest pins.)
     ///
     /// Ported from `RtEventBuf`'s `drain_each_callback_may_reborrow_the_buffer`.
     ///
-    /// Mutations (run): dropping the `draining` guard → the nested drain clears
-    /// the scratch, the outer one stops after its first event, and this fails
-    /// on the count; dropping the guard *and* indexing `events[i]` for a count
-    /// taken before the visits (the shape the review found) → it panics with
-    /// "index out of bounds".
+    /// Mutation (run): dropping the `draining` guard → the nested drains take
+    /// the events pushed during the visits, so `nested` is 4 and the next
+    /// block finds none → fails.
     #[test]
     fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
-        let manager = HardwareMidiInputs::new(16);
+        let manager = Arc::new(HardwareMidiInputs::new(16));
         let mut a = manager.create_input_port("A");
         let mut b = manager.create_input_port("B");
         for i in 0..2 {
@@ -1094,11 +1169,12 @@ mod tests {
         let mut outer = Vec::new();
         let mut nested = 0;
         let mut nested_visits = 0;
-        let visited = manager.cycle_start_read_all_inputs(512, |port, _| {
+        let visited = drain_of(&manager).cycle_start_read_all_inputs(512, |port, _| {
             outer.push(port);
             // Push one more so a nested drain would have something to take.
             assert!(a.push(MidiEvent::noop(), now()));
-            nested += manager.cycle_start_read_all_inputs(512, |_, _| nested_visits += 1);
+            nested +=
+                drain_of(&manager).cycle_start_read_all_inputs(512, |_, _| nested_visits += 1);
             assert_eq!(manager.list_input_ports().len(), 2);
             assert!(manager.set_port_active(PortType::Input, b.port_id(), true));
             manager.set_sample_rate(48_000.0);
@@ -1128,7 +1204,7 @@ mod tests {
     /// fails.
     #[test]
     fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
-        let manager = HardwareMidiInputs::new(16);
+        let manager = Arc::new(HardwareMidiInputs::new(16));
         let a = manager.create_input_port("A").port_id();
         assert!(manager.remove_input_port(a));
         let mut b = manager.create_input_port("B");
@@ -1182,9 +1258,10 @@ mod tests {
         };
 
         let block_start = Instant::now();
+        let mut drain = drain_of(&manager);
         for _ in 0..20_000 {
             assert!(handle.push(MidiEvent::noop(), block_start - Duration::from_millis(1)));
-            manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| {
+            drain.cycle_start_read_all_inputs_at(1024, block_start, |_, e| {
                 // 1 ms at 48 kHz or at 96 kHz, never anything else.
                 assert!(
                     e.frame_offset == 1024 - 48 || e.frame_offset == 1024 - 96,
@@ -1205,18 +1282,18 @@ mod tests {
     /// → the port stays alive → fails.
     #[test]
     fn collect_frees_a_port_removed_during_a_drain() {
-        let manager = HardwareMidiInputs::new(16);
+        let manager = Arc::new(HardwareMidiInputs::new(16));
         let mut handle = manager.create_input_port("Gone");
         let id = handle.port_id();
         assert!(handle.push(MidiEvent::noop(), now()));
         drop(handle);
         let port = Arc::downgrade(
-            manager.input_ports.lend()[0]
+            manager.published_slots()[0]
                 .as_ref()
                 .expect("the port is live"),
         );
 
-        manager.cycle_start_read_all_inputs(512, |_, _| {
+        drain_of(&manager).cycle_start_read_all_inputs(512, |_, _| {
             assert!(manager.remove_input_port(id));
         });
         assert!(

@@ -12,10 +12,9 @@
 //! than reachable and inert:
 //!
 //! ```no_run
-//! # use std::sync::Arc;
-//! # use tutti_core::{meter::MeterMap, ArcLend};
+//! # use tutti_core::ProjectMeter;
 //! # use tutti_plugin::handles::PluginClient;
-//! # fn ex(client: &mut PluginClient, meter: Arc<ArcLend<MeterMap>>) {
+//! # fn ex(client: &mut PluginClient, meter: ProjectMeter) {
 //! // `None` for a plugin that declined transport, so the install is not
 //! // reachable at all rather than reachable and inert.
 //! if let Some(mut t) = client.transport() {
@@ -46,8 +45,6 @@
 //! [`PluginClient::takes_midi`] and
 //! [`PluginClient::sends_midi`] answer whether wiring them means anything.
 
-use std::sync::Arc;
-
 use super::PluginClient;
 use crate::protocol::Features;
 
@@ -76,11 +73,10 @@ pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -
 pub struct TransportView<'a>(&'a mut PluginClient);
 
 impl TransportView<'_> {
-    /// Install the meter map the snapshot's signature and bar are read from.
-    ///
-    /// The meter map arrives as an `ArcLend` because the audio thread reads it
-    /// once per block and never holds an owning handle.
-    pub fn set_meter(&mut self, meter: Arc<tutti_core::ArcLend<tutti_core::meter::MeterMap>>) {
+    /// Install the project meter the snapshot's signature and bar are read
+    /// from: the node's meter follows it (see
+    /// [`PluginMeter`](super::PluginMeter)), so a later edit reaches it.
+    pub fn set_meter(&mut self, meter: tutti_core::ProjectMeter) {
         self.0.set_meter(meter);
     }
 

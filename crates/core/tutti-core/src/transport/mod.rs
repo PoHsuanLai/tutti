@@ -18,6 +18,7 @@ pub(crate) mod fsm;
 mod handle;
 mod motion;
 mod offline;
+mod project_meter;
 mod settings;
 mod state;
 mod timed;
@@ -29,6 +30,7 @@ pub use clock::TransportClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
+pub use project_meter::{MeterSlot, MeterSlotCell, ProjectMeter};
 pub use settings::TransportSettings;
 pub use state::{
     beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed, SeekSlot,

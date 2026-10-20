@@ -116,6 +116,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old one was removed: each re-asserts its feed on the entity's current node
   when its `AudioNode` changes (the old node's feeds go with it).
 
+### Changed — design 015 PR 5: modulation and MIDI in `tutti-session`
+
+- **The session runs the modulation loop** (feature `modulation`):
+  `Phase::Modulation` applies the declarations (a host's, passed as
+  `PhaseCx::with_mods(ModInput)`, or the session's own), and
+  `Phase::AfterCommit` re-applies while a target waits for its node,
+  commits what that built (publishing compensation on `Sent`) and sends the
+  resyncs owed. A target still unresolved after 4 s of `PhaseCx::now`
+  (`SessionBuilder::unresolved_warning`) is
+  `SessionEvent::ModulationUnresolved`; a refusal is
+  `SessionEvent::ModulationRefused(ModRefusal)`, once per change.
+- **`Session::mods()`** declares modulation without a host: `lfo`,
+  `macro_`, `follower`, `note_envelope` and `source` mint `SourceKey`s,
+  `route` mints `RouteKey`s, `range`/`automate`/`record` name a
+  `ParamRef` (`unit`, `plugin`); `Session::mod_state()` reads what
+  applied. `Take` is the recorder `AutomationTake` wraps.
+- **`Session::midi()`** (feature `midi`): `live_input`, `play_clip`,
+  `stop_clip`, `clip`, `retarget`, the hardware input's `route`,
+  `unroute`, `set_route_fallback` and host-keyed `set_routes`, and the
+  hardware out: `set_hardware_out(Option<UmpOut>)`, `set_jr_stamping`,
+  `hardware_out()` (the router), `drain_out`, `out_drops`.
+  `Phase::MidiOut` drains the engine's hardware-out node and reports a
+  rising drop count as `SessionEvent::MidiOutDropped`.
+- **`examples/headless_modulation.rs` moved** from `tutti-nodes` to
+  `tutti-session` (design 015 §5.1): `cargo run -p tutti-session
+  --features modulation --example headless_modulation`.
+- **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::modulation::ModulationState` resource (`Res<ModulationState>`) | a view: `AudioGraphRes::modulation()` (`ModulationState<'_>`), whose reads return owned values (`lane` → `Option<(NodeKey, LaneControls)>`; `unresolved_targets` and `unresolved_sources` iterate a copy); `set_knob` unchanged |
+  | `bevy_tutti::midi::UmpOutRes` resource | `bevy_tutti::midi::UmpOut` (`tutti_session::UmpOut`), connected with `AudioGraphRes::midi().set_hardware_out(Some(out))` |
+  | `bevy_tutti::midi::MidiOutDrops` resource | the session's count, `AudioGraphRes::midi().out_drops()`; `MidiOutDrops` is a plain type (re-exported) |
+  | `MidiOutRouter { out: Option<&mut UmpOutRes>, .. }`, `out_active` | `MidiOutRouter { out: Option<&mut UmpOut>, .. }`; `out_active` gone (`AudioGraphRes::midi().hardware_out()` hands the router) |
+  | `ClockMasterRes { master, out }`, `ClockMasterRes::new(master, out)` | `ClockMasterRes { master }`, `new(master)`: the out ring is the session's (`Session::midi_nodes().out_controls`), drained by `Phase::MidiOut` |
+  | `bevy_tutti::midi::RoutedTargets` resource | gone: the session tracks what its routes fed |
+  | `SequencedClips(HashMap<Entity, (AudioNode, MidiClipControls)>)` | `SequencedClips(HashMap<Entity, AudioNode>)`; `node(entity)` unchanged |
+  | `pump_clock_out_system`, `pump_midi_out_system` took `MidiOutDrops`/`UmpOutRes` | take `AudioGraphRes` and `JrStamperRes` |
+  | `graph::commit::commit_and_publish` (crate-private) | gone: `Session::commit` publishes |
+  | `tutti_session::Graph::{modulate, send_mod_resyncs}` (public) | `pub(crate)`: run `Phase::Modulation`/`AfterCommit` (`Session::run_phase`) |
+  | `AudioNode`: `Eq + Hash` | also `PartialOrd + Ord` |
+
+  **Migration.** Read modulation state through
+  `world.resource::<AudioGraphRes>().modulation()` (or a
+  `Res<AudioGraphRes>` in a system). Connect a JR output with
+  `graph.midi().set_hardware_out(Some(UmpOut::new(sink, rate)))` instead
+  of inserting `UmpOutRes`; `JrStamperRes` still switches stamping. Read
+  the clock's out ring, in a test, from the session's MIDI nodes. A
+  headless host that called `Graph::modulate` passes its declarations as
+  `PhaseCx::with_mods` to `run_phase`, or declares through `s.mods()`.
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

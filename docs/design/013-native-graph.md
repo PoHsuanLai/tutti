@@ -15,7 +15,11 @@ half has landed (the plugin node is a `Node`, bound by typestate; see
 [below](#item-4s-plugin-half-landed)). Phase 3's `bevy-tutti` runtime
 (`GraphRuntime` behind `AudioGraphRes`) has since moved to `tutti-session`,
 the Bevy-free API layer both umbrellas use: see
-[doc 015](015-headless-api.md), PR 4. With `Net` no longer a runtime and
+[doc 015](015-headless-api.md), PR 4. Its modulation loop (the re-apply
+after a commit, the resyncs) and its MIDI wiring (clips, live inputs, the
+hardware input's routes, the hardware out) followed in PR 5: the session
+runs them as `Phase::{Modulation, AfterCommit, MidiOut}`, and
+`bevy-tutti`'s systems collect their declarations and call it. With `Net` no longer a runtime and
 `Legacy` gone, "native" no longer distinguishes anything: the design's title
 and this file's name keep it, but the code and the crate docs say "the
 graph" (rewrite-order item 9). Work that does not need the graph has

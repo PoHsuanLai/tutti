@@ -174,7 +174,11 @@ impl SessionBuilder {
 
     /// The session over `parts`, `engine` its offline engine if any, with
     /// (`sampler`) a disk streamer when `streamer`.
-    fn session(parts: Parts, engine: Option<tutti_core::Engine>, streamer: bool) -> Result<Session> {
+    fn session(
+        parts: Parts,
+        engine: Option<tutti_core::Engine>,
+        streamer: bool,
+    ) -> Result<Session> {
         #[cfg(feature = "sampler")]
         let disk_streamer = if streamer {
             Some(tutti_sampler::DiskStreamer::new(

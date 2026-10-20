@@ -27,8 +27,8 @@ use crate::export::request::{
     ExportTarget, PreparedGraph,
 };
 use crate::graph::resources::ExportRefused;
-use tutti_session::PendingExport;
 use crate::graph::{AudioConfig, AudioGraphRes};
+use tutti_session::PendingExport;
 
 /// Starts the oldest pending [`ExportRequest`], if nothing is already running.
 ///
@@ -283,10 +283,7 @@ impl NodeNames {
             .iter(world)
         {
             nodes.insert(entity, *node);
-            by_key.insert(
-                node.key(),
-                (entity, name.map(|n| n.as_str().to_owned())),
-            );
+            by_key.insert(node.key(), (entity, name.map(|n| n.as_str().to_owned())));
         }
         Self { nodes, by_key }
     }

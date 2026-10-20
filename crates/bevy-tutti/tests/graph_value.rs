@@ -21,8 +21,7 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::topology::{key_of, LiveGraph};
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphReconcilePlugin, GraphSource, MasterSources, PortSource,
-    PortSources,
+    AudioGraphRes, GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::AudioNode;

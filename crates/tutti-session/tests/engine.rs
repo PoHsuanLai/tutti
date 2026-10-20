@@ -155,6 +155,22 @@ fn the_graph_runs_at_the_rate_it_was_built_at() {
     assert_eq!(on, vec![1, 24_001, 48_001]);
 }
 
+/// **The transport converts at the session's rate.** Its rate is not the
+/// graph's: the engine's clock steps the beat at the graph's rate whatever
+/// the transport holds, so the click above cannot see it. What reads it is
+/// the conversion a host schedules against (frames per beat, a time in
+/// frames). At 120 BPM and 48 kHz a beat is 24 000 frames; a transport left
+/// at its 44.1 kHz default would say 22 050.
+///
+/// Mutation (run): `SessionBuilder::parts` building the transport at
+/// `SampleRate::DEFAULT` → 22 050 → fails (the click test passes under it).
+#[test]
+fn the_transport_converts_at_the_sessions_rate() {
+    let s = offline();
+    assert_eq!(s.transport().sample_rate(), SampleRate(RATE));
+    assert_eq!(s.transport().samples_per_beat(), Samples(24_000));
+}
+
 // ---- a clip reader through the builder's engine ---------------------------
 
 /// The tone's frame `i`: 440 Hz at `RATE`.

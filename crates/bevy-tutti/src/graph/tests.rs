@@ -8,8 +8,8 @@ use tutti_core::{AudioNode, ChannelLayout, Drive, UnitParam};
 use tutti_graph::{IntoNode, NodeParts, ParamSet, Prepare};
 
 use crate::graph::{
-    AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, MasterSources,
-    PortSource, SpawnAudioNode,
+    AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, MasterSources, PortSource,
+    SpawnAudioNode,
 };
 use crate::AudioEngineState;
 
@@ -215,8 +215,8 @@ fn every_param_write_path_reaches_a_fork() {
 /// (or, on a poisoned graph, never will).
 ///
 /// Mutations (run):
-/// - `land` binding the controls on `Waiting` without parking the binding
-///   → nothing waits in `PendingCrossfades` → fails;
+/// - `land` dropping the binding on `Waiting` instead of parking it →
+///   nothing waits in `PendingCrossfades` → fails;
 /// - `PendingCrossfades::resolve` not calling the binding once the node
 ///   lands → the entity no longer steers the incoming unit → fails at the
 ///   last seed.
@@ -321,11 +321,9 @@ impl tutti_graph::Node for Grenade {
 /// as they were — the incoming unit's are not bound to a node it never
 /// reached.
 ///
-/// Mutation (run): `land` treating a refusal as a landing (binding a
-/// `CapturedControls::default()` and parking the controls' binding under a
-/// fresh id) → `PendingCrossfades` is not empty → fails; the session's
-/// `crossfade` answering `Waiting` on a poisoned graph → the binding is
-/// parked for good → fails.
+/// Mutation (run): the session's `replace` answering `Busy` on a poisoned
+/// graph → the session parks the node and this crate parks its binding, for
+/// good → fails.
 #[test]
 fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     let mut graph = AudioGraphRes::headless(0, 1);

@@ -15,7 +15,9 @@ use bevy_app::App;
 use tutti_session::{Device, Session, SessionBuilder};
 
 use crate::engine::Result;
-use crate::graph::{AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes};
+use crate::graph::{
+    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
+};
 
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
@@ -86,9 +88,8 @@ pub(crate) fn build_on(
     // The session's own cell: the disk streamer pre-rolls by it.
     // `GraphReconcilePlugin` (and `LatencyCompensationPlugin`) use
     // `init_resource`, which leaves it.
-    let compensation = crate::graph::latency::ChannelCompensation(std::sync::Arc::clone(
-        session.compensation(),
-    ));
+    let compensation =
+        crate::graph::latency::ChannelCompensation(std::sync::Arc::clone(session.compensation()));
     let transport = session.transport().clone();
     let metronome = std::sync::Arc::clone(session.click_settings());
     let meter = session.meter().clone();

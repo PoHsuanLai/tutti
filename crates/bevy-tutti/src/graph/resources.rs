@@ -288,7 +288,9 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<(), ReplaceRefused<Box<tutti_plugin::handles::PluginClient>>> {
-        self.write().graph().replace_plugin(node, client, fade, curve)
+        self.write()
+            .graph()
+            .replace_plugin(node, client, fade, curve)
     }
 
     /// Takes `node` out of the graph. Every edge to and from it reads silence
@@ -366,7 +368,9 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<Crossfade<()>, CrossfadeRefused> {
-        self.write().graph().crossfade_plugin(node, client, fade, curve)
+        self.write()
+            .graph()
+            .crossfade_plugin(node, client, fade, curve)
     }
 
     /// Writes `value` to `node`'s scalar param `param`, through the node's
@@ -437,7 +441,9 @@ impl AudioGraphRes {
         source: Option<AudioNode>,
         range: tutti_graph::ParamRange,
     ) -> Result<(), tutti_graph::GraphInvalid> {
-        self.write().graph().set_param_mod(node, param, source, range)
+        self.write()
+            .graph()
+            .set_param_mod(node, param, source, range)
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again,

@@ -45,8 +45,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
-    MetronomeRes, TransportRes,
+    AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources, MetronomeRes,
+    TransportRes,
 };
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,

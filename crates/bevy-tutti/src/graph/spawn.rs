@@ -256,7 +256,10 @@ const FADE: tutti_core::Seconds = tutti_core::Seconds(0.005);
 const CURVE: tutti_core::CrossfadeCurve = tutti_core::CrossfadeCurve::EqualAmplitude;
 
 /// The entity's node and the graph, or a warning and `None`.
-fn crossfade_target(world: &mut World, entity: Entity) -> Option<(AudioNode, Mut<'_, AudioGraphRes>)> {
+fn crossfade_target(
+    world: &mut World,
+    entity: Entity,
+) -> Option<(AudioNode, Mut<'_, AudioGraphRes>)> {
     let Some(node) = world.get::<AudioNode>(entity).copied() else {
         bevy_log::warn!(
             "crossfade_audio_node: entity {:?} has no AudioNode; nothing to crossfade",
@@ -294,13 +297,11 @@ fn land<C: Send + Sync + 'static>(
             }
         }
         Ok(Crossfade::Waiting(id)) => {
-            let bind: Bind = Box::new(move |e, controls| {
-                match controls.downcast::<C>() {
-                    Ok(controls) => bind(e, *controls),
-                    Err(_) => bevy_log::error!(
-                        "crossfade_audio_node: a landed crossfade's controls were not its node's"
-                    ),
-                }
+            let bind: Bind = Box::new(move |e, controls| match controls.downcast::<C>() {
+                Ok(controls) => bind(e, *controls),
+                Err(_) => bevy_log::error!(
+                    "crossfade_audio_node: a landed crossfade's controls were not its node's"
+                ),
             });
             world
                 .get_resource_or_init::<PendingCrossfades>()

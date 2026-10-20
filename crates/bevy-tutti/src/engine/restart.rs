@@ -152,7 +152,9 @@ mod tests {
     use super::*;
     use crate::engine::build::build_on;
     use crate::graph::latency::{ChannelCompensation, GraphLatency};
-    use crate::graph::{GraphReconcilePlugin, MasterSources, PortSource, PortSources, TransportRes};
+    use crate::graph::{
+        GraphReconcilePlugin, MasterSources, PortSource, PortSources, TransportRes,
+    };
     use crate::graph::{PendingCrossfades, SpawnAudioNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;

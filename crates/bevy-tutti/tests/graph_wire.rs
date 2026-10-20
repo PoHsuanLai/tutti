@@ -25,8 +25,8 @@ mod graph_wire {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
-        PortSource, PortSources,
+        AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources, PortSource,
+        PortSources,
     };
     use bevy_tutti::AudioEngineState;
     // `GraphSource` is the graph's own spelling of what feeds a port.
@@ -473,12 +473,13 @@ mod graph_wire {
     /// This is what the diff buys: editing the session for an unchanged port
     /// would force a commit the frame did not need.
     ///
-    /// Driven by marking the sink's `PortSources` changed with the same
-    /// declaration, which runs the rebuild without changing anything it
-    /// declares. (A second, unrelated node would run it too, but its insert is
-    /// itself an edit, and the flag would say nothing about the rebuild.)
-    /// Without the diff, every already-correct port is rewritten and the
-    /// session is edited.
+    /// Driven by marking the sink's `AudioNode` changed with the same binding,
+    /// which runs the rebuild through `topology::apply` without changing
+    /// anything it declares. (A second, unrelated node would run it too, but
+    /// its insert is itself an edit, and the flag would say nothing about the
+    /// rebuild; a changed `PortSources` alone stops at the `want == live`
+    /// early return, before `apply`.) Without the diff, every already-correct
+    /// port is rewritten and the session is edited.
     ///
     /// The flag has to be sampled **between** the rebuild and `commit_graph`, which
     /// clears it in the `Commit` set — reading it after `update()` returns shows
@@ -516,11 +517,12 @@ mod graph_wire {
             .before(GraphReconcileSystems::Commit),
         );
 
-        // The same declaration, marked changed: the rebuild runs, but nothing
-        // it already wired has changed.
+        // The same binding, marked changed: `Changed<AudioNode>` skips the
+        // rebuild's early return, so `topology::apply` walks every declared
+        // port, and none of them has changed.
         app.world_mut()
-            .get_mut::<PortSources>(filt)
-            .expect("declared")
+            .get_mut::<AudioNode>(filt)
+            .expect("bound")
             .set_changed();
         app.update();
 

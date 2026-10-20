@@ -191,6 +191,42 @@ fn a_scheduled_note_lands_on_its_frame() {
     assert_eq!(note_ons(&seen), vec![(8_000, 60)]);
 }
 
+/// **A target re-bound to a new node keeps its clip**: the feed is keyed by
+/// the node (the session's feeds), and the event reconcile moves every
+/// feed of the entity's old node onto its new one, so the clip plays the new
+/// node and not the one the entity left.
+///
+/// Mutation (run): `graph::events::reconcile` not calling `move_feeds` when
+/// an entity's node changes → the clip still feeds the old node, the new tap
+/// hears nothing → fails.
+#[test]
+fn a_re_bound_target_keeps_its_clip() {
+    use bevy_tutti::graph::InsertAudioNode;
+
+    let mut app = app();
+    let (tap, old) = spawn_tap(&mut app);
+    app.world_mut().spawn(MidiSourceInstall::new(
+        tap,
+        note(60, Beat(1.0 / 3.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+
+    let new = Seen::default();
+    app.world_mut()
+        .commands()
+        .entity(tap)
+        .insert_audio_node(Tap(Arc::clone(&new)));
+    app.world_mut().flush();
+    app.update();
+
+    roll(&mut app, 0, 9_000);
+    assert_eq!(note_ons(&new), vec![(8_000, 60)], "the new node plays it");
+    assert!(
+        note_ons(&old).is_empty(),
+        "the node the entity left does not"
+    );
+}
+
 /// **Two installs naming one target both play**: they are merged into its
 /// one clip.
 ///

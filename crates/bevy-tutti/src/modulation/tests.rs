@@ -83,9 +83,7 @@ fn sent(app: &App) -> Arc<tutti_graph::Plan> {
 }
 
 fn idle(app: &App) -> bool {
-    !app.world()
-        .resource::<AudioGraphRes>()
-        .is_edited()
+    !app.world().resource::<AudioGraphRes>().is_edited()
 }
 
 /// A cutoff probe (knob 500, range `0..=1000`) on output 0, a sine at

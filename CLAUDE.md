@@ -194,9 +194,9 @@ crates/
   vendor/        rustysynth-tutti, tutti-clap-test-plugin
 ```
 
-- `tutti-types` names no other tutti crate. Its one workspace dependency is
-  `arc-lend`, which is not a tutti crate: it depends on nothing at all, and
-  nothing audio-specific belongs in it.
+- `tutti-types` names no other tutti crate. Its one workspace-member
+  dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
+  at all, and nothing audio-specific belongs in it.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
@@ -253,7 +253,11 @@ use `Param<U>`.
   epoch, each publish's retired value stays pinned and memory grows until they
   drop. It is unreachable if the rule above is kept. A host can poll
   `retired_len()` and `epoch_stalls()`; the cell itself neither asserts nor
-  logs (it is a library, and the policy is the host's).
+  logs (it is a library, and the policy is the host's). tutti's policy is
+  `debug_check_reclaiming` after a `publish` (a debug-build panic at
+  `PARKED_LOAN_LIMIT` retired values): call it after any cell you republish
+  every frame, as the automation lane's program and the sampler voice's
+  placement do.
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.

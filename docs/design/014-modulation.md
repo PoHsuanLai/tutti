@@ -422,8 +422,9 @@ the 32-byte event are unchanged.
 - **One read per block**, at the first frame, dropped before returning. The
   program holds frozen `Arc`s, not further cells, so there is no nested read
   (it fixes M7).
-- **The fork's copy comes from the control side.** A `Loan` only `Deref`s
-  (`crates/arc-lend/src/lend.rs:723`) and must not leave the
+- **The fork's copy comes from the control side.** `RtRef` only `Deref`s
+  (`crates/core/tutti-types/src/rt/publish.rs:786`; now arc-lend's `Loan`,
+  in its `lend.rs`) and must not leave the
   block, so `LaneControls` keeps the last published `Arc<ControlProgram>`
   beside the cell; the fork gathers that.
 - **No audio-thread allocation.** Per-layer and per-input state lives in

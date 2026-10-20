@@ -85,6 +85,15 @@ pub const DEFAULT_EPOCHS: usize = 3;
 /// also scans every epoch for every retired value, so more epochs only cost.
 pub const MAX_EPOCHS: usize = 64;
 
+/// The largest `SLOTS` a cell accepts.
+///
+/// Each publish copies every slot into an array on its own stack
+/// (`[usize; SLOTS]`) and scans it for every retired value, so a cell with
+/// thousands of slots would cost the publisher a large stack frame and a
+/// slow filter for nothing a reader gains: past a few slots per reader
+/// thread, a lend only ever uses the first free one.
+pub const MAX_SLOTS: usize = 1024;
+
 /// Slot value: no reader.
 const FREE: usize = 0;
 /// Slot value: a reader has claimed the slot but not yet announced what it
@@ -166,7 +175,8 @@ struct Control<T, const EPOCHS: usize> {
 /// # Parameters
 ///
 /// - `SLOTS` ([`DEFAULT_SLOTS`]): reader slots. A lend tries each at most
-///   once, so it is also the bound on a lend's CASes. At least 1.
+///   once, so it is also the bound on a lend's CASes. From 1 to
+///   [`MAX_SLOTS`].
 /// - `EPOCHS` ([`DEFAULT_EPOCHS`]): overflow epochs. From 2 to
 ///   [`MAX_EPOCHS`].
 ///
@@ -175,6 +185,11 @@ struct Control<T, const EPOCHS: usize> {
 /// ```compile_fail
 /// # // Mutation: `assert!(true || SLOTS >= 1, ..)` in `VALID`; this compiles.
 /// let cell: arc_lend::ArcLend<u32, 0> = arc_lend::ArcLend::new_with_params(1); // no slots
+/// ```
+///
+/// ```compile_fail
+/// # // Mutation: `true || SLOTS <= MAX_SLOTS` in `VALID`; this compiles.
+/// let cell: arc_lend::ArcLend<u32, 1025> = arc_lend::ArcLend::new_with_params(1); // > MAX_SLOTS
 /// ```
 ///
 /// ```compile_fail
@@ -288,6 +303,7 @@ impl<T, const SLOTS: usize, const EPOCHS: usize> ArcLend<T, SLOTS, EPOCHS> {
     /// compile the moment anything constructs one).
     const VALID: () = {
         assert!(SLOTS >= 1, "ArcLend needs at least one reader slot");
+        assert!(SLOTS <= MAX_SLOTS, "ArcLend: SLOTS exceeds MAX_SLOTS");
         assert!(
             EPOCHS >= 2,
             "ArcLend needs at least two epochs: with one, the current epoch \

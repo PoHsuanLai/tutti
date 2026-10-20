@@ -90,7 +90,7 @@ against the version named; the sources are cited under [Sources](#sources).
 | | Reader holds | Reader frees? | Reader allocates? | Reader waits? | Writer waits on readers? | Readers |
 |---|---|---|---|---|---|---|
 | **arc-lend** | a borrow | never | never | no (wait-free) | only on a reader mid-lend, never on a held loan | any |
-| `arc-swap` 1.9.3 `load` | a `Guard`, which a store can promote to an owned `Arc` | yes, if its guard was promoted and is the last owner | on a thread's first load (a debt node) | lock-free; wait-free almost always | no | any |
+| `arc-swap` 1.9.3 `load` | a `Guard`, which a store can promote to an owned `Arc` | yes, if its guard was promoted and is the last owner | on a thread's first load, if no free debt node exists (`debt/list.rs:169`) | lock-free; wait-free almost always | no | any |
 | `basedrop` 0.1.3 `SharedCell` | an owned `Shared<T>` | no: the last drop queues it for a `Collector` | no | no | yes: `replace` spins until no reader is mid-`get` | any |
 | Firewheel 0.14 `ArcGc` | an owned `ArcGc<T>` | no: a registry keeps a count until `collect` | no | no | n/a: a pointer type, swapped by other means; registering takes a global mutex | any |
 | `left-right` 0.11.8 | a borrow (`ReadGuard`) | no | no (a `ReadHandle` allocates once, when made) | no | yes: `publish` waits for every reader to leave the old copy | one handle per reader |
@@ -101,9 +101,10 @@ against the version named; the sources are cited under [Sources](#sources).
 
 ### When to prefer something else
 
-- **`arc-swap`** is the better general-purpose cell. Its loads are cheaper
-  than a lend, it has a far larger API (`rcu`, `compare_and_swap`, `Cache`,
-  `Access` projections) and years of use. If the reader may free, or a
+- **`arc-swap`** is the better general-purpose cell. Its uncontended loads
+  cost about what a lend does (see benches, E2), it has a far larger API
+  (`rcu`, `compare_and_swap`, `Cache`, `Access` projections) and years of
+  use. If the reader may free, or a
   thread's first load may allocate, it is the right choice. It can also be
   made safe for a deadline by discipline: prewarm each reader thread, and
   have the writer keep retired `Arc`s until their count is one. arc-lend
@@ -148,7 +149,7 @@ the epoch word, and the retired list.
 `ArcLend<T, SLOTS = 8, EPOCHS = 4>`. `SLOTS` is how many loans of one cell
 can be live before lends take the coarser overflow path; `EPOCHS` is how
 many overflow epochs the cell cycles through. Both are checked at compile
-time (`SLOTS ≥ 1`, `2 ≤ EPOCHS ≤ 64`). The defaults suit a few reader
+time (`1 ≤ SLOTS ≤ 1024`, `2 ≤ EPOCHS ≤ 64`). The defaults suit a few reader
 threads with one loan each.
 
 ## Guides

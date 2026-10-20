@@ -230,8 +230,12 @@ Rules:
   as the `ArcSwap::load` it replaced, and ~25 ns against a publisher hammering
   the cell (arc-swap: ~41 ns) — `arc-lend`'s `benches/lend.rs` (measured when
   it was `tutti-types`' `benches/rt_publish_read.rs`).
-- **Never park a `Loan`** in a struct field or hold one across blocks (now a
-  compile error rather than a review rule).
+- **Never park a `Loan`** in a struct field or hold one across blocks. The
+  type enforces only part of this: a `Loan` is `!Send` and borrows the cell,
+  so it stays on one thread and cannot outlive the cell, but a struct with a
+  lifetime can still hold one across blocks. In debug builds, tutti's
+  `debug_check_reclaiming` at the busiest publish sites panics once a cell
+  holds back `PARKED_LOAN_LIMIT` (1024) retired values.
 - **Avoid nested lends** — several live `Loan`s into the same cell. Each
   occupies one of the cell's reader slots; past them a lend registers in an
   overflow *epoch* instead, which is just as wait-free and allocation-free for
@@ -242,7 +246,10 @@ Rules:
   const parameters, `ArcLend<T, SLOTS = 8, EPOCHS = 4>`; the engine uses the
   defaults — don't code against a number.) The cell neither asserts nor logs
   when parked loans stall reclamation; `retired_len()` and `epoch_stalls()`
-  are there for a host to poll with its own policy.
+  are there for a host to poll with its own policy. tutti's is
+  `tutti_types::debug_check_reclaiming`, called after the two publishes a
+  drag repeats every frame (an automation lane's program, a sampler voice's
+  placement): a debug build panics once 1024 retired values are waiting.
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
 - Nullable hot-swap slots go through `ArcLend` as well, as

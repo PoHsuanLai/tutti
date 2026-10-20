@@ -2389,7 +2389,8 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   taken off the reader's position) — moves the window there; a jump inside it
   costs nothing, and a reader a little past its end is caught up rather than
   moved.
-- **The no-tear protocol is `tutti_types::PosRing`'s**, beside `RtPublish`,
+- **The no-tear protocol is `tutti_types::PosRing`'s**, beside what was then
+  `RtPublish` (now the `arc-lend` crate's `ArcLend`),
   and checked the same way: its atomics become loom's under `--cfg loom`, and
   `tutti-types/tests/pos_ring_loom.rs` models a reader making two claims
   against a writer that pushes round the ring, retracts then pushes, and
@@ -3106,7 +3107,8 @@ same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
 anticipative partition for nodes with no live-input dependency, with export as
 its degenerate case.
 
-`RtPublish` under the parallel executor: its eight reader slots per cell share
+`RtPublish` (now `arc-lend`'s `ArcLend`, whose slot count is a const
+parameter) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
 bounce that line between them, and past eight concurrent readers the rest take
 the overflow epochs (safe and bounded, but coarser reclamation). If profiling
@@ -3117,8 +3119,9 @@ workers a reference, so only one reader touches the cell at all.
 
 That is how it landed: the executor reads the plan once per block on the
 calling thread and hands every worker `&Plan`; no worker reads an
-`RtPublish` cell for the plan. Nodes that read their own `RtPublish` cells
-still do so from whichever worker runs them, one read per block each.
+`ArcLend` cell (then `RtPublish`) for the plan. Nodes that lend their own
+`ArcLend` cells still do so from whichever worker runs them, one lend per
+block each.
 
 #### Phase 6, part (a): the parallel executor
 

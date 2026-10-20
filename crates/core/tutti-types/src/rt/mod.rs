@@ -44,12 +44,16 @@
 //!   threads: self-resetting activation counters and a ready list.
 //! - [`JobGate`] — lends a borrowed job to a pool's helper threads for one
 //!   call and returns only when every helper has let go of it.
+//! - [`debug_check_reclaiming`] — tutti's debug net for a parked
+//!   [`Loan`](crate::Loan): a debug build panics once a publish cell holds
+//!   back [`PARKED_LOAN_LIMIT`] retired values.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
 pub mod cell;
 pub mod denormals;
 pub mod job_gate;
+pub mod parked;
 pub mod pos_ring;
 pub mod range_cell;
 pub mod scope;
@@ -62,6 +66,7 @@ pub mod vec;
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use job_gate::JobGate;
+pub use parked::{debug_check_reclaiming, PARKED_LOAN_LIMIT};
 pub use pos_ring::{
     PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
 };

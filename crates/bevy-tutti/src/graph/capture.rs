@@ -91,6 +91,24 @@ impl CapturedControls {
         }
     }
 
+    /// Captures what the session keeps for a plugin it hosts
+    /// ([`tutti_session::HostedPlugin`]): an out-of-process plugin's
+    /// controls, else its meter cell (an in-process VST2 plugin's), else
+    /// nothing.
+    #[cfg(feature = "plugin")]
+    pub fn for_hosted(hosted: &tutti_session::HostedPlugin) -> Self {
+        match (hosted.controls(), hosted.meter()) {
+            (Some(controls), _) => Self {
+                plugin: Some(controls.clone()),
+                plugin_meter: None,
+            },
+            (None, meter) => Self {
+                plugin: None,
+                plugin_meter: meter.cloned(),
+            },
+        }
+    }
+
     /// Binds `entity` to `node`: inserts [`AudioNode`] and every captured control.
     ///
     /// The whole binding in one step, which is how every insertion path in this

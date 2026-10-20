@@ -20,9 +20,7 @@ use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
 };
 use bevy_tutti::modulation::{ParamRef, TuttiModulationPlugin};
-use bevy_tutti::plugin_host::{
-    PluginLoadTerminated, PluginParamValues, PluginRequest, TuttiHostingPlugin,
-};
+use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::{ClickState, Transport};
 use tutti_core::AudioNode;
@@ -73,10 +71,12 @@ fn load(app: &mut App, path: std::path::PathBuf) -> Entity {
     loop {
         let world = app.world();
         let loaded = world.get::<PluginLoadTerminated>(entity).is_some()
-            && world.get::<AudioNode>(entity).is_some()
-            && world
-                .get::<PluginParamValues>(entity)
-                .is_some_and(PluginParamValues::is_ready);
+            && world.get::<AudioNode>(entity).is_some_and(|&node| {
+                world
+                    .resource::<AudioGraphRes>()
+                    .with_plugin(node, |p| p.param_values().is_some_and(|m| m.is_ready()))
+                    == Some(true)
+            });
         if loaded {
             break;
         }
@@ -117,7 +117,8 @@ fn knob_of(app: &mut App, target: ParamRef) -> f32 {
 /// modulated one (`0.5012`).
 ///
 /// Mutations (run), each fails: the knob seeded at the range's bottom
-/// (`Declared::plugin_value` answering `Some(Some(0.0))`: the knob check);
+/// (the session's `ModHostOver` answering `Some(Some(0.0))` for a plugin
+/// parameter: the knob check);
 /// a lane handing the editor no fork source (`fork: None` in
 /// `ControlLaneNode::into_parts`: the export is refused as not forkable);
 /// a lane's fork starting its knob at 0, not the live knob (`fork_fresh`:
@@ -259,9 +260,9 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
 /// callback, and the next frame writes it into the lane's knob on
 /// parameter 0, leaving parameter 1's knob where the plugin started it.
 ///
-/// Mutations (run), each fails: `plugin_param_edits` not writing the knob
-/// (the mirror alone: parameter 0's knob stays 0); writing every edit to
-/// parameter 1's knob (parameter 0's stays 0).
+/// Mutations (run), each fails: the session's `Phase::Plugins` not writing
+/// the knob (the mirror alone: parameter 0's knob stays 0); writing every
+/// edit to parameter 1's knob (parameter 0's stays 0).
 #[cfg(feature = "vst2")]
 #[test]
 fn a_plugin_gui_edit_becomes_the_knob() {
@@ -320,12 +321,12 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     let state = app.world().resource::<AudioGraphRes>().modulation();
     assert_eq!(state.lane(p0).expect("a lane").1.knob(), Some(0.5));
     assert_eq!(state.lane(p1).expect("a lane").1.knob(), Some(1.0 / 16.0));
+    let node = *app.world().get::<AudioNode>(plugin).expect("bound");
     assert_eq!(
         app.world()
-            .get::<PluginParamValues>(plugin)
-            .expect("the mirror")
-            .get(0),
-        Some(Some(0.5)),
+            .resource::<AudioGraphRes>()
+            .with_plugin(node, |p| p.param_values().expect("the mirror").get(0)),
+        Some(Some(Some(0.5))),
         "and the mirror"
     );
 }

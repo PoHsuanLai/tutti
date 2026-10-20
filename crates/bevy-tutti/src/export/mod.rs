@@ -1,9 +1,10 @@
 //! Offline export, driven from the ECS (feature `export`).
 //!
-//! `tutti-export` is synchronous and spawns no threads. This module runs it
-//! off the main thread for a Bevy host: it carries the engine's own `ExportConfig` as a
-//! component, runs the synchronous call on Bevy's `AsyncComputeTaskPool`, and
-//! reports the result as an entity event.
+//! The session exports (`tutti_session::Session::export`: a job that is
+//! `Send` and blocks, and `finish_export` on the main thread). This module
+//! runs it for a Bevy host: it carries the engine's own `ExportConfig` as a
+//! component, runs the job on Bevy's `AsyncComputeTaskPool`, and reports the
+//! result as an entity event.
 //!
 //! An export is an **entity**: spawn a request, observe the result on that same
 //! entity, where the code that knows what the render was for still has scope.
@@ -161,7 +162,7 @@ pub use request::{
 // The engine types this module's API hands out, so a host names them without
 // depending on the crates they come from: the graph a `prepare` hook edits,
 // and what an `ExportError` carries.
-pub use run::{poll_exports, start_exports, ExportDrops};
+pub use run::{poll_exports, start_exports};
 pub use tutti_export::RenderGraph;
 pub use tutti_graph::{ForkCause, ForkFaultKind};
 pub use tutti_types::NodeKey;
@@ -193,7 +194,7 @@ impl Plugin for ExportPlugin {
         // render's completion in the same frame it picks the next request, so
         // a queue of them drains at one per frame with no idle gap. The cost is
         // only that a just-finished render reports on the following frame.
-        app.init_resource::<ExportDrops>().add_systems(
+        app.add_systems(
             Update,
             (
                 poll_exports,

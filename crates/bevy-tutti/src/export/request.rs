@@ -3,23 +3,38 @@
 //! An export is an **entity**: spawn one carrying [`ExportRequest`], and either
 //! observe [`ExportDone`] on it or watch for [`ExportInFlight`] to clear.
 //!
-//! Everything here is either a Bevy component or a type `tutti-export` already
-//! owns — `ExportConfig`, `Written`, `Rendered`, `Normalize`, `RenderClock`
-//! and `RenderGraph` all arrive verbatim from the engine — with one
-//! exception, [`ExportError`]: the engine names a node that failed an export
-//! by its graph key, and only the adapter knows which entity that is.
+//! The render itself is the session's (`tutti_session::Session::export`):
+//! this module's types are what a Bevy host spawns and observes. The target,
+//! output, clock and the prepared graph are the session's own
+//! ([`ExportTarget`], [`ExportOutput`], [`ExportClock`], [`PreparedGraph`],
+//! [`PrepareEdit`]), re-exported here. What the adapter adds: a source named
+//! by entity ([`ExportSource`]), a `prepare` hook that reads the `World`
+//! ([`PrepareGraph`]), and [`ExportError`]: the engine names a node that
+//! failed an export by its graph key, and only the adapter knows which
+//! entity that is.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 
-use tutti_export::{ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written};
+use tutti_export::{ExportConfig, RenderClock};
 use tutti_graph::{ForkCause, ForkFaultKind};
 use tutti_types::{NodeKey, Samples};
 
-use tutti_core::transport::OfflineTransport;
+/// The session's: the time an export renders in.
+pub use tutti_session::ExportClock;
+/// The session's: what an export produced.
+pub use tutti_session::ExportOutput;
+/// The session's: where the rendered audio goes.
+pub use tutti_session::ExportTarget;
+/// The session's: the edit half of a [`PrepareGraph`] hook, run on the
+/// worker once the fork is built.
+pub use tutti_session::PrepareEdit;
+/// The session's: the graph a [`PrepareGraph`] hook's edit receives.
+pub use tutti_session::PreparedGraph;
+
+use super::run::NodeNames;
 
 /// Which audio to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,26 +74,6 @@ pub enum ExportSource {
     /// and recompute next frame, rather than spawning all of them and hoping
     /// for an ordering this crate does not promise.
     Node(Entity),
-}
-
-/// Where the rendered audio goes.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ExportTarget {
-    /// Encode to a file.
-    ///
-    /// `normalize: None` streams — the encoder pulls the graph a block at a
-    /// time and no PCM is held whole. `Some(..)` is a **two-pass** render:
-    /// the whole signal is held in memory so a gain can be measured from it.
-    /// The choice is visible at the call site because the cost differs.
-    File {
-        /// Where to write. A cancelled render may leave a partial file here.
-        path: PathBuf,
-        /// `None` streams; `Some` measures a gain over the whole signal first,
-        /// which costs holding it all in memory.
-        normalize: Option<Normalize>,
-    },
-    /// Render into memory, one `Vec` per channel.
-    Buffers,
 }
 
 /// Spawn an entity with this to run an export.
@@ -195,107 +190,6 @@ impl ExportRequest {
     }
 }
 
-/// The time an export renders in: the clock the renderer advances and the
-/// timeline every transport-aware node reads, as **one** value, so there is
-/// no way to hand a render one and its nodes another (a playhead nothing
-/// moves, or a clock nothing reads).
-///
-/// - [`frozen`](Self::frozen): no musical time — a graph with nothing
-///   placed on a timeline (an effect tail, a synth patch, a test tone). The
-///   renderer's transport is stopped at beat 0, and the nodes are rebound
-///   onto a timeline stopped at beat 0 too: a clip reader plays nothing
-///   rather than replay its first block.
-/// - [`timeline`](Self::timeline): an `OfflineTimeline` (or any clock that
-///   is also an `OfflineClock`: never the live transport), seeded at the tempo and beat to render from, at
-///   the render's rate. The renderer advances it; the nodes read it.
-#[derive(Clone)]
-pub struct ExportClock(Clock);
-
-#[derive(Clone)]
-enum Clock {
-    Frozen,
-    Timeline {
-        clock: Arc<dyn RenderClock>,
-        timeline: OfflineTransport,
-    },
-}
-
-impl ExportClock {
-    /// Creates a clock with no musical time; see the type docs.
-    pub fn frozen() -> Self {
-        Self(Clock::Frozen)
-    }
-
-    /// Creates a clock that renders against `timeline`: the renderer advances it, and every
-    /// transport-aware node is rebound onto it. One argument, because they
-    /// are the same object — the only configuration that is ever correct.
-    pub fn timeline<T>(timeline: Arc<T>) -> Self
-    where
-        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
-    {
-        Self(Clock::Timeline {
-            clock: timeline.clone() as Arc<dyn RenderClock>,
-            timeline: OfflineTransport::new(timeline),
-        })
-    }
-
-    /// What the renderer advances.
-    pub(crate) fn render_clock(&self) -> Arc<dyn RenderClock> {
-        match &self.0 {
-            Clock::Frozen => Arc::new(tutti_core::transport::FrozenClock),
-            Clock::Timeline { clock, .. } => Arc::clone(clock),
-        }
-    }
-
-    /// What the nodes are rebound onto.
-    pub(crate) fn offline(&self) -> OfflineTransport {
-        match &self.0 {
-            Clock::Frozen => OfflineTransport::new(Arc::new(Stopped)),
-            Clock::Timeline { timeline, .. } => timeline.clone(),
-        }
-    }
-}
-
-impl Default for ExportClock {
-    /// [`frozen`](Self::frozen).
-    fn default() -> Self {
-        Self::frozen()
-    }
-}
-
-impl std::fmt::Debug for ExportClock {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Clock::Frozen => f.write_str("ExportClock::Frozen"),
-            Clock::Timeline { .. } => f.write_str("ExportClock::Timeline(..)"),
-        }
-    }
-}
-
-/// [`ExportClock::frozen`]'s timeline: stopped at beat 0, what
-/// `FrozenClock` hands the renderer. Its tempo is never read by a stopped
-/// transport's consumers; 120 BPM is the engine's default.
-struct Stopped;
-
-/// The frozen render's timeline: only the render reads it.
-impl tutti_core::transport::OfflineClock for Stopped {}
-
-impl tutti_core::Timeline for Stopped {
-    fn beat(&self) -> tutti_core::Beat {
-        tutti_core::Beat(0.0)
-    }
-    fn tempo(&self) -> tutti_core::Bpm {
-        tutti_core::Bpm(120.0)
-    }
-    fn is_rolling(&self) -> bool {
-        false
-    }
-    fn segment_generation(&self) -> u64 {
-        // Never moves, so never jumps.
-        0
-    }
-}
-
 impl std::fmt::Debug for ExportRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `dyn RenderClock` is not Debug.
@@ -322,19 +216,29 @@ impl std::fmt::Debug for ExportRequest {
 /// entities, but is not needed for safety.
 #[derive(Component)]
 pub struct ExportInFlight {
-    task: Task<Result<ExportOutput, ExportError>>,
+    task: Task<tutti_session::ExportRendered>,
+    /// The node bindings when the render started, which name a node a
+    /// failure is about.
+    names: NodeNames,
 }
 
 impl ExportInFlight {
-    pub(crate) fn new(task: Task<Result<ExportOutput, ExportError>>) -> Self {
-        Self { task }
+    pub(crate) fn new(task: Task<tutti_session::ExportRendered>, names: NodeNames) -> Self {
+        Self { task, names }
     }
 
-    /// The finished export's result. Its graph, or what of it was built, has
-    /// gone to [`ExportDrops`](super::ExportDrops) by then, for
-    /// `poll_exports` to drop on the main thread.
-    pub(crate) fn poll(&mut self) -> Option<Result<ExportOutput, ExportError>> {
-        bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
+    /// An in-flight export with no node bindings, for this crate's tests.
+    #[cfg(test)]
+    pub(crate) fn for_test(task: Task<tutti_session::ExportRendered>) -> Self {
+        Self::new(task, NodeNames::default())
+    }
+
+    /// The finished job's return, for `Session::finish_export` on the main
+    /// thread, with the names its errors map through.
+    pub(crate) fn poll(&mut self) -> Option<(tutti_session::ExportRendered, &NodeNames)> {
+        let done =
+            bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))?;
+        Some((done, &self.names))
     }
 
     /// Aborts the render, discarding whatever it has done so far.
@@ -348,31 +252,24 @@ impl ExportInFlight {
     ///
     /// Whatever the export holds, whenever it is cancelled (before its fork
     /// is built, or mid-render: a render already running finishes its poll
-    /// first), goes to [`ExportDrops`](super::ExportDrops) and is dropped by
-    /// the next `poll_exports`, on the main thread, where a forked in-process
-    /// VST2 plugin in it must close.
+    /// first), goes back to the session and is dropped by its next
+    /// `Phase::Collect` (the frame's commit), on the main thread, where a
+    /// forked in-process VST2 plugin in it must close. The export's token
+    /// goes with the task, so the next frame's
+    /// [`plugin_render_mode`](crate::plugin_host::plugin_render_mode) tells
+    /// the hosted plugins `Realtime`.
     ///
     /// **At shutdown**, an export still in flight when the world (and its
-    /// [`ExportDrops`](super::ExportDrops)) is dropped has nowhere to send
-    /// what it holds when its task finishes or is dropped, and drops it where
-    /// it is: on a pool thread, for a pinned in-process VST2 fork a close off
-    /// the main thread. Nothing here waits for in-flight exports on exit (a
-    /// render can run for minutes, and an exit should not); a host with such
-    /// a plugin in its exports keeps updating until they have reported
-    /// (`ExportInFlight` gone; a finished export's graph is dropped by the
-    /// `poll_exports` that reports it) before it drops the world.
+    /// session) is dropped has nowhere to send what it holds when its task
+    /// finishes or is dropped, and drops it where it is: on a pool thread,
+    /// for a pinned in-process VST2 fork a close off the main thread.
+    /// Nothing here waits for in-flight exports on exit (a render can run
+    /// for minutes, and an exit should not); a host with such a plugin in
+    /// its exports keeps updating until they have reported (`ExportInFlight`
+    /// gone) before it drops the world.
     pub fn cancel(self) {
         drop(self.task);
     }
-}
-
-/// What an export produced.
-#[derive(Debug)]
-pub enum ExportOutput {
-    /// From [`ExportTarget::File`].
-    File(Written),
-    /// From [`ExportTarget::Buffers`].
-    Buffers(Rendered),
 }
 
 /// Triggered on the request entity when its render finishes — successfully or
@@ -510,53 +407,6 @@ impl std::fmt::Display for ExportNode {
     }
 }
 
-/// The graph an export is about to render, handed to the edit half of the
-/// caller's [`PrepareGraph`] hook on the compute pool, once the fork is built.
-///
-/// The hook reads `&World` in the frame the export starts and returns the
-/// edit that receives this. Two things need it, and neither is something this
-/// crate can do on the caller's behalf:
-///
-/// - **Filling voices.** A fork of a voice pool is born *empty* — an empty
-///   pool at its width, with no command queue — so nothing a pool played
-///   makes a sound until something re-inserts its voices. The data needed to
-///   do that (which clips exist, their decoded audio) lives in the app's ECS.
-/// - **Shaping the output.** Widening the graph to the master's channel count
-///   and pointing a node at the output, say — policy about what "the export"
-///   means, which differs per host.
-///
-/// `graph` is the engine's own [`RenderGraph`]: the fork's own editor and
-/// executor, already installed. Edit a fork through `graph.editor_mut()`
-/// (insert nodes, `spec_mut`); the adapter commits whatever the hook leaves,
-/// and a commit the fork refuses fails the export with the reason. A fork's
-/// units are on its executor by the time the hook runs, so a unit already in
-/// it cannot be reached to refill: insert a new one instead.
-///
-/// `ctx` is the render's offline transport, which every node in the fork was
-/// rebound onto. Voices built here must bind to it, not to the live one, or
-/// they read a playhead nothing advances.
-pub struct PreparedGraph<'a> {
-    /// The graph about to be rendered. Mutate it here or not at all — the
-    /// render starts when the edit returns.
-    pub graph: &'a mut RenderGraph,
-    /// The render's offline transport, which the graph was rebound onto.
-    /// Voices built in the hook must bind to *this*, not the live transport.
-    pub ctx: &'a OfflineTransport,
-}
-
-impl PreparedGraph<'_> {
-    /// Returns a key no node in any graph this adapter builds holds, for a node the
-    /// hook inserts into a fork (`editor.insert(prepared.fresh_key(), ..)`).
-    ///
-    /// Minted as the live graph mints its own (from [`NodeKey::fresh`]'s
-    /// process-wide counter), so it cannot collide with a forked node's key, which is its
-    /// live node's; a hand-picked key such as `NodeKey(u64::MAX)` would
-    /// silently replace whatever node holds it.
-    pub fn fresh_key(&self) -> NodeKey {
-        NodeKey::fresh()
-    }
-}
-
 /// A caller's hook into the graph, in two halves: the hook runs on the
 /// **main thread in the frame the export starts**, reads what it needs from
 /// `&World`, and returns the **edit**, which runs on the compute pool once
@@ -607,15 +457,3 @@ impl PreparedGraph<'_> {
 /// *request* means the caller that knows what this graph needs is the one
 /// that says so.
 pub type PrepareGraph = Box<dyn Fn(&World) -> PrepareEdit + Send + Sync>;
-
-/// The edit half of a [`PrepareGraph`] hook: what it returns, run on the
-/// compute pool on the built fork.
-///
-/// **It runs on a pool thread**, and so do the `prepare` of every node it
-/// inserts and the drop of whatever it captured once it has run. It must not
-/// insert, prepare or capture a unit confined to the main thread (an
-/// in-process VST2 plugin: its load, `prepare` and close are the main
-/// thread's); such a node goes into the live graph, where the fork's gather
-/// builds it pinned on the main thread. An edit that never runs (the build
-/// failed, the export was cancelled) is dropped on the main thread.
-pub type PrepareEdit = Box<dyn for<'a> FnOnce(PreparedGraph<'a>) + Send>;

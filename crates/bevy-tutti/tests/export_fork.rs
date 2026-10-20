@@ -2198,8 +2198,8 @@ mod off_thread {
     /// Mutation (run, with `bevy_tasks/multi_threaded`): `fork_gather`
     /// leaving a pinned unit unprepared and the build preparing it (as a
     /// `ForkBuild::ready` one) → prepared on a pool thread → fails. Mutation
-    /// (run, threaded): `ToMain`'s drop dropping its value where it is
-    /// instead of sending it to `ExportDrops` → dropped on a pool thread →
+    /// (run, threaded): the session's `ToMain` drop dropping its value
+    /// where it is instead of sending it back → dropped on a pool thread →
     /// fails.
     #[test]
     fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
@@ -2228,17 +2228,17 @@ mod off_thread {
     /// gather) is despawned in the frame it starts, while its slow build
     /// waits (or before its task ever ran: a pool without threads has not
     /// polled it yet); once released, whatever the task held (the pending
-    /// fork, or the graph if the build had begun) goes to `ExportDrops`, and
-    /// a later `poll_exports` drops it on the main thread. No `ExportDone`
-    /// fires.
+    /// fork, or the graph if the build had begun) goes back to the session,
+    /// and a later `poll_exports` drops it on the main thread
+    /// (`Session::drop_export_leftovers`). No `ExportDone` fires.
     ///
     /// Bites only with a threaded pool; see the module docs.
     ///
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): `ToMain`'s drop
-    /// dropping its value where it is → the pinned unit drops on a pool
-    /// thread (or wherever the cancelled task is dropped) → fails. Mutation
-    /// (run): `poll_exports` not draining `ExportDrops` → the unit is never
-    /// dropped → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's
+    /// `ToMain` drop dropping its value where it is → the pinned unit drops
+    /// on a pool thread (or wherever the cancelled task is dropped) → fails.
+    /// Mutation (run): `poll_exports` not calling `drop_export_leftovers` →
+    /// the unit is never dropped → fails.
     #[test]
     fn a_cancelled_export_drops_its_fork_on_the_main_thread() {
         let mut graph = graph_on();
@@ -2351,10 +2351,10 @@ mod off_thread {
     ///
     /// Mutation (run): `NodeNames::name` passing a `ForkError::Source` through
     /// as `ExportError::Render` → the refusal names no entity → fails.
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task dropping a
-    /// failed build's `ForkRemains` where it is (`drop(remains)`) instead of
-    /// sending it to `ExportDrops` → the pinned unit drops on a pool thread
-    /// → fails.
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's
+    /// `ExportJob::run` dropping a failed build's `ForkRemains` where it is
+    /// (`drop(remains)`) instead of sending it back → the pinned unit drops
+    /// on a pool thread → fails.
     #[test]
     fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         let mut graph = graph_on();
@@ -2413,10 +2413,10 @@ mod off_thread {
     /// the failing build still returns before the edit, on the main thread,
     /// and the cancel comes after the export has run inside `spawn`.)
     ///
-    /// Mutation (run, with `bevy_tasks/multi_threaded`): the task capturing
-    /// the edit bare instead of in a `ToMain` → the failed build's witness
-    /// drops on a pool thread → fails. Mutation (run, threaded): the edit bare
-    /// but sent to `ExportDrops` on the failed-build path → the cancelled
+    /// Mutation (run, with `bevy_tasks/multi_threaded`): the session's job
+    /// holding the edit bare instead of in a `ToMain` → the failed build's
+    /// witness drops on a pool thread → fails. Mutation (run, threaded): the
+    /// edit bare but sent back on the failed-build path → the cancelled
     /// task's witness drops on a pool thread → fails.
     #[test]
     fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {

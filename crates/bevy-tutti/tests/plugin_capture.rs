@@ -1,29 +1,27 @@
-//! A hosted plugin, loaded through the real request pipeline, is driven through
-//! the shadow captured at load — never through the graph.
+//! A hosted plugin, loaded through the real request pipeline, is bound
+//! through the shadow captured at load, and its latency is the session's.
 //!
-//! `plugin_host::bind` and `plugin_host::latency` reach a plugin through its
-//! [`PluginShadow`]: the node's `PluginControls`, taken from the loaded client
-//! in `plugin_load_promote` (`CapturedControls::for_plugin`) before it is bound
-//! and moves into the graph. This file puts a real plugin behind that path —
-//! the reference CLAP plugin, loaded by a real `plugin-server` subprocess — and
-//! checks each consumer of the shadow did its job:
+//! `plugin_host::bind` reaches a plugin through its [`PluginShadow`]: the
+//! node's `PluginControls`, taken from the session's record in
+//! `plugin_load_promote` (`CapturedControls::for_hosted`). The latency is
+//! the session's `Phase::Plugins` (run by `plugin_health_poll`), which reads
+//! the same controls from the session's record (`HostedPlugin::controls`).
+//! This file puts a real plugin behind both paths — the reference CLAP
+//! plugin, loaded by a real `plugin-server` subprocess — and checks:
 //!
 //! - the shadow is there, bound to the entity's node;
 //! - the meter binding ran (`PluginMeterBound`), which it only does through
 //!   the shadow;
 //! - the graph plans PDC against the node's declared latency, and a latency
-//!   the plugin changes reaches it through the poll, which reads only the
-//!   shadow;
-//! - the MIDI target was captured too, from the plugin's own port.
+//!   the plugin changes reaches it through the phase;
+//! - the plugin's node has its event input (MIDI and automation).
 //!
 //! # Mutation
 //!
-//! Replacing `CapturedControls::for_plugin(&client)` in `plugin_load_promote`
-//! with `CapturedControls::default()` fails with every observation empty: no
-//! MIDI target, no shadow, so no meter bind, and the latency change never
-//! reaches the graph. Dropping only the `plugin` field of `for_plugin`
-//! (`plugin: None`) fails with the MIDI target still present and the others
-//! empty, which is how the test tells the two captures apart.
+//! Replacing `CapturedControls::for_hosted(hosted)` in `plugin_load_promote`
+//! with `CapturedControls::default()` fails with no shadow and no meter
+//! bind (run, failed); the latency still reaches the graph, which is the
+//! session's and no longer the shadow's (design 015 PR 6).
 //!
 //! # The two artifacts
 //!
@@ -82,7 +80,7 @@ fn app() -> App {
 }
 
 #[test]
-fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
+fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions() {
     let mut app = app();
     let entity = app
         .world_mut()
@@ -151,10 +149,10 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         "the graph plans PDC against the node's latency"
     );
 
-    // Idle frames after the load leave the graph clean: the poll compares
+    // Idle frames after the load leave the graph clean: the phase compares
     // the plugin's declared latency with the editor's own figure, and while
     // the two agree it edits nothing, so nothing is recompiled or
-    // republished frame after frame. Observed between the poll and the
+    // republished frame after frame. Observed between the phase and the
     // commit (which clears the session's edit flag), by a probe system
     // (`record_dirty`).
     //
@@ -165,7 +163,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     app.add_systems(
         Update,
         record_dirty
-            .after(bevy_tutti::plugin_host::plugin_latency_poll)
+            .after(bevy_tutti::plugin_host::plugin_health_poll)
             .before(GraphReconcileSystems::Commit),
     );
     for _ in 0..5 {
@@ -178,12 +176,13 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     );
 
     // A latency change after load — what a plugin's `latency.changed`
-    // delivers into its cell — reaches the graph through the poll: a `Shape`
+    // delivers into its cell — reaches the graph through the phase: a `Shape`
     // change at the next commit. That is the one path: the editor read the
     // node's shape at insert and holds that figure until told.
     //
-    // Mutation (run): the poll not calling `refresh_node_latency` → the graph
-    // keeps planning against the load-time figure, and this fails.
+    // Mutation (run, failed): `Phase::Plugins` not calling
+    // `refresh_node_latency` → the graph keeps planning against the
+    // load-time figure.
     app.world()
         .get::<PluginShadow>(entity)
         .and_then(|s| s.controls_for(&AudioNode(node)))
@@ -199,7 +198,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     );
 
     // A figure past what PDC compensates is clamped, not refused: the editor
-    // refuses one past `MAX_NODE_LATENCY` outright, and the poll would not
+    // refuses one past `MAX_NODE_LATENCY` outright, and the phase would not
     // ask again until the plugin's figure moved.
     //
     // Mutation (run): dropping the clamp in the session's `clamp_latency` → the editor
@@ -219,7 +218,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     );
 }
 
-/// Frames on which the session's edit flag was set between the latency poll
+/// Frames on which the session's edit flag was set between the plugins phase
 /// and the commit.
 #[derive(bevy_ecs::prelude::Resource, Default)]
 struct DirtySeen(usize);
@@ -267,8 +266,8 @@ fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
 
 /// A crossfaded plugin is bound again: the incoming `PluginClient` gets the
 /// meter installed, (with modulation) a lane on one of its parameters feeds
-/// the incoming plugin's event input, and the latency poll follows the
-/// incoming plugin's figure.
+/// the incoming plugin's event input, and the session's latency follows the
+/// incoming plugin's figure (its record moves to the incoming plugin).
 ///
 /// The meter binding latches on `PluginMeterBound`, which describes the
 /// *outgoing* client. A crossfade keeps the entity and its markers, so
@@ -279,9 +278,10 @@ fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
 ///
 /// Deleting the marker-clearing block at the top of
 /// `CapturedControls::replace` fails the meter assertion: the incoming
-/// client's slot stays empty. Not replacing the shadow at all
-/// (dropping the `plugin` arm of `replace`) fails the latency assertion too,
-/// since the poll keeps reading the outgoing client's cell.
+/// client's slot stays empty (run, failed). The session's
+/// `Graph::replace_plugin` not moving its record to the incoming plugin
+/// (`HostedPlugin::replace` skipped) fails the latency assertion: the phase
+/// keeps reading the outgoing client's cell (run, failed).
 #[test]
 fn a_crossfaded_plugin_is_bound_again() {
     let mut app = app();
@@ -307,8 +307,8 @@ fn a_crossfaded_plugin_is_bound_again() {
     #[cfg(feature = "modulation")]
     lane_of(&mut app, gain);
 
-    // A second instance of the probe, told a different latency so the poll's
-    // record says which client it read.
+    // A second instance of the probe, told a different latency so the
+    // phase's figure says which client it read.
     let incoming = tutti_plugin::handles::PluginClient::new(
         tutti_plugin::BridgeConfig::default(),
         clap_probe(),
@@ -350,13 +350,13 @@ fn a_crossfaded_plugin_is_bound_again() {
         "the graph plans against the incoming plugin's declared latency"
     );
     // And a later change of the incoming plugin's latency is the one the
-    // poll hands the graph: it reads the incoming plugin's shadow.
+    // phase hands the graph: it reads the incoming plugin's controls.
     controls.set_latency(Samples(INCOMING_LATENCY + 7));
     app.update();
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
         Samples(INCOMING_LATENCY + 7 + CHUNK),
-        "the latency poll must read the incoming plugin"
+        "the latency phase must read the incoming plugin"
     );
 
     // And when the node goes — the dead-plugin teardown takes `AudioNode` off

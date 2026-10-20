@@ -33,8 +33,9 @@ use tutti_core::AudioNode;
 use tutti_export::{ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written};
 use tutti_types::{NodeKey, Samples};
 
+use crate::graph::AudioNodeTarget;
 use crate::graph::PendingExport;
-use crate::{AudioNodeTarget, Error, Session};
+use crate::{Error, Session};
 
 /// Which audio an export renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,6 +634,17 @@ impl Session {
     pub fn export_blocking(&mut self, request: ExportRequest) -> crate::Result<ExportOutput> {
         let job = self.export(request)?;
         self.finish_export(job.run())
+    }
+
+    /// Drops, here, what exports sent back so far: what a dropped job or a
+    /// dropped return held (its fork, a hook's edit). `Phase::Collect` (each
+    /// [`update`](Self::update)) and [`finish_export`](Self::finish_export)
+    /// do this; a host that polls its exports on a frame of its own calls it
+    /// there. A main-thread call: a forked in-process VST2 plugin closes
+    /// when dropped.
+    pub fn drop_export_leftovers(&mut self) {
+        crate::main_thread();
+        self.export.drop_leftovers();
     }
 
     /// Whether an export is in flight: its job or what it returned is

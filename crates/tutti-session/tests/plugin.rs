@@ -198,7 +198,11 @@ fn a_dropped_export_job_restores_realtime_on_the_next_update() {
     let job = s.export(request(ExportSource::Mix)).expect("starts");
     await_latency(&s, node, offline, "the job's export is in flight");
     drop(job);
-    assert_eq!(s.render_mode(), RenderMode::Offline, "nothing told on a drop");
+    assert_eq!(
+        s.render_mode(),
+        RenderMode::Offline,
+        "nothing told on a drop"
+    );
     s.update();
     assert!(!s.export_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
@@ -307,8 +311,14 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     let died = plugins_at(&mut s, 60);
     assert_eq!(died.len(), 1, "one report: {died:?}");
     assert_eq!(died[0].0, node);
-    assert!(!died[0].1.is_empty(), "the engine's cause, not a placeholder");
-    assert!(!s.graph_ref().contains(node), "the dead plugin's node is removed");
+    assert!(
+        !died[0].1.is_empty(),
+        "the engine's cause, not a placeholder"
+    );
+    assert!(
+        !s.graph_ref().contains(node),
+        "the dead plugin's node is removed"
+    );
     assert!(s.plugin(node).is_none(), "and its record");
 
     assert!(plugins_at(&mut s, 200).is_empty(), "reported once");

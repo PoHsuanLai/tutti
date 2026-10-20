@@ -641,7 +641,7 @@ impl Graph {
     /// What `RenderGraph::gather` refuses (a node with no outputs or not in
     /// the graph, a node that cannot be forked).
     #[cfg(feature = "export")]
-    pub fn gather_for_export(
+    pub(crate) fn gather_for_export(
         &self,
         target: AudioNodeTarget,
         ctx: &tutti_core::transport::OfflineTransport,
@@ -1503,7 +1503,7 @@ fn render(
 /// What an export renders: the whole graph, or one node's sub-graph.
 #[cfg(feature = "export")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioNodeTarget {
+pub(crate) enum AudioNodeTarget {
     /// The master: every global output.
     Master,
     /// `node`'s outputs.
@@ -1681,7 +1681,7 @@ impl AudioSide {
 /// ([`Graph::gather_for_export`]) and not yet built: `Send`, holding nothing
 /// of the live graph.
 #[cfg(feature = "export")]
-pub struct PendingExport {
+pub(crate) struct PendingExport {
     fork: tutti_graph::PendingFork,
     pool: Option<Arc<dyn tutti_graph::Pool>>,
 }
@@ -1695,7 +1695,7 @@ impl PendingExport {
     ///
     /// A deferred fork source's failure, or a fork that does not commit,
     /// with what was built, to drop on the main thread.
-    pub fn build(
+    pub(crate) fn build(
         self,
     ) -> Result<tutti_export::RenderGraph, (tutti_export::Error, tutti_graph::ForkRemains)> {
         let mut graph = tutti_export::RenderGraph::build(self.fork)?;

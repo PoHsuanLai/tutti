@@ -163,8 +163,6 @@ pub struct Declared<'w, 's> {
     automation: Query<'w, 's, (&'static Automation, Option<&'static AutomationTake>)>,
     nodes: Query<'w, 's, &'static AudioNode>,
     entities: &'w bevy_ecs::entity::Entities,
-    #[cfg(feature = "plugin")]
-    plugins: Query<'w, 's, &'static crate::plugin_host::PluginParamValues>,
 }
 
 /// The frame's declarations, owned.
@@ -262,18 +260,6 @@ impl Declared<'_, '_> {
 impl tutti_session::ModKeys for Declared<'_, '_> {
     fn node(&self, target: u64) -> Option<AudioNode> {
         self.node_of(Entity::try_from_bits(target)?)
-    }
-
-    fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>> {
-        let entity = Entity::try_from_bits(target)?;
-        #[cfg(feature = "plugin")]
-        if let Ok(values) = self.plugins.get(entity) {
-            return values.get(id);
-        }
-        // A node no plugin load mirrors (a host's own node taking parameter
-        // events): no knob to start from.
-        let _ = (entity, id);
-        Some(None)
     }
 
     fn feed(&self, source: SourceKey) -> Option<Feed> {

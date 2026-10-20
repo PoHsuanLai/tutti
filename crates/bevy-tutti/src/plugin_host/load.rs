@@ -28,7 +28,7 @@
 //! [`PlaySoundFont`]: crate::soundfont::PlaySoundFont
 
 use bevy_ecs::prelude::*;
-use bevy_log::{error, info, warn};
+use bevy_log::{error, info};
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use tutti_core::SampleRate;
@@ -36,6 +36,7 @@ use tutti_plugin::catalog::Plugin;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
+use tutti_session::{PluginLoadRequest, PluginLoaded};
 
 use crate::graph::{AudioGraphRes, CapturedControls};
 use crate::plugin_host::editor::PluginEmitter;
@@ -58,6 +59,9 @@ const _: () = {
         assert_send::<PluginClient>();
         assert_send::<PluginHandle>();
         assert_send::<BridgeError>();
+        // The session's job and its result, which are what cross now.
+        assert_send::<tutti_session::PluginLoad>();
+        assert_send::<PluginLoaded>();
     }
     let _ = proof;
 };
@@ -144,7 +148,7 @@ impl Default for PluginRequest {
 /// promoter a task belonging to no request.
 #[derive(Component)]
 pub struct PendingPlugin {
-    task: Task<Result<Plugin, BridgeError>>,
+    task: Task<PluginLoaded>,
 }
 
 /// This entity's load attempt is finished — successfully or not — and must not
@@ -225,12 +229,18 @@ type LoadNotStarted = (
 pub fn plugin_load_start(
     mut commands: Commands,
     plugins: Option<Res<PluginsRes>>,
+    graph: Option<Res<AudioGraphRes>>,
     pending: Query<&PendingPlugin>,
     requests: Query<(Entity, &PluginRequest), LoadNotStarted>,
 ) {
     // Absent while a rescan owns the catalog, and until a host inserts one.
     // Requests simply wait — that is what the steady-state query buys.
     let Some(plugins) = plugins else {
+        return;
+    };
+    // The session makes the job; `engine_ready` gates this system on a
+    // value a host can insert alone.
+    let Some(graph) = graph else {
         return;
     };
 
@@ -244,16 +254,21 @@ pub fn plugin_load_start(
         }
         budget -= 1;
 
-        // Everything the worker needs, owned: `Plugin::open_with` is an
-        // associated function, so no borrow of the catalog outlives the frame
-        // while a subprocess takes half a second to fifteen to launch.
-        let audio = plugins.0.audio_config().clone();
-        let path = request.id.path().to_path_buf();
-        let sample_rate = request.sample_rate;
+        // The session's load job (`Session::plugin_load`), owning
+        // everything the worker needs: no borrow of the catalog outlives the
+        // frame while a subprocess takes half a second to fifteen to launch.
+        // The job restores the saved state and (`modulation`) reads the
+        // parameter values on the worker too.
+        let job = graph
+            .read()
+            .plugin_load(PluginLoadRequest {
+                id: request.id.clone(),
+                state: request.state.clone(),
+            })
+            .with_config(plugins.0.audio_config().clone())
+            .at_rate(request.sample_rate);
 
-        let task = AsyncComputeTaskPool::get().spawn(async move {
-            tutti_plugin::catalog::Plugin::open_with(&audio, &path, sample_rate)
-        });
+        let task = AsyncComputeTaskPool::get().spawn(async move { job.run() });
 
         commands.entity(entity).insert(PendingPlugin { task });
     }
@@ -268,67 +283,33 @@ pub fn plugin_load_start(
 pub fn plugin_load_promote(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut pending: Query<(Entity, &PluginRequest, &mut PendingPlugin)>,
+    mut pending: Query<(Entity, &mut PendingPlugin)>,
 ) {
     let Some(mut graph) = graph else {
         return;
     };
 
-    for (entity, request, mut slot) in pending.iter_mut() {
+    for (entity, mut slot) in pending.iter_mut() {
         let Some(result) = block_on(future::poll_once(&mut slot.task)) else {
             continue; // still loading
         };
 
-        let outcome = match result {
-            Ok(plugin) => {
-                // Split before the node moves into the graph: the node
-                // consumes the `Plugin`, and the handle has to outlive it.
-                let handle = plugin.handle().clone();
-                if let Some(blob) = &request.state {
-                    // A refusal does **not** abort the load: a plugin sitting at
-                    // its defaults is better than no plugin, and the user can
-                    // still re-dial it. But it must not be silent — this is a
-                    // project load, and a swallowed refusal shows the user a
-                    // restored plugin that restored nothing.
-                    if let Err(e) = handle.state().load_state(blob) {
-                        warn!(
-                            "{}: saved state was not restored ({e}); the plugin is \
-                             loaded at its defaults",
-                            handle.name()
-                        );
-                    }
-                }
+        let path = result.path().display().to_string();
+        // `Session::add_plugin`: the node goes in unwired, and its health,
+        // latency, render mode and (`modulation`) parameter mirror are the
+        // session's from here.
+        let outcome = match graph.session().add_plugin(result) {
+            Ok(node) => {
+                let hosted = graph
+                    .session()
+                    .plugin(node)
+                    .expect("`add_plugin` hosts what it inserts");
+                let handle = hosted.handle().clone();
+                // The shadow the binding systems drive comes from the
+                // session's record: an out-of-process plugin's controls, or
+                // an in-process VST2 plugin's meter.
+                let controls = CapturedControls::for_hosted(hosted);
                 let name = handle.name().to_string();
-                // Before the plugin moves into the graph: this is the last point
-                // the concrete `PluginClient` is in hand, and the shadow the
-                // binding systems drive (and the MIDI target) come from it.
-                //
-                // An out-of-process plugin is bound as it goes in
-                // (`PluginClient::bind`): a graph node, with its own fork
-                // source so an export can fork it (by state transfer). An
-                // in-process VST2 plugin goes in through its own `IntoNode`,
-                // which carries its fork source too (a second instance in this
-                // process, restored from the live one's state).
-                let (id, controls) = match plugin.into_client() {
-                    Ok(client) => {
-                        let controls = CapturedControls::for_plugin(&client);
-                        (graph.insert_plugin(client), controls)
-                    }
-                    Err(plugin) => {
-                        // Its one control, its meter, taken before it moves
-                        // in: the meter binding installs through it.
-                        let meter = plugin.meter();
-                        let (id, _) = graph.insert(*plugin);
-                        (id, CapturedControls::for_plugin_meter(meter))
-                    }
-                };
-
-                // After the saved state: its values are what a modulation
-                // lane's knob starts at.
-                #[cfg(feature = "modulation")]
-                commands
-                    .entity(entity)
-                    .insert(crate::plugin_host::read_plugin_params(&handle));
                 commands
                     .entity(entity)
                     .insert((PluginEmitter { handle }, PluginHealth::default()));
@@ -339,17 +320,14 @@ pub fn plugin_load_promote(
                 // landed yet.
                 commands
                     .entity(entity)
-                    .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, id));
+                    .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, node));
                 info!("plugin '{name}' loaded (entity {entity:?})");
                 Ok(())
             }
             Err(e) => {
                 // No `AudioNode` is inserted, so none of the teardown observers
                 // have anything to undo.
-                error!(
-                    "plugin '{}' failed to load: {e}",
-                    request.id.path().display()
-                );
+                error!("plugin '{path}' failed to load: {e}");
                 Err(e)
             }
         };

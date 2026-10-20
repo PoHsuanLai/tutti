@@ -70,8 +70,6 @@ pub use export::{
 };
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
-#[cfg(feature = "export")]
-pub use graph::{AudioNodeTarget, PendingExport};
 pub use graph::{
     AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Graph,
     GraphSource, ReplaceRefused, LIVE_MAX_BLOCK,

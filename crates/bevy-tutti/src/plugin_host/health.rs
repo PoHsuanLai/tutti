@@ -1,145 +1,87 @@
-//! Plugin health: liveness polling, proactive state snapshots, and teardown
-//! that does not block the frame.
+//! Plugin health, latency and state snapshots: the session's
+//! `Phase::Plugins`, run each frame, and what it reports placed on the
+//! entities (design 015 §4.4).
 //!
-//! # Why a state and not a bool
+//! # What the session does
 //!
-//! The engine reports liveness as [`tutti_plugin::handles::PluginStatus`] — a
-//! latched death plus the reason for it. That answers *whether* a plugin died
-//! and *why*, but not the condition this module exists for:
+//! [`tutti_session::Session`] keeps a record for each plugin it hosts
+//! (`tutti_session::HostedPlugin`) and its `Phase::Plugins` does the work:
 //!
-//! - **A failed call returns before the death is published.** The bridge marks
-//!   the crash on its own thread with a `Release` store, so a system that checks
-//!   immediately after a failed call can legitimately see the plugin alive.
-//!   Reacting to one observation races the publish.
-//! - **`Alive` does not mean healthy.** A peer that answers a `GetParameter`
-//!   with a well-formed reply of the *wrong kind* leaves the engine reporting
-//!   `Alive` while the call returns `None`. The engine documents this and
-//!   declines to model it, because how many failures over how long is a host's
-//!   policy — this module is that host.
+//! - **Liveness, debounced.** The engine reports a latched death plus its
+//!   cause ([`tutti_plugin::handles::PluginStatus`]); a failed call returns
+//!   before the death is published, and `Alive` does not mean healthy, so
+//!   one observation is not enough. `tutti-plugin`'s [`Liveness`] declares
+//!   a plugin dead after at least [`Liveness::DEATHS`] consecutive unhealthy
+//!   observations spanning at least [`Liveness::DEFAULT_WINDOW`] (50 ms), on
+//!   the wall clock each frame passes, so it holds at any frame rate. A
+//!   dead plugin's node is removed and reported once, with the engine's
+//!   cause.
+//! - **Latency.** A plugin may change its latency while loaded (a
+//!   linear-phase EQ switched into an oversampling mode); the figure its node
+//!   declares now (`PluginControls::declared_latency`) is handed to the
+//!   graph when it moved, so the next commit re-plans compensation.
+//! - **GUI edits** (`modulation`): what the plugin reports reaches the knob
+//!   of the lane on that parameter.
+//! - **Snapshots.** `save_state` short-circuits on the crash flag, so by the
+//!   time a host *knows* a plugin died its state is unreadable: a healthy
+//!   plugin's state is captured every
+//!   [`SNAPSHOT_INTERVAL`](tutti_session::SNAPSHOT_INTERVAL) (8 s, or the
+//!   session's `snapshot_interval`), as a job, one in flight at a time.
 //!
-//! So liveness is debounced, by `tutti-plugin`'s [`Liveness`]: dead after at
-//! least [`Liveness::DEATHS`] consecutive unhealthy observations spanning at
-//! least [`Liveness::DEFAULT_WINDOW`] (50 ms), reset by a healthy one.
-//! [`PluginLiveness::Failing`] mirrors the count and only
-//! [`PluginLiveness::Dead`] unwires. The window is measured on the wall clock
-//! each frame reads, not counted in frames, so it holds at any frame rate: a
-//! death lands on the first unhealthy frame at least 50 ms after the first
-//! (the 4th at a steady 60 Hz, later under jitter). The
-//! cost is that a genuinely dead plugin emits silence for a few extra frames —
-//! which it was emitting anyway, since a crashed bridge returns zeros rather
-//! than erroring.
+//! # What this module adds
 //!
-//! # Why the cause is read, not subscribed to
-//!
-//! `PluginHandle::on_invalidate` fires [`PluginInvalidation::Crashed`] with the
-//! same cause this module reports, and a callback would learn of a death
-//! sooner. It is deliberately not used, for the reason
-//! [`plugin_latency_poll`](super::latency::plugin_latency_poll) gives: a
-//! callback cannot touch the `World`, so it would need a channel and a drain
-//! system — a second route to a value the engine already owns and will hand
-//! over on request.
-//!
-//! Reading it here keeps one owner, and costs nothing: the engine latches the
-//! cause where the crash is noticed and `status()` returns it at any later
-//! time, so a subscriber would arrive earlier and still have to wait out the
-//! same debounce count.
-//!
-//! [`PluginInvalidation::Crashed`]: tutti_plugin::handles::PluginInvalidation::Crashed
-//!
-//! # Why snapshots have to be proactive
-//!
-//! `save_state` short-circuits on the crash flag and returns `None`. By the time
-//! a host *knows* a plugin died, its state is already unreadable. Anything a
-//! session wants to survive a crash must have been captured while the plugin was
-//! healthy, which is what [`plugin_state_snapshot`] does.
+//! [`plugin_health_poll`] runs the phase and places its reports:
+//! [`PluginHealth::status`] mirrors the session's belief; a death removes
+//! `AudioNode` (and the editor) from the entity that held the node, which
+//! is the whole ECS teardown; a latency change marks the graph changed; a
+//! snapshot job goes on `AsyncComputeTaskPool` (`save_state` is a blocking
+//! round trip with a ten-second timeout, which the frame thread must not
+//! wait out). [`plugin_state_snapshot`] lands finished jobs
+//! (`Session::land_snapshot`) and copies the stored bytes onto the
+//! component.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use bevy_ecs::prelude::*;
-use bevy_log::error;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
-// Aliased at the import rather than named in full at the use site: this module
-// defines its own `PluginStatus`-shaped type (`PluginLiveness`), and two types
-// one word apart in the same file is how a reader mistakes the host's belief
-// for the engine's observation.
-use tutti_plugin::handles::PluginStatus as EngineStatus;
-use tutti_plugin::{Liveness, Verdict};
+use tutti_core::AudioNode;
+#[cfg(doc)]
+use tutti_plugin::Liveness;
+use tutti_session::{Phase, PluginSnapshotTaken, SessionEvent};
 
-use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
+use crate::graph::AudioGraphRes;
+use crate::plugin_host::editor::PluginEditorOpen;
 
-/// Frames between state snapshots of a healthy plugin.
-///
-/// A frame counter rather than a `Timer`: `bevy_time` is not a dependency of
-/// this crate and nothing else in it is periodic, so a real clock would add both
-/// a dependency and a convention for one system. The exact cadence does not
-/// matter — this is a "something is better than nothing before a crash" backstop,
-/// not a scheduling guarantee. At 60fps this is roughly every eight seconds.
-const SNAPSHOT_INTERVAL_FRAMES: u32 = 512;
-
-/// What the host believes about a plugin's liveness.
-///
-/// Distinct from [`tutti_plugin::handles::PluginStatus`], which reports what the
-/// *engine* has observed: a latched death, or nothing yet. This adds the
-/// debounce between them — `Failing` is a belief [`Liveness`] forms by
-/// counting, and has no engine counterpart by design.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum PluginLiveness {
-    /// Answering normally.
-    #[default]
-    Healthy,
-    /// Recently unhealthy, but not yet written off — see the module docs on why
-    /// one observation is not enough.
-    Failing {
-        /// How many polls in a row have found the plugin unhealthy.
-        consecutive: u8,
-    },
-    /// Written off. The node has been unwired; the plugin is not coming back
-    /// without a fresh load, because the engine offers no relaunch.
-    ///
-    /// The cause comes from the engine's latch, so it names the actual failure
-    /// — a refused connection, a protocol mismatch, a dropped stream.
-    Dead {
-        /// The engine's description of the failure.
-        cause: String,
-    },
-}
+/// What the session believes about a plugin's liveness: `Healthy`,
+/// `Failing` (the debounce's count) or `Dead` (with the engine's cause).
+pub use tutti_session::PluginLiveness;
 
 /// Liveness and last-known-good state for one loaded plugin.
 ///
-/// Inserted by the load path alongside [`PluginEmitter`].
+/// Inserted by the load path alongside
+/// [`PluginEmitter`](crate::plugin_host::PluginEmitter).
 ///
 /// Not `Debug`: the in-flight snapshot is a `Task`, which is not.
 #[derive(Component, Default)]
 pub struct PluginHealth {
-    /// What this host believes about the plugin right now. Written only by
-    /// [`plugin_health_poll`]; a host reads it, or asks
+    /// What the session believes about the plugin right now. Written only
+    /// by [`plugin_health_poll`]; a host reads it, or asks
     /// [`is_dead`](Self::is_dead).
     pub status: PluginLiveness,
-    /// The debounce behind `status`: the run of unhealthy observations, and
-    /// when it began.
-    liveness: Liveness,
-    /// The most recent state captured while healthy, if any.
+    /// The most recent state captured while healthy, if any: a copy of the
+    /// session's (`HostedPlugin::snapshot`), which outlives the record when
+    /// the plugin dies.
     ///
-    /// Private: this is a snapshot [`plugin_state_snapshot`] maintains, and a
-    /// host that wrote to it would be claiming a plugin said something it did
-    /// not. Read it with [`snapshot`](Self::snapshot) to restore into a
-    /// replacement `PluginRequest`.
+    /// Private: a host that wrote to it would be claiming a plugin said
+    /// something it did not. Read it with [`snapshot`](Self::snapshot) to
+    /// restore into a replacement `PluginRequest`.
     last_snapshot: Option<Vec<u8>>,
-    /// Frames since the last snapshot attempt.
-    frames_since_snapshot: u32,
-    /// The snapshot currently being fetched, if one is in flight.
-    ///
-    /// `save_state` is a blocking round-trip with a **ten-second** timeout, so
-    /// it cannot run on the frame thread — see [`plugin_state_snapshot`]. This
-    /// holds it on the task pool the same way [`PendingPlugin`] holds a load.
-    ///
-    /// Also the concurrency guard: `Some` means "already asking", which is what
-    /// stops a plugin that takes longer than the interval from accumulating one
-    /// task per interval against a peer that is not answering.
-    ///
-    /// [`PendingPlugin`]: super::load::PendingPlugin
-    pending_snapshot: Option<Task<Result<Vec<u8>, tutti_plugin::error::StateError>>>,
+    /// The snapshot job on the task pool, if one is in flight. The session
+    /// asks for one at a time (the job holds its token), so this never
+    /// replaces a live task.
+    pending_snapshot: Option<Task<PluginSnapshotTaken>>,
 }
 
 impl PluginHealth {
@@ -170,170 +112,144 @@ impl PluginHealth {
 // happens when the graph releases the node — a graveyard only delays the socket
 // cleanup while keeping the process alive longer.
 //
-// **And that teardown must stay where it is.** The node is dropped by
-// `commit_graph`, which is pinned to the main thread with a `NonSendMarker`
-// precisely because an in-process plugin's `Drop` tears down a native editor
-// window, and AppKit/Win32/X11 teardown off-main is a crash rather than a
-// warning. Moving plugin drops anywhere else reintroduces the bug that marker
-// exists to prevent.
+// **And that teardown must stay where it is.** The node is dropped by the
+// session's `Phase::Collect`, on the main thread, because an in-process
+// plugin's `Drop` tears down a native editor window, and AppKit/Win32/X11
+// teardown off-main is a crash rather than a warning.
 //
 // The join is also far shorter than its worst case suggests: the bridge thread
 // parks with a one-millisecond timeout and the shutdown push unparks it
 // immediately, so it waits out only the command actually in flight. The
 // ten-second bound needs a `save_state` crossing the wire at that instant.
 
-/// Polls liveness, and unwires plugins that have failed often enough to be
-/// declared dead.
+/// Runs the session's `Phase::Plugins` at the frame's wall clock, and places
+/// what it reports (see the module docs).
 ///
-/// Removing `AudioNode` is the whole teardown: the `On<Remove, AudioNode>`
-/// observers take the node out of the graph and the sender off the MIDI bus.
-/// This system does not touch either, which is why it needs no
-/// `AudioGraphRes`.
+/// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)):
+/// the phase hands latencies to the graph's editor, which collects, and a
+/// dead plugin's removal may drop an in-process plugin with an editor.
+///
+/// Removing `AudioNode` from a dead plugin's entity is the ECS teardown: the
+/// session has already removed the node, and the `On<Remove, AudioNode>`
+/// observers take the sender off the MIDI bus (their graph removal is a
+/// no-op by then). Any entity holding the node is unwired, with or without
+/// a [`PluginHealth`] (a plugin a host inserted through
+/// [`AudioGraphRes::insert_plugin`] is watched too).
 pub fn plugin_health_poll(
+    _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,
-    mut plugins: Query<(Entity, &PluginEmitter, &mut PluginHealth)>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    mut plugins: Query<(Entity, &AudioNode, Option<&mut PluginHealth>)>,
 ) {
-    let now = Instant::now();
-    for (entity, plugin, mut health) in plugins.iter_mut() {
-        if health.is_dead() {
-            continue;
+    let Some(mut graph) = graph else {
+        return;
+    };
+    let events = graph
+        .bypass_change_detection()
+        .run_phase(Phase::Plugins, Instant::now());
+
+    let by_node: HashMap<AudioNode, Entity> = plugins
+        .iter()
+        .map(|(entity, node, _)| (*node, entity))
+        .collect();
+    // The session's belief, onto each component; written only when it moved,
+    // so `Changed<PluginHealth>` means a change.
+    {
+        let session = graph.bypass_change_detection().session();
+        for (_, node, health) in &mut plugins {
+            let (Some(mut health), Some(hosted)) = (health, session.plugin(*node)) else {
+                continue;
+            };
+            if health.status != *hosted.liveness() {
+                health.status = hosted.liveness().clone();
+            }
         }
-        let cause = match plugin.handle.status() {
-            EngineStatus::Dead { cause } => Some(cause),
-            _ => None,
-        };
-        match health
-            .bypass_change_detection()
-            .liveness
-            .observe(cause.is_none(), now)
-        {
-            // Any healthy observation resets the count: the debounce is for
-            // *consecutive* failures, and a single late reply is not a death.
-            Verdict::Healthy => {
-                if health.status != PluginLiveness::Healthy {
-                    health.status = PluginLiveness::Healthy;
+    }
+
+    for event in events {
+        match event {
+            SessionEvent::PluginDied { node, cause } => {
+                let Some(&entity) = by_node.get(&node) else {
+                    continue;
+                };
+                if let Ok((_, _, Some(mut health))) = plugins.get_mut(entity) {
+                    health.status = PluginLiveness::Dead { cause };
                 }
-                continue;
+                commands
+                    .entity(entity)
+                    .remove::<PluginEditorOpen>()
+                    .remove::<AudioNode>();
+                graph.set_changed();
             }
-            Verdict::Failing { consecutive } => {
-                health.status = PluginLiveness::Failing { consecutive };
-                continue;
+            SessionEvent::PluginLatencyChanged { .. } => graph.set_changed(),
+            SessionEvent::PluginSnapshotDue(job) => {
+                // No entity with a `PluginHealth` to hold it: dropped
+                // unrun, which frees the plugin for the next interval.
+                let Some(&entity) = by_node.get(&job.node()) else {
+                    continue;
+                };
+                if let Ok((_, _, Some(mut health))) = plugins.get_mut(entity) {
+                    health.pending_snapshot =
+                        Some(AsyncComputeTaskPool::get().spawn(async move { job.run() }));
+                }
             }
-            Verdict::Dead => {}
+            _ => {}
         }
-        // `Liveness` declares a death only on an unhealthy observation, and
-        // every unhealthy one carries the engine's cause.
-        let cause = cause.unwrap_or_default();
-
-        // The engine's latched reason, not a placeholder. It is captured where
-        // the crash is noticed rather than reconstructed from the flag, so it
-        // names the actual failure — a refused connection, a protocol
-        // mismatch, a dropped stream — including for a plugin that died before
-        // this host could have subscribed to anything.
-        error!(
-            "plugin '{}' declared dead ({cause}); unwiring entity {entity:?}",
-            plugin.handle.name()
-        );
-        health.status = PluginLiveness::Dead { cause };
-
-        commands
-            .entity(entity)
-            .remove::<PluginEditorOpen>()
-            .remove::<tutti_core::AudioNode>();
     }
 }
 
-/// Periodically capture a healthy plugin's state, so a later crash is
-/// recoverable.
-///
-/// # Why the fetch is off-thread
-///
-/// `save_state` is a blocking round-trip to the plugin subprocess, bounded by a
-/// **ten-second** timeout. This system runs in `Update`, so calling it inline
-/// would put that whole worst case on the frame thread: a plugin that stopped
-/// answering — precisely the plugin whose state is most worth having — freezes
-/// the app for ten seconds. The interval alone does not help; it makes the
-/// freeze rare rather than short, and rare-and-catastrophic is the harder bug
-/// to attribute.
-///
-/// So the call runs on `AsyncComputeTaskPool`, the shape
-/// [`plugin_load_start`](super::load::plugin_load_start) uses for the load
-/// itself, and this system only starts and collects.
-///
-/// Skipped entirely once a plugin is failing: the call would block against a
-/// peer that is already not answering, and would return `None` anyway.
-pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHealth)>) {
-    for (plugin, mut health) in plugins.iter_mut() {
-        // Collect first, so a snapshot that finished during this frame lands
-        // before the interval is considered again. Draining after the start
-        // branch would leave a completed task sitting for a whole extra
-        // interval.
-        if let Some(task) = health.pending_snapshot.as_mut() {
-            match block_on(future::poll_once(task)) {
-                // `None` from the plugin means it declined, or the bridge went
-                // down mid-call. Keep the previous snapshot rather than
-                // overwriting a good one with nothing.
-                Some(result) => {
-                    health.pending_snapshot = None;
-                    match result {
-                        Ok(state) => health.last_snapshot = Some(state),
-                        // Keep the previous snapshot rather than overwriting a
-                        // good one with nothing — but say why, which the old
-                        // `Option` could not. A snapshot that keeps failing is
-                        // how a recoverable plugin quietly becomes one whose
-                        // state is stale by hours.
-                        Err(e) => {
-                            tracing::warn!("periodic plugin state snapshot failed: {e}");
-                        }
-                    }
-                }
-                // Still fetching. Do not start another — see the field docs.
-                None => continue,
-            }
-        }
-
-        if health.status != PluginLiveness::Healthy {
+/// Lands finished snapshot jobs (`Session::land_snapshot`) and copies what
+/// the session stored onto the component. A declined save keeps the
+/// previous snapshot, in the session and here. Runs before
+/// [`plugin_health_poll`], so a job finished during the frame is landed
+/// before the phase considers the interval again.
+pub fn plugin_state_snapshot(
+    graph: Option<ResMut<AudioGraphRes>>,
+    mut plugins: Query<(&AudioNode, &mut PluginHealth)>,
+) {
+    let Some(mut graph) = graph else {
+        return;
+    };
+    for (node, mut health) in &mut plugins {
+        let Some(task) = health.pending_snapshot.as_mut() else {
             continue;
+        };
+        let Some(taken) = block_on(future::poll_once(task)) else {
+            continue; // still fetching
+        };
+        health.pending_snapshot = None;
+        let session = graph.bypass_change_detection().session();
+        if session.land_snapshot(taken) {
+            health.last_snapshot = session
+                .plugin(*node)
+                .and_then(tutti_session::HostedPlugin::snapshot)
+                .map(<[u8]>::to_vec);
         }
-        health.frames_since_snapshot = health.frames_since_snapshot.saturating_add(1);
-        if health.frames_since_snapshot < SNAPSHOT_INTERVAL_FRAMES {
-            continue;
-        }
-        health.frames_since_snapshot = 0;
-
-        // The handle is cloned into the task rather than borrowed: it is
-        // `Arc`-backed, so this is cheap, and it is what lets the round-trip
-        // outlive the frame that asked for it.
-        let handle = plugin.handle.clone();
-        health.pending_snapshot =
-            Some(AsyncComputeTaskPool::get().spawn(async move { handle.state().save_state() }));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin_host::PluginEmitter;
     use bevy_app::prelude::*;
     use std::sync::Arc;
+    use std::time::Duration;
     use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress, PluginHandle};
     use tutti_plugin::server::ParameterInfo;
+    use tutti_plugin::Liveness;
 
     /// A backend whose liveness is whatever the test says it is.
     ///
-    /// `PluginClient::new` launches a subprocess, so no test can put a real
-    /// plugin here — but `PluginHandle::from_backend` takes any `HostParams +
-    /// HostState`, which makes the *system* testable rather than only the
-    /// decision rule extracted out of it. That matters for the case this module
-    /// is about: the cause has to survive the trip from the backend, through the
-    /// handle, into a component, and only an end-to-end assertion sees that.
+    /// `PluginClient::new` launches a subprocess, so no unit test can put a
+    /// real plugin here — but `PluginHandle::from_backend` takes any
+    /// `HostParams + HostState`, and `Graph::host_plugin` hosts it at a node,
+    /// which makes the *systems* testable end to end: the cause has to
+    /// survive the trip from the backend, through the handle and the
+    /// session, into a component.
     struct FakeBackend {
         cause: Option<String>,
         /// What `save_state` answers, and a count of how often it was asked.
-        ///
-        /// The count is what distinguishes "the snapshot is off-thread" from
-        /// "the snapshot happens to work": a system that started a fresh task
-        /// every frame would still produce the right bytes, and only the number
-        /// of calls shows it.
         state: Option<Vec<u8>>,
         saves: Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -361,10 +277,6 @@ mod tests {
         fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
             self.saves
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // The fixture still says "has state / has none" as an `Option`,
-            // which is all these tests need; `NoStateRoute` is the honest
-            // rendering of the second, and keeps every call site below
-            // unchanged.
             self.state
                 .clone()
                 .ok_or(tutti_plugin::error::StateError::NoStateRoute)
@@ -374,12 +286,8 @@ mod tests {
         }
     }
 
-    /// A handle over a backend that reports `cause`, dead if `Some`.
-    fn handle_reporting(cause: Option<&str>) -> PluginHandle {
-        handle_with(cause, None, Arc::default())
-    }
-
-    /// A handle whose backend answers `state` and counts its `save_state` calls.
+    /// A handle whose backend reports `cause` (dead if `Some`), answers
+    /// `state` and counts its `save_state` calls.
     fn handle_with(
         cause: Option<&str>,
         state: Option<Vec<u8>>,
@@ -399,68 +307,67 @@ mod tests {
         )
     }
 
-    fn test_app() -> App {
+    /// An app running both systems over `graph`.
+    fn app_over(graph: AudioGraphRes) -> App {
         let mut app = App::new();
-        app.insert_resource(crate::graph::AudioGraphRes::headless(0, 2));
-        app.add_systems(Update, plugin_health_poll);
+        app.insert_resource(graph);
+        app.add_systems(Update, (plugin_state_snapshot, plugin_health_poll).chain());
         app
+    }
+
+    /// Hosts `handle` at a `dc` node (`Graph::host_plugin`) and spawns its
+    /// entity, as the load path would. `AudioNode` is a real graph node: its
+    /// *removal* is the teardown, so it has to be present for the unwire to
+    /// be observable. Nothing reads what the node computes.
+    fn host(app: &mut App, handle: PluginHandle) -> Entity {
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let (node, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+            assert!(graph.session().graph().host_plugin(node, handle.clone()));
+            node
+        };
+        app.world_mut()
+            .spawn((PluginEmitter { handle }, PluginHealth::default(), node))
+            .id()
     }
 
     /// Spawn a plugin that reports `cause`, run `frames` updates, return the
     /// entity.
     ///
     /// The frames are half of [`Liveness::DEFAULT_WINDOW`] apart (a sleep: the
-    /// system reads the wall clock), so [`Liveness::DEATHS`] of them span the
-    /// window, as they do at 60 Hz. The debounce's own rule, count against
-    /// window with explicit times, is pinned in `tutti-plugin`'s `Liveness`
-    /// tests; these pin that the system feeds it and acts on its verdict.
-    /// Mutations (each run, each failed): the system observing every plugin
-    /// healthy (the three crash tests); the sleep removed, so the frames run
-    /// back to back inside the window (both death tests: three observations
-    /// are not a death until they span it).
+    /// system passes the wall clock), so [`Liveness::DEATHS`] of them span the
+    /// window, as they do at 60 Hz. The debounce's own rule is pinned in
+    /// `tutti-plugin`'s `Liveness` tests and the session's phase in
+    /// `tutti-session`'s `tests/plugin.rs`; these pin that the system runs
+    /// the phase and places its verdict.
     ///
-    /// `AudioNode` is a real graph node rather than a fabricated id: its
-    /// *removal* is the whole teardown this system performs, so the component
-    /// has to be present for the unwire to be observable at all. A `dc` node
-    /// stands in for the plugin — nothing here reads what the node computes.
-    fn run(app: &mut App, cause: Option<&str>, frames: usize) -> Entity {
-        let node = {
-            let mut graph = app
-                .world_mut()
-                .resource_mut::<crate::graph::AudioGraphRes>();
-            graph.insert(tutti_nodes::testing::Const::mono(0.0))
-        };
-        let entity = app
-            .world_mut()
-            .spawn((
-                PluginEmitter {
-                    handle: handle_reporting(cause),
-                },
-                PluginHealth::default(),
-                node,
-            ))
-            .id();
+    /// Mutations (each run, each failed): the system not running the phase
+    /// (every crash test: never Failing, never Dead); the sleep removed, so
+    /// the frames run back to back inside the window (both death tests:
+    /// three observations are not a death until they span it).
+    fn run(cause: Option<&str>, frames: usize) -> (App, Entity) {
+        let mut app = app_over(AudioGraphRes::headless(0, 2));
+        let entity = host(&mut app, handle_with(cause, None, Arc::default()));
         for frame in 0..frames {
             if frame > 0 {
                 std::thread::sleep(Liveness::DEFAULT_WINDOW / 2);
             }
             app.update();
         }
-        entity
+        (app, entity)
     }
 
     /// The engine's latched reason reaches the component verbatim.
     ///
     /// Asserting on the *content* is what distinguishes reading the engine's
-    /// cause from inventing one: an assertion that merely checked for `Dead`
-    /// would pass just as well against a fixed placeholder string, which is
-    /// what a host writes the moment the `BridgeError` behind the flag is
-    /// dropped instead of carried.
+    /// cause from inventing one: a fixed placeholder would pass a check for
+    /// `Dead` alone.
+    ///
+    /// Mutation (run, failed): the `PluginDied` arm writing
+    /// `Dead { cause: String::new() }`.
     #[test]
     fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
-        let mut app = test_app();
-        let entity = run(
-            &mut app,
+        let (app, entity) = run(
             Some("could not connect to plugin-server: No such file or directory"),
             Liveness::DEATHS as usize,
         );
@@ -475,18 +382,16 @@ mod tests {
         );
     }
 
-    /// A plugin is not written off on the first bad observation.
-    ///
-    /// The debounce is the reason this module keeps a state rather than
-    /// mirroring the engine's: the crash is published from the bridge thread
-    /// after the failing call returns, so one look can race the publish. Pinned
-    /// at every frame below the threshold, because an off-by-one here would
+    /// A plugin is not written off on the first bad observation. Pinned at
+    /// every frame below the threshold, because an off-by-one here would
     /// unwire a live plugin.
+    ///
+    /// Mutation (run, failed): the liveness not mirrored onto the component
+    /// (it stays `Healthy`).
     #[test]
     fn a_crash_is_not_declared_until_the_debounce_elapses() {
         for frames in 1..Liveness::DEATHS as usize {
-            let mut app = test_app();
-            let entity = run(&mut app, Some("stream closed"), frames);
+            let (app, entity) = run(Some("stream closed"), frames);
 
             let health = app.world().get::<PluginHealth>(entity).unwrap();
             assert_eq!(
@@ -497,112 +402,107 @@ mod tests {
                 "at {frames} observation(s) the plugin is failing, not dead"
             );
             assert!(
-                app.world().get::<tutti_core::AudioNode>(entity).is_some(),
+                app.world().get::<AudioNode>(entity).is_some(),
                 "a failing plugin must stay wired — unwiring it early silences a live plugin"
             );
         }
     }
 
-    /// Declaring a plugin dead removes `AudioNode`, which is the whole teardown.
+    /// Declaring a plugin dead removes `AudioNode` from its entity, and the
+    /// session's node with it.
     ///
-    /// The `On<Remove, AudioNode>` observers take the node out of the graph and
-    /// the sender off the MIDI bus, so this system's only job is the removal. A
-    /// status set without it would leave a dead plugin's node still processing.
+    /// Mutation (run, failed): the `PluginDied` arm not removing
+    /// `AudioNode` (the entity keeps it).
     #[test]
     fn declaring_death_unwires_the_node() {
-        let mut app = test_app();
-        let entity = run(&mut app, Some("stream closed"), Liveness::DEATHS as usize);
+        let (mut app, entity) = run(Some("stream closed"), Liveness::DEATHS as usize);
+        let node = app
+            .world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .session()
+            .plugins()
+            .count();
 
         assert!(
-            app.world().get::<tutti_core::AudioNode>(entity).is_none(),
+            app.world().get::<AudioNode>(entity).is_none(),
             "a dead plugin must be unwired by removing AudioNode"
         );
+        assert_eq!(node, 0, "and the session no longer hosts it");
     }
 
-    /// A plugin the engine reports as alive is never written off, however long
-    /// it runs.
+    /// A plugin the engine reports as alive is never written off, however
+    /// long it runs: the negative case, which none of the above would notice
+    /// a poll declaring death unconditionally fail.
     ///
-    /// The negative case, and worth its own test: every assertion above fires
-    /// only for a backend already reporting a crash, so none of them would
-    /// notice a poll that declared death unconditionally.
+    /// Mutation (run, failed): the `PluginDied` arm run for every hosted
+    /// node each frame (a `Dead` written regardless).
     #[test]
     fn a_live_plugin_is_never_declared_dead() {
-        let mut app = test_app();
-        let entity = run(&mut app, None, Liveness::DEATHS as usize + 5);
+        let (app, entity) = run(None, Liveness::DEATHS as usize + 5);
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
         assert_eq!(health.status, PluginLiveness::Healthy);
         assert!(
-            app.world().get::<tutti_core::AudioNode>(entity).is_some(),
+            app.world().get::<AudioNode>(entity).is_some(),
             "a healthy plugin must stay wired"
         );
     }
 
     // ---- snapshots ---------------------------------------------------------
+    //
+    // The cadence (one per interval, one in flight, restarted on each job)
+    // and the declined save's rule are the session's and pinned there
+    // (`tutti-session`'s `plugin::tests`), with the in-flight guard the old
+    // Bevy test could not hold open on a single-threaded pool. These pin the
+    // placing: the job onto the pool, the landing, the copy.
 
-    /// An app running only the snapshot system, with a plugin that answers
-    /// `state` and counts how often it was asked.
+    /// An app whose session asks for a snapshot on every phase (interval
+    /// zero), with a plugin that answers `state` and counts its saves.
     fn snapshot_app(state: Option<Vec<u8>>) -> (App, Entity, Arc<std::sync::atomic::AtomicUsize>) {
         // The pool is process-global and may already exist from another test in
         // this binary — `get_or_init` rather than `init`, which panics on the
         // second call.
-        bevy_tasks::AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new);
-
-        let mut app = App::new();
-        app.add_systems(Update, plugin_state_snapshot);
+        AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new);
+        let session = tutti_session::Session::builder()
+            .outputs_floor(2)
+            .snapshot_interval(Duration::ZERO)
+            .build_detached(tutti_core::SampleRate::DEFAULT)
+            .expect("a detached session builds");
+        let mut app = app_over(AudioGraphRes::from_session(session));
         let saves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let entity = app
-            .world_mut()
-            .spawn((
-                PluginEmitter {
-                    handle: handle_with(None, state, Arc::clone(&saves)),
-                },
-                PluginHealth::default(),
-            ))
-            .id();
+        let entity = host(&mut app, handle_with(None, state, Arc::clone(&saves)));
         (app, entity, saves)
     }
 
-    /// Run frames until one full snapshot cycle has started *and* resolved.
-    ///
-    /// Both halves are driven here rather than by a frame count at the call
-    /// site: the fetch runs on the task pool, so the frame that starts it is
-    /// never the frame that collects it, and the interval counter resets on the
-    /// *start* frame — so "interval frames, then look" both races the pool and
-    /// overshoots the next cycle. Only `pending_snapshot` transitioning
-    /// `None → Some → None` identifies one cycle unambiguously.
-    ///
-    /// Bounded so a genuine hang fails the test rather than hanging the suite.
-    fn run_until_collected(app: &mut App, entity: Entity) {
-        let in_flight = |app: &App| {
-            app.world()
-                .get::<PluginHealth>(entity)
-                .unwrap()
-                .pending_snapshot
-                .is_some()
-        };
-
-        let mut started = false;
-        for _ in 0..(SNAPSHOT_INTERVAL_FRAMES as usize * 2 + 1000) {
+    /// Run frames until at least one snapshot job has been landed. The
+    /// session asks for the next job only once the last one's token is
+    /// free, and a landed job frees it, so a second save means the first was
+    /// landed (or dropped, which the tests' mutations tell apart). Counted
+    /// in saves, not in `pending_snapshot`: with an interval of zero the
+    /// frame that lands one job asks for the next. Bounded so a genuine
+    /// hang fails the test rather than hanging the suite.
+    fn run_until_landed(app: &mut App, saves: &std::sync::atomic::AtomicUsize) {
+        for _ in 0..2000 {
             app.update();
-            if !started {
-                started = in_flight(app);
-            } else if !in_flight(app) {
+            if saves.load(std::sync::atomic::Ordering::SeqCst) >= 2 {
                 return;
             }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("the snapshot never started, or never resolved");
+        panic!("no snapshot job was landed");
     }
 
-    /// A captured snapshot reaches the component.
+    /// A captured snapshot reaches the component: the job crosses to the
+    /// pool, its bytes come back a frame or more later, are landed in the
+    /// session, and are copied onto the component.
     ///
-    /// End-to-end through the task pool: the bytes cross a thread boundary and
-    /// land a frame or more after the one that asked. Without this the whole
-    /// off-thread rework could silently capture nothing.
+    /// Mutations (each run, each failed): `plugin_state_snapshot` dropping
+    /// the finished job instead of landing it (the bytes never arrive); the
+    /// `PluginSnapshotDue` arm dropping the job (nothing is ever saved).
     #[test]
     fn a_snapshot_is_captured_and_stored() {
         let (mut app, entity, saves) = snapshot_app(Some(vec![1, 2, 3]));
-        run_until_collected(&mut app, entity);
+        run_until_landed(&mut app, &saves);
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
         assert_eq!(
@@ -610,28 +510,20 @@ mod tests {
             Some(&vec![1, 2, 3]),
             "the captured state must reach the component"
         );
-        assert_eq!(
-            saves.load(std::sync::atomic::Ordering::Relaxed),
-            1,
-            "one interval is one save, not one per frame"
-        );
     }
 
-    /// The fetch does not block the frame that starts it.
+    /// The fetch does not block the frame that starts it: the job is on the
+    /// pool, its task held by the component, and nothing is stored yet.
+    /// `save_state` has a ten-second timeout, so an inline call would stall
+    /// the app for that long against a plugin that stopped answering.
     ///
-    /// This is the property the change exists for. `save_state` has a
-    /// ten-second timeout, so a system calling it inline stalls the app for that
-    /// long against a plugin that stopped answering. Asserting that the
-    /// triggering frame leaves the task *in flight* is what distinguishes
-    /// "spawned onto the pool" from "called inline and finished" — an inline
-    /// call would have `pending_snapshot == None` and the bytes already stored
-    /// on that same frame.
+    /// Mutation (run, failed): the `PluginSnapshotDue` arm running the job
+    /// inline and landing it (`pending_snapshot` stays `None`, the bytes
+    /// already stored).
     #[test]
     fn the_triggering_frame_does_not_wait_for_the_plugin() {
         let (mut app, entity, _) = snapshot_app(Some(vec![7]));
-        for _ in 0..SNAPSHOT_INTERVAL_FRAMES {
-            app.update();
-        }
+        app.update();
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
         assert!(
@@ -645,64 +537,19 @@ mod tests {
         );
     }
 
-    /// Snapshots happen on the interval, not every frame.
+    /// A plugin that declines leaves the component's previous snapshot
+    /// intact: only what the session stored is copied.
     ///
-    /// Three intervals is three saves — the cadence the whole design rests on,
-    /// since `save_state` is a round-trip and a per-frame one would be a
-    /// permanent load on the plugin.
-    ///
-    /// # What this deliberately does NOT cover
-    ///
-    /// The `pending_snapshot` guard against *restarting* an in-flight fetch is
-    /// **not** pinned here, and cannot be in this crate's test configuration.
-    /// `bevy-tutti` pulls `bevy_tasks` without its `multi_threaded` feature, so
-    /// `AsyncComputeTaskPool` is the single-threaded pool: a spawned task runs
-    /// on whichever thread polls it, which is the frame thread. A fake that
-    /// blocked inside `save_state` to hold the fetch open therefore deadlocks
-    /// the very `app.update()` that would release it — verified, it hangs
-    /// indefinitely.
-    ///
-    /// So the in-flight window the guard exists for never occurs here, and any
-    /// assertion about it passes whether the guard is present or absent — a
-    /// version of this test asserting the guard's behaviour stayed **green**
-    /// with the guard deleted.
-    ///
-    /// The guard is still load-bearing: a host that enables `multi_threaded` is
-    /// the configuration it protects. Covering it needs an integration test in
-    /// such a crate, which does not exist yet. Stated rather than faked,
-    /// because a test that cannot fail claims coverage it does not have.
-    #[test]
-    fn snapshots_happen_on_the_interval_not_every_frame() {
-        let (mut app, entity, saves) = snapshot_app(Some(vec![9]));
-        for _ in 0..3 {
-            run_until_collected(&mut app, entity);
-        }
-
-        assert_eq!(
-            saves.load(std::sync::atomic::Ordering::Relaxed),
-            3,
-            "three completed intervals is three saves"
-        );
-    }
-
-    /// A plugin that declines leaves the previous snapshot intact.
-    ///
-    /// `None` means the plugin refused or the bridge dropped mid-call. Storing
-    /// it would replace a good recovery point with nothing, which is worse than
-    /// a stale one — the snapshot exists precisely for the moment the plugin
-    /// stops answering.
+    /// Mutation (run, failed): the copy made whatever `land_snapshot`
+    /// returned (the component reads the session's `None`).
     #[test]
     fn a_declined_save_does_not_erase_the_previous_snapshot() {
-        let (mut app, entity, _) = snapshot_app(None);
-        run_until_collected(&mut app, entity);
-
-        // Seed a good snapshot the way a successful capture would have, then
-        // let another interval decline over the top of it.
+        let (mut app, entity, saves) = snapshot_app(None);
         app.world_mut()
             .get_mut::<PluginHealth>(entity)
             .unwrap()
             .last_snapshot = Some(vec![4, 2]);
-        run_until_collected(&mut app, entity);
+        run_until_landed(&mut app, &saves);
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
         assert_eq!(

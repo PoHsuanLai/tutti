@@ -60,8 +60,9 @@
 //! - it takes a mutex, which also serializes concurrent publishers;
 //! - it allocates (a free list per publish, and the retired list's growth);
 //! - it may spin, backing off to `yield_now`, on a reader caught between the
-//!   two halves of a lend (claim and announce, or register and load). It never
-//!   waits for a loan to be dropped;
+//!   two halves of a lend (claim and announce, or register and load), for as
+//!   long as that reader is descheduled there: unbounded. It never waits for a
+//!   loan to be dropped;
 //! - it filters the retired list against every slot and epoch, which is
 //!   quadratic in the list's length in the worst case. The list is short
 //!   unless loans are parked.

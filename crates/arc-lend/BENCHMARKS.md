@@ -52,10 +52,12 @@ What arc-lend loses:
   At four readers it is behind `RwLock` (186 ns).
 - **A flat-out publisher slows the reader**: 120 ns p50 at one reader,
   against 51 ns for arc-swap (section 2.4).
-- **Nested reads past the slot count are slow, and share the slots across
-  readers**: 8 nested reads on each of 4 readers take 5539 ns p50 per
-  block against 191 ns for arc-swap, whose 8 slots are per thread
-  (section 5).
+- **Nested reads are slow, and past the slot count share the slots across
+  readers**: on one reader, 8 nested reads take 356 ns p50 per block
+  against 191 ns for arc-swap, with no overflow (every lend scans from slot
+  0, so the k-th nested lend fails k − 1 CASes first: quadratic in the
+  depth). 8 nested reads on each of 4 readers overflow and take 5539 ns,
+  against 191 ns for arc-swap, whose 8 slots are per thread (section 5).
 - **The publisher waits on a reader that is preempted mid-lend.** With 2
   or more readers its p99.9 reaches hundreds of microseconds (681.0 µs at
   2 readers and 1 kHz, against 7663 ns for arc-swap), and when a reader
@@ -105,8 +107,9 @@ criterion reports means, and a deadline thread cares about the tail.
   and destructor; every run ends with 0 live.
 - **Threads are pinned** with `core_affinity` 0.8.3: the publisher on core
   0, readers from core 1, wrapping.
-- **Rates:** the publisher runs idle, at 1 kHz or 100 kHz (paced by
-  spinning to a deadline, so a late publish is not made up), or flat out.
+- **Rates:** the publisher runs idle, at 1 kHz or 100 kHz (paced to a
+  deadline by sleeping, then spinning for the last 300 µs or less, so a
+  late publish is not made up), or flat out.
 - **Reader counts:** 1, 2, 3 and 4. The brief asks for 1, 2, 4 and N
   (cores − 1); on this 4-vCPU machine N is 3.
 - **Section 1** runs in a child process of its own. arc-swap's debt nodes
@@ -158,8 +161,8 @@ the source line in the contender's crate that justifies it.
 | Mutex<Arc<T>> | lock() per block, read through the guard; writer swaps under the lock, drops the old Arc after |
 | RwLock<Arc<T>> | read() per block, read through the guard; writer swaps under write(), drops the old Arc after |
 
-- **arc-swap best** is the configuration arc-swap's own documentation
-  points to for this use: `load()` guards dropped in the block and never
+- **arc-swap best** is `DefaultStrategy`, as arc-swap documents, plus our
+  writer and prewarm discipline: `load()` guards dropped in the block and never
   more than 8 per thread (`DEBT_SLOT_CNT`, `src/debt/fast.rs:23`), each
   reader thread prewarmed with one load, and the writer keeping replaced
   `Arc`s until their strong count is 1, so a guard that `store` promotes
@@ -257,7 +260,10 @@ One block is one read, a sum of the 16-element payload, and the drop. Latencies 
   rises to 137, 197 and 300 ns: its readers contend on one cache line of
   slots. basedrop (414-497 ns) and `Mutex` (142-527 ns) are worse;
   `RwLock` (136-186 ns) is better than arc-lend at three and four readers.
-- No contender allocates or frees on a reader here.
+- No contender allocates or frees on a reader here. Naive arc-swap's 0
+  allocations in this section are not a first-load figure: its reader
+  threads reuse debt nodes that earlier runs in this process left free.
+  Section 1 measures the first load in a fresh process.
 
 ### 2.2. Publisher at 1 kHz
 
@@ -500,11 +506,20 @@ Per publish (the payload is built before the clock starts; the time includes any
 - arc-lend loses the tails once readers share the cell. Its publisher
   waits for a reader between claiming a slot and announcing it, and for a
   reader between registering on an epoch and loading. If that reader is
-  preempted, the publisher spins until it runs again. At 2 readers and
+  preempted, the publisher spins until it runs again. In these runs only
+  the first wait can occur: every reader holds one loan and there are at
+  most four, so no lend overflows into an epoch and the seal has no
+  registered reader to wait for. At 2 readers and
   1 kHz the p99.9 is 681.0 µs (arc-swap best 7663 ns); at 3 readers it is
   641.0 µs with a 4089.9 µs max (arc-swap best 16.5 µs and 18.7 µs).
+- The 1 kHz rows hold about 1500 publishes, so p99.9 is about the
+  second-worst sample and p99.99 is the max. The sub-millisecond
+  comparisons at 2 and 3 readers rest on one or two events each.
 - At four readers, where one reader shares core 0 with the publisher, the
-  spin can last a scheduler time slice: arc-lend made 513 of about 1500
+  spin can last many scheduler time slices: the backoff's `yield_now`
+  need not run the preempted reader next (a scheduler that balances CPU
+  time, as Linux's does, can keep running the publisher while the reader has
+  had more CPU than it). arc-lend made 513 of about 1500
   publishes at 1 kHz with a 37.0 ms max, and 165909 flat out against
   497581 for arc-swap best. basedrop, whose `replace` spins on readers mid-
   `get` (`src/shared_cell.rs:117`), shows the same (357 publishes, 41.0 ms),
@@ -600,8 +615,12 @@ Each block holds *depth* reads of the cell at once (summing each), then drops th
   ns on one reader, against 191 ns for 8 (3.5 times the cost for twice the
   loads), and 4431 ns with four readers sharing the `Arc`'s count. Best
   config does not close this case: its rule is to stay at 8 or fewer.
-- arc-lend is worse in every row. Its 8 hazard slots belong to the cell,
-  not the thread, so 4 readers holding 8 reads each overflow at depth 8
+- arc-lend is worse in every row. On one reader at depth 8 nothing
+  overflows (8 reads, 8 slots), yet a block costs 356 ns against
+  arc-swap's 191 ns: every lend scans the slots from slot 0
+  (`src/lend.rs`, `lend`), so the k-th nested lend fails k − 1 CASes
+  before it claims one, quadratic in the depth. Its 8 hazard slots belong
+  to the cell, not the thread, so 4 readers holding 8 reads each overflow at depth 8
   (5539 ns, against arc-swap's 191 ns), and at depth 16 it takes 11.6 µs
   (arc-swap 4431 ns).
 - left-right is fastest: a nested `enter()` on one handle is a counter
@@ -725,9 +744,19 @@ _Finished in 250 s. Load average at the end: 3.24 2.44 1.37. Live payloads at ex
 ## What the next change (E3) should move
 
 E3 replaces anonymous `lend()` and the epoch fallback with registered
-per-reader slots on a growable list. Under it only the arc-lend adapter in
-`contenders.rs` changes (a registered reader handle per reader thread), and
-the same command re-runs every table. Expected:
+per-reader slots on a growable list, lent through `Reader::lend(&mut self)`.
+The harness's `Contender::read` takes `&Self::Reader`, and the nesting
+scenarios call it again inside the closure on the same handle, so the
+re-run needs a mapping, planned here so that it is like for like:
+
+- **Depth 1** (sections 1 to 4): one registered `Reader` per reader
+  thread, lent through `&mut`; `Contender::read` takes `&mut Self::Reader`
+  then, with one handle per thread, as now.
+- **Nesting** (section 5) and **the staircase** (section 6): one registered
+  `Reader` per nesting level on each thread. The bound under test then
+  becomes one value pinned per registered `Reader`.
+
+The same command re-runs every table. Expected:
 
 - **Section 2:** arc-lend's multi-reader p50 should flatten toward its
   one-reader figure, since readers stop contending on one line of slots.

@@ -86,29 +86,30 @@ static ALLOC: CountingAlloc = CountingAlloc;
 // Plan
 // ---------------------------------------------------------------------------
 
-/// How long and how often. `--test` is the smoke plan: it proves every
-/// section runs and asserts nothing about the numbers.
+/// How long and how often. The smoke plan (`--test`, or any run `cargo bench`
+/// did not start) proves every section runs and asserts nothing about the
+/// numbers.
 struct Plan {
     smoke: bool,
-    /// Section 2: how long each (contender, readers, rate) cell runs.
+    /// Sections 2 and 3: how long each (contender, readers, rate) cell runs.
     run: Duration,
     /// Section 1: threads alive at once in the "pool grows" phase.
     fresh_threads: usize,
-    /// Section 3: stores made while the reader holds its read.
+    /// Section 4: stores made while the reader holds its read.
     held_stores: u64,
-    /// Section 4: how long each nested-read cell runs.
+    /// Section 5: how long each nested-read cell runs.
     nested_run: Duration,
-    /// Section 5: publishes per retained-memory run.
+    /// Section 6: publishes per retained-memory run.
     retained_publishes: u64,
-    /// Section 5: a parked reader lets go once the publisher has made no
+    /// Section 6: a parked reader lets go once the publisher has made no
     /// progress for this long (left-right and the locks wait for it).
     stall: Duration,
-    /// Section 6: publishes timed per cell.
+    /// Section 7: publishes timed per cell.
     cost_publishes: usize,
-    /// Section 6: reader handles registered while publishing. E3's
+    /// Section 7: reader handles registered while publishing. E3's
     /// registered readers make publish scan them; this axis shows it.
     registered: &'static [usize],
-    /// Section 6: retired values pinned (arc-lend).
+    /// Section 7: retired values pinned (arc-lend).
     pinned: &'static [usize],
 }
 
@@ -212,7 +213,7 @@ fn elapsed_ns(t0: Instant) -> u64 {
     u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-/// `depth` nested reads of one cell: the block of section 4 (depth 1 is the
+/// `depth` nested reads of one cell: the block of section 5 (depth 1 is the
 /// ordinary block).
 fn nested<C: Contender>(r: &C::Reader, depth: usize) -> u64 {
     if depth == 0 {
@@ -581,7 +582,7 @@ fn section_fresh(plan: &Plan) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 2: the matrix
+// Sections 2 and 3: the matrix
 // ---------------------------------------------------------------------------
 
 struct MatrixRow {
@@ -687,7 +688,7 @@ fn rate_index(rate: Rate) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: a store while the reader holds its read
+// Section 4: a store while the reader holds its read
 // ---------------------------------------------------------------------------
 
 struct HeldRow {
@@ -795,7 +796,7 @@ fn section_held(plan: &Plan, cores: &Cores) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 4: nested reads
+// Section 5: nested reads
 // ---------------------------------------------------------------------------
 
 fn section_nested(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
@@ -847,7 +848,7 @@ fn section_nested(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
 }
 
 // ---------------------------------------------------------------------------
-// Section 5: retained memory
+// Section 6: retained memory
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1062,7 +1063,7 @@ fn section_retained(plan: &Plan, cores: &Cores) {
 const STAIRCASE: usize = arc_lend::DEFAULT_SLOTS + arc_lend::DEFAULT_EPOCHS;
 
 // ---------------------------------------------------------------------------
-// Section 6: publish cost
+// Section 7: publish cost
 // ---------------------------------------------------------------------------
 
 /// `publishes` timed publishes on a pinned thread, with `registered` reader
@@ -1140,9 +1141,13 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // `cargo bench` passes `--bench`; `--test` is the smoke run, as for the
-    // criterion benches (`just bench-smoke`). Everything else is ignored.
-    let smoke = std::env::args().any(|a| a == "--test");
+    // Criterion's convention: the full run only when `cargo bench` passes
+    // `--bench`, and never with `--test` (`cargo bench -- --test`, the CI
+    // smoke run and `just bench-smoke`'s). Anything else, such as `cargo test
+    // --benches` or `--all-targets`, which pass neither, is the smoke run
+    // too, not four minutes of harness. Everything else is ignored.
+    let full = std::env::args().any(|a| a == "--bench") && !std::env::args().any(|a| a == "--test");
+    let smoke = !full;
     let plan = if smoke { Plan::smoke() } else { Plan::full() };
     let cores = Cores::detect();
     let n = std::thread::available_parallelism()
@@ -1183,9 +1188,7 @@ fn run_fresh_in_child(plan: &Plan) {
     let child = std::env::current_exe().and_then(|exe| {
         let mut cmd = std::process::Command::new(exe);
         cmd.arg(FRESH_ONLY);
-        if plan.smoke {
-            cmd.arg("--test");
-        }
+        cmd.arg(if plan.smoke { "--test" } else { "--bench" });
         cmd.stderr(std::process::Stdio::inherit()).output()
     });
     match child {

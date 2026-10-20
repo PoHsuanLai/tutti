@@ -10,10 +10,18 @@
 //! what one reader thread owns: a clone of the shared cell for most, a
 //! `ReadHandle` of its own for left-right.
 //!
-//! **When arc-lend's API changes (E3: registered `Reader`s), only
-//! [`ArcLendCell`] changes**: `reader` becomes `cell.reader()` and `read`
-//! becomes `reader.lend()`. Every scenario reaches arc-lend through this
-//! trait, so the rest of the harness re-runs unchanged.
+//! **When arc-lend's API changes (E3: registered `Reader`s, lent through
+//! `Reader::lend(&mut self)`), this trait is not yet the whole change.**
+//! [`Contender::read`] takes `&Self::Reader`, and `nested` and the
+//! staircase (`main.rs`) call it again inside its closure on the same handle,
+//! which `&mut` forbids. The planned mapping, so the re-run is like for like
+//! (`BENCHMARKS.md`, "What the next change (E3) should move"):
+//!
+//! - depth 1: one registered `Reader` per reader thread, and `read` takes
+//!   `&mut Self::Reader`;
+//! - nesting and the staircase: one registered `Reader` per nesting level on
+//!   each thread, so the bound becomes one value pinned per registered
+//!   `Reader`.
 
 use std::sync::{Arc, Mutex, RwLock};
 

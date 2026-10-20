@@ -4,11 +4,12 @@ Like `arc-swap`, but readers only ever borrow: the writer keeps ownership,
 so the read side never frees.
 
 `ArcLend<T>` holds an `Arc<T>` that one side replaces with
-`publish` and any number of threads read with
-`lend`. A lend returns a `Loan`: a `!Send` borrow tied to
-the cell, not an owning handle. Dropping a loan clears a slot or bumps a
-counter, and nothing else. It cannot run a destructor, because the reader
-never owns anything a destructor could be run on.
+`publish`. Each thread that reads it registers a
+`Reader` once, with `reader`, and then lends through
+it with `Reader::lend`. A lend returns a `Loan`: a `!Send` borrow, not
+an owning handle. Dropping a loan clears the reader's slot, and nothing
+else. It cannot run a destructor, because the reader never owns anything
+a destructor could be run on.
 
 ## The problem
 
@@ -32,18 +33,19 @@ looking at and later *un-announces* it, then the last owner of every value
 is always the cell, and the cell is only ever reached for reclamation by the
 publisher.
 
-- **Hazard slots.** A reader claims one of a few slots, announces the
-  pointer it loaded, and clears the slot when its loan drops. A publisher
-  frees a retired value only if no slot announces it. A `SeqCst` fence on
-  each side orders the claim against the publisher's scan.
-- **Overflow epochs.** When every slot is taken, a reader registers in the
-  current *epoch* with one atomic add instead. An epoch pins the short run
-  of values that were current while it was open. The lend still never
-  fails, waits or allocates.
+- **A slot per reader.** Registering a `Reader` gives it one hazard
+  slot, on a cache line of its own. A lend writes a claim there, loads the
+  pointer, and announces it; the loan's drop clears it. No reader writes
+  another's line, and no reader loops. A `SeqCst` fence on each side
+  orders the claim against the publisher's scan.
+- **A publisher that never waits.** A publish frees every retired value
+  no slot announces. A reader caught between its claim and its
+  announcement is not waited for: its claim carries a generation, and the
+  publisher keeps every value that reader could still load until a later
+  scan sees it has moved on.
 - **A retirement list only the publisher touches.** Swapped-out values wait
-  there, behind a mutex no reader ever takes, until a publish finds them
-  unannounced and unpinned. The free runs on the publisher's thread,
-  outside the lock.
+  there, behind a mutex no reader ever takes. The free runs on the
+  publisher's thread, outside the lock.
 
 The reader announces and un-announces; it never owns. That is the whole
 design. The protocol and its memory-ordering argument are in
@@ -60,25 +62,24 @@ struct Mix { gains: Vec<f32> }
 
 let cell = Arc::new(ArcLend::new(Mix { gains: vec![1.0; 4] }));
 
-// The deadline thread: one lend per iteration, dropped before the next.
-let reader = {
-    let cell = Arc::clone(&cell);
-    std::thread::spawn(move || {
-        for _ in 0..1000 {
-            let mix = cell.lend();
-            let total: f32 = mix.gains.iter().sum();
-            assert!(total > 0.0);
-        } // the loan drops here: a store, never a free
-    })
-};
+// Register on the control side (this may allocate), then move the
+// reader to the deadline thread: one lend per iteration.
+let mut reader = cell.reader();
+let deadline = std::thread::spawn(move || {
+    for _ in 0..1000 {
+        let mix = reader.lend();
+        let total: f32 = mix.gains.iter().sum();
+        assert!(total > 0.0);
+    } // the loan drops here: a store, never a free
+});
 
 // The publisher: build off the deadline thread, publish, and absorb the
 // free of whatever no reader still holds.
 for n in 1..100 {
     cell.publish(Arc::new(Mix { gains: vec![0.5; 4 + n % 3] }));
 }
-reader.join().unwrap();
-assert!(cell.retired_len() <= 1);
+deadline.join().unwrap();
+assert_eq!(cell.reclaim(), 0); // the reader is gone: nothing is pinned
 ```
 
 ## How it compares
@@ -89,7 +90,7 @@ against the version named; the sources are cited under [Sources](#sources).
 
 | | Reader holds | Reader frees? | Reader allocates? | Reader waits? | Writer waits on readers? | Readers |
 |---|---|---|---|---|---|---|
-| **arc-lend** | a borrow | never | never | no (wait-free) | only on a reader mid-lend, never on a held loan | any |
+| **arc-lend** | a borrow | never | never (registering may, on the control side) | no (wait-free) | never | one registered `Reader` each |
 | `arc-swap` 1.9.3 `load` | a `Guard`, which a store can promote to an owned `Arc` | yes, if its guard was promoted and is the last owner | on a thread's first load, if no free debt node exists (`debt/list.rs:169`) | lock-free; wait-free almost always | no | any |
 | `basedrop` 0.1.3 `SharedCell` | an owned `Shared<T>` | no: the last drop queues it for a `Collector` | no | no | yes: `replace` spins until no reader is mid-`get` | any |
 | Firewheel 0.14 `ArcGc` | an owned `ArcGc<T>` | no: a registry keeps a count until `collect` | no | no | n/a: a pointer type, swapped by other means; registering takes a global mutex | any |
@@ -101,12 +102,12 @@ against the version named; the sources are cited under [Sources](#sources).
 
 ### When to prefer something else
 
-- **`arc-swap`** is the better general-purpose cell. Its uncontended loads
-  cost about what a lend does with one reader, stay flat as readers are
-  added where a lend does not, and nest past 8 more cheaply (see
-  [the benchmark](BENCHMARKS.md)). It has a far larger API
-  (`rcu`, `compare_and_swap`, `Cache`, `Access` projections) and years of
-  use. If the reader may free, or a
+- **`arc-swap`** is the better general-purpose cell. Its loads cost about
+  what a lend does (see
+  [the benchmark](BENCHMARKS.md)),
+  need no registration, and its writer's cost does not grow with the
+  readers. It has a far larger API (`rcu`, `compare_and_swap`, `Cache`,
+  `Access` projections) and years of use. If the reader may free, or a
   thread's first load may allocate, it is the right choice. It can also be
   made safe for a deadline by discipline: prewarm each reader thread, and
   have the writer keep retired `Arc`s until their count is one. arc-lend
@@ -131,36 +132,19 @@ against the version named; the sources are cited under [Sources](#sources).
 
 ## Cost
 
-Counts of operations, not measured times. The measured comparison with
-`arc-swap`, `basedrop`, `left-right` and the locks is in
-[BENCHMARKS.md](BENCHMARKS.md), one run on a shared VM. In it no arc-lend
-reader allocated or freed, and one reader's lend cost what an `arc-swap`
-load did (47 ns against 51 ns p50). arc-lend lost where readers share the
-cell: its slots are one cache line for all readers, so the reader p50 rose
-to 300 ns at four readers (`arc-swap` stayed at 51 ns), nested lends past
-the slots were slower than `arc-swap`'s, and the publisher's tail grew when
-a reader was preempted mid-lend. A staircase of parked loans pinned every
-retired value, as `docs::limitations` describes.
+A lend is a `Release` store, a `SeqCst` fence, an `Acquire` load and a
+`Relaxed` store, all on the reader's own cache line, plus a `Release`
+store when the loan drops. A publish takes a mutex, swaps, fences, reads
+every registered slot once and filters the retired list once. The
+operation counts, and what they measured against `arc-swap`, `basedrop`,
+`left-right` and the locks, are in `docs::performance`.
 
-| Operation | Thread | What it does |
-|---|---|---|
-| `lend`, slot path | reader | ≤ `SLOTS` relaxed CASes, one `SeqCst` fence, one `Acquire` load, one relaxed store |
-| `lend`, overflow path | reader | one `Acquire` `fetch_add`, one `Acquire` load, one `Release` `fetch_add` |
-| drop a `Loan` | reader | one `Release` store (slot) or `fetch_add` (overflow) |
-| `publish` | publisher | a mutex; one allocation for the free list (and amortized growth of the retired list); one swap and one `SeqCst` fence; an epoch advance that may spin on readers between registering and loading; a scan of `SLOTS` slots that may spin on readers between claiming and announcing; a filter over the retired list; the frees, after the lock |
-| `retired_len`, `epoch_stalls` | publisher | the mutex |
-
-No reader operation allocates, frees, takes a lock or retries. Memory is
-`SLOTS` words on their own cache line, two words per epoch, the pointer,
-the epoch word, and the retired list.
-
-## Parameters
-
-`ArcLend<T, SLOTS = 8, EPOCHS = 4>`. `SLOTS` is how many loans of one cell
-can be live before lends take the coarser overflow path; `EPOCHS` is how
-many overflow epochs the cell cycles through. Both are checked at compile
-time (`1 ≤ SLOTS ≤ 1024`, `2 ≤ EPOCHS ≤ 64`). The defaults suit a few reader
-threads with one loan each.
+In one run on a shared VM, no arc-lend reader allocated or freed; a lend
+cost 41-42 ns p50 per block at one to four readers (`arc-swap`: 51 ns);
+nested lends cost about one lend per level; and the publisher never
+waited on a reader. It lost where a publish scans many registered readers
+(1343 ns at 1000), and where a reader preempted mid-lend under a flat-out
+publisher pinned thousands of retired values until it ran again.
 
 ## Guides
 
@@ -168,6 +152,7 @@ In the API docs, under the `docs` module (sources in [`src/docs/`](src/docs)):
 
 - `docs::patterns`: how to use it well.
 - `docs::limitations`: what it does not do, and where memory can grow.
+- `docs::performance`: what it costs, measured.
 - `docs::internal`: the protocol and why it is sound.
 
 Two runnable examples: [`examples/game_tick.rs`](examples/game_tick.rs) (a
@@ -180,8 +165,8 @@ reading a sampling config a control thread updates).
 The protocol is checked against the shipped code, not a replica: under
 `--cfg loom` its atomics, fences and mutex are loom's, and `tests/loom.rs`
 models readers against publishers (its mutation record lists each ordering
-it catches, and the one it cannot). Miri runs the unit tests, including a
-multi-reader stress test, over many scheduling seeds:
+it catches). Miri runs the unit tests, including a multi-reader stress
+test, over many scheduling seeds:
 
 ```text
 LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p arc-lend --release --test loom
@@ -227,7 +212,6 @@ version named):
   loops until it is given back (`RealtimeObject.tcc:69-72`).
 - crill (commit `895eaf2f`). `seqlock_object`'s readers "can block if
   there is a concurrent write" (`include/crill/seqlock_object.h:21-23`).
-
 
 ## Status
 

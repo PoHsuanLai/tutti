@@ -1,4 +1,4 @@
-//! **What does one `ArcLend::lend` cost, against an `ArcSwap::load`?**
+//! **What does one `Reader::lend` cost, against an `ArcSwap::load`?**
 //!
 //! The rule is one lend per iteration of the reader's loop, so this is a
 //! per-iteration cost, not a per-element one: at an audio callback of 64
@@ -22,8 +22,9 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 fn uncontended(c: &mut Criterion) {
     let mut g = c.benchmark_group("read_uncontended");
-    let cell = ArcLend::new([7u64; 8]);
-    g.bench_function("arc_lend", |b| b.iter(|| black_box(cell.lend()[3])));
+    let cell = Arc::new(ArcLend::new([7u64; 8]));
+    let mut reader = cell.reader();
+    g.bench_function("arc_lend", |b| b.iter(|| black_box(reader.lend()[3])));
     let swap = ArcSwap::from_pointee([7u64; 8]);
     g.bench_function("arc_swap_load", |b| b.iter(|| black_box(swap.load()[3])));
     g.finish();
@@ -49,11 +50,12 @@ fn while_publishing(c: &mut Criterion) {
     let mut g = c.benchmark_group("read_while_publishing");
 
     let cell = Arc::new(ArcLend::new([7u64; 8]));
+    let mut reader = cell.reader();
     let writer = cell.clone();
     with_publisher(
         move || writer.publish(Arc::new([8u64; 8])),
         || {
-            g.bench_function("arc_lend", |b| b.iter(|| black_box(cell.lend()[3])));
+            g.bench_function("arc_lend", |b| b.iter(|| black_box(reader.lend()[3])));
         },
     );
 

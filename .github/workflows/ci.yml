@@ -589,11 +589,11 @@ jobs:
       - run: cargo +nightly miri test --locked -p tutti-types --lib
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
       - run: cargo +nightly miri test --locked -p arc-lend
-      # Its unit tests again over 16 scheduling seeds: the concurrent-readers
-      # stress test reports a race on a freed value if either `SeqCst` fence in
-      # `ArcLend` goes, but only on some seeds — the default one alone missed
-      # it. (A plain x86 run never does — a CAS is already a full barrier
-      # there — which is why this job and the loom one both exist.)
+      # Its unit tests again over 16 scheduling seeds: the small
+      # concurrent-readers stress test reports a race on a freed value if
+      # either `SeqCst` fence in `ArcLend` goes, on some seeds only. (A plain
+      # x86 run rarely does: only a store-buffer reordering shows it, which is
+      # why this job and the loom one both exist.)
       - run: cargo +nightly miri test --locked -p arc-lend --lib
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16

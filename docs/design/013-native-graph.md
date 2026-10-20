@@ -3134,7 +3134,8 @@ What each layer holds:
   helper to wake. `WorkerPoolBuilder::on_start` runs a host hook on each
   helper before it takes work: where RT priority, MMCSS or a macOS audio
   workgroup join goes. The engine does not promote threads itself, for the
-  reason it does not promote the callback.
+  reason it does not promote the callback. The helpers must run at the
+  callback's priority, not below it (decision 7).
 - **The runtime primitives (`tutti-types`, loom-checked).**
   `JobGate` lends one borrowed job to helper threads per call (the only
   lifetime erasure, and the reason the pool needs no `std::thread::scope`
@@ -3182,6 +3183,13 @@ Decisions:
    ports. Two nodes sharing mutable state outside the graph (one
    `Arc<Mutex<_>>`) are ordered serially by accident and not at all in
    parallel.
+7. **The caller spins, then yields** while it waits on a helper (the task
+   graph's `remaining`, the gate's `entered`). On Linux, after 250 µs in
+   which the counter has not moved, it calls `sched_yield` once, then spins
+   again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
+   never yields inside a job; it leaves. This replaced a caller that only spun, which starved a helper
+   queued behind it on its own core under `SCHED_FIFO` (see ["The caller
+   yields to a same-core helper"](#the-caller-yields-to-a-same-core-helper-landed)).
 
 Evidence:
 
@@ -3883,6 +3891,98 @@ all three into fresh `Vec`s to keep only the restart flags.
 - Not changed: `ParameterQueue::normalize` still uses std's stable sort,
   because it runs only inside the wire decode, which allocates the points
   anyway.
+
+#### The caller yields to a same-core helper (landed)
+
+**Status: landed** (2026-10-20).
+
+- **The defect.** The audio thread's two waits on a helper inside a block
+  (`TaskGraph::work` as `Participant::Caller` on `remaining`, `JobGate`'s
+  close on `entered`) spun without bound and never yielded. A helper that
+  was queued behind the `SCHED_FIFO` audio thread on the audio thread's
+  core could not run: FIFO does not time-slice, even between equal
+  priorities. The block then ended only when the kernel migrated the helper,
+  and a pinned or unmigratable helper never ran.
+- **Measured** (`tutti-types/tests/spin_starvation.rs`, an ignored probe;
+  a 4-CPU Firecracker VM, kernel 6.18, `CAP_SYS_NICE`). Caller and helper
+  are pinned to one core. The helper holds the only task in flight: 1 ms of
+  CPU, a 1 ms block, then 1 ms more.
+
+  | caller, helper | spin only (main) | spin, then yield after 250 µs |
+  |---|---|---|
+  | `OTHER`, `OTHER` | 1.6–7.9 ms | 2.1–3.5 ms |
+  | `FIFO` 10, `OTHER` | 950 ms–1.0 s (RT throttling) | 951–953 ms (4 runs; 1 not exercised) |
+  | `FIFO` 10, `FIFO` 10 | never: 5/5 aborted by the 2 s watchdog | 1.83–1.85 ms (3 runs; 2 not exercised) |
+
+  A run is "not exercised" when the caller found the task already done
+  (wait under 1 ms): at equal FIFO priority a waking caller cannot preempt
+  the helper, so in some runs the helper finishes before the caller runs.
+  The probe requires at least one exercised FIFO/FIFO run, and none
+  aborted.
+- **The fix.** `SpinThenYield` (`rt/spin.rs`). On Linux and Android, once
+  the counter it waits on has not moved for `CALLER_YIELD_AFTER` (250 µs),
+  the caller calls `yield_now` once and starts timing again. Progress (the
+  counter moving) restarts the clock. The clock (`Instant::now`, about
+  20 ns) is read once every 64 waits. 250 µs is long enough that a healthy
+  block never reaches it, and short enough to hand a starved helper the
+  core with about 2.4 ms of a 128-frame block (2.67 ms at 48 kHz) to spare.
+  No allocation; the no-alloc gates are unchanged.
+- **The first version was routine, not exceptional.** It counted 1024
+  waits instead of timing them, which is 10 to 100 µs depending on the core
+  (a wait is a `pop` attempt, a load and a `spin_loop` hint; a hint is
+  about 14 ns on this VM and 50 to 70 ns on Intel since Skylake). An
+  ordinary tail task outlasted it, so `wide/32x8/4` yielded about 1.2 times
+  per block. A time budget makes the yield exceptional.
+- **What a yield costs.** Under `SCHED_FIFO` or `SCHED_RR`, one system call
+  that returns at once when no thread of the caller's priority is ready on
+  its core. Under `SCHED_OTHER` the fair scheduler may run another task
+  first, for up to a slice of a few milliseconds. On Windows,
+  `SwitchToThread` may run a ready thread of lower priority for up to its
+  quantum, and macOS's `swtch_pri` lowers the caller's priority for up to a
+  quantum. Both also round-robin equal-priority real-time threads at a
+  quantum's end. So the caller yields only on Linux and Android, and spins
+  elsewhere as before. Neither Windows nor macOS was measured.
+- **Cost in the common case** (`tutti-nodes/benches/parallel_render.rs`,
+  run under `chrt -f 1` so the other load on the shared VM could not
+  preempt it; caller yields counted on the bench's main thread with
+  `strace -ff`).
+
+  | bench | count of 1024 (first version) | 250 µs |
+  |---|---|---|
+  | `deep/128/4` caller yields | 0 | 0 |
+  | `wide/32x8/4` caller yields | 15,567 (~1.2 per block) | 259, 414, 299 over ~13k blocks |
+
+  The time-based yields come in bursts: 124 and 87 separate gaps of over
+  2 ms in two runs. Each is a block in which no 20 µs lane task finished
+  for 250 µs, more than a whole median block (215 µs): a helper off its
+  core. The VM showed steal time at a load of about 10. Medians over three
+  alternating pairs against main: `wide/32x8/4` 211, 217 and 219 µs on
+  main, against 223, 209 and 216 µs; `deep/128/4` 184, 185 and 195 µs,
+  against 185, 166 and 191 µs. That is within run-to-run spread.
+- **What it does not fix.** A yield moves a FIFO thread behind threads of
+  its own priority only. A helper below the callback's priority (a
+  `SCHED_OTHER` helper, the default when a host gives
+  `WorkerPoolBuilder::on_start` no hook) still waits for RT throttling,
+  as the middle row shows. `WorkerPool`'s docs now say the helpers must run
+  at the callback's priority. Raising it is still the host's call.
+- **Not demonstrated:** the stall without pinning. Unpinned, the kernel's
+  RT push/pull moves a runnable FIFO helper to any core running something
+  of lower priority, so the stall needs every other core busy at or above
+  the callback's priority. The probe also covers only the task graph's
+  wait: `JobGate` has no abort, so a starved close cannot be stopped by a
+  watchdog. Its yield is covered by a unit test.
+- **Tests.** `the_caller_yields_while_a_helper_holds_a_task` and
+  `the_close_yields_while_a_helper_is_inside` hold a helper inside until
+  the caller's yield is counted (a test-only per-thread counter). The
+  caller's clock is a test-only stepped one, a quarter of the budget per
+  read, so they involve no timing. Without the yield each fails after its
+  10 s bound instead of hanging. `rt::spin`'s two tests pin the budget on
+  the stepped clock. All four are Linux-only, as the yield is. loom has no
+  clock, so under loom the budget is two waits; the models run the new
+  wait, and the ordering is the same, so their mutation records stand.
+- **Deferred.** `CALLER_YIELD_AFTER` could be a per-pool setting in the
+  planned crate extraction. `HELPER_SPINS` is still a count, so how long a
+  helper stays in a block still differs across cores.
 
 ## Per-node rewrite plan
 

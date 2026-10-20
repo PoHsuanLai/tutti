@@ -53,9 +53,9 @@ use core::marker::PhantomData;
 ///   covers only status and exception flags), so the rule is the two above.
 ///
 /// This guard leaves FTZ/DAZ (or FZ) set across ordinary Rust code until it
-/// drops, which is what those texts call undefined behavior. `new` is safe
-/// regardless, because `tutti-graph` is `#![forbid(unsafe_code)]` and calls
-/// it. What tutti relies on instead:
+/// drops, which is what those texts call undefined behavior. `new` is still
+/// a safe `fn`, by choice rather than by proof: `tutti-graph` is
+/// `#![forbid(unsafe_code)]` and calls it. What tutti relies on instead:
 ///
 /// - **The deviation reaches only float values.** The mode changes what an
 ///   operation returns when an operand or result is subnormal (it becomes

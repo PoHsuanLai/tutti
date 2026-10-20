@@ -7,14 +7,14 @@
 //! [`VoicePool`](super::pool::VoicePool), so the per-voice read is the same
 //! code in both — a fix in one is a fix in both.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::clock::{BlockClock, Clock};
-use super::command::{PlacementCell, VoiceNodeHandle};
+use super::command::{PlacedWindow, PlacementCell, VoiceNodeHandle};
 use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
@@ -132,6 +132,7 @@ impl VoiceNode {
         let params = self.param_set();
         let handle = VoiceNodeHandle {
             placement: Arc::clone(&self.placement),
+            placed: PlacedWindow::default(),
             gain: self.gain.handle(),
             params,
         };
@@ -342,8 +343,9 @@ struct VoiceNodeFork {
     /// with `Voice::fork_copy`, which shares nothing.
     template: Voice,
     channels: ChannelLayout,
-    /// The live node's placement cell, read when a fork is taken.
-    placement: PlacementCell,
+    /// The window the live node's handle last published, read when a fork
+    /// is taken (the control side's record, never the node's cell).
+    placed: PlacedWindow,
     /// The node's params: a fork starts from the gain cell, which holds the
     /// gain last **set** (a modulation lane sends its composite to the
     /// port and never writes the cell).
@@ -353,7 +355,7 @@ struct VoiceNodeFork {
 impl ForkSource for VoiceNodeFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
-        let placed = *self.placement.lend();
+        let placed = *self.placed.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(window) = placed {
             voice.source.apply_placement(window.start, window.duration);
         }
@@ -381,7 +383,7 @@ impl IntoNode for VoiceNode {
         let fork = VoiceNodeFork {
             template: node.slot.voice.as_ref().clone(),
             channels: node.channels,
-            placement: Arc::clone(&node.placement),
+            placed: Arc::clone(&handle.placed),
             params: handle.params.clone(),
         };
         NodeParts {

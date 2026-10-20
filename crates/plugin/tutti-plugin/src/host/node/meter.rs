@@ -2,90 +2,79 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ArcLend, Loan, MeterMap};
+use tutti_core::{MeterSlot, MeterSlotCell, ProjectMeter};
 
-/// What a [`PluginMeter`] publishes: the installed meter's cell, or none.
-type Installed = Option<Arc<ArcLend<MeterMap>>>;
-
-/// A plugin node's meter cell: the project meter it reads once per block for
-/// the time-signature and bar fields of the transport it tells the plugin.
+/// A plugin node's meter: the project meter it reads once per block for the
+/// time-signature and bar fields of the transport it tells the plugin.
 ///
 /// Every plugin node has one, shared with the node: the out-of-process node's
 /// [`PluginControls::meter`](super::PluginControls::meter), and the in-process
 /// VST2 node's controls (what inserting it hands back). A clone is another
-/// handle on the same cell, so an install through any handle reaches the node
+/// handle on the same slot, so an install through any handle reaches the node
 /// the audio thread runs, lock-free and with no graph commit. Empty until a
 /// host installs a meter; the node then tells the plugin 4/4 from bar 0.
 ///
-/// # Why a cell of an `Arc`, read twice
+/// # One cell, fixed when the node is built
 ///
-/// The slot is an [`ArcLend`] of the installed cell's `Arc`, so the node
-/// only ever *borrows* that `Arc`: an install or a clear during playback
-/// retires the old one for the control side to free, even when the host kept
-/// no clone of the meter it installed. (An `ArcSwapOption` here turned the
-/// node's guard into the last strong count, and its drop freed the host's
-/// whole meter cell on the audio thread.)
+/// The node reads one cell of its own ([`MeterSlot::cell`], taken when it is
+/// built), holding the project's [`MeterMap`](tutti_core::MeterMap) or
+/// nothing. Installing a meter makes the slot *follow* a [`ProjectMeter`]:
+/// the project meter publishes into the slot now, and on every
+/// [`ProjectMeter::set_meter`] after, so a meter edit reaches the metronome
+/// and every plugin with one call. Installing or clearing is a publish into
+/// the node's cell, never a swap of which cell it reads.
 ///
-/// The node's block read is a nested one: this slot, then the meter cell it
-/// holds. Reader slots are per cell, so the two reads use one slot each, in
-/// different cells. This slot's readers are the nodes holding a handle on it
-/// (the node the audio thread runs, once per block, and any clone of an
-/// in-process VST2 node that shares the cell), plus the odd control-side
-/// [`has_meter`](Self::has_meter). The meter cell is the project's, shared
-/// by every plugin node and by other readers (the click node, export forks
-/// sharing the cell, control-side reads), so its live readers are bounded by
-/// the threads inside a read of that cell at one moment: within the cell's
-/// slot count while that is eight or fewer, and safe past it (the overflow
-/// path, which pins a retired meter a publish longer).
-#[derive(Clone)]
-pub struct PluginMeter(Arc<ArcLend<Installed>>);
-
-impl Default for PluginMeter {
-    fn default() -> Self {
-        Self::holding(None)
-    }
-}
+/// The cell is an [`ArcLend`](tutti_core::ArcLend) of an `Option<Arc<_>>`,
+/// so the node only ever *borrows* the meter: an install or a clear during
+/// playback retires the old value for the control side to free. (An
+/// `ArcSwapOption` here turned the node's guard into the last strong count,
+/// and its drop freed the meter on the audio thread.)
+#[derive(Clone, Default)]
+pub struct PluginMeter(MeterSlot);
 
 impl PluginMeter {
-    /// Give the node the project meter. Pass the cell the host publishes
-    /// meter edits into, and an edit reaches the running plugin with nothing
+    /// Give the node the project meter: it follows `meter`, so an edit the
+    /// host publishes there reaches the running plugin with nothing
     /// re-installed. Replaces any meter installed before.
     ///
-    /// Control thread: allocates the slot's new value, and frees the meter it
-    /// replaces here unless the node is reading it this block (then the next
-    /// install or clear frees it).
-    pub fn set_meter(&self, meter: Arc<ArcLend<MeterMap>>) {
-        self.0.publish(Arc::new(Some(meter)));
+    /// Control thread: publishes into the node's cell, and frees the value
+    /// it replaces here unless the node is reading it this block (then the
+    /// next publish frees it).
+    pub fn set_meter(&self, meter: ProjectMeter) {
+        self.0.follow(meter);
     }
 
     /// Drop the meter; the node tells the plugin 4/4 from bar 0.
     ///
     /// Control thread, as [`set_meter`](Self::set_meter).
     pub fn clear_meter(&self) {
-        self.0.publish(Arc::new(None));
+        self.0.unfollow();
     }
 
-    /// Whether a meter is installed.
+    /// Whether a meter is installed. Control side: reads the slot's own
+    /// record, never the node's cell.
     pub fn has_meter(&self) -> bool {
-        self.0.lend().is_some()
+        self.0.is_following()
     }
 
-    /// The installed meter's cell, for the node's once-per-block lend: a
-    /// borrow, wait-free, no allocation, and dropping it frees nothing.
-    pub(crate) fn lend(&self) -> Loan<'_, Installed> {
-        self.0.lend()
+    /// The cell the node reads once per block: for the node, when it is
+    /// built. A borrow of it is wait-free, allocates nothing, and frees
+    /// nothing when it drops.
+    pub(crate) fn cell(&self) -> Arc<MeterSlotCell> {
+        self.0.cell()
     }
 
-    /// The meter installed now, to give a fork (whose cell is its own).
-    /// Control thread: clones the `Arc`.
-    pub(crate) fn installed(&self) -> Installed {
-        Option::clone(&self.0.lend())
+    /// The meter installed now, to give a fork (whose slot is its own).
+    /// Control side.
+    pub(crate) fn installed(&self) -> Option<ProjectMeter> {
+        self.0.following()
     }
 
-    /// A handle on a new cell holding `meter`: the default's, and an
-    /// in-process VST2 fork's.
-    pub(crate) fn holding(meter: Installed) -> Self {
-        Self(Arc::new(ArcLend::new(meter)))
+    /// A handle on a new slot following `meter`, or nothing: an in-process
+    /// VST2 fork's.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn holding(meter: Option<ProjectMeter>) -> Self {
+        Self(MeterSlot::following_meter(meter))
     }
 }
 
@@ -100,49 +89,51 @@ impl std::fmt::Debug for PluginMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{Beat, MeterChange, TimeSignature};
+    use tutti_core::{Beat, MeterChange, MeterMap, TimeSignature};
 
-    /// A meter of `n`/4 from beat 0, for a block to recognise.
-    fn meter_of(n: u32) -> Arc<ArcLend<MeterMap>> {
-        Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
+    /// A project meter of `n`/4 from beat 0, for a block to recognise.
+    fn meter_of(n: u32) -> ProjectMeter {
+        ProjectMeter::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             TimeSignature::from_parts(n, 4),
-        )])))
+        )]))
     }
 
     /// Installing or clearing the meter while the node reads it frees nothing
     /// on the audio thread, even when the host kept no clone of the meter it
-    /// installed (so the slot held the meter cell's last `Arc`).
+    /// installed (so the slot's value held the meter's last `Arc`).
     ///
-    /// Each block does the node's read (`PluginMeter::read`, then the meter
-    /// cell's, as `graph_node.rs` and the in-process VST2 feed do) under
-    /// `assert_no_alloc`, and the host's install or clear lands while both
-    /// borrows are live, under `permit_alloc`: the free of the replaced meter
-    /// must then fall to the control side, never to the borrows' drops. The
+    /// Each block does the node's read (one borrow of the node's cell, as
+    /// `graph_node.rs` and the in-process VST2 feed do) under
+    /// `assert_no_alloc`, and the host's install or clear lands while the
+    /// borrow is live, under `permit_alloc`: the free of the replaced meter
+    /// must then fall to the control side, never to the borrow's drop. The
     /// lib test binary registers the `AllocDisabler` allocator
     /// (`process_pipeline_tests`). This pins the reader's code path; the race
-    /// itself is `tutti-types`' loom model's.
+    /// itself is `arc-lend`'s loom model's.
     ///
-    /// Mutation: putting the slot back on `ArcSwapOption` (`load()` for
-    /// `read`, `store` for `set_meter` and `clear_meter`) aborts this on its
-    /// first block: the store turns the node's guard into the replaced meter
-    /// cell's last strong count, and the guard's drop frees the whole cell
-    /// inside the gate.
+    /// Mutation (run): the block taking an owning handle rather than a
+    /// borrow (`Option::clone(&cell.lend())`, the shape an `ArcSwapOption`
+    /// guard upgraded into) aborts inside the gate (SIGABRT): an install
+    /// replaced the only other owner of the meter the block held, and the
+    /// handle's drop frees it there.
     #[test]
     fn installing_or_clearing_during_a_block_frees_nothing_on_the_audio_thread() {
         let slot = PluginMeter::default();
-        // The host keeps no clone: the slot holds the meter's only `Arc`.
+        let cell = slot.cell();
+        // The host keeps no clone: the slot holds the project meter's only
+        // handle.
         slot.set_meter(meter_of(1));
         // One read outside the gate, as a stream's first block would be: so
         // the mutation below fails on the free, not on a lazy first-read
         // registration (arc-swap allocated a per-thread node on a thread's
         // first `load`).
-        assert!(slot.has_meter());
+        assert!(cell.lend().is_some());
 
         for block in 1..=16u32 {
             let seen = assert_no_alloc::assert_no_alloc(|| {
-                let installed = slot.lend();
-                let meter = installed.as_ref().map(|cell| cell.lend());
+                let installed = cell.lend();
+                let meter = installed.as_deref();
                 assert_no_alloc::permit_alloc(|| {
                     if block % 3 == 0 {
                         slot.clear_meter();
@@ -163,5 +154,33 @@ mod tests {
             );
         }
         assert!(slot.has_meter(), "block 16 installed 17/4");
+    }
+
+    /// **A project meter edit reaches the node** with nothing re-installed,
+    /// and a clear stops it: the node's cell follows the meter it was given.
+    ///
+    /// Mutation (run): `set_meter` publishing the project meter's value once
+    /// and not following it (`MeterSlot::follow` without `attach`'s
+    /// registration) → the edit to 7/8 never reaches the cell, fails.
+    #[test]
+    fn a_project_meter_edit_reaches_the_installed_node() {
+        let project = meter_of(3);
+        let slot = PluginMeter::default();
+        let cell = slot.cell();
+        slot.set_meter(project.clone());
+        assert!(slot.installed().unwrap().ptr_eq(&project));
+        let seven_eight = TimeSignature::from_parts(7, 8);
+        project.set_meter(Arc::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            seven_eight,
+        )])));
+        assert_eq!(
+            cell.lend().as_deref().map(|m| m.changes()[0].signature),
+            Some(seven_eight)
+        );
+        slot.clear_meter();
+        assert!(cell.lend().is_none());
+        project.set_meter(Arc::new(MeterMap::default()));
+        assert!(cell.lend().is_none(), "a cleared node no longer follows");
     }
 }

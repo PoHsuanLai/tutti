@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tutti_core::ArcLend;
-use tutti_core::{AtomicF64, Ordering, SampleRate, Samples, SrcRatio};
+use tutti_core::{AtomicF64, Ordering, SampleRate, SrcRatio};
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
@@ -19,17 +18,16 @@ use super::loops::{apply_mapping, buffer_size_for_file, LeadIn, Mapping, RingLoo
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::RegionBuffer;
+use super::preroll::PdcFeed;
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
-/// loop. `Clone` is cheap — every field is an `Arc` or `Option<Arc>`.
+/// loop. `Clone` is cheap — every field is an `Arc`.
 #[derive(Clone)]
 pub(super) struct Handles {
     pub plans: Arc<DashMap<usize, ChannelPlan>>,
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
-    /// Lock-free subscription to the compensation table. `None` = no PDC wiring.
-    pub pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
     /// The session rate each stream's [`SrcRatio`] is derived against.
     pub session_rate: SessionRate,
 }
@@ -84,17 +82,21 @@ pub(super) struct Local {
     pub next_region_id: u64,
     /// Flat interleaved refill scratch. Butler-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
+    /// The read state on the delay-compensation table, built with the
+    /// controller (`ButlerThread::with_pdc`) and read by `&mut` here.
+    pub pdc: PdcFeed,
 }
 
 impl Local {
-    /// Thread-local state with no regions and a scratch buffer pre-sized for one
-    /// `base_chunk_size` refill.
-    pub(super) fn new(base_chunk_size: usize) -> Self {
+    /// Thread-local state with no regions, a scratch buffer pre-sized for one
+    /// `base_chunk_size` refill, and `pdc` to read compensation through.
+    pub(super) fn new(base_chunk_size: usize, pdc: PdcFeed) -> Self {
         Self {
             regions: RegionMap::new(),
             buffer_margin: 1.0,
             next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
+            pdc,
         }
     }
 
@@ -298,13 +300,7 @@ fn handle_stream_file(
         producer.set_resident(wave);
     }
 
-    let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
-        pdc.lend()
-            .get(channel_index)
-            .copied()
-            .unwrap_or_default()
-            .get() as u64
-    });
+    let pdc_preroll = local.pdc.preroll(channel_index);
 
     // The window starts where the reader will play: the offset, pre-rolled.
     // A free-running reader starts at the offset; a placed voice at its clock.
@@ -472,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_mint_region_id_is_monotonic() {
-        let mut local = Local::new(4096);
+        let mut local = Local::new(4096, PdcFeed::default());
 
         let id1 = local.mint_region_id();
         let id2 = local.mint_region_id();

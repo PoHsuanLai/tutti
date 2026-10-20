@@ -166,12 +166,16 @@ impl SessionBuilder {
         // host enables it) and the hardware out the clock feeds.
         #[cfg(feature = "midi")]
         let midi = {
+            // The node owns its drain: the read state on the port set, built
+            // here on the control thread.
             #[cfg(feature = "midi-hardware")]
-            let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = midi_io
-                .as_ref()
-                .map(|io| Arc::clone(io.ports()) as Arc<dyn tutti_midi_types::MidiIn>);
+            let wire: Option<Box<dyn tutti_midi_types::MidiIn>> = midi_io.as_ref().map(|io| {
+                Box::new(tutti_midi_hardware::HardwareMidiDrain::new(Arc::clone(
+                    io.ports(),
+                ))) as Box<dyn tutti_midi_types::MidiIn>
+            });
             #[cfg(not(feature = "midi-hardware"))]
-            let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = None;
+            let wire: Option<Box<dyn tutti_midi_types::MidiIn>> = None;
             let (input, input_controls) =
                 graph.insert(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
             let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());

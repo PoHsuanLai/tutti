@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — every `ArcLend` read site reads one cell it owns (arc-lend E3a)
+
+Preparation for `arc-lend`'s registered readers. Each audio-thread read now
+sits on the node (or butler step) that reads, over one cell fixed when the
+reader is built. No control-side `&self` method reads a cell the audio thread
+reads: each keeps a mirror written in the call that publishes. The plugin
+meter is flattened from a cell of cells to one cell per node, which follows
+the project meter.
+
+| Was | Now |
+|---|---|
+| `ClickSettings::meter() -> Loan<'_, MeterMap>` | `ClickSettings::meter() -> Arc<MeterMap>` (the control side's record, not a read of the metronome's cell) |
+| `ClickSettings::meter_cell() -> Arc<ArcLend<MeterMap>>` | `ClickSettings::project_meter() -> tutti_core::ProjectMeter` |
+| the project meter was an `Arc<ArcLend<MeterMap>>` the host published into | `tutti_core::ProjectMeter`: `set_meter(Arc<MeterMap>)` publishes to the metronome and to every following plugin before it returns; `current()` reads it back on the control side |
+| `PluginMeter`, `PluginControls`, `PluginClient`, `Plugin`, `TransportView`, the in-process VST2 node and client: `set_meter(Arc<ArcLend<MeterMap>>)` | `set_meter(ProjectMeter)`; `Plugin::set_transport_source` likewise |
+| `PluginMeter` a cell holding the installed cell (`PluginMeter::lend`, crate-private) | `PluginMeter` wraps a `tutti_core::MeterSlot`: the node reads the slot's own cell (`MeterSlotCell`), and installing or clearing is a publish into it |
+| `trait MidiIn: Send + Sync { fn poll_block(&self, ..) }` | `trait MidiIn: Send { fn poll_block(&mut self, ..) }`: an implementor is one reader's state, owned by the node that polls it |
+| `MidiInputNode::new(Option<Arc<dyn MidiIn>>)` | `MidiInputNode::new(Option<Box<dyn MidiIn>>)` |
+| `HardwareMidiInputs` implements `MidiIn`; `HardwareMidiInputs::cycle_start_read_all_inputs[_at]` | `tutti_midi_hardware::HardwareMidiDrain::new(Arc<HardwareMidiInputs>)` implements `MidiIn` and owns those two methods (now `&mut self`); a second drain of the same inputs while one runs returns 0, as a re-entered one did |
+
+Migration:
+
+- **Meter.** Take `click_settings.project_meter()` where you took
+  `meter_cell()`, and hand it to `set_meter`. Publish an edit with
+  `project_meter.set_meter(Arc::new(map))` (or `ClickSettings::set_meter`)
+  rather than into a cell.
+- **MIDI input.** Build the hardware input as
+  `MidiInputNode::new(Some(Box::new(HardwareMidiDrain::new(Arc::clone(&inputs)))))`,
+  and call the `cycle_start_*` methods on a drain. A custom `MidiIn` takes
+  `&mut self`; one the test or host still pushes into after handing it over
+  shares its queue through an `Arc` inside the implementor, as
+  `bevy-tutti/tests/midi_soundfont.rs`'s `Wire` does.
+
 ### Changed — `RtPublish` is now the `arc-lend` crate's `ArcLend`
 
 The publish cell left `tutti-types` for its own crate, `crates/arc-lend`

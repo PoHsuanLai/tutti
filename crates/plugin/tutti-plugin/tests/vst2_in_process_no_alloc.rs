@@ -65,23 +65,24 @@ fn process_steady_state_does_not_allocate() {
     drop(handle);
 }
 
-/// With a project meter installed (`set_meter`), each block reads it — the
-/// meter cell's load, then its `ArcLend` — and still does not allocate.
+/// With a project meter installed (`set_meter`), each block reads it — one
+/// borrow of the node's meter cell — and still does not allocate.
 ///
 /// Mutation (run): allocate in `TransportFeed::block` only when a meter is
 /// installed → this test trips the gate, the two without a meter pass.
 #[test]
 fn process_with_a_meter_does_not_allocate() {
-    use std::sync::Arc;
-    use tutti_core::{ArcLend, Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
+    use tutti_core::{
+        Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, ProjectMeter, TimeSignature,
+    };
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)
         .expect("load failed");
-    unit.set_meter(Arc::new(ArcLend::new(MeterMap::new([MeterChange::new(
+    unit.set_meter(ProjectMeter::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
-    )]))));
+    )])));
     let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
     for _ in 0..32 {
         unit.block();

@@ -31,6 +31,7 @@
 //! the graph know nothing about bars.
 
 use super::beat_walk::piece_beats;
+use super::project_meter::ProjectMeter;
 use super::Transport;
 use crate::{AtomicBool, AtomicF32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -111,16 +112,16 @@ pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.
     ///
-    /// An [`ArcLend`] rather than a packed atomic because a [`MeterMap`] is a
-    /// `Vec`, not a scalar. Read once per block in [`ClickNode::process`], never
-    /// per sample — the read is a guard acquire, far heavier than the plain
-    /// atomic loads beside it.
+    /// Published through an [`ArcLend`] rather than a packed atomic because a
+    /// [`MeterMap`] is a `Vec`, not a scalar. The node holds that cell itself
+    /// (taken when it is built) and reads it once per block, never per
+    /// sample; the control side reads the [`ProjectMeter`]'s own mirror.
     ///
-    /// Wrapped in its own `Arc` so the *cell* can be shared, not just its
-    /// contents: hosted plugins need the same meter for their transport
-    /// snapshot, and handing them this handle means one publish reaches the
-    /// metronome and every plugin at once. See [`meter_cell`](Self::meter_cell).
-    meter: Arc<ArcLend<MeterMap>>,
+    /// A [`ProjectMeter`] so hosted plugins hear every meter edit too: each
+    /// plugin node's slot follows it, and one
+    /// [`set_meter`](Self::set_meter) publishes to the metronome and every
+    /// follower. See [`project_meter`](Self::project_meter).
+    meter: ProjectMeter,
     mode: AtomicU8,
 }
 
@@ -129,7 +130,7 @@ impl ClickSettings {
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
-            meter: Arc::new(ArcLend::new(MeterMap::default())),
+            meter: ProjectMeter::default(),
             mode: AtomicU8::new(MetronomeMode::Off as u8),
         }
     }
@@ -146,28 +147,27 @@ impl ClickSettings {
         Amplitude(self.volume.load(Ordering::Acquire))
     }
 
-    /// Publishes a new meter. Lock-free; visible to the audio thread on its next
-    /// block.
+    /// Publishes a new meter to the metronome and to every plugin following
+    /// the [`project_meter`](Self::project_meter), all before it returns:
+    /// visible to the audio thread on its next block. Control thread.
     pub fn set_meter(&self, meter: Arc<MeterMap>) {
-        self.meter.publish(meter);
+        self.meter.set_meter(meter);
     }
 
-    /// The meter in force. Prefer calling this once per block.
-    ///
-    /// A borrow, not an owning handle — see [`ArcLend`] for why that is the
-    /// whole point on the audio thread. Hold it for the block you are rendering
-    /// and no longer.
-    pub fn meter(&self) -> tutti_types::Loan<'_, MeterMap> {
-        self.meter.lend()
+    /// The meter last published. Control side: the project meter's mirror,
+    /// never a read of the cell the node reads.
+    pub fn meter(&self) -> Arc<MeterMap> {
+        self.meter.current()
     }
 
-    /// The shared meter cell, for other subsystems that must see the same value.
+    /// The project meter, for other subsystems that must see the same value.
     ///
-    /// Hosted plugins carry the meter in their transport snapshot; giving them
-    /// this handle rather than a copy means [`set_meter`](Self::set_meter)
-    /// reaches them too, with no second publish path to keep in sync.
-    pub fn meter_cell(&self) -> Arc<ArcLend<MeterMap>> {
-        Arc::clone(&self.meter)
+    /// Hosted plugins carry the meter in their transport snapshot; a plugin
+    /// node's meter slot follows this handle, so
+    /// [`set_meter`](Self::set_meter) reaches them too, with no second
+    /// publish path to keep in sync.
+    pub fn project_meter(&self) -> ProjectMeter {
+        self.meter.clone()
     }
 
     /// Choose when the metronome sounds. Takes effect on the audio thread's
@@ -183,16 +183,15 @@ impl ClickSettings {
 
     /// A fresh cell holding this one's volume, mode and meter now, sharing
     /// nothing with it: what a fork of the metronome renders with. Control
-    /// thread (it allocates; the meter's borrow is released before the fresh
-    /// cell is built).
+    /// thread: it allocates, and reads the meter from the control side's
+    /// mirror, never the node's cell.
     pub fn snapshot(&self) -> ClickSettings {
         let fresh = ClickSettings::new();
         fresh
             .volume
             .store(self.volume.load(Ordering::Acquire), Ordering::Release);
         fresh.set_mode(self.mode());
-        let meter = Arc::new(self.meter().clone());
-        fresh.set_meter(meter);
+        fresh.set_meter(Arc::new(MeterMap::clone(&self.meter())));
         fresh
     }
 }
@@ -226,6 +225,11 @@ pub type ClickState = ClickSettings;
 #[derive(Clone)]
 pub struct ClickNode {
     settings: Arc<ClickSettings>,
+    /// The meter cell of `settings`' project meter, taken when the node is
+    /// built: the one cell the node reads the meter from, once per block.
+    /// Never swapped: a node over other settings is built with
+    /// [`over`](Self::over), which takes that settings' cell.
+    meter: Arc<ArcLend<MeterMap>>,
     /// The transport's count-in flag (`TransportSettings::in_preroll`), or a
     /// fork's own copy of it.
     preroll: Arc<AtomicBool>,
@@ -266,9 +270,16 @@ impl ClickNode {
     /// `settings` is taken as an `Arc` so a later `set_meter` / `set_volume`
     /// reaches the running node: they are its controls.
     pub fn new(transport: &Transport, settings: Arc<ClickSettings>) -> Self {
+        Self::over(settings, Arc::clone(&transport.settings.in_preroll))
+    }
+
+    /// A node over `settings` and the count-in flag `preroll`, reading the
+    /// meter cell of `settings`' project meter. Control thread.
+    fn over(settings: Arc<ClickSettings>, preroll: Arc<AtomicBool>) -> Self {
         Self {
+            meter: settings.meter.cell(),
             settings,
-            preroll: Arc::clone(&transport.settings.in_preroll),
+            preroll,
             sample_rate: None,
             click_normal: Vec::new(),
             click_accent: Vec::new(),
@@ -362,7 +373,7 @@ impl ClickNode {
     /// playhead leaves that span, i.e. about once per notated beat.
     ///
     /// Takes its mutable fields individually rather than `&mut self`: the meter
-    /// arrives as a read lease borrowed from `self.settings`, so a whole-`self`
+    /// arrives as a read lease borrowed from `self.meter`, so a whole-`self`
     /// mutable borrow would collide with it at every call site.
     #[inline]
     fn advance_to(
@@ -439,7 +450,7 @@ impl ClickNode {
     ///
     /// Over the playback fields rather than `&mut self`, for the reason
     /// [`advance_to`](Self::advance_to) gives: the block loop holds the meter
-    /// lease borrowed from `self.settings` while it calls this.
+    /// lease borrowed from `self.meter` while it calls this.
     #[inline]
     fn next_sample(
         click_normal: &[f32],
@@ -485,7 +496,7 @@ impl ClickNode {
                 continue;
             }
             // One lease for the piece — `ArcLend::lend` is never per frame.
-            let meter = self.settings.meter();
+            let meter = self.meter.lend();
             let Self {
                 click_normal,
                 click_accent,
@@ -557,19 +568,34 @@ impl Node for ClickNode {
     }
 }
 
-/// [`ClickNode`]'s fork source: a template sharing the live node's settings
-/// and count-in cell, forked into a node that shares neither.
-struct ClickFork(ClickNode);
+/// [`ClickNode`]'s fork source: the live node's settings and count-in cell,
+/// forked into a node that shares neither.
+///
+/// It holds the cells, not a node: a fork is a node built over new cells
+/// ([`ClickNode::over`]), never a clone of the live one with its cells
+/// swapped, so whatever the node reads its meter cell with is built for the
+/// fork's own cell.
+struct ClickFork {
+    settings: Arc<ClickSettings>,
+    preroll: Arc<AtomicBool>,
+}
 
 impl ClickFork {
+    /// The fork source of `node`.
+    fn of(node: &ClickNode) -> Self {
+        Self {
+            settings: Arc::clone(&node.settings),
+            preroll: Arc::clone(&node.preroll),
+        }
+    }
+
     /// The fork: the settings and the count-in flag as they stand now, in
-    /// cells of its own, and nothing sounding.
+    /// cells of its own, and nothing sounding (it is unprepared).
     fn node(&self) -> ClickNode {
-        let mut fork = self.0.clone();
-        fork.settings = Arc::new(self.0.settings.snapshot());
-        fork.preroll = Arc::new(AtomicBool::new(self.0.preroll.load(Ordering::Acquire)));
-        fork.go_silent();
-        fork
+        ClickNode::over(
+            Arc::new(self.settings.snapshot()),
+            Arc::new(AtomicBool::new(self.preroll.load(Ordering::Acquire))),
+        )
     }
 }
 
@@ -586,7 +612,7 @@ impl IntoNode for ClickNode {
 
     fn into_parts(self) -> NodeParts<Arc<ClickSettings>> {
         let controls = Arc::clone(&self.settings);
-        let fork = ClickFork(self.clone());
+        let fork = ClickFork::of(&self);
         NodeParts {
             node: Box::new(self),
             controls,
@@ -1278,7 +1304,7 @@ mod tests {
             // Recording-only, so the count-in gates it (the render records).
             settings.set_mode(MetronomeMode::RecordingOnly);
             let node = ClickNode::new(&transport, Arc::clone(&settings));
-            (transport, settings, ClickFork(node))
+            (transport, settings, ClickFork::of(&node))
         };
         // 10 240 frames rolling (and recording) from beat 0 at 20 beats a
         // second: four clicks, past beat 3 (a downbeat in 3/4, not in 4/4).

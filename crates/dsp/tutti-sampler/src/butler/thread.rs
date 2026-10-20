@@ -21,9 +21,11 @@ use super::handlers::{Handles, SessionRate};
 use super::loop_body::{butler_loop, Pacing};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
+use super::preroll::PdcFeed;
 use super::queue::{ButlerQueue, ButlerSender};
+use super::step::ButlerCycle;
 #[cfg(any(test, feature = "test-support"))]
-use super::step::{ButlerCycle, StepOutcome};
+use super::step::StepOutcome;
 
 /// Owner of the butler thread and of every handle shared with it.
 ///
@@ -39,6 +41,10 @@ pub struct ButlerThread {
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
+    /// The read state on the delay-compensation table, built here by
+    /// [`with_pdc`](Self::with_pdc) on the control thread; each cycle owns a
+    /// clone of it.
+    pdc: PdcFeed,
     /// How long the thread parks between cycles.
     pacing: Pacing,
     /// The synchronous cycle, when this controller is being driven by hand
@@ -72,7 +78,6 @@ impl ButlerThread {
                 config.cache_max_bytes,
             )),
             metrics: Arc::new(Metrics::new()),
-            pdc: None,
             session_rate: SessionRate::new(sample_rate),
         };
 
@@ -82,6 +87,7 @@ impl ButlerThread {
             shutdown: Arc::new(AtomicBool::new(false)),
             shared,
             config,
+            pdc: PdcFeed::default(),
             pacing: Pacing::DEFAULT,
             #[cfg(any(test, feature = "test-support"))]
             manual: None,
@@ -95,9 +101,20 @@ impl ButlerThread {
     /// audio graph; the butler takes a fresh [`ArcLend::lend`] snapshot each
     /// refill cycle and pre-rolls each stream by its channel's entry. The
     /// subscription is shared, not copied, so later publications are observed.
+    ///
+    /// The butler's read state on the table is built here, on the calling
+    /// thread, and handed to the cycle that runs.
     pub fn with_pdc(mut self, snapshot: Arc<ArcLend<Vec<Samples>>>) -> Self {
-        self.shared.pdc = Some(snapshot);
+        self.pdc = PdcFeed::over(snapshot);
         self
+    }
+
+    /// The cycle state a driver owns: the thread [`start`](Self::start)
+    /// spawns, or [`step_once`](Self::step_once). Built here, on the control
+    /// thread, by both, so the hand-stepped tests build what the thread runs,
+    /// the compensation read state included.
+    fn cycle(&self) -> ButlerCycle {
+        ButlerCycle::new(self.config, self.pdc.clone())
     }
 
     /// A cloneable sender onto the butler's command queue.
@@ -141,7 +158,7 @@ impl ButlerThread {
         let queue = Arc::clone(&self.queue);
         let shutdown = Arc::clone(&self.shutdown);
         let shared = self.shared.clone();
-        let config = self.config;
+        let cycle = self.cycle();
         let pacing = self.pacing;
 
         let handle = thread::Builder::new()
@@ -162,7 +179,7 @@ impl ButlerThread {
                 // nobody, and that first cycle drains it.
                 queue.0.register_butler();
                 let _ = thread_priority::set_current_thread_priority(ThreadPriority::Max);
-                butler_loop(&queue.0, shared, config, shutdown, pacing);
+                butler_loop(&queue.0, shared, cycle, shutdown, pacing);
             })
             // Fatal init: spawning the disk-I/O butler thread is a prerequisite
             // for all streaming/recording. A spawn failure means the OS is out of
@@ -222,9 +239,10 @@ impl ButlerThread {
             "step_once on a started butler: the thread already owns the cycle state"
         );
         let queue = Arc::clone(&self.queue);
-        let cycle = self
-            .manual
-            .get_or_insert_with(|| ButlerCycle::new(self.config));
+        if self.manual.is_none() {
+            self.manual = Some(self.cycle());
+        }
+        let cycle = self.manual.as_mut().expect("set just above");
         cycle.step(&self.shared, || queue.pop())
     }
 

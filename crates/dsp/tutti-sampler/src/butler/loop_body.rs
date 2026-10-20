@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use super::config::BufferConfig;
 use super::handlers::Handles;
 use super::queue::ButlerQueue;
 use super::step::{ButlerCycle, StepOutcome};
@@ -50,12 +49,10 @@ impl Pacing {
 pub(super) fn butler_loop(
     queue: &ButlerQueue,
     shared: Handles,
-    config: BufferConfig,
+    mut cycle: ButlerCycle,
     shutdown: Arc<AtomicBool>,
     pacing: Pacing,
 ) {
-    let mut cycle = ButlerCycle::new(config);
-
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;

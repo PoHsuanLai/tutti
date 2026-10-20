@@ -31,7 +31,7 @@ use super::config::BufferConfig;
 use super::handlers::{handle_command, Handles, Local};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::{apply_mapping, Mapping};
-use super::preroll::apply_pdc_updates;
+use super::preroll::{apply_pdc_updates, PdcFeed};
 
 /// What the pacing layer should do after one butler cycle.
 ///
@@ -78,10 +78,11 @@ pub(crate) struct ButlerCycle {
 }
 
 impl ButlerCycle {
-    /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill.
-    pub(crate) fn new(config: BufferConfig) -> Self {
+    /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill,
+    /// reading delay compensation through `pdc`.
+    pub(crate) fn new(config: BufferConfig, pdc: PdcFeed) -> Self {
         Self {
-            local: Local::new(config.chunk_size),
+            local: Local::new(config.chunk_size, pdc),
             config,
         }
     }
@@ -112,7 +113,7 @@ impl ButlerCycle {
             return StepOutcome::Idle;
         }
 
-        apply_pdc_updates(&shared.pdc, &shared.plans);
+        apply_pdc_updates(&mut self.local.pdc, &shared.plans);
         self.apply_directions(shared);
 
         // Frames resident across every streaming ring, sampled before the

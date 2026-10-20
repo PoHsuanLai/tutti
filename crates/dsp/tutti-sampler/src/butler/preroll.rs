@@ -24,6 +24,47 @@ use std::sync::Arc;
 use tutti_core::ArcLend;
 use tutti_core::Samples;
 
+/// The butler's read state on the published compensation table.
+///
+/// Built on the control thread when the table is subscribed
+/// (`ButlerThread::with_pdc`) and owned by the butler's cycle state, which
+/// reads through it by `&mut`: so a read state that must be registered on the
+/// table before the butler runs (the coming `arc-lend` `Reader`) has a home
+/// built off the butler thread, and one owner. A clone is another read state
+/// on the same table, for a second cycle (a restarted butler, or one stepped
+/// by hand).
+///
+/// Covered by `live_loop`'s `an_entry_past_the_loop_and_a_preroll_land_where_
+/// the_memory_tier_plays`, a hand-stepped butler whose cycle is built by the
+/// same `ButlerThread::cycle` the thread's is. Mutations (run): `with_pdc`
+/// not keeping the feed → fails; a stream opened at preroll 0 instead of its
+/// channel's entry (`handle_stream_file`) → fails.
+#[derive(Clone, Default)]
+pub(crate) struct PdcFeed {
+    /// `None` = no PDC wiring: every channel pre-rolls 0.
+    table: Option<Arc<ArcLend<Vec<Samples>>>>,
+}
+
+impl PdcFeed {
+    /// A feed reading `table`. Control thread.
+    pub(crate) fn over(table: Arc<ArcLend<Vec<Samples>>>) -> Self {
+        Self { table: Some(table) }
+    }
+
+    /// `channel_index`'s preroll in the table now: 0 with no table, or past
+    /// its end. Butler thread.
+    pub(crate) fn preroll(&mut self, channel_index: usize) -> u64 {
+        self.table.as_ref().map_or(0, |table| {
+            table
+                .lend()
+                .get(channel_index)
+                .copied()
+                .unwrap_or_default()
+                .get() as u64
+        })
+    }
+}
+
 /// Reconcile every streaming channel's preroll against the published
 /// compensation table, once per refill cycle.
 ///
@@ -32,18 +73,15 @@ use tutti_core::Samples;
 /// fall beyond the end of the table are left alone — a missing entry reads as
 /// zero compensation, which is the same answer as "none needed".
 ///
-/// A no-op when nothing is subscribed. Butler thread: it takes an
+/// A no-op when nothing is subscribed. Butler thread: it takes one
 /// [`ArcLend::lend`] snapshot for the pass rather than per channel, and it
 /// must never run on the audio thread.
-pub(crate) fn apply_pdc_updates(
-    pdc: &Option<Arc<ArcLend<Vec<Samples>>>>,
-    plans: &DashMap<usize, ChannelPlan>,
-) {
-    let Some(pdc) = pdc.as_ref() else {
+pub(crate) fn apply_pdc_updates(pdc: &mut PdcFeed, plans: &DashMap<usize, ChannelPlan>) {
+    let Some(table) = pdc.table.as_ref() else {
         return;
     };
 
-    let snapshot = pdc.lend();
+    let snapshot = table.lend();
 
     for mut entry in plans.iter_mut() {
         let channel_index = *entry.key();
@@ -109,7 +147,7 @@ mod tests {
     #[test]
     fn with_nothing_subscribed_nothing_moves() {
         let (plans, rings) = streaming(1);
-        apply_pdc_updates(&None, &plans);
+        apply_pdc_updates(&mut PdcFeed::default(), &plans);
         assert_eq!(rings[0].preroll(), 0);
     }
 
@@ -125,7 +163,8 @@ mod tests {
     fn each_ring_is_told_its_channels_preroll() {
         let (plans, rings) = streaming(4);
         let pdc = table([200, 0, 100]);
-        apply_pdc_updates(&Some(Arc::clone(&pdc)), &plans);
+        let mut feed = PdcFeed::over(Arc::clone(&pdc));
+        apply_pdc_updates(&mut feed, &plans);
         assert_eq!(
             rings.iter().map(|r| r.preroll()).collect::<Vec<_>>(),
             [200, 0, 100, 0]
@@ -133,10 +172,10 @@ mod tests {
         assert_eq!(plans.get(&0).unwrap().pdc_preroll, 200);
 
         pdc.publish(Arc::new(vec![Samples(0), Samples(0), Samples(100)]));
-        apply_pdc_updates(&Some(Arc::clone(&pdc)), &plans);
+        apply_pdc_updates(&mut feed, &plans);
         assert_eq!(rings[0].preroll(), 0);
         pdc.publish(Arc::new(vec![Samples(200)]));
-        apply_pdc_updates(&Some(pdc), &plans);
+        apply_pdc_updates(&mut feed, &plans);
         assert_eq!(rings[0].preroll(), 200);
         assert_eq!(rings[2].preroll(), 0, "past the table's end is no preroll");
     }

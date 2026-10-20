@@ -198,7 +198,9 @@ fn a_loop_wrap_restates_the_context_at_the_wrap() {
 ///
 /// Mutation: `set` publishing whatever the lanes → the same lanes re-state
 /// the context → fails. Mutation: a new generation not forgetting the walk →
-/// the new lanes' context is not re-stated → fails.
+/// the new lanes' context is not re-stated → fails. Mutation (run): `set`
+/// publishing without updating the controls' own record of the lanes
+/// (`Shared::current`, what `set` compares against and `len` reads) → fails.
 #[test]
 fn replaced_lanes_restate_and_the_same_lanes_do_not() {
     let (_ed, mut exec, controls, seen) = rig(HarmonyNode::new(lanes()), 512);

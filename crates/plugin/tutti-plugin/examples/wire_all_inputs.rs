@@ -16,8 +16,6 @@
 //! what a plugin will and will not receive *at wiring time* rather than
 //! wondering later why a stream had no effect.
 
-use std::sync::Arc;
-
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_mod::{
@@ -28,7 +26,7 @@ use tutti_plugin::catalog::{Plugin, PluginRole};
 use tutti_plugin::handles::ParamAddress;
 use tutti_plugin::Result;
 
-use tutti_core::{ArcLend, Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, SampleRate};
+use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, ProjectMeter, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
@@ -54,9 +52,9 @@ fn main() -> Result<()> {
     //    instrument.
     //    The transport itself needs no install: the node reads it from each
     //    block it renders. The meter (time signature and bars) is the host's.
-    let meter = Arc::new(ArcLend::new(MeterMap::default()));
+    let meter = ProjectMeter::new(MeterMap::default());
 
-    let took_transport = plugin.set_meter(Arc::clone(&meter));
+    let took_transport = plugin.set_meter(meter.clone());
 
     // Chords and scales are a node of their own too, wired to the plugin's
     // event input: `takes_harmony` answers whether the plugin will read them

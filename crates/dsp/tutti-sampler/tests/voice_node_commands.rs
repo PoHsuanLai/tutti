@@ -254,12 +254,14 @@ fn a_node_with_no_handle_renders_normally() {
 ///
 /// The node's fork source keeps a copy of the voice as it was inserted, so a
 /// placement set after the insert reaches a fork only because the fork source
-/// reads the node's placement cell when the fork is taken; otherwise it would
-/// export the clip at its old position.
+/// applies the window the handle last published (its control-side record,
+/// never the cell the audio thread reads) when the fork is taken; otherwise
+/// it would export the clip at its old position.
 ///
-/// Mutation (run): `VoiceNodeFork::fork` not applying the published
+/// Mutations (run): `VoiceNodeFork::fork` not applying the recorded
 /// placement → the fork keeps the window at beat 0, is silent at beat 10,
-/// and this fails.
+/// and this fails; `set_placement` publishing without updating the record →
+/// the same.
 #[test]
 fn a_placement_sent_after_the_insert_reaches_a_fork() {
     let (ed, _exec, handle) = graph_with(node_at(0.0));

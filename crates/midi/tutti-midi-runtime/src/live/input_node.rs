@@ -15,7 +15,7 @@
 //!
 //! Its fork is silent: an offline render reads no wire.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_core::{ArcLend, ChannelLayout};
 use tutti_graph::{
@@ -72,23 +72,40 @@ pub fn input_ports(channel: Option<MidiChannel>) -> impl Iterator<Item = usize> 
 /// assert_eq!(controls.pending_mpe_mode(), None);
 /// ```
 pub struct MidiInputNode {
-    input: Option<Arc<dyn MidiIn>>,
+    /// The edge this node polls, owned: whatever state a poll keeps (a
+    /// hardware drain's scratch, its read of the port set) is the node's.
+    input: Option<Box<dyn MidiIn>>,
     scratch: Box<[MidiEvent]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
-    request: Arc<ArcLend<Option<MpeMode>>>,
+    request: Arc<MpeRequest>,
+}
+
+/// The MPE mode a host asked for: what the node reads, and the control
+/// side's record of it.
+struct MpeRequest {
+    /// What the node reads, once per block.
+    cell: ArcLend<Option<MpeMode>>,
+    /// The mode last asked for, for the control side
+    /// ([`MidiInputControls::pending_mpe_mode`]). The node never takes this
+    /// lock.
+    asked: Mutex<Option<MpeMode>>,
 }
 
 impl MidiInputNode {
     /// A node polling `input` each block (`None`: a node that sends nothing),
-    /// with MPE ingestion off.
-    pub fn new(input: Option<Arc<dyn MidiIn>>) -> Self {
+    /// with MPE ingestion off. The node owns `input`: build one per node
+    /// (a hardware manager's `HardwareMidiInputs::drain`).
+    pub fn new(input: Option<Box<dyn MidiIn>>) -> Self {
         Self {
             input,
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
-            request: Arc::new(ArcLend::new(None)),
+            request: Arc::new(MpeRequest {
+                cell: ArcLend::new(None),
+                asked: Mutex::new(None),
+            }),
         }
     }
 
@@ -106,7 +123,7 @@ impl MidiInputNode {
     /// the ingest, so re-adopting it every block would drop every sounding
     /// note's voice mapping every block.
     fn adopt_mpe_request(&mut self) {
-        let pending = *self.request.lend();
+        let pending = *self.request.cell.lend();
         if let Some(mode) = pending {
             if *self.mpe.mode() != mode {
                 self.mpe.set_mode(mode);
@@ -118,7 +135,7 @@ impl MidiInputNode {
 /// The host's handle on a [`MidiInputNode`]: its MPE mode. Cheap to clone.
 #[derive(Clone)]
 pub struct MidiInputControls {
-    request: Arc<ArcLend<Option<MpeMode>>>,
+    request: Arc<MpeRequest>,
 }
 
 impl MidiInputControls {
@@ -128,14 +145,28 @@ impl MidiInputControls {
     /// member channel loses its mapping. Setting the mode in force changes
     /// nothing.
     pub fn set_mpe_mode(&self, mode: MpeMode) {
-        self.request.publish(Arc::new(Some(mode)));
+        let mut asked = self.asked();
+        *asked = Some(mode);
+        self.request.cell.publish(Arc::new(Some(mode)));
     }
 
     /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
     /// if any: what was asked, not what is in force (they differ for a block
-    /// after a change, and for good if the graph never runs).
+    /// after a change, and for good if the graph never runs). Control side:
+    /// reads its own record, never the node's cell.
     pub fn pending_mpe_mode(&self) -> Option<MpeMode> {
-        *self.request.lend()
+        *self.asked()
+    }
+
+    /// The control side's record, under its lock: held across a publish so
+    /// two `set_mpe_mode` calls cannot leave the record and the cell
+    /// disagreeing.
+    fn asked(&self) -> std::sync::MutexGuard<'_, Option<MpeMode>> {
+        // A poisoned lock still holds a whole `Option`, set in one write.
+        self.request
+            .asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -156,7 +187,7 @@ impl Node for MidiInputNode {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // Before any event is translated, stated or not.
         self.adopt_mpe_request();
-        let Some(input) = &self.input else {
+        let Some(input) = self.input.as_mut() else {
             return Status::Modified;
         };
         let block_len = cx.env.block_len;
@@ -213,6 +244,33 @@ impl IntoNode for MidiInputNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The controls report the mode last asked for, from their own record,
+    /// and the node adopts it on its next block.
+    ///
+    /// Mutation (run): `set_mpe_mode` publishing without writing the record
+    /// (drop `*asked = Some(mode)`) → `pending_mpe_mode` stays `None`,
+    /// fails.
+    #[test]
+    fn the_controls_report_the_mode_last_asked_for() {
+        use tutti_midi_types::mpe::MpeZoneConfig;
+        let parts = MidiInputNode::new(None).into_parts();
+        let controls = parts.controls;
+        assert_eq!(controls.pending_mpe_mode(), None);
+        let lower = MpeMode::LowerZone(MpeZoneConfig::lower(15));
+        let upper = MpeMode::UpperZone(MpeZoneConfig::upper(7));
+        controls.set_mpe_mode(lower);
+        controls.clone().set_mpe_mode(upper);
+        assert_eq!(controls.pending_mpe_mode(), Some(upper), "the last asked");
+
+        // A node over the same request, as the inserted one is.
+        let mut node = MidiInputNode {
+            request: Arc::clone(&controls.request),
+            ..MidiInputNode::new(None)
+        };
+        node.adopt_mpe_request();
+        assert_eq!(*node.mpe.mode(), upper, "the node adopts it");
+    }
 
     /// A listener on one channel takes that channel's port and the
     /// channelless one; an omni listener takes all seventeen.

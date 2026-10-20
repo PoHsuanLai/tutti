@@ -29,7 +29,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use tutti_types::{AudioThread, NodeKey, ParamAddr, RangeCell, Samples, UnitParam};
+use tutti_types::{NodeKey, ParamAddr, RangeCell, RtScope, Samples, UnitParam};
 
 use crate::event::{segment_progress, Event, EventKind, SegmentShape};
 use crate::spec::EventOut;
@@ -698,7 +698,7 @@ impl Drop for ParamState {
     /// allocated nothing (no declared params) may go anywhere.
     fn drop(&mut self) {
         if !self.ports.is_empty() {
-            AudioThread::check_not_current("a unit's param state");
+            RtScope::check_outside("a unit's param state");
         }
     }
 }

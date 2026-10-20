@@ -32,7 +32,7 @@ bevy = ["dep:bevy_reflect"]
 # the audio thread through. A general-purpose crate in this workspace that names
 # no tutti crate, so the rule "tutti-types names no other tutti crate" holds.
 arc-lend = { path = "../../arc-lend" }
-# The fixed inline storage behind `RtVec` (`rt/capped.rs`):
+# The fixed inline storage behind `RtVec` (`rt/vec.rs`):
 # a run of `N` slots that cannot grow, so the cap is the type's, not a check
 # beside it.
 arrayvec = "0.7"

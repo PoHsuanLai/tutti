@@ -542,8 +542,8 @@ fn a_clone_and_its_original_tick_independently() {
 ///
 /// Replaces `the_block_scratch_rides_the_shared_bank`.
 ///
-/// Mutation (run): `from_vocoders` sizing the scratch `RtScratch::new(0)` →
-/// fails.
+/// Mutation (run): `from_vocoders` sizing the scratch
+/// `vec![0.0f32; 0].into_boxed_slice()` → fails.
 #[test]
 fn a_clone_arrives_with_its_block_scratch_sized() {
     let u = Unit::with_channels(44_100.0, 6usize);
@@ -551,7 +551,7 @@ fn a_clone_arrives_with_its_block_scratch_sized() {
     for scratch in [&c.ch.scratch_in, &c.ch.scratch_out] {
         assert_eq!(scratch.len(), 6, "one scratch buffer per channel");
         assert!(
-            scratch.iter().all(|s| s.capacity() >= 8192),
+            scratch.iter().all(|s| s.len() >= 8192),
             "a clone's scratch must arrive sized, with no hook to size it later"
         );
     }
@@ -1618,5 +1618,55 @@ fn isolate_snapshots_stretch_and_pitch() {
             bits(&before),
             "{name}: moving it did not change a fresh fork's output"
         );
+    }
+}
+
+/// **A block longer than the scratch is split, not truncated.** One
+/// `process` of 8192 + 300 frames renders exactly what a fresh twin renders
+/// from two calls of 8192 and 300, processing and bypassing alike: every
+/// output frame is written, with none left stale past the scratch.
+///
+/// Mutation (run): `process` calling `process_run(0, size, …)` once instead
+/// of in runs → panics on the scratch slice → fails. Mutation (run): a
+/// `break` after the first run (the old clamp's truncation) → the tail
+/// stays at its sentinel → fails.
+#[test]
+fn a_block_past_the_scratch_is_rendered_in_runs() {
+    let head = MAX_BUFFER_SIZE;
+    let size = head + 300;
+    for stretch in [2.0, 1.0] {
+        let mut whole = Unit::with_channels(44_100.0, 2usize);
+        whole.set_stretch_factor(StretchFactor::new(stretch));
+        let mut split = whole.clone();
+
+        let lane: Vec<f32> = (0..size).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        let input = vec![lane.clone(), lane];
+        // A sentinel no render produces, so an unwritten frame shows.
+        let mut out_whole = vec![vec![9.0f32; size]; 2];
+        let mut out_split = vec![vec![9.0f32; size]; 2];
+
+        planar(&mut whole, size, &input, &mut out_whole);
+        {
+            let ins: Vec<&[f32]> = input.iter().map(|c| &c[..head]).collect();
+            let mut outs: Vec<&mut [f32]> = out_split.iter_mut().map(|c| &mut c[..head]).collect();
+            split.process(head, &ins, &mut outs);
+            let ins: Vec<&[f32]> = input.iter().map(|c| &c[head..]).collect();
+            let mut outs: Vec<&mut [f32]> = out_split.iter_mut().map(|c| &mut c[head..]).collect();
+            split.process(size - head, &ins, &mut outs);
+        }
+
+        for ch in 0..2 {
+            assert!(
+                out_whole[ch].iter().all(|&s| s != 9.0),
+                "stretch {stretch}, channel {ch}: a frame was left unwritten"
+            );
+            assert_eq!(
+                out_whole[ch], out_split[ch],
+                "stretch {stretch}, channel {ch}: one long block must render as its runs"
+            );
+        }
+        if stretch == 1.0 {
+            assert_eq!(out_whole, input, "bypass copies every frame through");
+        }
     }
 }

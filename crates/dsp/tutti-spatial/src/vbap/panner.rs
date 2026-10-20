@@ -2,7 +2,6 @@ use super::error::Result;
 use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::RtScratch;
 use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Spread, StereoWidth};
 use vbap::VBAPanner;
 
@@ -47,8 +46,10 @@ pub(crate) struct VbapPanner {
     /// Sized to the layout's speaker count on construction; reused per solve
     /// so the RT path never allocates. One buffer serves both virtual sources
     /// of the stereo-width branch: each solve is copied out into an f32
-    /// array before the next one starts.
-    gains_scratch: RtScratch<f64>,
+    /// array before the next one starts. Every solve uses the whole buffer
+    /// (its length *is* the speaker count), so there is no active length to
+    /// get wrong and nothing to clamp.
+    gains_scratch: Box<[f64]>,
 }
 
 impl VbapPanner {
@@ -63,7 +64,7 @@ impl VbapPanner {
             smoother: AngleSmoother::new(sample_rate),
             spread: Spread::POINT,
             has_rear_speakers,
-            gains_scratch: RtScratch::new(speaker_count),
+            gains_scratch: vec![0.0; speaker_count].into_boxed_slice(),
         }
     }
 
@@ -299,12 +300,12 @@ impl VbapPanner {
         // `compute_gains`. The latter allocates a fresh `Vec<f64>` per call
         // (and is `#[deprecated]` in vbap 0.1.2). Backstop:
         // `tutti-spatial/tests/rt_no_alloc.rs::vbap_panner_stereo_process_is_allocation_free`.
-        let speaker_count = self.gains_scratch.capacity();
+        let speaker_count = self.gains_scratch.len();
         // `solve_gains` takes its two inputs explicitly rather than `&self`:
         // the scratch is borrowed mutably out of this same struct, so a
         // `&self` receiver would not co-exist with it.
         let (panner, has_rear) = (&self.panner, self.has_rear_speakers);
-        let scratch = self.gains_scratch.active(speaker_count);
+        let scratch = &mut *self.gains_scratch;
         Self::solve_gains(panner, has_rear, azimuth, elevation, scratch);
 
         let count = speaker_count.min(MAX_SPEAKERS);

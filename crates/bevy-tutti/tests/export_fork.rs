@@ -1066,7 +1066,7 @@ mod synths {
     use super::*;
 
     use bevy_tutti::graph::{
-        GraphNode, GraphReconcilePlugin, MasterSources, SpawnAudioNode, TransportRes,
+        GraphReconcilePlugin, MasterSources, SessionNode, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
@@ -1131,7 +1131,7 @@ mod synths {
     /// "Synth", routed to the master.
     fn app_with<N>(unit: N) -> (App, Entity)
     where
-        N: GraphNode,
+        N: SessionNode,
         N::Controls: Send + Sync + 'static,
     {
         let mut app = app_over(graph_on());
@@ -1282,8 +1282,9 @@ mod synths {
     /// params were a `ParamSet` (its controls were `()`), an `AudioParam` on
     /// the synth node reached nothing.
     ///
-    /// Mutation (run): the synth registered with no params (`impl GraphNode
-    /// for PolySynth {}` instead of `param_graph_node!`) → the live cell
+    /// Mutation (run): the synth registered with no params (the session's
+    /// `impl SessionNode for PolySynth {}` instead of `param_session_node!`)
+    /// → the live cell
     /// stays at 1 and the export at full volume → fails.
     #[test]
     fn an_audio_param_on_a_synth_reaches_it_and_its_fork() {

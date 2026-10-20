@@ -4,10 +4,19 @@
 // which `tests/no_logic.rs` forbids anyway. Two gates on the same rule.
 //
 // This file holds only `pub use`, `pub mod` and docs: a convenience
-// constructor belongs in the crate that owns what it wires (device bootstrap
-// in `tutti-cpal`, graph logic in `tutti-graph`/`tutti-core`), where
-// `bevy-tutti` gets it too. `tests/no_logic.rs` enforces this.
+// constructor belongs in the crate that owns what it wires, or, when it
+// composes several crates, in `tutti-session`, where `bevy-tutti` gets it
+// too. `tests/no_logic.rs` enforces this.
 #![deny(missing_docs)]
+
+// --- the API layer ----------------------------------------------------------
+
+/// The API layer (`tutti-session`): a [`Session`](session::Session) is a
+/// graph, its transport and the engine side it renders on, built offline or
+/// on a device by a [`SessionBuilder`](session::SessionBuilder). The same
+/// layer `bevy-tutti` runs on. Feature `session`, on by default.
+#[cfg(feature = "session")]
+pub use tutti_session as session;
 
 // --- runtime and vocabulary -------------------------------------------------
 //
@@ -123,9 +132,11 @@ pub use tutti_plugin as plugin;
 ///
 /// The engine's prelude (units, `ChannelLayout`, buffer views, `Engine`,
 /// `Transport`, metering) plus the transport's motion vocabulary, and the
-/// device and sampler handles when those features are on. `Result`, `Sample`
-/// and `Unit` are left out because each would shadow a name a consumer
-/// already has. It matches `bevy-tutti`'s prelude without the ECS types.
+/// device and sampler handles when those features are on, and the session
+/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, and with `device`
+/// its `Device`). `Result`, `Sample` and `Unit` are left out because each
+/// would shadow a name a consumer already has. It matches `bevy-tutti`'s
+/// prelude without the ECS types.
 pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
@@ -139,4 +150,9 @@ pub mod prelude {
 
     #[cfg(feature = "sampler")]
     pub use tutti_sampler::{Playback, Voice, VoiceWindow};
+
+    #[cfg(all(feature = "session", feature = "device"))]
+    pub use tutti_session::Device;
+    #[cfg(feature = "session")]
+    pub use tutti_session::{Phase, Session, SessionBuilder, SessionEvent};
 }

@@ -1,7 +1,7 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **in progress**. PRs 1, 2 and 3 (§9) have landed; the rest has
-not. Each landed PR says so in a "Landed" note. The user has made every
+Status: **in progress**. PRs 1, 2, 3 and 4 (§9) have landed; the rest
+has not. Each landed PR says so in a "Landed" note. The user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before PR 1.
 
@@ -458,8 +458,14 @@ only legal on the host's main (UI) thread:
   teardown is main-thread-only (`tutti-export` `lib.rs:172-174`).
 
 So these calls are main-thread calls: `update()`, `run_phase(Collect)`,
-`run_phase(Commit)`, `run_phase(AfterCommit)`, `add_plugin`, `remove`,
-`finish_export`, and dropping the `Session`.
+`run_phase(Commit)`, `run_phase(AfterCommit)`, `add_plugin`,
+`finish_export`, and dropping the `Session`. The free itself is guarded
+where it happens, at the editor's collect (the `Collect` phase, and on a
+detached session every commit, `render_frame` and `set_sample_rate`, which
+apply and collect at once), so no path around the list frees off the main
+thread unchecked. `remove` is not on the list (PR 4 review): it frees
+nothing itself, and Bevy calls it from parallel systems (a clip whose target
+lost its event input); the node it removes is freed at the next collect.
 
 - With `plugin` on, each asserts it with `tutti-plugin`'s existing
   debug-only guard (`assert_main_thread`, `tutti-plugin-types`
@@ -1368,6 +1374,90 @@ they are. Each splits in two:
 **Exit:** every `bevy-tutti` graph, engine and restart test passes over the
 session. `headless_engine.rs` is rewritten on `Session` and is under 20
 lines.
+
+**Landed.** `crates/tutti-session`: every module private (`builder`,
+`device`, `error`, `graph`, `node`, `session`), `#![forbid(unsafe_code)]`,
+`default = []`. What moved, old → new:
+
+| Was (`bevy-tutti`) | Now (`tutti-session`) |
+|---|---|
+| `graph::runtime::GraphRuntime` | `Graph` (`Session::graph`) |
+| `GraphNode` (and its impls for the engine's nodes, the voices, the panners) | `SessionNode`; `param_graph_node!` names it through `__private` |
+| `GraphNode::captured` (default: nothing captured) | removed: a Bevy-free trait cannot name `CapturedControls`. The spawn paths bind `CapturedControls::default()` (a plugin's, `for_plugin`), and a host with other controls calls `CapturedControls::bind` |
+| `GraphDirty` | the edit flag, `Graph::is_edited`; `update()` and `Phase::Commit` commit iff it is set |
+| `EventFeeds` (keyed by `Entity`) | `Graph::{set_feed, feed, move_feeds}`, keyed by `AudioNode`; `remove` purges a node from every feed |
+| `ModEntities` | `ModKeys` (`node`, `plugin_value`, `feed`), implemented by `Declared` |
+| `engine/build.rs`'s assembly (graph, transport, click, MIDI nodes, streamer, callback state) | `SessionBuilder::{build_offline, build_detached, build_device, build_device_on}` |
+| `TuttiDriver` as a resource | `Device` (`!Send`, a non-send resource) |
+| `engine/restart.rs`'s re-rate | `Session::{restart, restart_following, restart_on}` |
+| `bevy_tutti::Error` | `tutti_session::Error`, re-exported |
+| the crossfade retry and compensation publish in `commit_graph` | `Phase::{Collect, Commit}` |
+
+Tests: the three `runtime.rs` tests split as planned. The session halves
+are in `tests/graph.rs` (`every_param_write_path_reaches_a_fork`,
+`a_crossfade_refused_busy_during_a_re_prepare_lands_on_a_later_update`,
+`a_crossfade_on_a_poisoned_graph_is_refused`); the adapter halves are in
+`bevy-tutti`'s `graph/tests.rs`. The properties above are
+`an_offline_session_renders_a_sines_analytic_rms`,
+`a_latent_branch_is_compensated_on_the_other_to_the_sample`,
+`a_rerate_keeps_the_published_compensation_in_step_with_the_plan`
+(`tests/device.rs`), `an_edit_between_updates_is_committed_by_the_next`,
+`an_update_with_no_edit_sends_no_plan`,
+`move_feeds_moves_every_feeders_sources` with `bevy-tutti`'s
+`a_re_bound_target_keeps_its_clip`, and `Device`'s `compile_fail`
+doctest. The engine tests of `engine/build.rs` (the click, the rate, the
+voices, `root_width`) moved to `tests/engine.rs` and `tests/graph.rs`;
+`the_transport_converts_at_the_sessions_rate` is new, because the click
+cannot see the transport's rate. `scripts/check-bevy-free.sh` runs in
+`just ci` and CI, with its mutations recorded in the script. After review:
+`a_target_removed_then_re_bound_keeps_its_clip`,
+`a_keyboard_follows_its_entity_onto_a_node_bound_after_a_removal` and
+`a_removal_is_any_threads_and_a_free_is_the_main_threads`, and CI and
+`just test-doc` run `cargo test --doc -p tutti-session --features device`
+(the `Device` `compile_fail` proof) by name.
+
+Where the code differs from the text above:
+
+- **`bevy-tutti` re-exports single session items** (`SessionNode`,
+  `GraphSource`, `Crossfade`, `Device`, `DeviceRestart`, `Error`, …),
+  where §6 says it re-exports none and a hand-written impl adds the
+  dependency. They are the types its own signatures take, so a host
+  naming them adds no dependency; the crate is still not re-exported
+  whole.
+- **The crossfade retry runs in `Collect`**, not `Commit`: a crossfade
+  refused `Busy` is parked and retried once the re-prepare is collected,
+  and lands as `SessionEvent::CrossfadeLanded` (Bevy binds its controls
+  then, `PendingCrossfades`).
+- **Extra builder and restart entry points:** `build_detached(rate)` (no
+  engine; the executor stays on this side), `Session::restart_following`
+  (takes a closure run with the new `OutputSpec`, which Bevy uses to
+  re-rate its disk streamer and `AudioConfig`) and `restart_on` (any
+  `StreamDriver`, for the device-free tests).
+- **`DeviceRestart` is `Clone`, not `Copy`**, and its `device` is a
+  `DeviceSelector`; `TuttiDriver::{restart, restart_with}` take
+  `impl Into<DeviceSelector>` (an `Option<usize>` still converts).
+- **`Error` is `#[non_exhaustive]`.**
+- **A staged edit waits for the next frame.** An edit a host makes through
+  `AudioGraphRes` after `commit_graph` is committed by the next frame's
+  commit; before, `GraphDirty` could be set and cleared by whichever
+  system ran next. Modulation's `after_commit` no longer commits a host's
+  staged edit early: it resolves its waiting targets, and commits what
+  that built, only while the graph is otherwise clean.
+- **`EngineNodes` is inserted only when the click exists** (a detached or
+  offline-without-click session has none).
+- **A live MIDI input is fed once its entity has an `AudioNode`.** The
+  inbound routes, the clips and the live inputs each re-assert their feed
+  on the entity's current node when its `AudioNode` changes, so a re-bound
+  target keeps all three, also when the old `AudioNode` was removed first
+  (`Graph::remove` drops the old node's feeds, so `move_feeds` alone would
+  find nothing; a review of PR 4 caught this).
+- **`Session::remove` does not assert the main thread** (§4.2): the free
+  is guarded at the editor's collect, every path to which asserts.
+
+Deferred: `GraphReconcileSystems` is not yet built from `PHASES` (the sets
+run the same steps in the same order by hand), and Bevy does not run
+`Phase::Poll` (its device poll stays a system). The modulation reconcile
+loop, MIDI wiring, plugins and export are PRs 5 and 6.
 
 ### PR 5: modulation and MIDI in the session
 

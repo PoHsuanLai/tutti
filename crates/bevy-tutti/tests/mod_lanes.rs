@@ -67,7 +67,7 @@ fn app(outputs: usize) -> (App, AudioSide) {
 /// Spawns `node` the ordinary way and returns its entity.
 fn spawn<N>(app: &mut App, node: N) -> Entity
 where
-    N: bevy_tutti::graph::GraphNode,
+    N: bevy_tutti::graph::SessionNode,
     N::Controls: Send + Sync + 'static,
 {
     let entity = app.world_mut().commands().spawn_audio_node(node).id();
@@ -180,7 +180,7 @@ fn setup(mut mods: Mods, scene: Res<Scene>) {
 /// Mutations (run), each fails: `ModHostOver::target` handing the knob
 /// cell of another param (`p.cell(Volume)`: the cutoff has none and reads
 /// 500 flat); `Declared::collect` dropping the ranges (the routes are
-/// refused); `ModEntities::feed` answering `None` (the follower is
+/// refused); `ModKeys::feed` (`Declared`) answering `None` (the follower is
 /// unresolved and the pad never dips).
 #[test]
 fn the_8_1_example_renders_its_analytic_values() {

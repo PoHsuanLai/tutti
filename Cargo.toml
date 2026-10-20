@@ -20,6 +20,10 @@ members = [
     # Re-exporting was never the problem; owning logic was. See
     # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
     "crates/tutti",
+    # The Bevy-free API layer both umbrellas use (design 015): the
+    # cross-crate composition, not an umbrella. It re-exports no crate whole
+    # and never reaches Bevy (`scripts/check-bevy-free.sh`).
+    "crates/tutti-session",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",

@@ -49,14 +49,14 @@ use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
 
-use crate::graph::{AudioGraphRes, GraphDirty};
+use crate::graph::AudioGraphRes;
 use crate::plugin_host::PluginShadow;
 
 /// Hands the graph a plugin's latency when the figure its node declares no
 /// longer matches the one the editor holds.
 ///
 /// `AudioGraphRes::refresh_node_latency` feeds `Editor::set_latency`, and
-/// `GraphDirty` is set, so the next commit moves PDC to the new figure without
+/// marks the session edited, so the next commit moves PDC to the new figure without
 /// touching the plugin — which is why this must run before the `Commit` phase
 /// to be seen in the same frame. Pinned to the main thread
 /// ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)) for the reason
@@ -72,11 +72,10 @@ use crate::plugin_host::PluginShadow;
 /// moved leaves `AudioGraphRes` unchanged.
 pub fn plugin_latency_poll(
     _main: bevy_ecs::system::NonSendMarker,
-    dirty: Option<ResMut<GraphDirty>>,
     graph: Option<ResMut<AudioGraphRes>>,
     plugins: Query<(&AudioNode, &PluginShadow)>,
 ) {
-    let (Some(mut dirty), Some(mut graph)) = (dirty, graph) else {
+    let Some(mut graph) = graph else {
         return;
     };
 
@@ -84,12 +83,13 @@ pub fn plugin_latency_poll(
         let Some(controls) = shadow.controls_for(node) else {
             continue;
         };
-        let declared = crate::graph::clamp_latency(controls.declared_latency());
-        if graph.node_latency(*node) == declared.samples() {
-            continue;
-        }
-        if graph.refresh_node_latency(*node, declared) {
-            dirty.0 = true;
+        // `refresh_node_latency` clamps the figure and compares it with the
+        // editor's itself; the resource is marked changed only when it moved.
+        if graph
+            .bypass_change_detection()
+            .refresh_node_latency(*node, controls.declared_latency())
+        {
+            graph.set_changed();
         }
     }
 }
@@ -101,53 +101,58 @@ mod tests {
     use crate::AudioEngineState;
     use bevy_app::prelude::*;
 
-    /// The poll raises `GraphDirty`; nothing else in this app does, so the
-    /// observation is attributable.
+    /// The poll alone, with no commit: an edit it made would stay on the
+    /// session's edit flag, and nothing else in this app edits the graph, so
+    /// the observation is attributable.
     fn test_app() -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
-        app.init_resource::<GraphDirty>();
         app.add_systems(Update, plugin_latency_poll);
         app
     }
 
-    /// An entity whose `AudioNode` is not a hosted plugin must not raise the
-    /// flag — every node in the graph carries `AudioNode`, so a poll that did
-    /// not require a shadow would mark the graph dirty every frame forever and
+    /// An entity whose `AudioNode` is not a hosted plugin must not edit the
+    /// session — every node in the graph carries `AudioNode`, so a poll that
+    /// did not require a shadow would mark the graph edited every frame
+    /// forever and
     /// re-run compensation on a graph nothing had changed.
     #[test]
-    fn a_non_plugin_node_never_marks_the_graph_dirty() {
+    fn a_non_plugin_node_never_marks_the_graph_edited() {
         let mut app = test_app();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(tutti_nodes::testing::Const::mono(0.0))
+            let (node, controls) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+            // The insert is an edit: send it, so the flag starts clear.
+            assert!(graph.commit(), "the insert commits");
+            (node, controls)
         };
         app.world_mut().spawn(node);
 
         app.update();
 
         assert!(
-            !app.world().resource::<GraphDirty>().0,
+            !app.world().resource::<AudioGraphRes>().is_edited(),
             "a dc node is not a plugin and has no latency to compensate"
         );
     }
 
     /// With no graph resource the system is inert rather than panicking.
     ///
-    /// `AudioGraphRes` belongs to `engine::build_into` and `GraphDirty` to
-    /// `GraphReconcilePlugin`; neither is this module's, so a host that adds
-    /// the plugin host alone must not crash.
+    /// `AudioGraphRes` belongs to `engine::build_into`, not this module, so
+    /// a host that adds the plugin host alone must not crash.
+    ///
+    /// The property is "does not panic without a graph": the test passes by
+    /// returning from `update`. There is nothing else to observe. Before the
+    /// session, a `GraphDirty` resource could be checked for staying clean,
+    /// but the edit flag lives in the graph, and here there is no graph.
+    ///
+    /// Mutation (run): the poll taking `ResMut<AudioGraphRes>` (not an
+    /// `Option`) → Bevy panics on the missing resource → fails.
     #[test]
     fn the_poll_is_inert_without_a_graph() {
         let mut app = App::new();
-        app.init_resource::<GraphDirty>();
         app.add_systems(Update, plugin_latency_poll);
         app.update();
-
-        assert!(
-            !app.world().resource::<GraphDirty>().0,
-            "no graph means nothing to compensate, not a dirty graph"
-        );
     }
 }

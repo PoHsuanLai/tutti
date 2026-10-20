@@ -32,6 +32,11 @@ tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", default-features = f
 tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
 tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
 tutti-plugin = { path = "../plugin/tutti-plugin", optional = true }
+# The API layer (design 015): a graph, its engine and its device behind one
+# `Session`. `default-features = false` (its default is empty anyway): each
+# feature below turns on the session's feature of the same name with `?`, so
+# a build without `session` gets no session edge from a feature.
+tutti-session = { path = "../tutti-session", default-features = false, optional = true }
 
 [dev-dependencies]
 # `tutti::nodes::testing` for this crate's own test, examples and README
@@ -40,9 +45,13 @@ tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features 
 tempfile = "3.8"
 
 [features]
-# `default = []`, as on every other member. A consumer names what it wants,
-# or takes `full`.
-default = []
+# `default = ["session"]`: the API layer is what this umbrella is for. It is
+# the one member whose default is not empty, and it costs nothing a feature
+# did not already ask for: `tutti-session` itself has `default = []`, so the
+# default build adds the session's own code and nothing else (no device, so no
+# ALSA). Set `default-features = false` for the raw crates alone.
+default = ["session"]
+session = ["dep:tutti-session"]
 
 # Everything a headless host can have. Plugin FORMATS stay opt-in — each
 # links an SDK — exactly as in bevy-tutti's own `full`.
@@ -68,7 +77,7 @@ full = [
 # The sound card. NOT default, unlike in `bevy-tutti` where it is mandatory:
 # an offline render, a CI job and a server build all want this crate without
 # ALSA or CoreAudio headers on the box.
-device = ["dep:tutti-cpal"]
+device = ["dep:tutti-cpal", "tutti-session?/device"]
 
 # JACK, through `tutti-cpal`. Linux/BSD only in effect, and it hard-links
 # libjack at build time — see that crate's own `jack` feature.
@@ -96,8 +105,9 @@ midi = [
     "dep:tutti-midi-file",
     "dep:tutti-midi-runtime",
     "tutti-core/midi",
+    "tutti-session?/midi",
 ]
-midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardware"]
 
 # --- subsystems -------------------------------------------------------------
 #
@@ -105,15 +115,17 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 # is the only systematic difference between the two tables, and it is the
 # whole point of this crate: `bevy-tutti`'s `modulation` pulls
 # `tutti-mod/bevy` + `tutti-types/bevy`, and its `sampler` pulls
-# `tutti-sampler/bevy`. None of that belongs here.
-synth = ["dep:tutti-polysynth"]
-soundfont = ["midi", "dep:tutti-soundfont"]
-sampler = ["wav", "dep:tutti-sampler"]
-audio-io = ["io", "tutti-cpal?/capture"]
-export = ["dep:tutti-export"]
-spatial = ["dep:tutti-spatial"]
-modulation = ["dep:tutti-mod"]
-convolution = ["tutti-nodes/convolution"]
+# `tutti-sampler/bevy`. None of that belongs here. (Each also turns on the
+# session's feature of the same name, with `?` here because `session` is
+# optional; in bevy-tutti the session is always there.)
+synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
+soundfont = ["midi", "dep:tutti-soundfont", "tutti-session?/soundfont"]
+sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
+audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
+export = ["dep:tutti-export", "tutti-session?/export"]
+spatial = ["dep:tutti-spatial", "tutti-session?/spatial"]
+modulation = ["dep:tutti-mod", "tutti-session?/modulation"]
+convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # Axes bevy-tutti does not have: bevy-tutti does not depend on
 # `tutti-analysis` at all.
@@ -126,11 +138,11 @@ analysis = ["dep:tutti-analysis"]
 # cycle one edit away — the cycle `tutti-plugin`'s build script and the CI
 # workflow both warn about. Build it with
 # `cargo build -p tutti-plugin-server`.
-plugin = ["dep:tutti-plugin", "midi"]
-vst2 = ["plugin", "tutti-plugin/vst2"]
-vst3 = ["plugin", "tutti-plugin/vst3"]
-clap = ["plugin", "tutti-plugin/clap"]
-au = ["plugin", "tutti-plugin/au"]
+plugin = ["dep:tutti-plugin", "midi", "tutti-session?/plugin"]
+vst2 = ["plugin", "tutti-plugin/vst2", "tutti-session?/vst2"]
+vst3 = ["plugin", "tutti-plugin/vst3", "tutti-session?/vst3"]
+clap = ["plugin", "tutti-plugin/clap", "tutti-session?/clap"]
+au = ["plugin", "tutti-plugin/au", "tutti-session?/au"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -144,4 +156,4 @@ required-features = ["export", "analysis", "wav"]
 # be read.
 [[example]]
 name = "headless_engine"
-required-features = ["device"]
+required-features = ["session", "device"]

@@ -81,15 +81,14 @@
 //! fn control_audio(
 //!     transport: Res<TransportRes>,
 //!     mut graph: ResMut<AudioGraphRes>,
-//!     mut dirty: ResMut<GraphDirty>,
 //! ) {
 //!     transport.settings.set_tempo(128.0);
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
 //!     let (node, _) = graph.insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
-//!     // Staged, not committed: `commit_graph` publishes the frame's edits once.
-//!     dirty.0 = true;
+//!     // Staged, not committed: the insert marks the session edited, and
+//!     // `commit_graph` publishes the frame's edits once.
 //!     let _ = node;
 //! }
 //! ```
@@ -108,9 +107,8 @@
 //!   [`PortSources`](graph::PortSources) and
 //!   [`MasterSources`](graph::MasterSources) declare its audio wiring;
 //!   [`AudioParam`](graph::AudioParam) sets a parameter;
-//!   [`GraphDirty`](graph::GraphDirty) and
-//!   [`commit_graph`](graph::commit_graph) batch a frame's edits into one
-//!   commit.
+//!   [`commit_graph`](graph::commit_graph) sends a frame's edits in one
+//!   commit (the session's own edit flag says whether there are any).
 //! - [`graph::TransportRes`], [`graph::MetronomeRes`], [`graph::MeteringRes`]
 //!   and [`graph::AudioTapRes`]: the transport, the click, the master meter
 //!   and an analysis tap on the master output.
@@ -212,6 +210,7 @@ pub use plugin::TuttiPlugin;
 #[doc(hidden)]
 pub mod __private {
     pub use tutti_graph::ParamSet;
+    pub use tutti_session::SessionNode;
 }
 
 // Latency (plugin delay) compensation figures, and the opt-in debug check of
@@ -223,7 +222,9 @@ pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationP
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
 
 // Engine types. The graph itself is `graph::AudioGraphRes`.
-pub use engine::{restart_device, restart_device_on, DeviceInfo, DeviceRestart, TuttiDriver};
+pub use engine::{
+    restart_device, restart_device_on, Device, DeviceInfo, DeviceRestart, DeviceSelector,
+};
 
 // The crate error, at the crate root: its public position and its file
 // position agree, which is the workspace convention.
@@ -237,14 +238,14 @@ pub use engine::AudioEngineState;
 pub mod prelude {
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
-        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes, GraphDirty,
-        GraphNode, GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode,
-        MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished,
+        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes,
+        GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode, MasterSources,
+        MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished, SessionNode,
         SpawnAudioNode, TransportRes,
     };
     pub use crate::{
-        AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
-        LatencyCompensationPlugin, TuttiDriver, TuttiPlugin,
+        AudioDeviceState, AudioEngineState, ChannelCompensation, Device, DeviceInfo, GraphLatency,
+        LatencyCompensationPlugin, TuttiPlugin,
     };
 
     #[cfg(feature = "export")]
@@ -283,7 +284,7 @@ pub mod prelude {
     pub use tutti_core::transport::ClickState;
     pub use tutti_core::CrossfadeCurve;
     /// A plain node's fork, said at insert: the wrappers that make any
-    /// `tutti_graph::Node` a [`crate::graph::GraphNode`].
+    /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
 
     pub use tutti_core::transport::{

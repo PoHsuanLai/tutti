@@ -261,7 +261,7 @@ fn unaligned_blocks_render_per_sample_units_identically() {
 /// with the new drive (the waveshaper holds no state), and before it the
 /// scene with the old one.
 ///
-/// Mutation (run): `GraphRuntime::set_param` sending the setting with the
+/// Mutation (run): `tutti_session::Graph::set_param` sending the setting with the
 /// enclosing node's address instead of the leaf's →
 /// the waveshaper ignores it and the render after the write stays the old
 /// scene's.
@@ -419,7 +419,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 ///
 /// This is what tells a compiled compensation from a spliced one.
 ///
-/// Mutation (run): `GraphRuntime::lift` answering `Silence` for a node source
+/// Mutation (run): `tutti_session::Graph::lift` answering `Silence` for a node source
 /// → the channel no longer reads the waveshaper; the rebuild's own
 /// consistency check (`topology::disagreements`) panics on it first.
 #[test]

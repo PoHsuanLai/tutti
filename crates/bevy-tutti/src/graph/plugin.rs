@@ -9,9 +9,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::graph::{
-    commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
-};
+use crate::graph::{commit_graph, engine_ready, reconcile_node_despawn, GraphReconcileSystems};
 
 /// Reconciles declared ECS state into the audio graph every frame.
 ///
@@ -21,8 +19,9 @@ use crate::graph::{
 /// ([`GraphWirePlugin`](crate::graph::GraphWirePlugin),
 /// [`GraphEventsPlugin`](crate::graph::GraphEventsPlugin)), the
 /// [`reconcile_node_despawn`] observer, [`commit_graph`], and initializes
-/// [`GraphDirty`], [`ChannelCompensation`](crate::ChannelCompensation) and
-/// [`GraphLatency`](crate::GraphLatency).
+/// [`ChannelCompensation`](crate::ChannelCompensation),
+/// [`GraphLatency`](crate::GraphLatency) and
+/// [`PendingCrossfades`](crate::graph::PendingCrossfades).
 ///
 /// [`TuttiPlugin`](crate::TuttiPlugin) always adds it. Other plugins hook into
 /// the sets to interleave their work; `Compensate` holds only
@@ -41,7 +40,7 @@ impl Plugin for GraphReconcilePlugin {
         // is kept.
         app.init_resource::<crate::graph::latency::ChannelCompensation>()
             .init_resource::<crate::graph::latency::GraphLatency>();
-        app.init_resource::<GraphDirty>().configure_sets(
+        app.configure_sets(
             Update,
             (
                 GraphReconcileSystems::Spawn,
@@ -64,15 +63,10 @@ impl Plugin for GraphReconcilePlugin {
         app.add_plugins(crate::graph::GraphWirePlugin);
         app.add_plugins(crate::graph::GraphEventsPlugin);
 
-        // Crossfades that waited out a re-prepare land first thing in the
-        // frame, with the frame's own spawns.
+        // Crossfades waiting out a re-prepare: the session retries them in
+        // its `Collect` phase (`commit_graph`), which binds each one's
+        // controls to its entity once it lands.
         app.init_resource::<crate::graph::PendingCrossfades>();
-        app.add_systems(
-            Update,
-            crate::graph::spawn::retry_pending_crossfades
-                .in_set(GraphReconcileSystems::Spawn)
-                .run_if(engine_ready),
-        );
 
         app.add_systems(
             Update,

@@ -13,7 +13,8 @@ filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
 once, and events as ports. Phases 3–5 are done: `Engine` renders only the
 graph (`Engine::new(&transport, &mut editor, executor)`), it is
-`bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is the
+`bevy-tutti`'s only runtime (`AudioGraphRes` wraps a `tutti_session::Session`,
+whose graph holds the `Editor`; PDC is the
 compiler's, export forks the live graph with `Editor::fork`), and every node
 is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
 `tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
@@ -161,6 +162,8 @@ of truth.
 crates/
   tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
+  tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
+                 (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
                  tutti-cpal (device),
@@ -181,6 +184,9 @@ crates/
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
+- `tutti-session` keeps every module private too (`tutti_session::Graph`;
+  CI runs the per-module path gate on it), has no `bevy` feature and
+  re-exports no crate whole (`scripts/check-bevy-free.sh`).
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc.
@@ -260,8 +266,9 @@ Non-scalar state handed to the audio thread goes through
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild builds a
   `Topology` value from them (`LiveGraph` holds the last one), writes the
-  declared ports that differ into the editor's spec, and the frame's commit
-  compiles it; PDC is the compiler's, and nothing is spliced into the graph.
+  declared ports that differ into the session graph's spec, and the frame's
+  commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
+  the compiler's, and nothing is spliced into the graph.
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check
@@ -273,14 +280,14 @@ Non-scalar state handed to the audio thread goes through
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   Node removal is an `On<Remove, AudioNode>` observer.
-- Every spawn path takes a `GraphNode`: `spawn_audio_node`,
+- Every spawn path takes a `SessionNode`: `spawn_audio_node`,
   `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
   `replace` take its `IntoNode`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
   `App::add_audio_param::<U, P>()`. They reach a node through its
-  `ParamSet` (`GraphNode::params`): a node without the param takes nothing.
+  `ParamSet` (`SessionNode::params`): a node without the param takes nothing.
   Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
   `ParamRef`): each modulated param gets a control lane on its port, whose
   knob is the node's own cell (a plugin parameter's lane, its own knob on

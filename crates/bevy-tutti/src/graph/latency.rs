@@ -55,11 +55,10 @@
 //! use tutti_core::Hz;
 //! use tutti_nodes::testing::Osc;
 //!
-//! /// A host system that edits the graph itself.
-//! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
+//! /// A host system that edits the graph itself. Every edit made through
+//! /// `AudioGraphRes` marks the session edited; the frame's commit sends it.
+//! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>) {
 //!     graph.insert(Osc::sine(Hz(440.0)));
-//!     // Say so, or the frame's commit skips it.
-//!     dirty.0 = true;
 //! }
 //!
 //! let mut app = App::new();
@@ -69,9 +68,9 @@
 //! app.add_systems(Update, my_graph_edits.before(GraphReconcileSystems::Commit));
 //! app.update();
 //!
-//! // The frame's edit was in before the commit ran, so `commit_graph`
-//! // cleared the flag on the way past.
-//! assert!(!app.world().resource::<GraphDirty>().0);
+//! // The frame's edit was in before the commit ran, so `commit_graph` sent
+//! // it and the session is clean again.
+//! assert!(!app.world().resource::<AudioGraphRes>().is_edited());
 //! ```
 //!
 //! # Sources outside the graph
@@ -92,7 +91,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use crate::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
 use tutti_core::RtPublish;
 use tutti_core::Samples;
 
@@ -128,36 +127,38 @@ impl GraphLatency {
     }
 }
 
-/// Publish the compensation of the plan `graph` sent last: its per-channel
-/// pre-roll to `table`, its total to `total`, whichever the world has. A graph
-/// that has sent no plan publishes nothing.
-pub(crate) fn publish(
+/// Mirror the session's published figures into the world: the
+/// [`ChannelCompensation`] resource holds the session's own cell (rebound
+/// once, when it is another, as one a reconcile plugin initialized before
+/// the graph was inserted), and [`GraphLatency`] its total, marked changed
+/// only when it moved.
+pub(crate) fn mirror(
     graph: &AudioGraphRes,
-    table: Option<&ChannelCompensation>,
-    total: Option<&mut GraphLatency>,
+    table: Option<ResMut<ChannelCompensation>>,
+    total: Option<ResMut<GraphLatency>>,
 ) {
-    let Some(figures) = graph.sent_compensation() else {
-        return;
-    };
-    if let Some(total) = total {
-        total.0 = figures.total;
+    if let Some(mut table) = table {
+        let cell = graph.compensation();
+        if !Arc::ptr_eq(&table.0, &cell) {
+            table.0 = cell;
+        }
     }
-    if let Some(table) = table {
-        table.0.publish(Arc::new(figures.channels));
+    if let Some(mut total) = total {
+        total.set_if_neq(GraphLatency(graph.latency()));
     }
 }
 
-/// [`publish`], for a caller holding the world (a device restart's hook).
-pub(crate) fn publish_sent(world: &mut World) {
+/// [`mirror`], for a caller holding the world (a device restart).
+pub(crate) fn mirror_world(world: &mut World) {
     world.resource_scope(|world, graph: Mut<AudioGraphRes>| {
-        let table = world.get_resource::<ChannelCompensation>().cloned();
-        publish(
-            &graph,
-            table.as_ref(),
-            world
-                .get_resource_mut::<GraphLatency>()
-                .map(Mut::into_inner),
-        );
+        let mut state: bevy_ecs::system::SystemState<(
+            Option<ResMut<ChannelCompensation>>,
+            Option<ResMut<GraphLatency>>,
+        )> = bevy_ecs::system::SystemState::new(world);
+        let Ok((table, total)) = state.get_mut(world) else {
+            return;
+        };
+        mirror(&graph, table, total);
     });
 }
 
@@ -185,7 +186,8 @@ impl Plugin for LatencyCompensationPlugin {
 /// Checks, in debug builds, that the graph's latency fold matches the plan the
 /// frame's commit will compile.
 ///
-/// Runs only on a frame that edits the graph ([`GraphDirty`] set). The fold
+/// Runs only on a frame that edits the graph (the session's edit flag set).
+/// The fold
 /// over the whole spec ([`AudioGraphRes::latency_plan`]: audio edges plus
 /// event and param-modulation sources) must equal what the compiled plan
 /// compensates by. Both are read on the control side from the one spec, so a
@@ -196,22 +198,22 @@ impl Plugin for LatencyCompensationPlugin {
 /// In debug builds, when the two disagree. Publishes nothing
 /// ([`commit_graph`](crate::graph::commit_graph) does), and in release builds
 /// does nothing. Returns quietly while either resource is missing.
-pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<GraphDirty>>) {
-    let (Some(graph), Some(dirty)) = (graph, dirty) else {
+pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>) {
+    let Some(graph) = graph else {
         return;
     };
-    if !cfg!(debug_assertions) || !dirty.0 {
+    if !cfg!(debug_assertions) || !graph.is_edited() {
         return;
     }
     // `None` only for a spec that does not compile: its commit refuses it
     // too, and there is no plan to check against.
-    let Some(compiled) = graph.compensate() else {
+    let Some((channels, total)) = graph.compensate() else {
         return;
     };
     let folded = graph.latency_plan();
     // The fold reports no channels at all when nothing is latent (its "empty
     // result"); the plan has one zero per output. Same figures.
-    let width = folded.channels().len().max(compiled.channels.len());
+    let width = folded.channels().len().max(channels.len());
     let per_channel = |c: &[Samples]| -> Vec<Samples> {
         (0..width)
             .map(|i| c.get(i).copied().unwrap_or(Samples(0)))
@@ -219,7 +221,7 @@ pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<Gra
     };
     debug_assert_eq!(
         (per_channel(folded.channels()), folded.total()),
-        (per_channel(&compiled.channels), compiled.total),
+        (per_channel(&channels), total),
         "the spec's latency fold and the compiled plan disagree"
     );
 }
@@ -247,13 +249,12 @@ mod tests {
         app
     }
 
-    /// App with the graph, the dirty flag and `LatencyCompensationPlugin`'s
-    /// check alone, no commit: to drive that one system.
+    /// App with the graph and `LatencyCompensationPlugin`'s check alone, no
+    /// commit: to drive that one system.
     fn check_app(graph: AudioGraphRes) -> App {
         let mut app = App::new();
         app.insert_resource(graph);
         app.insert_resource(crate::AudioEngineState::Running);
-        app.init_resource::<GraphDirty>();
         app.add_plugins(LatencyCompensationPlugin);
         app
     }
@@ -285,10 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn publishes_the_table_when_the_graph_is_dirty() {
+    fn publishes_the_table_when_the_graph_is_edited() {
         let (graph, eff_lat) = skewed_graph();
         let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
 
         app.update();
 
@@ -308,7 +308,6 @@ mod tests {
     fn publishes_the_graphs_total_latency_not_just_the_per_channel_table() {
         let (graph, eff_lat) = skewed_graph();
         let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
 
         app.update();
 
@@ -333,36 +332,56 @@ mod tests {
         graph.set_output_source(1, GraphSource::Node(a, 0));
 
         let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
         app.update();
 
         assert!(app.world().resource::<GraphLatency>().is_empty());
         assert_eq!(app.world().resource::<GraphLatency>().0, Samples(0));
     }
 
+    /// **A frame with no edit publishes nothing**: the figures go out with a
+    /// plan, and a clean session sends none. The graph's own inserts edit it,
+    /// so the first frame commits; a sentinel published into the session's
+    /// cell after that must survive a frame with no edit.
+    ///
+    /// (Before the session, this read "`GraphDirty` false → no table"; the
+    /// flag is gone, and every edit made through `AudioGraphRes` is sent.)
+    ///
+    /// Mutation (run): the session's `Commit` phase committing whether or not
+    /// the graph is edited → the second frame republishes the plan's table
+    /// over the sentinel → fails.
     #[test]
     fn does_nothing_while_the_graph_is_clean() {
         let (graph, _) = skewed_graph();
         let mut app = test_app(graph);
-        // GraphDirty defaults to false — no edits this frame.
+        app.update();
+        assert!(!app.world().resource::<AudioGraphRes>().is_edited());
+        let sentinel = vec![Samples(99)];
+        app.world()
+            .resource::<ChannelCompensation>()
+            .0
+            .publish(std::sync::Arc::new(sentinel.clone()));
 
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert!(published.0.read().is_empty(), "no table published");
+        assert_eq!(*published.0.read(), sentinel, "no table published");
     }
 
+    /// The check reads the edit flag; it never clears it.
+    ///
+    /// Mutation (run): `compensate_graph` committing the graph after its
+    /// check → the flag clears → fails.
     #[test]
-    fn the_check_leaves_the_dirty_flag_for_commit_to_clear() {
+    fn the_check_leaves_the_edit_flag_for_commit_to_clear() {
         let (graph, _) = skewed_graph();
         let mut app = check_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
+        assert!(app.world().resource::<AudioGraphRes>().is_edited());
 
         app.update();
 
         assert!(
-            app.world().resource::<GraphDirty>().0,
-            "commit_graph owns clearing the flag"
+            app.world().resource::<AudioGraphRes>().is_edited(),
+            "the session's Commit phase owns clearing the flag"
         );
     }
 
@@ -371,21 +390,19 @@ mod tests {
     /// compiled plan compensates by, zeros and all (the fold reports no
     /// channels when nothing is latent; the plan a zero per output).
     ///
-    /// Mutation (run): `GraphRuntime::planned_compensation` returning the
+    /// Mutation (run): the session's `planned_compensation` returning the
     /// plan's channels reversed → the check panics on the skewed graph.
     #[cfg(debug_assertions)]
     #[test]
     fn the_check_holds_on_latent_and_latency_free_graphs() {
         let (graph, _) = skewed_graph();
         let mut app = check_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
         app.update();
 
         let mut graph = AudioGraphRes::headless(0, 2);
         let (a, _) = graph.insert(Const::mono(1.0));
         graph.set_outputs_from(a);
         let mut app = check_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
         app.update();
     }
 
@@ -396,32 +413,35 @@ mod tests {
     /// the graph applies, and a graph without `LatencyCompensationPlugin`
     /// still publishes.
     ///
-    /// Mutation (run): `latency::publish` publishing the channels reversed →
-    /// the table and the sent plan disagree on both channels (and the two
-    /// publish tests above fail); `commit_graph` publishing only when a
-    /// re-prepare resumes → nothing is published → fails.
+    /// Mutation (run): the session's `publish_sent` publishing the channels
+    /// reversed → the table and the sent plan disagree on both channels (and
+    /// the two publish tests above fail); `latency::mirror` not rebinding
+    /// the resource to the session's cell → the plugin's empty table stays
+    /// → fails.
     #[test]
     fn publishes_the_compensation_its_commit_sends() {
         let (graph, eff_lat) = skewed_graph();
         let authored = [graph.output_source(0), graph.output_source(1)];
         let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
         app.update();
-        assert!(!app.world().resource::<GraphDirty>().0, "committed");
+        assert!(
+            !app.world().resource::<AudioGraphRes>().is_edited(),
+            "committed"
+        );
 
-        let sent = app
+        let (sent_channels, sent_total) = app
             .world()
             .resource::<AudioGraphRes>()
             .sent_compensation()
             .expect("the commit sent a plan");
         let table = app.world().resource::<ChannelCompensation>().0.read();
-        assert_eq!(&*table, &sent.channels[..], "per-channel pre-roll");
+        assert_eq!(&*table, &sent_channels[..], "per-channel pre-roll");
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
-            sent.total,
+            sent_total,
             "total latency"
         );
-        assert_eq!(sent.total, eff_lat, "and it is the limiter's lookahead");
+        assert_eq!(sent_total, eff_lat, "and it is the limiter's lookahead");
         // Nothing was spliced in to get there: the compiler compensates, and
         // both channels still read the nodes they were wired to.
         let graph = app.world().resource::<AudioGraphRes>();
@@ -439,8 +459,9 @@ mod tests {
     /// publishes the resumed plan's figures on the frame its collect resumes
     /// it.
     ///
-    /// Mutation (run): `commit_graph` publishing only after a commit (not on a
-    /// resume) → the 44.1 kHz figure stays published → fails.
+    /// Mutation (run): the session's `Commit` phase not publishing on a
+    /// resume (`publish_sent` skipped) → the 44.1 kHz figure stays
+    /// published → fails.
     #[test]
     fn a_re_prepare_republishes_the_figures_once_it_resumes() {
         let mut graph = AudioGraphRes::headless(0, 2);
@@ -456,7 +477,6 @@ mod tests {
         let at_44k = graph.node_latency(eff);
         let mut side = graph.take_audio_side();
         let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
         app.update();
         assert_eq!(app.world().resource::<GraphLatency>().0, at_44k);
         let mut out = [0.0f32; 2];

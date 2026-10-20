@@ -428,16 +428,17 @@ kept a tracked map to know what to disconnect.
 `bevy_tutti::graph` owns the `GraphReconcileSystems` set hierarchy —
 `Spawn → Params → Despawn → Compensate → Commit` — one file per duty (`schedule`,
 `spawn`, `despawn`, `commit`, `wire`, `param`, plus `io`, `metering`, `tap`,
-`transport`, `plugin`, `resources`). `AudioGraphRes` is the graph handle
-(opaque: its methods are the only way to the `Editor` inside, and there is no
-`Deref`, so the mutate/commit boundary stays visible),
-`AudioConfig` the sample-rate / channel config, `GraphDirty` the per-frame
-commit-coalescing flag. Node removal is an `On<Remove, AudioNode>` observer, not a
+`transport`, `plugin`, `resources`). `AudioGraphRes` is the graph handle, a
+`tutti_session::Session` behind it (opaque: its methods are the only way to
+the `Editor` inside, and there is no `Deref`, so the mutate/commit boundary
+stays visible), and `AudioConfig` the sample-rate / channel config. Every edit
+through it sets the session graph's edit flag (`Graph::is_edited`), which is
+what coalesces a frame's edits into one commit (design 015). Node removal is an `On<Remove, AudioNode>` observer, not a
 despawn system.
 
 Params are `AudioParam<U, const P: u16>` — one generic component per scalar,
 registered with `App::add_audio_param::<U, P>()` and written in the `Params`
-phase through the node's `ParamSet` (`GraphNode::params`); a node without the
+phase through the node's `ParamSet` (`SessionNode::params`); a node without the
 param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
 `bevy` feature: one `derive(Component)` on one struct.
 

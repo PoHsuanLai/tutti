@@ -13,7 +13,7 @@ use bevy_ecs::prelude::*;
 use tutti_core::AudioNode;
 use tutti_midi_runtime::{MidiInputControls, MidiQueueNode, MidiSender};
 
-use crate::graph::{engine_ready, AudioGraphRes, EventFeeds, EventWiring, GraphDirty};
+use crate::graph::{engine_ready, AudioGraphRes, EventWiring};
 
 /// The MIDI nodes the engine build inserts, each bound to an entity like any
 /// node:
@@ -109,25 +109,34 @@ impl std::ops::Deref for LiveMidi {
     }
 }
 
-/// Who feeds an entity through its [`LiveMidiInput`], in `EventFeeds`.
+/// Who feeds an entity's node through its [`LiveMidiInput`], in the
+/// session's feeds (`AudioGraphRes::set_feed`).
 const LIVE: &str = "live midi";
 
-/// Inserts a queue node for every [`LiveMidiInput`] without one.
+/// Inserts a queue node for every [`LiveMidiInput`] without one, feeding the
+/// entity's node: one whose node is not in yet waits for it. The feed is
+/// keyed by the node, and is re-asserted on the node an entity is bound to
+/// whenever its `AudioNode` changes: a node bound in place of the old one
+/// (the event reconcile would move the feed), and one bound after the old
+/// node was removed (whose feeds went with it, `Graph::remove`).
 pub fn attach_live_midi(
     mut commands: Commands,
-    wanted: Query<Entity, (With<LiveMidiInput>, Without<LiveMidi>)>,
+    wanted: Query<(Entity, &AudioNode), (With<LiveMidiInput>, Without<LiveMidi>)>,
+    rebound: Query<(&AudioNode, &LiveMidi), (With<LiveMidiInput>, Changed<AudioNode>)>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut feeds: ResMut<EventFeeds>,
-    mut dirty: ResMut<GraphDirty>,
 ) {
     let Some(mut graph) = graph else {
         return;
     };
-    for entity in &wanted {
+    for (entity, &sink) in &wanted {
         let (node, sender) = graph.insert(MidiQueueNode::new());
-        feeds.set(entity, LIVE, vec![node.into()]);
+        graph.set_feed(sink, LIVE, vec![node.into()]);
         commands.entity(entity).insert(LiveMidi { sender, node });
-        dirty.0 = true;
+    }
+    // Derived at the point of use: `set_feed` leaves an unchanged feed (and
+    // the edit flag) alone.
+    for (&sink, live) in &rebound {
+        graph.set_feed(sink, LIVE, vec![live.node.into()]);
     }
 }
 
@@ -137,15 +146,12 @@ pub fn detach_live_midi(
     removed: On<Remove, LiveMidiInput>,
     live: Query<&LiveMidi>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut feeds: ResMut<EventFeeds>,
-    mut dirty: ResMut<GraphDirty>,
     mut commands: Commands,
 ) {
     let entity = removed.event_target();
-    feeds.remove(entity, LIVE);
+    // Removing the queue node takes it out of every feed it is in.
     if let (Ok(live), Some(mut graph)) = (live.get(entity), graph) {
         graph.remove(live.node);
-        dirty.0 = true;
     }
     if let Ok(mut e) = commands.get_entity(entity) {
         e.try_remove::<LiveMidi>();
@@ -160,8 +166,6 @@ pub struct LiveMidiPlugin;
 
 impl Plugin for LiveMidiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EventFeeds>();
-        app.init_resource::<GraphDirty>();
         app.add_observer(detach_live_midi);
         app.add_systems(
             Update,

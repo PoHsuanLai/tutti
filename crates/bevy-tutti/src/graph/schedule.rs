@@ -1,14 +1,12 @@
 //! When reconcile work runs, and whether it runs at all.
 //!
-//! The ordering anchor ([`GraphReconcileSystems`]), the run-condition every
-//! engine-touching system is gated on ([`engine_ready`]), and the per-frame
-//! coalescing flag ([`GraphDirty`]) that decides whether the frame ends in a
-//! commit.
+//! The ordering anchor ([`GraphReconcileSystems`]) and the run-condition every
+//! engine-touching system is gated on ([`engine_ready`]).
 //!
-//! None of this has an engine counterpart, and that is the point: the graph has no
-//! dirty bit and no notion of a frame. Batching a frame's edits into one
-//! `commit()` is the ECS binding's own duty, which is why this state lives here
-//! and dies at the end of the frame.
+//! Whether the frame ends in a commit is the session's edit flag, not
+//! state here: every edit through [`AudioGraphRes`](super::AudioGraphRes)
+//! sets it, and the frame's commit (the session's `Commit` phase) sends the
+//! frame's edits at once, iff it is set.
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::SystemSet;
@@ -40,7 +38,8 @@ pub enum GraphReconcileSystems {
     /// here is [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s
     /// debug cross-check, when a host adds it.
     Compensate,
-    /// Single `graph.commit()` if any earlier set mutated the graph.
+    /// The session's `Collect` and `Commit` phases: one commit, iff any
+    /// edit was made since the last.
     Commit,
 }
 
@@ -86,17 +85,3 @@ pub enum GraphReconcileSystems {
 pub fn engine_ready(state: Option<Res<AudioEngineState>>) -> bool {
     state.is_some_and(|s| s.is_running())
 }
-
-/// Per-frame "did anything change?" flag that coalesces `graph.commit()` to at
-/// most one call per frame.
-///
-/// Any reconcile system that mutates the graph sets it; [`commit_graph`] clears
-/// it. Set it after staging an edit rather than committing inline — a commit per
-/// edit costs a graph rebuild per edit.
-///
-/// [`commit_graph`]: super::commit_graph
-#[derive(Resource, Default)]
-pub struct GraphDirty(
-    /// Whether any reconcile system mutated the graph this frame.
-    pub bool,
-);

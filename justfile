@@ -51,6 +51,9 @@ test-editor-no-corpus:
 # is the only way to run them; nextest has no doctest support at all.
 test-doc *ARGS:
     cargo test --doc --workspace {{ARGS}}
+    # `Device`'s `!Send` proof is a `compile_fail` doctest behind `device`;
+    # named here, not left to bevy-tutti's features unifying it in.
+    cargo test --doc -p tutti-session --features device {{ARGS}}
 
 # Everything.
 test-all: test test-features test-editor test-doc
@@ -255,6 +258,9 @@ check-bevy-free:
     @! cargo tree -p tutti --features full -e normal | grep -qE '\bbevy(_[a-z]+)?\b' \
         || (cargo tree -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; \
             echo "FAIL: a bevy crate reached the Bevy-free facade."; exit 1)
+    # The session layer both umbrellas use: no Bevy crate under it with every
+    # feature on, no `bevy` feature, no whole-crate re-export (design 015 §8).
+    scripts/check-bevy-free.sh
 
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant

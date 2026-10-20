@@ -21,8 +21,7 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::topology::{key_of, LiveGraph};
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphSource, MasterSources, PortSource,
-    PortSources,
+    AudioGraphRes, GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::AudioNode;
@@ -407,18 +406,18 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
 
 /// N spawns in one frame end in **one** commit.
 ///
-/// `GraphDirty` is the coalescing flag, and the property is that it is a flag
-/// and not a counter: every spawn sets it, `commit_graph` clears it once. The
+/// The session's edit flag is the coalescing flag, and the property is that
+/// it is a flag and not a counter: every spawn sets it, `commit_graph`'s
+/// commit clears it once. The
 /// value is what makes the assertion cheap — all N nodes are in one topology,
 /// so "did they all land in the same pass" is a length check rather than a
 /// per-node engine read.
 ///
-/// **Mutation note.** Moving `commit_graph`'s `dirty.0 = false` above the
-/// commit, or committing per spawn inside `spawn_audio_node`, both leave the
-/// flag observable; this asserts it is *clear* after the frame, which is the
-/// statement that exactly one commit consumed all four edits. Removing the
-/// `dirty.0 = true` from `spawn_audio_node` fails the `nodes.len()` assertion
-/// instead, since the wire pass would never run.
+/// This asserts the flag is *clear* after the frame, which is the statement
+/// that one commit consumed all four edits.
+///
+/// Mutation (run): the session's `commit` not clearing the flag on a sent
+/// plan → still edited after the frame → fails.
 #[test]
 fn many_spawns_in_one_frame_coalesce_into_one_commit() {
     let mut app = app();
@@ -435,7 +434,7 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
     app.update();
 
     assert!(
-        !app.world().resource::<GraphDirty>().0,
+        !app.world().resource::<AudioGraphRes>().is_edited(),
         "one commit consumed the whole frame's edits"
     );
     assert_eq!(

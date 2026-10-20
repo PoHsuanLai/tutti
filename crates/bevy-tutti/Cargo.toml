@@ -33,8 +33,16 @@ tutti-core = { path = "../core/tutti-core", default-features = false, features =
 # device config to Stereo on scene load.
 tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
-# The graph: the runtime behind `AudioGraphRes`.
+# The graph's vocabulary (`IntoNode`, `ParamSet`, `ForkByClone`): the node
+# contract a spawn path takes.
 tutti-graph = { path = "../core/tutti-graph" }
+# The Bevy-free API layer (design 015): the `Session` behind `AudioGraphRes`,
+# its builder, the `!Send` `Device`, the commit and its compensation, the
+# event feeds and the crossfade retry. `device` always: this crate opens the
+# sound card. Each subsystem feature below forwards to the session's own. Not
+# re-exported: a Bevy app sees this crate's API (`param_graph_node!` names
+# `SessionNode` through `__private`).
+tutti-session = { path = "../tutti-session", default-features = false, features = ["device"] }
 # tutti-nodes is pure DSP; its ECS binding is this crate.
 # The optional `convolution` feature below adds the convolver on top.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
@@ -114,20 +122,20 @@ full = [
 
 # Spatial audio: the VBAP / binaural panner units, in their own crate.
 # Names exactly one thing — the dependency on `tutti-spatial`.
-spatial = ["dep:tutti-spatial"]
+spatial = ["dep:tutti-spatial", "tutti-session/spatial"]
 # The binaural panner (`tutti-spatial/hrtf`, which pulls the `hrtf` crate), so
 # `HrtfBinauralNode` can be spawned as a graph node.
-hrtf = ["spatial", "tutti-spatial/hrtf"]
+hrtf = ["spatial", "tutti-spatial/hrtf", "tutti-session/hrtf"]
 
 # FFT convolution reverb (partitioned IR) in tutti-nodes.
-convolution = ["tutti-nodes/convolution"]
+convolution = ["tutti-nodes/convolution", "tutti-session/convolution"]
 
 # Modulation as declarations (`Mods`, `ModRoute`, `ModRange`) that compile to
 # control lanes.
 # `tutti-mod/bevy` is what makes the components reflectable — it carries the
 # `Reflect` derives on the shape vocabulary and pulls the reflection features of
 # the units and the curve type underneath.
-modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy"]
+modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy", "tutti-session/modulation"]
 
 # Audio formats. The decoder is `tutti-io`'s (always a dependency, see above);
 # the sampler forwards to it too when it is on.
@@ -143,23 +151,28 @@ ogg = ["tutti-io/ogg", "tutti-sampler?/ogg"]
 # `tutti-polysynth` is absent from this list on purpose: it has no `midi`
 # feature to enable. MIDI is unconditional there — a synth you cannot send a
 # note to is not a smaller synth — so pulling the crate in at all brings it.
-midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi"]
+midi = [
+    "dep:tutti-midi-file",
+    "dep:tutti-midi-runtime",
+    "tutti-core/midi",
+    "tutti-session/midi",
+]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
 # — deliberately, since the feature does nothing but pull the crate in.
 # `tutti-midi-hardware` ships one feature, `test-support`, and it adds no
 # capability — only its fake device list. That is a dev concern, enabled in the
 # dev-dependency below rather than cascaded from here: a host enabling
 # `midi-hardware` must not thereby link a fake backend.
-midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session/midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
 # wants the asset derives on both.
-synth = ["dep:tutti-polysynth"]
+synth = ["dep:tutti-polysynth", "tutti-session/synth"]
 # SoundFont does NOT imply `synth`: it is its own crate and pulls no voice
 # engine. `midi` is required — `tutti-soundfont` needs `tutti-core/midi`, and
 # enabling it here keeps `engine/build.rs` in step with the tutti-core that
 # compiles under feature unification.
-soundfont = ["midi", "dep:tutti-soundfont"]
+soundfont = ["midi", "dep:tutti-soundfont", "tutti-session/soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::sampler`).
 #
@@ -168,13 +181,19 @@ soundfont = ["midi", "dep:tutti-soundfont"]
 # the other way, so folding them together would make a host wanting only
 # mic→WAV compile the butler thread to get it. `tutti-io/bevy` is the
 # `WaveAsset` derive the `.wav` loader hands out.
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-io/bevy"]
+sampler = [
+    "wav",
+    "dep:tutti-sampler",
+    "tutti-sampler/bevy",
+    "tutti-io/bevy",
+    "tutti-session/sampler",
+]
 
 # The live audio I/O edge: mic capture, WAV sink, and the pump between them
 # (`tutti-cpal/capture`, plus `tutti-io`'s re-exports → `crate::io`). Independent of `sampler` in
 # both directions — recording a take needs no clip playback, and playing a clip
 # needs no microphone.
-audio-io = ["tutti-cpal/capture"]
+audio-io = ["tutti-cpal/capture", "tutti-session/audio-io"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
 # `tutti-plugin-server` pulls `tutti-core` with `midi` under feature
@@ -191,14 +210,15 @@ plugin = [
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
     "midi",
+    "tutti-session/plugin",
 ]
-vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2"]
-vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3"]
-clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap"]
-au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
+vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2", "tutti-session/vst2"]
+vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3", "tutti-session/vst3"]
+clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap", "tutti-session/clap"]
+au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au", "tutti-session/au"]
 
 # Export.
-export = ["dep:tutti-export"]
+export = ["dep:tutti-export", "tutti-session/export"]
 
 [dev-dependencies]
 # `contract::Direct`: a node driven by hand as a graph drives it, for the

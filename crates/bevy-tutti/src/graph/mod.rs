@@ -6,11 +6,12 @@
 //! reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
-//! - the pipeline, one file per duty: [`schedule`] (the set order, the
-//!   [`engine_ready`] gate, [`GraphDirty`]), [`spawn`] ([`SpawnAudioNode`],
+//! - the pipeline, one file per duty: [`schedule`] (the set order and the
+//!   [`engine_ready`] gate), [`spawn`] ([`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
 //!   node: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
-//!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
+//!   [`commit`] ([`commit_graph`], the session's `Collect` and `Commit`
+//!   phases) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
 //!   same phase that wires, so every static question (latency, tail, "did
@@ -35,7 +36,6 @@ pub mod param;
 pub mod plugin;
 pub mod pump;
 pub mod resources;
-pub(crate) mod runtime;
 pub mod schedule;
 pub mod spawn;
 pub mod tap;
@@ -47,7 +47,7 @@ pub use capture::CapturedControls;
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use events::{
-    EventFeeds, EventSource, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
+    EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls, DECLARED,
 };
 pub use metering::MeteringRes;
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
@@ -55,11 +55,8 @@ pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
-pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
-#[cfg(feature = "plugin")]
-pub(crate) use runtime::clamp_latency;
-pub use runtime::{AudioSide, ReplaceRefused};
-pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
+pub use resources::{AudioConfig, AudioGraphRes};
+pub use schedule::{engine_ready, GraphReconcileSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
 pub use spawn::{
@@ -69,3 +66,12 @@ pub use tap::AudioTapRes;
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
 pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
+
+// The session's items this crate's own signatures take, one by one: the
+// session crate itself is not re-exported (design 015 §6).
+pub use tutti_session::{
+    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, ReplaceRefused, SessionNode,
+};
+
+#[cfg(test)]
+mod tests;

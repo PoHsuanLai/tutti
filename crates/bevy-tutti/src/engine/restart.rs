@@ -1,84 +1,48 @@
 //! Restarting the output device — at whatever rate it now runs.
 //!
-//! [`TuttiDriver`] owns the stream and the graph's *audio* side only, so on
-//! its own it can re-open a device and nothing more: a device that comes back
-//! at another rate would play a graph built for the old one, every oscillator
-//! off pitch, the beat clock off tempo, every figure in samples (PDC, a
-//! lookahead) wrong — with no error anywhere. That is why a plain
-//! `TuttiDriver::restart` refuses a rate change, and why this module
-//! exists: [`restart_device`] runs the driver's restart with a hook that, while
-//! no callback runs, moves everything the adapter owns to the new
-//! configuration:
+//! The re-rate is the session's ([`Session::restart`](tutti_session::Session),
+//! design 015 §4.3): while no callback runs, it re-prepares the graph (both
+//! halves, so the first block at the new rate renders the re-prepared graph),
+//! moves the transport's rate (the engine follows by itself, rescaling its
+//! frame clock and every scheduled `At::Frame` command), widens the root to
+//! a wider device by the build's rule, publishes the compensation figures
+//! before the first block, and re-rates the hardware MIDI input's timestamps.
+//! Every unit instance is kept; only time-based state resets.
 //!
-//! - the graph: both halves of `Editor::reprepare`, inside the hook — the
-//!   engine settled from the control side while no callback runs
-//!   ([`Stopped::settle_graph`]) — so the first block at the new rate renders
-//!   the re-prepared graph, not the silent block of a re-prepare with its
-//!   units out;
-//! - the engine follows by itself: it adopts the new rate on the first block
-//!   that carries it, rescaling its frame clock and every scheduled
-//!   `At::Frame` transport command to the same wall-clock time, and stepping
-//!   the beat at the new rate — so the playhead continues without a jump;
-//! - the graph root, widened to a wider device as the build widens it
-//!   (`root_width`: the wider of the two, never narrowed), and
-//!   [`AudioConfig`], which takes the device's width and rate;
-//! - [`TransportRes`]'s rate, the hardware MIDI input's timestamp rate, the
-//!   sampler's disk streamer (every open stream's conversion ratio, so a
-//!   streamed clip keeps its pitch and speed) — and, through the graph's
-//!   re-prepare, the MIDI clock node (its 24-PPQN ticks and MTC
-//!   quarter-frames land on the new rate's frames);
-//! - the compensation figures in samples (`ChannelCompensation`,
-//!   `GraphLatency`), published before the first block, so a disk source
-//!   seeking in it pre-rolls by the new rate's.
-//!
-//! Every unit instance is kept across the re-prepare, and only time-based
-//! state resets (`Editor::reprepare`'s rule): voices keep sounding, and
-//! filter memory and LFO phase carry over.
+//! What is left here is the glue: [`restart_device`] takes the `!Send`
+//! [`Device`] out of the world for the call and puts it back whatever
+//! happens, re-rates the sampler's disk streamer this crate holds (every open
+//! stream's conversion ratio, so a streamed clip keeps its pitch and speed)
+//! inside the hook, and republishes [`AudioConfig`] and the
+//! [`GraphLatency`](crate::GraphLatency) mirror.
 //!
 //! **Recovery after a failed hook:** the stream is left stopped, and the
-//! driver keeps the old spec and graph rate (`TuttiDriver::graph_rate`). A
-//! restart onto the old device at the old rate — `restart_device` with it,
-//! or a plain `TuttiDriver::restart` — moves nothing and plays again.
+//! device keeps the old spec and graph rate (`Device::graph_rate`). A
+//! restart onto the old device at the old rate moves nothing and plays
+//! again.
 //!
-//! A `SoundFontUnit` re-rates in its own `prepare` (rustysynth fixes a
-//! synthesizer's rate, so the node swaps in one built at the new rate,
-//! keeping its preset and channel state but no sounding voice; on failure,
-//! a rate rustysynth refuses, it keeps the old rate). Not
-//! re-rated here: a host-built `UmpOutRes` (its JR clock). A MIDI clip
-//! node needs nothing: it places its events by its block's `Env`, rate
-//! included.
+//! A `SoundFontUnit` re-rates in its own `prepare`. Not re-rated here: a
+//! host-built `UmpOutRes` (its JR clock). A MIDI clip node needs nothing: it
+//! places its events by its block's `Env`, rate included.
 
 use bevy_ecs::prelude::*;
 
 use tutti_core::Samples;
-use tutti_cpal::{OutputSpec, Stopped, StreamDriver, TuttiDriver};
+use tutti_cpal::{OutputSpec, StreamDriver};
+use tutti_session::{Device, Session};
+
+pub use tutti_session::DeviceRestart;
 
 use crate::engine::{Error, Result};
-use crate::graph::{AudioConfig, AudioGraphRes, GraphDirty, TransportRes};
-
-/// What [`restart_device`] asks for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DeviceRestart {
-    /// The output device, as [`TuttiDriver::devices`] numbers it; `None` for
-    /// the host's default.
-    pub device: Option<usize>,
-    /// The largest block the graph is prepared for from the restart on
-    /// (`Prepare`'s `MaxBlock`); `None` keeps the one it has. At most the
-    /// engine's block capacity (`Engine::block_capacity`): past it the
-    /// restart is refused before the stream stops.
-    ///
-    /// A host's choice, not the device's: the device hands over whatever
-    /// callback it likes, and the engine renders one longer than this as
-    /// consecutive graph blocks.
-    pub max_block: Option<Samples>,
-}
+use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Restarts the output device and moves the graph, the transport and every
-/// rate-derived resource to the configuration it comes back with.
+/// rate-derived resource to the configuration it comes back with
+/// (`Session::restart`).
 ///
 /// Call from an exclusive system or a queued command
 /// (`commands.queue(|world: &mut World| { … })`): it takes the world because
-/// the driver is `NonSend` and the hook writes several resources at once.
+/// the [`Device`] is `NonSend` and the hook writes several resources at once.
 ///
 /// Every unit is kept; only what is time-based resets.
 ///
@@ -91,22 +55,19 @@ pub struct DeviceRestart {
 ///   a poisoned graph.
 /// - What resolving or opening the device reports ([`Error::Device`]).
 /// - [`Error::Reprepare`] from the re-prepare itself (a graph that no
-///   longer compiles at the new block): the stream is then left **stopped**
-///   (`TuttiDriver::restart_with`), since nothing may play at a rate the
-///   graph was not moved to. Restart again with another `max_block`, or
-///   onto the old device and rate, which moves nothing and plays again.
+///   longer compiles at the new block): the stream is then left **stopped**,
+///   since nothing may play at a rate the graph was not moved to. Restart
+///   again with another `max_block`, or onto the old device and rate, which
+///   moves nothing and plays again.
 pub fn restart_device(world: &mut World, request: DeviceRestart) -> Result<()> {
-    restart(world, request.max_block, |driver, world| {
-        driver.restart_with(request.device, |spec, stopped| {
-            rerate(world, spec, stopped, request.max_block)
-        })
+    restart(world, |session, device, follow| {
+        session.restart_following(device, request, follow)
     })
 }
 
 /// [`restart_device`] on a driver of the caller's choosing, with `spec`
 /// standing for the config the new device reports: the device-free restart
-/// (`TuttiDriver::restart_on`), for a host's tests or a stream it drives
-/// itself.
+/// (`Session::restart_on`), for a host's tests or a stream it drives itself.
 ///
 /// # Errors
 ///
@@ -120,38 +81,57 @@ pub fn restart_device_on<D: StreamDriver>(
 where
     D::Running: 'static,
 {
-    restart(world, max_block, |d, world| {
-        d.restart_on(spec, driver, |spec, stopped| {
-            rerate(world, spec, stopped, max_block)
-        })
+    restart(world, |session, device, follow| {
+        session.restart_on(device, spec, driver, max_block, follow)
     })
 }
 
-/// The checks that must pass before the stream stops, then `run` with the
-/// driver out of the world (it is `NonSend`, and the hook needs the world).
+/// `run` with the session and the device out of the world (the device is
+/// `NonSend`, and the hook reads the world), and the hook's follow-up for
+/// what this crate holds; then the device goes back, whatever `run` did (a
+/// panic included: a world left without it has no stream to restart ever
+/// again), and the figures are republished.
 fn restart(
     world: &mut World,
-    max_block: Option<Samples>,
-    run: impl FnOnce(&mut TuttiDriver, &mut World) -> Result<()>,
+    run: impl FnOnce(&mut Session, &mut Device, &mut dyn FnMut(&OutputSpec)) -> Result<()>,
 ) -> Result<()> {
-    if max_block.is_some_and(|b| b.is_zero()) {
-        return Err(Error::Device(tutti_cpal::Error::InvalidConfig(
-            "a zero-frame max block".into(),
-        )));
+    if !world.contains_resource::<AudioGraphRes>() {
+        return Err(not_built());
     }
-    let Some(graph) = world.get_resource::<AudioGraphRes>() else {
+    let Some(mut device) = world.remove_non_send::<Device>() else {
         return Err(not_built());
     };
-    graph.check_rerate(max_block)?;
-    let Some(mut driver) = world.remove_non_send::<TuttiDriver>() else {
-        return Err(not_built());
-    };
-    // The driver goes back whatever `run` does, a panic included: a world
-    // left without it has no stream to restart ever again.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(&mut driver, &mut *world)
-    }));
-    world.insert_non_send(driver);
+    let mut moved_to: Option<OutputSpec> = None;
+    let result = world.resource_scope(|world, mut graph: Mut<AudioGraphRes>| {
+        #[cfg(feature = "sampler")]
+        let streamer = world.get_resource::<crate::sampler::DiskStreamerRes>();
+        #[cfg(not(feature = "sampler"))]
+        let _ = &world;
+        let mut follow = |spec: &OutputSpec| {
+            // Every open stream's ratio (file rate / session rate) is
+            // re-derived, so it plays on at its pitch; its position is in
+            // file frames, which the rate does not move.
+            #[cfg(feature = "sampler")]
+            if let Some(streamer) = streamer {
+                streamer.set_sample_rate(spec.sample_rate);
+            }
+            moved_to = Some(spec.clone());
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(graph.session(), &mut device, &mut follow)
+        }))
+    });
+    world.insert_non_send(device);
+    // The hook ran to its end: the device's width and rate, as the build
+    // publishes them (the root is at least as wide), whether or not the
+    // stream then started.
+    if let Some(spec) = moved_to {
+        world.insert_resource(AudioConfig {
+            sample_rate: spec.sample_rate,
+            channels: spec.channels,
+        });
+    }
+    crate::graph::latency::mirror_world(world);
     match result {
         Ok(result) => result,
         Err(panic) => std::panic::resume_unwind(panic),
@@ -164,82 +144,6 @@ fn not_built() -> Error {
     ))
 }
 
-/// The hook: move everything the adapter owns to `spec`, with no callback
-/// running.
-fn rerate(
-    world: &mut World,
-    spec: &OutputSpec,
-    stopped: &Stopped<'_>,
-    max_block: Option<Samples>,
-) -> Result<()> {
-    let rate = spec.sample_rate;
-    let transport = world
-        .get_resource::<TransportRes>()
-        .map(|t| t.0.clone())
-        .ok_or_else(not_built)?;
-    let mut graph = world.resource_mut::<AudioGraphRes>();
-    // The new device's callback size too: a hosted plugin's pipeline follows
-    // it, and its declared latency with it (the graph re-reads every shape).
-    graph.rerate(rate, max_block, spec.quantum)?;
-    // The transport's rate first: it marks every frame-timed command sent
-    // from here on as already in the new rate's frames, and the engine's
-    // settle below rescales only the ones before the mark.
-    transport.set_sample_rate(rate);
-    // Both halves of the re-prepare, now, while no callback runs: the
-    // executor checks its units out (the engine following the rate with its
-    // clock and the scheduled commands), the editor re-prepares them and
-    // sends the resumed plan, and the executor adopts it. So the first block
-    // on the new device renders the re-prepared graph — not the silent block
-    // an executor renders while its units are out — and the plan's PDC
-    // figures are the new rate's before that block.
-    stopped.settle_graph();
-    graph.collect();
-    // A unit that panicked in `prepare`, or shapes that no longer compile,
-    // poison the editor here: refuse, with the stream still stopped.
-    graph.check_rerate(None)?;
-    // A wider device widens the root, by the build's rule, so its channels
-    // are there to be routed to rather than left silent; a narrower one keeps
-    // it, and the engine folds. The new channels read silence. Committed and
-    // settled here too, so the first block has the width.
-    let width = crate::engine::build::root_width(graph.outputs(), spec.channels);
-    if width > graph.outputs() {
-        graph.widen_outputs(width);
-        if !graph.commit() {
-            // Refused for now (commits in flight): the frame's
-            // `commit_graph` retries.
-            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-                dirty.0 = true;
-            }
-        }
-    }
-    let running = stopped.settle_graph();
-    debug_assert!(running, "the re-prepare resumed inside the hook");
-    // The figures the first block runs at, published before it
-    // (`ChannelCompensation` is what a disk source pre-rolls by).
-    crate::graph::latency::publish_sent(world);
-    // The port manager turns an event's wall-clock arrival into a frame
-    // offset at this rate; its contract is to be told before the stream
-    // starts, which is where the hook runs.
-    #[cfg(feature = "midi-hardware")]
-    if let Some(io) = world.get_resource::<crate::midi::MidiIoRes>() {
-        io.ports().set_sample_rate(rate);
-    }
-    // Every open stream's ratio (file rate / session rate) is re-derived, so
-    // it plays on at its pitch; its position is in file frames, which the
-    // rate does not move.
-    #[cfg(feature = "sampler")]
-    if let Some(streamer) = world.get_resource::<crate::sampler::DiskStreamerRes>() {
-        streamer.set_sample_rate(rate);
-    }
-    // The device's width, as the build publishes it; the root is at least
-    // as wide (widened above).
-    world.insert_resource(AudioConfig {
-        sample_rate: rate,
-        channels: spec.channels,
-    });
-    Ok(())
-}
-
 /// A device restart from 44.1 kHz to 48 kHz through the whole adapter —
 /// `build_on` (the device-free `build_into`), the reconcile pipeline,
 /// compensation — over `ManualStreamDriver`s standing for the two devices.
@@ -248,12 +152,14 @@ mod tests {
     use super::*;
     use crate::engine::build::build_on;
     use crate::graph::latency::{ChannelCompensation, GraphLatency};
-    use crate::graph::{GraphReconcilePlugin, MasterSources, PortSource, PortSources};
+    use crate::graph::{
+        GraphReconcilePlugin, MasterSources, PortSource, PortSources, TransportRes,
+    };
     use crate::graph::{PendingCrossfades, SpawnAudioNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;
     use tutti_core::{At, ChannelLayout, Db, Frame, Hz, MotionEvent, SampleRate};
-    use tutti_cpal::{AudioEngine, ManualStream, ManualStreamDriver};
+    use tutti_cpal::{ManualStream, ManualStreamDriver};
     use tutti_nodes::testing::Osc;
     use tutti_nodes::LimiterNode;
 
@@ -275,12 +181,9 @@ mod tests {
         let mut app = App::new();
         let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
-        build_on(
-            &plugin,
-            &mut app,
-            AudioEngine::from_spec(spec_at(OLD)),
-            |engine, state| engine.start_with(state, driver),
-        )
+        build_on(&plugin, &mut app, |builder| {
+            builder.build_device_on(spec_at(OLD), driver)
+        })
         .expect("builds with no device");
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
@@ -365,18 +268,20 @@ mod tests {
     ///   block pre-rolls by the new figure.
     ///
     /// Mutations (run):
-    /// - `rerate` not calling `AudioGraphRes::rerate` → the beat steps at
-    ///   44.1 kHz (and, past that check, the sine measures 44.1 frames a
+    /// - the session's `rerate` not re-preparing the graph → the beat steps
+    ///   at 44.1 kHz (and, past that check, the sine measures 44.1 frames a
     ///   cycle);
-    /// - `rerate` not republishing `AudioConfig` (or not setting the
-    ///   transport's rate) → fails on each;
+    /// - `restart` not republishing `AudioConfig` (or the session's `rerate`
+    ///   not setting the transport's rate) → fails on each;
     /// - `Schedule::rescale` ignoring the `mark_rate_change` boundary → the
     ///   play at 84 000 moves to ~91 429 → beat ~3.19 → fails;
-    /// - `rerate` not calling `latency::publish_sent` → the 44.1 kHz figure
-    ///   is still published before the first block → fails;
-    /// - `rerate` not settling the engine and collecting (leaving the second
-    ///   half to `commit_graph`) → the first block
-    ///   is silent, and the figures are old before it → fails.
+    /// - `restart` not mirroring the figures (`latency::mirror_world`) →
+    ///   `GraphLatency` holds the 44.1 kHz figure before the first block →
+    ///   fails (the session's `rerate` not calling `publish_sent` is its own
+    ///   test's, `a_rerate_keeps_the_published_compensation_in_step_with_the_plan`);
+    /// - the session's `rerate` not settling the engine and collecting
+    ///   (leaving the second half to `commit_graph`) → the first block is
+    ///   silent, and the figures are old before it → fails.
     #[test]
     fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         let (mut app, old, _, lim) = engine_app();
@@ -486,7 +391,7 @@ mod tests {
     /// host gets the graph's reason. The capacity is the engine's
     /// (`DEFAULT_BLOCK_CAPACITY`, 8 192 frames).
     ///
-    /// Mutation (run): `GraphRuntime::check_reprepare` not checking the
+    /// Mutation (run): `Graph::check_reprepare` not checking the
     /// block → the stream stops first and the refusal comes from the
     /// re-prepare in the hook, with the device stopped → fails.
     #[test]
@@ -545,9 +450,9 @@ mod tests {
     /// folds, while `AudioConfig` says two.
     ///
     /// Mutations (run):
-    /// - `rerate` not widening → the root stays two → fails;
-    /// - `rerate` publishing the old `AudioConfig::channels` →
-    ///   two after the 5.1 restart → fails.
+    /// - the session's `rerate` not widening → the root stays two → fails;
+    /// - `restart` publishing the old `AudioConfig::channels` → two after
+    ///   the 5.1 restart → fails.
     #[test]
     fn a_restart_onto_a_wider_device_widens_the_root() {
         let (mut app, _old, _, _) = engine_app();
@@ -618,8 +523,9 @@ mod tests {
     /// same `DiskStreamerRes`, which the hook re-rates), so the butler's
     /// refills are counted rather than raced.
     ///
-    /// Mutation (run): `rerate` not calling `DiskStreamer::set_sample_rate`
-    /// → the ratio stays 1 and the tone plays at 44.1 frames a cycle on the
+    /// Mutation (run): `restart`'s follow-up not calling
+    /// `DiskStreamer::set_sample_rate` (the session holds no streamer: this
+    /// crate took it) → the ratio stays 1 and the tone plays at 44.1 frames a cycle on the
     /// 48 kHz device (1.088 kHz) → fails.
     #[cfg(feature = "sampler")]
     #[test]
@@ -777,34 +683,44 @@ mod tests {
     }
 
     /// **After a hook fails, a restart onto the old device and rate plays
-    /// again.** The hook fails with the stream stopped (here: the
-    /// transport resource is gone, so it cannot re-rate); the driver keeps
-    /// the old spec and graph rate, and `AudioConfig` is untouched. Then a
-    /// restart at 44.1 kHz moves nothing and renders the 1 kHz sine at 44.1
-    /// frames a cycle.
+    /// again.** The hook fails with the stream stopped (here: an edit the
+    /// frame has not committed feeds the limiter from a node it feeds, so the graph
+    /// no longer compiles and its re-prepare refuses); the device keeps the
+    /// old spec and graph rate, and `AudioConfig` is untouched. Then a frame
+    /// puts the declared wiring back, and a restart at 44.1 kHz moves
+    /// nothing and renders the 1 kHz sine at 44.1 frames a cycle.
     ///
-    /// Mutation (run): `TuttiDriver::rerate_or_restore` adopting the new
-    /// rate on failure → the driver claims 48 kHz → fails.
+    /// Mutations (run): `TuttiDriver::rerate_or_restore` adopting the new
+    /// rate on failure → the device claims 48 kHz → fails; the session's
+    /// `rerate` running `follow` first, before the re-prepare can refuse →
+    /// `AudioConfig` says 48 kHz → fails.
     #[test]
     fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
-        let (mut app, old, _, _) = engine_app();
-        let t = app
-            .world_mut()
-            .remove_resource::<TransportRes>()
-            .expect("built");
+        let (mut app, old, _, lim) = engine_app();
+        let lim = *app
+            .world()
+            .get::<tutti_core::AudioNode>(lim)
+            .expect("a node");
+        {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let (loop_back, ()) = graph.insert(tutti_nodes::testing::Through::mono());
+            graph.set_source(loop_back, 0, crate::graph::GraphSource::Node(lim, 0));
+            graph.set_source(lim, 0, crate::graph::GraphSource::Node(loop_back, 0));
+        }
         let (driver, new) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_at(NEW), driver, None)
-            .expect_err("the hook cannot re-rate");
+            .expect_err("the graph no longer compiles");
         assert!(!old.is_open() && !new.is_open(), "left stopped");
-        let driver = app.world().non_send::<TuttiDriver>();
-        assert_eq!(driver.graph_rate(), SampleRate(OLD));
-        assert_eq!(driver.spec().sample_rate, SampleRate(OLD));
+        let device = app.world().non_send::<Device>();
+        assert_eq!(device.graph_rate(), SampleRate(OLD));
+        assert_eq!(device.spec().sample_rate, SampleRate(OLD));
         assert_eq!(
             app.world().resource::<AudioConfig>().sample_rate,
             SampleRate(OLD)
         );
 
-        app.world_mut().insert_resource(t);
+        // The declared `PortSources` writes the limiter's input back.
+        app.update();
         let (driver, back) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_at(OLD), driver, None).expect("recovers");
         assert!(back.is_open());
@@ -815,19 +731,19 @@ mod tests {
         );
     }
 
-    /// **The driver goes back into the world even if the restart panics**:
+    /// **The device goes back into the world even if the restart panics**:
     /// a world left without it has no stream to restart again.
     ///
     /// Mutation (run): `restart` calling `run` without `catch_unwind` → the
-    /// panic skips the reinsert → the driver is gone → fails.
+    /// panic skips the reinsert → the device is gone → fails.
     #[test]
-    fn a_panicking_restart_puts_the_driver_back() {
+    fn a_panicking_restart_puts_the_device_back() {
         let (mut app, _old, _, _) = engine_app();
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = restart(app.world_mut(), None, |_, _| panic!("mid-restart"));
+            let _ = restart(app.world_mut(), |_, _, _| panic!("mid-restart"));
         }));
         assert!(caught.is_err(), "the panic propagates");
-        assert!(app.world().get_non_send::<TuttiDriver>().is_some());
+        assert!(app.world().get_non_send::<Device>().is_some());
     }
 
     /// **A crossfade asked for right after a restart lands at once, at the
@@ -836,10 +752,10 @@ mod tests {
     /// sine plays at the new rate: 24 frames a cycle.
     ///
     /// The waiting case (a crossfade in `PendingCrossfades` while a graph
-    /// re-prepares) is pinned by `graph::runtime`'s
+    /// re-prepares) is pinned by `graph::tests`'
     /// `a_crossfade_during_a_re_prepare_lands_after_it`.
     ///
-    /// Mutation (run): `rerate` not settling the engine and collecting
+    /// Mutation (run): the session's `rerate` not settling the engine and collecting
     /// (leaving the second half to `commit_graph`) → the crossfade waits →
     /// fails.
     #[test]
@@ -877,10 +793,10 @@ mod tests {
     /// `Prepare::quantum`). The graph's latency (`GraphLatency`, the plugin
     /// alone on output 0) is the new figure before the first block.
     ///
-    /// Mutation: `rerate` passing `None` for the quantum → the chunk falls
-    /// back to the graph's `MaxBlock` (1024) → 1161, not 393 → fails.
-    /// Mutation: `build_on` not passing the opened spec's quantum → 1161 on
-    /// the first device → fails.
+    /// Mutation: the session's `rerate` passing `None` for the quantum → the
+    /// chunk falls back to the graph's `MaxBlock` (1024) → 1161, not 393 →
+    /// fails. Mutation: `SessionBuilder::build_on` not passing the opened
+    /// spec's quantum → 1161 on the first device → fails.
     #[cfg(feature = "plugin")]
     #[test]
     fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
@@ -890,12 +806,9 @@ mod tests {
         let mut app = App::new();
         let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
-        build_on(
-            &plugin,
-            &mut app,
-            AudioEngine::from_spec(spec_at(NEW).with_quantum(tutti_core::Samples(512))),
-            |engine, state| engine.start_with(state, driver),
-        )
+        build_on(&plugin, &mut app, |builder| {
+            builder.build_device_on(spec_at(NEW).with_quantum(tutti_core::Samples(512)), driver)
+        })
         .expect("builds with no device");
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
@@ -912,7 +825,6 @@ mod tests {
             graph.set_output_source(0, crate::graph::GraphSource::Node(node, 0));
             node
         };
-        app.world_mut().resource_mut::<crate::graph::GraphDirty>().0 = true;
         app.update();
         let _ = stream.render_block(512).expect("the stream is open");
         app.update();

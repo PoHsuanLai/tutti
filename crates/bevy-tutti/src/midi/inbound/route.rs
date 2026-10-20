@@ -49,16 +49,18 @@
 //! The hardware input is a graph node ([`MidiEngineNodes::input`]) with one
 //! event output per channel and one for channelless messages (system, SysEx,
 //! Flex). [`rebuild`] turns the rules into which of those ports each target's
-//! event input takes (through [`EventFeeds`]): a channel rule gives its
+//! event input takes (through the session's feeds,
+//! `AudioGraphRes::set_feed`): a channel rule gives its
 //! targets that channel's port and the channelless one, an any-channel rule
 //! all seventeen, several rules the union. The fallback takes every port no
 //! rule covers — a channel no rule names, and the channelless port while no
-//! rule is armed. A target is an entity, resolved to its node by the event
-//! wiring every frame, so a `crossfade` strands nothing.
+//! rule is armed. A target is an entity, resolved to its node when the rules
+//! compile and again whenever an entity's node changes; a `crossfade` keeps
+//! the node, so it strands nothing.
 //!
 //! [`MidiEngineNodes::input`]: crate::midi::MidiEngineNodes
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -66,7 +68,9 @@ use bevy_ecs::prelude::*;
 use tutti_midi_runtime::{compile_routes, RouteRule};
 use tutti_midi_types::MidiChannel;
 
-use crate::graph::{engine_ready, EventFeeds, EventSource, EventWiring, GraphReconcileSystems};
+use tutti_core::AudioNode;
+
+use crate::graph::{engine_ready, AudioGraphRes, EventSource, EventWiring, GraphReconcileSystems};
 use crate::midi::MidiEngineNodes;
 
 /// One inbound routing rule: which channel reaches which entities.
@@ -125,33 +129,38 @@ impl MidiRouteRule {
 #[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
 pub struct MidiRouteFallback(pub Option<Entity>);
 
-/// Who feeds a target through the route rules, in [`EventFeeds`].
+/// Who feeds a target's node through the route rules, in the session's
+/// feeds.
 const ROUTES: &str = "midi routes";
 
-/// The targets [`rebuild`] fed last, so one no rule names any more is
-/// unwired.
+/// The targets [`rebuild`] fed last, each with the node it fed, so one no
+/// rule names any more (or an entity now on another node) is unwired.
 #[derive(Resource, Default)]
-pub struct RoutedTargets(HashSet<Entity>);
+pub struct RoutedTargets(HashMap<Entity, AudioNode>);
 
 /// Compiles every armed rule into which of the hardware input's ports each
 /// target takes ([`compile_routes`], the engine's pure compile), and writes it
-/// into [`EventFeeds`] (see the module docs).
+/// into the session's feeds on each target's node (see the module docs).
 ///
-/// Runs when a rule changes, is added, or is removed, and when the fallback
-/// changes: a whole recompile, since a target's ports are the union of every
-/// rule naming it. A target with no node yet is wired as soon as it has one
-/// (the event wiring resolves entities every frame).
+/// Runs when a rule changes, is added, or is removed, when the fallback
+/// changes, and when an entity's node does: a whole recompile, since a
+/// target's ports are the union of every rule naming it. A target with no
+/// node yet is wired on the frame it gets one.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     nodes: Option<Res<MidiEngineNodes>>,
     rules: Query<&MidiRouteRule>,
     fallback: Res<MidiRouteFallback>,
     changed: Query<(), Changed<MidiRouteRule>>,
+    rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiRouteRule>,
-    mut feeds: ResMut<EventFeeds>,
+    bound: Query<&AudioNode>,
+    graph: Option<ResMut<AudioGraphRes>>,
     mut routed: ResMut<RoutedTargets>,
 ) {
     let dirty = !changed.is_empty()
         || !removed.is_empty()
+        || !rebound.is_empty()
         || fallback.is_changed()
         || nodes_changed(&nodes);
     // An event reader: draining is what marks this frame's removals as seen, so
@@ -160,7 +169,7 @@ pub fn rebuild(
     if !dirty {
         return;
     }
-    let Some(nodes) = nodes else {
+    let (Some(nodes), Some(mut graph)) = (nodes, graph) else {
         return;
     };
 
@@ -172,18 +181,27 @@ pub fn rebuild(
         fallback.0,
     );
 
-    // Every target `compile_routes` returns takes at least one port.
-    let wanted: HashSet<Entity> = ports.keys().copied().collect();
-    for gone in routed.0.difference(&wanted) {
-        feeds.remove(*gone, ROUTES);
+    // Every target `compile_routes` returns takes at least one port; one
+    // without a node yet is left for the frame it gets one.
+    let wanted: HashMap<Entity, AudioNode> = ports
+        .keys()
+        .filter_map(|&target| bound.get(target).ok().map(|&node| (target, node)))
+        .collect();
+    for (target, &fed) in &routed.0 {
+        if wanted.get(target) != Some(&fed) {
+            graph.set_feed(fed, ROUTES, Vec::new());
+        }
     }
     for (target, ports) in ports {
+        let Some(&sink) = wanted.get(&target) else {
+            continue;
+        };
         let sources = ports
             .into_iter()
             .filter_map(|p| u16::try_from(p).ok())
             .map(|p| EventSource::new(nodes.input_node, p))
             .collect();
-        feeds.set(target, ROUTES, sources);
+        graph.set_feed(sink, ROUTES, sources);
     }
     routed.0 = wanted;
 }
@@ -205,7 +223,6 @@ impl Plugin for MidiRoutePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MidiRouteFallback>();
         app.init_resource::<RoutedTargets>();
-        app.init_resource::<EventFeeds>();
         app.add_systems(
             Update,
             rebuild

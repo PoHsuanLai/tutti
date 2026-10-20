@@ -188,7 +188,8 @@ impl Plugin for LiveMidiPlugin {
                 // A hard gate, not an early return: a system that runs
                 // consumes its change ticks, so a `LiveMidiInput` added
                 // before the graph exists would never be seen again.
-                .run_if(engine_ready.and(resource_exists::<AudioGraphRes>)),
+                .run_if(engine_ready)
+                .run_if(resource_exists::<AudioGraphRes>),
         );
     }
 }

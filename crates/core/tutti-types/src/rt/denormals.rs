@@ -18,6 +18,8 @@
 //! }
 //! ```
 
+use core::marker::PhantomData;
+
 /// An RAII guard that flushes denormals to zero while it is alive, restoring
 /// the previous FPU mode on drop.
 ///
@@ -73,10 +75,11 @@
 ///   reduction for `tan`, whose intermediates are scaled into the normal
 ///   range, where the mode changes nothing.
 /// - **The mode is scoped.** It is set in `new` and the saved register is
-///   written back in `drop`, unwinding included. Drop guards in reverse
-///   order of creation (the natural order for locals), never
-///   [`forget`](core::mem::forget) one, and never move one to another thread:
-///   each of those leaves the wrong mode on a thread.
+///   written back in `drop`, unwinding included. The guard is `!Send` and
+///   `!Sync`, so it cannot be moved to another thread and dropped there.
+///   Drop guards in reverse order of creation (the natural order for
+///   locals) and never [`forget`](core::mem::forget) one: either leaves the
+///   wrong mode on the thread.
 ///
 /// So **do not rely on a bit-exact float result inside a guard** for anything
 /// but the audio itself: a value near the subnormal range can differ between a
@@ -105,11 +108,25 @@
 /// }
 /// # audio_callback(&mut [1.0; 4]);
 /// ```
+///
+/// A guard cannot leave its thread:
+///
+/// ```compile_fail
+/// use tutti_types::ScopedNoDenormals;
+///
+/// let guard = ScopedNoDenormals::new();
+/// std::thread::spawn(move || drop(guard));
+/// ```
+// Mutation: with the `_thread` field removed the guard is `Send` again, and
+// this `compile_fail` doctest compiles, so `cargo test --doc` fails it.
 pub struct ScopedNoDenormals {
     #[cfg(target_arch = "x86_64")]
     prev_mxcsr: u32,
     #[cfg(target_arch = "aarch64")]
     prev_fpcr: u64,
+    /// `!Send` and `!Sync`: the saved register belongs to the thread that
+    /// built the guard, and dropping it on another would write it there.
+    _thread: PhantomData<*const ()>,
 }
 
 impl ScopedNoDenormals {
@@ -126,7 +143,10 @@ impl ScopedNoDenormals {
                 core::arch::asm!("stmxcsr [{}]", in(reg) &mut prev, options(nostack));
                 let new = prev | 0x8040; // FTZ | DAZ
                 core::arch::asm!("ldmxcsr [{}]", in(reg) &new, options(nostack));
-                Self { prev_mxcsr: prev }
+                Self {
+                    prev_mxcsr: prev,
+                    _thread: PhantomData,
+                }
             }
         }
         #[cfg(target_arch = "aarch64")]
@@ -135,12 +155,17 @@ impl ScopedNoDenormals {
                 let prev: u64;
                 core::arch::asm!("mrs {}, fpcr", out(reg) prev);
                 core::arch::asm!("msr fpcr, {}", in(reg) prev | (1 << 24)); // FZ
-                Self { prev_fpcr: prev }
+                Self {
+                    prev_fpcr: prev,
+                    _thread: PhantomData,
+                }
             }
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
-            Self {}
+            Self {
+                _thread: PhantomData,
+            }
         }
     }
 }

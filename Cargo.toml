@@ -29,6 +29,10 @@ members = [
     # through. A general-purpose crate that names nothing of tutti's (and
     # `publish = false` until the maintainer decides otherwise).
     "crates/arc-lend",
+    # The comparison benchmark for arc-lend (`crates/arc-lend/BENCHMARKS.md`).
+    # Its own member so the contenders it measures stay out of arc-lend's
+    # dev-dependencies. Unpublished; nothing depends on it.
+    "crates/arc-lend/compare",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",

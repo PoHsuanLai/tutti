@@ -3606,9 +3606,10 @@ reserved once and reused), the type is a `Vec` or a boxed slice; where the
 inline storage was a hard cap (`RtVec`/`RtEventBuf`, the IPC MIDI block, the
 harmony containers) it is an `arrayvec::ArrayVec`, whose push past the cap
 is refused rather than spilling to the heap. `tutti-types` takes `arrayvec`
-for `Capped` (since folded into `RtVec`). The `Retire<T>` box in §5 is deleted (no production user; the
-`Drop` check on the audio-thread marker does its job), and the graph's probe
-of it in `tests/executor.rs` uses that check directly.
+for `Capped` (since folded into `RtVec`). The `Retire<T>` box in §5 is
+deleted (no production user; the `Drop` check on the audio-thread marker
+does its job), and the graph's probe of it in `tests/executor.rs` uses that
+check directly.
 
 Two audio-thread paths depended on the inline room and are reserved now:
 a `ParameterQueue` built per block had ten points inline, and a `Vec` has
@@ -4008,10 +4009,16 @@ all three into fresh `Vec`s to keep only the restart flags.
   type checks it in its `Drop`, as before.
 - **Not done: replacing `ScopedNoDenormals` with `no_denormals` 0.3.0.**
   The crate restores the register on drop and neither allocates nor makes a
-  syscall, but its only API is `unsafe fn no_denormals(f)`, and three of
-  the guard's seven users are in this crate, which is
-  `#![forbid(unsafe_code)]`. Adopting it needs a safe wrapper in
-  `tutti-types`, which is the module it was meant to delete.
+  syscall, but:
+  - its only API is `unsafe fn no_denormals(f)`, and three of the five
+    files that construct the guard (`exec.rs`, `par.rs`, `reference.rs`;
+    the others are tutti-cpal's `output.rs` and the plugin server's
+    `audio_pipeline.rs`, besides re-exports) are in this crate, which is
+    `#![forbid(unsafe_code)]`. Adopting it needs a safe wrapper in
+    `tutti-types`, which is the module it was meant to delete;
+  - on aarch64 with `fp16` (every Apple-silicon target) it also sets FZ16;
+  - on any architecture but x86, x86_64 and aarch64 it is a
+    `compile_error!`, where `ScopedNoDenormals` compiles to nothing.
 
 ## Per-node rewrite plan
 

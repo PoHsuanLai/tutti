@@ -58,7 +58,7 @@ pub struct RtScopeGuard {
 }
 
 impl RtScope {
-    /// Marks the current thread as the audio thread until the guard drops.
+    /// Marks the current thread as inside a block until the guard drops.
     ///
     /// An executor calls this at the top of every block. Allocation-free.
     pub fn enter() -> RtScopeGuard {

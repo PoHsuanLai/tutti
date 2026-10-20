@@ -6,8 +6,9 @@
 //!
 //! Covered: in-memory `MemorySource` (the workhorse playback node) in full
 //! blocks and in one-frame blocks, the voice-pool command drain, and
-//! `stretch::Unit`, whose fixed-capacity `Box<[f32]>` scratch buffers make `process`
-//! non-allocating for any block size (a longer one is split into runs).
+//! `stretch::Unit`, whose fixed-capacity `Box<[f32]>` scratch buffers make
+//! `process` non-allocating for any block size (a block past the scratch is
+//! split into runs; `time_stretch_process_past_the_scratch_is_allocation_free`).
 //!
 //! The sampler's nodes are graph nodes: each is driven through
 //! `tutti_graph::contract::Direct`, whose buffers are built once, under a
@@ -151,6 +152,40 @@ fn time_stretch_process_is_allocation_free() {
     });
 }
 
+/// One `process` of a block **past the 8192-frame scratch**, in processing
+/// mode: the block is split into runs inside `process`, and the split must
+/// not allocate either. The 64-frame gate above never reaches the split.
+///
+/// Mutation (run): a `Vec::<f32>::with_capacity(run)` built (and
+/// `black_box`ed) inside `process`'s split loop → the gate aborts → fails.
+#[test]
+fn time_stretch_process_past_the_scratch_is_allocation_free() {
+    const FRAMES: usize = 8192 + 300;
+    let mut node = TimeStretchUnit::new(48_000.0);
+    node.set_sample_rate(SampleRate(48_000.0));
+    node.set_stretch_factor(StretchFactor::new(1.5));
+    assert!(
+        node.is_processing(),
+        "the gate is on the vocoder path, not bypass"
+    );
+
+    // Built outside the gate: the harness's buffers are not the unit's.
+    let input = vec![vec![0.25f32; FRAMES]; 2];
+    let mut output = vec![vec![0.0f32; FRAMES]; 2];
+    let ins = [&input[0][..], &input[1][..]];
+    let [o0, o1] = &mut output[..] else {
+        unreachable!("two channels")
+    };
+    let mut outs = [&mut o0[..], &mut o1[..]];
+
+    // One warm-up block, so the gated one is past the vocoder's fill-up.
+    node.process(FRAMES, &ins, &mut outs);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        node.process(FRAMES, &ins, &mut outs);
+    });
+}
+
 /// The same guarantee for a **cloned** unit — the shape a fork produces.
 ///
 /// A clone builds its own vocoders and block scratch, so there is no step
@@ -160,10 +195,11 @@ fn time_stretch_process_is_allocation_free() {
 /// here: it drives a freshly constructed unit, not a clone.
 ///
 /// Mutation (run): `Unit::process` building its input scratch per block
-/// (`self.ch.scratch_in = … vec![0.0; MAX_BUFFER_SIZE].into_boxed_slice() …`) → fails. (A
-/// clone that sized its scratch only on first use would slip past: the
-/// warm-up runs that use. `stretch::tests::a_clone_arrives_with_its_block_scratch_sized`
-/// pins that a clone arrives sized.)
+/// (`self.ch.scratch_in = … vec![0.0; MAX_BUFFER_SIZE].into_boxed_slice() …`)
+/// → fails. (A clone that sized its scratch only on first use would slip
+/// past: the warm-up runs that use.
+/// `stretch::tests::a_clone_arrives_with_its_block_scratch_sized` pins that a
+/// clone arrives sized.)
 #[test]
 fn cloned_time_stretch_process_is_allocation_free() {
     let mut original = TimeStretchUnit::new(48_000.0);

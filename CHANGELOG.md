@@ -30,7 +30,9 @@ Migration: rename per the table; `AudioThreadCell` is unchanged. A former
 
 `ScopedNoDenormals` stays: the `no_denormals` crate's only API is an
 `unsafe fn` taking a closure, which `tutti-graph`'s
-`#![forbid(unsafe_code)]` cannot call (see the PR for the verification).
+`#![forbid(unsafe_code)]` cannot call, and it is a `compile_error!` on
+any architecture but x86, x86_64 and aarch64, where `ScopedNoDenormals`
+compiles to nothing (see the PR for the verification).
 
 ### Changed — design 015 PR 7: rules, gates and a pinned toolchain
 

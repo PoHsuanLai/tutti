@@ -6,8 +6,7 @@ use arrayvec::ArrayVec;
 /// `&[T]`.
 ///
 /// This is the "collect during the block, then hand the filled run to a
-/// caller" shape — the most common one on the RT path, and the one the other
-/// `rt` buffers do not serve:
+/// caller" shape, the most common one on the RT path.
 ///
 /// A caller that needs the same buffer through `&self` (behind an `Arc`, in a
 /// COM object) wraps it in an [`AudioThreadCell`](crate::AudioThreadCell).

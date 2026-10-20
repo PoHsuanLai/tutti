@@ -7,8 +7,9 @@
 //!
 //! There is one capped collection, [`RtVec`]: it answers "what happens at the
 //! cap?" — refuse the write, latch an overflow flag, never grow — with
-//! `&mut self` in and a borrowed `&[T]` out. An owner that holds the buffer behind an `Arc` (a CPAL
-//! callback's shared state, a COM object) puts the `RtVec` in an
+//! `&mut self` in and a borrowed `&[T]` out. An owner that holds the buffer
+//! behind an `Arc` (a CPAL callback's shared state, a COM object) puts the
+//! `RtVec` in an
 //! [`AudioThreadCell`] and reads it under that cell's borrow guard; it never
 //! lends a borrow into the storage out of a `&self` method, which would need
 //! an `UnsafeCell` and a single-thread contract the compiler cannot check.

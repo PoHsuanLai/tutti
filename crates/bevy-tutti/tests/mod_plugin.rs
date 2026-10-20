@@ -335,7 +335,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
 /// `+0.25` on a knob of 0), on its one event input. A MIDI source is then
 /// declared on that input (`EventSources`) and taken away again: each
 /// rewrite of the port's declared sources leaves the lane's edge where it
-/// was (`GraphRuntime::set_event_sources` keeps the edges it did not
+/// was (`tutti_session::Graph::set_event_sources` keeps the edges it did not
 /// make), so `event_sources` still lists the lane and the plugin still
 /// reads `0.25`.
 ///

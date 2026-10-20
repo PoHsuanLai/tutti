@@ -71,6 +71,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `tutti-io` was an optional `bevy-tutti` dependency (`audio-io`, `sampler`) | it is always one: `graph::pump` is always compiled. `wav`/`flac`/`mp3`/`ogg` now turn on `tutti-io`'s codec unconditionally |
   | the pump's thread panic read "audio pump thread panicked" | "recording thread panicked", `Recorder`'s message |
 
+### Changed — design 015 PR 4: `tutti-session`, the Bevy-free API layer
+
+- **New crate `tutti-session`**: the cross-crate composition both
+  umbrellas use. A `Session` is a `Graph` (the editor, the nodes inserted
+  through it and their event feeds), its transport, and the engine side it
+  renders on, built by a `SessionBuilder` offline (`build_offline`, then
+  `Session::render`), detached (`build_detached`) or on a device
+  (`build_device`, `build_device_on`; feature `device`, giving back a
+  `!Send` `Device`). `Session::update()` runs a frame's phases in `PHASES`
+  order and commits iff the graph was edited. Every module is private, it
+  has no `bevy` feature, and it re-exports no crate whole
+  (`scripts/check-bevy-free.sh`, now in `just ci` and CI).
+- **`tutti` re-exports it** as `tutti::session`, with
+  `default = ["session"]` (the one non-empty default; it adds no device and
+  no ALSA). Each feature forwards to the session's feature of the same
+  name with `?`. The prelude gains `Session`, `SessionBuilder`,
+  `SessionEvent`, `Phase` and, with `device`, `Device`.
+  `examples/headless_engine.rs` is now 19 lines on `Session`.
+- **`bevy-tutti` runs on the session.** `AudioGraphRes` wraps a `Session`,
+  `engine/build.rs` calls the builder, and the device restart is the
+  session's. **Breaking:**
+
+  | Was | Now |
+  |---|---|
+  | `bevy_tutti::graph::GraphDirty` (set by hand after an edit) | gone: every edit through `AudioGraphRes` marks the session graph edited (`AudioGraphRes::is_edited`), and `commit_graph` commits iff it is set |
+  | `GraphNode` (trait; `GraphNode::params`) | `SessionNode` (`bevy_tutti::graph::SessionNode`, also in the prelude); `param_graph_node!` unchanged for callers |
+  | `EventFeeds` resource (`set`, `remove`, keyed by `Entity`) | `AudioGraphRes::{set_feed, feed, move_feeds}`, keyed by `AudioNode`; removing a node purges it from every feed |
+  | `TuttiDriver` resource (`bevy_tutti::TuttiDriver`) | `Device`, a non-send resource (`NonSend<Device>`); `Device::devices()` enumerates |
+  | `DeviceRestart { device: Option<usize>, .. }` (`Copy`) | `DeviceRestart { device: DeviceSelector, .. }` (`Clone`); `DeviceSelector::from(Option<usize>)` converts |
+  | `TuttiDriver::{restart, restart_with}(Option<usize>, ..)` | take `impl Into<DeviceSelector>` (an `Option<usize>` still converts) |
+  | `bevy_tutti::Error` (exhaustive) | `tutti_session::Error`, re-exported, `#[non_exhaustive]` |
+  | `AudioGraphRes` held the editor and runtime state itself | it wraps a `Session`; new methods `add`, `crossfade`, `crossfade_plugin`, `is_edited`, `set_feed`, `feed`, `move_feeds` |
+  | an edit staged through `AudioGraphRes` after `commit_graph` could be committed early by modulation's `after_commit` | it waits for the next frame's commit; `after_commit` commits only its own resolution, and only while the graph is otherwise clean |
+
+  A crossfade refused `Busy` (a re-prepare in flight) is parked and
+  retried by the session; `crossfade_audio_node` binds the new node's
+  controls when it lands (`PendingCrossfades`, resolved from
+  `SessionEvent::CrossfadeLanded`). `EngineNodes` is inserted only when the session has a click. A live MIDI
+  input is fed once its entity has an `AudioNode`, and the inbound routes
+  and MIDI clips follow a target re-bound to a new node.
+
 ### Added
 
 - **`tutti_types::{SeqWriter<W>, SeqReader<W>}`**, a sequence lock over

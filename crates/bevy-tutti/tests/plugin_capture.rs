@@ -329,7 +329,7 @@ fn a_crossfaded_plugin_is_bound_again() {
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
     // The gain's lane feeds whichever plugin the entity is bound to: the
     // incoming one now (a crossfade keeps the key and its edges). Mutation
-    // (run): `GraphRuntime::event_sources` listing only edges from nodes
+    // (run): `tutti_session::Graph::event_sources` listing only edges from nodes
     // the runtime holds (a lane is the reconciler's) → no event source →
     // fails.
     #[cfg(feature = "modulation")]

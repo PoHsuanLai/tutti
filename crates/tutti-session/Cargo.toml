@@ -23,8 +23,9 @@ tutti-types = { path = "../core/tutti-types", default-features = false }
 tutti-graph = { path = "../core/tutti-graph" }
 tutti-core = { path = "../core/tutti-core", default-features = false }
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
-# Logging: what `GraphRuntime`'s `bevy_log` calls became. `bevy_log` is a
-# `tracing` subscriber, so a Bevy app sees these where it saw those.
+# Logging: what the `bevy_log` calls of `bevy-tutti`'s old `GraphRuntime`
+# became. `bevy_log` is a `tracing` subscriber, so a Bevy app sees these
+# where it saw those.
 tracing = "0.1"
 thiserror.workspace = true
 

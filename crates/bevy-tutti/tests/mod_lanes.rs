@@ -180,7 +180,7 @@ fn setup(mut mods: Mods, scene: Res<Scene>) {
 /// Mutations (run), each fails: `ModHostOver::target` handing the knob
 /// cell of another param (`p.cell(Volume)`: the cutoff has none and reads
 /// 500 flat); `Declared::collect` dropping the ranges (the routes are
-/// refused); `ModEntities::feed` answering `None` (the follower is
+/// refused); `ModKeys::feed` (`Declared`) answering `None` (the follower is
 /// unresolved and the pad never dips).
 #[test]
 fn the_8_1_example_renders_its_analytic_values() {

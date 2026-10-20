@@ -196,7 +196,7 @@ mod master_bus {
     /// This is the whole defect in four lines: nothing warns, nothing logs, and the
     /// first node is simply gone from the output.
     ///
-    /// Mutation (run): `GraphRuntime::set_outputs_from` writing only the
+    /// Mutation (run): `tutti_session::Graph::set_outputs_from` writing only the
     /// channels that read nothing yet (a layering "mix") → the second claim
     /// does not land and this fails.
     #[test]

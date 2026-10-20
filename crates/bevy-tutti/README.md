@@ -56,8 +56,8 @@ yourself in that case.
   `App::add_audio_param`.
 - **One commit per frame.** The reconcile systems run in `Update` in the
   `GraphReconcileSystems` sets (`Spawn`, `Params`, `Despawn`, `Compensate`,
-  `Commit`). Direct edits through `AudioGraphRes` set `GraphDirty`, and
-  `commit_graph` publishes the frame's edits together.
+  `Commit`). Direct edits through `AudioGraphRes` mark the session graph
+  edited, and `commit_graph` publishes the frame's edits together.
 - **Latency is compensated by the graph.** `GraphLatency` and
   `ChannelCompensation` report the plan the audio thread runs.
 

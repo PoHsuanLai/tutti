@@ -6,7 +6,14 @@
 //! `plugin-server` (build it first: `cargo build -p tutti-plugin-server`),
 //! and the VST2 probe in process.
 
-#![cfg(all(feature = "plugin", feature = "modulation"))]
+// Every test here needs `export` (the CLAP one) or `vst2` (the rest): with
+// `plugin,modulation` alone, the file would be helpers and no test, which
+// `dead_code` rejects.
+#![cfg(all(
+    feature = "plugin",
+    feature = "modulation",
+    any(feature = "export", feature = "vst2")
+))]
 
 #[macro_use]
 mod common;
@@ -29,7 +36,9 @@ use tutti_types::SampleRate;
 
 const RATE: f64 = 48_000.0;
 
-/// Set a switch a plugin (or its server) reads when it starts.
+/// Set a switch a plugin (or its server) reads when it starts. Only the
+/// CLAP test (`export`) has switches to set.
+#[cfg(feature = "export")]
 fn env(key: &str, value: impl ToString) {
     // SAFETY: nextest runs each test in its own process, and nothing in it
     // reads the environment concurrently.

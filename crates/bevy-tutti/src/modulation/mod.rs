@@ -101,16 +101,20 @@ pub use tutti_mod::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::graph::{engine_ready, GraphReconcileSystems};
+use tutti_session::Phase;
+
+use crate::graph::{engine_ready, GraphReconcileSystems, SessionPhaseSystems};
 
 /// Where the modulation systems run, for a host's own to order against.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ModulationSystems {
     /// [`close_takes`] then [`reconcile`]: after
     /// [`GraphReconcileSystems::Spawn`], before
-    /// [`GraphReconcileSystems::Params`].
+    /// [`GraphReconcileSystems::Params`], in the session's `Modulation`
+    /// phase ([`SessionPhaseSystems`]).
     Apply,
-    /// [`after_commit`]: after [`GraphReconcileSystems::Commit`].
+    /// [`after_commit`]: after [`GraphReconcileSystems::Commit`], in the
+    /// session's `AfterCommit` phase.
     AfterCommit,
 }
 
@@ -132,8 +136,11 @@ impl Plugin for TuttiModulationPlugin {
             (
                 ModulationSystems::Apply
                     .after(GraphReconcileSystems::Spawn)
-                    .before(GraphReconcileSystems::Params),
-                ModulationSystems::AfterCommit.after(GraphReconcileSystems::Commit),
+                    .before(GraphReconcileSystems::Params)
+                    .in_set(SessionPhaseSystems(Phase::Modulation)),
+                ModulationSystems::AfterCommit
+                    .after(GraphReconcileSystems::Commit)
+                    .in_set(SessionPhaseSystems(Phase::AfterCommit)),
             ),
         );
         app.add_systems(

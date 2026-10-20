@@ -18,14 +18,16 @@ use std::sync::Arc;
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_tutti::export::RenderGraph;
 use bevy_tutti::export::{
     ExportClock, ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest,
     ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
+// `RenderGraph`, the graph a `prepare` hook edits, is the session's offline
+// render, which `bevy-tutti` does not re-export (`scripts/check-adapter.sh`):
+// a host that names it depends on `tutti-export`, as this test does.
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
+    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
 };
 use tutti_nodes::testing::{Const, Sink};
 use tutti_types::graph::{OutPort, Source};
@@ -325,7 +327,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         let level = world.resource::<Level>().0;
         move |prepared: PreparedGraph<'_>| {
             let prepared_key = prepared.fresh_key();
-            // Named through `bevy_tutti::export`, the path a host uses.
+            // Named through `tutti_export`, the path a host uses.
             let graph: &mut RenderGraph = prepared.graph;
             let editor = graph.editor_mut();
             let key = prepared_key;

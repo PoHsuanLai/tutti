@@ -116,7 +116,12 @@ fn unconfigured_channels() -> ChannelLayout {
 // `&mut self` method reaches it with `get_mut`, lock-free; a `&self` query
 // takes the lock, uncontended — the resource's own borrow already serializes
 // access.
-pub struct AudioGraphRes(Mutex<Session>);
+pub struct AudioGraphRes(
+    Mutex<Session>,
+    // Test builds: every phase run through `run_phase{,_with_mods}`, in order,
+    // for the schedule test (`schedule::tests`).
+    #[cfg(test)] Mutex<Vec<Phase>>,
+);
 
 impl AudioGraphRes {
     /// `&self` access. Poison is recovered: a panic mid-edit leaves a spec
@@ -150,7 +155,11 @@ impl AudioGraphRes {
 
     /// The resource over a built `session` ([`build_into`](crate::engine::build_into)).
     pub(crate) fn from_session(session: Session) -> Self {
-        Self(Mutex::new(session))
+        Self(
+            Mutex::new(session),
+            #[cfg(test)]
+            Mutex::default(),
+        )
     }
 
     /// A graph with no device behind it: `inputs` global inputs and `outputs`
@@ -626,11 +635,22 @@ impl AudioGraphRes {
         self.read().graph_ref().fork_live().ok()
     }
 
+    /// The phases run since the last call, in the order they ran.
+    #[cfg(test)]
+    pub(crate) fn take_phase_log(&mut self) -> Vec<Phase> {
+        std::mem::take(self.1.get_mut().unwrap_or_else(PoisonError::into_inner))
+    }
+
     // --- Publishing and rendering ---
 
     /// Runs one of the session's phases (`Session::run_phase`) at `now`,
     /// returning what it found.
     pub(crate) fn run_phase(&mut self, phase: Phase, now: std::time::Instant) -> Vec<SessionEvent> {
+        #[cfg(test)]
+        self.1
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(phase);
         let mut out = Vec::new();
         self.write().run_phase(phase, PhaseCx::at(now), &mut out);
         out
@@ -645,6 +665,11 @@ impl AudioGraphRes {
         now: std::time::Instant,
         mods: tutti_session::ModInput<'_>,
     ) -> Vec<SessionEvent> {
+        #[cfg(test)]
+        self.1
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(phase);
         let mut out = Vec::new();
         self.write()
             .run_phase(phase, PhaseCx::at(now).with_mods(mods), &mut out);

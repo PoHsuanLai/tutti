@@ -13,26 +13,27 @@
 //!
 //! ```text
 //! cargo build -p tutti-plugin-server
-//! cargo run -p tutti-session --features clap,export --example plugin_midi_export
-//! cargo run -p tutti-session --features clap,export --example plugin_midi_export -- \
+//! cargo run -p tutti --features clap,export --example plugin_midi_export
+//! cargo run -p tutti --features clap,export --example plugin_midi_export -- \
 //!     Synth.clap song.mid song.wav
 //! ```
 //!
 //! CI runs it as a test (`test = true`), which plays the phrase.
+//!
+//! It is the umbrella's, not `tutti-session`'s, so that it reads as the
+//! design does: one `use tutti::prelude::*;` (the session's requests are in
+//! the prelude with the features that gate them). `tutti-session` cannot
+//! name `tutti`, which depends on it.
 
-#[path = "../tests/support/mod.rs"]
+// The plugin and server lookup `tutti-session`'s plugin suite uses.
+#[path = "../../tutti-session/tests/support/mod.rs"]
 mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{Bpm, ChannelLayout, SampleRate, Samples};
-use tutti_export::{ExportConfig, Written};
-use tutti_midi_file::MidiFile;
-use tutti_midi_runtime::TimedMidiEvent;
-use tutti_plugin::catalog::PluginId;
-use tutti_session::{ExportOutput, ExportRequest, PluginLoadRequest, Session};
+use tutti::export::Written;
+use tutti::prelude::*;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -78,7 +79,7 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
 /// for the last four. Written through `midly` (re-exported by
 /// `tutti-midi-file`): this crate's own writer sets one tempo only.
 fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    use tutti_midi_file::midly::{
+    use tutti::midi_file::midly::{
         num::u28, Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
     };
     const TPQ: u32 = 480;

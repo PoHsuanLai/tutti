@@ -6,12 +6,13 @@
 //! reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
-//! - the pipeline, one file per duty: [`schedule`] (the set order and the
+//! - the pipeline, one file per duty: [`schedule`] (the set order, the
+//!   session's phases in `PHASES` order ([`SessionPhaseSystems`]) and the
 //!   [`engine_ready`] gate), [`spawn`] ([`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
 //!   node: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
-//!   [`commit`] ([`commit_graph`], the session's `Collect` and `Commit`
-//!   phases) — composed by [`GraphReconcilePlugin`],
+//!   [`commit`] ([`collect_graph`] and [`commit_graph`], the session's
+//!   `Collect` and `Commit` phases) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
 //!   same phase that wires, so every static question (latency, tail, "did
@@ -44,7 +45,7 @@ pub mod transport;
 pub mod wire;
 
 pub use capture::CapturedControls;
-pub use commit::commit_graph;
+pub use commit::{collect_graph, commit_graph};
 pub use despawn::reconcile_node_despawn;
 pub use events::{
     EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls, DECLARED,
@@ -56,7 +57,7 @@ pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
 pub use resources::{AudioConfig, AudioGraphRes};
-pub use schedule::{engine_ready, GraphReconcileSystems};
+pub use schedule::{engine_ready, GraphReconcileSystems, SessionPhaseSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
 pub use spawn::{
@@ -70,7 +71,8 @@ pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
 // The session's items this crate's own signatures take, one by one: the
 // session crate itself is not re-exported (design 015 §6).
 pub use tutti_session::{
-    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, ReplaceRefused, SessionNode,
+    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, Phase, ReplaceRefused,
+    SessionNode,
 };
 
 #[cfg(test)]

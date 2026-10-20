@@ -280,7 +280,9 @@ impl Plugin for TuttiHostingPlugin {
             Update,
             (
                 plugin_state_snapshot.before(plugin_health_poll),
-                plugin_health_poll.after(plugin_load_promote),
+                plugin_health_poll.after(plugin_load_promote).in_set(
+                    crate::graph::SessionPhaseSystems(tutti_session::Phase::Plugins),
+                ),
             )
                 .in_set(GraphReconcileSystems::Spawn)
                 .run_if(crate::graph::engine_ready),

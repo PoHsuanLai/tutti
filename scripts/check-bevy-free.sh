@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # `tutti-session` is the Bevy-free API layer both umbrellas use (design 015
-# §8, checks 2 and 4). Three assertions, none of which a compile can make:
+# §8, check 2). Two assertions, neither of which a compile can make:
 #
 # 1. No Bevy crate in its normal dependency closure, with every feature on.
 #    `cargo tree`, not `cargo metadata`: metadata resolves features once for
@@ -13,14 +13,9 @@
 # 2. No `bevy` feature in its manifest. Every other engine crate has one,
 #    off by default; this crate must never grow one, which is a stronger rule
 #    than (1) can state while the feature has no dependency behind it yet.
-# 3. No whole-crate (or whole-module) re-export in its source:
-#    `pub use tutti_x as ...;`, `pub use tutti_x;`, `pub use tutti_x::{self ...}`,
-#    or a glob anywhere under a `tutti_` path (`pub use tutti_x::*;`,
-#    `pub use tutti_x::prelude::*;`, `pub use tutti_x::{a::*, B};`), with or
-#    without attributes in front (`#[cfg(...)] pub use ...`) and across
-#    lines. Single items are allowed (the types its own signatures take). A
-#    crate re-exported whole makes it a third umbrella, and the umbrella is
-#    `tutti`.
+#
+# Its third check from PR 4 to PR 7, no whole-crate re-export (§8 check 4),
+# is `scripts/check-adapter.sh`'s, with its mutation records.
 #
 # A script rather than a test: a test that shells out to `cargo` inside
 # `cargo nextest` contends for the build lock.
@@ -30,13 +25,6 @@
 #   feature → (1) lists `bevy_ecs` and fails; the same tree without
 #   `--all-features` lists nothing, which is why the flag is there.
 # - `bevy = []` under `[features]` → (2) fails.
-# - `pub use tutti_mod as modulation;` in `lib.rs` → (3) fails and names
-#   `tutti` as the umbrella; `pub use tutti_mod;` and `pub use tutti_mod::*;`
-#   fail the same way.
-# - The variants a first version of (3) let through (PR 4 review), each now
-#   failing: `#[cfg(feature = "modulation")] pub use tutti_mod as
-#   modulation;` (an attribute on the same line), `pub use
-#   tutti_mod::{self as modulation};` and `pub use tutti_core::prelude::*;`.
 #
 # Usage:
 #   scripts/check-bevy-free.sh
@@ -47,12 +35,11 @@ cd "$(dirname "$0")/.."
 
 readonly CRATE=tutti-session
 readonly MANIFEST=crates/tutti-session/Cargo.toml
-readonly SRC=crates/tutti-session/src
 
 fail=0
 
 # 1. The dependency closure.
-if ! tree=$(cargo tree -p "$CRATE" -e normal --all-features --prefix none 2>&1); then
+if ! tree=$(cargo tree --locked -p "$CRATE" -e normal --all-features --prefix none 2>&1); then
   echo "$tree"
   echo "FAIL: cargo tree -p $CRATE did not run."
   exit 1
@@ -76,32 +63,7 @@ if awk '
   fail=1
 fi
 
-# 3. Whole-crate re-exports. Perl over each whole file, so a `use` spanning
-#    lines is one match. A statement starts a line, after optional
-#    attributes; comment lines never start with `pub` or `#[`, so they
-#    cannot match. `pub(crate) use` is not a re-export and is not matched.
-#    Per `pub use tutti_x` (optionally `::`-led):
-#    - then `;` or `as NAME;`: the crate itself;
-#    - then any `::seg` path ending `::*`: a glob;
-#    - then any `::seg` path and a `{...}` group holding `self` or a `*`.
-hits=$(find "$SRC" -name '*.rs' -print0 | xargs -0 perl -0777 -ne '
-  while (/^[ \t]*(?:\#\[[^\]]*\][ \t]*)*pub[ \t]+use[ \t]+(?:::)?tutti_[a-z0-9_]+
-          (?: \s*(?:as\s+\w+\s*)?;
-            | (?:::\w+)*::\*
-            | (?:::\w+)*::\{[^}]*(?:\bself\b|\*) )/gmx) {
-    my $line = 1 + (substr($_, 0, $-[0]) =~ tr/\n//);
-    (my $text = $&) =~ s/\s+/ /g;
-    print "$ARGV:$line: $text\n";
-  }')
-if [[ -n $hits ]]; then
-  echo "$hits"
-  echo "FAIL: $CRATE re-exports a crate whole. It is not an umbrella: the umbrella is"
-  echo "      \`tutti\` (and \`bevy-tutti\` for a Bevy app). Re-export the single items"
-  echo "      $CRATE's own signatures take, or let the umbrella re-export the crate."
-  fail=1
-fi
-
 if [[ $fail -ne 0 ]]; then
   exit 1
 fi
-echo "OK: $CRATE is Bevy-free, has no bevy feature, and re-exports no crate whole."
+echo "OK: $CRATE is Bevy-free and has no bevy feature."

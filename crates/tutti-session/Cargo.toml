@@ -1,10 +1,10 @@
 # The Bevy-free API layer (design 015): the cross-crate composition both
 # umbrellas use. `bevy-tutti` and `tutti` depend on it; nothing else does.
 #
-# Not an umbrella: it re-exports no crate whole (`scripts/check-bevy-free.sh`
+# Not an umbrella: it re-exports no crate whole (`scripts/check-adapter.sh`
 # fails on `pub use tutti_x as …;`, `pub use tutti_x;` and
 # `pub use tutti_x::*;`), only the single items its own signatures take. And no
-# `bevy` feature: nothing here reaches Bevy (the same script runs
+# `bevy` feature: nothing here reaches Bevy (`scripts/check-bevy-free.sh` runs
 # `cargo tree -p tutti-session -e normal --all-features`).
 [package]
 name = "tutti-session"
@@ -85,7 +85,7 @@ tutti-io = { path = "../core/tutti-io" }
 tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, features = ["test-support"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.
 tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
-# The reference CLAP plugin `tests/plugin.rs` and the §5.2 example load, in a
+# The reference CLAP plugin `tests/plugin.rs` loads, in a
 # `plugin-server` (built first: `cargo build -p tutti-plugin-server`; it is
 # not a dev-dependency, which would be a cycle through `tutti-plugin`).
 tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
@@ -118,14 +118,5 @@ required-features = ["midi"]
 name = "plugin"
 required-features = ["clap", "export"]
 
-# Design 015 §5.1: doc 014 §8.1's modulation, headless.
-[[example]]
-name = "headless_modulation"
-required-features = ["modulation"]
-
-# Design 015 §5.2: load a plugin, play a MIDI file, export to WAV. Run as a
-# test (`test = true`) so CI plays it; it needs `plugin-server` built first.
-[[example]]
-name = "plugin_midi_export"
-required-features = ["clap", "export"]
-test = true
+# The §5.1 and §5.2 examples are the umbrella's (`crates/tutti/examples`):
+# they import `tutti::prelude`, which this crate cannot name.

@@ -1,7 +1,8 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **in progress**. PRs 1, 2, 3, 4 and 5 (§9) have landed; the rest
-has not. Each landed PR says so in a "Landed" note. The user has made every
+Status: **complete**. All seven PRs (§9) have landed; each says so in a
+"Landed" note, and the one item still deferred (Bevy's `Phase::Poll`) is in
+PR 7's. The user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before PR 1.
 
@@ -1785,6 +1786,58 @@ Where the code differs from the text above:
 
 **Exit:** `just ci` is green, and `scripts/check-adapter.sh` reports no
 denied type in `bevy-tutti/src`.
+
+**Landed.** As scoped, plus a reproducible toolchain (the user's
+addition). Specifics:
+
+- **`scripts/check-adapter.sh`** holds §8 checks 3 and 4 (check 4 moved
+  there from `check-bevy-free.sh`), in `just ci` and CI's paths job. Check
+  3 is a small Perl lexer over `bevy-tutti/src`, not a line grep: it
+  blanks comments (nested too), string, raw-string and char literals, and
+  every item under `#[cfg(test)]` or `#[cfg(all(test, …))]` to its closing
+  brace, keeping line numbers; an out-of-line `#[cfg(test)] mod x;` is
+  excluded by path (`#[path]` honoured). `Phase::Modulation` is a phase,
+  not the reconcile, and is not a hit. Its limits are in the script: an
+  item under `cfg(any(test, …))` is checked, a name built by a macro or
+  reached through an alias declared outside the crate is not seen, and an
+  inner `#![cfg(test)]` is not read.
+- **One real hit on main:** `bevy_tutti::export` re-exported
+  `tutti_export::RenderGraph`. Nothing in the adapter used it; it is
+  removed, and the one test that named it imports it from `tutti-export`.
+- **The schedule is built from `PHASES`.** `SessionPhaseSystems(Phase)`
+  sets are chained from the constant and placed against
+  `GraphReconcileSystems` (`configure_phases`). Two orderings on main
+  disagreed with `PHASES`:
+  - `Phase::Collect` ran inside `commit_graph`, after `Plugins` and
+    `Modulation`. It is now its own system, `collect_graph`, first in the
+    frame; `commit_graph` runs only `Commit`.
+  - `Phase::MidiOut` (the clock pump) had no order against the commit and
+    `AfterCommit`. It now follows them.
+- **The test** (`graph::schedule::tests`) records the phases the session
+  ran in each frame (a `cfg(test)` log on `AudioGraphRes`) and asserts
+  they are strictly increasing in `PHASES` rank, with every phase the
+  features schedule present. It reads the order from `PHASES`, so
+  reordering the constant reorders the expectation.
+- **The prelude** gains the session's requests behind their features
+  (`ExportRequest`, `ExportOutput`, `ExportConfig`, `PluginLoadRequest`,
+  `PluginId`, `ParamRef`, `MidiFile`, `TimedMidiEvent`, `GraphSource`, the
+  offline timeline). **Deviation:** §5.1 and §5.2 moved from
+  `tutti-session/examples` to `tutti/examples` so they can use
+  `tutti::prelude::*`: `tutti-session` cannot dev-depend on `tutti`, which
+  depends on it. The §5.2 example is still a test (`test = true`), run by
+  `tutti --features clap,export`.
+- **Reproducible builds:** `Cargo.lock` is committed and every CI and
+  `just` cargo command passes `--locked`; `rust-toolchain.toml` pins 1.99.1,
+  which CI installs in place of `dtolnay/rust-toolchain@stable`; miri names
+  `+nightly`. The pin surfaced no new lint. `bevy-tutti --features
+  plugin,modulation` had dead test code (`tests/mod_plugin.rs` loads a
+  plugin only with `export` or `vst2`); the file is gated on them, and
+  dark-features lints that combination and `tutti --features
+  clap,export,modulation`.
+- **Deferred:** Bevy still does not run `Phase::Poll`. Its set exists,
+  last in the chain, but `device_state_sync_system` reads the device's
+  faults into `AudioDeviceState` itself. `tutti-plugin`'s `bevy` feature
+  (unused since PR 6) is left for a cleanup.
 
 ## 10. Out of scope
 

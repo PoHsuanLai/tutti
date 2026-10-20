@@ -82,7 +82,11 @@ impl Plugin for ClockOutPlugin {
         // still an `Option` (see the system).
         app.add_systems(
             Update,
-            pump_clock_out_system.run_if(crate::graph::engine_ready),
+            pump_clock_out_system
+                .run_if(crate::graph::engine_ready)
+                .in_set(crate::graph::SessionPhaseSystems(
+                    tutti_session::Phase::MidiOut,
+                )),
         );
     }
 }

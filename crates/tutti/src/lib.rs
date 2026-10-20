@@ -133,14 +133,23 @@ pub use tutti_plugin as plugin;
 /// The engine's prelude (units, `ChannelLayout`, buffer views, `Engine`,
 /// `Transport`, metering) plus the transport's motion vocabulary, and the
 /// device and sampler handles when those features are on, and the session
-/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, and with `device`
-/// its `Device`). `Result`, `Sample` and `Unit` are left out because each
-/// would shadow a name a consumer already has. It matches `bevy-tutti`'s
-/// prelude without the ECS types.
+/// (`Session`, `SessionBuilder`, `SessionEvent`, `Phase`, `GraphSource`, and
+/// with `device` its `Device`), with the requests a session takes, each
+/// behind the features that gate it: `ParamRef` (`modulation`),
+/// `ExportRequest`, `ExportOutput` and `ExportConfig` (`export`),
+/// `PluginLoadRequest` and `PluginId` (`plugin`), and `MidiFile` and
+/// `TimedMidiEvent` (`midi`), with the offline timeline an export runs on.
+/// `Result`, `Sample` and `Unit` are left out because each would shadow a
+/// name a consumer already has. It matches `bevy-tutti`'s prelude without
+/// the ECS types.
+///
+/// `Phase` is the session's (`tutti_session::Phase`); the oscillator phase
+/// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
-        ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState, Then,
+        ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
+        OfflineTimeline, OfflineTimelineConfig, Then,
     };
     pub use tutti_core::CrossfadeCurve;
 
@@ -154,5 +163,22 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
-    pub use tutti_session::{Phase, Session, SessionBuilder, SessionEvent};
+    pub use tutti_session::{GraphSource, Phase, Session, SessionBuilder, SessionEvent};
+
+    // What a session's calls take, by the feature that gates each (design
+    // 015 §5): a modulation target, an export, a plugin load, a MIDI file.
+    #[cfg(feature = "export")]
+    pub use tutti_export::ExportConfig;
+    #[cfg(feature = "midi")]
+    pub use tutti_midi_file::MidiFile;
+    #[cfg(feature = "midi")]
+    pub use tutti_midi_runtime::TimedMidiEvent;
+    #[cfg(feature = "plugin")]
+    pub use tutti_plugin::catalog::PluginId;
+    #[cfg(all(feature = "session", feature = "modulation"))]
+    pub use tutti_session::ParamRef;
+    #[cfg(all(feature = "session", feature = "plugin"))]
+    pub use tutti_session::PluginLoadRequest;
+    #[cfg(all(feature = "session", feature = "export"))]
+    pub use tutti_session::{ExportOutput, ExportRequest};
 }

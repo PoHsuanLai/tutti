@@ -75,7 +75,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
 scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
 scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
+scripts/check-bevy-free.sh         # tutti-session and tutti reach no Bevy
+scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
 ```
+
+- **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
+  and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
+  `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
 
 ### Testing
 
@@ -91,8 +97,8 @@ just test-all                      # both
 
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
-  `real_stall_tests`, `tutti-session`'s `plugin` suite and §5.2 example
-  (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
+  `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
+  example (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
   `plugin_capture`, `mod_plugin` and `export_fork` plugin tests and
   `engine::restart::tests::a_restart_to_another_callback_size_re_declares_a_plugins_latency`
   (`--features full,plugin`) fail with that exact command. They must fail
@@ -191,12 +197,16 @@ crates/
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
-  re-exports no crate whole (`scripts/check-bevy-free.sh`).
+  re-exports no crate whole (`scripts/check-adapter.sh`).
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc.
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
-  `bevy-tutti` does not depend on `tutti`.
+  `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
+  holds only code that names two or more engine crates, or the order they
+  run in, has no `bevy` feature (`scripts/check-bevy-free.sh`) and
+  re-exports no crate whole. `bevy-tutti` reaches the engine's composition
+  only through it (`scripts/check-adapter.sh`), and does not re-export it.
 
 ## Unit types (MANDATORY)
 
@@ -274,6 +284,8 @@ Non-scalar state handed to the audio thread goes through
   declared ports that differ into the session graph's spec, and the frame's
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
+- A headless `Session` declares through its own spec, keyed by
+  `AudioNode`, and `Session::update()` commits iff the graph was edited.
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check
@@ -284,7 +296,10 @@ Non-scalar state handed to the audio thread goes through
 - Keys are sink ports, so fan-in cannot be represented. Summing is a node's
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
-  Node removal is an `On<Remove, AudioNode>` observer.
+  The session's phases run in `SessionPhaseSystems(Phase)`, chained from
+  `PHASES` (`Collect` before `Spawn`, `Commit` in `Commit`); schedule a
+  system that runs a phase in its set. Node removal is an
+  `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
   `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
   `replace` take its `IntoNode`). A host's plain node goes in as
@@ -331,8 +346,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   - Never write another copy.
 - **VST3 UIDs:** build them with `inline_uid(l1, l2, l3, l4)`, never a
   hardcoded `[u8; 16]`.
-- **The `tutti` umbrella holds no code.** Anything that wants to live there
-  belongs in the crate that owns what it wires.
+- **Neither umbrella holds engine logic.** A piece with one owner goes to
+  that crate; a piece composing several goes to `tutti-session`.
 - **The engine must not reference `dawai`.** The provenance note in
   `bevy-tutti/Cargo.toml` is the one exception. The `docs/` audits are dated
   records: fix only what claims to be current, and never "update" a reference

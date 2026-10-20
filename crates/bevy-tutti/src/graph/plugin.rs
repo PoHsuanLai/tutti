@@ -9,7 +9,13 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::graph::{commit_graph, engine_ready, reconcile_node_despawn, GraphReconcileSystems};
+use tutti_session::Phase;
+
+use crate::graph::schedule::configure_phases;
+use crate::graph::{
+    collect_graph, commit_graph, engine_ready, reconcile_node_despawn, GraphReconcileSystems,
+    SessionPhaseSystems,
+};
 
 /// Reconciles declared ECS state into the audio graph every frame.
 ///
@@ -18,7 +24,9 @@ use crate::graph::{commit_graph, engine_ready, reconcile_node_despawn, GraphReco
 /// [`engine_ready`]. It adds the declared-wiring plugins
 /// ([`GraphWirePlugin`](crate::graph::GraphWirePlugin),
 /// [`GraphEventsPlugin`](crate::graph::GraphEventsPlugin)), the
-/// [`reconcile_node_despawn`] observer, [`commit_graph`], and initializes
+/// [`reconcile_node_despawn`] observer, [`collect_graph`] and
+/// [`commit_graph`], the session's phases in `PHASES` order
+/// ([`SessionPhaseSystems`]), and initializes
 /// [`ChannelCompensation`](crate::ChannelCompensation),
 /// [`GraphLatency`](crate::GraphLatency) and
 /// [`PendingCrossfades`](crate::graph::PendingCrossfades).
@@ -51,6 +59,9 @@ impl Plugin for GraphReconcilePlugin {
             )
                 .chain(),
         );
+        // The session's phases, in `PHASES` order, placed against the sets
+        // above (`SessionPhaseSystems`).
+        configure_phases(app);
 
         // `AudioGraphRes` + `AudioConfig` are inserted directly by `build_into`
         // before this plugin is added; there is no transient to claim.
@@ -64,14 +75,16 @@ impl Plugin for GraphReconcilePlugin {
         app.add_plugins(crate::graph::GraphEventsPlugin);
 
         // Crossfades waiting out a re-prepare: the session retries them in
-        // its `Collect` phase (`commit_graph`), which binds each one's
+        // its `Collect` phase (`collect_graph`), which binds each one's
         // controls to its entity once it lands.
         app.init_resource::<crate::graph::PendingCrossfades>();
 
         app.add_systems(
             Update,
-            commit_graph
-                .in_set(GraphReconcileSystems::Commit)
+            (
+                collect_graph.in_set(SessionPhaseSystems(Phase::Collect)),
+                commit_graph.in_set(SessionPhaseSystems(Phase::Commit)),
+            )
                 .run_if(engine_ready),
         );
     }

@@ -36,10 +36,10 @@ pub mod tail;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThreadCell, BorrowGuard, BorrowRef, ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held,
-    JobGate, Participant, PosClaim, PosFrame, PosReader, PosRing, PosWriter, RangeCell, RingWindow,
-    RtScope, RtScopeGuard, RtVec, RwView, ScopedNoDenormals, SeqReader, SeqWriter, SplitMut,
-    SplitRw, TaskGraph, MAX_POS_RING_FRAMES, SEQ_CELL_READ_RETRIES,
+    AudioThreadCell, BorrowGuard, BorrowRef, ClaimConflict, ClaimTable, Claimed, ClaimedRun,
+    Contended, Held, JobGate, PackedAtomic, Participant, PosClaim, PosFrame, PosReader, PosRing,
+    PosWriter, RingWindow, RtScope, RtScopeGuard, RtVec, RwView, ScopedNoDenormals, SeqReader,
+    SeqWriter, SplitMut, SplitRw, TaskGraph, MAX_POS_RING_FRAMES,
 };
 
 // The cell non-scalar state reaches the audio thread through: a control

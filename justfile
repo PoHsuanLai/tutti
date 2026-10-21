@@ -149,7 +149,7 @@ miri:
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib
 
 # The loom models: `ArcLend`'s reclamation protocol, `PosRing`'s no-tear
-# protocol, `RangeCell`'s untorn pair, the sequence cell's unmixed copy and
+# protocol, `PackedAtomic`'s untorn pair, the sequence cell's unmixed copy and
 # `AudioThreadCell`'s borrow flag (against the
 # shipped code) and the plugin shm header protocol (a replica). `--cfg loom` is
 # global, so each runs on its own target. This is what CI runs: the `ArcLend` models at a
@@ -160,7 +160,7 @@ loom:
     RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test pos_ring_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test range_cell_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test packed_atomic_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test seq_cell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test cell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-shm-model --release

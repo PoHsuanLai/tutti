@@ -1,7 +1,7 @@
 //! The transport snapshot the plugin reads back via `audioMasterGetTime`: a
 //! sequence cell ([`SeqWriter`] / [`SeqReader`]) holding a `TimeInfo`'s
-//! fields as words. `TimeInfo` is 88 bytes of `Copy` POD and readers take it
-//! by value, so the cell is overwritten in place: wait-free reads,
+//! fields. `TimeInfo` is 88 bytes of `Copy` data and readers take it by
+//! value, so the cell is overwritten in place: wait-free reads,
 //! allocation-free writes.
 //!
 //! Not an `ArcSwap`: the audio thread is the *writer* here (once per block),
@@ -9,8 +9,9 @@
 //! the callback, which the audio thread must never do.
 //! `ArcLend` is control-thread→audio-thread and also takes ownership of a
 //! fresh value, so it does not fit either. The sequence lock is
-//! `tutti-types`' [`SeqWriter`] / [`SeqReader`], with its loom model there; this file only
-//! packs and unpacks, and holds no `unsafe`.
+//! `tutti-types`' [`SeqWriter`] / [`SeqReader`], with its loom model there;
+//! this file only mirrors `TimeInfo` as a plain-bytes [`Snapshot`], and holds
+//! no `unsafe`.
 //!
 //! Re-entrancy is the governing constraint: the plugin calls `audioMasterGetTime`
 //! from inside `processReplacing`, on the same thread that just wrote, and a
@@ -18,27 +19,99 @@
 //! thread. [`Vst2Instance::process_f32`] runs `update_transport` to completion
 //! before entering the plugin, so the sequence is already even by then. Writes
 //! never overlap by construction: the one [`TransportWriter`] lives in the
-//! instance and writes through `&mut self`. A reader on
-//! another thread is the genuinely concurrent case, which is why the read gives
-//! up after a bounded number of retries
-//! ([`SEQ_CELL_READ_RETRIES`](tutti_types::SEQ_CELL_READ_RETRIES)) rather
-//! than spinning: the fallback (`None` = "host has no transport", which every
-//! VST2 plugin must already handle) beats an unbounded spin on the plugin's
-//! thread.
+//! instance and writes through `&mut self`.
+//!
+//! A reader on another thread is the genuinely concurrent case, which is why
+//! the read gives up after [`READ_RETRIES`] rather than spinning. What the
+//! plugin sees is `None` ("host has no transport", a null `VstTimeInfo`) both
+//! before the first write and when the read gives up: a plugin must already
+//! handle the null, and the alternatives are worse. Spinning until a copy
+//! lands is unbounded on the plugin's thread; handing back an older snapshot
+//! would need a copy per reader, kept where `&self` cannot write it. A read
+//! gives up only when a write overlapped every copy, which the audio thread's
+//! own reads (the usual caller) never see.
 //!
 //! [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
 
+use bytemuck::{Pod, Zeroable};
 use tutti_types::{SeqReader, SeqWriter};
 use vst::api::{SmpteFrameRate, TimeInfo};
 
-/// `TimeInfo` as words: its eight `f64`s, then its six `i32`s two to a word.
-const WORDS: usize = 11;
+/// Copies a read tries after the first before it gives up: eight in all. A
+/// write is eleven relaxed stores, so a reader that loses this many races
+/// was descheduled, and more copies would not help.
+const READ_RETRIES: usize = 7;
+
+/// `TimeInfo`'s fields as plain bytes, so the cell can hold it: `TimeInfo`
+/// itself is not [`Pod`] (its frame rate is an enum, which not every bit
+/// pattern is), so the frame rate is kept as its discriminant. The same
+/// fields in the same order, so it is 88 bytes with no padding, eleven words.
+#[derive(Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct Snapshot {
+    sample_pos: f64,
+    sample_rate: f64,
+    nanoseconds: f64,
+    ppq_pos: f64,
+    tempo: f64,
+    bar_start_pos: f64,
+    cycle_start_pos: f64,
+    cycle_end_pos: f64,
+    time_sig_numerator: i32,
+    time_sig_denominator: i32,
+    smpte_offset: i32,
+    smpte_frame_rate: i32,
+    samples_to_next_clock: i32,
+    flags: i32,
+}
+
+impl From<TimeInfo> for Snapshot {
+    fn from(t: TimeInfo) -> Self {
+        Self {
+            sample_pos: t.sample_pos,
+            sample_rate: t.sample_rate,
+            nanoseconds: t.nanoseconds,
+            ppq_pos: t.ppq_pos,
+            tempo: t.tempo,
+            bar_start_pos: t.bar_start_pos,
+            cycle_start_pos: t.cycle_start_pos,
+            cycle_end_pos: t.cycle_end_pos,
+            time_sig_numerator: t.time_sig_numerator,
+            time_sig_denominator: t.time_sig_denominator,
+            smpte_offset: t.smpte_offset,
+            smpte_frame_rate: t.smpte_frame_rate as i32,
+            samples_to_next_clock: t.samples_to_next_clock,
+            flags: t.flags,
+        }
+    }
+}
+
+impl From<Snapshot> for TimeInfo {
+    fn from(s: Snapshot) -> Self {
+        Self {
+            sample_pos: s.sample_pos,
+            sample_rate: s.sample_rate,
+            nanoseconds: s.nanoseconds,
+            ppq_pos: s.ppq_pos,
+            tempo: s.tempo,
+            bar_start_pos: s.bar_start_pos,
+            cycle_start_pos: s.cycle_start_pos,
+            cycle_end_pos: s.cycle_end_pos,
+            time_sig_numerator: s.time_sig_numerator,
+            time_sig_denominator: s.time_sig_denominator,
+            smpte_offset: s.smpte_offset,
+            smpte_frame_rate: smpte_from_i32(s.smpte_frame_rate),
+            samples_to_next_clock: s.samples_to_next_clock,
+            flags: s.flags,
+        }
+    }
+}
 
 /// The one writer of the transport snapshot: the instance's
 /// `update_transport`, on the audio thread, once per block. Not `Clone`, and
 /// [`write`](Self::write) takes `&mut self`, so `process_f32`'s own `&mut`
 /// is what keeps writes from overlapping.
-pub(crate) struct TransportWriter(SeqWriter<WORDS>);
+pub(crate) struct TransportWriter(SeqWriter<Snapshot>);
 
 impl TransportWriter {
     /// A cell holding no transport information yet.
@@ -54,84 +127,38 @@ impl TransportWriter {
     /// Publishes a new snapshot, overwriting in place: nothing is allocated or
     /// freed.
     pub(crate) fn write(&mut self, next: TimeInfo) {
-        self.0.write(pack(&next));
+        self.0.write(next.into());
     }
 
     /// The snapshot the last [`write`](Self::write) published, or `None`
     /// before the first: the writer's own copy, so it never retries and never
     /// gives up, which a [`TransportReader::read`] may.
     pub(crate) fn last(&self) -> Option<TimeInfo> {
-        self.0.last().map(|w| unpack(&w))
+        self.0.last().map(TimeInfo::from)
     }
 }
 
 /// A read side of the transport snapshot: the plugin's `audioMasterGetTime`,
 /// from any thread.
 #[derive(Clone)]
-pub(crate) struct TransportReader(SeqReader<WORDS>);
+pub(crate) struct TransportReader(SeqReader<Snapshot>);
 
 impl TransportReader {
-    /// The current snapshot, or `None` if none has been published yet or the
-    /// value could not be read cleanly within the cell's retries.
+    /// The current snapshot, or `None` if none has been published yet or
+    /// every one of the read's copies overlapped a write (see the module
+    /// docs for why both are `None` to the plugin).
     ///
     /// Wait-free: bounded retries, never blocks. Safe to call re-entrantly from
     /// the audio thread inside the plugin's `process`.
     pub(crate) fn read(&self) -> Option<TimeInfo> {
-        self.0.read().map(|w| unpack(&w))
+        self.0.read(READ_RETRIES).ok().flatten().map(TimeInfo::from)
     }
 }
 
-/// Two `i32`s in one word: `hi` in the high half.
-fn pair(hi: i32, lo: i32) -> u64 {
-    (u64::from(hi as u32) << 32) | u64::from(lo as u32)
-}
-
-/// The two `i32`s [`pair`] packed: `(hi, lo)`.
-fn unpair(w: u64) -> (i32, i32) {
-    ((w >> 32) as u32 as i32, w as u32 as i32)
-}
-
-fn pack(t: &TimeInfo) -> [u64; WORDS] {
-    [
-        t.sample_pos.to_bits(),
-        t.sample_rate.to_bits(),
-        t.nanoseconds.to_bits(),
-        t.ppq_pos.to_bits(),
-        t.tempo.to_bits(),
-        t.bar_start_pos.to_bits(),
-        t.cycle_start_pos.to_bits(),
-        t.cycle_end_pos.to_bits(),
-        pair(t.time_sig_numerator, t.time_sig_denominator),
-        pair(t.smpte_offset, t.smpte_frame_rate as i32),
-        pair(t.samples_to_next_clock, t.flags),
-    ]
-}
-
-fn unpack(w: &[u64; WORDS]) -> TimeInfo {
-    let (time_sig_numerator, time_sig_denominator) = unpair(w[8]);
-    let (smpte_offset, smpte_frame_rate) = unpair(w[9]);
-    let (samples_to_next_clock, flags) = unpair(w[10]);
-    TimeInfo {
-        sample_pos: f64::from_bits(w[0]),
-        sample_rate: f64::from_bits(w[1]),
-        nanoseconds: f64::from_bits(w[2]),
-        ppq_pos: f64::from_bits(w[3]),
-        tempo: f64::from_bits(w[4]),
-        bar_start_pos: f64::from_bits(w[5]),
-        cycle_start_pos: f64::from_bits(w[6]),
-        cycle_end_pos: f64::from_bits(w[7]),
-        time_sig_numerator,
-        time_sig_denominator,
-        smpte_offset,
-        smpte_frame_rate: smpte_from_i32(smpte_frame_rate),
-        samples_to_next_clock,
-        flags,
-    }
-}
-
-/// The frame rate [`pack`] stored as its discriminant. Every value read back
-/// was written from a `SmpteFrameRate`, so the fallback is unreachable; it is
-/// the type's default rather than a panic on a callback with no unwind guard.
+/// The frame rate a [`Snapshot`] stored as its discriminant. Every value read
+/// back was written from a `SmpteFrameRate`, so the fallback is unreachable;
+/// it is the type's default rather than a panic on a callback with no unwind
+/// guard.
 fn smpte_from_i32(v: i32) -> SmpteFrameRate {
     use SmpteFrameRate as R;
     [
@@ -164,15 +191,13 @@ mod tests {
         }
     }
 
-    /// Every field survives the word packing, bit for bit: each holds a
-    /// value no other field does, negatives and the last frame rate
-    /// included.
+    /// Every field survives the cell, bit for bit: each holds a value no
+    /// other field does, negatives and the last frame rate included.
     ///
-    /// Mutations (run): `pair` sign-extending `lo` (`lo as i64 as u64` for
-    /// `lo as u32`), so a negative low half overwrites the high one →
-    /// `time_sig_numerator` reads `-1` → fails; `unpack` reading
-    /// `smpte_offset` and the frame rate from swapped halves → fails; `pack`
-    /// storing `ppq_pos` in `tempo`'s word → fails.
+    /// Mutations (run): `From<Snapshot>` reading `smpte_offset` from
+    /// `samples_to_next_clock` → fails; `From<TimeInfo>` storing `ppq_pos`
+    /// in `tempo` → fails; `smpte_from_i32` missing `Smpte60fps` → the frame
+    /// rate reads back as the default → fails.
     #[test]
     fn every_field_round_trips() {
         let info = vst::api::TimeInfo {

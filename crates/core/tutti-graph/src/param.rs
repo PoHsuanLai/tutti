@@ -29,7 +29,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use tutti_types::{NodeKey, ParamAddr, RangeCell, RtScope, Samples, UnitParam};
+use tutti_types::{NodeKey, PackedAtomic, ParamAddr, RtScope, Samples, UnitParam};
 
 use crate::event::{segment_progress, Event, EventKind, SegmentShape};
 use crate::spec::EventOut;
@@ -175,7 +175,10 @@ pub struct ParamIn {
 /// reaches the audio thread
 /// ([`GraphInvalid::BadParamRange`](crate::GraphInvalid::BadParamRange)).
 /// Compared and hashed by bits, so a spec holding one stays `Eq + Hash`.
-#[derive(Clone, Copy, Debug)]
+/// Plain bytes (`Pod`), so a port's live range is one
+/// [`PackedAtomic`] word.
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
 pub struct ParamRange {
     /// The lowest value.
     pub min: f32,
@@ -405,7 +408,7 @@ pub(crate) fn render_ramps(
 /// port's step, so a move lands on the next block and costs a store, not a
 /// plan. The spec's range is its initial value; the plan carries no range.
 ///
-/// One [`RangeCell`] per port: both bounds in one word, so a reader never
+/// One [`PackedAtomic`] per port: both bounds in one word, so a reader never
 /// pairs one write's `min` with another's `max` (two `AtomicF32`s, as two
 /// `Param<U>`s would be, could). Each is an `Arc`, so a reader outside the
 /// graph (a control lane, doc 014 §4.2) can read the very cell the port
@@ -419,7 +422,7 @@ pub(crate) fn render_ramps(
 #[derive(Debug)]
 pub(crate) struct ParamRanges {
     declared: ParamPorts,
-    cells: Box<[Arc<RangeCell>]>,
+    cells: Box<[Arc<PackedAtomic<ParamRange>>]>,
 }
 
 impl ParamRanges {
@@ -428,7 +431,7 @@ impl ParamRanges {
         Arc::new(Self {
             declared,
             cells: (0..declared.len())
-                .map(|_| Arc::new(RangeCell::unbounded()))
+                .map(|_| Arc::new(PackedAtomic::new(ParamRange::UNBOUNDED)))
                 .collect(),
         })
     }
@@ -456,17 +459,16 @@ impl ParamRanges {
         else {
             return false;
         };
-        cell.store(range.min, range.max);
+        cell.store(range);
         true
     }
 
     /// Port `k`'s range now (unbounded past the last port). Wait-free.
     #[inline]
     pub(crate) fn load(&self, k: usize) -> ParamRange {
-        self.cells.get(k).map_or(ParamRange::UNBOUNDED, |c| {
-            let (min, max) = c.load();
-            ParamRange::new(min, max)
-        })
+        self.cells
+            .get(k)
+            .map_or(ParamRange::UNBOUNDED, |c| c.load())
     }
 }
 
@@ -481,14 +483,13 @@ impl ParamRanges {
 /// the spec), so a store that went to the cell alone would be undone by the
 /// next commit.
 #[derive(Clone, Debug)]
-pub struct ParamRangeReader(Arc<RangeCell>);
+pub struct ParamRangeReader(Arc<PackedAtomic<ParamRange>>);
 
 impl ParamRangeReader {
     /// The range now: both bounds as one store left them. Wait-free.
     #[inline]
     pub fn load(&self) -> ParamRange {
-        let (min, max) = self.0.load();
-        ParamRange::new(min, max)
+        self.0.load()
     }
 
     /// Whether `self` and `other` read the same cell.

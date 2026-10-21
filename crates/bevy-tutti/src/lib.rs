@@ -231,8 +231,8 @@ pub use engine::{
 mod error;
 pub use error::{Error, Result};
 
-pub use engine::AudioDeviceState;
 pub use engine::AudioEngineState;
+pub use engine::{AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKind};
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {
@@ -244,8 +244,8 @@ pub mod prelude {
         SpawnAudioNode, TransportRes,
     };
     pub use crate::{
-        AudioDeviceState, AudioEngineState, ChannelCompensation, Device, DeviceInfo, GraphLatency,
-        LatencyCompensationPlugin, TuttiPlugin,
+        AudioDeviceFault, AudioDeviceState, AudioEngineState, ChannelCompensation, Device,
+        DeviceInfo, GraphLatency, LatencyCompensationPlugin, TuttiPlugin,
     };
 
     #[cfg(feature = "export")]

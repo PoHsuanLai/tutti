@@ -476,8 +476,8 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # The engine must stay usable without Bevy. `--no-default-features` does
-      # NOT test that — `bevy` is already off by default on every engine crate,
-      # so that flag drops the codec and midi features instead and proves
+      # NOT test that — `bevy` is already off by default on every engine crate
+      # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
       - run: cargo check --locked -p tutti-core
       - run: cargo check --locked -p tutti-core --features bevy

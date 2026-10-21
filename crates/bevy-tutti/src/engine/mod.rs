@@ -19,11 +19,11 @@ mod state;
 
 pub use crate::error::{Error, Result};
 pub use build::build_into;
-pub use device_state::AudioDeviceState;
+pub use device_state::{AudioDeviceFault, AudioDeviceState};
 pub use restart::{restart_device, restart_device_on, DeviceRestart};
 pub use state::AudioEngineState;
 
-pub use tutti_cpal::{DeviceInfo, DeviceSelector};
+pub use tutti_cpal::{DeviceInfo, DeviceSelector, StreamFault, StreamFaultKind};
 pub use tutti_session::Device;
 
 // The mic/record API is not here: it is the live I/O edge, not engine

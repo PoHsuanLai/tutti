@@ -85,7 +85,7 @@ fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) {
 | `MeteringRes` | always | Master peak and RMS meters |
 | `AudioTapRes` | always | A copy of the master output for analysis or recording |
 | `MasterSources` | always | What feeds each output channel |
-| `AudioDeviceState`, `AudioEngineState` | always | The output device and whether the engine is running |
+| `AudioDeviceState`, `AudioEngineState`, `AudioDeviceFault` (message) | always | The output device, whether the engine is running, and the device's faults |
 | `GraphLatency`, `ChannelCompensation` | always | Latency compensation figures |
 | `MidiEngineNodes`, `MpeModeRes` | `midi` | The engine's MIDI nodes and the input's MPE mode |
 | `DiskStreamerRes` | `sampler` | The disk-streaming engine |

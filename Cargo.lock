@@ -4519,7 +4519,6 @@ dependencies = [
  "arrayvec",
  "assert_no_alloc",
  "atomic_float",
- "bevy_ecs",
  "bincode",
  "criterion",
  "crossbeam",

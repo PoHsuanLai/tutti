@@ -5,8 +5,6 @@
 //! geometry expresses both, and [`Unit::input_rate`] tells the caller how fast
 //! to feed it.
 
-use std::sync::Arc;
-
 use tutti_analysis::StftGeometry;
 
 use super::vocoder::Vocoder;
@@ -65,8 +63,13 @@ pub struct Unit {
     pub(super) ch: Box<Channels>,
     /// The unit's declared width — one vocoder per channel.
     pub(super) width: ChannelLayout,
-    pub(super) stretch_factor: Arc<AtomicF32>,
-    pub(super) pitch_cents: Arc<AtomicF32>,
+    /// Written only through [`set_stretch_factor`](Self::set_stretch_factor),
+    /// so it always holds a finite factor in
+    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]: the hops divide by it.
+    pub(super) stretch_factor: AtomicF32,
+    /// Written only through [`set_pitch_cents`](Self::set_pitch_cents), so it
+    /// always holds a finite transposition within ±2400 cents.
+    pub(super) pitch_cents: AtomicF32,
     pub(super) enabled: bool,
     /// Fractional debt in the source-intake resampler: how much of the next
     /// source sample the unit still owes itself before it may consume one.
@@ -154,8 +157,8 @@ impl Unit {
         Self::from_vocoders(
             (0..n).map(|_| Vocoder::new(geometry)).collect(),
             width,
-            StretchFactor::UNITY.get(),
-            0.0,
+            StretchFactor::UNITY,
+            Cents(0.0),
             true,
         )
     }
@@ -166,8 +169,8 @@ impl Unit {
     fn from_vocoders(
         vocoders: Vec<Vocoder>,
         width: ChannelLayout,
-        stretch_factor: f32,
-        pitch_cents: f32,
+        stretch_factor: StretchFactor,
+        pitch_cents: Cents,
         enabled: bool,
     ) -> Self {
         let n = vocoders.len();
@@ -183,8 +186,8 @@ impl Unit {
                 scratch_out: scratch(),
             }),
             width,
-            stretch_factor: Arc::new(AtomicF32::new(stretch_factor)),
-            pitch_cents: Arc::new(AtomicF32::new(pitch_cents)),
+            stretch_factor: AtomicF32::new(StretchFactor::new_clamped(stretch_factor.get()).get()),
+            pitch_cents: AtomicF32::new(clamp_pitch(pitch_cents).get()),
             enabled,
             intake_debt: 0.0,
         }
@@ -217,7 +220,11 @@ impl Unit {
     }
 
     /// Sets the duration scaling, clamped into
-    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
+    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]
+    /// ([`StretchFactor::new_clamped`]): zero or a negative factor is
+    /// [`MIN`](StretchFactor::MIN), a non-finite one
+    /// [`UNITY`](StretchFactor::UNITY). This is the cell's only writer, so a
+    /// factor the hops cannot divide by never reaches them.
     ///
     /// Above unity the material gets longer, below it shorter, and pitch is
     /// untouched either way. `&self` and a single atomic store, so a control
@@ -234,45 +241,21 @@ impl Unit {
         StretchFactor::new(self.stretch_factor.load(Ordering::Acquire))
     }
 
-    /// The stretch cell itself, for a caller driving it lock-free from
-    /// elsewhere — automation, or a pool holding the filter across voices.
-    ///
-    /// Writes through this handle bypass the clamp that
-    /// [`set_stretch_factor`](Self::set_stretch_factor) applies, so a caller
-    /// using it owns keeping the value inside
-    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
-    ///
-    /// A block read (`filter_lanes`, the voice pool's path) reads the cell
-    /// once per block, so a write that lands mid-block takes effect at the
-    /// next block, not at the next frame.
-    pub fn stretch_factor_arc(&self) -> Arc<AtomicF32> {
-        Arc::clone(&self.stretch_factor)
-    }
-
     /// Sets the transposition in [`Cents`], clamped to ±2400 (two octaves each
-    /// way).
+    /// way); a non-finite value is no transposition. This is the cell's only
+    /// writer.
     ///
     /// Duration is untouched: the resample that transposes is undone by the
     /// hops. `&self` and a single atomic store, so it is safe alongside a
     /// running audio thread.
     pub fn set_pitch_cents(&self, cents: Cents) {
-        self.pitch_cents.store(
-            cents.get().clamp(MIN_PITCH_CENTS, MAX_PITCH_CENTS),
-            Ordering::Release,
-        );
+        self.pitch_cents
+            .store(clamp_pitch(cents).get(), Ordering::Release);
     }
 
     /// The transposition currently in force, as last clamped and stored.
     pub fn pitch_cents(&self) -> Cents {
         Cents::new(self.pitch_cents.load(Ordering::Acquire))
-    }
-
-    /// The pitch cell itself, for a caller driving it lock-free from elsewhere.
-    ///
-    /// As with [`stretch_factor_arc`](Self::stretch_factor_arc), writes here
-    /// skip the ±2400-cent clamp and the caller owns the range.
-    pub fn pitch_cents_arc(&self) -> Arc<AtomicF32> {
-        Arc::clone(&self.pitch_cents)
     }
 
     /// Engages or bypasses the vocoder outright.
@@ -479,9 +462,20 @@ const STRETCH_EPSILON: f32 = 0.001;
 /// Half a cent — beneath the threshold of hearing.
 const PITCH_EPSILON_CENTS: f32 = 0.5;
 /// Two octaves down.
-pub(super) const MIN_PITCH_CENTS: f32 = -2400.0;
+pub(super) const MIN_PITCH: Cents = Cents(-2400.0);
 /// Two octaves up.
-pub(super) const MAX_PITCH_CENTS: f32 = 2400.0;
+pub(super) const MAX_PITCH: Cents = Cents(2400.0);
+
+/// `cents` within [`MIN_PITCH`]..=[`MAX_PITCH`]; a non-finite value is no
+/// transposition. `Cents::clamp` alone passes NaN through, and a NaN
+/// transposition is a NaN effective stretch: hops and intake rate with it.
+pub(super) fn clamp_pitch(cents: Cents) -> Cents {
+    if cents.get().is_finite() {
+        cents.clamp(MIN_PITCH, MAX_PITCH)
+    } else {
+        Cents(0.0)
+    }
+}
 
 impl Unit {
     /// Filter frames `frames` of the lanes `input` into the same frames of
@@ -570,8 +564,8 @@ impl Clone for Unit {
         Self::from_vocoders(
             self.ch.vocoders.iter().map(Vocoder::clone_fresh).collect(),
             self.width,
-            self.stretch_factor.load(Ordering::Acquire),
-            self.pitch_cents.load(Ordering::Acquire),
+            self.stretch_factor(),
+            self.pitch_cents(),
             self.enabled,
         )
     }

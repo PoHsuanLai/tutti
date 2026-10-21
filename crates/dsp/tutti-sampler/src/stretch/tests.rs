@@ -374,7 +374,7 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
 ///
 /// The loop is paced by [`Unit::intake_rate`], which is the **pitch** ratio —
 /// not `input_rate`, which is the caller's stretch half and never reaches
-/// this loop. [`MAX_PITCH_CENTS`] is +2400, so the rate cannot exceed 4.0 and
+/// this loop. [`MAX_PITCH`] is +2400, so the rate cannot exceed 4.0 and
 /// the loop cannot run more than four times per tick. The bound comes from
 /// `set_pitch_cents` clamping on store: a raw `Cents::new(12_000.0)` would
 /// otherwise ask for a thousand iterations.
@@ -389,7 +389,7 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
 
     // Well past the clamp, in the direction that increases intake.
     u.set_pitch_cents(Cents::new(12_000.0));
-    assert_eq!(u.pitch_cents().get(), MAX_PITCH_CENTS);
+    assert_eq!(u.pitch_cents(), MAX_PITCH);
     assert!(
         u.intake_rate() <= 4.0 + 1e-6,
         "intake rate {} would run the per-tick loop more than 4 times",
@@ -398,8 +398,63 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
 
     // And the other end cannot drive it to zero, which would starve the FIFO.
     u.set_pitch_cents(Cents::new(-12_000.0));
-    assert_eq!(u.pitch_cents().get(), MIN_PITCH_CENTS);
+    assert_eq!(u.pitch_cents(), MIN_PITCH);
     assert!(u.intake_rate() > 0.0);
+}
+
+/// A degenerate factor or transposition (zero, negative, NaN, infinite)
+/// never reaches the hops: the setters are the cells' only writers, and each
+/// lands it inside its clamp, so the analysis hop stays a finite stride (at
+/// most the synthesis hop over the smallest effective stretch, 0.25 × two
+/// octaves down) and the unit still produces finite audio.
+///
+/// Mutations, each failed, then reverted:
+/// - `set_stretch_factor` storing `factor.get()` unclamped: a factor of 0
+///   is stored as 0 (whose analysis hop is `inf as usize`, `usize::MAX`).
+/// - `clamp_pitch` without its `is_finite` arm (`clamp` alone): NaN
+///   passes through, and the pitch it reads back is not finite.
+#[test]
+fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
+    let u = Unit::with_channels(44_100.0, 1usize);
+    let (_, synthesis) = u.hops();
+    let longest = (synthesis as f32 / (StretchFactor::MIN.get() * MIN_PITCH.to_pitch_ratio()))
+        .round() as usize;
+    let bad = [
+        0.0,
+        -0.0,
+        -1.0,
+        f32::MIN_POSITIVE,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for stretch in bad {
+        for pitch in bad {
+            let mut u = Unit::with_channels(44_100.0, 1usize);
+            u.set_stretch_factor(StretchFactor::new(stretch));
+            u.set_pitch_cents(Cents::new(pitch));
+            let f = u.stretch_factor().get();
+            assert!(
+                (StretchFactor::MIN.get()..=StretchFactor::MAX.get()).contains(&f),
+                "stretch {stretch} stored as {f}"
+            );
+            let c = u.pitch_cents().get();
+            assert!(
+                (MIN_PITCH.get()..=MAX_PITCH.get()).contains(&c),
+                "pitch {pitch} stored as {c}"
+            );
+            let (analysis, _) = u.hops();
+            assert!(
+                (1..=longest).contains(&analysis),
+                "stretch {stretch}, pitch {pitch}: analysis hop {analysis} (at most {longest})"
+            );
+            let mut out = [0.0f32];
+            for i in 0..4_096 {
+                u.tick(&[(i as f32 * 0.05).sin()], &mut out);
+                assert!(out[0].is_finite(), "stretch {stretch}, pitch {pitch}");
+            }
+        }
+    }
 }
 
 /// The caller's rate is bounded too, for a different reason: it scales a
@@ -1203,9 +1258,9 @@ fn parameters_round_trip_and_clamp() {
     assert_eq!(unit.stretch_factor().get(), StretchFactor::MIN.get());
 
     unit.set_pitch_cents(Cents::new(5000.0));
-    assert_eq!(unit.pitch_cents().get(), MAX_PITCH_CENTS);
+    assert_eq!(unit.pitch_cents(), MAX_PITCH);
     unit.set_pitch_cents(Cents::new(-5000.0));
-    assert_eq!(unit.pitch_cents().get(), MIN_PITCH_CENTS);
+    assert_eq!(unit.pitch_cents(), MIN_PITCH);
 }
 
 #[test]
@@ -1572,9 +1627,9 @@ fn stretch_factor_changes_the_source_consumption_rate() {
 /// (must be bit-identical); clone again and render (must differ, so the move
 /// is audible and the check can fail).
 ///
-/// Mutation: in `Unit::clone`, share the cells
-/// (`stretch_factor: Arc::clone(&self.stretch_factor)`, likewise pitch) →
-/// "a live move reached the fork" on the matching control.
+/// No mutation can break this: the cells are owned `AtomicF32`s, not `Arc`s,
+/// so a clone that shared them with its original would not compile. The
+/// property is structural; the test stays as the isolate row's record.
 #[test]
 fn isolate_snapshots_stretch_and_pitch() {
     const FRAMES: usize = 16_384;

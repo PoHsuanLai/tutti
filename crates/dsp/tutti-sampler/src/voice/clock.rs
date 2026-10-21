@@ -25,8 +25,7 @@
 //! a **jump** ([`Run::jump`]) when it starts somewhere else while rolling — a
 //! seek, at a block's start or inside it — and every loop wrap is one. A
 //! start, a stop, and a seek while stopped are not (the playhead resumes
-//! where it stands), as the timeline cursor they replace (`BeatCursor`) had
-//! it. Each jump moves the [generation](Run::generation) on: a live disk
+//! where it stands). Each jump moves the [generation](Run::generation) on: a live disk
 //! read's segment.
 //!
 //! A seek at a block's first frame to exactly where the playhead would have
@@ -450,8 +449,8 @@ mod tests {
     }
 
     /// **A stop, a seek while stopped, and a restart where the playhead
-    /// stands are no jump** (the playhead resumes where it stands, as the
-    /// `BeatCursor` this replaces had it): nothing buffered is stale.
+    /// stands are no jump** (the playhead resumes where it stands): nothing
+    /// buffered is stale.
     ///
     /// Mutation (run): `continuation` treating a stopped run as rolling
     /// (the `!run.rolling` return removed) → the restart reads the playhead

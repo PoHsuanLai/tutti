@@ -21,9 +21,8 @@
 #![cfg(feature = "vst2")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_core::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
 };
@@ -155,13 +154,6 @@ fn load() -> (InProcessVst2Client, PluginHandle) {
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
-fn offline() -> OfflineTransport {
-    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    })))
-}
-
 fn prepare_at(rate: f64) -> Prepare {
     Prepare::new(SampleRate(rate), Samples(BLOCK))
 }
@@ -221,11 +213,10 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
 
     let key = NodeKey(1);
     let editor = live_graph(key, client);
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
         .fork(
             ForkTarget::Node(key),
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             prepare_at(SAMPLE_RATE),
         )
         .expect("a graph holding an in-process VST2 plugin forks");
@@ -317,11 +308,10 @@ fn a_fork_at_another_rate_tells_the_plugin_its_rate() {
 
     let key = NodeKey(3);
     let editor = live_graph(key, client);
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
         .fork(
             ForkTarget::Node(key),
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             prepare_at(96_000.0),
         )
         .expect("forks");
@@ -371,10 +361,9 @@ fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
 
     let key = NodeKey(4);
     let editor = live_graph(key, client);
-    let offline = offline();
     match editor.fork(
         ForkTarget::Node(key),
-        ForkMode::Offline(&offline),
+        ForkMode::Offline,
         prepare_at(SAMPLE_RATE),
     ) {
         Err(ForkError::Source { key: at, cause }) => {
@@ -452,11 +441,10 @@ fn a_plugin_handed_back_by_into_client_forks() {
 
     let key = NodeKey(5);
     let editor = live_graph(key, *plugin);
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
         .fork(
             ForkTarget::Node(key),
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             prepare_at(SAMPLE_RATE),
         )
         .expect("forks");
@@ -491,11 +479,10 @@ fn a_fork_reads_its_transport_from_the_render() {
 
     let key = NodeKey(6);
     let editor = live_graph(key, client);
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
         .fork(
             ForkTarget::Node(key),
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             prepare_at(SAMPLE_RATE),
         )
         .expect("forks");

@@ -22,10 +22,8 @@
 mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_graph::{Env, ForkMode, LoopRange, Offset, Transport, TransportChanges};
 use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
 
@@ -196,13 +194,9 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
-    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    })));
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     // A 64-frame device quantum in 128-frame blocks: two chunks a block.
@@ -283,13 +277,9 @@ fn a_plugin_behind_a_latent_path_sees_the_transport_its_input_was_rendered_at() 
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
     let probe = load_probe(SAMPLE_RATE);
-    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    })));
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
     const ARRIVAL: usize = 40;

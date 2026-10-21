@@ -52,7 +52,7 @@ use tutti_graph::{
 /// (`Voice::fork_copy`: its own gain cell; a disk voice reading its file
 /// itself), moved to the placement the handle last published and set to the gain
 /// last set, with a stretch filter of its own. It reads its render's
-/// transport from its block's `Env`: nothing to rebind. A disk voice's node
+/// transport from its block's `Env`. A disk voice's node
 /// forks only for an offline render.
 pub struct VoiceNode {
     /// The single voice plus its resident stretch filter and the per-sample
@@ -360,7 +360,7 @@ struct VoiceNodeFork {
 }
 
 impl ForkSource for VoiceNodeFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
         let placed = *self.placed.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(window) = placed {

@@ -5,10 +5,10 @@
 //! transport manager `Arc` is shared with the RT callback as it is built — and
 //! inserted from there.
 //!
-//! [`TransportRes`] is time as a **value**, read per frame or (via
-//! [`timeline`](TransportRes::timeline)) per block. A graph node reads it per
-//! frame from its block's `Env`, with nothing wired into it (the metronome, a
-//! beat-synced LFO, an automation lane).
+//! [`TransportRes`] is time as a **value**, read per frame, or through
+//! [`timeline`](TransportRes::timeline) by code outside the graph. A graph
+//! node reads it per frame from its block's `Env`, with nothing wired into
+//! it (the metronome, a beat-synced LFO, an automation lane).
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -40,17 +40,15 @@ use tutti_core::transport::{ClickState, Timeline, Transport};
 pub struct TransportRes(pub Transport);
 
 impl TransportRes {
-    /// Returns a [`Timeline`] handle for an audio-thread source to ask the beat
-    /// with.
+    /// Returns a [`Timeline`] handle on the live transport, for a reader
+    /// outside the graph.
     ///
-    /// **This is the seam between the two rates**, and getting it right is the
-    /// difference between sample-accurate scheduling and framerate-quantised
-    /// scheduling. An ECS system runs per *frame*; a beat-scheduled source needs
-    /// the beat per *block*, and the two are neither equal nor aligned. So a
-    /// system does not read the beat and push events — it hands over this handle
-    /// once, at install time, and the source reads the beat itself every block
-    /// (usually through a [`BeatCursor`](tutti_core::transport::BeatCursor),
-    /// which owns the seek-epsilon and paused-case arithmetic).
+    /// A graph node does not use this: it reads the transport of each frame
+    /// from its block's `Env` (`tutti_graph::Env::transport_at`), which
+    /// carries every change inside the block. This handle is for code with no
+    /// `Env`, such as a host's own sequencer thread or a UI: hand it over
+    /// **once**, at install time, and read it whenever that code runs, rather
+    /// than having a system push the beat every frame.
     ///
     /// The clone shares state rather than snapshotting it: every field
     /// [`Timeline`] reads — the beat, the tempo, the rolling flag — lives behind
@@ -63,9 +61,9 @@ impl TransportRes {
     /// use bevy_tutti::prelude::*;
     /// use std::sync::Arc;
     ///
-    /// /// Stands in for an audio-thread reader of the live transport (a
-    /// /// sampler's disk voice): it holds the handle exactly like this and
-    /// /// reads it per block.
+    /// /// Stands in for a reader of the live transport outside the graph
+    /// /// (a host's sequencer thread): it holds the handle and reads it
+    /// /// when it runs.
     /// #[derive(Resource)]
     /// struct Sequencer(Arc<dyn Timeline>);
     ///

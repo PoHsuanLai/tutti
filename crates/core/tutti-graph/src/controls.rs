@@ -135,9 +135,9 @@ impl ParamSetBuilder {
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
 /// nothing and starts from the values its cells hold.
 ///
-/// A graph node reads time from its block's [`Env`](crate::Env), so a fork
-/// has nothing to rebind: [`fork_fresh`](Self::fork_fresh) is the whole
-/// copy.
+/// A graph node reads time from its block's [`Env`](crate::Env), so
+/// [`fork_fresh`](Self::fork_fresh) is the whole copy: the fork reads its
+/// render's `Env`.
 pub trait ParamNode: Node + Sized {
     /// A [`ParamSet`] over this node's cells (every param a host may set by
     /// address). Control thread; may allocate.
@@ -184,14 +184,14 @@ impl<N: ParamNode> ParamFork<N> {
 }
 
 impl<N: ParamNode> ForkSource for ParamFork<N> {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.fork_node())))
     }
 
     /// The cells are read here, at the gather: a param set after
     /// it does not reach the fork. The fork's cells are its own, so it can
     /// be prepared on any thread.
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::ready)
     }
 }

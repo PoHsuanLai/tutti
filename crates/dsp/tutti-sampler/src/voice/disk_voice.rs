@@ -354,7 +354,7 @@ pub struct DiskVoiceConfig {
 /// it) is cut off from the stream, and handed the stream's file, as the
 /// butler records it (path, rate, loop), to read on demand on the render's
 /// thread. It plays the same window of the file on the render's transport
-/// (its `Env`: nothing to rebind), read as the memory tier reads it; see
+/// (it reads its render's `Env`), read as the memory tier reads it; see
 /// `offline_read`. That path blocks on file I/O and is never taken live: a
 /// live fork of a disk voice is refused.
 pub struct DiskVoice {
@@ -945,7 +945,7 @@ impl DiskVoiceControls {
 struct DiskVoiceFork(DiskVoice);
 
 impl ForkSource for DiskVoiceFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         if matches!(mode, ForkMode::Live) {
             return Err(ForkCause::new(LiveDiskFork));
         }
@@ -1404,17 +1404,8 @@ mod tests {
             "a copy moved the live gain"
         );
 
-        let clock = Arc::new(tutti_core::transport::OfflineTimeline::new(
-            &tutti_core::transport::OfflineTimelineConfig {
-                start_beat: Beat::new(0.0),
-                tempo: Bpm::new(120.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            },
-        ));
-        let ctx = tutti_core::transport::OfflineTransport::new(clock);
         let source = DiskVoiceFork(live.clone());
-        assert!(source.fork(ForkMode::Offline(&ctx)).is_ok());
+        assert!(source.fork(ForkMode::Offline).is_ok());
         let refused = source
             .fork(ForkMode::Live)
             .err()

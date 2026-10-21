@@ -1,24 +1,20 @@
-//! [`Timeline`], what a transport-aware reader reads, and
-//! [`OfflineTransport`], the one shape an offline render hands every node.
-//!
-//! Both live here, below `tutti-core` and `tutti-graph`, so the graph's
-//! `ForkMode::Offline(&OfflineTransport)` can name the offline context by
-//! type: a context of the wrong type is a compile error rather than a rebind
-//! that silently does nothing.
+//! [`Timeline`], what a transport-aware reader outside the graph reads, and
+//! [`OfflineTransport`], an offline render's timeline.
 //!
 //! ```compile_fail,E0308
-//! fn rebind(ctx: &tutti_types::OfflineTransport) {}
-//! rebind(&42u32); // not a timeline: refused, not silently ignored
+//! fn render(ctx: &tutti_core::transport::OfflineTransport) {}
+//! render(&42u32); // not a timeline: refused
 //! ```
 
 use std::sync::Arc;
 
-use crate::value::{Beat, Bpm};
+use crate::{Beat, Bpm};
 
 /// A musical timeline: the position, the tempo, whether it is moving, and
 /// which stretch of straight-line time the position is on.
 ///
-/// Implemented by tutti-core's live `Transport` and by its `OfflineTimeline`,
+/// Implemented by the live [`Transport`](super::Transport) and by
+/// [`OfflineTimeline`](super::OfflineTimeline),
 /// so a beat-driven source can be handed either one and not care which.
 ///
 /// # When to use this instead of a block's `Env`
@@ -41,9 +37,9 @@ use crate::value::{Beat, Bpm};
 /// Recording, looping, and preroll are live-session facts, not timeline
 /// facts: an offline render either answers `false`/`None` forever or handles
 /// them by direct field access, never through this trait. They live on
-/// tutti-core's `TransportState` supertrait (record + loop) and its
-/// `TransportSettings` (preroll), read only where a genuinely live transport
-/// is required.
+/// the [`TransportState`](super::TransportState) supertrait (record + loop)
+/// and [`TransportSettings`](super::TransportSettings) (preroll), read only
+/// where a genuinely live transport is required.
 pub trait Timeline: Send + Sync {
     /// Returns the playhead, as a [`Beat`] position. May be negative during a
     /// count-in.
@@ -75,55 +71,34 @@ pub trait Timeline: Send + Sync {
 /// A [`Timeline`] that only an offline render advances: the promise
 /// [`OfflineTransport::new`] asks for.
 ///
-/// A marker, so the offline context cannot be the live transport. The live
-/// transport is tutti-core's `Transport`, and by the orphan rule only
-/// tutti-core (or this crate) could implement this for it, and neither
-/// does: handing the live playhead to a fork as its render timeline, which
-/// would export whatever the live transport happened to be doing, does not
-/// compile. tutti-core's `OfflineTimeline` implements it; so may a test's
-/// own clock, or a render's stopped timeline.
+/// A marker, so an offline render's timeline cannot be the live transport:
+/// [`Transport`](super::Transport) does not implement it, and outside this
+/// crate the orphan rule keeps anyone from adding it, so exporting against
+/// whatever the live playhead happens to be doing does not compile.
+/// [`OfflineTimeline`](super::OfflineTimeline) implements it; so may a
+/// test's own clock, or a render's stopped timeline.
 pub trait OfflineClock: Timeline {}
 
-/// The timeline an offline render advances, one block at a time.
-///
-/// What `tutti_graph::ForkMode::Offline` carries to every `ForkSource::fork`,
-/// typed on both sides, so a context of another type is a compile error rather
-/// than a rebind that silently does nothing.
+/// The timeline an offline render advances, one block at a time: what an
+/// export hands the code that edits its forked graph (a node in the graph
+/// reads its block's `Env` instead).
 ///
 /// A newtype over `Arc<dyn Timeline>`, built only from an [`OfflineClock`]
-/// ([`new`](Self::new)): a timeline of the right *type* but the wrong
-/// *kind* — the live transport — is refused too. It derefs to the
-/// timeline; [`timeline`](Self::timeline) hands out the shared handle for a
-/// node that keeps one.
+/// ([`new`](Self::new)), so the live transport is refused. It derefs to the
+/// timeline; [`timeline`](Self::timeline) hands out the shared handle.
 ///
-/// # What a node does on rebind
-///
-/// Nodes holding a transport re-point at this. Nodes carrying their own
-/// internal clock re-seat it from [`Timeline::beat`] and [`Timeline::tempo`]:
-/// severing the live links (`Param::detach`) leaves the clock at whatever beat
-/// the *live* playhead held, so without this every beat-driven node (LFO,
-/// automation) renders from an arbitrary position and the output depends on
-/// *when* the render started. Read at rebind time, before the renderer has
-/// advanced anything, so these are the seeded start values rather than a
-/// moving position.
-///
-/// # No scalars beside the timeline
-///
-/// It carries **no** `start_beat` or `tempo` of its own. Both are things a
-/// timeline already answers, and a copy beside it can disagree: one rebind
-/// path reading the scalar while another follows the timeline renders half
-/// the graph at one tempo and half at another, silently.
+/// It carries **no** `start_beat` or `tempo` of its own: both are things the
+/// timeline already answers, and a copy beside it could disagree.
 #[derive(Clone)]
 pub struct OfflineTransport(Arc<dyn Timeline>);
 
 impl OfflineTransport {
-    /// Creates the offline context for a render advancing `timeline`.
+    /// Wraps the timeline a render advances.
     pub fn new<T: OfflineClock + 'static>(timeline: Arc<T>) -> Self {
         Self(timeline)
     }
 
-    /// Returns the timeline, as the shared handle a node keeps (a clip
-    /// reader's cursor, a voice's transport).
+    /// Returns the timeline, as a shared handle.
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::clone(&self.0)
     }

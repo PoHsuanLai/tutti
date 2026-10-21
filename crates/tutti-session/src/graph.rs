@@ -657,7 +657,7 @@ impl Graph {
 
     /// The control-thread half of a copy of `target` for an offline render
     /// at `rate`, sharing no state with this graph: `Editor::fork_gather`
-    /// with `ForkMode::Offline(ctx)`, through tutti-export
+    /// with `ForkMode::Offline`, through tutti-export
     /// (`RenderGraph::gather`). [`PendingExport::build`] makes the rest on a
     /// worker.
     ///
@@ -669,7 +669,6 @@ impl Graph {
     pub(crate) fn gather_for_export(
         &self,
         target: AudioNodeTarget,
-        ctx: &tutti_core::transport::OfflineTransport,
         rate: SampleRate,
     ) -> tutti_export::Result<PendingExport> {
         let target = match target {
@@ -679,7 +678,7 @@ impl Graph {
         let fork = tutti_export::RenderGraph::gather(
             &self.editor,
             target,
-            tutti_graph::ForkMode::Offline(ctx),
+            tutti_graph::ForkMode::Offline,
             rate,
         )?;
         Ok(PendingExport {

@@ -192,9 +192,8 @@ impl VoiceSource {
 /// # There is deliberately no `placement` field
 ///
 /// Placement is the source's alone. Carrying a second copy here makes two clocks
-/// kept in sync by hand, and a rebind that reaches only the record leaves the
-/// real read clock on the live transport — rendering silence with nothing to
-/// point at. Ask the source for its placement.
+/// kept in sync by hand, and the record drifting from the source renders
+/// silence with nothing to point at. Ask the source for its placement.
 #[derive(Debug)]
 pub struct Playback {
     /// Output gain, applied after the source read. Linear, not decibels.
@@ -277,7 +276,7 @@ impl Voice {
     /// ([`DiskVoice::fork_copy`]). A disk voice forks only for an offline
     /// render: [`ForkMode::Live`] is refused for it (its fork would read its
     /// file on the audio thread).
-    pub(crate) fn fork_copy(&self, mode: ForkMode<'_>) -> Result<Self, ForkCause> {
+    pub(crate) fn fork_copy(&self, mode: ForkMode) -> Result<Self, ForkCause> {
         let source = match &self.source {
             VoiceSource::Memory(s) => {
                 let mut s = s.clone();

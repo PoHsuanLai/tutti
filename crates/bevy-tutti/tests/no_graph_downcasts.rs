@@ -2,7 +2,7 @@
 //!
 //! A typed node accessor hands back the graph's own copy of a node, downcast
 //! to a concrete type. This crate needs none: a synth's MIDI arrives over event
-//! edges, and a node's modulatable params and a hosted plugin's input slots
+//! edges, a node's params are its `ParamSet`, and a hosted plugin's meter
 //! and latency come from components captured off the unit as it is inserted
 //! (`bevy_tutti::graph::capture`).
 //!

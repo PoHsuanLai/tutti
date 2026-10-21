@@ -248,7 +248,7 @@ impl FrameClock {
     /// [`mark_play_start`](Self::mark_play_start) — and at nothing else.
     ///
     /// What a timeline publishes as its
-    /// [`Timeline::segment_generation`](crate::Timeline::segment_generation),
+    /// `Timeline::segment_generation` (tutti-core),
     /// so a reader that caches a position computed at one beat can tell a
     /// jump that lands on the same beat from no jump at all: comparing
     /// beats cannot (a seek to where the playhead stands, a loop exactly one

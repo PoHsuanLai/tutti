@@ -8,7 +8,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
@@ -125,13 +124,9 @@ fn a_forked_graph_plays_the_clip() {
         onset(&render(ed, exec, 48_000.0, BLOCK)).expect("a note at frame 0 sounds")
     };
     let (live, _exec) = graph(unit(48_000), 48_000.0, 1_000);
-    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(48_000.0),
-        ..Default::default()
-    })));
     let prepare = *live.prepare();
     let (fork, fork_exec) = live
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("a clip and a soundfont node fork");
     assert_eq!(
         onset(&render(fork, fork_exec, 48_000.0, 4_096)),

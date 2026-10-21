@@ -1708,7 +1708,7 @@ record that named moved code re-run against it: `plugin_capture.rs`,
 (`ExportClock::offline` and `Stopped::is_rolling`: a memory voice reads
 the render's `Env`, not the fork's timeline); they now name the render
 clock, which the test does pin. `ExportClock::offline` is pinned by
-`export_surface.rs`'s rebinding tests. `Stopped::is_rolling` is read by
+`export_surface.rs`'s prepare-hook timeline tests. `Stopped::is_rolling` is read by
 no node while the render is stopped, but a `PrepareEdit` reads it:
 `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins it.
 

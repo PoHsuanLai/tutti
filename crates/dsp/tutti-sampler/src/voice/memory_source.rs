@@ -128,7 +128,7 @@ pub enum LoopSetting {
 ///
 /// **Pure geometry — no clock.** A window is a value a voice owns; the
 /// clock is the block's (`tutti_graph::Env`), read where the window is
-/// gated. So this is `Copy`, and a fork of a voice needs nothing rebound.
+/// gated. So this is `Copy`, and a fork of a voice reads its render's `Env`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceWindow {
     /// Start position in beats on the timeline.
@@ -237,8 +237,7 @@ impl Default for MemorySourceConfig {
 /// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`]), so it
 /// goes in through [`param_parts`]: its controls are that [`ParamSet`], and a
 /// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
-/// gain cell at the authored value — and plays on its render's `Env`, with
-/// nothing to rebind.
+/// gain cell at the authored value — and plays on its render's `Env`.
 ///
 /// # Real-time
 ///
@@ -2674,7 +2673,7 @@ mod tests {
         assert_eq!(Node::param_base(&s, 1), None);
     }
 
-    /// **A fork plays from the render's transport**, with nothing rebound:
+    /// **A fork plays from the render's transport**:
     /// a placed source forked out of a live graph reads its window of the
     /// fork's own blocks' `Env`.
     ///

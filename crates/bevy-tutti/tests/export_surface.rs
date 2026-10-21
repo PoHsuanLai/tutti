@@ -363,17 +363,15 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     );
 }
 
-/// **The caller's timeline is what the nodes get rebound onto.**
+/// **The `prepare` hook is handed the caller's timeline.**
 ///
 /// `RenderClock` is advance-only, so this crate cannot read a timeline back out
-/// of the `clock` a caller supplies. Manufacturing its own timeline (say 120 BPM
-/// at beat 0) and rebinding the clone's transport-aware nodes onto *that*,
-/// while the renderer advanced the caller's, would make the two ends disagree:
-/// a tap on a 90 BPM project would bind its voices to a 120 BPM playhead that
-/// nothing advances, which is the silent-playhead failure the per-node rebind
-/// exists to prevent.
+/// of the `clock` a caller supplies. Handing the hook a timeline of its own
+/// (say 120 BPM at beat 0) while the renderer advanced the caller's would make
+/// the two disagree: a node the hook places on a 90 BPM project would land on
+/// a 120 BPM playhead that nothing advances.
 #[test]
-fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
+fn the_prepare_hook_sees_the_callers_timeline() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, node) = app_with_engine_on();
@@ -396,7 +394,7 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
         stereo_config(),
         ExportClock::timeline(timeline.clone()),
     )
-    // The hook sees the very context the nodes were rebound with.
+    // The hook sees the very timeline the renderer advances.
     .with_prepare(|_world: &World| {
         |prepared: PreparedGraph<'_>| {
             let transport = prepared.ctx;
@@ -422,7 +420,7 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     assert_eq!(
         SEEN_TEMPO.load(Ordering::SeqCst),
         90,
-        "nodes must be rebound onto the caller's timeline, not a manufactured 120 BPM one"
+        "the hook must see the caller's timeline, not a manufactured 120 BPM one"
     );
     assert_eq!(
         SEEN_BEAT.load(Ordering::SeqCst),
@@ -431,14 +429,13 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     );
 }
 
-/// **A master export is rebound onto the caller's timeline too**, pinned
-/// where a host sees it: what the `prepare` hook is told.
+/// **A master export's `prepare` hook sees the caller's timeline too.**
 ///
 /// Mutation (run): the session's `ExportJob::run` handing the hook a
 /// context of its own (`ExportClock::frozen().offline()`) instead of the
-/// one the fork was rebound onto → the hook sees 120 BPM, not 90.
+/// request's → the hook sees 120 BPM, not 90.
 #[test]
-fn a_master_export_is_rebound_onto_the_callers_timeline() {
+fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, _node) = app_with_engine_on();

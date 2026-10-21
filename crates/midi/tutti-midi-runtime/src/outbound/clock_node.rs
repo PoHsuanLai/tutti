@@ -115,7 +115,7 @@ impl Node for ClockNode {
 struct SilentClock;
 
 impl ForkSource for SilentClock {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(ClockNode::new())))
     }
 }

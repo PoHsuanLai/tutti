@@ -21,7 +21,6 @@ mod channels;
 mod downmix;
 mod interleaved;
 mod rt;
-mod timeline;
 mod topology;
 
 // Public: `tutti-core` re-exports each of these AS A MODULE
@@ -69,10 +68,6 @@ pub use value::{
     first_frame_at_or_after, snap_to_whole_frame, FrameClock, LoopRange, SegmentOrigin,
     TimelineSegment, FRAME_TOLERANCE,
 };
-
-// What a transport-aware node reads, and the typed context an offline render
-// hands it (`ForkMode::Offline`, which every `ForkSource::fork` receives).
-pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 
 // Channel layout — how many channels.
 pub use channels::ChannelLayout;

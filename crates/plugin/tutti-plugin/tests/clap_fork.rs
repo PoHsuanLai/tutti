@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_core::{SampleRate, Samples};
 use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
@@ -103,13 +103,6 @@ fn drive_fork(unit: &mut Rig, blocks: usize) -> Vec<Vec<f32>> {
     (0..blocks).map(|b| drive(unit, b)).collect()
 }
 
-fn offline() -> OfflineTransport {
-    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    })))
-}
-
 fn env() -> ProbeEnv {
     ProbeEnv::new()
         .render_mode(render::TAG_PASSTHROUGH)
@@ -138,10 +131,9 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
     let probe = load_probe(SAMPLE_RATE);
     probe.client.set_parameter(GAIN, gain_at(-6.0));
 
-    let offline = offline();
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     assert_eq!(fork.descriptor().id, probe.client.descriptor().id);
 
@@ -193,10 +185,9 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     let handle: PluginHandle = probe.handle.clone();
     probe.client.set_parameter(GAIN, gain_at(-6.0));
 
-    let offline = offline();
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     let state_at_fork = handle.state().save_state().expect("the probe saves");
 
@@ -276,10 +267,9 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let probe = load_probe(SAMPLE_RATE);
     let _refuse = ProbeEnv::new().refuse_state_load(true);
 
-    let offline = offline();
     let err = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect_err("the fresh instance refuses the state");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
@@ -291,7 +281,7 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let key = NodeKey(7);
     let _controls = editor.insert(key, "plugin", probe.client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-    match editor.fork(ForkTarget::Node(key), ForkMode::Offline(&offline), prepare) {
+    match editor.fork(ForkTarget::Node(key), ForkMode::Offline, prepare) {
         Err(ForkError::Source { key: at, cause }) => {
             assert_eq!(at, key);
             assert!(
@@ -346,9 +336,8 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
     let _controls = editor.insert(key, "plugin", probe.client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
 
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
-        .fork(ForkTarget::Node(key), ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
         .expect("a graph holding a plugin forks");
     let out = Renderer::new(fork_ed, fork_exec).render(BLOCK * 8);
     let want = TAG_P0C0 * amplitude(-6.0);
@@ -372,9 +361,8 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
     let key = NodeKey(3);
     let _controls = editor.insert(key, "plugin", client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-    let offline = offline();
     let (fork_ed, fork_exec) = editor
-        .fork(ForkTarget::Node(key), ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
         .expect("forks");
     assert_eq!(fork_ed.fork_health(), Ok(()), "healthy before rendering");
     let mut renderer = Renderer::new(fork_ed, fork_exec);
@@ -577,14 +565,8 @@ fn live_graph(client: PluginClient) -> (Editor, tutti_graph::Executor) {
 /// buffers.
 fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Rendered> {
     let rate = SampleRate(SAMPLE_RATE);
-    let offline = offline();
-    let graph = tutti_export::RenderGraph::fork(
-        live,
-        ForkTarget::Master,
-        ForkMode::Offline(&offline),
-        rate,
-    )
-    .expect("a graph holding a plugin forks");
+    let graph = tutti_export::RenderGraph::fork(live, ForkTarget::Master, ForkMode::Offline, rate)
+        .expect("a graph holding a plugin forks");
     let config = tutti_export::ExportConfig {
         render: tutti_export::RenderConfig {
             sample_rate: rate,
@@ -673,11 +655,10 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let offline = OfflineTransport::new(timeline.clone());
     let graph = tutti_export::RenderGraph::fork(
         &live,
         ForkTarget::Master,
-        ForkMode::Offline(&offline),
+        ForkMode::Offline,
         SampleRate(SAMPLE_RATE),
     )
     .expect("a graph holding a plugin forks");
@@ -772,9 +753,8 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
         }));
-        let offline = OfflineTransport::new(timeline.clone());
         let (_fork_ed, mut fork_exec) = live
-            .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+            .fork(ForkTarget::Master, ForkMode::Offline, prepare)
             .expect("forks");
 
         let mut out = Vec::new();
@@ -849,9 +829,8 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let offline = OfflineTransport::new(timeline.clone());
     let (_fork_ed, mut fork_exec) = live
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("a clip node and a plugin fork");
 
     let mut out = Vec::new();
@@ -970,9 +949,8 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
             sample_rate: SampleRate(SAMPLE_RATE),
             ..Default::default()
         }));
-        let offline = OfflineTransport::new(timeline.clone());
         let (_fork_ed, mut fork_exec) = live
-            .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+            .fork(ForkTarget::Master, ForkMode::Offline, prepare)
             .expect("a clip, a plugin and a sink fork");
 
         let mut out = Vec::new();
@@ -1073,14 +1051,8 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     }
     live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
 
-    let offline = offline();
-    let graph = tutti_export::RenderGraph::fork(
-        &live,
-        ForkTarget::Master,
-        ForkMode::Offline(&offline),
-        rate,
-    )
-    .expect("the graph forks");
+    let graph = tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
+        .expect("the graph forks");
     let latency = graph.reported_latency();
     assert_eq!(
         latency,
@@ -1151,14 +1123,9 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     ];
     let export = |pooled: bool| {
         let rate = SampleRate(SAMPLE_RATE);
-        let offline = offline();
-        let mut graph = tutti_export::RenderGraph::fork(
-            &live,
-            ForkTarget::Master,
-            ForkMode::Offline(&offline),
-            rate,
-        )
-        .expect("a graph holding plugins forks");
+        let mut graph =
+            tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
+                .expect("a graph holding plugins forks");
         if pooled {
             graph.set_pool(Some(Arc::new(tutti_core::WorkerPool::new(4))));
         }

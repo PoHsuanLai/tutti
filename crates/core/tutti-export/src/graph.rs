@@ -202,8 +202,7 @@ impl RenderGraph {
     /// `sample_rate`. The live graph is not touched (`Editor::fork` reads the
     /// spec and the nodes' fork sources, and sends nothing).
     ///
-    /// `mode` is normally `ForkMode::Offline(&transport)`, with `transport`
-    /// the render's `OfflineTransport`: typed, so nothing else compiles.
+    /// `mode` is normally `ForkMode::Offline`.
     ///
     /// # Errors
     ///
@@ -225,7 +224,7 @@ impl RenderGraph {
     pub fn fork(
         live: &Editor,
         target: ForkTarget,
-        mode: ForkMode<'_>,
+        mode: ForkMode,
         sample_rate: SampleRate,
     ) -> Result<Self> {
         let (editor, executor) = live
@@ -254,7 +253,7 @@ impl RenderGraph {
     pub fn gather(
         live: &Editor,
         target: ForkTarget,
-        mode: ForkMode<'_>,
+        mode: ForkMode,
         sample_rate: SampleRate,
     ) -> Result<PendingFork> {
         live.fork_gather(target, mode, Self::prepare(sample_rate))

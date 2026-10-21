@@ -606,7 +606,7 @@ impl ClickFork {
 }
 
 impl ForkSource for ClickFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.node())))
     }
 }

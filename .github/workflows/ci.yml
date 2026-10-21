@@ -34,7 +34,7 @@ env:
 # PR that bumps the file. Every cargo command that resolves dependencies runs
 # `--locked` against the committed `Cargo.lock`: a lock that drifted from the
 # manifests fails loudly instead of resolving newer crates in silence (a
-# floating resolve is what broke PR 5, through a deprecation in a new
+# floating resolve once broke a build, through a deprecation in a new
 # `bevy_ecs`). Miri names its nightly (`cargo +nightly`), which overrides
 # the file.
 
@@ -190,7 +190,7 @@ jobs:
       #                         binding compiles with it; `plugin,modulation`
       #                         alone, without `export` or `vst2`, left
       #                         `tests/mod_plugin.rs` helpers and no test
-      #                         (dead code) until PR 7 linted it.
+      #                         (dead code) until this lint found it.
       #   tutti-session/clap  — src/plugin.rs and src/export.rs's plugin half:
       #                         tests/plugin.rs hosts the reference CLAP
       #                         plugin through a real plugin-server.
@@ -301,8 +301,8 @@ jobs:
   # Benchmarks: proved to RUN, never compared.
   #
   # GitHub's runners are shared and swing 30-50% on this workload, and the
-  # engine's own profile_stretch_clone harness (deleted with `Net`, doc 013
-  # Phase 5; its figures are in doc 013) measured an 81x spread on a QUIET
+  # engine's own profile_stretch_clone harness (deleted with `Net`; its
+  # figures are in doc 013) measured an 81x spread on a QUIET
   # machine. A timing threshold here would flap, and a flapping gate gets
   # `continue-on-error: true` within a month and then tests nothing — the same
   # death the pre-extraction workflow died. So this job runs every benchmark
@@ -552,7 +552,7 @@ jobs:
   # the aliasing in `tutti-types`' `AudioThreadCell` and `arc-lend`'s
   # hazard-slot reclamation (`ArcLend`, its own crate since it left
   # `tutti-types`). (The third, the pointer arithmetic in
-  # `tutti-node`'s planar buffers, went with that crate in doc 013 Phase 5: a
+  # `tutti-node`'s planar buffers, went with that crate: a
   # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
@@ -651,7 +651,7 @@ jobs:
       - run: cargo test --locked -p tutti-types --release --test cell_loom
       - run: cargo test --locked -p tutti-shm-model --release
 
-  # The parallel executor's runtime primitives (doc 013 Phase 6, part a), each
+  # The parallel executor's runtime primitives (doc 013), each
   # against the shipped code: `SplitMut`/`SplitRw`'s claims, `JobGate`'s
   # borrowed-job hand-off and `TaskGraph`'s dispatch and self-reset. Their own
   # job, so neither this nor the one above nears its timeout. Every recorded

@@ -1216,7 +1216,7 @@ mod tests {
     /// knob (`AudioParam`, `write_param`) and as a control lane's knob is
     /// the same cell: `false` for a param the set lacks. (These tests
     /// pinned the synth's `ModParams` impl and then an `AtomicTarget` over
-    /// the set's cell; doc 014 PR 5 deleted both, and the `ParamSet` is the
+    /// the set's cell; doc 014 §10 deleted both, and the `ParamSet` is the
     /// one address.)
     fn set(synth: &PolySynth, p: tutti_core::UnitParam, value: f32) -> bool {
         tutti_graph::ParamNode::param_set(synth).set(p, value)

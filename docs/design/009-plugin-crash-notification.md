@@ -9,7 +9,7 @@ and asks `PluginHandle::status()` (`host/handles/control_handle.rs`). Two
 departures from the pieces below: the cause is a `String`, since `BridgeError`
 is not `Clone`, and `PluginStatus` is `Alive | Dead { cause }`, with the
 `Failing` debounce left to the host: `tutti-plugin`'s `Liveness` since design
-015 PR 2 (count and time: 3 observations spanning 50 ms), which `bevy-tutti`'s
+015 (count and time: 3 observations spanning 50 ms), which `bevy-tutti`'s
 `PluginLiveness` mirrors. The body below is
 the proposal as written, and its code references are as of then.
 

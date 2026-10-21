@@ -137,8 +137,8 @@ mod routes {
     /// **A disabled rule routes nothing, and removing a rule unwires its
     /// target.**
     ///
-    /// Mutation (run, against `tutti_session::Midi::set_routes` since design
-    /// 015 PR 5): not removing the feeds of a node no rule reaches any more
+    /// Mutation (run, against `tutti_session::Midi::set_routes`): not removing
+    /// the feeds of a node no rule reaches any more
     /// (the session's `routed` set unused) → the ports stay → fails.
     #[test]
     fn removing_or_disabling_a_rule_unwires_its_target() {
@@ -235,7 +235,7 @@ mod keyboard {
     /// feeds with it (`Graph::remove`), so nothing is left to move; the live
     /// input re-asserts its feed on the entity's node whenever that changes.
     ///
-    /// Mutations (run, design 015 PR 5), each fails: `attach_live_midi` not
+    /// Mutations (run), each fails: `attach_live_midi` not
     /// re-aiming the queue on a changed `AudioNode` (`Midi::retarget`
     /// skipped); the session's `retarget` not feeding the new target → the
     /// new synth's event input is empty.
@@ -282,8 +282,8 @@ mod keyboard {
     /// gets its `LiveMidi`, fed into its node.
     ///
     /// Mutation (run): `attach_live_midi` gated by an early return on a
-    /// missing graph rather than the plugin's `run_if` (as design 015 PR 5
-    /// first did: the system ran, consuming the `Added` tick) → no
+    /// missing graph rather than the plugin's `run_if` (the system runs,
+    /// consuming the `Added` tick) → no
     /// `LiveMidi` → fails.
     #[test]
     fn a_keyboard_declared_before_the_graph_attaches_when_it_arrives() {

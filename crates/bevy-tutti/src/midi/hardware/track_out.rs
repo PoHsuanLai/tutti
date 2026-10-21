@@ -200,8 +200,8 @@ mod tests {
     /// silently.** `MidiOutPlugin` alone (no engine, no `AudioGraphRes`): a
     /// `SendMidiOut` of two notes is drained and counted as two drops.
     ///
-    /// Mutation (run): the no-graph arm draining with `drops: None` (as
-    /// design 015 PR 5 first did) → the count stays 0 → fails.
+    /// Mutation (run): the no-graph arm draining with `drops: None` → the
+    /// count stays 0 → fails.
     #[test]
     fn with_no_graph_the_drained_events_are_counted() {
         let mut app = App::new();

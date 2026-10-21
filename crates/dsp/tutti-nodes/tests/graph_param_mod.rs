@@ -17,7 +17,7 @@
 //!   driven param, the lane's offset riding on it
 //!   (`an_authored_write_moves_the_base_under_modulation`).
 //!
-//! Ported in doc 014 PR 5 from an audio-rate source (`ParamFrom::Audio` of
+//! Ported from an audio-rate source (`ParamFrom::Audio` of
 //! a `Const`, gone with audio-rate param sources, §10, §11) to the lane an
 //! engine wires; the shaping oracle (`param_mod_oracle.rs`) went with
 //! `ParamModShaping`.
@@ -369,7 +369,7 @@ fn cases() -> Vec<Case> {
             hi: 1.0,
         },
     ];
-    // The block-rate params doc 014 PR 5 made ports: a route onto any of
+    // The block-rate params doc 014 §12.6 made ports: a route onto any of
     // these was refused (`NoSuchParam`) once the frame-rate driver went.
     cases.extend(block_rate_cases());
     cases
@@ -670,7 +670,7 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// the value whatever the base: the nodes' own `the_feed_declares_*` /
 /// `the_shape_is_*` tests pin the bases.)
 ///
-/// The block-rate cases (`block_rate_cases`, the params doc 014 PR 5 made
+/// The block-rate cases (`block_rate_cases`, the params doc 014 §12.6 made
 /// ports) were each run with the node ignoring that driven port and reading
 /// its cell instead, and each failed: the LFO rate (chorus and phaser), the
 /// chorus depth and feedback, the phaser depth and mix, the compressor's
@@ -725,7 +725,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// the lane's offset keeps riding on it. There is no second base cell to
 /// lose (doc 014 §4.2: one writer per knob).
 ///
-/// Changed in doc 014 PR 5: the offset was an audio source added to the
+/// Changed in doc 014 §12.6: the offset was an audio source added to the
 /// node's base by the port; it is now the lane's constant layer (`Wave::Const`,
 /// a twentieth of the port's 0..10 span), added to the knob by the lane.
 ///

@@ -11,16 +11,15 @@ section there before you relax or work around a rule.
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md) (the
 filename keeps the design's old "native graph" name; it is just the graph): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. Phases 3–5 are done: `Engine` renders only the
-graph (`Engine::new(&transport, &mut editor, executor)`), it is
-`bevy-tutti`'s only runtime (`AudioGraphRes` wraps a `tutti_session::Session`,
-whose graph holds the `Editor`; PDC is the
-compiler's, export forks the live graph with `Editor::fork`), and every node
-is a `tutti_graph::Node`. Phase 5 deleted fundsp's `Net`, the vendored fork,
-`tutti-node` and its `AudioUnit` trait, `Setting` and the numeric tower;
-`AudioNode` wraps a `NodeKey`, and `tutti_types::latency` is a pure pass that
-is the compiler's own solve. Phase 6 is under way: the parallel executor
-(part a, below) and the cost model and coarsening (part b) have landed.
+once, and events as ports. `Engine` renders only the graph
+(`Engine::new(&transport, &mut editor, executor)`), it is `bevy-tutti`'s
+only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
+holds the `Editor`; PDC is the compiler's, export forks the live graph with
+`Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
+the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
+the numeric tower are deleted; `AudioNode` wraps a `NodeKey`, and
+`tutti_types::latency` is a pure pass that is the compiler's own solve. The
+parallel executor (below) and its cost model and coarsening have landed.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
@@ -37,10 +36,10 @@ is the compiler's own solve. Phase 6 is under way: the parallel executor
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
-- Doc 013 lists the defects and types each phase addresses. Update it when a
-  phase lands or a decision changes.
+- Doc 013 lists the defects and types each part addresses. Update it when a
+  decision changes.
 
-## The parallel executor (doc 013 Phase 6)
+## The parallel executor (doc 013)
 
 A block's tasks may run on several threads (`Executor::set_pool`,
 `tutti_core::WorkerPool`), and the render must stay bit-identical to the
@@ -291,7 +290,7 @@ Scalars use `Param<U>`.
 
 ## Wiring is declared, not called
 
-`bevy-tutti` runs on `tutti-graph` only (doc 013, Phase 3 PR 13).
+`bevy-tutti` runs on `tutti-graph` only (doc 013, "Flip the adapter").
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild builds a
@@ -372,7 +371,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   crates, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
   `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'), and
   tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
-  `modulation::legacy`) → deleted (doc 014 PR 5: `tutti_mod::compile` and
+  `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is

@@ -99,7 +99,7 @@
 //! # The loop is `tutti_io::Recorder`'s
 //!
 //! This module used to run its own copy of the poll / park / break / finalize
-//! loop. It was the same loop as [`Recorder`]'s, so design 015 PR 3 kept that
+//! loop. It was the same loop as [`Recorder`]'s, so design 015 kept that
 //! one: it already had the width check, the `Drop` finalization and the
 //! driver seam its tests count passes through, and it gained the three
 //! non-blocking methods a frame loop needs ([`Recorder::request_stop`],

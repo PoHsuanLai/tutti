@@ -1,4 +1,5 @@
-//! The cost model (doc 013, compiler step 6; Phase 6 part (b)).
+//! The cost model (doc 013, compiler step 6; "The cost model and
+//! coarsening").
 //!
 //! The compiler estimates every op's work per block from what the node
 //! declared ([`Shape::cost`](crate::Shape::cost)) and its channel count, as
@@ -40,7 +41,8 @@
 //! errs safely: the default, [`Cost::Heavy`], is the cost of a node that
 //! declares nothing (a plugin, a host's node), so any two independent such
 //! nodes are each worth a task and spread at any block length. For a graph
-//! that declares nothing, three things still differ from part (a): its
+//! that declares nothing, three things still differ from spreading every
+//! op: its
 //! copy and event ops are priced cheap, so sibling ones pack (where that
 //! does not lengthen the critical path); the wake count is the larger of
 //! the average parallelism and the widest level, at least 2; and a plan
@@ -53,7 +55,7 @@
 //! # The constants
 //!
 //! Work is counted in **units of about a nanosecond of one core** on the
-//! machine the constants were calibrated on (doc 013, "Phase 6, part (b)":
+//! machine the constants were calibrated on (doc 013, "The cost model and coarsening":
 //! a 4-core container, `tutti-nodes`' `parallel_render` bench). Only their
 //! ratios matter to a decision: a faster core shrinks node work and
 //! dispatch alike. They are a speed decision only — the parallel render is
@@ -109,7 +111,7 @@ impl Cost {
 /// An estimate of work per block, affine in the block length:
 /// `fixed + per_frame × frames`, in the cost model's units (about a
 /// nanosecond of one core; see the module docs of `cost.rs` in doc 013,
-/// "Phase 6, part (b)").
+/// "The cost model and coarsening").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Work {
     /// Work per block whatever its length.

@@ -645,11 +645,11 @@ mod tests {
 
     /// The shape declares the threshold, attack and release, and it never
     /// changes the arity: audio plus sidechain, at every width. (Doc 014
-    /// PR 5 widened the list: a route onto any of these was refused once
+    /// §12.6 widened the list: a route onto any of these was refused once
     /// the frame-rate driver went.)
     ///
     /// Mutation (run): declare no params in `shape` → the first assertion
-    /// fails. Mutation (run, PR 5): `param_base(2)` answering the attack
+    /// fails. Mutation (run): `param_base(2)` answering the attack
     /// cell → fails.
     #[test]
     fn gate_declares_its_params() {

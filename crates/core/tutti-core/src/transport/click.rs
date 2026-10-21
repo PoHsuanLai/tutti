@@ -539,7 +539,7 @@ impl Node for ClickNode {
             .with_tail(Tail::Unbounded)
             // A beat derived and compared per frame: measured 3.8 ns per
             // frame and channel, against a gain's 0.2 and `SvfFilterNode`'s
-            // 7.2 (doc 013, "Phase 6, part (b)").
+            // 7.2 (doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
     }
 

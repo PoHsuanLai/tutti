@@ -56,8 +56,7 @@ tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optio
 tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false }
 tutti-sampler = { path = "../dsp/tutti-sampler", optional = true, default-features = false }
 # The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
-# is a component around `tutti_io::Recorder`, the one pump loop (design 015
-# PR 3). `audio-io` adds the device half and re-exports `WavOut`,
+# is a component around `tutti_io::Recorder`, the one pump loop. `audio-io` adds the device half and re-exports `WavOut`,
 # `MicMonitorNode` and `Recorder` through `crate::io`; `sampler` adds
 # `Wave`/`WaveAsset`/the decoder. With no codec feature the crate compiles no
 # decoder.

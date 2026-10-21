@@ -2,7 +2,7 @@
 //! crossfade retry, the event feeds, compensation, and what a fork renders.
 //!
 //! The graph halves of what `bevy-tutti`'s `graph::runtime` tests pinned
-//! through an `App` (design 015 §9, PR 4); the ECS halves stayed there.
+//! through an `App` (design 015 §9.4); the ECS halves stayed there.
 
 use std::sync::Arc;
 

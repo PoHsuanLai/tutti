@@ -99,7 +99,7 @@ fn two_hundred_parameters_changing_in_one_block_all_arrive() {
 /// then nothing, however many more blocks run. A value that moves is one
 /// more point.
 ///
-/// Ported in doc 014 PR 5: the source was the deleted `PluginAutomation`
+/// Ported: the source was the deleted `PluginAutomation`
 /// node, which sampled every parameter at every stride point of every
 /// block; a lane sends only when something moves, so the re-sends are asked
 /// for, to keep the node's own dedupe under test.

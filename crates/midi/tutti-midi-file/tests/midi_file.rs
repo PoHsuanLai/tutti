@@ -5,7 +5,7 @@
 //! so a tick is the tick the test wrote, not one this crate's writer chose.
 //! The decode tests (`smf_bytes_decode_to_tracks` through
 //! `a_truncated_smf_is_a_parse_error`) moved here from `bevy-tutti`'s
-//! `midi/file/tests.rs` with the decode itself (design 015, PR 1).
+//! `midi/file/tests.rs` with the decode itself.
 
 mod support;
 

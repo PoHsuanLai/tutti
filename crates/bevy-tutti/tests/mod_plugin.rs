@@ -1,5 +1,5 @@
-//! Modulation lanes on hosted plugins' parameters (doc 014 §8.2, §12
-//! "PR 4b"): a plugin target is a lane on the plugin's event input, its knob
+//! Modulation lanes on hosted plugins' parameters (doc 014 §8.2,
+//! §12.5): a plugin target is a lane on the plugin's event input, its knob
 //! its own, started at the plugin's value and moved by the plugin's GUI.
 //!
 //! The plugins are the reference ones: the CLAP probe through a real

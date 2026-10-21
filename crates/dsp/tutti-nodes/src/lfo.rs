@@ -489,9 +489,9 @@ mod tests {
     /// one declares only its depth, as its `ParamSet` addresses only that
     /// (its rate cell holds beats per cycle, not `Hz`).
     ///
-    /// Mutation (run, PR 5): `param_base(1)` answering in either mode (the
+    /// Mutation (run): `param_base(1)` answering in either mode (the
     /// mode guard dropped) → the beat-synced node reports a rate base →
-    /// fails. Mutation (run, PR 5): `param_base(0)` answering the rate →
+    /// fails. Mutation (run): `param_base(0)` answering the rate →
     /// fails.
     #[test]
     fn the_shape_declares_depth_and_a_free_running_rate() {

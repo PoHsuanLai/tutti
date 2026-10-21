@@ -1,9 +1,7 @@
 //! The synth's params under a control lane, as an engine wires one (doc 014
 //! §4.2): a `ControlLaneNode` whose knob is the synth's own cell, sending
 //! into the synth's param port. The master volume, unison detune and
-//! stereo spread became ports in doc 014 PR 5 ([`SYNTH_PARAMS`]); before,
-//! a route onto any of them was refused with `NoSuchParam` once the
-//! frame-rate driver (which wrote the cell) went.
+//! stereo spread are ports ([`SYNTH_PARAMS`]).
 //!
 //! A note at frame 0 into a saw synth, 120 BPM at 48 kHz.
 
@@ -139,9 +137,9 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
 /// gain on the voices' sum), and the cell still holds the knob (the lane
 /// sends to the port and never writes it).
 ///
-/// Mutation (run, PR 5): the synth reading its cell, not the driven port
+/// Mutation (run): the synth reading its cell, not the driven port
 /// (`block_driven(&io, 0)` replaced by `None`) → every sample is 1.0 times
-/// → fails. Mutation (run, PR 5): `SYNTH_PARAMS` not declared in the shape
+/// → fails. Mutation (run): `SYNTH_PARAMS` not declared in the shape
 /// → `param_range_cell` is `None` → fails.
 #[test]
 fn a_lane_drives_the_master_volume_around_its_cell() {
@@ -180,7 +178,7 @@ fn a_lane_drives_the_master_volume_around_its_cell() {
 /// the knob at 0 plus the whole of a 0..1 range spreads them hard left and
 /// right, so the channels differ.
 ///
-/// Mutation (run, PR 5): the unison engine reading its spread cell, not
+/// Mutation (run): the unison engine reading its spread cell, not
 /// the driven port (`block_driven(&io, 2)` replaced by `None`) → the
 /// channels stay equal → fails.
 #[test]
@@ -218,7 +216,7 @@ fn a_lane_drives_the_unison_spread() {
 /// of a 0..100 range) beats, and sounds as the synth does with its own
 /// detune at 20 cents.
 ///
-/// Mutation (run, PR 5): the unison engine reading its detune cell, not
+/// Mutation (run): the unison engine reading its detune cell, not
 /// the driven port (`block_driven(&io, 1)` replaced by `None`) → the
 /// driven synth stays at 0 cents → fails.
 #[test]

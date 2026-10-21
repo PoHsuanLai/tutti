@@ -151,7 +151,7 @@ crates/
 The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc in
 CI: it is third-party code we do not restyle, and it carries pre-existing lint
 debt that is not ours to pay. (The FunDSP fork, `fundsp-tutti`, was the other
-until design doc 013 Phase 5 deleted it.)
+until design doc 013 deleted it.)
 
 ## Unit Types (MANDATORY)
 
@@ -734,7 +734,7 @@ comments and docs, and treat it as a bug when you find it:
   and it would recreate the double edges. Making it safe would mean `tutti`
   stops being an umbrella and a new facade goes on top, which is (a) with
   the names swapped. Option (c), spreading the API over the owning crates,
-  is right for every single-owner piece (design 015 PRs 1–3 moved those),
+  is right for every single-owner piece (design 015 §9.1–§9.3 moved those),
   but cannot hold the composition without inverting an edge. The crate is
   bounded by one sentence: it holds only code that names two or more engine
   crates, or the order they run in. Three checks keep it so:

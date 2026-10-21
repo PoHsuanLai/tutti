@@ -18,8 +18,8 @@
 #    across lines, in groups nested to any depth
 #    (`pub use tutti_x::{a::{B}, self};`) and in a root group
 #    (`pub use {tutti_x as m};`). Single items are allowed: the types its own signatures
-#    take. (This check moved here from `check-bevy-free.sh`, which ran it
-#    from PR 4 to PR 7; its mutation records are below.)
+#    take. (This check moved here from `check-bevy-free.sh`; its mutation
+#    records are below.)
 #
 # A script rather than a test: a test that shells out inside `cargo nextest`
 # contends for the build lock, and this needs no build at all (perl only), so
@@ -61,7 +61,7 @@
 #   modules are `#[cfg(test)] mod tests` at the end of a file, or out of line
 #   in `tests.rs`).
 #
-# On landing (PR 7) it found one hit: `bevy_tutti::export` re-exported
+# On landing it found one hit: `bevy_tutti::export` re-exported
 # `RenderGraph`. The re-export is gone; a prepare hook calls the graph's
 # methods without naming it, and a host that names it depends on
 # `tutti-export`.
@@ -76,7 +76,7 @@
 # - (4), from `check-bevy-free.sh`: `#[cfg(feature = "modulation")] pub use
 #   tutti_mod as modulation;` (an attribute on the same line), `pub use
 #   tutti_mod::{self as modulation};` and `pub use tutti_core::prelude::*;`
-#   each fail (PR 4 review).
+#   each fail.
 # - The lexer, each case appended to `src/graph/commit.rs`: `Engine` in a
 #   `//` comment, in nested `/* */`, in a string and a raw string, inside
 #   `#[cfg(test)] mod tests { .. }` (with `"}"` and `'}'` in it) and as
@@ -87,7 +87,7 @@
 #   deleted.
 #   (Current main names no denied type inside its test code either, so the
 #   exclusions are exercised only by these cases.)
-# - (3), PR 7 review: a `#[cfg(test)]` on a field, an argument or an
+# - (3), from review: a `#[cfg(test)]` on a field, an argument or an
 #   expression used to blank the rest of the file (the scan went past the
 #   closer of its group at depth -1). `AudioGraphRes`'s `cfg(test)` phase
 #   log field hid the 247 lines after it, and
@@ -103,7 +103,7 @@
 #   tutti_core::Engine);` passes (the test-only field is still excluded),
 #   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_core::Engine>` reports
 #   a false hit (the generics limit above).
-# - (4), PR 7 review: `pub use tutti_mod::{a::{B}, self};` and
+# - (4), from review: `pub use tutti_mod::{a::{B}, self};` and
 #   `pub use {tutti_mod as m};` passed the old regex. Check 4 now parses the
 #   use tree, and both fail, as do `pub use ::tutti_mod::{x::{y::{*}}};` and
 #   a multi-line `pub use tutti_mod::{ a::{B, C}, self as m, };`. These

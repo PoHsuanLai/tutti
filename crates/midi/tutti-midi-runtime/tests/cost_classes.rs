@@ -1,5 +1,5 @@
-//! The MIDI nodes are event-only and declare `Cost::Light` (doc 013, "Phase
-//! 6, part (b)"). Declaring it changes only the parallel schedule: sibling
+//! The MIDI nodes are event-only and declare `Cost::Light` (doc 013, "The
+//! cost model and coarsening"). Declaring it changes only the parallel schedule: sibling
 //! clip-to-output lanes pack into fewer tasks than undeclared ones, and on a
 //! pool every event leaves on the frame the serial walk sends it on.
 

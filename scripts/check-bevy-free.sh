@@ -14,8 +14,8 @@
 #    off by default; this crate must never grow one, which is a stronger rule
 #    than (1) can state while the feature has no dependency behind it yet.
 #
-# Its third check from PR 4 to PR 7, no whole-crate re-export (§8 check 4),
-# is `scripts/check-adapter.sh`'s, with its mutation records.
+# Its former third check, no whole-crate re-export (§8 check 4), is
+# `scripts/check-adapter.sh`'s, with its mutation records.
 #
 # A script rather than a test: a test that shells out to `cargo` inside
 # `cargo nextest` contends for the build lock.

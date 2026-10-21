@@ -235,12 +235,13 @@ fn a_re_bound_target_keeps_its_clip() {
 /// (`tutti_session::Midi::retarget`), so the same clip reaches the new node
 /// anyway.
 ///
-/// Mutations (run, design 015 PR 5), each fails: the rebuild not re-aiming
+/// Mutations (run), each fails: the rebuild not re-aiming
 /// its clips (`retarget` skipped: `play_clip` finds no clip fed into the
 /// new node and makes a second, leaving the first unfed in the graph → "the
 /// same clip"); the session's `play_clip` making a fresh clip on every call
-/// (→ "the same clip"). Before PR 5 (run): the rebuild setting the feed only
-/// when it created a clip → the new tap heard `[]`.
+/// (→ "the same clip"). Before the move into the session (run): the
+/// rebuild setting the feed only when it created a clip → the new tap
+/// heard `[]`.
 #[test]
 fn a_target_removed_then_re_bound_keeps_its_clip() {
     use bevy_tutti::graph::InsertAudioNode;
@@ -308,8 +309,8 @@ fn two_installs_on_one_target_both_play() {
 /// node's new events replace the old, and the note the old ones held is
 /// released on the edit's first block.
 ///
-/// Mutation (run, against `tutti_session::Midi::play_clip` since design 015
-/// PR 5): a fresh clip node per edit (`play_clip` never finding the one it
+/// Mutation (run, against `tutti_session::Midi::play_clip`): a fresh clip node
+/// per edit (`play_clip` never finding the one it
 /// has) → the old node sends nothing more → no note-off → fails.
 #[test]
 fn an_edit_does_not_hang_the_previous_note() {
@@ -464,7 +465,7 @@ fn event_sources_wire_a_clip_node_to_a_graph_synth() {
 /// install goes**, so the notes it left sounding end on its frames
 /// (`removing_the_last_install_ends_its_notes`).
 ///
-/// Mutations (run, design 015 PR 5): a fresh clip node per edit (the
+/// Mutations (run): a fresh clip node per edit (the
 /// session's `play_clip` never finding the one it has) → the node changes
 /// across the edit → fails. Removing the clip node with the last install
 /// (the rebuild's `gone` taking targets no install names) → it is

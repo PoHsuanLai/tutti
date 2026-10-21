@@ -1,36 +1,32 @@
 # A native audio graph, and the road off fundsp
 
-Status: **in progress** (2026-09-27): Phases 0–5 have landed and Phase 6 is
-next. **fundsp is gone** (Phase 5: `Net`, the vendored fork, `tutti-node` and
-its `AudioUnit`, [below](#phase-5-part-1-nothing-uses-net)). The graph crate (`tutti-graph`,
-Phases 1 and 2) has landed, and `Engine` renders it
-([Phase 2](#phase-2--runtime-behind-the-engine), 2b) and nothing else
-(Phase 3 PR 15); the Bevy adapter runs on it alone (PR 13; PR 11 had put it
-beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
-renders only it (PR 14). **Phase 3 is done**, and so is Phase 4: every node
-is a `tutti_graph::Node` and the `Legacy` adapter is deleted
-([below](#legacy-deleted)); Phase 5 is done, and Phase 6 has begun (the
-parallel executor, [below](#phase-6-part-a-the-parallel-executor)). Rewrite-order item 4's plugin
-half has landed (the plugin node is a `Node`, bound by typestate; see
-[below](#item-4s-plugin-half-landed)). Phase 3's `bevy-tutti` runtime
+Status: **in progress** (2026-09-27). **fundsp is gone** (`Net`, the
+vendored fork, `tutti-node` and its `AudioUnit`,
+[below](#nothing-uses-net)). `Engine` renders the graph crate
+(`tutti-graph`, [below](#runtime-behind-the-engine)) and nothing else; the
+Bevy adapter runs on it alone, and export forks the graph and renders only
+it. Every node is a `tutti_graph::Node` and the `Legacy` adapter is deleted
+([below](#legacy-deleted)); the plugin node is a `Node`, bound by typestate
+([below](#item-4s-plugin-half-landed)). The parallel executor has landed
+([below](#the-parallel-executor)). The adapter's `bevy-tutti` runtime
 (`GraphRuntime` behind `AudioGraphRes`) has since moved to `tutti-session`,
-the Bevy-free API layer both umbrellas use: see
-[doc 015](015-headless-api.md), PR 4. Its modulation loop (the re-apply
-after a commit, the resyncs) and its MIDI wiring (clips, live inputs, the
-hardware input's routes, the hardware out) followed in PR 5: the session
-runs them as `Phase::{Modulation, AfterCommit, MidiOut}`, and
-`bevy-tutti`'s systems collect their declarations and call it. With `Net` no longer a runtime and
-`Legacy` gone, "native" no longer distinguishes anything: the design's title
-and this file's name keep it, but the code and the crate docs say "the
-graph" (rewrite-order item 9). Work that does not need the graph has
-landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
-[below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
+the Bevy-free API layer both umbrellas use ([doc 015](015-headless-api.md)),
+with its modulation loop (the re-apply after a commit, the resyncs) and its
+MIDI wiring (clips, live inputs, the hardware input's routes, the hardware
+out): the session runs them as `Phase::{Modulation, AfterCommit, MidiOut}`,
+and `bevy-tutti`'s systems collect their declarations and call it. With
+`Net` no longer a runtime and `Legacy` gone, "native" no longer
+distinguishes anything: the design's title and this file's name keep it,
+but the code and the crate docs say "the graph" (rewrite-order item 9).
+Work that does not need the graph has landed too: the D1–D3 latency fixes
+(#3), shrinking the surface (#14, see
+[below](#shrink-the-surface-no-behaviour-change)), the re-exports (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
 `RtPublish` structural fix (#15).
 
 ## Why
 
-The node *contract* already left the fork (`tutti-node`, PR 4a/4b). What has
+The node *contract* already left the fork (`tutti-node`). What has
 not is the **runtime** — `Net`, `NetBackend`, `Vertex`, the commit/migrate
 protocol, `Fade`, `PdcDelay` splicing. Every blocker the `Topology` series hit
 is a property of that runtime, not of the design:
@@ -72,13 +68,13 @@ thread-pool, Surge/Vital SIMD).
 | Feedback only via explicit one-block edge; other cycles rejected (SCC) | Web Audio spec, Firefox cycle breaker, knyst `feedback_to` | **Yes** — already `Edge::Feedback` in the value |
 | Sample-accurate events by sub-chunking at event offsets + block ramps for a-rate | Firewheel, nih-plug, Web Audio `AudioParam` | **Yes** |
 | Per-node crossfade on replace | FunDSP `Vertex` | **Yes**, as an explicit delta op |
-| Parallel dataflow: self-resetting atomic activation counters, inline continuation of first ready successor, callback thread is worker 0, spin→park, serial fast path | supernova, Tracktion, Ardour, generic-daw | **Yes, phase 2** |
+| Parallel dataflow: self-resetting atomic activation counters, inline continuation of first ready successor, callback thread is worker 0, spin→park, serial fast path | supernova, Tracktion, Ardour, generic-daw | **Yes**, after the serial executor |
 | Compile-time coarsening of serial chains into one task | supernova, Faust `-sch` direct activation | **Yes** |
 | Deterministic reclamation over return channels, never drop on push failure | Firewheel, knyst, Kira; basedrop | **Yes** — and fix `RtPublish`'s bounded-not-impossible RT free (**done**, #15) |
 | Hash-consing identical subgraphs | Elementary | **No** — 31-bit collisions, silent identity change on prop edit; DAW graphs rarely share subtrees |
 | Refcounted run-time buffer pool | Tracktion, web-audio-api-rs `Rc` CoW | No — atomics per buffer; static colouring does it for free |
 | Per-sample `tick` graph / typenum static combinators | FunDSP `An<X>` | **No** for the graph (one production user). Sample-level feedback belongs *inside* a node |
-| Anticipative (render-ahead) partition | REAPER | Later — design the plan so it is possible (see Phase 6) |
+| Anticipative (render-ahead) partition | REAPER | Later — design the plan so it is possible (see "Go fast") |
 
 Pitfalls every source agreed on: wakeup latency (12–100 µs) vs a 1.33 ms
 block ⇒ never block the callback on an OS primitive; small/serial graphs lose
@@ -175,10 +171,10 @@ pub trait Node: Send + 'static {
    to `MAX_NODE_LATENCY`; retuning never allocates. Output alignment and the
    `ChannelCompensation` pre-roll table fall out of the same pass.
 4. **Coarsen** — fuse single-in/single-out chains into one task (no atomics on
-   those edges). (Landed with Phase 6: chains in part (a); part (b) also
-   packs sibling tasks too cheap to dispatch alone, where that does not
-   lengthen the critical path, and fuses the chains that leaves — see ["Phase 6, part
-   (b)"](#phase-6-part-b-the-cost-model-and-coarsening).)
+   those edges). (Landed: the parallel executor fuses chains, and the cost
+   model also packs sibling tasks too cheap to dispatch alone, where that
+   does not lengthen the critical path, and fuses the chains that leaves —
+   see ["The cost model and coarsening"](#the-cost-model-and-coarsening).)
 5. **Buffer colouring over the partial order** — serial liveness colouring
    (JUCE) is *wrong* under a parallel order. Two values share a slot only if
    every reader of one happens-before the writer of the other (reachability
@@ -186,7 +182,7 @@ pub trait Node: Send + 'static {
    input's last reader is this node (Firewheel only copies). One aligned
    `Vec<f32>` arena per port kind, reused when capacity allows.
 6. **Cost model** — pick serial vs parallel from critical path / total work
-   and node count. (Landed in Phase 6 part (b) as `Plan::schedule`: the
+   and node count. (Landed as `Plan::schedule`: the
    compiler totals the estimates, and the decision is made when the plan
    meets a pool, whose participant count the compiler cannot know.)
 7. **Verify** (debug) — no slot written twice by steps that may run
@@ -282,9 +278,9 @@ the interpreter.
   *events* of a vanished delay are flushed to the surviving sink at offset 0,
   so a note-off is never lost. Feedback keys include the unit generation.
 - **Global inputs are aligned like any other source** at a merge point with a
-  latent path. `tutti_types::latency::plan` (the fundsp side) did not; since
-  Phase 5 it is the same solve as the compiler's, and does
-  ([part 2](#phase-5-part-2-the-fork-is-deleted)).
+  latent path. `tutti_types::latency::plan` (the fundsp side) did not; it is
+  now the same solve as the compiler's, and does
+  ([the fork is deleted](#the-fork-is-deleted)).
 - **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
   along with everything else. Once it comes from `Env`, `Cx` has to carry each
   node's compiled **arrival latency** so the node reads the transport at its
@@ -293,7 +289,7 @@ the interpreter.
   earlier, reaching before the block through the executor's
   `TransportHistory`; see ["Arrival-aligned transport
   landed"](#arrival-aligned-transport-landed).)
-- **Executor, parallel** (phase 2): per-task `AtomicU32` activation counters,
+- **Executor, parallel**: per-task `AtomicU32` activation counters,
   128-byte padded, **self-reset after run** (supernova — no O(n) reset);
   callback thread is worker 0; first ready successor runs inline, the rest go
   to a per-worker LIFO deque with FIFO stealing; bounded wakeups (Ardour
@@ -313,7 +309,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 |---|---|---|
 | **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
 | **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
-| **The audio-thread marker on `Drop`**: the executor runs under `RtScope::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `RtScope::check_outside` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under Phase 6.) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
+| **The audio-thread marker on `Drop`**: the executor runs under `RtScope::enter`, and what it hands back (units, crossfades, commits, a unit's param state) calls `RtScope::check_outside` in its `Drop`, so a free on the audio thread panics in debug. (Planned as an owning box, `Retire<T>`; it shipped, but nothing in production held one, since each hand-off type carries the check in its own `Drop`, and it was deleted; see "SmallVec removed" under "Go fast".) | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; the `Drop` check does it for hand-offs |
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
@@ -385,7 +381,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events (linear) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments landed") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
-| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (item 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (item 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under "Flip the adapter"): 64-frame resolution, as through `Net`, until it is ported to `Env::transport_at` |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -396,11 +392,11 @@ means:
   audio-rate parameter ports.
 - **Untimed control-thread commands** land at the next block boundary, and
   are now spelled that way: `At::NextBlock`. **The timestamped command queue
-  exists** (Phase 2, done): `Editor::schedule(At, EventIn, EventKind)`
+  exists**: `Editor::schedule(At, EventIn, EventKind)`
   delivers an event or a `ParamRamp` into a node's event input on its exact
-  frame. **Transport commands take the same `At`** (Phase 2b, done):
+  frame. **Transport commands take the same `At`**:
   `MotionFsm::schedule(At, TransportCommand)` for play, stop, seek, tempo
-  and loop (see item 3). Clip launch is Phase 3.
+  and loop (see item 3).
 - **Feedback edges** delay by the delay their edge declares, which must be at
   least one `MaxBlock`, as in every DAW. Sample-level feedback belongs inside
   a node.
@@ -410,7 +406,7 @@ offsets; the contract suite does that. What types can do is make the
 sample-accurate path the only one that compiles for timing, and force every
 place that loses precision to be written out explicitly:
 
-1. **`Offset(u32)` vs `Frame(u64)` (Phase 2) — done.** An `Offset`
+1. **`Offset(u32)` vs `Frame(u64)` — done.** An `Offset`
    (`tutti-graph`) is valid only within its block and is created checked
    against the block length. A `Frame` (`tutti-types`, beside `Samples`) is
    an absolute timeline position, with its own algebra: `Frame + Samples`,
@@ -421,13 +417,13 @@ place that loses precision to be written out explicitly:
    (the off-by-a-block bug) does not compile — a compile_fail doctest on
    `Offset` pins it. Events, `SortedEvents`, `EventWriter`, the reference
    interpreter and the executor carry `Offset`; `Env::frame` is a `Frame`.
-2. **Timing precision in the parameter's type (Phase 3).** `Smoothed<U>`
+2. **Timing precision in the parameter's type.** `Smoothed<U>`
    (block-rate, ramped: for a fader someone drags) vs `SampleAccurate<U>`
    (read as per-sample values for the block, built from `ParamRamp` events or
    an audio-rate port). `ParamKey<U, PerSample>` carries the rate, and a
    `ParamRamp` can only be built from a `PerSample` key, so automating a
    block-rate knob is a compile error.
-3. **Commands must say when (Phase 2) — done, for the graph and the transport.** Control-thread
+3. **Commands must say when — done, for the graph and the transport.** Control-thread
    commands take `At::{Frame(Frame), Beat(Beat), NextBlock}` (`tutti-types`,
    so the engine's transport commands share it), with no untimed overload.
    `NextBlock` stays available, but it is a visible, greppable choice.
@@ -465,7 +461,7 @@ place that loses precision to be written out explicitly:
    playhead exact wherever the true beat is representable, and the
    tolerance is now the engine-wide rule, `FRAME_TOLERANCE`.)
 
-   **Transport commands (Phase 2b) — done.** `MotionFsm::schedule(At,
+   **Transport commands — done.** `MotionFsm::schedule(At,
    TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`), a
    tempo or a loop change. No untimed overload: the old `try_send` and
    settings stores still work and mean `At::NextBlock`. The queue is a
@@ -555,17 +551,16 @@ place that loses precision to be written out explicitly:
      left every receiver one tick behind; its test pinned the skip and now
      pins the spec. In continuing blocks a tick on a block boundary is sent
      once, on the next block's first frame, instead of twice or never.
-4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
+4. **`io.sub_blocks()` — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.
-5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` (Phase 2) — done.**
+5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` — done.**
    Nodes declare their resolution (new nodes `Sample`; `Legacy`, which
    receives no events, `Block`; SoundFont will be `Frames(8)`). An event edge
    marked with `GraphSpec::require_resolution` into a node that cannot honour
    it is `CompileError::ResolutionTooCoarse`; unmarked edges never are, so
-   the `ParamRamp` edge is the one to mark. The contract suite (Phase 3,
-   done) checks each node against what it declared. **Decision (PR 5
-   review): a `Frames(n)` node honours an event when its response lands
+   the `ParamRamp` edge is the one to mark. The contract suite checks each
+   node against what it declared. **Decision: a `Frames(n)` node honours an event when its response lands
    within `n - 1` frames of the exact frame, in either direction**, with no
    grid origin assumed (a node chunking on its own cursor, as rustysynth
    does, passes whatever its phase against the blocks); `Block` means
@@ -649,7 +644,7 @@ place that loses precision to be written out explicitly:
      accumulation fails them, as does dropping the origin in either
      graph-side walker.
 
-**Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
+**Re-prepare — done.** `Editor::reprepare(Prepare)` is a full
 recompile with every unit re-prepared on the control thread, in two commits
 (units checked out, then sent back re-prepared with a plan compiled against
 their new shapes). A sample-rate change resets time-based state (PDC and
@@ -664,7 +659,7 @@ shapes no longer compile), the editor is poisoned: the executor stays
 suspended and renders silence forever without panicking, every later call
 returns `CommitError::Poisoned`, and recovery is a new editor/executor pair.
 
-**Proof (Phase 3, PR 5) — done.** For every row and every path, an
+**Proof — done.** For every row and every path, an
 excitation at frame `F` produces its response at exactly
 `F + arrival + latency`, where `arrival` is the node's compiled arrival and
 `latency` the latency it *declares*: so a node whose DSP drifts from its
@@ -713,7 +708,7 @@ that the running plan holds the edit.
   to 8, one declaring `Frames(8)` but 9 frames late, a mispinned latency,
   an audio row asked for an event path. A fan-in tie at equal offsets goes
   by source order.
-- **Deferred to Phase 4.** The polysynth, the SoundFont player and plugin
+- **Deferred to the native ports.** The polysynth, the SoundFont player and plugin
   instruments take MIDI through a mailbox, out of band: their events are
   neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
   calls a unit in 64-frame chunks, and a mailbox offset is relative to
@@ -723,7 +718,7 @@ that the running plan holds the edit.
   ported natively; a native port adds its row with the same harness. The
   sampler's clip readers are in the same position for time rather than
   events: they poll a timeline once per 64-frame call (a graph holding
-  them renders chunk-major, Phase 3), so a clip lands on its chunk, not its frame,
+  them renders chunk-major), so a clip lands on its chunk, not its frame,
   until they read `Env::transport_at`.
 
 ### SIMD and DOD, concretely
@@ -743,9 +738,9 @@ that the running plan holds the edit.
 
 ## Migration
 
-Each phase ships green and is reversible up to phase 4.
+Each step ships green and is reversible until the nodes are ported natively.
 
-### Phase 0 — shrink the surface (no behaviour change)
+### Shrink the surface (no behaviour change)
 
 Status as of 2026-09-25: **done**, with two items deliberately narrower than
 planned (the trait methods, see below). What each item became:
@@ -763,12 +758,12 @@ planned (the trait methods, see below). What each item became:
   no caller outside the fork and left the trait; they are
   `fundsp_tutti::audiounit::AudioUnitExt`, blanket-implemented for the fork's
   own tests and examples. `footprint` is now defaulted (`size_of_val`), since
-  only `display` and tests read it; the existing overrides go in Phase 4.
+  only `display` and tests read it; the existing overrides go with the native ports.
   **`ping` and `set_hash` stay**: the survey's "no callers" missed a dynamic
   one. `Net::determine_order` calls `ping` through `Box<dyn AudioUnit>` on
   every reorder, and that is how an `An<X>` generator held in a `Net` gets
   its seed via `set_hash`. No engine node overrides either, so they are inert
-  for the engine; they go with `Net` in Phase 5.
+  for the engine; they go with `Net`.
 - Rehome what is really used from the fork:
   - **Done** — `Wave`, `WaveAsset`, `WaveMetadata`, `WaveError`, `read.rs`'s
     decode, `FileIn` (`stream.rs`) and tutti-core's `codec.rs` →
@@ -789,15 +784,15 @@ planned (the trait methods, see below). What each item became:
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
   - **Done** — `real_fft`/`inverse_fft`: the sampler's vocoder calls
     `microfft` directly (`stretch/fft.rs`).
-  - **Done** — `Fade` is `CrossfadeCurve`, now `tutti-graph`'s (Phase 3
-    PR 3), re-exported by `tutti-core`, whose `net_fade` converts it for
-    `Net::crossfade` until Phase 5.
+  - **Done** — `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,
+    re-exported by `tutti-core` (whose `net_fade` converted it for
+    `Net::crossfade` until `Net` went).
 - **Done** — doc drift: the `LiveGraph` docs
   (`bevy-tutti/src/graph/topology.rs`), `tutti-core/src/topology.rs`'s "what
   this does not do", and the "27 `node_as` sites" count in `tutti-core/src/lib.rs`
   (now named by role, not counted), plus neighbouring post-0b drift.
 
-### Phase 0b — re-exports that tutti already does better
+### Re-exports that tutti already does better
 
 `tutti_core` still re-exports fundsp names where tutti has its own, better
 version, and the umbrellas widen that: `tutti` forwards the whole `dsp` module
@@ -830,9 +825,9 @@ or example.
 | `DEFAULT_SAMPLE_RATE: SampleRate` (fundsp `lib.rs:73`) **and** `tutti_node::DEFAULT_SR: f64` | `SampleRate` | keep one `SampleRate::DEFAULT` in `tutti-types`; delete both constants (34 prod sites in tutti-nodes) |
 | `F32x`, exported by `tutti_core::dsp` **and** `tutti_node` | none needed | test-only consumer (automation lane); dropped with the planar layout |
 | `BufferArray<U1/U2/U6>` (typenum widths) | `BufferVec` (runtime `ChannelLayout`) | 53 test sites + `engine.rs` scratch; switch to `BufferVec`, drop typenum `U*` |
-| `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`). **Done** (Phase 3 PR 3) |
-| `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until the Phase 5 deletion |
-| `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel in Phase 3 when params go through `Controls` |
+| `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`). **Done** |
+| `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until `Net` is deleted |
+| `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel when params go through `Controls` |
 | `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` |
 
 **No tutti equivalent yet.** These must be written or rehomed rather than
@@ -851,16 +846,16 @@ dropped:
   (`sink`). Add a `tutti-nodes::testing` module (`Const`, `Sine`, `Through<N>`,
   `Sink<N>`), with widths taken from `ChannelLayout`.
 - **`Wave`, `FileIn`, `WaveAsset`, `WaveMetadata`, `WaveError`**: rehomed
-  to `tutti-io` in Phase 0 (see there). The sampler uses `Wave` only as a
+  to `tutti-io` when the surface shrank (see there). The sampler uses `Wave` only as a
   resident buffer (`new`/`zero`/`from_samples`/`at`/`load`/`probe_metadata`),
   so the moved `Wave` is that planar buffer plus the symphonia decode, not the
   855-line original.
 
-After 0b, `tutti_core::dsp` holds only `Net`, `NodeId`, `Source` and the
+After this, `tutti_core::dsp` holds only `Net`, `NodeId`, `Source` and the
 combinators the polysynth still needs until its rewrite. Both umbrellas stop
 forwarding fundsp names.
 
-### Phase 1 — `tutti-graph`: compiler + reference interpreter
+### `tutti-graph`: compiler + reference interpreter
 
 New crate below `tutti-core`, depending on `tutti-types` + `tutti-node`.
 Topology extensions, the new `Node` trait, `compile`, `Plan`, `Delta`, the
@@ -869,16 +864,16 @@ A `Legacy<U: AudioUnit>` adapter implements `Node` so all 43 existing nodes run
 unmodified (one box per node is acceptable *here* because nothing downcasts
 through the graph any more).
 
-### Phase 2 — runtime behind the engine
+### Runtime behind the engine
 
 `UnitStore`, delta delivery, serial executor, PDC-as-pass, crossfade,
 silence. `Engine` takes the new runtime instead of `NetBackend`
 (`engine.rs:52`). Benchmark against `docs/benchmarks.md`'s graph-render table
 before flipping anything.
 
-**Status (Phase 2b, 2026-09-25): `Engine` renders an `Executor`.**
-(Superseded by Phase 3 PR 15: the `Net` backend is gone, and `with_graph`
-is `Engine::new`. The rest of this paragraph is the record of 2b.)
+**`Engine` renders an `Executor`** (2026-09-25). (Superseded: the `Net`
+backend is gone, and `with_graph` is `Engine::new`. The rest of this
+paragraph is the record of that step.)
 `Engine::with_graph(&Transport, &mut Editor, Executor) -> Result` sits beside
 `Engine::new(MotionFsm, NetBackend)`; the backend is an enum matched once per block, so the RT path
 stays monomorphic and allocation-free (`tests/rt_no_alloc_engine.rs`). The
@@ -1032,25 +1027,25 @@ what it costs:
   constant is not constant);
 - an exception to the whole-block promise the executor documents.
 
-Revisit it with the parallel executor in Phase 6. There, cache-sized
-passes pay back differently.
+Revisit it with the parallel executor. There, cache-sized passes pay back
+differently.
 
-### Phase 3 — flip the adapter
+### Flip the adapter
 
-**Status: done** (2026-09-26). Every PR in the plan below has landed; the
-last, PR 15, removed the engine's `Net` backend ("PR 15 landed"). What of
-`Net` is left is a graph container, not a runtime, and goes with fundsp in
-Phase 5.
+**Status: done** (2026-09-26). Everything in the plan below has landed; the
+last step removed the engine's `Net` backend ("tutti-core's `Engine`
+renders only the native graph"). What of `Net` was left was a graph container, not a
+runtime, and went with fundsp.
 
 - Clip launch as a timestamped transport command (`At`), with the engine's
-  other transport commands (deferred from Phase 2b).
+  other transport commands.
 
 - `bevy-tutti`: `LiveGraph` diff emits a `Delta` via `compile`; delete
   `topology::apply` port-by-port writes, the `disagreements` shadow, the
   `rebound` exception, `compensate_graph`'s re-minting and the
   `PdcDelay`/`PDC_DELAY_ID` exclusions, `commit_output_arity_change` pinning.
 - `node_as*` sites → `Controls` returned at insert (MIDI endpoint target,
-  modulation target/driver, plugin bind/latency). **Done on `Net` (PR 9):**
+  modulation target/driver, plugin bind/latency). **Done on `Net`:**
   every insertion path captures `MidiTarget` / `ModParamsHandle` /
   `PluginShadow` from the owned unit (`bevy_tutti::graph::capture`), readers
   never touch the graph, and `tests/no_graph_downcasts.rs` keeps it that way.
@@ -1068,17 +1063,17 @@ Phase 5.
 > publishing, the modulation loop, plugin hosting and export) into
 > `tutti-session`, which both umbrellas use. `bevy-tutti` keeps the ECS
 > glue: the declarations, the reconcile sets and the schedule, which runs
-> the session's `PHASES` in `SessionPhaseSystems` (doc 015 PR 7). The graph
+> the session's `PHASES` in `SessionPhaseSystems`. The graph
 > contract is unchanged.
 
-#### Phase 3 PR plan (scoped 2026-09-25)
+#### Closing the adapter's gaps (scoped 2026-09-25)
 
-Seven gaps have to close before the flip. Each is closed by the PR in brackets:
+Seven gaps had to close before the flip:
 
 1. **Silence skip.** It starves `Legacy` sources that are fed out-of-band
    (SoundFont, PolySynth, VoicePool, plugin instruments, mic, a base-0
    `AtomicSourceNode`): a silent block parks them for good. Legacy must report
-   `Modified` by default and opt in to skipping [PR 1]. **Closed by PR 1:**
+   `Modified` by default and opt in to skipping. **Closed:**
    `Legacy` returns `Modified` unless built with `Legacy::pure` (or
    `assume_pure`), which keeps the scan, the masks and the skip. A default
    `Legacy` does not scan for downstream masks either: the contract has no
@@ -1089,7 +1084,7 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    instrument with a sidechain) was not. The executor now also never parks a
    node with no outputs at all (a sink runs for its side effects).
 2. **No `Net::set(Setting)` path.** Some `set` impls write plain fields (the
-   sampler voice's `play.gain`) [PR 1]. **Closed by PR 1:**
+   sampler voice's `play.gain`). **Closed:**
    `Legacy::controlled(unit)` returns the node and `LegacyControls<T>`: a
    64-deep SPSC ring of `Setting`s drained into `AudioUnit::set` at the start
    of each call, and a never-processed shadow (`Arc<Mutex<T>>`) that every
@@ -1102,10 +1097,10 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    ahead of anything newer (`Delivery::Held`); nothing is dropped. The
    editor passed to `controlled` flushes held settings on every `collect`,
    so a burst that goes quiet is still delivered.
-3. ~~**No replace-with-fade** for `crossfade_audio_node`~~ [PR 3]. **Closed**:
+3. ~~**No replace-with-fade** for `crossfade_audio_node`~~. **Closed**:
    `Editor::replace`, below.
-4. **No runtime latency change** for a plugin's latency atomic [PR 1].
-   **Closed by PR 1:** `Editor::set_latency(key, Latency)` updates the spec
+4. **No runtime latency change** for a plugin's latency atomic.
+   **Closed:** `Editor::set_latency(key, Latency)` updates the spec
    and the shape; the next commit moves PDC without touching the unit. It is
    the authority until the next re-prepare, which re-probes the unit (a frame
    count is wrong at a new rate) or a replace re-reads the new unit's shape.
@@ -1113,7 +1108,7 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    clamped. The reference interpreter reads latency from the spec, as the
    compiler does.
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
-   hosts read its `BEAT_PORTS` [PR 6]. **Closed:** `EnvClock` (tutti-core,
+   hosts read its `BEAT_PORTS`. **Closed:** `EnvClock` (tutti-core,
    beside `TransportClock`) is a native `Node` that emits the same
    `BEAT_PORTS` samples from each block's `Env`: per segment, the host's
    beat stepped frame by frame with the clock's own arithmetic
@@ -1133,8 +1128,8 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    commands, so a start or stop inside a block gates the click from the
    block's first frame (a start can click on the held beat before its
    frame). The beat itself is sample-accurate; the gate should read
-   `Env::transport_at` when `ClickNode` is ported natively (Phase 4).
-6. **No `Fork`** for export [PR 2]. **Closed by PR 2:**
+   `Env::transport_at` when `ClickNode` is ported natively.
+6. **No `Fork`** for export. **Closed:**
    `Editor::fork(ForkTarget::{Master, Node(key)}, ForkMode::{Live,
    Offline(&dyn Any)}, Prepare)` returns a new, installed editor/executor
    pair that shares no state with the live one. The editor cannot clone a
@@ -1152,7 +1147,7 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    `DiskVoice` keeps a second `Arc<RtState>` that a fork would seek the live
    butler through, so it said `false` (and a `VoiceNode` answers for its
    voice) until its `isolate` cut that too and its fork learned to read the
-   file itself ("Disk voices export", after PR 12); `VoicePool::isolate`
+   file itself ("Disk voices export"); `VoicePool::isolate`
    left its beat cursor shared (now dropped, and rebuilt on the render's
    transport by `rebind_offline`);
    `EqBandNode` never forwarded `isolate` to its SVF (now it does). One
@@ -1188,14 +1183,15 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    shared `Arc` cell after construction (the shadow was isolated then, and
    since every unit's `isolate` detaches its control cells, that now
    includes a UI handle's `Param` writes: drive a `controlled` node through
-   its settings ring); that is the Phase 4 port's to close with native
+   its settings ring); that is the native port's to close with native
    `ForkSource`s. Every
    forkable `Legacy` keeps a second deep copy of its unit for its lifetime
    (the shadow or the insert-time clone): negligible for most units,
-   megabytes for a convolver, which copies its IR spectra (Phase 4 moves
-   them to `Arc`).
+   megabytes for a convolver, which copies its IR spectra (the native
+   port moves them to `Arc`).
 
-   Two things for PR 12 (both done there, see "PR 12 landed").
+   Two things for the export fork (both done, see "bevy-tutti exports
+   through `Fork`").
    **`ForkTarget::Master` isolates and resets**,
    unlike today's master export, which is a plain `Net::clone` that keeps
    live bindings: through a fork, disk voices are severed from their live
@@ -1204,13 +1200,13 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    master export renders what the graph is *driven* to play from the
    offline transport, not a copy of what is sounding now. And a graph
    holding a plugin forks only if the plugin was inserted as a
-   `PluginClient` (item 7): PR 12 must insert plugins through
+   `PluginClient` (item 7): export must insert plugins through
    `IntoNode for PluginClient`, not as a boxed `AudioUnit` in a `Legacy`.
-7. ~~**A plugin cannot be forked**~~ [PR 16, before PR 12]. Its clones
+7. ~~**A plugin cannot be forked**~~. Its clones
    share the one plugin process (or in-process instance), so it says
    `forkable() == false` and export of a graph containing one is refused
    explicitly rather than driving the live plugin from the worker. The fix
-   is a fork by **state transfer**. **Closed by PR 16** for out-of-process
+   is a fork by **state transfer**. **Closed** for out-of-process
    plugins (`tutti-plugin/src/host/node/fork.rs`):
    `PluginClient::fork_instance(ForkMode)` asks the live instance for its
    saved state (the one control call it gets; it stalls the live bridge
@@ -1248,10 +1244,10 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    program's parameters, needed their own design and tests. (Since landed:
    [below](#in-process-vst2-forks-by-state-transfer).)
 
-   Two rules from its review. (The first is history: doc 014 PR 5 deleted
+   Two rules from its review. (The first is history: doc 014 deleted
    `PluginParamTarget` and the router, and modulation now reaches a fork,
    as control lanes that are graph nodes and send their value on the
-   fork's first block; 014 §10, §12 "PR 5: landed".) **Modulation does not
+   fork's first block; 014 §10.) **Modulation does not
    reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
    writes every frame; a fork freezes each curve (`Curve::frozen`, a new
@@ -1316,26 +1312,7 @@ nothing to move):
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 
-| PR | Scope | Needs |
-|---|---|---|
-| 1 | tutti-graph Legacy parity: never skip by default, with `Legacy::pure`; `Legacy::controlled` returning a settings ring plus a never-processed shadow; `Editor::set_latency` | #18 |
-| 2 | **Done.** tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
-| 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
-| 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
-| 5 | **Done.** tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks, scheduled `At::Frame`/`At::Beat`; the harness behind a `contract` feature | 4 |
-| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
-| 7 | **Done.** tutti-export `GraphSource` beside `NetSource`; `RenderGraph { Net, Graph }` at every entry point; `RenderGraph::fork` | 2, 4, 6 |
-| 8 | **Done.** tutti-export tests and examples move to `GraphBuilder` | 7 |
-| 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
-| 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
-| 11 | **Done.** bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
-| 12 | **Done.** bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
-| 13 | **Done** (see "PR 13 landed"). bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
-| 14 | **Done** (see "PR 14 landed"). tutti-export: graph-only API | 8, 13 |
-| 15 | **Done** (see "PR 15 landed"). tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
-| 16 | **Done.** tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
-
-**PR 8 landed.** Every tutti-export suite, both examples, the README and
+**Export's tests build graphs.** Every tutti-export suite, both examples, the README and
 the `offline_render` bench build with `GraphBuilder` and render through
 `RenderGraph::Graph`, with every assertion as it was. `Net` stays only where
 the `Net` arm is the subject: `tests/graph_source.rs` (the equivalence
@@ -1345,7 +1322,7 @@ the `Net`-taking `reported_latency` / `reported_tail`. `tutti-spatial` gained
 `vbap_mix_parts` (the mix's owned units plus every edge as data, sources
 included; `param_mod_parts`' shape), and `build_vbap_mix` is now that plus
 `VbapMixParts::insert_into(&mut Net, ..)`, so bevy-tutti keeps its `Net`
-form until PR 13; `tests/vbap_mix_parts.rs` renders the two bit-identical at
+form until it drops `Net`; `tests/vbap_mix_parts.rs` renders the two bit-identical at
 quad, 5.1 and 7.1.4. Byte-comparing `render_export_cases`' 30 files against
 the `Net` build: 29 identical, and the Ogg differs only in its stream serial
 number, which is random per run on either backend. Found on the way:
@@ -1360,15 +1337,15 @@ number, which is random per run on either backend. Found on the way:
   voice measured 768 Hz. `NetSource` never hit it because it advances every
   64 frames. The port prepares that fixture at a 64-frame `MaxBlock`, where
   the clock moves between the voice's calls as a `Net` render's does, and
-  says why. It is not fixed here, and it needs a decision before PR 12 (the
-  export fork prepares at `GRAPH_MAX_BLOCK`) and PR 11 (the live graph
-  engine advances its clock once per block piece, `GraphRender` in
+  says why. It is not fixed here, and it needs a decision before export
+  forks (the export fork prepares at `GRAPH_MAX_BLOCK`) and before the live
+  graph runs (the live graph engine advances its clock once per block piece, `GraphRender` in
   `engine.rs`, so a `Legacy` sampler there likely has the same shape of
   fault; not measured here): sub-block `render_graph` at 64 frames
   for a moving clock (tried: correct, but it breaks
   `env_clock.rs`'s `an_offline_render_sees_the_live_engine_transport`, which
   pins offline and live blocks one to one), prepare graphs holding clip
-  readers at 64, or port the readers to `Env::transport_at` (Phase 4).
+  readers at 64, or port the readers to `Env::transport_at`.
   **Since fixed** (the next paragraph): the fixture is back at
   `GRAPH_MAX_BLOCK`, and the live engine did have the same fault.
 - **Widening a graph for export** (the `Net`'s `set_output_arity`, which
@@ -1382,8 +1359,8 @@ number, which is random per run on either backend. Found on the way:
   this change.
 
 **A `Legacy` clip reader reads its timeline per 64-frame chunk (decided
-2026-09-25, fixed before PRs 11 and 12).** Found porting export's tests (PR
-8): a sampler voice (`VoicePool`, `MemorySource`, `DiskVoice`, and so every
+2026-09-25, fixed before the native backend and the export fork).** Found
+porting export's tests: a sampler voice (`VoicePool`, `MemorySource`, `DiskVoice`, and so every
 clip reader) polls its `Arc<dyn Timeline>` out of band on every
 `AudioUnit::process` call and takes the answer as that call's first frame.
 `Legacy` makes that call per 64-frame chunk, but the graph backend moved
@@ -1395,7 +1372,7 @@ replayed one 64-frame stretch through the block: at 1024 frames a dry
 440 Hz voice measured 768 Hz. The `Net` never hit it because it renders in
 64-frame chunks and its clock moves between them.
 
-**Decision: parity with `Net` for Phase 3, by rendering chunk-major —
+**Decision: parity with `Net` while the adapter flips, by rendering chunk-major —
 the `Legacy` compatibility mode.** While the compiled plan holds any
 `Legacy` unit, the renderer drives the executor in blocks of at most
 `LEGACY_CHUNK` (64) frames **across every node**, moving its clock (and
@@ -1439,10 +1416,10 @@ again. A `BeatCursor` shared by a voice's clones, one clip source feeding
 two synths, or both halves of a crossfade then saw `BeatWindowSync::Rewound`
 every block, which refires a clip's notes and flushes a vocoder. The
 control-thread playhead went backwards mid-block. And it is a global the
-Phase 6 parallel executor could not run. `Net` never had these problems
+parallel executor could not run. `Net` never had these problems
 because it runs 64-frame chunks across all nodes, so that is what the graph
 does while it hosts units written for `Net`. Also rejected: preparing graphs
-that hold clip readers at a 64-frame `MaxBlock` (the PR 8 workaround: a
+that hold clip readers at a 64-frame `MaxBlock` (the export tests' first workaround: a
 per-graph rule every host must know), and a thread-local "current chunk"
 that `Transport::beat` would consult (a `Timeline` whose answer depends on
 the asking thread).
@@ -1460,17 +1437,17 @@ chunk live. Against `Net` on the same work at 512 frames (14.6 µs, 217 µs,
 113 µs), chunk-major is 13–15% slower; whole-block it was 5% slower.
 A native-only graph pays nothing.
 
-**It disappears as nodes port natively (Phase 4).** Each port removes a
+**It disappears as nodes port natively.** Each port removes a
 `Legacy` unit; the last one removed turns the mode off for that graph,
 at the next block, with no configuration. Clip readers are the ones that
 need it for correctness (they read `Env::transport_at` once ported); the
-rest merely pay for it while they share a graph with one. **Phase 6's
+rest merely pay for it while they share a graph with one. **The
 parallel executor runs chunk-major across workers while a `Legacy` unit is
 present**: every worker finishes chunk *k* before any starts chunk *k + 1*,
 and the clock moves between, which is what keeps a timeline shared between
 nodes on different workers monotonic.
 
-What it does not change, still Phase 4's: a `Legacy` unit reads the
+What it does not change, still the native port's: a `Legacy` unit reads the
 transport **once per 64-frame call**, so a cut inside a chunk reaches it at
 the chunk's start (a scheduled locate at frame 10 037 plays the target from
 9 984; `Net`, which renders pieces split at the cut, plays it from 10 037;
@@ -1498,7 +1475,7 @@ Pinned by:
   alone renders, bit for bit, and the `Net`'s two).
 - `tutti-export/tests/graph_source.rs`: a placed voice and a forked
   `MemorySource` bit-identical to the `Net` render at `GRAPH_MAX_BLOCK`;
-  `sampler_to_export.rs`'s five pitch and stretch cases, which PR 8 had
+  `sampler_to_export.rs`'s five pitch and stretch cases, which had been
   prepared at a 64-frame `MaxBlock`, back at `GRAPH_MAX_BLOCK`.
 - `env_clock.rs`'s `an_offline_render_sees_the_live_engine_transport`:
   offline and live hand the graph the same `Env` per block, every block at
@@ -1511,7 +1488,7 @@ Mutation, run against every one of those: the renderer rendering whole
 blocks with a `Legacy` unit present (`has_legacy` ignored) fails each.
 
 
-**PR 7 landed.** Export's entry points (`render_to_file`,
+**Export renders a graph.** Export's entry points (`render_to_file`,
 `render_to_buffers`, `render_normalized_to_file`) take
 `impl Into<RenderGraph>`, an enum of a `Net` (existing callers convert
 unchanged) and an installed `Editor`/`Executor` pair. `GraphSource` renders
@@ -1541,20 +1518,16 @@ Found on the way:
   non-multiple of 64 (1000) differ from `Net`. That is the test that guards
   `GRAPH_MAX_BLOCK`.
 - **A fork is compared against a reset `Net`.** Through `Editor::fork` every
-  unit is reset (see PR 12 above), and a reset panner starts on its
+  unit is reset (see item 6 above), and a reset panner starts on its
   commanded bearing where a fresh one glides there from front-centre. Today's
   export resets its cloned `Net` too, so that is the like-for-like pair.
 - **`reported_latency(&mut Net)` answers at the net's current rate**, which
   is 44.1 kHz for a net that was never rendered: a 5 ms lookahead limiter
   reports 221 frames, not the 240 it trims at 48 kHz. The graph answers at
   the rate it was prepared at and cannot be asked early. A `Net` caller must
-  re-rate first; PR 14 removes the trap with the `Net` arm.
+  re-rate first; dropping the `Net` arm removes the trap.
 
-For PR 8, `tests/graph_source.rs` is the harness to port onto: each fixture
-there is already written twice (`Net`, `GraphBuilder`), and its quad VBAP
-fixture is `build_vbap_mix`'s graph spelled out on the builder.
-
-**PR 4 landed.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
+**`GraphBuilder`.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
 `push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,
 `connect_output`, `set_source`, `set_output`, `pass_through`, `disconnect`,
 `pipe` for `pipe_all`, `pipe_input`, `pipe_output`, `chain`/`chain_unit`)
@@ -1563,7 +1536,7 @@ holds a `GraphSpec` and the units, nothing else, and `build(Prepare)` goes
 through `Editor::insert` + `commit`, so it is not a second graph model.
 `Renderer` drives the executor in blocks with a supplied transport and
 returns planar or interleaved output. `tests/legacy.rs` builds through it.
-Two notes for PR 8:
+Two notes for porting onto it:
 
 - The fan-out rules are `Net`'s, checked against `Net` itself over a grid
   of widths (`tests/builder.rs`): port `c` reads `c % width`, so stereo into
@@ -1573,7 +1546,7 @@ Two notes for PR 8:
   `surround_export` fixtures need a builder-side form of it before they
   can port.
 
-**PR 3 landed: `Editor::replace(key, node, Fade { duration, curve })`.**
+**`Editor::replace(key, node, Fade { duration, curve })`.**
 The rules (`tutti-graph/src/fade.rs`), each pinned by a test in
 `tests/replace.rs` and driven against the reference by the differential
 suite's `crossfades_are_bit_identical`:
@@ -1611,7 +1584,7 @@ suite's `crossfades_are_bit_identical`:
   `verify_fades`, checks every fade a delta carries against both plans and
   runs on every `Editor::package`.
 
-**PR 10 landed.** `AudioGraphRes`'s field is private (a `compile_fail`
+**`AudioGraphRes` is opaque.** Its field is private (a `compile_fail`
 doctest on the type keeps it so), and bevy-tutti's src, tests, examples and
 README reach the graph only through its methods. They are named in graph terms
 and take an `AudioNode` and a `GraphSource` (`Node(AudioNode, port)`,
@@ -1624,7 +1597,8 @@ and take an `AudioNode` and a `GraphSource` (`Node(AudioNode, port)`,
 Crate-private: `commit`, `widen_outputs`, `compensate`, the two PDC-delay
 queries `topology::disagreements` needs, `take_backend` for the engine builder,
 and `export_master`/`export_node`, the only two that still hand out a `Net`
-(PR 12 replaces them with `Fork`). What PR 11 has to answer behind them:
+(the export fork replaces them). What the native backend has to answer
+behind them:
 
 - **`AudioNode` still wraps a `NodeId`.** The native backend can key on
   `NodeKey(node.0.value())` and mint handles with `NodeId::new()`, which keeps
@@ -1642,9 +1616,9 @@ and `export_master`/`export_node`, the only two that still hand out a `Net`
 - **`render_frame` renders the control side**, as `Net::tick` did. A native
   graph has no control-side copy, so it drives the executor instead.
 
-For PR 11: `crossfade_audio_node` maps to
+For the native backend: `crossfade_audio_node` maps to
 `Editor::replace(key, unit, Fade::seconds(Seconds(0.005), rate, CrossfadeCurve::EqualAmplitude))`.
-**`set_latency` × fades (decided across PRs 1 and 3):** a runtime latency
+**`set_latency` × fades:** a runtime latency
 change at a key that is mid-fade, running or queued, is a hard edit for the
 fade. The next commit carries the key in `Delta::cuts`; the executor retires
 every unit there but the newest through the fade-return ring, and `collect`
@@ -1653,7 +1627,7 @@ swap. The reference derives the same cut from a spec latency change with no
 new generation (`tests/replace.rs`, `set_latency_cuts_a_fade` and
 `the_reference_cuts_a_fade_on_a_latency_change`).
 
-**PR 11 landed.** `AudioGraphRes` has two runtimes behind its method
+**A native backend in `bevy-tutti`.** `AudioGraphRes` has two runtimes behind its method
 surface, chosen once — `TuttiPlugin::graph_backend` for an engine,
 `headless_with` / `unattached_with` without a device — as
 `GraphBackend::{Net, Native}`, `Net` the default. The native arm
@@ -1664,7 +1638,7 @@ a test takes it, its `Executor`. How each method maps:
   wrapper, since `controlled` wants a sized `Clone` unit), never `pure`: an
   `AudioUnit` says nothing about whether it is a function of its inputs, and
   a wrong `pure` parks a SoundFont for good. Keyed `NodeKey(node.0.value())`,
-  handles minted with `NodeId::new()`, as PR 10 proposed.
+  handles minted with `NodeId::new()`.
 - **Edges and outputs** are written into `editor.spec_mut()`; silence is no
   edge.
 - **`set_param`** goes through the node's `LegacyControls` (ring + shadow).
@@ -1694,7 +1668,7 @@ a test takes it, its `Executor`. How each method maps:
   and every unit ran 8.8% fast. The graph is now built at the device rate on
   both backends.
 
-**The PR 10 leftovers.** `unattached`: on `Native` a `set_param` lands on the
+**What opacity left open.** `unattached`: on `Native` a `set_param` lands on the
 next rendered block, on every graph — there is no control-side copy for it
 to land on at once. The tests that read a unit's state after a write render a
 frame first (`graph_reconcile`'s `audio_param`), and the one that pokes the
@@ -1705,11 +1679,11 @@ is taken. `take_audio_side` returns an `AudioSide` that renders either
 backend. `a_range_edit_reaches_a_live_clamp` renders the chain instead of
 inspecting it: the clamp lives in `ClampBounds`, a cell a native shadow does
 not share once `isolate` snapshots cells (#29). **Export stays `Net`-only**:
-on `Native` it reports `InvalidConfig` naming the backend and PR 12 (no `Net`
+on `Native` it reports `InvalidConfig` naming the backend (no `Net`
 mirror is kept: a second graph to keep in step is the thing this migration
-removes). **Superseded by PR 12**, below: `Native` exports fork.
+removes). **Superseded**, below: `Native` exports fork.
 
-**Control writes and forks** (for PR 12). A fork clones each node's shadow,
+**Control writes and forks.** A fork clones each node's shadow,
 so a by-value write that bypasses the settings ring moves the live unit and
 leaves a fork (an export) at the value the unit was built with. Every
 `bevy-tutti` path was audited: `AudioParam` and `AudioGraphRes::set_param` go
@@ -1723,7 +1697,7 @@ which `isolate` severs from a copy, so `VoiceNodeHandle` records each
 placement it queues in a control-thread cell the node shares with its
 clones, and `isolate` applies the latest to the copy (review of #32; the
 queue and the record are now one `RtPublish` cell the fork reads, see
-"Sampler real-time fixes" under Phase 6). A unit
+"Sampler real-time fixes" under "Go fast"). A unit
 test forks the native graph and checks each path (`graph::native::tests`);
 the placement is pinned in `tutti-sampler`'s `voice_node_commands`. Known
 export limits, each a cell a `Setting` cannot reach:
@@ -1740,7 +1714,7 @@ export limits, each a cell a `Setting` cannot reach:
 - **Metronome volume and mode** (`MetronomeRes`, `ClickSettings` atomics):
   live-only; a click is not part of an export.
 - **Hosted plugin parameters** go over the plugin's own transport, and a
-  plugin forks by state transfer (PR 16), which reads the live instance.
+  plugin forks by state transfer (item 7), which reads the live instance.
 
 **Where the backends differ** (each stated on `GraphBackend`): the
 `set_param` timing above; `inspect` reads a shadow; `render_frame` needs the
@@ -1771,7 +1745,7 @@ latency re-probe clamps to `MAX_NODE_LATENCY`, as the insert-time probe is
 clamped, since `set_latency` refuses a figure past it and the poll would not
 ask again.
 
-**PR 12 landed: bevy-tutti exports through `Fork`.** On `Native` an
+**bevy-tutti exports through `Fork`.** On `Native` an
 `ExportRequest` renders `Editor::fork` of the live graph, through
 tutti-export's `RenderGraph::fork` (prepared at the render's rate and
 `GRAPH_MAX_BLOCK`) and its `Graph` backend: `ExportSource::Master` is
@@ -1781,7 +1755,7 @@ request's `OfflineTransport` itself — the exact type every `rebind_offline`
 downcasts. `clone_isolated`, `isolate_for_offline` and the `Net` hand-out
 are gone from the native path; `AudioGraphRes::export` is one method that
 dispatches per backend, and the `Net` arm exports as it always did until
-PR 13 deletes it (no mixing: a `Net` graph never forks, a native one never
+it is deleted (no mixing: a `Net` graph never forks, a native one never
 clones). The pieces:
 
 - **The render's time is one value.** `ExportRequest` carried a
@@ -1878,7 +1852,7 @@ clones). The pieces:
   its notes at the export's with nothing to update, and so does a live clip
   after a device-rate change. Pinned at 48 and 96 kHz with the reference
   plugin's new note-gate render mode (`RenderMode::Notes`).
-- **What an export renders, restated from PR 16:** the controls as a
+- **What an export renders, restated from item 7:** the controls as a
   snapshot at the fork; a modulated parameter's authored base and a plugin's
   base plus authored automation, never live modulation (an export has no
   offline modulation driver yet); the plan rendered chunk-major while it
@@ -1886,7 +1860,7 @@ clones). The pieces:
   The metronome is a snapshot too: a forked click is cloned from its shadow,
   taken at insert with the mode it had then (`Off` in a fresh engine), and
   `MetronomeRes` writes only the live node's settings cell — a click is not
-  part of an export (PR 11's "known export limits").
+  part of an export (the native backend's "known export limits").
 
 **The behaviour change, decided.** A native master export isolates and
 resets every node (`ForkTarget::Master`), where the `Net` master export is a
@@ -1903,13 +1877,13 @@ such a unit, and would fail on `Net`'s master path by construction), and its
 click and beat clock follow the **live** transport (measured over `build_on`:
 clicks on frames 1 and 24 001 of the render, the live playhead's beats). A
 `Net` node export of the `TransportClock` starts from beat 0, not from the
-render timeline's start beat — its rebind severs it at its own beat; PR 13
-removes the arm.
+render timeline's start beat — its rebind severs it at its own beat; the
+arm has since been removed.
 
-**Disk voices refused a native export** in PR 12 (`ExportError::NotForkable`,
+**Disk voices refused a native export** at first (`ExportError::NotForkable`,
 by entity and name, when an output reached them): a fork's copy would have
-asked the live butler to seek. Since closed; see "Disk voices export" after
-this PR's notes.
+asked the live butler to seek. Since closed; see "Disk voices export"
+below.
 
 Tests, each mutation run (the mutation is on the test):
 
@@ -2004,7 +1978,7 @@ Recorded for later:
     must not insert a main-thread-only unit. An export still in flight when
     the world is dropped has no `ExportDrops` to send to and drops where it
     is (documented on `ExportInFlight`; exit does not wait for renders). tutti-export gains
-    `RenderGraph::gather` / `RenderGraph::build`. (Design 015 PR 6 moved
+    `RenderGraph::gather` / `RenderGraph::build`. (Design 015 moved
     the gather, the job and the leftovers' channel into `tutti-session`:
     `Session::export`, `ExportJob::run`, `Session::finish_export`;
     `ExportDrops` is gone.)
@@ -2022,8 +1996,7 @@ Recorded for later:
   Their MIDI port is severed by `isolate`, and bevy-tutti's
   `Legacy::controlled` shadow is isolated at insert, so the shadow a fork
   cloned never saw the clip installed on the live port later: a synth
-  instrument exported silent (a blocker for making `Native` the default,
-  PR 13). Each synth now has a fork source of its own, the plugin's shape,
+  instrument exported silent (a blocker for making `Native` the default). Each synth now has a fork source of its own, the plugin's shape,
   without waiting for native nodes:
   - `PolySynth::fork_source` / `SoundFontUnit::fork_source` keep a
     **template** — a clone taken at insert, never processed and *not*
@@ -2132,7 +2105,7 @@ Recorded for later:
   report and delay agree. The probe's other modes are routing oracles, not
   delays, and keep their report so the PDC suites see a latent plugin.
 
-**Disk voices export (after PR 12).** PR 12 first refused a fork holding
+**Disk voices export.** The export fork first refused a fork holding
 a disk voice (`ExportError::NotForkable`): `DiskSource`'s `Clone` shares
 its ring consumer and `isolate` stopped it, but `DiskVoice` kept its own
 `Arc<RtState>`, so a fork's first in-window frame asked the **live** butler
@@ -2140,7 +2113,7 @@ to seek. The `Net` export was no better: a master export's plain clone read
 the live voice's ring from the render thread (popping frames the audio
 thread was waiting on, against the live transport), and a node export
 severed the ring and rendered silence. That refusal blocked making `Native`
-the default (PR 13). Now a forked disk voice plays its file:
+the default. Now a forked disk voice plays its file:
 
 - **Severed whole.** `DiskVoice::isolate` replaces the voice's control cell
   with a private snapshot (`RtState::detached`: speed, direction, gain,
@@ -2244,7 +2217,7 @@ read either way), so there is no pre-filter output to compare.
 
 On `Net`, a node export (`clone_isolated`: isolate, rebind) plays the file
 the same way; a `Net` master export is still a plain clone that reads the
-live ring, and goes with the arm in PR 13.
+live ring, and goes with the arm.
 
 Tests (each mutation run; the mutation is on the test):
 - tutti-sampler `disk_voice::tests`: a severed (or only rebound) copy never
@@ -2538,7 +2511,7 @@ whole file), `disk_voice::tests` (one file frame per output frame; the
 conversion applied once; a varispeed change moves the read; a severed copy
 never touches the live ring; a free-running source follows a relayed seek).
 
-**Phase 3 follow-ups** (recorded, not done here):
+**Follow-ups from flipping the adapter** (recorded, not done here):
 
 - **An engine-driven sampler A/B — done** with the `Legacy` per-chunk
   timeline fix. `AudioSide::render` renders under a stopped transport, so
@@ -2656,8 +2629,8 @@ never touches the live ring; a free-running source follows a relayed seek).
   - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` placed
     events in frames at its build rate) was rebuilt at the new rate:
     `midi::sequence::rebuild` treated a change of `AudioConfig`'s rate as
-    dirty, with the all-notes-off every rebuild sends. **Superseded by PR
-    12:** a clip holds no rate — `MidiUnitIn::poll_unit` is handed the
+    dirty, with the all-notes-off every rebuild sends. **Superseded:** a
+    clip holds no rate — `MidiUnitIn::poll_unit` is handed the
     polling unit's rate every block — so a re-rated unit places its clip at
     the new rate with nothing rebuilt, and the rate-change rebuild (and its
     all-notes-off mid-note) is gone. `midi_sequence.rs`'s
@@ -2672,7 +2645,7 @@ never touches the live ring; a free-running source follows a relayed seek).
     sounding voices; on failure, a rate rustysynth refuses, it keeps the
     old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOut` (`midi-hardware`; connected with
-    `Midi::set_hardware_out` since design 015 PR 5, `UmpOutRes` before): its `JrStream` stamps JR
+    `Midi::set_hardware_out`): its `JrStream` stamps JR
     timestamps and paces JR Clock at the rate it was built with. The host
     constructs it, so the hook cannot see it; `JrStream` has no way to
     re-rate yet (its stamper carries an origin in frames).
@@ -2680,7 +2653,7 @@ never touches the live ring; a free-running source follows a relayed seek).
     tap, a `Recorder`'s WAV header): `AudioConfig` changes on a restart,
     which is the signal to rebuild them.
 
-**PR 13 landed: bevy-tutti runs on the native graph only.**
+**bevy-tutti runs on the native graph only.**
 `AudioGraphRes` holds a `Mutex<NativeGraph>`, nothing else: the `Backend`
 enum and every `Net` arm are gone (about 520 net lines out of `src/`), and
 with them `GraphBackend` itself. **Decided: removed, not kept with one
@@ -2718,12 +2691,12 @@ built what `headless` builds once there is no control-side copy of a node);
   one thing and reads back another is caught where it happens.
 - **`apply`** is kept as the write of declared ports into the editor's
   spec, comparing first so a rebuild that moves nothing leaves the graph
-  clean (no dirty flag, no compile). **Deviation:** the Phase 3 bullet
+  clean (no dirty flag, no compile). **Deviation:** the "Flip the adapter" bullet
   "`LiveGraph` diff emits a `Delta` via `compile`" is not done here. The
   value keys nodes by entity and the spec by `AudioNode` (a node goes in
   before an entity is bound, and nodes with no entity are allowed), and a
   declaration may be partial (below), so the value cannot replace the
-  spec's edges wholesale. Keying the spec by entity is a Phase 4-sized
+  spec's edges wholesale. Keying the spec by entity is a large
   change with no defect behind it.
 - **`rebound`** (`Changed<AudioNode>` bypassing `want == live`) is kept, for
   the same reason: a re-bind to a node of the same shape leaves the value
@@ -2770,8 +2743,8 @@ in the order the adapter's `Net` arm did:
   and reset, rendered by `RenderGraph::Net`).
 
 These oracles are the **narrowest `Net` seam left in bevy-tutti**, test-only;
-they go with tutti-export's `Net` arm (PR 14) and `Engine::new(NetBackend)`
-(PR 15), when each test keeps only its analytic half or is re-pinned against
+they go with tutti-export's `Net` arm and `Engine::new(NetBackend)`,
+when each test keeps only its analytic half or is re-pinned against
 recorded figures. Assertions that were about the adapter's `Net` arm itself
 could not be ported and are dropped, each named where it was: the PDC-switch test's "`Net`'s dry channel reads a spliced delay"
 (its native half stays, `pdc_is_the_compilers`); the engine-export test's
@@ -2821,15 +2794,15 @@ naming the node), recorded in the CHANGELOG's migration table:
 
 (Disk voices export since #43.)
 
-Left for the next PRs, as scoped: `PreparedGraph::graph` is still a
-`&mut RenderGraph` whose `Net` arm the adapter never builds (PR 14 makes it
-graph-only); `AudioNode` still wraps fundsp's `NodeId` (the key's source of
+Left for later, as scoped: `PreparedGraph::graph` is still a
+`&mut RenderGraph` whose `Net` arm the adapter never builds (made
+graph-only below); `AudioNode` still wraps fundsp's `NodeId` (the key's source of
 uniqueness, and harmless). `tests/no_net.rs` keeps `dsp::Net` and
 `NetBackend` out of bevy-tutti's non-test code.
 
-The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
-control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in
-parallel; it has no consumer until Phase 4.
+The plugin typestate moves to the native ports: the shadow gives plugin
+bind a safe control path without it. `ParamKey<U, Rate>` (§6 item 2) can
+land in parallel; it has no consumer until then.
 
 Two things carry over from `Legacy` chunking in 64 frames: a block-oriented
 unit (convolver FFT, vocoder, plugin batcher) can differ from `Net` when
@@ -2837,16 +2810,16 @@ blocks are not multiples of 64, so bit-identity tests use per-sample units or
 64-multiple blocks; and `Net`'s `ping` seeding of generators is lost, which
 affects tests only.
 
-**PR 14 landed: tutti-export renders only the native graph.** The `Net`
+**tutti-export renders only the native graph.** The `Net`
 arm and everything that existed only to render a `Net` are gone: the
 `RenderGraph::Net` variant and `From<Net>`, `NetSource` and `fold_net_frame`
 in `render/driver.rs`, and the free `reported_latency(&mut Net)` /
-`reported_tail(&Net)`. No seam is kept for PR 15: its `Net` fixtures are
+`reported_tail(&Net)`. No seam is kept for the engine's `Net` backend: its `Net` fixtures are
 tutti-core's (`Engine::new(NetBackend)`), and none of them renders through
 tutti-export. Decisions and deviations:
 
-- **`RenderGraph` is a struct, not a one-variant enum**, for PR 13's
-  reason about `GraphBackend`: one variant selects nothing. **Its fields
+- **`RenderGraph` is a struct, not a one-variant enum**, for the
+  adapter's reason about `GraphBackend`: one variant selects nothing. **Its fields
   are private (changed in review)**, so a mismatched editor/executor pair
   is refused at construction rather than first at render:
   `RenderGraph::new(editor, executor) -> Result<Self>` checks
@@ -2862,7 +2835,7 @@ tutti-export. Decisions and deviations:
 - **The entry points take `RenderGraph`, not `impl Into<RenderGraph>`**:
   the conversion existed so a `Net` could be passed unchanged.
 - **`RenderGraph::reported_latency` takes `&self`** (it only reads the
-  plan). The re-rate trap PR 8 found (`reported_latency(&mut Net)` answering
+  plan). The re-rate trap the export tests found (`reported_latency(&mut Net)` answering
   at the net's last rate) goes with the function.
 - **The `tutti` umbrella re-exports `tutti-graph` as `tutti::graph`.** Its
   `headless_export` example and `one_import` test render through the façade
@@ -2895,7 +2868,7 @@ arm:
   `*_are_bit_identical_to_the_net_era` assertions are unchanged.
 
 None had to be re-pinned to recorded values: each Net-vs-graph comparison
-still runs against a `Net` rendered in the test. **Left for PR 15** (they use
+still runs against a `Net` rendered in the test. **Left for the engine** (they use
 tutti-core's `Net`, not tutti-export's): bevy-tutti's `tests/net_parity.rs`
 (`NetEra`, over `Engine::new(NetBackend)`), `engine::build`'s
 `engine_tests` (`net_era`), the two oracles above (`net_render`,
@@ -2905,7 +2878,7 @@ tutti-core's `Net`, not tutti-export's): bevy-tutti's `tests/net_parity.rs`
 `NetSource` / `fold_net_frame` (`tests/frame_exact_entry.rs`,
 `voice/memory_source.rs`); they were left to avoid colliding with #46.
 
-**PR 15 landed: tutti-core's `Engine` renders only the native graph.** The
+**tutti-core's `Engine` renders only the native graph.** The
 `Net` backend is gone from the engine: `Engine::new(MotionFsm, NetBackend)`,
 the `Backend` enum and its `Net` arm (`NetRender`, `follow_rate`),
 `NetPieces`, `render_net` and the root re-export of `NetBackend` (with
@@ -2937,11 +2910,11 @@ store between pieces. Decisions:
 - **`TransportClock` stays**: it is the engine's own clock
   (`GraphRender::clock`, driven by `begin`/`advance`). Its `AudioUnit` half
   (the beat on ports inside a `Net`) now runs only in its own tests and a
-  `Net` a caller builds; it goes with `Net` (Phase 5), and `EnvClock` is the
+  `Net` a caller builds; it goes with `Net`, and `EnvClock` is the
   graph's.
 - **Chunk-major `Legacy` rendering stays.** It exists for `Legacy` units
-  that poll a timeline, not for `Net` parity; it goes with `Legacy` (Phase
-  4), as planned.
+  that poll a timeline, not for `Net` parity; it goes with `Legacy`, as
+  planned.
 - **`net_fade` is removed** (nothing takes fundsp's `Fade` any more). Its
   test had pinned `CrossfadeCurve::EqualAmplitude` to fundsp's `smooth5`,
   and the review found nothing else pinned the law: `fade.rs` checked only
@@ -3059,7 +3032,7 @@ so, and name what does catch it: tutti-sampler's `frame_exact_entry.rs` (a
 clip entering mid-render) and `graph_engine_clock.rs`'s
 `a_voice_plays_in_time_*`, and tutti-core's `legacy_chunk_major.rs`.
 
-**What of `Net` remains, all Phase 5's:** `tutti_core::dsp::{Net, NodeId,
+**What of `Net` remained, all deleted with fundsp:** `tutti_core::dsp::{Net, NodeId,
 Source}` and `topology::compile`; the `Net` forms of `build_vbap_mix` /
 `VbapMixParts::insert_into` (tutti-spatial) (`ParamModParts::insert_into`
 went with the whole param chain in item 6); `PdcDelay`,
@@ -3068,12 +3041,12 @@ own tests (tutti-nodes, tutti-sampler, tutti-spatial, tutti-graph's builder
 and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
 `profile_stretch_clone` example; and `TransportClock`'s `AudioUnit` half.
 
-> **Design 015 PR 3 landed** (`docs/design/015-headless-api.md` §9): the
+> **Since design 015** (`docs/design/015-headless-api.md` §9): the
 > pump thread loop `bevy-tutti`'s `AudioPump` ran is gone; the component
 > holds a `tutti_io::Recorder`, the one `AudioIn → AudioOut` loop. The graph
 > contract does not change.
 
-### Phase 4 — port nodes natively
+### Port nodes natively
 
 Mechanical, 43 impls: `route`→`Shape.latency`, drop `tick`/`footprint`/
 `get_id`/`as_any`/`DynClone`, `set(Setting)`→`Controls`, `isolate`+
@@ -3083,18 +3056,18 @@ sampler's `Arc`-everything-to-survive-clone workarounds (`voice/node.rs:236-255`
 `harmony_source.rs:47`) can be simplified once units stop being cloned.
 The convolver's IR spectra move to `Arc` (read-only, shared): today every
 forkable `Legacy` convolver keeps a second copy of them, megabytes per long
-reverb, for its fork source (Phase 3 PR 2). Clip readers (the sampler's
+reverb, for its fork source. Clip readers (the sampler's
 voices, `DiskVoice`, and the plugin transport sources) read
 `Env::transport_at` instead of polling an `Arc<dyn Timeline>`. The
-chunk-major compatibility mode (Phase 3) turns itself off for a graph once
+chunk-major compatibility mode turns itself off for a graph once
 its last `Legacy` unit is gone, and goes with `Legacy`. Delete `Legacy`.
 
-### Phase 5 — delete
+### Delete fundsp
 
 **Done** (2026-09-27), in three parts: [nothing uses
-`Net`](#phase-5-part-1-nothing-uses-net), [the fork is
-deleted](#phase-5-part-2-the-fork-is-deleted), [`AudioUnit` and `tutti-node`
-are deleted](#phase-5-part-3-audiounit-and-tutti-node-are-deleted). Every row
+`Net`](#nothing-uses-net), [the fork is
+deleted](#the-fork-is-deleted), [`AudioUnit` and `tutti-node`
+are deleted](#audiounit-and-tutti-node-are-deleted). Every row
 below is gone; the "rehomed I/O & kernels" had all moved before (nothing
 non-test used the fork by then), and of `tutti-node` only the filters'
 `Real` and the sampler's `FaultLatch` were kept, each in its one user.
@@ -3111,7 +3084,7 @@ non-test used the fork by then), and of `tutti-node` only the filters'
 Keeps: `Topology`, the latency/tail folds (as pure passes), `RtPublish`,
 units, `AudioIn`/`AudioOut` edges, `ChannelLayout`.
 
-### Phase 6 — go fast
+### Go fast
 
 Parallel executor + coarsening + cost model; SoA voices in polysynth/sampler;
 same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
@@ -3134,7 +3107,7 @@ calling thread and hands every worker `&Plan`; no worker reads an
 `ArcLend` cells still do so from whichever worker runs them, one lend per
 block each.
 
-#### Phase 6, part (a): the parallel executor
+#### The parallel executor
 
 **Status: landed** (2026-09-27). A block's tasks run across a pool's
 threads, bit for bit the render the serial walk makes; the serial walk is
@@ -3149,7 +3122,7 @@ What each layer holds:
   many helpers the executor wakes per block. It is a heuristic, not a
   bound: tasks on different levels can be ready at once (the review's
   counterexample is in `Plan::task_width`'s docs), and then a block runs
-  with fewer participants than it could. (Part (b) replaced it as the wake
+  with fewer participants than it could. (The cost model replaced it as the wake
   count: a block now wakes the larger of the plan's average parallelism
   and its widest level, `Schedule::Parallel::wake`; the level width is
   still `Plan::task_width`, one of the two inputs.)
@@ -3273,7 +3246,7 @@ the serial time over the fastest):
 Where a pool loses: `tiny/16` (16 single gains, one multiply per sample)
 costs 1.7× the serial walk at two participants, 1.8× at four and 1.9× at
 eight, because each task is cheaper than dispatching it. That is what the cost
-model is for ([part (b)](#phase-6-part-b-the-cost-model-and-coarsening),
+model is for (["The cost model and coarsening"](#the-cost-model-and-coarsening),
 whose measurements supersede this row). `deep/128` is one fused task: the executor takes the
 serial walk and the pool costs nothing. Eight participants oversubscribe the
 four cores and lose to four everywhere; those rows are measured, not
@@ -3306,12 +3279,12 @@ measurable.
 | `fan/64-wide/64` | 34.06 µs | 33.90 µs | -0.5% | 2.5% |
 | `fan/64-wide/512` | 256.64 µs | 255.64 µs | -0.4% | 1.8% |
 
-#### Phase 6, part (b): the cost model and coarsening
+#### The cost model and coarsening
 
 **Status: landed** (2026-10-14). A pool spreads a block only when the cost
 model says it pays, and the compiler packs sibling tasks too cheap to
-dispatch alone. Part (a)'s weak spot — `tiny/16` costing more on a pool
-than serially (1.7–1.9× in part (a)'s table, 2.2× in this section's;
+dispatch alone. The parallel executor's weak spot — `tiny/16` costing more on a pool
+than serially (1.7–1.9× in its table, 2.2× in this section's;
 both measured idle, against different `main`s) — is gone: the plan now
 renders serially there. The render is still bit for bit the
 serial one whatever the model decides; the model is a speed decision only.
@@ -3333,7 +3306,7 @@ What each layer holds:
   row order, on one shared list. So the last of a wide fan-out of tiny
   tasks pays the whole queue, which is what packing shortens.
 - **Coarsening (`src/compile/coarsen.rs`, compiler step 7).** Three passes:
-  1. fuse chains (part (a));
+  1. fuse chains (as the parallel executor did);
   2. pack **siblings** — tasks with the same predecessor set — priced under
      `GRAIN` (five dispatches) at the plan's maximum block, into
      `max(1, total / GRAIN)` tasks of about equal cost, one sibling class
@@ -3386,12 +3359,12 @@ Decisions:
    plugin, a host's node — is priced as a plugin (a fixed 20 µs, the order
    of an out-of-process call, plus 256 per sample and channel), so any two
    independent ones are each worth a task and spread at any block length.
-   What still changes for a graph that declares nothing, against part (a):
+   What still changes for a graph that declares nothing, against the first parallel executor:
    - its **copy and event ops** (global inputs, outputs, PDC delays,
      captures, merges) are priced cheap, so sibling ones are packed — only
      where that does not lengthen the critical path;
    - the **wake count** is the larger of the average parallelism and the
-     widest level, at least 2 (part (a) woke the widest level, at least 1);
+     widest level, at least 2 (it woke the widest level, at least 1);
    - a plan whose only parallelism is in those cheap ops can now run
      **serially**: 24 of the 510 multi-task plans the differential
      generator makes over 512 seeds, undeclared, do at four participants
@@ -3527,7 +3500,7 @@ Decisions:
 6. **The constants are a calibration, not a contract.** `TASK_DISPATCH`
    (400), `BLOCK_DISPATCH` (6 000), `GRAIN` (2 000) and the class weights
    (`Light` 100 + 1/sample·channel, `Moderate` 200 + 8, `Heavy` 20 000 +
-   256) were set from part (a)'s figures on the 4-core box (`tiny/16`'s
+   256) were set from the parallel executor's figures on the 4-core box (`tiny/16`'s
    dispatch overhead, `SvfFilterNode`'s cost per frame: the model prices
    `wide/8x8`'s work at 164 µs against 163 µs measured) and checked against
    the benchmarks below. Only their ratios matter: a faster core shrinks
@@ -3543,7 +3516,7 @@ Evidence:
   participants of a pool of four from a short block up. `cost::tests` pin
   the arithmetic, including the `from` threshold (it pays there and not one
   frame below). Mutations: `pays` always true, always false, and `par_for`
-  ignoring the schedule (part (a)) each fail them.
+  ignoring the schedule (the first parallel executor's behaviour) each fail them.
 - **The per-block gate.** `blocks_shorter_than_from_run_serially` runs a
   plan whose `from` is above one frame on a pool that counts its jobs: a
   block of `from - 1` frames never reaches the pool, a block of `from`
@@ -3573,7 +3546,7 @@ Evidence:
   by the DAG (packed siblings are not): it requires them ascending, which,
   with every op edge running forward (checked), keeps every dependency
   inside a task, and every cross-task op edge in `task_succ` as before.
-- Part (a)'s tests stay green: `tests/parallel.rs`, the differential
+- The parallel executor's tests stay green: `tests/parallel.rs`, the differential
   modes, the `rt_no_alloc` gates and `alloc_budget`. Their test nodes
   declare nothing, so their plans still spread. One changed:
   `the_graph_spreads` asserted `task_width >= 5`, and now asserts the
@@ -3581,7 +3554,7 @@ Evidence:
   wake count is the schedule's.
 
 Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
-one 256-frame block at 48 kHz, the same 4-core container as part (a),
+one 256-frame block at 48 kHz, the same 4-core container as the parallel executor's,
 **idle**: no other builds ran, and each run started once the one-minute
 load average was under 0.8 (the load at the ends, about 3–4, is the bench's
 own spinning helpers). `main` is `origin/main` at 53385a5, built from the
@@ -3603,7 +3576,7 @@ The new cases (branch only; `main` has no cost classes), at 1, 2, 4 and
 | graph | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
 | `tiny/16` (light gains) | 10.4 µs | 10.1 µs | 10.1 µs | 10.1 µs |
-| `tiny/16-undeclared` (part (a) behaviour) | 10.3 µs | 20.1 µs | 20.7 µs | 20.0 µs |
+| `tiny/16-undeclared` (the first parallel executor's behaviour) | 10.3 µs | 20.1 µs | 20.7 µs | 20.0 µs |
 | `mixed/8x4x8` (light gains packed) | 140.2 µs | 94.9 µs | 69.8 µs | 66.9 µs |
 | `mixed/8x4x8-undeclared` (a task per gain) | 140.6 µs | 103.8 µs | 69.9 µs | 70.3 µs |
 
@@ -3612,7 +3585,7 @@ What they show:
 - **`tiny/16` no longer loses.** On a pool it costs what the serial walk
   costs (10.1 µs against 10.4 µs), where `main` paid 2.2× (22.3 µs at
   four). Undeclared, the same graph still pays about 2× (`tiny/16-undeclared`),
-  which is the part (a) behaviour declaring `Light` replaces.
+  which is the behaviour declaring `Light` replaces.
 - **The wide graphs and `deep/128` are unchanged**, within run-to-run noise
   of `main`, at every participant count.
 - **`mixed/8x4x8` gains little from packing on this machine.** 64 cheap
@@ -4170,9 +4143,9 @@ vocoder retirement channel for voices the pool removes.
 | # | Change | Why first | Needs the graph? |
 |---|---|---|---|
 | 1 | **Done.** **Latency defects D1–D3, plus D5, D7, D8** (D1–D3 in #3; D5 with the SoA bank, D7 with the strip's per-block ramp, D8 with the click's per-sample onset off `EnvClock`'s beat ports) | These are bugs, and small | No |
-| 2 | **Done (#5).** **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
+| 2 | **Done (#5).** **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks shrinking the surface and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10; the Strip in the per-node port).** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
-| 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
+| 4 | **`Env` + plugin typestate**. **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR; `VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
@@ -4361,7 +4334,7 @@ latent sibling was off by the upstream latency.
   models the rules from the public walk and asserts the boundary is reached
   and honoured before the first block, for a burst past the capacity, and
   after a rate change.
-- **On the parallel executor** (Phase 6) every participant reads the
+- **On the parallel executor** every participant reads the
   executor's one history, read-only: `par::run_block`'s shared block state
   and each worker's `Head` carry the same `&TransportHistory`, and
   `observe` runs on the audio thread before `pool.run`, so nothing reads it
@@ -4444,7 +4417,7 @@ landed"](#in-process-vst2-live-transport-from-cx-landed)).
 - **SoA across channels (4 stages × N lanes).** Measured 26% slower than
   per-channel state without explicit SIMD. The code documents this and runs
   channels side by side in groups of up to 8 instead; SoA is revisited with
-  Phase 6's SIMD work.
+  the SIMD work under "Go fast".
 
 **Testing note.** The `process_matches_tick`-style tests lose their oracle
 when `tick` goes. Replace it with the reference interpreter run at block size
@@ -4454,7 +4427,7 @@ when `tick` goes. Replace it with the reference interpreter run at block size
 
 The graph side of events as ports is in `tutti-graph`; no MIDI node is
 ported yet, and the `Legacy` mailbox path (`MidiInPort`) is unchanged.
-Most of it arrived with Phases 1–3 and is listed here so item 5 has one
+Most of it arrived with the graph crate, its runtime and the adapter, and is listed here so item 5 has one
 place that says what a ported node can rely on:
 
 - **Ports.** `Shape` declares event inputs and outputs (`with_events`).
@@ -4754,7 +4727,7 @@ under both.
   `EventFeeds` of the input's ports (`EventFeeds` and `set_event_sources`
   now name a port, `EventSource`); the fallback takes the ports no armed
   rule covers. (The compile itself is `tutti_midi_runtime::compile_routes`
-  since doc 015's PR 1; `bevy-tutti` only writes its result.) A keyboard is a
+  since doc 015; `bevy-tutti` only writes its result.) A keyboard is a
   `LiveMidiInput` on its entity (a queue node wired to it, `LiveMidi` the
   sender). The sequencer plays only through clip
   nodes: removing the last install empties the clip (its notes end on their
@@ -4797,56 +4770,56 @@ under both.
 > Read doc 014 before extending what follows; this section is kept as the
 > record of what landed.
 >
-> **Doc 014 PR 2a landed** the port rule (014 §5.6, marked below where it
-> changes the record): an event source replaces the base, one per port,
-> unshaped. It also landed the graph's play clock (`Env::play`,
-> `Cx::play_at`, `Editor::play_reading`) and `Editor::param_range_cell`.
+> **The port rule** (014 §5.6, marked below where it changes the record):
+> an event source replaces the base, one per port, unshaped. It came with
+> the graph's play clock (`Env::play`, `Cx::play_at`,
+> `Editor::play_reading`) and `Editor::param_range_cell`.
 >
-> **Doc 014 PR 2b landed** the control lane: `ControlLaneNode` sends a
-> target's whole `ControlProgram` on a 32-frame grid of the play clock
-> plus every corner, and `AutomationLaneNode::for_param` / `for_foreign`
-> now build one (014 §12, "PR 2b: landed"). The producer and the plugin
-> delivery described under "Curve segments landed" below are superseded
-> where marked. It landed over the shared point pool (014 §9's
+> **The control lane:** `ControlLaneNode` sends a target's whole
+> `ControlProgram` on a 32-frame grid of the play clock plus every corner,
+> and `AutomationLaneNode::for_param` / `for_foreign` now build one (014
+> §12.2). The producer and the plugin delivery described under "Curve
+> segments landed" below are superseded where marked. It landed over the
+> shared point pool (014 §9's
 > point-storage note): requirement 6's room is each queue's logical room,
 > and past the pool a queue keeps its floor, grid points dropped before
 > corners, counted.
 >
-> **Doc 014 PR 3 landed** the compiler: `tutti_mod::compile` turns
-> declared sources, routes and targets into a `ControlProgram` per target,
-> a `SourceNode` description per signal source and the event edges, purely
-> (014 §7, §12 "PR 3: landed"). `PlayReading` moved to `tutti-types`
+> **The compiler:** `tutti_mod::compile` turns declared sources, routes
+> and targets into a `ControlProgram` per target, a `SourceNode`
+> description per signal source and the event edges, purely (014 §7,
+> §12.3). `PlayReading` moved to `tutti-types`
 > (`tutti_graph::PlayReading` re-exports it), so the compiler can date a
 > rate edit's anchor without naming the graph.
 >
-> **Doc 014 PR 3b landed** the signal sources: `EnvelopeFollowerNode`
+> **The signal sources:** `EnvelopeFollowerNode`
 > (an audio input's peak over channels, as linear pieces on the play-clock
 > grid, one step late) and `NoteEnvelopeNode` (an ADSR on a MIDI input, as
 > exact linear segments), both plain `tutti_graph::Node`s inserted
 > `ForkByClone`, resetting on the frame `Cx::play_at`'s epoch changes, and
-> built from the compiler's `SourceNode` with `from_decl` (014 §6, §12 "PR
-> 3b"). A lane frees the input slots its new program no longer reads, and
+> built from the compiler's `SourceNode` with `from_decl` (014 §6,
+> §12.4). A lane frees the input slots its new program no longer reads, and
 > the compiler never gives a `SourceId` twice (014 §7).
 >
-> **Doc 014 PR 4a landed** the reconcile, Bevy-free:
+> **The reconcile**, Bevy-free:
 > `tutti_nodes::Modulation` applies compiled declarations to a plain
 > `Editor` through a host seam (`ModHost`), republishing a changed program
 > without a commit, building and removing lanes, signal sources and their
 > edges, refusing a follower downstream of its target by route, and
 > scheduling the new `EventKind::Resync` into a note envelope a lane newly
-> reads (014 §6, §8.2, §12 "PR 4a"). `ParamSegment::unit` and
+> reads (014 §6, §8.2, §12.5). `ParamSegment::unit` and
 > `ControlLaneNode::for_unit` address a param by `UnitParam` alone.
 >
-> **Doc 014 PR 4b landed** `bevy-tutti` on lanes: modulation is declared
+> **`bevy-tutti` on lanes:** modulation is declared
 > on entities (`Mods`, `ModRoute`, `ModRange`, `Automation`, `ParamRef`)
 > and `TuttiModulationPlugin` applies it through `Modulation` on the
 > graph's editor, so every modulated param, a hosted plugin's included,
-> is a lane in the graph an export forks (014 §8.2 "As landed (PR 4b)",
-> §12 "PR 4b"). The frame-rate driver and `plugin_bind_params` are
+> is a lane in the graph an export forks (014 §8.2 "As landed",
+> §12.5). The frame-rate driver and `plugin_bind_params` are
 > unscheduled (`modulation::legacy`); `ParamSet::set_authored` is gone.
 >
-> **Doc 014 PR 5 landed** the deletion, and this section is now history
-> (014 §10, §12 "PR 5: landed"). A param port has at most one source, an
+> **The deletion**, and this section is now history (014 §10, §12.6). A
+> param port has at most one source, an
 > event output (`connect_param(at, from: EventOut)`); the fused step is
 > `clamp(held, range)`. Gone: audio sources (`ParamFrom::Audio`; audio-rate
 > modulation is a node's own audio input, 014 §11), shapings and their LUT,
@@ -4900,7 +4873,7 @@ under both.
     the target on its last frame (a zero-length ramp is a step; a
     `ParamSegment` moves it along its shape instead, see "Curve segments
     landed"); the value starts at 0 and is an offset like an audio source's.
-  **Superseded by doc 014 §5.6 (PR 2a):** an event source's value now
+  **Superseded by doc 014 §5.6:** an event source's value now
   *replaces* the base from its first event on (a first ramp starts from
   the base on its frame), audio sources stay offsets on whichever holds,
   and a port takes at most one event source, unshaped
@@ -4939,7 +4912,7 @@ under both.
   gains `ParamFeed` (`AudioUnit::param_feed` / `param_base`): per-param
   buffers `Legacy` fills per 64-frame chunk, with a live bit per param;
   an unfed param reads the unit's own control. The feed's params are the
-  node's `Shape::params`. It goes with `Legacy` (Phase 5).
+  node's `Shape::params`. It goes with `Legacy`.
 - **Ported**: `SvfFilterNode` (cutoff, Q), `LadderFilterNode` (cutoff,
   resonance as `Q`, drive), `DelayLineNode` (feedback, delay time),
   `DistortionNode` (drive), `CompressorNode` / `GateNode` (threshold),
@@ -4958,7 +4931,7 @@ under both.
   `AudioGraphRes::set_param_mod`). `write_param` lost its base-cell
   branch: the base is the node's control, reached through the settings
   ring — so the two "known export limits" of the base cell and the clamp
-  cell (Phase 3 PR 12, above) are gone.
+  cell (above) are gone.
 - **Curves.** `ParamModShaping::shaping()` bakes `tutti_mod::shape` with
   the old shaper's bake and lookup, and the fused sum folds from `-0.0` as
   `f32`'s `Sum` does, so the new step is bit-identical to the old chain:
@@ -5156,7 +5129,7 @@ carried.
   value, and widening it releases the value onto the curve where the
   segment has run on to.
 - **The producer: `AutomationLaneNode::for_param` / `for_foreign`.**
-  **Superseded by doc 014 PR 2b:** these return a `ControlLaneNode`; a
+  **Superseded by doc 014's control lane (§12.2):** these return a `ControlLaneNode`; a
   piece with no segment shape goes on the play-clock grid, not at block
   edges; the capacity is 256 and past it the lane thins its grid and
   counts; a hosted plugin receives each piece's endpoints, not stride
@@ -5199,7 +5172,7 @@ carried.
   gate). A ramp is still its target at its frame. `PluginAutomation` (the plugin's
   automation source) is unchanged: it samples its curves into
   `ParamRamp::foreign` points at a stride, which is what its target takes.
-- **Plugin parameter delivery (landed, modulation PR 1).** The 16-queue
+- **Plugin parameter delivery (landed, doc 014 §9).** The 16-queue
   chunk is gone. The plugin's parameter list is read once at
   `PluginClient::new` (which already blocks on the server; no protocol
   change), and the node's `ParamDelivery` (`host/node/param_delivery.rs`)
@@ -5297,7 +5270,7 @@ carried.
   `addParameterData` returns null, both counted. At 2000 parameters and a
   4096-frame chunk the IPC node's buffers went from about 43 MB to
   6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB (at the room
-  of the time; with doc 014 PR 2b's raised room, 16.31 MB and 16.1 MB,
+  of the time; with doc 014's raised room (§12.1), 16.31 MB and 16.1 MB,
   where per-queue storage would have been about 118 MB each); the
   figures, the budget's derivation and what is left (a CLAP
   `params.rescan` does not re-reserve the server's output) are in doc 014
@@ -5462,7 +5435,7 @@ It lands with a native `Node` impl for the voice (`IntoNode::Controls`, a
 real `Fork`, the transport from `Env`): items 4 and 9. (Landed in two
 steps: the typed handle with item 4, its placement still on a queue; the
 `RtPublish` placement cell, which deletes the queue and `PlacementRecord`,
-with "Sampler real-time fixes" under Phase 6.)
+with "Sampler real-time fixes" under "Go fast".)
 
 **Found by the review, fixed.** `VoiceCommand::AddVoice` carried its filter
 as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
@@ -5472,7 +5445,7 @@ the slot holds the voice boxed so the command's box moves in, and a replaced
 slot goes to the retirement channel (`tests/rt_no_free.rs` counts the
 drain's frees). The lanes are one block long: `AudioUnit::process` was
 then never handed more than 64 frames, so 256-frame lanes were a split
-nothing reached and a memset nothing used. (`AudioUnit` is gone (Phase 5)
+nothing reached and a memset nothing used. (`AudioUnit` is gone
 and every voice is a `tutti_graph::Node`, so the reason for 64 went with
 it: the lanes are now sized from `Prepare::max_block`, landed under
 "Sampler scratch sized from `max_block`" below.) A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
@@ -5483,7 +5456,7 @@ past it.
 **Also kept:** `BeatCursor` still clones by sharing its cells (the pool's
 and the node's `isolate` drop it); it goes with `Env` (item 4). The
 `profile_stretch_clone` example is now a record of the `Net` era (its
-commits deep-clone again, a cost nothing pays) until Phase 5.
+commits deep-clone again, a cost nothing pays) until fundsp went.
 
 **Tests re-pinned** (their property was the `Net` clone semantics this item
 deletes; each now pins what native does, with its mutation run):
@@ -5628,7 +5601,7 @@ time-stretched voice is silent for its filter's refill after a seek
 (proposed: prime the filter from the source ahead of the jump; open as
 #67). (`stretch::Unit`, a slot's internal filter and never a graph node, was
 the last `AudioUnit`; it has plain methods since
-[Phase 5](#phase-5-part-3-audiounit-and-tutti-node-are-deleted).)
+[its deletion](#audiounit-and-tutti-node-are-deleted).)
 
 #### Legacy deleted
 
@@ -5671,12 +5644,12 @@ test that wired an `AudioUnit` was moved onto a test `Node` with its
 assertions kept. `stretch::Unit` stays an `AudioUnit`: a slot's internal
 filter, never inserted into a graph.
 
-#### Phase 5, part 1: nothing uses `Net`
+#### Nothing uses `Net`
 
-Every user left on the list in [Phase 3](#phase-3--flip-the-adapter)
-("What of `Net` remains") moved off it, or went with it; after this PR only
-the fork itself names `Net`. Several items on that list had already moved in
-Phase 4 (the `Net` form of `build_vbap_mix` / `VbapMixParts::insert_into`,
+Every user left on the list in [Flip the adapter](#flip-the-adapter)
+("What of `Net` remained") moved off it, or went with it; after this only
+the fork itself names `Net`. Several items on that list had already moved
+with the native ports (the `Net` form of `build_vbap_mix` / `VbapMixParts::insert_into`,
 the nodes' own tests, `TransportClock`'s `AudioUnit` half); what was left:
 
 - **tutti-core**: `topology::compile` and `Catalog` (the from-scratch
@@ -5722,13 +5695,13 @@ record. Pinned in `executor.rs`
 (`an_unchanged_commit_sends_nothing_and_a_change_still_sends`) and by the
 budget itself, which now asserts a no-op commit allocates nothing at all.
 
-#### Phase 5, part 2: the fork is deleted
+#### The fork is deleted
 
 `crates/vendor/fundsp-tutti` is gone (the 32.7k-line row of the
-[Phase 5 table](#phase-5--delete)), with its workspace membership and its
+["Delete fundsp" table](#delete-fundsp)), with its workspace membership and its
 `--exclude fundsp-tutti` in CI's and `just`'s clippy, rustdoc and Windows
 runs. No non-test crate used any of its DSP kernels or I/O by then (the
-decoder had moved to `tutti-io` in Phase 0, the FFT to the sampler and the
+decoder had moved to `tutti-io` when the surface shrank, the FFT to the sampler and the
 convolver, the filters and panners to `tutti-nodes`), so nothing was
 rehomed. Two side effects: nothing pulls `font-kit` any more (the fork's
 bare `plotters` dev-dependency did), so CI stops installing
@@ -5775,7 +5748,7 @@ only.
 crates' code. With the fork gone neither type exists, so a line naming one
 cannot compile and the scans can no longer fail on anything.
 
-#### Phase 5, part 3: `AudioUnit` and `tutti-node` are deleted
+#### `AudioUnit` and `tutti-node` are deleted
 
 With the fork gone, `tutti-node` (the leaf crate that held the node contract
 *below* the fork so a crate could implement a node without depending on it)
@@ -5914,7 +5887,7 @@ clip each, at 64- and 512-frame blocks).
 
 #### In-process VST2 forks by state transfer
 
-The follow-up PR 13 recorded (an export of a graph holding an in-process
+The follow-up recorded when bevy-tutti went native-only (an export of a graph holding an in-process
 VST2 plugin was refused, `NotForkable`): `InProcessVst2Client` now hands the
 editor a `ForkSource` (`format::vst2_in_process`'s `fork` module), the
 in-process twin of the out-of-process plugin's (item 7's "plugin fork by
@@ -6068,7 +6041,7 @@ metronome's meter is 7/8.
 The owner delegated these on 2026-09-24. The migration uses the proposed
 option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
 ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
-now (**reversed** 2026-09-26, see 8). Item 5 was decided when Phase 0 ran:
+now (**reversed** 2026-09-26, see 8). Item 5 was decided when the surface shrank:
 `tutti-io`.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
@@ -6105,7 +6078,7 @@ now (**reversed** 2026-09-26, see 8). Item 5 was decided when Phase 0 ran:
      `(offset, source order)`, which is cheap (proposed);
    - require an explicit `Merge` node.
 
-   Audio stays one source per port. This has to be decided before Phase 1.
+   Audio stays one source per port. This has to be decided before the graph crate is built.
 
    **Decided (2026-09-26, for item 5): fan-in on event ports only.** An
    event input may have several sources. The executor merges them into one

@@ -1050,15 +1050,15 @@ fn feed_into(ed: &mut Editor, feed: u64, lane: u64) {
 /// **A republish that reads a new source frees a slot for it.** A program
 /// reading sources 1..=8 (every input slot, each at 0.0) is republished to
 /// read source 9 alone at depth 0.5 of a 0..96 range; source 9 stepping to
-/// 0.5 on frame 640 reads 10 + 24 = 34.0 from that frame. (Reported in the
-/// PR 2b review: the eight stale slots were never freed, so source 9's
+/// 0.5 on frame 640 reads 10 + 24 = 34.0 from that frame. (Reported in
+/// review: the eight stale slots were never freed, so source 9's
 /// events were dropped, uncounted, and the lane held 10.)
 ///
 /// Mutation (run): the slot fallback only a free slot (`Option::is_none`,
 /// not a slot whose source the program no longer reads) → 10.0 from frame
 /// 640 → fails.
 ///
-/// Changed in doc 014 PR 3b (the mutation record only): a lane now frees
+/// Changed in doc 014 §12.4 (the mutation record only): a lane now frees
 /// every slot its new program does not read when it takes the program, so
 /// a free slot is the only fallback. Mutation (run): that freeing dropped
 /// (the `generation != self.seen.generation` sweep in `process`) → the
@@ -1100,7 +1100,7 @@ fn a_republished_program_reads_a_new_source() {
 }
 
 /// **A reused source id starts from nothing** (doc 014 §7's hazard, closed
-/// in PR 3b). A lane reads source 3 at depth 0.5 of a 0..96 range on knob
+/// in §12.4). A lane reads source 3 at depth 0.5 of a 0..96 range on knob
 /// 10, and source 3 steps to 0.5 on frame 0: 34.0. A republish drops the
 /// source (the lane glides to 10.0 by the next grid point), then another
 /// reads source 3 again, as a new source given the old id would be, which
@@ -1201,7 +1201,7 @@ fn an_unread_source_is_no_point() {
 /// until something moves. `LaneControls::resync` makes the next block send
 /// at frame 0: probe 3 hears it on that block's first frame (through the
 /// port's connect crossfade) and reads 250.0 once the crossfade ends. This
-/// is what PR 4's reconcile calls after it re-wires a lane.
+/// is what the reconcile calls after it re-wires a lane.
 ///
 /// Mutation (run): `process` ignoring the resync flag (`let resync =
 /// false`) → probe 3 never reads 250 → fails.

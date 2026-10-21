@@ -70,9 +70,7 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "a_plugin_fork_that_cannot_be_built_is_a_named_failure and \
          off_thread::a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread \
          each downcast an export error's `ForkCause` to the source's own error \
-         (the cause's documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
-         in its own `Net`, and its raw node access, went with it in doc 013 \
-         PR 15.)",
+         (the cause's documented use), not a graph node.",
     ),
     (
         "tests/audio_io_pump.rs",

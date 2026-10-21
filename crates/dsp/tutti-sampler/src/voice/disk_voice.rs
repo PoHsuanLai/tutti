@@ -255,7 +255,7 @@ impl Node for DiskSource {
             .with_tail(Tail::Unbounded)
             // The memory tier's read (`MemorySource`, measured 16–17 ns per
             // frame and channel), through the same kernel, from a ring of
-            // atomics: not measured on its own (doc 013, "Phase 6, part (b)").
+            // atomics: not measured on its own (doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
     }
 

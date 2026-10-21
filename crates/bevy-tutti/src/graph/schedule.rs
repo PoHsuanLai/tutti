@@ -185,7 +185,7 @@ mod tests {
     /// commit. `Poll` has no system: a Bevy app reads the device's faults
     /// itself.
     ///
-    /// Before this PR (design 015 PR 7), main ran `Collect` in
+    /// Before design 015 §9.7, main ran `Collect` in
     /// `commit_graph`, right before `Commit` (after `Plugins` and
     /// `Modulation`), and `MidiOut` unordered: this test failed there.
     ///

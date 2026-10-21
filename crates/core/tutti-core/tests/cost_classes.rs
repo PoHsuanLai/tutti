@@ -1,4 +1,4 @@
-//! The metronome declares `Cost::Moderate` (doc 013, "Phase 6, part (b)").
+//! The metronome declares `Cost::Moderate` (doc 013, "The cost model and coarsening").
 //! Declaring it changes only the parallel schedule: sibling clicks pack
 //! into fewer tasks than undeclared ones, and the render on a pool is bit
 //! for bit the serial one.

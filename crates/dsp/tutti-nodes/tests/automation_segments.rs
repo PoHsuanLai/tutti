@@ -36,7 +36,7 @@ const RATE: f64 = 48_000.0;
 
 /// A lane sending `curve` to the cutoff, with no knob and no range: the
 /// automation-only lane every test here drives (it was
-/// `AutomationLaneNode::for_param` until doc 014 PR 5).
+/// `AutomationLaneNode::for_param`).
 fn automation(curve: impl Curve + 'static) -> ControlLaneNode {
     ControlLaneNode::for_param(
         ParamKey::<Hz>::CUTOFF,
@@ -293,7 +293,7 @@ fn check_grid(curve: &dyn Curve, lane: ControlLaneNode, blocks: &[usize], tol: f
 /// linear pieces on the play-clock grid: exact on every grid frame, a line
 /// between, and the same frames whatever the blocks.
 ///
-/// Changed in doc 014 PR 2b: this sampled the curve at block edges, which
+/// Changed in doc 014 §12.2: this sampled the curve at block edges, which
 /// moved with block size (doc 014 §5.4); it is the grid now, and the two
 /// block schedules render the same bits.
 ///
@@ -320,7 +320,7 @@ fn an_unrepresentable_piece_is_linear_on_the_grid() {
 /// A curve that cannot say its pieces (`segment_at` is `None`: here a
 /// sine) takes the same grid: exact on every grid frame, a line between.
 ///
-/// Changed in doc 014 PR 2b: exact on each block's first and last frame
+/// Changed in doc 014 §12.2: exact on each block's first and last frame
 /// before; on the grid now (doc 014 §5.4).
 ///
 /// Mutation (run): the fallback sending nothing → the port holds 0 → fails.

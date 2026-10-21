@@ -1,6 +1,6 @@
 //! The outbound wire's switch: whether drained MIDI is JR-stamped.
 //!
-//! The wire itself is the session's (design 015 PR 5): the output a host
+//! The wire itself is the session's: the output a host
 //! connects ([`UmpOut`](tutti_session::UmpOut), through
 //! [`AudioGraphRes::midi`](crate::graph::AudioGraphRes::midi)'s
 //! `set_hardware_out`), the drop count, and the one router both producers

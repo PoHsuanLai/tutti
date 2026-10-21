@@ -15,7 +15,7 @@ together — an upper bound, not a block count:
 | `crates/plugin/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
 | `crates/plugin/tutti-plugin/` | 46 | shm slab, IPC transport |
 | `crates/midi/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
-| `crates/core/` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013 Phase 5) |
+| `crates/core/` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
 | `crates/dsp/` | 14 | see below |
 | `crates/plugin/tutti-plugin-types/` | 7 | bundle/ABI value types |
 
@@ -27,7 +27,7 @@ question is the other 5%.
 
 There are five sites: the five code bullets below. (Earlier revisions said
 eight, then seven, counting the prose-only last bullet too; design doc 013
-Phase 5 deleted `tutti-node` and its planar buffers, and #116 made
+deleted `tutti-node` and its planar buffers, and #116 made
 `Engine::settle_graph` safe.) Each exists because a safe construct would have
 cost something on the audio thread, and each is named here so the list can
 be checked against the tree.
@@ -68,7 +68,7 @@ be checked against the tree.
   was an `unsafe fn` whose `unsafe` was a *contract*: it borrows the
   executor and the transport schedule the audio thread owns, from the
   control side, so a device restart can finish a graph re-prepare before the
-  first block (doc 013, PR 13), and the cells holding them checked a
+  first block, and the cells holding them checked a
   concurrent borrow only in debug builds. With the check always on, a call
   racing a running callback panics rather than racing, so it is a safe
   `pub fn` that documents the panic. `Stopped` (a token constructible only
@@ -132,7 +132,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
   is the aliasing in `AudioThreadCell` and `ArcLend`'s reclamation, which is
   where a mistake would be silent. (It covered the pointer arithmetic in
-  `tutti-node`'s planar buffers too, until doc 013 Phase 5 deleted them: a
+  `tutti-node`'s planar buffers too, until doc 013 deleted them: a
   graph node gets its buffers from `tutti-graph`, which is
   `#![forbid(unsafe_code)]`.)
 

@@ -1,5 +1,5 @@
 //! The Bevy-free modulation reconciler (`tutti_nodes::Modulation`, doc 014
-//! §8.2, PR 4a): declarations applied to a plain `Editor`, rendered by its
+//! §8.2, §12.5): declarations applied to a plain `Editor`, rendered by its
 //! executor, against analytic figures and invariants of the render.
 //!
 //! Each test names the mutations it was seen to fail under. The no-allocation
@@ -1447,8 +1447,8 @@ impl Playhead {
 /// blocks; the export is an offline fork taken before the start, in
 /// 1024-frame blocks. Bit for bit from the play start.
 ///
-/// The reference CLAP plugin's gain at a pinned chunk size is PR 4b's:
-/// a plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
+/// The reference CLAP plugin's gain at a pinned chunk size is
+/// `bevy-tutti`'s `mod_plugin.rs`: a plugin is `tutti-plugin`'s, which `tutti-nodes` cannot name.
 ///
 /// Mutations (run), each fails: the lane's fork dropping the knob it
 /// gathers (`fork_fresh`'s knob `None`: the export's cutoff has no base);

@@ -1,6 +1,6 @@
 //! The parallel executor: a block's tasks run across a [`Pool`]'s threads.
 //!
-//! Doc 013 §4, "Executor, parallel", and Phase 6. The plan already carries
+//! Doc 013 §4, "Executor, parallel", and "The parallel executor". The plan already carries
 //! everything a schedule needs, computed by the pure compiler: the ops fused
 //! into **tasks** (chains run back to back on one thread), the task DAG as
 //! CSR successor rows, each task's **activation count** (its distinct

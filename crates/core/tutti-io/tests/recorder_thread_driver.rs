@@ -30,7 +30,7 @@
 //! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
 //!
 //! The last three tests are the Bevy-free half of `bevy-tutti`'s
-//! `audio_io_pump.rs` (design 015 PR 3 moved its pump loop here): a finite
+//! `audio_io_pump.rs` (design 015 moved its pump loop here): a finite
 //! source ends its own take and a frame loop can see that without blocking; a
 //! live one ends only when asked, and the ask does not block either.
 //!

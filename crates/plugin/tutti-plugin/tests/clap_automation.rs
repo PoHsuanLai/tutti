@@ -56,15 +56,15 @@ fn gained(v: f64) -> f32 {
 /// pipeline answers every chunk: once the first chunk has passed, the
 /// output is 10^(-6/20).
 ///
-/// Ported in doc 014 PR 5 from the deleted `PluginAutomation` node.
+/// Ported from the deleted `PluginAutomation` node.
 ///
-/// Mutations (run, PR 5), each fails with the gain left at 0 dB: the
+/// Mutations (run), each fails with the gain left at 0 dB: the
 /// plugin node ignoring segment events (the lane's) in its event walk;
 /// decoding a segment's number in the other address model
 /// (`address(id, !indexed)`), so the loader finds no parameter `Index(77)`.
 /// The ramp path (the deleted node's) is pinned by
 /// `an_interrupting_ramp_stops_a_segment_on_a_plugin`: ignoring ramp events
-/// there fails (run, PR 5); here it survives, as a lane sends segments.
+/// there fails (run); here it survives, as a lane sends segments.
 #[test]
 fn automation_reaches_the_plugin_through_its_event_input() {
     let _lock = exclusive();
@@ -205,7 +205,7 @@ fn is_gain(got: f32, v: f32) -> bool {
 /// being monotone, never above `curve(g + 32)`. So for a lane `piece` is
 /// 32 and the upper bound is the curve at the next grid frame.
 ///
-/// Changed in doc 014 PR 2b: the upper bound was `curve(f)` for both
+/// Changed in doc 014 §12.2: the upper bound was `curve(f)` for both
 /// tests; the lane's chunk-edge point at frame 255 (on its 224..256 piece)
 /// is the chord's value, 2.9e-5 relative above `curve(255)` and below
 /// `curve(256)`.
@@ -258,7 +258,7 @@ fn follows(
 /// Mutations (run), each fails: the plugin node sending only the segment's
 /// first point (no `SegmentPoints` tracking) → the gain stays near the
 /// start; no point on the arrival frame → the end gain lands late, on the
-/// next stride point. Doc 014 PR 2b: the play-grid points dropped
+/// next stride point. Mutation (run): the play-grid points dropped
 /// (`on_grid` false in `SegmentPoints::points`) → the gain holds the start
 /// until the chunk's last frame, "input frame 334" below the curve 32
 /// frames earlier → fails.
@@ -284,7 +284,7 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
 ///
 /// Mutation (run): the plugin node not interrupting a segment on a ramp
 /// (`SegmentPoints::interrupt` not called) → the next stride point pulls
-/// the gain back onto the segment → fails. Mutation (run, doc 014 PR 5):
+/// the gain back onto the segment → fails. Mutation (run):
 /// the plugin ignoring ramp events (`params.point` not called) → the
 /// segment's value is left → fails.
 #[test]
@@ -315,7 +315,7 @@ fn an_interrupting_ramp_stops_a_segment_on_a_plugin() {
 ///
 /// Mutation (run): the plugin node sending only each segment's first point
 /// → the gain moves only at the lane's block-edge re-sends, more than one
-/// spacing behind the curve → fails. Doc 014 PR 2b (run): each piece's end
+/// spacing behind the curve → fails. Mutation (run): each piece's end
 /// value read one grid step late (`d + 32.0` in the lane's piece end) →
 /// the chunk edge at frame 255 lies above `curve(256)` → fails.
 #[test]

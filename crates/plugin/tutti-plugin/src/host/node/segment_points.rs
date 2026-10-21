@@ -295,7 +295,7 @@ mod tests {
     /// last frame while it is in flight, and its end value exactly on the
     /// frame it arrives; nothing else, and nothing after.
     ///
-    /// Changed in doc 014 PR 2b: the points between were every 8th chunk
+    /// Changed in doc 014 §12.2: the points between were every 8th chunk
     /// frame (the automation node's stride), a grid that moved with the chunk; they are
     /// now the play clock's 32-frame grid (doc 014 §5.3).
     ///

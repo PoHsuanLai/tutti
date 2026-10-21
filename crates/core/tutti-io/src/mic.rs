@@ -202,7 +202,7 @@ impl Node for MicMonitorNode {
             .with_tail(Tail::Unbounded)
             // A ring pop (two atomics) per frame: measured 5.4 ns per frame
             // and channel, against a gain's 0.2 and `SvfFilterNode`'s 7.2
-            // (doc 013, "Phase 6, part (b)").
+            // (doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
     }
 

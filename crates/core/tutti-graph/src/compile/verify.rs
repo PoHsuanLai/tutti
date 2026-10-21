@@ -984,7 +984,7 @@ mod tests {
     /// Mutations (run), one per group, each failed this test: delete the
     /// `verify_params(plan)?` call (the two table corruptions pass); drop
     /// the param reads from `accesses` (the unordered read passes).
-    /// (Doc 014 PR 5 removed the in-place, event-count and shaping groups
+    /// (Doc 014 §12.6 removed the in-place, event-count and shaping groups
     /// with what they checked: a param reads only an event slot, and a port
     /// holds one unshaped source by construction.)
     #[test]

@@ -221,8 +221,8 @@ impl Node for HrtfBinauralNode {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
             .with_latency(Latency::new(Samples(LATENCY)))
             .with_tail(Tail::Finite(Samples(self.panner.ring_out())))
-            // An exception to the nearest-class rule (doc 013, "Phase 6,
-            // part (b)"). The average, 32 ns per frame and channel with a
+            // An exception to the nearest-class rule (doc 013, "The cost
+            // model and coarsening"). The average, 32 ns per frame and channel with a
             // four-vertex sphere of 128-tap HRIRs, is under the 45 ns
             // boundary, but the FFT work lands all at once in the block
             // that completes a 512-frame frame: at 64-frame blocks that

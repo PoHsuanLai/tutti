@@ -48,7 +48,7 @@ pub(super) const MIDI_BUFFER: usize = 512;
 ///
 /// The voice bank renders each SIMD group of lanes that holds a sounding
 /// voice, so at full polyphony the synth costs what its lane count does.
-/// Measured with a saw, every voice held (doc 013, "Phase 6, part (b)"):
+/// Measured with a saw, every voice held (doc 013, "The cost model and coarsening"):
 /// 18–21 ns per frame and channel at 8 lanes, 74 at 32 (65 at 8 voices ×
 /// 4 unison), about 2.2 more per lane, against `SvfFilterNode`'s 7.2
 /// (`Moderate`'s reference) and `Heavy`'s 256. 16 lanes come to about
@@ -204,8 +204,8 @@ mod tests {
     /// a unison engine its detune and spread too ([`SYNTH_PARAMS`](super::SYNTH_PARAMS)),
     /// each port's base its cell.
     ///
-    /// Mutation (run, PR 5): `param_base(2)` answering the detune cell →
-    /// fails. Mutation (run, PR 5): the shape declaring all three without
+    /// Mutation (run): `param_base(2)` answering the detune cell →
+    /// fails. Mutation (run): the shape declaring all three without
     /// unison → fails.
     #[test]
     fn the_shape_declares_volume_and_the_unison_params() {

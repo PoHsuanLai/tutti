@@ -153,7 +153,7 @@ Migration: rename per the table; `AudioThreadCell` is unchanged. A former
 any architecture but x86, x86_64 and aarch64, where `ScopedNoDenormals`
 compiles to nothing (see the PR for the verification).
 
-### Changed — design 015 PR 7: rules, gates and a pinned toolchain
+### Changed — design 015: rules, gates and a pinned toolchain
 
 - **`scripts/check-adapter.sh`**, run in `just ci` and CI's paths job,
   enforces design 015 §8 rules 3 and 4.
@@ -208,7 +208,7 @@ compiles to nothing (see the PR for the verification).
   code.** `tests/mod_plugin.rs` needs `export` or `vst2` to load a plugin,
   and is now gated on them. CI's dark-features job lints that combination,
   and lints and tests `tutti --features clap,export,modulation`.
-- **Breaking.** The table below gathers design 015's renames, PRs 4–7, for
+- **Breaking.** The table below gathers design 015's renames (§9.4–§9.7), for
   a host that skips straight to this release. Each row is checked against
   the code.
 
@@ -243,11 +243,11 @@ compiles to nothing (see the PR for the verification).
   | `AtomicSamplePosition::default()` | `Param64::new(SamplePosition::new(0.0))` |
   | `AtomicReadRate::default()` | `Param64::new(ReadRate::UNITY)` |
 
-### Changed — design 015 PR 1: MIDI and sample pieces to their owning crates
+### Changed — design 015: MIDI and sample pieces to their owning crates
 
 - **MIDI file decoding, the inbound route compile and the memory voice move
   out of `bevy-tutti` into the crates that own them** (design doc 015,
-  PR 1), so a headless host gets them without Bevy. `bevy-tutti` calls
+  §9.1), so a headless host gets them without Bevy. `bevy-tutti` calls
   them; its behaviour is unchanged.
   - `tutti_midi_file::MidiFile` is the sniffed file (SMF or MIDI 2.0 Clip
     File) that was `bevy_tutti::midi::MidiFileContents`. New: `timed()`
@@ -352,7 +352,7 @@ compiles to nothing (see the PR for the verification).
   | `unsafe fn Engine::settle_graph(&self) -> bool` | `fn Engine::settle_graph(&self) -> bool`: drop the `unsafe` block; it panics if a callback renders the engine at the same moment |
   | `AudioThreadCell::new` is `const` | still `const`, except under `--cfg loom` (loom's atomics are not) |
 
-### Changed — design 015 PR 3: the audio pump is `tutti_io::Recorder`
+### Changed — design 015: the audio pump is `tutti_io::Recorder`
 
 - **One pump loop.** `bevy-tutti`'s `AudioPump` ran its own copy of
   `tutti_io::Recorder`'s thread loop; it now holds a `Recorder`, and
@@ -377,7 +377,7 @@ compiles to nothing (see the PR for the verification).
   | `tutti-io` was an optional `bevy-tutti` dependency (`audio-io`, `sampler`) | it is always one: `graph::pump` is always compiled. `wav`/`flac`/`mp3`/`ogg` now turn on `tutti-io`'s codec unconditionally |
   | the pump's thread panic read "audio pump thread panicked" | "recording thread panicked", `Recorder`'s message |
 
-### Changed — design 015 PR 4: `tutti-session`, the Bevy-free API layer
+### Changed — design 015: `tutti-session`, the Bevy-free API layer
 
 - **New crate `tutti-session`**: the cross-crate composition both
   umbrellas use. A `Session` is a `Graph` (the editor, the nodes inserted
@@ -422,7 +422,7 @@ compiles to nothing (see the PR for the verification).
   old one was removed: each re-asserts its feed on the entity's current node
   when its `AudioNode` changes (the old node's feeds go with it).
 
-### Changed — design 015 PR 5: modulation and MIDI in `tutti-session`
+### Changed — design 015: modulation and MIDI in `tutti-session`
 
 - **The session runs the modulation loop** (feature `modulation`):
   `Phase::Modulation` applies the declarations (a host's, passed as
@@ -488,9 +488,9 @@ compiles to nothing (see the PR for the verification).
   headless host that called `Graph::modulate` passes its declarations as
   `PhaseCx::with_mods` to `run_phase`, or declares through `s.mods()`.
 
-### Changed — design 015 PR 6: plugins and export in `tutti-session`
+### Changed — design 015: plugins and export in `tutti-session`
 
-- **Hosted plugins and exports are the session's** (design doc 015, PR 6),
+- **Hosted plugins and exports are the session's** (design doc 015, §9.6),
   so a headless host loads a plugin, plays a MIDI file into it and bounces
   it without Bevy (`crates/tutti-session/examples/plugin_midi_export.rs`).
   `bevy-tutti` runs the session's `Phase::Plugins` and `Phase::RenderMode`
@@ -593,7 +593,7 @@ compiles to nothing (see the PR for the verification).
   read retries before it returns `None`.
 
 - **A cost model and coarsening for the parallel executor** (design doc
-  013, "Phase 6, part (b)"). The compiler prices every op from what its
+  013, "The cost model and coarsening"). The compiler prices every op from what its
   node declares, packs sibling tasks too cheap to dispatch alone into
   larger ones (never lengthening the critical path), and totals the work and the critical path; `Plan::schedule`
   turns those into the decision whether a pool spreads a block, from which
@@ -617,7 +617,7 @@ compiles to nothing (see the PR for the verification).
   | — | the other crates' nodes declare from measured per-frame costs: the MIDI nodes (clip, harmony, clock, queue, input, out) `Cost::Light`; `MemorySource`, `DiskSource`, `DiskVoice`, a plain `VoiceNode`, `VbapPannerNode`, `ClickNode` and `MicMonitorNode` `Cost::Moderate`; `PolySynth` `Moderate` up to 16 oscillator lanes (`max_voices` × unison) and `Heavy` past them; a stretched `VoiceNode`, `VoicePool`, `SoundFontUnit` and `HrtfBinauralNode` `Heavy` (stated); plugin nodes and `PluginAutomation` still declare nothing (`Heavy`) |
   | packing ran once, so cheap siblings each wired to their own outputs could pack to more tasks than undeclared | passes 2 and 3 (pack siblings, fuse chains) repeat to a fixed point; the critical path is still never longer than chain fusion alone gives |
 
-- **The parallel executor** (design doc 013, "Phase 6, part (a)"). A
+- **The parallel executor** (design doc 013, "The parallel executor"). A
   block's independent nodes run across a pool's threads, bit for bit the
   render the serial executor makes; the serial walk is the one-participant
   case, and a pool is opt-in.
@@ -628,7 +628,7 @@ compiles to nothing (see the PR for the verification).
   | — | `tutti_graph::Pool` (the trait a pool implements: `participants`, `run(wake, job)`), re-exported as `tutti_core::Pool` |
   | — | `tutti_core::{WorkerPool, WorkerPoolBuilder, OnStart}`: helper threads that spin, yield, then park; `on_start` hook for RT priority / workgroups |
   | — | `tutti_types::{JobGate, TaskGraph, Participant, SplitMut, SplitRw, RwView, Held, ClaimTable, Claimed, ClaimedRun, ClaimConflict}` (loom-checked runtime primitives) |
-  | — | `Plan::task_width()` (the task DAG's widest level; since part (b) one input to the wake count, see above) |
+  | — | `Plan::task_width()` (the task DAG's widest level; one input to the wake count, see above) |
   | — | `RenderGraph::{set_pool, is_parallel}` (tutti-export) |
   | — | `TuttiPlugin::render_workers` (bevy-tutti; default 1, `0` = one per core); an export forks onto a pool of its own |
 
@@ -661,10 +661,10 @@ compiles to nothing (see the PR for the verification).
   a node that does not honour offsets sample-accurately, as it refuses a
   ramp.
 
-### Design 015 PR 2: plugin, SoundFont and mod-source pieces to their owners
+### Design 015: plugin, SoundFont and mod-source pieces to their owners
 
 Engine logic that lived in `bevy-tutti` moves into the one crate that owns
-it, so a headless host gets it without Bevy (design doc 015, §9 "PR 2").
+it, so a headless host gets it without Bevy (design doc 015, §9.2).
 `bevy-tutti`'s systems call the moved code. **Breaking** where noted.
 
 | Was | Now |
@@ -693,7 +693,7 @@ the window (or asserts on `Liveness` with explicit times).
 
 ### Changed
 
-- **The old modulation system is deleted** (design doc 014, PR 5).
+- **The old modulation system is deleted** (design doc 014, §12.6).
   Control lanes are the one modulation path: a param port has at most one
   source, an event output, and the fused step is `clamp(held, range)`;
   `tutti-mod` is the pure compiler and holds no runtime. Audio-rate
@@ -707,7 +707,7 @@ the window (or asserts on `Liveness` with explicit times).
   |---|---|
   | `tutti_mod`'s `routing` feature: `ModMatrix`, `AtomicTarget`, `ModRouter`, `ModBus`, `ModEdge`, `ModRoutingTable`, `ModRoutingSnapshot`, `ModPreFrame`, `ErasedModulator`, `Sourced`, `SourceRate`, `Rate`, `SourceClock`, `Route`, `RouteTo`, `TargetHandle`, `LayeredCurve`, `ShapedCurve`, `EdgeShape`, `CurveModulator`, `BeatLfo` | declare sources, routes and targets and call `tutti_mod::compile` (headless: `tutti_nodes::Modulation` applies the result to an `Editor`), or declare them in Bevy (`bevy_tutti::modulation`'s `Mods`, `ModRoute`, `ModRange`); a `ControlLaneNode` per target runs its program |
   | `tutti_mod::{ModParams, ModTarget, LayerKey, ModTargetId, fold}`; the `std` and `routing` features (`bevy` implied `routing`) | gone: a node's params are its `ParamSet`, a lane's knob one of its cells; `tutti-mod` has `default = []` and `bevy` |
-  | `tutti_mod::{Lfo, Modulator, RandomState, SampleHold}` | `tutti_nodes::{Lfo, Modulator, RandomState, SampleHold}` (the copies the nodes run since PR 3) |
+  | `tutti_mod::{Lfo, Modulator, RandomState, SampleHold}` | `tutti_nodes::{Lfo, Modulator, RandomState, SampleHold}` (the copies the nodes run) |
   | `spec.connect_param(at, ParamFrom::Events(out), ParamShaping::Identity)` | `spec.connect_param(at, out)`, which replaces the port's source and returns the one it had; `disconnect_param(at, out)` |
   | `ParamFrom` (`Audio`, `Events`), `ParamShaping`, `ShapeLut`, `SHAPE_LUT_LEN`, `ParamSource`, `MAX_PARAM_SOURCES`, `GraphInvalid::{TooManyParamSources, UnsortedParamSources}`, `DelayKey::ParamAudio`; `ParamMod { range, sources }` | `ParamMod { range, source: Option<EventOut> }`; a port with no source reads its base under the range |
   | `Plan::param_sources()`, `ParamSourceOp`, `ParamSlot`; `ParamPortOp { sig, sources, .. }` | `ParamPortOp { port, param, from: EventOut, slot }`, the port's one source |
@@ -724,8 +724,8 @@ the window (or asserts on `Liveness` with explicit times).
   | a param a node addresses in its `ParamSet` but did not declare as a port, which the frame-rate driver modulated by writing its cell (a lane needs the port, so a route onto one would be refused with `NoSuchParam`) | declared as ports, each read once per block (a driven port's last frame) where the node reads its cell: new `MOD_DELAY_PARAMS` (chorus and flanger rate, depth, feedback, mix), `PHASER_PARAMS` (the same four), `CONVOLVER_PARAMS` (mix), `tutti_polysynth::SYNTH_PARAMS` (volume; detune and spread with a unison engine), `tutti_sampler::VOICE_PARAMS` (a `VoiceNode`'s gain, and a standalone `MemorySource`'s), `LFO_PARAMS` (depth; rate while free-running); and widened: `COMPRESSOR_PARAMS` (threshold, now also ratio, attack, release and makeup `GainDb`), `GATE_PARAMS` (threshold, now also attack and release), `LIMITER_PARAMS` (ceiling and threshold, now also release), `DELAY_PARAMS` (feedback and delay time, now also mix), `SVF_PARAMS` (cutoff and Q, now also gain). **Breaking** for code that matches a const's length or a shape's param list |
   | `BusStripNode`'s `Mute`, modulated by the driver like any cell | knob-only: a toggle, not a continuous control, and the strip folds it in unmodulated. A route onto it is refused with `NoSuchParam`; write it with `ParamSet::set` or `set_muted` |
 
-- **`bevy-tutti` modulation runs on control lanes** (design doc 014, PR
-  4b). Sources, routes, ranges and automation are declarations on
+- **`bevy-tutti` modulation runs on control lanes** (design doc 014,
+  §12.5). Sources, routes, ranges and automation are declarations on
   entities; `TuttiModulationPlugin` applies them every frame through
   `tutti_nodes::Modulation`, so each modulated param gets one control lane
   (sample-accurate on a 32-frame grid) and each follower or note envelope
@@ -735,7 +735,7 @@ the window (or asserts on `Liveness` with explicit times).
   authored value). A depth, range, curve or automation edit is a store,
   never a new plan, and an LFO keeps its phase across one. **Breaking**
   for every user of `bevy_tutti::modulation`; the old frame-rate driver was
-  kept, unscheduled, in `modulation::legacy` until PR 5 deleted it (above).
+  kept, unscheduled, in `modulation::legacy` until it was deleted (above).
 
   | Was | Now |
   |---|---|
@@ -767,7 +767,7 @@ the window (or asserts on `Liveness` with explicit times).
   `ParamRef` instead. `TuttiModulationPlugin` must still be added
   explicitly, after `TuttiPlugin`.
 
-- **The modulation reconcile, Bevy-free** (design doc 014, PR 4a):
+- **The modulation reconcile, Bevy-free** (design doc 014, §12.5):
   `tutti_nodes::Modulation` applies declared sources, routes and targets
   to a plain `Editor`. It compiles them against the last compile, builds a
   control lane per target and a node per signal source with their edges,
@@ -792,9 +792,9 @@ the window (or asserts on `Liveness` with explicit times).
   `Modulation::commit` when `Applied::commit` or `Applied::resync` says
   so, re-applying after a commit while `Applied::unresolved_targets` is
   not empty (`tutti-nodes/examples/headless_modulation.rs`; design 015
-  PR 5 moved it to `tutti-session/examples`, where a session does this).
+  moved it to `tutti-session/examples`, where a session does this).
 
-- **Signal-driven modulation sources** (design doc 014, PR 3b): an
+- **Signal-driven modulation sources** (design doc 014, §12.4): an
   envelope follower and a note envelope, graph nodes that send a raw value
   in `[0, 1]` into the control lanes reading their `SourceId`, built from
   the compiler's `SourceNode` descriptions. Both reset on the frame the
@@ -814,13 +814,11 @@ the window (or asserts on `Liveness` with explicit times).
   | a control lane kept a removed source's last segment in its input slot until another source needed the slot | a lane frees every input slot its newly adopted program does not read, so a source reading a reused id starts from 0, not the removed source's last value |
   | — | `tutti_mod::SourceId` derives `Default` (id 0) |
 
-- **`tutti-mod` as a pure compiler** (design doc 014, PR 3): `compile`
+- **`tutti-mod` as a pure compiler** (design doc 014, §12.3): `compile`
   turns declared sources, routes and targets into a `ControlProgram` per
   target, a `SourceNode` per signal-driven source and the event edges
   between them. It is a pure function with stable layer ids, rate-edit
-  anchors and refusals by name, and it needs no runtime. Nothing calls it
-  yet: `bevy-tutti` moves to it in PR 4, and the follower and
-  note-envelope nodes it describes come in PR 3b. **Breaking** for code
+  anchors and refusals by name, and it needs no runtime. **Breaking** for code
   that builds a `Layer` with a `depth_by`, matches `ProgramError`
   exhaustively, or relies on `tutti_nodes::{Lfo, Modulator}` being
   `tutti-mod`'s types.
@@ -833,9 +831,9 @@ the window (or asserts on `Liveness` with explicit times).
   | `ControlProgram::new` accepted a NaN in a layer or an input's depth | it returns `ProgramError::NotANumber(layer)`, so `ControlProgram` is `Eq`. Add an arm if you match `ProgramError` exhaustively |
   | `tutti_graph::PlayReading` | defined in `tutti_types::PlayReading`, so the compiler names no graph; `tutti_graph::PlayReading` re-exports it, so existing paths still compile |
   | `ParamAddr` was `Eq + Hash` only | it also derives `PartialOrd + Ord` (every `Unit` before every `Id`), so `TargetKey` can be a map key |
-  | `tutti_nodes::{Lfo, Modulator}` re-exported `tutti-mod`'s | they are `tutti-nodes`' own copies, used by `ModulatorNode` and `LfoNode`, and `tutti_nodes::{SampleHold, RandomState}` are newly exported. Migration: code that hands a `tutti_nodes::Lfo` to `tutti-mod`'s routing (anything bounded on `tutti_mod::Modulator`, such as `Sourced`) names `tutti_mod::Lfo` instead. `tutti-mod`'s copies go with `routing` in PR 5 |
+  | `tutti_nodes::{Lfo, Modulator}` re-exported `tutti-mod`'s | they are `tutti-nodes`' own copies, used by `ModulatorNode` and `LfoNode`, and `tutti_nodes::{SampleHold, RandomState}` are newly exported. Migration: code that hands a `tutti_nodes::Lfo` to `tutti-mod`'s routing (anything bounded on `tutti_mod::Modulator`, such as `Sourced`) names `tutti_mod::Lfo` instead. `tutti-mod`'s copies go with `routing` |
 
-- **The control lane** (design doc 014, PR 2b): one node per target that
+- **The control lane** (design doc 014, §12.2): one node per target that
   evaluates the target's `ControlProgram` (automation or the knob, plus
   every modulation offset) on a 32-frame grid of the play clock and every
   corner, and sends it as segments, equal live and in an export, serial
@@ -1081,7 +1079,7 @@ the window (or asserts on `Liveness` with explicit times).
   - Replace a `Retire<T>` with a newtype whose `Drop` calls
     `AudioThread::check_not_current`.
 
-- **The control-lane floor** (design doc 014, PR 2a): the port rule for
+- **The control-lane floor** (design doc 014, §12.2): the port rule for
   event sources, the graph's play clock and a shareable range cell.
   **Breaking** in three ways. A param port's event source *replaces* the
   base instead of adding to it. A port refuses a second event source, or a
@@ -1143,7 +1141,7 @@ the window (or asserts on `Liveness` with explicit times).
   `InProcessVst2Client` forks it instead, or loads the plugin again.
 
 - **Plugin parameters are delivered as changes only, with no 16-queue
-  cap** (modulation PR 1; design doc 013, "Plugin parameter delivery").
+  cap** (design doc 014 §9; design doc 013, "Plugin parameter delivery").
   The hosted plugin node reads the plugin's parameter list once, at
   `PluginClient::new`, and reserves a slot per parameter (plus 64 spare)
   at bind and, at prepare, a chunk with a queue per slot and room in each
@@ -1299,8 +1297,8 @@ the window (or asserts on `Liveness` with explicit times).
   | tutti-export `Error::NotForkable`'s message listed in-process VST2 | no longer does |
   | — | `tutti-vst2-test-plugin`: `TUTTI_VST2_PROBE_STATE_DC` (the instance's state as an output DC, `config::state_dc`), `TUTTI_VST2_PROBE_UNIQUE_ID`, and `tutti_vst2_probe_set_refuse_chunk_load` |
 
-- **`AudioUnit` and `tutti-node` are deleted** (design doc 013, "Phase 5,
-  part 3"). **Breaking.** fundsp's node contract had no implementor left
+- **`AudioUnit` and `tutti-node` are deleted** (design doc 013, "`AudioUnit`
+  and `tutti-node` are deleted"). **Breaking.** fundsp's node contract had no implementor left
   but the sampler's internal stretch filter. The node contract is
   `tutti_graph::Node`.
 
@@ -1315,7 +1313,7 @@ the window (or asserts on `Liveness` with explicit times).
   | `just miri` / CI `miri` ran `tutti-node` | removed (its planar buffers were the subject) |
 
 - **The fundsp fork is deleted, and the latency solve is one pass**
-  (design doc 013, "Phase 5, part 2"). **Breaking.**
+  (design doc 013, "The fork is deleted"). **Breaking.**
   `crates/vendor/fundsp-tutti` is gone. `tutti_types::latency` no longer
   inserts anything: `delays(&g)` returns the per-port and per-output delays
   as a value, a global input is aligned at a merge point, and event and
@@ -1331,7 +1329,7 @@ the window (or asserts on `Liveness` with explicit times).
   | — | `impl LatencyGraph for tutti_graph::GraphSpec` |
   | CI installs `libfontconfig1-dev` | not needed (the fork's `plotters` dev-dependency was the only edge) |
 
-- **Nothing uses fundsp's `Net`** (design doc 013, "Phase 5, part 1").
+- **Nothing uses fundsp's `Net`** (design doc 013, "Nothing uses `Net`").
   **Breaking.** `AudioNode` wraps a `NodeKey`; the `Topology → Net`
   compile route and the `dsp` re-exports are gone. `Editor::commit` with
   nothing changed since the last commit sends nothing and compiles nothing.
@@ -1484,7 +1482,7 @@ the window (or asserts on `Liveness` with explicit times).
   tutti-polysynth's `a_first_block_on_a_cold_thread_is_allocation_free` is
   no longer `#[ignore]`d.
 
-- **Smart types 2: four footguns found in Phase 3/4 review, made
+- **Smart types 2: four footguns found in review, made
   unwritable** (design doc 013 §5). Each was a rule a doc stated and nothing
   enforced; each is now a type, or a named error where the mistake is made.
 
@@ -1658,11 +1656,11 @@ the window (or asserts on `Liveness` with explicit times).
   declaration, and the contract suite's `EventFanIn` path behind PDC.
 
 - **tutti-core's `Engine` renders only the native graph** (design doc 013,
-  Phase 3 PR 15; Phase 3 is done). The engine's fundsp `Net` backend is
+  "Flip the adapter"). The engine's fundsp `Net` backend is
   removed: the `Engine::new(MotionFsm, NetBackend)` constructor, the
   `Net` render path and the root re-export of `NetBackend`. `Net` itself
   stays, as a graph container (`tutti_core::dsp::Net`, `topology::compile`),
-  until Phase 5 deletes fundsp. What changes for a host:
+  until fundsp is deleted. What changes for a host:
 
   | Was | Now |
   |---|---|
@@ -1685,8 +1683,8 @@ the window (or asserts on `Liveness` with explicit times).
   pinned to analytic figures, to invariants of the render, and, for samples
   that call libm, to golden digests asserted on Linux/glibc.
 
-- **tutti-export renders only the native graph** (design doc 013, Phase 3 PR
-  14). fundsp's `Net` is no longer an export source: the `Net` arm of
+- **tutti-export renders only the native graph** (design doc 013, "Flip
+  the adapter"). fundsp's `Net` is no longer an export source: the `Net` arm of
   `RenderGraph`, its conversion from a `Net`, and the `Net`-taking latency
   and tail queries are removed. What changes for a caller:
 
@@ -1702,8 +1700,8 @@ the window (or asserts on `Liveness` with explicit times).
   | bevy-tutti: `if let RenderGraph::Graph { editor, .. } = prepared.graph` in an export `prepare` hook | `prepared.graph.editor_mut()`: `PreparedGraph::graph` is always a native graph, and a hook can no longer swap in a `Net`. The adapter still commits what the hook leaves |
   | `tutti` umbrella: an export graph needed a direct `tutti-graph` dependency | `tutti::graph` re-exports `tutti-graph` (`tutti::graph::GraphBuilder`) |
 
-- **bevy-tutti runs on the native graph only** (design doc 013, Phase 3 PR
-  13). fundsp's `Net` is gone from the adapter: `AudioGraphRes` holds the
+- **bevy-tutti runs on the native graph only** (design doc 013, "Flip the
+  adapter"). fundsp's `Net` is gone from the adapter: `AudioGraphRes` holds the
   native `tutti-graph` editor, PDC is the compiler's (no delay nodes are
   spliced into the graph), and every export forks the live graph. What
   changes for a host:
@@ -1716,11 +1714,11 @@ the window (or asserts on `Liveness` with explicit times).
   | `AudioGraphRes::unattached(i, o)` | `AudioGraphRes::headless(i, o)`: the two built the same graph on the native runtime (a setting is never applied at once), so one name stays |
   | `AudioGraphRes::backend()` | removed |
   | `PreparedGraph::ctx: Option<&OfflineTransport>` (`None` for a `Net` master export) | `ctx: &OfflineTransport`: every export is a fork rebound onto the request's timeline |
-  | `PreparedGraph::graph` could be `RenderGraph::Net` | always `RenderGraph::Graph` (the enum keeps its `Net` arm until tutti-export's graph-only API, PR 14) |
-  | `ExportSource::Master` on `Net`: a plain clone keeping live bindings and running state | a fork of what the outputs hear, isolated, rebound and reset (PR 12's behaviour, now the only one) |
+  | `PreparedGraph::graph` could be `RenderGraph::Net` | always `RenderGraph::Graph` (the enum keeps its `Net` arm until tutti-export's graph-only API) |
+  | `ExportSource::Master` on `Net`: a plain clone keeping live bindings and running state | a fork of what the outputs hear, isolated, rebound and reset (the native backend's behaviour, now the only one) |
   | `bevy_tutti::Net`, and `Net` in `bevy_tutti::prelude` | removed: nothing in the adapter hands one out. Name `tutti_core::dsp::Net` if you still build one yourself |
   | `offline_export` example's `-- --native` | removed; the example always forks |
-  | An export of a graph holding an **in-process VST2 plugin** (inserted boxed) cloned it | `ExportError::NotForkable`, naming the node: its clones share the one plugin. **Follow-up**, not by design: an in-process VST2 fork by state transfer (doc 013, PR 13's follow-ups). Meanwhile export a node it does not feed, freeze it, or host it out of process |
+  | An export of a graph holding an **in-process VST2 plugin** (inserted boxed) cloned it | `ExportError::NotForkable`, naming the node: its clones share the one plugin. **Follow-up**, not by design: an in-process VST2 fork by state transfer (doc 013, "In-process VST2 forks by state transfer"). Meanwhile export a node it does not feed, freeze it, or host it out of process |
   | An export of a graph holding a **unit with a captured MIDI port pushed with `insert` / `insert_boxed`** rendered it | `ExportError::NotForkable`, naming the node: its fork would drop the clip on its port. **By design**: insert it with `AudioGraphRes::insert_with` and its `CapturedControls` (what `spawn_audio_node` does), and its fork carries the clip |
   | An export of a graph whose outputs reach a **mic monitor** (`MicMonitorNode`) cloned it, and the render read the live input ring | `ExportError::NotForkable`, naming the node. **By design**: a live input has nothing to render offline. Route the monitor away from what you export, or export a node it does not feed. A monitor no output reaches does not refuse a master export |
   | `TuttiDriver::restart_with` / `restart_on` hooks took `(&OutputSpec)` (tutti-cpal) | they take `(&OutputSpec, &Stopped)`; `Stopped::settle_graph` reaches the engine while no callback can (`unsafe fn Engine::settle_graph`, new in tutti-core: the caller guarantees no callback runs; `Stopped` is the safe way in). Ignore the second argument if the hook does not need it |
@@ -1746,13 +1744,13 @@ the window (or asserts on `Liveness` with explicit times).
     plugin adds a debug-build check that the topology's latency fold agrees
     with the compiled plan. Its API is unchanged.
 
-- **bevy-tutti exports fork the native graph** (design doc 013, Phase 3 PR
-  12). On `GraphBackend::Native` an `ExportRequest` renders `Editor::fork`
+- **bevy-tutti exports fork the native graph** (design doc 013, "Flip the
+  adapter"). On `GraphBackend::Native` an `ExportRequest` renders `Editor::fork`
   of the live graph — `ExportSource::Master` what the global outputs hear,
   `Node` the sub-graph feeding it — in `ForkMode::Offline` on the request's
   timeline, through tutti-export's `RenderGraph::Graph`. The live graph is
   not touched and keeps playing while the render runs. `GraphBackend::Net`
-  exports as before until PR 13 removes it. What changes for a host:
+  exports as before until it is removed. What changes for a host:
 
   | Was | Now |
   |---|---|
@@ -1784,7 +1782,7 @@ the window (or asserts on `Liveness` with explicit times).
     timeline (see the tutti-sampler entry below). It no longer refuses an
     export as `ExportError::NotForkable`. On `Net` a node export plays it
     the same way; a `Net` master export is still a plain clone that reads
-    the live voice's ring from the render thread, until PR 13 removes it.
+    the live voice's ring from the render thread, until it is removed.
   - New on `ExportRequest`, either backend: `trim_reported_latency()` and
     `with_reported_tail(cap)` take the render's latency trim and tail from
     the graph that is rendered, after the `prepare` hook. The tail resolves
@@ -1877,7 +1875,7 @@ the window (or asserts on `Liveness` with explicit times).
   the graph.** The field was `pub Net`; it is private, so `graph.0` no longer
   compiles outside the crate. The graph is still fundsp's `Net` inside. The
   methods are named in graph terms and take an `AudioNode` and a `GraphSource`,
-  so the native backend (design doc 013, Phase 3) can sit behind the same
+  so the native backend (design doc 013, "Flip the adapter") can sit behind the same
   signatures. Every removed or changed item, with its replacement:
 
   | Was | Now |
@@ -1904,7 +1902,7 @@ the window (or asserts on `Liveness` with explicit times).
   `GraphSource` is new, in `bevy_tutti::graph` and the prelude. `bevy_tutti::Net`
   stays: on `GraphBackend::Net` an export's `prepare` hook is still handed
   the `Net` it renders (as `RenderGraph::Net`, since export moved to `Fork`;
-  see the entry above). *Superseded by PR 13: `bevy_tutti::Net` is removed
+  see the entry above). *Superseded: `bevy_tutti::Net` is removed
   (the first entry).*
 
 - **bevy-tutti captures a node's controls when the node is inserted, and never
@@ -2386,7 +2384,7 @@ the window (or asserts on `Liveness` with explicit times).
     the entry above.
 
 - **A synth instrument exported silent on the native graph** (design doc
-  013, PR 12's follow-up). A forked `PolySynth` or `SoundFontUnit` was
+  013, "Flip the adapter"). A forked `PolySynth` or `SoundFontUnit` was
   cloned from its `Legacy::controlled` shadow, whose MIDI port was severed
   when the node was inserted — before any `MidiSourceInstall` clip reached
   the live port — so a native export played none of its notes. Each synth

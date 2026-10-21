@@ -156,7 +156,7 @@ mod plugins_without_engine {
     /// modulation plugin. (The drain it replaced, `plugin_param_edits`,
     /// once read `ModulationState`, a resource only the modulation plugin
     /// inserted.)
-    /// (The frame-rate binding it replaced, deleted in doc 014 PR 5, required
+    /// (The frame-rate binding it replaced, since deleted, required
     /// it too, and that combination panicked on frame one.)
     #[test]
     fn the_umbrella_plugin_survives_without_a_device() {

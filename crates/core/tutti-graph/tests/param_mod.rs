@@ -392,7 +392,7 @@ fn an_unconnected_param_reads_its_base_never_zero() {
 /// port's first frame, and is clamped to the port's range: an unbounded
 /// port reads the source exactly, a bounded one reads it clamped.
 ///
-/// Ported in doc 014 PR 5 from `modulators_sum_on_the_base_then_clamp`:
+/// Ported from `modulators_sum_on_the_base_then_clamp`:
 /// the base, several audio sources summed in source order and a shaping LUT
 /// are gone (§10, §11: one event source per port replaces the base; a lane
 /// sums and shapes before it sends). The clamp and the per-frame timing are
@@ -729,7 +729,7 @@ fn a_units_first_block_is_not_declicked() {
 /// changes its node's other port (Q gains a source), and through one that
 /// changes nothing of it (a range on Q).
 ///
-/// Ported in doc 014 PR 5 from
+/// Ported from
 /// `an_event_sources_held_value_survives_another_source_joining`: a second
 /// source can no longer join a port (one source, replacing the base), and
 /// shaping is gone (§10), so the reshape refusal went with it. The edit
@@ -842,7 +842,7 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
 /// (and hands it back), the port follows the new one after the declick,
 /// and disconnecting the one no longer there is a no-op.
 ///
-/// Ported in doc 014 PR 5 from `a_second_event_source_is_refused`: the
+/// Ported from `a_second_event_source_is_refused`: the
 /// refusal (`TooManyEventParamSources`) is gone because a port's source is
 /// one `Option<EventOut>`, so two cannot be represented (§10).
 ///
@@ -881,7 +881,7 @@ fn a_second_event_source_replaces_the_first() {
 /// source's events), and again when the sibling grows to 150 (the delay
 /// retuned longer). The held value is the port's, not the delay line's.
 ///
-/// Ported in doc 014 PR 5: the source was an audio step whose delay ring
+/// Ported: the source was an audio step whose delay ring
 /// had to be filled with its last value; audio sources are gone (§10), and
 /// an event delay carries only events, so the property is now that the
 /// port keeps what it holds.
@@ -964,7 +964,7 @@ impl Node for LatentHold {
 /// and `latency::plan` over the whole spec (`GraphSpec`'s `LatencyGraph`,
 /// what a latency readout folds) reports the same total.
 ///
-/// Added in doc 014 PR 5: the differential's reference shares the
+/// Added in doc 014 §12.6: the differential's reference shares the
 /// compiler's arrival, so nothing pinned the spec's fold of param sources
 /// (`compile_passes.rs` pins its event sources).
 ///
@@ -1045,7 +1045,7 @@ impl Node for OnFirstBlock {
 /// prepared copy that sends its value on its first block, and the fork's
 /// ports (fresh too) take it from their first frame, undeclicked.
 ///
-/// Ported in doc 014 PR 5 from `a_fork_carries_its_event_sources_ramps`:
+/// Ported from `a_fork_carries_its_event_sources_ramps`:
 /// the fork no longer seeds its ports from a tap of the live ones (the
 /// seeds are gone, §10); a fresh source speaks instead. The lane itself is
 /// held to this in `tutti-nodes` (`ControlLaneNode`'s fork test).
@@ -1451,10 +1451,10 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
 /// A segment replaces the base, frame by frame: before the segment's first
 /// event the port is the base, from it on the segment, never both.
 ///
-/// Changed in doc 014 PR 2a (was `a_segment_sums_with_other_modulators_through_its_shaping`):
+/// Changed in doc 014 §12.2 (was `a_segment_sums_with_other_modulators_through_its_shaping`):
 /// the segment went through a `-2x` LUT and summed with the base; an event
 /// source now replaces the base and takes no shaping. Changed in doc 014
-/// PR 5 (was `a_segment_replaces_the_base_and_audio_offsets_add`): the audio
+/// §12.6 (was `a_segment_replaces_the_base_and_audio_offsets_add`): the audio
 /// modulator added beside it is gone with audio-rate param sources (§10,
 /// §11).
 ///
@@ -1752,7 +1752,7 @@ fn a_bad_range_move_is_refused() {
 /// the ramp has got to, frame for frame — having run on, unclamped, the
 /// whole time.
 ///
-/// Changed in doc 014 PR 2a: the ramp ran from 0 and the port read base +
+/// Changed in doc 014 §12.2: the ramp ran from 0 and the port read base +
 /// ramp; an event source now replaces the base, and its first ramp starts
 /// from the base.
 ///
@@ -2177,7 +2177,7 @@ proptest! {
     /// growing, shrinking), regenerated probes and ranges moved without a
     /// commit — and on every param source's PDC delay.
     ///
-    /// Mutations (run in doc 014 PR 5, after the collapse to one event
+    /// Mutations (run after the collapse to one event
     /// source per port), each diverges: in the executor, reset the ramp of
     /// a port whose source did not change; in the reference, keep a
     /// regenerated probe's param state; in the reference, declick a port's
@@ -2198,7 +2198,7 @@ proptest! {
 /// every cell from the spec) leaves it reading the same range. A param the
 /// node does not declare, or a key no commit has placed, has none.
 ///
-/// Changed in review of doc 014 PR 2a: the handle was an `Arc<RangeCell>`
+/// Changed in review of doc 014 §12.2: the handle was an `Arc<RangeCell>`
 /// and the test stored through it; a store there was undone by the next
 /// commit, so the handle is read-only and the test writes through the
 /// supported path, `set_param_range`, still asserting the handle sees it.

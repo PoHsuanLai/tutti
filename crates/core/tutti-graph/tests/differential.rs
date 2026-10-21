@@ -468,7 +468,7 @@ fn schedule(which: usize, seed: u64, frames: usize) -> Vec<usize> {
 /// The executors each case runs: serial, and parallel on a participant
 /// count the seed picks from `common::WORKERS` — so every generated graph is
 /// held to the reference on both, and the parallel render is held to the
-/// serial one through it, sample for sample (doc 013 Phase 6).
+/// serial one through it, sample for sample (doc 013, "The parallel executor").
 ///
 /// Mutation (each applied to `src/par.rs` and seen to fail, then
 /// reverted): run a task's ops in reverse → `executor_is_bit_identical`
@@ -834,8 +834,8 @@ fn the_generator_covers_what_the_suite_claims() {
 
 /// Declared costs for `desc`'s nodes, a pure function of the seed: about
 /// two in three declare `Cost::Light`, a few `Cost::Moderate`, the rest
-/// nothing (`Cost::Heavy`) — so cheap siblings pack (doc 013, "Phase 6,
-/// part (b)") beside heavy tasks that keep the plan parallel.
+/// nothing (`Cost::Heavy`) — so cheap siblings pack (doc 013, "The cost
+/// model and coarsening") beside heavy tasks that keep the plan parallel.
 fn random_costs(desc: &Desc, seed: u64) -> BTreeMap<NodeKey, tutti_graph::Cost> {
     let mut rng = Rng::new(seed ^ 0xC057);
     desc.kinds
@@ -888,7 +888,8 @@ proptest! {
 #[test]
 fn the_cost_generator_packs_and_spreads() {
     let (mut packed, mut packed_parallel, mut serial) = (0, 0, 0);
-    // Undeclared graphs, for the record (doc 013, part (b) decision 2):
+    // Undeclared graphs, for the record (doc 013, the cost model's
+    // decision 2):
     // multi-task plans the model keeps serial at four participants.
     let (mut plain_multi, mut plain_serial) = (0, 0);
     for seed in 0..512u64 {

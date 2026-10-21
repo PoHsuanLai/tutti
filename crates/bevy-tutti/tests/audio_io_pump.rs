@@ -297,7 +297,7 @@ mod audio_pump {
     /// reports the refusal as the pump's result.
     ///
     /// `Recorder::start` refuses the pair; a component has no error to return,
-    /// so `PumpFinished` is where it goes. Before design 015 PR 3 this pump ran
+    /// so `PumpFinished` is where it goes. Before design 015 this pump ran
     /// anyway and only `pump`'s `debug_assert` stood between it and a file
     /// whose channels rotate every frame.
     ///

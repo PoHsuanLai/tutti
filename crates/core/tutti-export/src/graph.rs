@@ -170,7 +170,7 @@ impl RenderGraph {
         Ok(())
     }
 
-    /// Render on `pool` (the parallel executor, doc 013 Phase 6), or with
+    /// Render on `pool` (the parallel executor, doc 013), or with
     /// `None` on the render's own thread. Returns the pool it replaces. The
     /// render is bit for bit the same either way; a pool only spreads each
     /// block's independent nodes across its threads. Give an export its own

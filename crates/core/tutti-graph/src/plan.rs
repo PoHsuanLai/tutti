@@ -925,7 +925,7 @@ impl Plan {
     /// included): serially, or spread from some block length up over some
     /// number of participants. Pure arithmetic on [`work`](Self::work),
     /// [`critical_path`](Self::critical_path) and the task count, the cost
-    /// model of doc 013 ("Phase 6, part (b)"); the executor asks it when a
+    /// model of doc 013 ("The cost model and coarsening"); the executor asks it when a
     /// plan meets a pool, never per block.
     ///
     /// A speed decision only: the parallel render is bit for bit the

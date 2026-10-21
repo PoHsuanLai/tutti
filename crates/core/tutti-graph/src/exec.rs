@@ -1444,7 +1444,7 @@ impl Executor {
         } else {
             // Built once per block, not per op: rebuilt per node call it was
             // ~20 stack moves a node (measured on `graph_render`'s
-            // `overhead` chains, doc 013 Phase 6). A node op sets `at`.
+            // `overhead` chains). A node op sets `at`.
             let mut st = OpState {
                 arena,
                 flags,

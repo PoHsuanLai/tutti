@@ -1,4 +1,4 @@
-//! `compile`'s properties (doc 014 §12, PR 3), against analytic figures.
+//! `compile`'s properties (doc 014 §12.3), against analytic figures.
 //! Each test carries the mutations it was seen to fail under.
 
 use super::*;
@@ -573,7 +573,7 @@ fn an_anchor_is_carried_until_a_play_start() {
 /// gives its id again, so no lane can read a removed source's last segment
 /// as a new source's (doc 014 §7).
 ///
-/// Changed in doc 014 PR 3b: a removed source's id was reusable from the
+/// Changed in doc 014 §12.4: a removed source's id was reusable from the
 /// compile after the one that removed it (the last assertion read
 /// `SourceId(0)`, "freed last time"); a lane that skipped the program
 /// between could then read the stale segment. Ids are now never reused.
@@ -810,7 +810,7 @@ fn each_refusal_fires_by_name() {
     assert!(run(&one_lfo, &routes, &t1).is_ok());
 }
 
-/// Exit of doc 014 PR 1 (§12): what `bevy-tutti` expressed then compiles
+/// What `bevy-tutti` expressed before the compiler (doc 014 §12) compiles
 /// with no runtime (no driver, no target), each feature as a declaration:
 ///
 /// - a `ModSource { shape }` at `ModClock::Free { hz }` or
@@ -826,7 +826,7 @@ fn each_refusal_fires_by_name() {
 ///   parameter: automation and a layer.
 ///
 /// A custom `ModSourceKind` (an arbitrary `Modulator`) has no closed form;
-/// PR 4 gives it `declare() -> Source` (doc 014 §8.1).
+/// it declares one with `declare() -> Source` (doc 014 §8.1).
 ///
 /// Mutation: none applies (it pins that the declarations compile, which
 /// the type checker and the run assert; removing a source kind fails to

@@ -602,9 +602,9 @@ impl Session {
     ///
     /// The fork renders what the graph is driven to play from the request's
     /// clock, from silence: every node isolated and reset, reading that
-    /// clock through its `Env`; controls as they are now; a hosted plugin forked by state
-    /// transfer (a fresh instance in a new `plugin-server`, loaded with the
-    /// live one's state).
+    /// clock through its `Env`; controls as they are now; a hosted plugin
+    /// forked by state transfer (a fresh instance in a new `plugin-server`,
+    /// loaded with the live one's state).
     ///
     /// # Errors
     ///

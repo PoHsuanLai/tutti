@@ -1,5 +1,6 @@
-//! The synth as a graph node, fed by a clip node's event port: a clip's note sounds on its frame, in the block it is
-//! written, and a forked graph plays it offline with nothing rebound.
+//! The synth as a graph node, fed by a clip node's event port: a clip's note
+//! sounds on its frame, in the block it is written, and a forked graph plays
+//! it offline on its render's `Env`.
 //!
 //! 120 BPM at 48 kHz: a beat is 24 000 frames.
 
@@ -98,8 +99,7 @@ fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
     assert_eq!(onset(&out), Some(1_000 + lead()));
 }
 
-/// **An exported graph plays the clip, on the render's timeline, with
-/// nothing rebound.** The live graph is forked offline and rendered; the
+/// **An exported graph plays the clip, on the render's timeline.** The live graph is forked offline and rendered; the
 /// fork's clip node reads its render's `Env`, so the note is on the same
 /// frame as live.
 ///

@@ -135,9 +135,9 @@ impl ParamSetBuilder {
 /// [`ParamSet`]: what [`param_parts`] inserts, with a fork that shares
 /// nothing and starts from the values its cells hold.
 ///
-/// A graph node reads time from its block's [`Env`](crate::Env), so a fork
-/// has nothing to rebind: [`fork_fresh`](Self::fork_fresh) is the whole
-/// copy.
+/// A graph node reads time from its block's [`Env`](crate::Env), so
+/// [`fork_fresh`](Self::fork_fresh) is the whole copy: the fork reads its
+/// render's `Env`.
 pub trait ParamNode: Node + Sized {
     /// A [`ParamSet`] over this node's cells (every param a host may set by
     /// address). Control thread; may allocate.

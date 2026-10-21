@@ -354,7 +354,7 @@ pub struct DiskVoiceConfig {
 /// it) is cut off from the stream, and handed the stream's file, as the
 /// butler records it (path, rate, loop), to read on demand on the render's
 /// thread. It plays the same window of the file on the render's transport
-/// (its `Env`: nothing to rebind), read as the memory tier reads it; see
+/// (it reads its render's `Env`), read as the memory tier reads it; see
 /// `offline_read`. That path blocks on file I/O and is never taken live: a
 /// live fork of a disk voice is refused.
 pub struct DiskVoice {

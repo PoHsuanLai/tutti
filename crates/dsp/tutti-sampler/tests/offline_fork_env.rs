@@ -1,8 +1,8 @@
 //! An offline render must not hear the live playhead — nor steal from it.
 //!
 //! Each of the sampler's nodes reads the transport from its block's `Env`, so
-//! a fork (`Editor::fork`, the export's) has nothing to rebind: it plays on
-//! whatever transport its own renderer hands it. What these tests pin is the
+//! a fork (`Editor::fork`, the export's) plays on whatever transport its own
+//! renderer hands it. What these tests pin is the
 //! outcome, for every node shape (`VoicePool`, `VoiceNode`, a bare
 //! `MemorySource`, one behind another node): a fork rendered on a
 //! **stopped** render transport is silent while the live graph, on a rolling

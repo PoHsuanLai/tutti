@@ -90,8 +90,8 @@
 //! An export renders a **fork** of the live graph (`Editor::fork`): what the
 //! global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
 //! feeding one node for [`ExportSource::Node`], every node isolated and
-//! reset, reading the request's [`ExportClock`] through its `Env`. The live graph is not
-//! touched and keeps playing while the render runs on the pool.
+//! reset, reading the request's [`ExportClock`] through its `Env`. The live
+//! graph is not touched and keeps playing while the render runs on the pool.
 //!
 //! - **It renders what the graph is driven to play, from silence.** A fork
 //!   keeps neither the live transport bindings nor running state (delay

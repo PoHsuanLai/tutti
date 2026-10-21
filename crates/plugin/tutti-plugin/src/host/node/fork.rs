@@ -54,9 +54,9 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Give it the live node's meter.** Nothing else it reads needs
-//!    rebinding: the transport comes from its own graph's `Env` (for an
-//!    offline fork, the render's), and parameter automation, chords and
+//! 4. **Give it the live node's meter.** Everything else it reads comes
+//!    from its own graph: the transport from its `Env` (for an offline
+//!    fork, the render's), and parameter automation, chords and
 //!    scales and MIDI from the graph's event edges, whose nodes fork
 //!    themselves: an exported instrument plays the clip node that feeds it.
 //!    Just before the state, step 1 also reads **what the live node has

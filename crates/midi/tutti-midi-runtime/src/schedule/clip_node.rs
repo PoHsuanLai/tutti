@@ -8,8 +8,7 @@
 //! block's transport and the clip, answered by a binary search over the
 //! sorted events and the engine's one beat→frame rule ([`Env::due`]), so a
 //! seek, a loop wrap or a tempo change inside a block needs no bookkeeping,
-//! and an offline fork plays the clip on its render's `Env` with nothing to
-//! rebind.
+//! and an offline fork plays the clip on its render's `Env`.
 //!
 //! What it does keep is the set of notes it has started and not ended
 //! ([`HeldNotes`]): when playback stops, jumps (a seek, a loop wrap), or the
@@ -287,7 +286,7 @@ impl IntoNode for MidiClipNode {
 
 /// A clip node's fork: a fresh node over the clip as it is when the fork is
 /// taken, so an export plays what was there at its start while the live clip
-/// is edited. Nothing to rebind: the fork reads its render's `Env`.
+/// is edited. The fork reads its render's `Env`.
 struct ClipFork {
     shared: Arc<Shared>,
 }

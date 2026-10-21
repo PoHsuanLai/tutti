@@ -5,10 +5,10 @@
 //! transport manager `Arc` is shared with the RT callback as it is built — and
 //! inserted from there.
 //!
-//! [`TransportRes`] is time as a **value**, read per frame or (via
-//! [`timeline`](TransportRes::timeline)) outside the graph. A graph node reads it per
-//! frame from its block's `Env`, with nothing wired into it (the metronome, a
-//! beat-synced LFO, an automation lane).
+//! [`TransportRes`] is time as a **value**, read per frame, or through
+//! [`timeline`](TransportRes::timeline) by code outside the graph. A graph
+//! node reads it per frame from its block's `Env`, with nothing wired into
+//! it (the metronome, a beat-synced LFO, an automation lane).
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;

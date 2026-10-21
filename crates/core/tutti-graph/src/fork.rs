@@ -726,8 +726,8 @@ impl Editor {
     /// plugin's state transfer). A node inserted as [`Unforkable`] has none,
     /// and a fork that needs it fails with [`ForkError::NotForkable`] —
     /// never a copy that quietly shares state with the live node. A graph
-    /// node reads time from its block's [`Env`](crate::Env), so a fork has
-    /// nothing to rebind: the fork's renderer hands it the render's
+    /// node reads time from its block's [`Env`](crate::Env), so a fork
+    /// reads its render's `Env`: the fork's renderer hands it the render's
     /// transport.
     ///
     /// # What a fork has, and what it does not

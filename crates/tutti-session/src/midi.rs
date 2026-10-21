@@ -372,14 +372,6 @@ impl MidiState {
         self.routed.remove(&node);
     }
 
-    /// The session's clips' retired events, freed (`Phase::Reclaim`).
-    pub(crate) fn reclaim(&self) -> usize {
-        self.clips
-            .values()
-            .map(|clip| clip.controls.reclaim())
-            .sum()
-    }
-
     /// `Phase::MidiOut`: drains the hardware out to the output, and reports
     /// the drops when their count rose, at most once per
     /// [`MIDI_OUT_DROP_REPORT`] of `now`.
@@ -484,7 +476,7 @@ impl Midi<'_> {
                 clip
             }
             None => {
-                let (clip, controls) = self.graph.insert(MidiClipNode::new(events));
+                let (clip, controls) = self.graph.add(MidiClipNode::new(events));
                 self.state.clips.insert(clip, Clip { controls, target });
                 clip
             }

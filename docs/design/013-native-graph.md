@@ -245,8 +245,9 @@ the interpreter.
   or a reader preempted mid-lend, pins it until the next scan after (hosts
   poll `retired_len()`; `reclaim()` frees without publishing, and is a lock
   and a length check with nothing retired). Every publisher reclaims on a
-  control-side tick it has: the session's `Phase::Reclaim`, `bevy-tutti`'s
-  `reclaim_graph`, the butler's cycle. Every read site
+  control-side tick it has: the session's `Phase::Reclaim` (its nodes'
+  through `SessionNode::reclaimer`, kept by node; `bevy-tutti`'s
+  `reclaim_graph` runs it), the butler's cycle. Every read site
   reads one cell it owns, registered where its node (or the butler's cycle,
   or the MIDI drain) is built; a fork's node registers on its own new cell,
   and a control-side `&self` method keeps a mirror instead of reading a

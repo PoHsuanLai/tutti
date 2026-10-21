@@ -21,16 +21,23 @@ every tick costs nothing.
 | What | Change |
 |---|---|
 | `ArcLend::reclaim` | returns `0` without scanning when nothing is retired |
-| `tutti_session::Phase` | new last phase, `Phase::Reclaim` (in `PHASES` after `Poll`): reclaims the compensation table, the project meter and the plugin meter slots following it, the modulation lanes, the session's clips, the hardware input's MPE request and port set (`HardwareMidiInputs::collect`). `Session::update` runs it; a host running the phases itself runs it last |
-| `bevy_tutti::graph::reclaim_graph` | new system in `SessionPhaseSystems(Phase::Reclaim)`, added by `GraphReconcilePlugin`: the session's phase, plus every `NodeControls<MidiClipControls>` (feature `midi`) and `VoiceCommands` (feature `sampler`) on an entity |
+| `tutti_session::Phase` | new last phase, `Phase::Reclaim` (in `PHASES` after `Poll`): runs the graph's table (each node's `Reclaimer`, and each hosted plugin's `PluginMeter`, a cleared one included) and reclaims the session's own cells: the compensation table, the project meter and every slot following it, the modulation lanes, the hardware port set (`HardwareMidiInputs::collect`). `Session::update` runs it; a host running the phases itself runs it last |
+| `tutti_session::SessionNode` | new provided method `reclaimer(controls) -> Option<Reclaimer>` (default `None`), beside `params`. The graph keeps it by node from `Graph::add` and `Graph::crossfade` until the node is removed or swapped (`Graph::insert` and `Graph::replace` keep none). `MidiClipNode`, `MidiInputNode`, `VoiceNode` return one; `HarmonyNode` is a new `SessionNode` that does |
+| `tutti_session::Reclaimer` | new: a boxed `Fn() -> usize + Send` over a clone of a node's controls (`Reclaimer::new`, `Reclaimer::reclaim`); re-exported as `bevy_tutti::graph::Reclaimer` |
+| the session's clips and the builder's MIDI input | go in through `Graph::add` (were `insert`), so their reclaimers are kept |
+| `bevy_tutti::graph::reclaim_graph` | new system in `SessionPhaseSystems(Phase::Reclaim)`, added by `GraphReconcilePlugin`: runs the session's phase, so a Bevy host and a headless one sweep the same cells |
 | the sampler's butler | each cycle reclaims every ring's read map |
-| `reclaim(&self) -> usize` | new on `ProjectMeter` (its cell and every live follower), `MeterSlot`, `LaneControls`, `Modulation` (every lane), `MidiClipControls`, `HarmonyControls`, `MidiInputControls`, `VoiceNodeHandle`; each returns how many retired values are still held |
+| `reclaim(&self) -> usize` | new on `ProjectMeter` (its cell and every live follower), `MeterSlot`, `PluginMeter`, `LaneControls`, `Modulation` (every lane), `MidiClipControls`, `HarmonyControls`, `MidiInputControls`, `VoiceNodeHandle`; each returns how many retired values are still held |
 
 Migration: a host that runs `Session::run_phase` itself adds
-`Phase::Reclaim` (iterating `PHASES` already does). A host that keeps a
-handle outside a session (`HarmonyControls`, an unfollowed `MeterSlot`, a
-`MidiClipControls` or `VoiceNodeHandle` not on a Bevy entity) calls its
-`reclaim` from its own control-side tick.
+`Phase::Reclaim` (iterating `PHASES` already does). A host's own
+`SessionNode` whose controls publish through an `ArcLend` returns a
+`Reclaimer` from `reclaimer` (a clone of its controls calling its cells'
+`reclaim`) and goes in with `add` or `crossfade`; one that goes in with
+`insert` or `replace` is not swept. A host that keeps a handle outside a
+session (an unfollowed `MeterSlot`, a clip, harmony track, voice or plugin
+meter in a graph it drives itself) calls its `reclaim` from its own
+control-side tick.
 
 ### Changed — the stretch filter's cells are written only through its setters
 

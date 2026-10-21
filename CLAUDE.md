@@ -261,12 +261,16 @@ Scalars use `Param<U>`.
   preempted mid-lend might load) stays retired until the next scan after
   the block. **Every cell's publisher calls `reclaim()` on a control-side
   tick it already has**, so a cell that goes quiet still gets that scan:
-  the session's `Phase::Reclaim` (its own cells, through each owner's
-  `reclaim`), `bevy-tutti`'s `reclaim_graph` (that phase, plus the controls
-  on node entities), the butler's cycle (its rings' maps). A new cell
-  joins its owner's sweep in the same change. `reclaim()` is a lock and a
-  length check when nothing is retired; it is control-thread only, like
-  `publish`.
+  the session's `Phase::Reclaim` (which `bevy-tutti`'s `reclaim_graph`
+  runs, and nothing more), the butler's cycle (its rings' maps). The
+  session's sweep is decided in `tutti-session` alone: a node whose
+  controls publish returns a `Reclaimer` from `SessionNode::reclaimer`,
+  which the graph keeps by node from `add`/`crossfade` until the node goes;
+  the graph sweeps its hosted plugins' meters; the session sweeps its own
+  cells (compensation, project meter, modulation lanes, hardware ports). A
+  new cell joins its owner's sweep in the same change. `reclaim()` is a
+  lock and a length check when nothing is retired; it is control-thread
+  only, like `publish`.
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.

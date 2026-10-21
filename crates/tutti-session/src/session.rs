@@ -493,19 +493,20 @@ impl Session {
     /// The [`Reclaim`](Phase::Reclaim) phase: every cell the session
     /// publishes to, scanned and what no block holds freed. Returns how many
     /// retired values are still held (by a block in progress).
+    ///
+    /// The nodes are the graph's table: each node's reclaimer, kept by node
+    /// as it went in ([`SessionNode::reclaimer`](crate::SessionNode::reclaimer)),
+    /// and each hosted plugin's meter. Beside it, the cells the session
+    /// publishes to itself: the compensation table, the project meter (and
+    /// every slot following it), the modulation lanes (inserted by the
+    /// reconciler, not through `add`) and the hardware ports' table.
     pub(crate) fn reclaim(&self) -> usize {
-        let mut pinned = self.compensation.reclaim();
+        let mut pinned = self.graph.reclaim();
+        pinned += self.compensation.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
         #[cfg(feature = "modulation")]
         {
             pinned += self.mods.state.reclaim();
-        }
-        #[cfg(feature = "midi")]
-        {
-            pinned += self.midi_state.reclaim();
-            if let Some(nodes) = &self.midi {
-                pinned += nodes.input_controls.reclaim();
-            }
         }
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &self.midi_io {

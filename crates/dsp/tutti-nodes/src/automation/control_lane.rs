@@ -83,6 +83,19 @@ struct Shared {
     unranged: AtomicU64,
 }
 
+/// A reader on a lane's cell ([`LaneControls::probe_reader`]): what a test
+/// of an owner's sweep lends through to stand in for a block. Not API.
+#[doc(hidden)]
+pub struct LaneProbe(Reader<Published>);
+
+impl LaneProbe {
+    /// Borrows the program as the node does once per block; the borrow pins
+    /// it until it drops.
+    pub fn lend(&mut self) -> impl Sized + '_ {
+        self.0.lend()
+    }
+}
+
 /// The handles a [`ControlLaneNode`]'s owner keeps: the program it
 /// evaluates, its knob, its range (a plugin lane's), and its counters.
 /// Cheap to clone; every clone reaches the same lane.
@@ -115,6 +128,22 @@ impl LaneControls {
     /// retired it is a lock and a length check.
     pub fn reclaim(&self) -> usize {
         self.0.program.reclaim()
+    }
+
+    /// How many programs the lane's cell holds retired: replaced, and not
+    /// yet freed by a publish or a [`reclaim`](Self::reclaim). Control side.
+    /// For a test of an owner's sweep; not API.
+    #[doc(hidden)]
+    pub fn retired_programs(&self) -> usize {
+        self.0.program.retired_len()
+    }
+
+    /// A reader registered on the lane's cell, as the node's own is, so a
+    /// test of an owner's sweep can hold a block's borrow across a publish.
+    /// Control thread: registering may allocate. Not API.
+    #[doc(hidden)]
+    pub fn probe_reader(&self) -> LaneProbe {
+        LaneProbe(self.0.program.reader())
     }
 
     /// The program last published (or built with).

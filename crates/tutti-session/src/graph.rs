@@ -167,6 +167,9 @@ struct Entry {
     /// What [`set_param`](Graph::set_param) writes through, and what a fork
     /// of the node starts from.
     params: Option<ParamSet>,
+    /// What frees the values its published cells retired
+    /// ([`SessionNode::reclaimer`]), run by [`Graph::reclaim`].
+    reclaimer: Option<crate::Reclaimer>,
 }
 
 /// The executor, while this side still holds it, and what a local render
@@ -205,7 +208,7 @@ where
     ) -> Result<Box<dyn Any + Send>, ReplaceRefused<Box<dyn ErasedSwap>>> {
         match graph.replace(node, self.0, fade, curve) {
             Ok(controls) => {
-                graph.set_node_params(node, N::params(&controls));
+                graph.address::<N>(node, &controls);
                 Ok(Box::new(controls))
             }
             Err(ReplaceRefused::Busy(n)) => Err(ReplaceRefused::Busy(Box::new(Swap(n)))),
@@ -525,7 +528,9 @@ impl Graph {
     /// editor, so an export forks it as its type says; it is prepared at the
     /// graph's rate. Address its params with
     /// [`set_node_params`](Self::set_node_params), or insert it with
-    /// [`add`](Self::add), which does.
+    /// [`add`](Self::add), which does, and keeps its reclaimer
+    /// ([`SessionNode::reclaimer`]): a node inserted here is not swept by
+    /// the reclaim phase.
     pub fn insert<N: IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
         let id = AudioNode::fresh();
         let controls = self.editor.insert(key(id), N::kind(), node);
@@ -534,6 +539,7 @@ impl Graph {
             Entry {
                 node: id,
                 params: None,
+                reclaimer: None,
             },
         );
         self.edited = true;
@@ -541,11 +547,21 @@ impl Graph {
     }
 
     /// [`insert`](Self::insert) a [`SessionNode`], its params addressed by
-    /// [`SessionNode::params`].
+    /// [`SessionNode::params`] and its reclaimer kept
+    /// ([`SessionNode::reclaimer`]).
     pub fn add<N: SessionNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
         let (id, controls) = self.insert(node);
-        self.set_node_params(id, N::params(&controls));
+        self.address::<N>(id, &controls);
         (id, controls)
+    }
+
+    /// Keeps what a [`SessionNode`] says of its controls under `node`: its
+    /// params and its reclaimer.
+    fn address<N: SessionNode>(&mut self, node: AudioNode, controls: &N::Controls) {
+        if let Some(entry) = self.nodes.get_mut(&key(node)) {
+            entry.params = N::params(controls);
+            entry.reclaimer = N::reclaimer(controls);
+        }
     }
 
     /// Inserts a hosted plugin: bound (`PluginClient::bind`, its typestate
@@ -560,7 +576,14 @@ impl Graph {
             crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
                 .with_controls(client.controls());
         let _controls = self.editor.insert(key(node), PLUGIN_KIND, client.bind());
-        self.nodes.insert(key(node), Entry { node, params: None });
+        self.nodes.insert(
+            key(node),
+            Entry {
+                node,
+                params: None,
+                reclaimer: None,
+            },
+        );
         self.plugins.insert(node, hosted);
         self.edited = true;
         node
@@ -667,6 +690,40 @@ impl Graph {
         })
     }
 
+    /// Runs every node's reclaimer ([`SessionNode::reclaimer`], kept by
+    /// [`add`](Self::add) and [`crossfade`](Self::crossfade), dropped with
+    /// the node) and (`plugin`) reclaims every hosted plugin's meter cell,
+    /// so a cell that stopped publishing still has what it retired freed.
+    /// Returns how many retired values are still pinned. Control thread:
+    /// the session's [`Reclaim`](crate::Phase::Reclaim) phase.
+    pub(crate) fn reclaim(&self) -> usize {
+        let pinned: usize = self
+            .nodes
+            .values()
+            .filter_map(|entry| entry.reclaimer.as_ref())
+            .map(crate::Reclaimer::reclaim)
+            .sum();
+        #[cfg(feature = "plugin")]
+        let pinned = pinned
+            + self
+                .plugins
+                .values()
+                .filter_map(crate::HostedPlugin::meter)
+                .map(tutti_plugin::handles::PluginMeter::reclaim)
+                .sum::<usize>();
+        pinned
+    }
+
+    /// Whether the graph keeps a reclaimer for `node`
+    /// ([`SessionNode::reclaimer`]): for a test that a path inserts a node
+    /// through [`add`](Self::add). Not API.
+    #[doc(hidden)]
+    pub fn keeps_reclaimer(&self, node: AudioNode) -> bool {
+        self.nodes
+            .get(&key(node))
+            .is_some_and(|entry| entry.reclaimer.is_some())
+    }
+
     /// Addresses `node`'s params by `params` (a `ParamNode`'s controls): what
     /// [`set_param`](Self::set_param) writes through for it, and what a fork
     /// of it starts from. `None` takes the address away.
@@ -680,7 +737,9 @@ impl Graph {
     /// `curve` when its shape fits the running unit's, else as a plain swap
     /// on the next commit (`Editor::replace_or_swap`). Hands back its
     /// controls; the caller addresses its params
-    /// ([`set_node_params`](Self::set_node_params)). Refused as
+    /// ([`set_node_params`](Self::set_node_params)). The outgoing node's
+    /// reclaimer goes with it and the incoming node keeps none
+    /// ([`crossfade`](Self::crossfade) keeps a [`SessionNode`]'s). Refused as
     /// [`ReplaceRefused::Busy`] with the node handed back while the graph
     /// re-prepares, and for good on a poisoned graph.
     /// [`crossfade`](Self::crossfade) waits out a re-prepare instead.
@@ -731,6 +790,7 @@ impl Graph {
             .map_err(|e| ReplaceRefused::Failed(e.to_string()))?;
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.params = None;
+            entry.reclaimer = None;
         }
         self.edited = true;
         Ok(controls)
@@ -768,7 +828,7 @@ impl Graph {
         }
         match self.replace(node, incoming, fade, curve) {
             Ok(controls) => {
-                self.set_node_params(node, N::params(&controls));
+                self.address::<N>(node, &controls);
                 Ok(Crossfade::Landed(controls))
             }
             Err(ReplaceRefused::Busy(n)) => Ok(Crossfade::Waiting(self.park(

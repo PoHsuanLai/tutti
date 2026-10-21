@@ -339,7 +339,15 @@ impl<T> ArcLend<T> {
             // Nothing to free. Skipping the scan is the same as not calling
             // `reclaim` at all: the claims it would have refreshed stay as
             // the last scan left them, which only makes the next scan keep
-            // more, never less.
+            // more, never less. In fact it keeps exactly as much: every
+            // publish ends with a scan that sets `scanned_at = seq`, so
+            // `scanned_at == seq` here. A claim this scan would record for
+            // the first time would get `scanned_at` as its floor, and the
+            // next scan (the next publish's, which reads `scanned_at` before
+            // it advances it) gives it that same floor; a claim the last
+            // scan recorded keeps its floor either way. All a scan now would
+            // change is the claim entries of slots that are free or
+            // announcing, which it clears and the next scan clears the same.
             if control.retired.is_empty() {
                 return 0;
             }

@@ -699,11 +699,10 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
 /// `MeterSlot`, as a plugin node holds) read when the project meter changed.
 /// A held `Loan` stands in for a block in progress across the publish.
 ///
-/// The session's other cells (the modulation lanes, its clips, the hardware
-/// input's MPE request and port set) are read only by nodes the executor
-/// owns, so no loan on them can be taken from here; each owner's `reclaim`
-/// is pinned with a held loan in its own crate, and removing one of their
-/// lines from `Session::reclaim` is not caught by this test.
+/// The nodes' cells are the graph's table, pinned by
+/// `the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph`; the
+/// modulation lanes by `tests/modulation.rs`, the hardware ports by
+/// `tests/midi.rs` (`midi-hardware`), a plugin's meter by `tests/plugin.rs`.
 ///
 /// Mutations (run): the `Reclaim` phase doing nothing → the old table and
 /// the old meter are still retired after the update, fails; `Session::reclaim`
@@ -743,4 +742,185 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
     s.update();
     assert_eq!(s.compensation().retired_len(), 0, "the table is freed");
     assert!(gone.upgrade().is_none(), "the meter is freed");
+}
+
+/// A source of zeros whose controls publish to it through an `ArcLend`
+/// cell, as a clip or a voice placement does: the node lends once per
+/// block, and its `SessionNode` impl hands the graph a reclaimer over its
+/// controls.
+struct Published {
+    node: PublishedNode,
+    controls: PublishedControls,
+}
+
+/// [`Published`]'s unit: the reader it lends through.
+struct PublishedNode {
+    reader: tutti_types::Reader<u32>,
+}
+
+/// [`Published`]'s controls: its cell, and a token only the controls hold
+/// (the unit holds none), so a test counts the clones alive (the test's,
+/// and the graph's reclaimer's).
+#[derive(Clone)]
+struct PublishedControls {
+    cell: Arc<tutti_types::ArcLend<u32>>,
+    token: Arc<()>,
+}
+
+impl PublishedControls {
+    /// The cell's `reclaim`, as an engine node's controls have one. (A
+    /// method, so the reclaimer's closure captures the whole controls,
+    /// token included, and not the `cell` field alone.)
+    fn reclaim(&self) -> usize {
+        self.cell.reclaim()
+    }
+}
+
+impl Published {
+    fn new() -> Self {
+        let cell = Arc::new(tutti_types::ArcLend::new(0));
+        Self {
+            node: PublishedNode {
+                reader: cell.reader(),
+            },
+            controls: PublishedControls {
+                cell,
+                token: Arc::new(()),
+            },
+        }
+    }
+}
+
+impl Node for PublishedNode {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let _block = self.reader.lend();
+        io.output(0).fill(0.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+impl IntoNode for Published {
+    type Controls = PublishedControls;
+    fn into_parts(self) -> NodeParts<PublishedControls> {
+        let NodeParts { node, fork, .. } = IntoNode::into_parts(Unforkable(self.node));
+        NodeParts {
+            node,
+            controls: self.controls,
+            fork,
+        }
+    }
+}
+
+impl SessionNode for Published {
+    fn reclaimer(controls: &PublishedControls) -> Option<tutti_session::Reclaimer> {
+        let controls = controls.clone();
+        Some(tutti_session::Reclaimer::new(move || controls.reclaim()))
+    }
+}
+
+/// Publishes into `controls`' cell while a borrow on it (a block in
+/// progress) is held, then lets the borrow go: what is left is one retired
+/// value nothing pins, which only a scan frees.
+fn replace_under_a_held_borrow(controls: &PublishedControls) {
+    let mut block = controls.cell.reader();
+    let _held = block.lend();
+    controls.cell.publish(Arc::new(1));
+}
+
+/// **The update sweeps each node's reclaimer while it is in the graph**:
+/// a value its cell retired while a block held it is freed by the next
+/// update, for a node `add`ed and for the node a crossfade put in its
+/// place; the reclaimer goes with the node (replaced by the crossfade's,
+/// dropped by a raw replace and by the removal), so a node out of the graph
+/// is not swept.
+///
+/// Mutations (run):
+/// - `Session::reclaim` not sweeping the graph (`0` for
+///   `self.graph.reclaim()`) → the value is still retired after the
+///   update, fails;
+/// - `Graph::reclaim` summing nothing (the table's loop removed) → the
+///   value is still retired after the update, fails;
+/// - `Graph::add` not keeping the reclaimer (`params` alone) → fails the
+///   same way;
+/// - `Graph::crossfade` addressing params alone on `Landed` → the
+///   incoming node's value is never freed, fails;
+/// - `swap_unit` keeping the outgoing reclaimer → the raw replace leaves
+///   the second token's count at 2, fails (the crossfade alone overwrites
+///   it, so the raw replace is what pins this);
+/// - `Graph::remove` leaving the node's entry (`nodes.get` for
+///   `nodes.remove`) → the third token's count stays 2, fails.
+#[test]
+fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
+    let mut s = detached(1);
+    let (node, first) = s.graph().add(Published::new());
+    s.graph().set_output_source(0, GraphSource::Node(node, 0));
+    s.update();
+    assert_eq!(Arc::strong_count(&first.token), 2, "the graph keeps one");
+
+    replace_under_a_held_borrow(&first);
+    assert_eq!(first.cell.retired_len(), 1, "retired, not yet scanned");
+    s.update();
+    assert_eq!(first.cell.retired_len(), 0, "the update freed it");
+
+    let second = match s
+        .graph()
+        .crossfade(
+            node,
+            Published::new(),
+            Seconds(0.0),
+            CrossfadeCurve::EqualAmplitude,
+        )
+        .expect("the node is in the graph")
+    {
+        Crossfade::Landed(controls) => controls,
+        Crossfade::Waiting(_) => panic!("nothing re-prepares"),
+    };
+    assert_eq!(
+        Arc::strong_count(&first.token),
+        1,
+        "the outgoing node's reclaimer went with it"
+    );
+    assert_eq!(
+        Arc::strong_count(&second.token),
+        2,
+        "the incoming one's kept"
+    );
+    s.update();
+    replace_under_a_held_borrow(&second);
+    s.update();
+    assert_eq!(second.cell.retired_len(), 0, "the incoming node is swept");
+
+    // A raw replace (a plain `IntoNode`) keeps no reclaimer, and takes the
+    // outgoing node's with it.
+    assert!(s
+        .graph()
+        .replace(
+            node,
+            Const::mono(0.0),
+            Seconds(0.0),
+            CrossfadeCurve::EqualAmplitude
+        )
+        .is_ok());
+    assert_eq!(
+        Arc::strong_count(&second.token),
+        1,
+        "the replaced node's reclaimer went with it"
+    );
+
+    let (other, third) = s.graph().add(Published::new());
+    s.update();
+    assert!(s.remove(other));
+    assert_eq!(
+        Arc::strong_count(&third.token),
+        1,
+        "the removal dropped its reclaimer"
+    );
+    replace_under_a_held_borrow(&third);
+    s.update();
+    assert_eq!(third.cell.retired_len(), 1, "a removed node is not swept");
 }

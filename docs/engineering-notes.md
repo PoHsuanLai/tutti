@@ -262,14 +262,21 @@ Rules:
   value a block held across that publish for as long as the cell lived,
   when the only `reclaim` caller was the hardware MIDI port set's owner.
   Every publisher now reclaims on a control-side tick it already has: the
-  session's `Phase::Reclaim` sweeps its cells through each owner's
-  `reclaim` (`ProjectMeter`, `Modulation`, the clips, the MIDI input's
-  controls, `HardwareMidiInputs::collect`), `bevy-tutti`'s `reclaim_graph`
-  runs that phase and sweeps the clip and voice controls on node entities,
-  and the butler's cycle sweeps its rings' maps. Derived at each owner
-  rather than registered in a global list: an owner with a tick already
-  knows its cells. `reclaim` returns at once when nothing is retired, so
-  the per-tick sweep costs a lock and a length check per cell.
+  session's `Phase::Reclaim` sweeps its graph's table (each node's
+  `Reclaimer`, which `SessionNode::reclaimer` hands the graph as the node
+  goes in through `add` or `crossfade` and which leaves with the node:
+  clips, harmony, the MIDI input, voices; and each hosted plugin's
+  `PluginMeter`, which a `clear_meter` leaves following no project meter)
+  and its own cells (`ProjectMeter`, `Modulation`, the compensation table,
+  `HardwareMidiInputs::collect`). `bevy-tutti`'s `reclaim_graph` only runs
+  that phase. A first cut had the adapter sweep the clip and voice controls
+  on its node entities, so a headless host swept fewer cells than a Bevy
+  one: which nodes publish is a fact of the node type, so the type says it
+  and the session keeps it by node. The butler's cycle sweeps its rings'
+  maps. Derived at each owner rather than registered in a global list: an
+  owner with a tick already knows its cells. `reclaim` returns at once when
+  nothing is retired, so the per-tick sweep costs a lock and a length check
+  per cell.
 - **Never `publish` from the audio thread** — it takes the publisher's lock
   *and* frees inside it.
 - Nullable hot-swap slots go through `ArcLend` as well, as

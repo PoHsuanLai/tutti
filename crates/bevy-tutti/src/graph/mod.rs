@@ -72,8 +72,8 @@ pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
 // The session's items this crate's own signatures take, one by one: the
 // session crate itself is not re-exported (design 015 §6).
 pub use tutti_session::{
-    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, Phase, ReplaceRefused,
-    SessionNode,
+    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, Phase, Reclaimer,
+    ReplaceRefused, SessionNode,
 };
 
 #[cfg(test)]

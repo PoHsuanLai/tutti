@@ -393,10 +393,9 @@ mod tests {
     /// Mutation (run): `reclaim_graph` not running the session's phase →
     /// the old table is still retired, fails.
     ///
-    /// Not pinned here: `reclaim_graph`'s sweep of the clip and voice
-    /// controls on node entities. Their cells are read only by nodes the
-    /// executor owns, so no loan on them can be taken from a test; each
-    /// handle's `reclaim` is pinned with a held loan in its own crate.
+    /// Which cells the phase sweeps is the session's, pinned in
+    /// `tutti-session`'s tests (the nodes' reclaimers in `tests/graph.rs`);
+    /// this pins only that the adapter runs it.
     #[test]
     fn a_frame_frees_a_table_a_block_held_across_its_replacement() {
         let (graph, _) = skewed_graph();

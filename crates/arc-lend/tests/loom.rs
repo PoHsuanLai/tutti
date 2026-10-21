@@ -45,24 +45,30 @@
 //! `LOOM_MAX_PREEMPTIONS=3`, each model on its own, because an aborting model
 //! hides the rest). The failing models are named.
 //!
-//! "All seven" means `one_reader_two_publishes`, `two_readers_one_publish`,
+//! "All eight" means `one_reader_two_publishes`, `two_readers_one_publish`,
 //! `a_reader_lends_twice`, `nested_readers`, `two_publishers_and_a_reader`,
-//! `reclaim_while_a_reader_lends` and `registering_and_dropping_readers`.
+//! `reclaim_while_a_reader_lends`, `registering_and_dropping_readers` and
+//! `reclaim_with_nothing_retired`. The last was added with `reclaim`'s early
+//! return, and every mutation below was re-run against it alone (at the same
+//! bound); the record includes its result. The `Reader::drop`-reclaims
+//! mutation was re-run for it as `self.cell.reclaim()` after the `owned`
+//! store, which `reclaim`'s early return skips while nothing is retired.
 //!
-//! - the reader's `fence(SeqCst)` removed → all seven (a causality
+//! - the reader's `fence(SeqCst)` removed → all eight (a causality
 //!   violation: the scan misses the claim and frees what the reader loads);
-//! - the publisher's `fence(SeqCst)` (in `scan`) removed → all seven;
-//! - the lend's `current.load(Acquire)` weakened to `Relaxed` → all seven
+//! - the publisher's `fence(SeqCst)` (in `scan`) removed → all eight;
+//! - the lend's `current.load(Acquire)` weakened to `Relaxed` → all eight
 //!   (the reader sees the pointer before the payload's write);
 //! - the claim's `store(claim, Release)` weakened to `Relaxed` →
-//!   `a_reader_lends_twice` only: the scan reads the second lend's claim,
+//!   `a_reader_lends_twice` and `reclaim_with_nothing_retired` (whose
+//!   reader also lends twice): the scan reads the second lend's claim,
 //!   which no longer carries the first lend's reads of value 0 with it, and
 //!   frees 0 under them;
 //! - the loan drop's `store(FREE, Release)` weakened to `Relaxed` → all
-//!   seven (a scan that reads the `FREE` no longer happens-after the
+//!   eight (a scan that reads the `FREE` no longer happens-after the
 //!   reader's last read);
-//! - the scan's slot load weakened from `Acquire` to `Relaxed` → all seven;
-//! - the publish's `swap(Release)` weakened to `Relaxed` → all seven (a
+//! - the scan's slot load weakened from `Acquire` to `Relaxed` → all eight;
+//! - the publish's `swap(Release)` weakened to `Relaxed` → all eight (a
 //!   causality violation: a reader's `Acquire` load of the new pointer no
 //!   longer sees the payload's construction);
 //! - every claim given a fresh floor (`scanned_at`, as if the last scan had
@@ -70,9 +76,9 @@
 //!   publish, so no claim spans two scans): a reader preempted between its
 //!   fence and its announcement across two publishes loads value 0, which
 //!   the second publish frees;
-//! - a claim made to pin nothing (`floor` left at `u64::MAX`) → all seven;
-//! - the announcement check removed from the retired filter → all seven;
-//! - `Reader::drop` made to reclaim (lock, `scan`, free) → all seven, with
+//! - a claim made to pin nothing (`floor` left at `u64::MAX`) → all eight;
+//! - the announcement check removed from the retired filter → all eight;
+//! - `Reader::drop` made to reclaim (lock, `scan`, free) → all eight, with
 //!   "reader thread freed value N";
 //! - `Reader::drop`'s `owned.store(false, Release)` weakened to `Relaxed` →
 //!   `registering_and_dropping_readers` only: the new owner's registration
@@ -365,8 +371,10 @@ fn reclaim_while_a_reader_lends() {
 /// before a publish, and a reclaim after it, while a reader lends twice: the
 /// skipped scan must leave the claim bookkeeping as safe as a scan would.
 ///
-/// Mutation (run, this model alone): the reader's `fence(SeqCst)` removed →
-/// fails. The early return itself has no unsafe mutation for this model to
+/// Mutations: the header's record (this model fails under all of them but
+/// `Reader::drop`'s `owned` store weakened to `Relaxed`, which only
+/// `registering_and_dropping_readers` catches). The early return itself
+/// has no unsafe mutation for this model to
 /// catch: with nothing retired, a skipped scan (or a reclaim that never
 /// scans) only keeps more. That it still frees once something is retired is
 /// the unit test `reclaim_frees_without_publishing_and_reports_what_is_pinned`.

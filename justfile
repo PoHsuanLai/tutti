@@ -168,8 +168,8 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
 
-# The `ArcLend` loom models, after changing `arc-lend`'s `src/lend.rs`: six of
-# them unbounded (exhaustive, about 10 s; CI runs them so too), and
+# The `ArcLend` loom models, after changing `arc-lend`'s `src/lend.rs`: seven
+# of the eight unbounded (exhaustive, about 10 s; CI runs them so too), and
 # `registering_and_dropping_readers` at a preemption bound of 5, one above
 # CI's (about 6 minutes; at 6 it did not finish in 25 minutes).
 loom-full:

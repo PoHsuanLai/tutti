@@ -968,7 +968,7 @@ struct PoolFork {
 }
 
 impl ForkSource for PoolFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(VoicePool::from_parts(
             None,
             self.channels,

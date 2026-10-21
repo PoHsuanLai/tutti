@@ -134,7 +134,7 @@ pub struct TransportPosition {
     /// an `Option` rather than a plain `i64` because no producer in this engine
     /// fills it: the transport's authority is musical (beats), and deriving
     /// project-time samples from beats and tempo is wrong the moment tempo
-    /// moves — see `tutti-plugin`'s `TransportSource`. Neither the VST2 nor the
+    /// moves. Neither the VST2 nor the
     /// VST3 ABI has a validity bit for their sample-position field, so a plain
     /// `0` travels as fact and every plugin doing sample-accurate math sees the
     /// project frozen at sample 0 forever. The `Option` forces each format host

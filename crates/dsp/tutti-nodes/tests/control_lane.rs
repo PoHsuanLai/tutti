@@ -9,7 +9,6 @@
 use std::sync::Arc;
 
 use audio_automation::{AutomationEnvelope, AutomationPoint};
-use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, SegmentShape, Shape,
@@ -23,7 +22,7 @@ use tutti_nodes::automation::{ControlLaneNode, LaneControls, CONTROL_STEP};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, NodeKey,
-    OfflineTransport, ParamKey, Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
+    ParamKey, Phase, PhaseIncrement, SampleRate, Samples, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;
@@ -231,17 +230,6 @@ fn block(
     }
     ed.collect();
     bufs
-}
-
-/// An export's timeline, for an offline fork. The fork's blocks are driven
-/// with an explicit transport (`block`), so the lane reads the same `Env`
-/// either way; the mode is the export's, so a fork source that rebinds
-/// offline is exercised as an export would.
-fn offline() -> OfflineTransport {
-    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(RATE),
-        ..Default::default()
-    })))
 }
 
 /// The host's playhead: a frame clock from beat 0 at `TEMPO`.
@@ -578,11 +566,10 @@ fn an_export_is_the_live_render_bit_for_bit() {
     for _ in 0..3 {
         block(&mut ed, &mut exec, &stopped, &TransportChanges::NONE, 128);
     }
-    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             Prepare::new(SampleRate(RATE), Samples(1024)),
         )
         .expect("forks");
@@ -1274,11 +1261,10 @@ fn a_lane_fed_fork_reads_its_value_at_frame_0() {
     }
     assert!(live[0].iter().all(|&v| v == 300.0));
 
-    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             Prepare::new(SampleRate(RATE), Samples(64)),
         )
         .expect("forks");

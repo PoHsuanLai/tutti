@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
 use param_probe::{knob, knobs, load_vst2_probe, until};
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
 use tutti_plugin::handles::{ParamAddress, ParamId, PluginHandle};
@@ -297,11 +297,10 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let offline = OfflineTransport::new(Arc::clone(&timeline));
     let (_fork_ed, mut fork_exec) = live
         .renderer()
         .editor()
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("the lane and the plugin fork");
     let silence = vec![0.0f32; FORK_BLOCK];
     let inputs: Vec<&[f32]> = (0..live.inputs()).map(|_| &silence[..]).collect();

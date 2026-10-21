@@ -23,11 +23,8 @@
 mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
 
-use std::sync::Arc;
-
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_graph::{ForkMode, Transport};
-use tutti_types::{SampleRate, Samples};
+use tutti_types::Samples;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// What the probe declares and delays by (`REPORTED_LATENCY_SAMPLES`).
@@ -42,13 +39,9 @@ fn input(t: usize) -> f32 {
 /// prepared for blocks of up to `max_block` frames.
 fn fork_rig(max_block: usize) -> (Rig, tutti_plugin::handles::PluginHandle) {
     let probe = load_probe(SAMPLE_RATE);
-    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    })));
     let fork = probe
         .client
-        .fork_instance(ForkMode::Offline(&offline))
+        .fork_instance(ForkMode::Offline)
         .expect("the probe forks");
     (Rig::new(fork, SAMPLE_RATE, max_block), probe.handle)
 }

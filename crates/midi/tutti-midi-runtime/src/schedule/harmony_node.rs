@@ -277,7 +277,7 @@ struct HarmonyFork {
 }
 
 impl ForkSource for HarmonyFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         let lanes = self.shared.current();
         let node = HarmonyNode::new(lanes.changes.iter().copied());
         Ok(Forked::new(Box::new(node)))

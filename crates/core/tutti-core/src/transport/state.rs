@@ -21,7 +21,7 @@ use crate::{Beat, BeatDuration};
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.
 ///
 /// The per-frame rate a reader needs to place a beat inside a block
-/// (`BeatWindow`, the MIDI clock, automation sampling): a beat span divided
+/// (the MIDI clock, automation sampling): a beat span divided
 /// by it is a frame distance, which the engine's one placement rule
 /// ([`first_frame_at_or_after`](tutti_types::first_frame_at_or_after)) turns
 /// into a frame, its tolerance absorbing the rate's rounding.

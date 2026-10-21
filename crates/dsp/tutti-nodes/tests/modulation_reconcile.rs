@@ -9,7 +9,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamIn, ParamSegment, Prepare, ScheduleError, Shape, Status,
@@ -24,8 +23,8 @@ use tutti_nodes::testing::Through;
 use tutti_nodes::{Feed, ModHost, Modulation, ReconcileError, Target};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
-    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, NodeKey,
-    OfflineTransport, ParamAddr, ParamKey, PhaseIncrement, SampleRate, Samples, Seconds, UnitParam,
+    Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, NodeKey, ParamAddr,
+    ParamKey, PhaseIncrement, SampleRate, Samples, Seconds, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;
@@ -1419,13 +1418,6 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
     r.m.commit(&mut r.ed).expect("the graph agrees");
 }
 
-fn offline() -> OfflineTransport {
-    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(RATE),
-        ..Default::default()
-    })))
-}
-
 /// The host's playhead: a frame clock from beat 0.
 struct Playhead(FrameClock);
 
@@ -1477,11 +1469,10 @@ fn an_export_is_the_live_render_on_a_native_param() {
         .1
         .store(450.0, std::sync::atomic::Ordering::Release);
 
-    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             Prepare::new(SampleRate(RATE), Samples(1024)),
         )
         .expect("forks");

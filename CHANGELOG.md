@@ -28,6 +28,30 @@ none below 4 cores.
 | `tutti_core::WorkerPool` | implements `try_run` (refuses while a job is running) |
 | `tutti_types::JobGate` | new `try_run(job, opened) -> bool`: a busy gate runs nothing; `run` is `try_run` with the caller-alone fallback |
 
+### Removed — `BeatCursor`/`BeatWindow`, and `ForkMode::Offline`'s timeline
+
+Every graph node reads musical time from its block's `Env`, so what served
+the old per-node timelines is gone. `tutti-core`'s `transport::beat_window`
+module had no user outside its own tests. `ForkMode::Offline` carried the
+render's `OfflineTransport` for the deleted `rebind_offline` impls, and no
+`ForkSource` read it any more. With tutti-graph no longer naming them,
+`Timeline`, `OfflineClock` and `OfflineTransport` move back from
+`tutti-types` to `tutti-core`.
+
+| Was | Now |
+|---|---|
+| `tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, BeatPlacement}` (and `tutti::core::transport::…`) | removed. A graph node places beats with `Env::due` / `Env::for_each_beat` and reads the transport with `Env::transport_at` (`Cx::transport_at` behind a latent path); a reader outside the graph reads a `Timeline` |
+| `tutti_graph::ForkMode<'a>`, `ForkMode::Offline(&'a OfflineTransport)` | `ForkMode` (no lifetime), `ForkMode::Offline`; it also derives `Debug`, `PartialEq`, `Eq` |
+| `ForkSource::fork(&self, mode: ForkMode<'_>)`, `gather(&self, mode: ForkMode<'_>)`, and every other `ForkMode<'_>` parameter | `ForkMode` |
+| `tutti_types::{Timeline, OfflineClock, OfflineTransport}` | `tutti_core::transport::{Timeline, OfflineClock, OfflineTransport}` (as before, `tutti_core::Timeline` too) |
+
+Migration: drop the argument from `ForkMode::Offline(&ctx)` and the
+lifetime from `ForkMode<'_>`. A `ForkSource` that read the timeline out of
+the mode reads its render's transport from `Env` in `process` instead (a
+fork's executor hands it the render's). Import `Timeline`, `OfflineClock`
+and `OfflineTransport` from `tutti_core::transport`. An export's
+`PrepareEdit` still gets the render's timeline as `PreparedGraph::ctx`.
+
 ### Changed — the PDC compensation table is a plain lock, not an `ArcLend`
 
 No audio thread reads the per-channel compensation table: the session

@@ -742,7 +742,7 @@ that the running plan holds the edit.
 - Batching same-kind siblings into one SoA kernel call in the compiler was
   measured and not built: the win is real only for recursive kernels, and
   the graphs tutti builds hold none as siblings (see "Same-kind sibling
-  batching: measured, not built" under "Go fast").
+  batching" under "Go fast").
 
 ## Migration
 
@@ -3099,10 +3099,10 @@ units, `AudioIn`/`AudioOut` edges, `ChannelLayout`.
 
 ### Go fast
 
-Parallel executor + coarsening + cost model (landed); SoA voices (the
+Parallel executor + coarsening + cost model; SoA voices (the
 polysynth's voice bank is SoA; the sampler renders each voice a block at a
 time, vectorised along time, and stays per voice: see below); same-kind
-sibling batching (measured, not built: see below); `clap.thread-pool`; then
+sibling batching (measured and not built: see below); `clap.thread-pool`; then
 (optional) REAPER-style anticipative partition for nodes with no live-input
 dependency, with export as its degenerate case.
 
@@ -3619,9 +3619,9 @@ What they show:
   tasks, and the review's callgrind count of the serial walk, this branch
   against `main`, differs by 0.009%.
 
-#### Same-kind sibling batching: measured, not built
+#### Same-kind sibling batching
 
-**Status: measured, not built** (2026-10-21). The question was whether
+The question was whether
 the compiler should run `N` sibling nodes of one kind (N bus strips, N
 filters) as one SoA kernel call, past what packing already does (packing
 runs cheap siblings in one *task*, but each is still its own op and its
@@ -4287,7 +4287,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `Chorus` / `Flanger` | One width-generic `ModDelay{config}` node with per-channel phase offsets. The LFO is computed as a block buffer. Removes 4 atomic loads and 2 `sin` per sample |
 | `Phaser` + `StereoPhaser` | One node: the coefficient is computed once (not once per channel, with 2 `tan` each), then the all-pass stages run SoA over channels |
 | `Convolver` + `StereoConvolver` | Stored once, IR as `Arc<[f32]>`, planar block convolution, width-generic, and the dry path delayed inside the node (fixes D3). Needs `Fork` |
-| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). Batching strips was measured and does not pay; its own kernel does ("Same-kind sibling batching: measured, not built") |
+| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). Batching strips was measured and does not pay; its own kernel does ("Same-kind sibling batching") |
 | `Compressor` / `Gate` (thin) | An optional sidechain port: when it is unconnected in `Io`, the node keys off its own input (today's fallback can never fire). Params read once per block. Readings go out through `Controls` (fixes D6). Block detector kernels |
 | `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` becomes a `Topology` fragment |
 | `ClickNode` | `BeatWindow::offset_of(onset)` against `Env` gives sample-accurate onsets (fixes D8). Mono output |

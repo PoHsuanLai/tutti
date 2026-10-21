@@ -1,8 +1,7 @@
 # 015: a Bevy-free tutti API layer
 
 Status: **complete**. Every step of §9 has landed; each says so in a
-"Landed" note, and the one item still deferred (Bevy's `Phase::Poll`) is in
-§9.7's. The user has made every
+"Landed" note. The user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before the migration.
 
@@ -1838,10 +1837,11 @@ addition). Specifics:
   plugin only with `export` or `vst2`); the file is gated on them, and
   dark-features lints that combination and `tutti --features
   clap,export,modulation`.
-- **Deferred:** Bevy still does not run `Phase::Poll`. Its set exists,
-  last in the chain, but `device_state_sync_system` reads the device's
-  faults into `AudioDeviceState` itself. `tutti-plugin`'s `bevy` feature
-  (unused since §9.6) is left for a cleanup.
+- **Since done:** Bevy runs `Phase::Poll` too: `device_fault_poll`, in
+  its set last in the chain, writes each `SessionEvent::DeviceFault` as an
+  `AudioDeviceFault` message and into `AudioDeviceState`, as a headless
+  `update()` reports it. `tutti-plugin`'s `bevy` feature (unused since
+  §9.6) is left for a cleanup.
 
 ## 10. Out of scope
 

@@ -65,10 +65,9 @@ pub enum GraphReconcileSystems {
 ///   after `Spawn`, before `Params`;
 /// - `Commit` ([`commit_graph`](super::commit_graph)): in `Commit`;
 /// - `AfterCommit` (`ModulationSystems::AfterCommit`), `MidiOut`
-///   (`pump_clock_out_system`, feature `midi`) and `Poll`: after `Commit`.
-///   No system runs `Poll`: a Bevy app reads the device's faults itself
-///   (`device_state_sync_system` into
-///   [`AudioDeviceState`](crate::AudioDeviceState)).
+///   (`pump_clock_out_system`, feature `midi`) and `Poll`
+///   ([`device_fault_poll`](crate::device_fault_poll), added by
+///   [`TuttiPlugin`](crate::TuttiPlugin)): after `Commit`.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SessionPhaseSystems(pub Phase);
 
@@ -182,8 +181,7 @@ mod tests {
     /// here is written down. `AfterCommit` runs only on a frame with work
     /// (`after_commit` skips an idle one), so a modulated filter is spawned
     /// before the first frame, whose target is new until that frame's
-    /// commit. `Poll` has no system: a Bevy app reads the device's faults
-    /// itself.
+    /// commit.
     ///
     /// Before design 015 §9.7, main ran `Collect` in
     /// `commit_graph`, right before `Commit` (after `Plugins` and
@@ -201,6 +199,7 @@ mod tests {
     ///   `AfterCommit` and `MidiOut`, both only after `Commit`, ran
     ///   `MidiOut` first (the plugins are added in the order that makes an
     ///   unordered pair run wrong).
+    /// - `device_fault_poll` in no phase set: `Poll` before `Commit`.
     /// - `plugin_health_poll` in `SessionPhaseSystems(Phase::AfterCommit)`
     ///   instead of `Plugins`: it is also in `Spawn`, so the schedule
     ///   refuses the cycle and the first `update` panics.
@@ -215,6 +214,7 @@ mod tests {
             channels: tutti_core::ChannelLayout::STEREO,
         });
         app.add_plugins(GraphReconcilePlugin);
+        app.add_plugins(crate::engine::device_state::DeviceStatePlugin);
         #[cfg(feature = "modulation")]
         {
             use crate::graph::SpawnAudioNode;
@@ -262,7 +262,7 @@ mod tests {
 
         // The phases with a system here, each frame.
         #[allow(unused_mut)]
-        let mut every_frame = vec![Phase::Collect, Phase::Commit];
+        let mut every_frame = vec![Phase::Collect, Phase::Commit, Phase::Poll];
         #[cfg(feature = "plugin")]
         every_frame.push(Phase::Plugins);
         #[cfg(all(feature = "plugin", feature = "export"))]

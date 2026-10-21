@@ -1,11 +1,11 @@
 //! [`TuttiPlugin`] — engine bootstrap plus per-feature subsystem registration.
 
-use bevy_app::{App, Plugin, Startup, Update};
+use bevy_app::{App, Plugin};
 use bevy_log::{error, info};
 
 use crate::engine::device_state;
 use crate::graph::{AudioConfig, GraphReconcilePlugin};
-use crate::{AudioDeviceState, AudioEngineState};
+use crate::AudioEngineState;
 
 #[cfg(feature = "midi")]
 use crate::midi::TuttiMidiPlugin;
@@ -60,7 +60,9 @@ use crate::soundfont::TuttiSoundFontPlugin;
 /// inserts.
 ///
 /// Besides the engine, it always adds
-/// [`GraphReconcilePlugin`] and keeps [`AudioDeviceState`] in sync. Which
+/// [`GraphReconcilePlugin`], keeps [`AudioDeviceState`](crate::AudioDeviceState) in sync and runs the
+/// session's `Poll` phase (device faults as
+/// [`AudioDeviceFault`](crate::AudioDeviceFault) messages). Which
 /// subsystem plugins it adds is governed by this crate's Cargo features:
 /// `soundfont`, `midi`, `plugin`, `sampler` and `export` each add their own.
 /// `TuttiModulationPlugin` (`modulation`), the audio pumps of `audio-io` and
@@ -147,16 +149,12 @@ impl Plugin for TuttiPlugin {
         };
         app.insert_resource(state);
 
-        app.init_resource::<AudioDeviceState>();
-        app.register_type::<AudioDeviceState>()
-            .register_type::<AudioEngineState>()
+        app.register_type::<AudioEngineState>()
             .register_type::<AudioConfig>();
-        app.add_systems(Startup, device_state::device_state_init_system);
-        app.add_systems(Update, device_state::device_state_sync_system);
 
         // The reconcile sets come first: the subsystem plugins below schedule
         // against them.
-        app.add_plugins(GraphReconcilePlugin);
+        app.add_plugins((GraphReconcilePlugin, device_state::DeviceStatePlugin));
 
         // Needs `bevy_asset::AssetPlugin` already added: this registers an asset
         // loader at build time, and `init_asset` panics without an `AssetServer`.

@@ -110,7 +110,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
-| `RangeCell` (packed `AtomicU64`) | `tutti-types`, beside `AtomicF32` | A plugin lane's own range; `ParamRanges` reuses it |
+| `PackedAtomic<ParamRange>` (one `AtomicU64`) | `PackedAtomic` in `tutti-types`, beside `AtomicF32`; `ParamRange` in `tutti-graph` | A plugin lane's own range; `ParamRanges` reuses it |
 | Plugin delivery | `tutti-plugin{,-types,-server}` | Where `ParameterChanges` is built, carried, applied |
 | The reconcile (`Modulation`, `ModHost`) | `tutti-nodes` (re-exported at the root), Bevy-free | It builds `tutti-nodes`' lanes and signal-source nodes and edits a plain `Editor`; a headless host needs it as much as an app. `tutti-nodes` already names `tutti-mod` and `tutti-graph`, and `bevy-tutti` names `tutti-nodes` |
 | Declarations (`Mods`, `ModRange`, `ParamRef`) and their adapter onto `Modulation` | `bevy-tutti` (`modulation`) | The API: entities to keys, `ModHost` over `AudioNode`s |
@@ -263,7 +263,7 @@ a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
 | | Native param port | Plugin parameter |
 |---|---|---|
 | Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/core/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block. `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
-| Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` moves onto `RangeCell`, with a public accessor) and loads it once per block for the span only. | A lane-owned `RangeCell`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
+| Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` holds a `PackedAtomic<ParamRange>` per port, with a public accessor) and loads it once per block for the span only. | A lane-owned `PackedAtomic<ParamRange>`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
 | Program | `ArcLend<ControlProgram>` (`LaneControls::publish`) | same |
 
 **As landed.** `Editor::param_range_cell(at)` hands out a
@@ -1521,8 +1521,9 @@ block's, lent only to a queue that moves.
 ### 12.2 The control lane node
 
 **In two parts.** **The floor**
-(branch `claude/control-lane-floor`): `RangeCell` in `tutti-types` with a
-loom model, `ParamRanges` on it and `Editor::param_range_cell`; the play
+(branch `claude/control-lane-floor`): the packed range cell in `tutti-types`
+(now `PackedAtomic`) with a loom model, `ParamRanges` on it and
+`Editor::param_range_cell`; the play
 clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`,
 `TransportHistory` carrying it, `Editor::play_reading`, forks at 0, see
 §4.3 "As landed"); and the port rule (§5.6) in the executor, the
@@ -1602,7 +1603,7 @@ sources:
   export points at one chunk size, which is the adapter's test (§12.5).
 
 **Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
-`RangeCell` in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
+the packed range cell in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
 `Cx::play_at`, the play clock in `TransportHistory` and the published
 `PlayReading` in `tutti-graph`; rate anchors; `ControlLaneNode`
 and `LaneControls` (§5), exact mode on the grid, thinning, the fork;

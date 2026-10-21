@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — typed `SeqWriter<T>`/`SeqReader<T>`, and `PackedAtomic<T>` replaces `RangeCell`
+
+The sequence lock holds a typed value instead of caller-packed words, and a
+read says why it returned nothing. `RangeCell` is generalised to any value
+of up to eight bytes. Both convert through `bytemuck` (a new dependency of
+`tutti-types`), with no `unsafe`; the protocols, orderings and loom models
+are unchanged in substance (the models now run a `[u32; 3]` and a
+`[f32; 2]`, and `tests/range_cell_loom.rs` is `tests/packed_atomic_loom.rs`).
+
+| Was | Now |
+|---|---|
+| `SeqWriter<const W: usize>`, `write([u64; W])`, `last() -> Option<[u64; W]>` | `SeqWriter<T: NoUninit + AnyBitPattern>`, `write(T)`, `last() -> Option<T>`; `T` is stored as its bytes in `size_of::<T>()` rounded up to whole `u64` words |
+| `SeqReader<W>::read() -> Option<[u64; W]>`: `None` for both "never written" and "eight copies overlapped a write" | `SeqReader<T>::read(retries) -> Result<Option<T>, Contended>`: `Ok(None)` never written, `Err(Contended)` every one of `1 + retries` copies overlapped a write |
+| `SEQ_CELL_READ_RETRIES` | removed; the caller passes its own count |
+| — | `tutti_types::Contended` (`Error`) |
+| `RangeCell::new(min, max)`, `unbounded()`, `store(min, max)`, `load() -> (f32, f32)`, `Default` | `PackedAtomic<T: NoUninit + AnyBitPattern>` with `size_of::<T>() <= 8` (checked at compile time): `new(T)`, `store(T)`, `load() -> T`; `Release`/`Acquire` as before |
+| `tutti_graph::ParamRange`: `Clone, Copy, Debug` | also `#[repr(C)]`, `bytemuck::Pod`, `Zeroable`; a port's live range is a `PackedAtomic<ParamRange>` |
+
+Migration: pack nothing by hand. Give the value a `#[repr(C)]` type that
+derives `bytemuck::Pod` (a foreign type, or one with an enum field, gets a
+plain mirror, as the VST2 host's `TimeInfo` snapshot does), and write it
+whole. Replace `reader.read()` with `reader.read(7)` for the old bound of
+eight copies, and match `Ok(None)` and `Err(Contended)` apart where
+they differ to you. Replace a `RangeCell` with a `PackedAtomic` of the
+range type (`PackedAtomic<ParamRange>`, or `PackedAtomic<[f32; 2]>`), and
+`unbounded()` with `new(ParamRange::UNBOUNDED)`.
+
+The VST2 host's `audioMasterGetTime` still answers a null `VstTimeInfo`
+both before the first transport write and when a read gives up (eight
+copies, as before): a plugin must handle the null, while spinning would be
+unbounded on the plugin's thread and an older snapshot would need a copy
+per reader.
+
 ### Changed — `arc-lend`: registered readers only; the publisher never waits
 
 `ArcLend` has one read path: a registered `Reader`, which owns one slot (a

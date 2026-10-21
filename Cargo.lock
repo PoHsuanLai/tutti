@@ -4724,6 +4724,7 @@ dependencies = [
  "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
+ "bytemuck",
  "libc",
  "loom",
  "serde",
@@ -4735,6 +4736,7 @@ name = "tutti-vst2-host"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "bytemuck",
  "crossbeam-queue",
  "libloading 0.8.9",
  "parking_lot",

@@ -1338,8 +1338,8 @@ number, which is random per run on either backend. Found on the way:
   64 frames. The port prepares that fixture at a 64-frame `MaxBlock`, where
   the clock moves between the voice's calls as a `Net` render's does, and
   says why. It is not fixed here, and it needs a decision before export
-  forks (the export fork prepares at `GRAPH_MAX_BLOCK`) and before the live
-  graph runs (the live graph engine advances its clock once per block piece, `GraphRender` in
+  forks (the export fork prepares at `GRAPH_MAX_BLOCK`) and before the native
+  backend (the live graph engine advances its clock once per block piece, `GraphRender` in
   `engine.rs`, so a `Legacy` sampler there likely has the same shape of
   fault; not measured here): sub-block `render_graph` at 64 frames
   for a moving clock (tried: correct, but it breaks
@@ -2662,7 +2662,7 @@ variant.** A one-variant enum selects nothing, and keeping
 compile while it means nothing; the migration is to delete the field.
 `headless_with`, `unattached_with` and `unattached` went too (`unattached`
 built what `headless` builds once there is no control-side copy of a node);
-`headless` is the one constructor. What each item of the PR's scope came to:
+`headless` is the one constructor. What each item of its scope came to:
 
 - **The `Net` arm of every method**: the plain-clone / `clone_isolated`
   export (and `Exported::rebound`, always true now, so
@@ -2946,7 +2946,7 @@ shifted; a fork renders the fresh graph; a compensated channel is the
 uncompensated one delayed; per-sample units render the same at any block
 length; a voice renders the same at every 64-multiple block); and, for
 samples that call libm and have no closed form, a **golden digest** (FNV-1a
-over the `f32` bits) recorded from the native render on this PR, which
+over the `f32` bits) recorded from the native render when the `Net` backend was removed, which
 rendered the `Net`'s samples bit for bit (asserted on main before it),
 asserted only on Linux/glibc (`GOLDEN_HERE`), with the portable checks
 beside it. The one libm-free digest (a dithered DC export) is asserted
@@ -4147,8 +4147,8 @@ vocoder retirement channel for voices the pool removes.
 | 3 | **Done (#10; the Strip in the per-node port).** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate**. **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
-| 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
-| 7 | **Done (item 7 PR; `VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
+| 6 | **Done.** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
+| 7 | **Done (`VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **Folded into 9: a node's fork is ported with the node** ([below](#items-8-and-9-the-per-node-port)). **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s (the count at the time; ~29 `isolate`s by the 2026-09-26 audit). The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
 | 9 | **Done.** Every node in the tree is a `tutti_graph::Node` ([below](#items-8-and-9-the-per-node-port)), **`Legacy` is deleted** ([below](#legacy-deleted)) and **the "native" naming is dropped** | With `Legacy` gone, the "native" naming was dropped: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) had stopped meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs` are `GraphRuntime` / `graph/runtime.rs`, `NATIVE_MAX_BLOCK` is `LIVE_MAX_BLOCK`, `NativeIsolateRow` is `IsolateRow`, the test and bench nodes lost their `Native` prefix, and CLAUDE.md and the crate docs say "the graph". This doc's filename and title keep the old name (dated audits link to it). (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
@@ -4603,10 +4603,9 @@ under both.
   re-rate live on a device restart" follow-up for the path bevy-tutti now
   takes. The port/event-input merge moved to `MidiInPort::gather`, shared.
 
-**Not yet (next PRs of item 5).**
+**Item 5, later steps.**
 
-- **Parameter automation as an event source: landed** (stacked on the
-  plugin MIDI-out PR; owner decision: replace the setters, breaking).
+- **Parameter automation as an event source: landed** (owner decision: replace the setters, breaking).
   `PluginControls::automation(params)` makes a `PluginAutomation` node: it
   samples one curve per parameter at `Env::transport_at` each point (the
   host's clock, loop wraps and mid-block starts included; 8-frame stride

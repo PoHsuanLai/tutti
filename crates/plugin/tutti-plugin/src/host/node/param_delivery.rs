@@ -100,7 +100,8 @@
 //!   plays (as a DAW's does). A value delivered between the read and the
 //!   save is in the state and is sent to the fork once more, harmlessly.
 //!
-//! Design doc 014 §9, requirement 4.
+//! Design doc 014 §9, requirement 4. An editor edit now also writes the
+//! lane's knob; whether that makes this record redundant is still open.
 //!
 //! # Delivered late, never lost
 //!
@@ -1212,8 +1213,7 @@ mod tests {
     /// **Up to the pool budget every point goes, without allocating; past
     /// it each point is merged into its parameter's last, counted.** 1 000
     /// parameters prepared for a 1024-frame chunk (a room of 289): the first
-    /// `POOLED_QUEUES` carry their full room,
-    /// every other one its floor (a
+    /// `POOLED_QUEUES` carry their full room, every other one its floor (a
     /// step and a second value), points for different parameters arriving
     /// interleaved, chunk after chunk inside the no-alloc gate, with nothing
     /// merged. Then one more parameter needs a third point with the pool

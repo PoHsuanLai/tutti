@@ -50,7 +50,7 @@ option c).**
 
 - `tutti` turns the layer on by default: `default = ["session"]` (§7).
 - `bevy-tutti` does **not** re-export the session (§6).
-- All seven PRs of §9 will run.
+- Every step of §9 will run.
 - The crate is named `tutti-session`, re-exported as `tutti::session`.
 
 ## 1. The constraint
@@ -800,7 +800,7 @@ resolves a host's modulation keys to graph nodes.
 pub trait ModKeys {
     fn node(&self, target: u64) -> Option<AudioNode>;
     /// Plugin parameter `id`'s value on `target`'s node: `None` while not read yet,
-    /// `Some(None)` for a parameter it does not list. Goes later (below).
+    /// `Some(None)` for a parameter it does not list. Goes once plugins move into the session (§9.6, below).
     fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>>;
     fn feed(&self, source: SourceKey) -> Option<Feed>;
 }
@@ -1549,7 +1549,7 @@ the same node, since a skipped re-aim now makes a second clip that plays
 rather than none. `a_host_edit_committed_for_a_target_publishes_its_latency`
 says what it covers: since §9.4 the frame's own commit takes a host's edit,
 so in that scene the re-apply's commit adds a macro's lane and moves no
-figure (the old mutation had already survived §9.4). A
+figure (the old mutation had already survived once §9.4 landed). A
 re-apply can move the latency (a follower of a latent node reaches its
 target's param port only through the lane the re-apply builds): the
 session's `a_re_apply_that_moves_the_latency_publishes_it` and Bevy's
@@ -1869,4 +1869,4 @@ No question is open. The user decided:
    project (§10).
 2. **The default:** `tutti` has `default = ["session"]` (§7).
 3. **No re-export from `bevy-tutti`** (§6).
-4. **All seven PRs run** (§9).
+4. **Every step of §9 runs.**

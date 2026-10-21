@@ -41,10 +41,10 @@
 //! errs safely: the default, [`Cost::Heavy`], is the cost of a node that
 //! declares nothing (a plugin, a host's node), so any two independent such
 //! nodes are each worth a task and spread at any block length. For a graph
-//! that declares nothing, three things still differ from spreading every
-//! op: its
-//! copy and event ops are priced cheap, so sibling ones pack (where that
-//! does not lengthen the critical path); the wake count is the larger of
+//! that declares nothing, three things still differ from the first parallel
+//! executor (before the cost model): its copy and event ops are priced
+//! cheap, so sibling ones pack (where that does not lengthen the critical
+//! path); the wake count is the larger of
 //! the average parallelism and the widest level, at least 2; and a plan
 //! whose only parallelism is in those cheap ops can run serially (24 of
 //! the differential generator's 510 undeclared multi-task plans do, at

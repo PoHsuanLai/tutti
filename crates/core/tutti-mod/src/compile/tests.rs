@@ -831,7 +831,7 @@ fn each_refusal_fires_by_name() {
 /// Mutation: none applies (it pins that the declarations compile, which
 /// the type checker and the run assert; removing a source kind fails to
 /// build). The no-runtime half is `cargo check -p tutti-mod` without
-/// features, run with this PR.
+/// features, run when the compiler landed.
 #[test]
 fn what_bevy_tutti_expresses_compiles_without_a_runtime() {
     let mut sources = Vec::new();
@@ -929,7 +929,7 @@ fn anchor_of(clock: Clock) -> Option<RateAnchor> {
 /// layers read, so at any frame both targets are at one phase.
 ///
 /// Mutation (run): anchors looked up by `(target, LayerId)` in the
-/// previous programs, not by source (the PR's first `anchor` closure) →
+/// previous programs, not by source (the first `anchor` closure as written) →
 /// the new route's layer has no anchor, so its clock differs from route
 /// 100's → fails.
 #[test]
@@ -1009,7 +1009,7 @@ fn a_depth_by_change_keeps_the_lfos_anchor() {
 /// reusing the anchor's frame, is `an_anchor_is_carried_until_a_play_start`.)
 ///
 /// Mutations (run), each fails: the reuse bound dropped (`a.at >
-/// now.play`, the PR's first rule) → the anchor stays at the old frame;
+/// now.play`, the rule as first written) → the anchor stays at the old frame;
 /// `prev_rate` the old clock's `prev_rate` (R0) → the clocks part after
 /// the old anchor.
 #[test]

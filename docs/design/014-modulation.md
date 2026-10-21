@@ -1046,7 +1046,7 @@ The rules, as designed:
 
 **One writer per knob** (it fixes M9): `write_param` loses its modulated
 branch and `set_param_snapshot`; `ParamSet` loses `set_authored` and
-`ParamSet::authored`. The cell is the value a fork of the node starts
+`ParamSet::authored`. The node's `Param` cell is the value a fork of the node starts
 from: a fork's template shares it (`ParamFork::fork_node` is the
 template's `fork_fresh`), and `get` reads it. One cell per param, one
 writer.
@@ -1114,7 +1114,8 @@ control lane (§12.2).
    node's record (read before the live state is saved), so an export
    renders what live playback plays. (Clearing it on all four, as first
    proposed, made an export overwrite an editor edit that live playback
-   kept.)
+   kept.) An editor edit now also writes the lane's knob (§8.2); whether
+   that makes this record redundant is still open.
 5. **No format host's lists grow after activation** (VST3's queue list,
    CLAP's input-event scratch).
 6. **Point capacity:** each parameter's queue has a logical room of
@@ -1534,7 +1535,7 @@ breaks no live feature. **The lane** is the rest of the scope below:
 `ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
 automation constructors and the lane's tests.
 
-**The lane** (branch `claude/control-lane-node`), but for the signal
+**The lane: landed** (branch `claude/control-lane-node`), but for the signal
 sources:
 
 - `tutti_mod::ControlProgram` (§4.1) with layers, input layers, rate
@@ -1776,7 +1777,7 @@ adapter** is `bevy-tutti`: the declarations, the adapter implementing `ModHost`
 over entities, the knob and plugin-GUI paths, takes, and the properties
 that need an app or a plugin.
 
-**The reconcile** (branch `claude/mod-reconciler`):
+**The reconcile: landed** (branch `claude/mod-reconciler`):
 
 - `tutti_nodes::Modulation` (`src/reconcile.rs`, §8.2 "As landed"):
   `apply(&Declarations, &mut Editor, &dyn ModHost) -> Result<Applied,
@@ -1859,7 +1860,7 @@ stronger (divide its depth by the span).
 **Exit.** `bevy-tutti` modulation runs on lanes only; M1–M3, M6, M7, M9,
 M10, M12 closed there.
 
-**The adapter** (branch `claude/mod-bevy-adapter`):
+**The adapter: landed** (branch `claude/mod-bevy-adapter`):
 
 - `bevy_tutti::modulation`: `Mods`, `ModSource` (`Lfo`, `Macro`,
   `Follower`, `NoteEnvelope`, or a host's `ModSourceKind::declare`),

@@ -36,8 +36,8 @@ parallel executor (below) and its cost model and coarsening have landed.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
-- Doc 013 lists the defects and types each part addresses. Update it when a
-  decision changes.
+- Doc 013 lists the defects and types each migration step addresses. Update
+  it when a step lands or a decision changes.
 
 ## The parallel executor (doc 013)
 

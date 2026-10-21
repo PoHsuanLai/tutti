@@ -182,7 +182,7 @@ it unread, and nothing outside `tutti-plugin` calls any of them at all. Only
 `set_automation_state_rt` is consumed, by `SubprocessBackend::set_automation_mode`,
 which turns it into a user-visible error.
 
-So `Delivered` landed on that one (`e2f71fbcc`) and the other nine kept the bool.
+So `Delivered` went on that one (`e2f71fbcc`) and the other nine kept the bool.
 This is the rule above applied honestly rather than abandoned: an enum earns its
 place when *the caller's response differs*, and for nine of these there is no
 response to differ. Converting them would have been ~20 edits serving zero
@@ -280,18 +280,18 @@ type, not the behaviour.
 
 ## Order
 
-1. ~~`load_state`~~ — **DONE**, both halves in one change (`eb95009cb`). The
-   in-process and IPC parts turned out to be hard to separate: the trait
-   signature is shared, so changing it forces both implementors at once.
-   `StateError` landed in `tutti-plugin-types` beside `PluginError`, and the
-   wire gained `BridgeMessage::StateLoaded` at `PROTOCOL_VERSION` 18.
-2. ~~The `_rt` family~~ — **DONE**, but only for the one member whose answer is
-   read (`e2f71fbcc`). See the case above for why the other nine were left.
-3. ~~`set_midi_source`/`set_midi_out`, `load_preset`~~ — **no work needed**;
-   see the two cases above. One has a single honest cause, the other was
-   already solved by the capability accessor.
+1. `load_state`, both halves in one change (`eb95009cb`). The in-process and
+   IPC parts are hard to separate: the trait signature is shared, so changing
+   it forces both implementors at once. `StateError` sits in
+   `tutti-plugin-types` beside `PluginError`, and the wire carries
+   `BridgeMessage::StateLoaded` from `PROTOCOL_VERSION` 18.
+2. The `_rt` family, only for the one member whose answer is read
+   (`e2f71fbcc`). See the case above for why the other nine were left.
+3. `set_midi_source`/`set_midi_out` and `load_preset` need no work; see the two
+   cases above. One has a single honest cause, the other is already solved by
+   the capability accessor.
 
-Deliberately separate from the parameter-grouping PR, which is at eight commits
+This is separate from the parameter-grouping change, which is eight commits
 across four themes already.
 
 ## Outcome

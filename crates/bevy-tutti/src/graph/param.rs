@@ -57,7 +57,7 @@
 //!
 //! # Modulated params
 //!
-//! A modulated param has one writer too (doc 014 §8.2, M9): the write is its
+//! A modulated param has one writer too (doc 014 §8.2): the write is its
 //! **knob**. Its control lane reads the same cell as its base and adds the
 //! modulation in the lane's own events, so nothing else writes the cell and
 //! the knob is never snapped back.

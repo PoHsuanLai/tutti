@@ -1,7 +1,7 @@
 //! Same-kind siblings run as one call: what batching `N` sibling nodes of
 //! one kind into one kernel call would save, at the graph level. The
 //! figures and the decision they led to are in doc 013, "Same-kind sibling
-//! batching: measured, not built".
+//! batching".
 //!
 //! Each case is one block of `frames` through an `Executor` (serial, no
 //! pool), `members` siblings of one kind, every member reading the global

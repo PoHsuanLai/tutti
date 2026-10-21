@@ -541,7 +541,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     assert!(low < 0.33, "the pad dips: {low}");
 }
 
-/// **A depth edit keeps phase (M2) and sends no plan.** The edit is a
+/// **A depth edit keeps phase and sends no plan.** The edit is a
 /// republish: `apply` asks for no commit, the commit sends nothing (the
 /// plan sent last is the same `Arc`), and from one grid step after the
 /// block it lands in the cutoff is the same sine at the new depth, its
@@ -658,7 +658,7 @@ fn range_and_depth_edits_need_no_commit_and_a_follower_route_one() {
     assert_eq!(again, tutti_nodes::Applied::default(), "nothing to do");
 }
 
-/// **A removed source leaves no node and no layer (M10).** A follower and
+/// **A removed source leaves no node and no layer.** A follower and
 /// an LFO on one cutoff; the follower's source and route go. Its node
 /// leaves the spec with its edges, the lane's program reads no input and
 /// keeps its LFO layer, and the reconciler holds no node for it.
@@ -701,7 +701,7 @@ fn a_removed_source_leaves_no_node_and_no_layer() {
     render(&mut r.ed, &mut r.exec, 128, 1_024);
 }
 
-/// **A knob written after a route edit is the knob (M9).** The knob is the
+/// **A knob written after a route edit is the knob.** The knob is the
 /// node's own cell, which the lane reads each block; a route edit
 /// republishes the program and writes no knob, so a knob written before or
 /// after it is the base the offsets ride on.

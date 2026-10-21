@@ -147,7 +147,7 @@ pub trait HostPresets: Send + Sync {
 ```
 
 Returning `bool` from `load_preset` rather than swallowing follows the
-`set_bypass` precedent landed in D-10: a refusal changes what the host must do
+`set_bypass` precedent set in D-10: a refusal changes what the host must do
 next (leave the UI selection where it was), so it cannot be dropped.
 
 ### Per-format mapping
@@ -159,18 +159,16 @@ next (leave the UI selection where it was), so it cannot be dropped.
 | **VST3** | `program_lists()` × `program_name` → `Program{..}`, `bank = list.name` | write the `kIsProgramChange` param — see below | read it back |
 | **CLAP** | `Vec::new()` | `Location(p)` → `load_preset(&p)` | `None` |
 
-**VST3's load goes through its program-change parameter.** *(Revised: this
-section first said `load_preset` returns `false`, and the follow-up it deferred
-was done immediately — see "How VST3's load landed" below.)*
+**VST3's load goes through its program-change parameter** (see "How VST3's
+load works" below).
 
 Selecting a program means writing the parameter flagged `kIsProgramChange`.
-That reasoning was right about not routing it through `load_preset` **blindly**;
-it was wrong to stop there. Done inside the format layer, where the owning
-parameter is identifiable, it is still a single write path — the parameter
-remains the only thing written — and it is what makes the four formats one API
-instead of three plus a special case.
+`load_preset` must not route to it **blindly**, but done inside the format
+layer, where the owning parameter is identifiable, it is still a single write
+path — the parameter remains the only thing written — and it is what makes the
+four formats one API instead of three plus a special case.
 
-### How VST3's load landed
+### How VST3's load works
 
 The link is **parameter → unit → program list**: a program-change parameter
 belongs to a unit, and that unit names the list it selects from. Matching on the
@@ -282,18 +280,15 @@ a UI poll the subprocess. In-process backends answer it directly.
 - **CLAP preset discovery.** Binding the factory-level discovery extension is
   its own piece of work; without it CLAP stays load-only, which the two-bit
   capability split represents honestly.
-- ~~**VST3 program-change parameter routing.**~~ Done — see "How VST3's load
-  landed". Deferring it would have left one format needing caller-side special
-  handling, which is the thing this design exists to remove.
 - **Any ECS layer.** Nothing in `bevy-tutti` yet. Following the C-12 lesson:
   land the host surface, add ECS when a UI exists to drive it.
 
-## Implementation order — **all shipped**
+## Implementation order
 
 Each step compiled and tested alone. Noted below: what each step found that the
 plan did not predict.
 
-1. ✅ **Vocabulary.** `PresetId`, `Preset` in `tutti-plugin-types`. Round-trip test
+1. **Vocabulary.** `PresetId`, `Preset` in `tutti-plugin-types`. Round-trip test
    per variant, plus a test pinning each variant's *wire discriminant* — a
    symmetric round-trip cannot catch a reordering, because both ends of
    `serialize`/`deserialize` move together.
@@ -303,29 +298,29 @@ plan did not predict.
    the wire until the frames exist; bumping now would refuse a v13 pairing over
    a capability neither side can yet use. The version gates the *frames*, and
    the frames are step 7.
-2. ✅ **The trait**, plus `PluginHandle::presets()` / `load_preset()` /
+2. **The trait**, plus `PluginHandle::presets()` / `load_preset()` /
    `current_preset()` and the `HostPresets` accessor, mirroring
    `render_mode()`'s `Option<&dyn>` shape for a format that does not implement
    it. → `cargo check -p tutti-plugin`
-3. ✅ **VST2** — the richest case, and the one with the bracket. Probe bits, the
+3. **VST2** — the richest case, and the one with the bracket. Probe bits, the
    begin/end wrap, and the enumeration hole to respect: the probe already models
    `serviced_programs` below `programs`, so a host walking `0..Info::presets`
    and trusting every answer reads names the plugin never had.
    → `cargo test -p tutti-vst2-host`
-4. ✅ **AU** — mapping only, both methods exist. Test against the corpus, and pin
+4. **AU** — mapping only, both methods exist. Test against the corpus, and pin
    that a sparsely-numbered unit round-trips (`Number` carries the selector, not
    a position). → `cargo test -p tutti-au-host`
-5. ✅ **VST3** — `presets()` with banks. Shipped in two parts: first
-   `load_preset` → `false` as planned, then the load itself once it was clear a
-   coherent API could not leave one format with a special case.
+5. **VST3** — `presets()` with banks. Built in two parts: first
+   `load_preset` → `false`, then the load itself, because a coherent API cannot
+   leave one format with a special case.
    → `cargo test -p tutti-plugin-server --features vst3`
-6. ✅ **CLAP** — `presets()` → empty, `load_preset` on `Location`. Pin that an
+6. **CLAP** — `presets()` → empty, `load_preset` on `Location`. Pin that an
    empty list plus a set `PRESET_LOAD` bit is a coherent state.
    → `cargo test -p tutti-clap-host`
-7. ✅ **IPC frames + loader wiring**, `PROTOCOL_VERSION` 13 → 14.
+7. **IPC frames + loader wiring**, `PROTOCOL_VERSION` 13 → 14.
    → `cargo test -p tutti-plugin-server`
-8. ✅ **README capability table** — VST2's two preset cells moved `○` → `◐`.
-9. ✅ **`PresetSupport`** — not in the original plan. Added because steps 1–8
+8. **README capability table** — VST2's two preset cells moved `○` → `◐`.
+9. **`PresetSupport`** — not in the original plan. Added because steps 1–8
    produced a capability *report*, not an API: a caller still had to
    cross-reference two bits against two method returns and get the three-state
    reading of each right. One `handle.preset_support()` answers it.

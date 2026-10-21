@@ -99,7 +99,7 @@ Three properties, each answering a rule this repo already enforces:
 
 - **No stored width.** `layout()` derives it from `positions.len()`. A stored
   count beside the list is a second owner needing invalidation.
-- **`Unknown(u16)` holds its slot.** The CLAP fix in PR #198 is the worked
+- **`Unknown(u16)` holds its slot.** The CLAP fix in #198 is the worked
   example: dropping an unnameable position from a *positional* list renumbers
   every channel after it. Same reasoning as `AuLayoutTag::Unknown`.
 - **`smpte()` is the engine's own order**, named once. Today that order is
@@ -156,7 +156,7 @@ off the audio thread, where inline storage bought nothing.)
 
 **Wire.** `LoadedPlugin` gaining per-bus topology is a bincode field addition →
 `PROTOCOL_VERSION` bump. Note it is **15**, not 14: the presets branch (#196)
-takes 14 and is unmerged.
+took 14.
 
 **Coverage limits, stated in advance.** The AU suite can test topology against
 Apple's system units. For VST3 the corpus is the SDK samples, which are stereo —
@@ -186,9 +186,9 @@ Each compiles, tests, and is independently revertable.
 
 Steps 2–4 are independent of each other; each is worth landing alone.
 
-### Status: steps 1–6 landed
+### The resulting surface
 
-All six are done. What the shipped surface looks like:
+What a caller sees:
 
 ```rust
 match handle.layout_support() {
@@ -199,11 +199,8 @@ match handle.layout_support() {
 handle.input_bus_topology(0);   // Option<&ChannelTopology>
 ```
 
-Two things the build changed from what is written above, both recorded rather
-than quietly done:
+One thing differs from the plan above:
 
-- **`PROTOCOL_VERSION` is 15, not 14.** The preset branch (#196) is unmerged and
-  already took 14. Whichever lands second rebases.
 - **`LayoutSupport` has three variants, not a `PresetSupport`-shaped four.**
   `Partial` is real and common — an AU whose main bus publishes a tag while its
   sidechain does not. There is deliberately **no** variant naming *proposal*:
@@ -220,7 +217,7 @@ not the naming ones.
 **Explicitly out of scope:** VST2's opcode 42. It needs a variable-length FFI
 struct that does not exist, and until step 6 gives it a caller it would be a
 surface with no policy behind it — the audit's original objection, which stands.
-It becomes a small, well-defined follow-up once 1–6 land.
+With steps 1–6 in place it is a small, well-defined follow-up.
 
 **Deferred:** an ambisonic variant, and the engine adopting `smpte()` in
 `downmix.rs`/`spatial`. Both are safe to do later; neither blocks the above.

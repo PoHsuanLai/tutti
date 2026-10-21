@@ -467,7 +467,7 @@ mod audio_param {
         assert_eq!(node_drive(&mut app, entity), 4.0);
     }
 
-    /// The single-writer rule (doc 014 §8.2, M9): a modulated param's knob
+    /// The single-writer rule (doc 014 §8.2): a modulated param's knob
     /// is the node's own cell, and an authored write lands there. A
     /// modulation lane sends `knob + Σ offsets` into the param's port and
     /// never writes the cell, so the authored value is not reverted within a

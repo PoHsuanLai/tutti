@@ -240,7 +240,7 @@ fn the_8_1_example_renders_its_analytic_values() {
 
 // --------------------------------------------------------- export --
 
-/// **Export == live in an app, on a native param (M3).** A 3 Hz sine on
+/// **Export == live in an app, on a native param.** A 3 Hz sine on
 /// one probe's cutoff and a 5 Hz triangle on another's volume, their knobs
 /// moved after the lanes are built (a knob is the node's cell, which a
 /// fork reads); live plays from a stop into rolling ragged blocks, the
@@ -378,9 +378,9 @@ fn an_export_is_the_live_render_on_a_native_param() {
     assert!((f64::from(export[0][12_000]) - want).abs() < lfo_tolerance(0.3, 3.0));
 }
 
-// ------------------------------------------------------- M10, M9 --
+// ------------------------------------------ removal and the knob --
 
-/// **A despawned source leaves no node and no layer (M10).** A follower and
+/// **A despawned source leaves no node and no layer.** A follower and
 /// an LFO on one cutoff; the follower's source entity is despawned (its
 /// route stays, naming a source that is gone). Its node leaves the graph,
 /// the lane's program reads no input and keeps the LFO's layer, and the
@@ -444,7 +444,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     assert_eq!(program.layers().len(), 1, "the LFO's layer");
 }
 
-/// **A knob written after a route edit is the knob (M9).** The cutoff's
+/// **A knob written after a route edit is the knob.** The cutoff's
 /// knob is the node's own cell, written through `AudioParam`; a depth
 /// edit republishes the lane and writes no knob, so the knob written before
 /// it and the one written after it are each the base the LFO rides on.

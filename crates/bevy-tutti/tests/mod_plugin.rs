@@ -111,7 +111,7 @@ fn knob_of(app: &mut App, target: ParamRef) -> f32 {
     }
 }
 
-/// **Export == live on a plugin's parameter (M3).** The reference CLAP
+/// **Export == live on a plugin's parameter.** The reference CLAP
 /// plugin renders a constant tag scaled by its gain (id 77, applied
 /// sample-accurately at each parameter event's frame); a 3 Hz sine at depth
 /// 0.1 modulates the gain's lane, whose knob starts at the plugin's own

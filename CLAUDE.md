@@ -18,8 +18,9 @@ holds the `Editor`; PDC is the compiler's, export forks the live graph with
 `Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
 the numeric tower are deleted; `AudioNode` wraps a `NodeKey`, and
-`tutti_types::latency` is a pure pass that is the compiler's own solve. The
-parallel executor (below) and its cost model and coarsening have landed.
+`tutti_types::latency` is a pure pass that is the compiler's own solve. A
+block's tasks can run on a worker pool (below); a cost model decides when
+that pays, and the compiler packs tasks too cheap to dispatch alone.
 
 - Write nodes against `tutti_graph::Node` (`shape`, `prepare`, `process`,
   `reset`: declared latency and tail in the shape). A node with params is a
@@ -36,8 +37,8 @@ parallel executor (below) and its cost model and coarsening have landed.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
-- Doc 013 lists the defects and types each migration step addresses. Update
-  it when a step lands or a decision changes.
+- Doc 013 records the defects found and the types that address them. Update
+  it when the code it describes or a decision changes.
 
 ## The parallel executor (doc 013)
 

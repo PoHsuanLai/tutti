@@ -4510,6 +4510,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-types",
+ "wide",
 ]
 
 [[package]]

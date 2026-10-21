@@ -201,6 +201,12 @@ the thread that loaded the plugin; debug builds assert it.
 [`ClapActive::process`] belongs on the audio thread and does not allocate: the
 scratch it renders through is sized at activation.
 
+A plugin that spreads its own work over `clap.thread-pool` has its requests
+run on the pool given to [`ClapLoaded::set_thread_pool`] (any
+`tutti_graph::Pool`, such as `tutti_core::WorkerPool`), with the calling audio
+thread taking part; without one, they are refused and the plugin runs the
+tasks itself. Only a request from inside the plugin's `process` is served.
+
 ## License
 
 MIT OR Apache-2.0
@@ -210,6 +216,7 @@ MIT OR Apache-2.0
 [`ClapLoaded::get_parameter_list`]: crate::ClapLoaded::get_parameter_list
 [`ClapLoaded::supports_f64`]: crate::ClapLoaded::supports_f64
 [`ClapLoaded::flush_params`]: crate::ClapLoaded::flush_params
+[`ClapLoaded::set_thread_pool`]: crate::ClapLoaded::set_thread_pool
 [`ClapActive`]: crate::ClapActive
 [`ClapActive::process`]: crate::ClapActive::process
 [`ClapError`]: crate::ClapError

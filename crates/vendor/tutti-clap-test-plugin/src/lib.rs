@@ -122,6 +122,14 @@ pub mod holes;
 
 pub use holes::HOLE_NONE;
 
+/// THREAD-POOL probe: `clap.thread-pool`, advertised only while a test asks
+/// for tasks; each `process` requests them and records what ran where.
+/// Separate module for the same reason as the others: its own capture
+/// channel and switches.
+pub mod thread_pool;
+
+pub use thread_pool::{ThreadPoolCapture, MAX_POOL_TASKS};
+
 /// OUT-OF-PROCESS probe: switches selected by **environment** rather than by an
 /// `extern "C"` call, for the host suites whose plugin lives in a
 /// `plugin-server` subprocess. A `dlopen` from those tests would load a second
@@ -493,6 +501,9 @@ unsafe extern "C" fn plugin_process(
     // while rendering.
     rt_probe::emit_audio_thread_logs(host);
 
+    // THREAD-POOL: ask the host to run this block's tasks, if a test armed it.
+    thread_pool::on_process(plugin, host);
+
     // RT-HAZARD: the status is the last thing decided, so the block counter the
     // alternating modes read advances exactly once per block regardless of
     // which branches above ran.
@@ -540,6 +551,11 @@ unsafe extern "C" fn plugin_get_extension(
     let gui_ext = gui::get_extension(id);
     if !gui_ext.is_null() {
         return gui_ext;
+    }
+    // THREAD-POOL extension — see `thread_pool.rs`. Null unless armed.
+    let pool_ext = thread_pool::get_extension(id);
+    if !pool_ext.is_null() {
+        return pool_ext;
     }
     ptr::null()
 }

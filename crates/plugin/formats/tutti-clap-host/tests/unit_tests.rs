@@ -1431,9 +1431,11 @@ fn test_host_remote_controls_changed_and_suggest() {
 
 // ── thread_pool, audio_ports_activation, extensible_audio_ports ──
 
-/// `ext/thread-pool.h:57`: `true` means the host *did execute* all the tasks.
-/// This host runs no pool, so every request must be rejected — a `true` here
-/// tells the plugin its tasks completed when nothing ran them.
+/// `ext/thread-pool.h`: `true` means the host *did execute* all the tasks,
+/// and a call from outside the plugin's `process` must be rejected. No
+/// process call is in flight here (and no pool), so every request must be
+/// rejected — a `true` tells the plugin its tasks completed when nothing ran
+/// them. The served case is `tests/clap_thread_pool.rs`.
 #[test]
 fn test_host_thread_pool_request_exec_rejects() {
     use clap_sys::ext::thread_pool::{clap_host_thread_pool, CLAP_EXT_THREAD_POOL};

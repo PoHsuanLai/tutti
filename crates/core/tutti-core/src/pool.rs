@@ -8,6 +8,11 @@
 //! `tutti_types::JobGate`, loom-checked there; this module adds only the
 //! threads and how they wait.
 //!
+//! The pool runs one job at a time. A `run` that finds it busy (another
+//! caller's job, or a call from inside a job) runs its job alone on the
+//! caller; a `try_run` runs nothing and returns `false`, for a caller with a
+//! fallback of its own (a CLAP plugin's `clap.thread-pool` request).
+//!
 //! # How a helper waits
 //!
 //! Between jobs a helper **spins** for a short while (a block's job usually
@@ -290,6 +295,15 @@ impl Pool for WorkerPool {
         let shared = &*self.shared;
         shared.gate.run(job, || shared.wake(wake.saturating_sub(1)));
     }
+
+    /// `false` when the gate is busy: another caller's job is open, or this
+    /// call is made from inside one.
+    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
+        let shared = &*self.shared;
+        shared
+            .gate
+            .try_run(job, || shared.wake(wake.saturating_sub(1)))
+    }
 }
 
 impl std::fmt::Debug for WorkerPool {
@@ -400,6 +414,28 @@ mod tests {
         }
         assert_eq!(started.load(Ordering::Relaxed), 3);
         drop(pool);
+    }
+
+    /// `try_run` from inside a job of the pool runs nothing and says so; on
+    /// an idle pool it runs the job.
+    ///
+    /// Mutation: have `WorkerPool::try_run` call `run` and return `true` →
+    /// the nested call runs and returns `true` → fails.
+    #[test]
+    fn try_run_inside_a_job_refuses() {
+        let pool = WorkerPool::new(2);
+        let inner = AtomicUsize::new(0);
+        let nested = AtomicUsize::new(0);
+        assert!(pool.try_run(1, &|i| {
+            if i == 0 {
+                let accepted = pool.try_run(1, &|_| {
+                    inner.fetch_add(1, Ordering::Relaxed);
+                });
+                nested.store(1 + accepted as usize, Ordering::Relaxed);
+            }
+        }));
+        assert_eq!(nested.load(Ordering::Relaxed), 1, "the nested call refused");
+        assert_eq!(inner.load(Ordering::Relaxed), 0);
     }
 
     /// A one-participant pool runs every job on the caller.

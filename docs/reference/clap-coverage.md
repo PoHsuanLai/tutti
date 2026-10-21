@@ -42,9 +42,12 @@ the equivalent VST3 pass found `IUnitInfo` completely absent.
 
 ### `clap_host_thread_pool.request_exec` returns `true` without executing anything — **[verified] · FIXED on main**
 
-> **Resolved.** `host_thread_pool_request_exec` now returns `false`, and the
-> write-only `thread_pool_pending` field is gone. The analysis below is kept as
-> the record of why — line numbers refer to the code as it was when surveyed.
+> **Resolved.** `host_thread_pool_request_exec` returned `false` after this
+> finding, and the write-only `thread_pool_pending` field is gone. It now runs
+> the tasks on the pool given with `ClapLoaded::set_thread_pool` when called
+> from inside the plugin's `process`, and still returns `false` otherwise
+> (doc 013, "`clap.thread-pool`"). The analysis below is kept as the record of
+> why — line numbers refer to the code as it was when surveyed.
 
 `host/callbacks.rs:713-729` stores `num_tasks` into an atomic and returns `true`.
 

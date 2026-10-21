@@ -183,7 +183,9 @@ unsafe extern "C" fn host_log(
     };
     // Check the thread before touching `msg`: building the `String` is itself
     // one of the allocations this guard exists to prevent.
-    if state.is_audio_thread() {
+    // A served `clap.thread-pool` task counts as the audio thread: the audio
+    // thread is waiting for it, whichever thread runs it.
+    if state.is_audio_thread() || super::thread_pool::in_served_task() {
         state.log.note_audio_thread_drop();
         return;
     }
@@ -776,18 +778,21 @@ pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_poo
     request_exec: Some(host_thread_pool_request_exec),
 };
 
-/// Always rejects. `ext/thread-pool.h:57` defines the return as "true if the
-/// host **did execute** all the tasks" and the call as blocking until they are
-/// done, so `true` from a host with no pool tells the plugin work completed
-/// that never ran — for a plugin splitting voices across the pool, silence for
-/// every task past whatever it computed inline. `false` is the answer the
-/// header documents for this case (`:10-11`): the plugin then runs the tasks
-/// itself, in the worst case a single-threaded loop.
+/// Runs the plugin's tasks on the instance's pool, when the call comes from
+/// inside its `process` on the audio thread and the instance has a pool
+/// (`ClapLoaded::set_thread_pool`); returns `false` otherwise, and the plugin
+/// runs them itself (`ext/thread-pool.h`). See `host/thread_pool.rs`.
 unsafe extern "C" fn host_thread_pool_request_exec(
-    _host: *const ClapHostVtable,
-    _num_tasks: u32,
+    host: *const ClapHostVtable,
+    num_tasks: u32,
 ) -> bool {
-    false
+    if host.is_null() {
+        return false;
+    }
+    // Only compared against the installed request's host state, never
+    // dereferenced here.
+    let state = (*host).host_data as *const HostState;
+    super::thread_pool::request_exec(state, num_tasks)
 }
 
 pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {

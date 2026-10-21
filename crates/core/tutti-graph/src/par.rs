@@ -87,9 +87,10 @@ use crate::node::{Env, MaxBlock, MAX_PORTS};
 use crate::plan::{Op, Plan, Span};
 use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 
-/// A pool of threads that runs one job at a time on several of them — what
-/// the parallel executor asks of a worker pool. `tutti_core::WorkerPool`
-/// implements it; a host with its own pool (or a test) can too.
+/// A pool of threads that runs a job on several of them — what the parallel
+/// executor (and a CLAP plugin's `clap.thread-pool` request) asks of a
+/// worker pool. `tutti_core::WorkerPool` implements it; a host with its own
+/// pool (or a test) can too.
 ///
 /// # Contract
 ///
@@ -98,9 +99,15 @@ use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 /// distinct and in `1..participants`, and returns only once no call of `job`
 /// is still running. It may run `job(0)` alone — when its threads are busy
 /// with another caller's job, say — and the executor's job is correct with
-/// any number of participants, one included. On the audio thread it must
-/// not allocate, lock or wait for a thread that has not started the job;
-/// waking sleeping threads is the one system call it may make.
+/// any number of participants, one included. A `run` called from inside a
+/// job of this pool must not wait for that job: it may run `job(0)` alone.
+/// On the audio thread it must not allocate, lock or wait for a thread that
+/// has not started the job; waking sleeping threads is the one system call
+/// it may make.
+///
+/// [`try_run`](Self::try_run) is the same call for a caller with a fallback
+/// of its own: where `run` would run `job(0)` alone because the pool is
+/// busy, it may instead run nothing and return `false`.
 pub trait Pool: Send + Sync + 'static {
     /// Participants a job can have, the caller included. At least 1.
     fn participants(&self) -> usize;
@@ -109,6 +116,14 @@ pub trait Pool: Send + Sync + 'static {
     /// participants (the caller included) the job can keep busy at once: a
     /// pool need not wake more threads than that.
     fn run(&self, wake: usize, job: &(dyn Fn(usize) + Sync));
+
+    /// Run `job` as [`run`](Self::run) does and return `true`, or, when the
+    /// pool is busy (another caller's job, or the job this call is made
+    /// from), run nothing and return `false`. The default always runs.
+    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
+        self.run(wake, job);
+        true
+    }
 }
 
 impl std::fmt::Debug for dyn Pool {

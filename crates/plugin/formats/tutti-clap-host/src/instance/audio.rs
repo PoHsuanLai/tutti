@@ -545,9 +545,20 @@ impl<T: ClapSample> ClapActive<T> {
             out_events,
         };
 
+        // What the plugin's `clap.thread-pool` requests run on, for exactly
+        // the span of its `process` call (`host/thread_pool.rs`). On this
+        // stack, so serving it allocates nothing.
+        let pool_request = self.loaded.pool_request();
         let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
         let status = if let Some(process_fn) = plugin_ref.process {
-            unsafe { process_fn(self.loaded.plugin.as_ptr(), &process_data) }
+            let plugin = self.loaded.plugin.as_ptr();
+            // SAFETY: the plugin's own `process`, with a `clap_process` that
+            // outlives the call.
+            let call = || unsafe { process_fn(plugin, &process_data) };
+            match &pool_request {
+                Some(request) => request.serve(call),
+                None => call(),
+            }
         } else {
             CLAP_PROCESS_CONTINUE
         };

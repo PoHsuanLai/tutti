@@ -1129,19 +1129,6 @@ impl ClapLoaded {
         })
     }
 
-    /// Runs a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
-    /// Call from a worker thread. Requires the `clap-extras` feature.
-    #[cfg(feature = "clap-extras")]
-    pub fn thread_pool_exec(&self, task_index: u32) {
-        if self.extensions.system.thread_pool.is_null() {
-            return;
-        }
-        let ext = unsafe { &*self.extensions.system.thread_pool };
-        if let Some(f) = ext.exec {
-            unsafe { f(self.plugin.as_ptr(), task_index) };
-        }
-    }
-
     /// Tells the plugin its tuning table set has changed. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn notify_tuning_changed(&self) {

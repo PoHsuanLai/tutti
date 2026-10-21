@@ -2397,7 +2397,12 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   retraction freed positions a block in flight still held). Ordered by fences
   and release/acquire, not by `SeqCst` accesses, which loom does not model as
   totally ordered. A threaded stress test (a real writer and reader, random
-  claims, tagged samples) runs at a scale loom cannot.
+  claims, tagged samples) runs at a scale loom cannot. The slot map
+  (`s mod N`) is a pure function the protocol only needs to be the same on
+  both sides; it is a multiply by a reciprocal taken once at `new`, not a
+  `u64` divide, because the voice's cubic reads four taps per output frame
+  (exact for the positions and ring lengths the window word allows, and
+  checked against `%` in `PosRing`'s tests).
 - **One writer and one reader, by type** (the review of `PosRing`):
   `PosRing::new` returns a `PosWriter` (its methods `&mut self`) and a
   `PosReader` whose `claim` returns a `PosClaim` borrowing it — samples are
@@ -3152,7 +3157,12 @@ What each layer holds:
   lifetime erasure, and the reason the pool needs no `std::thread::scope`
   per block); `TaskGraph` runs a DAG of tasks once per block over any
   number of participants (self-resetting activation counters, a ready list,
-  the first ready successor run inline); `SplitMut` / `SplitRw` hand one
+  the first ready successor run inline; the block's termination count
+  counts only the sink tasks, since every task's writes reach a sink
+  through the counters' `AcqRel` chain, so the one line every participant
+  polls takes an RMW per sink rather than per task, and each helper counts
+  its own completions on a line of its own for the waiting caller);
+  `SplitMut` / `SplitRw` hand one
   slice's elements or chunks to several threads, each claimed before use.
 
 **Safety without `unsafe` in `tutti-graph`.** The crate stays
@@ -3195,9 +3205,10 @@ Decisions:
    ports. Two nodes sharing mutable state outside the graph (one
    `Arc<Mutex<_>>`) are ordered serially by accident and not at all in
    parallel.
-7. **The caller spins, then yields** while it waits on a helper (the task
-   graph's `remaining`, the gate's `entered`). On Linux, after 250 µs in
-   which the counter has not moved, it calls `sched_yield` once, then spins
+7. **The caller spins, then yields** while it waits on a helper (on the
+   task graph, any task finishing: the sinks' `remaining`, the caller's own
+   count and the helpers' completion counters; on the gate, `entered`). On
+   Linux, after 250 µs in which none of it has moved, it calls `sched_yield` once, then spins
    again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
    never yields inside a job; it leaves. This replaced a caller that only spun, which starved a helper
    queued behind it on its own core under `SCHED_FIFO` (see ["The caller
@@ -3963,7 +3974,8 @@ all three into fresh `Vec`s to keep only the restart flags.
 - **Cost in the common case** (`tutti-nodes/benches/parallel_render.rs`,
   run under `chrt -f 1` so the other load on the shared VM could not
   preempt it; caller yields counted on the bench's main thread with
-  `strace -ff`).
+  `strace -ff`). Measured while every finished task decremented
+  `remaining`, which was then the caller's whole progress signal.
 
   | bench | count of 1024 (first version) | 250 µs |
   |---|---|---|
@@ -3977,6 +3989,34 @@ all three into fresh `Vec`s to keep only the restart flags.
   alternating pairs against main: `wide/32x8/4` 211, 217 and 219 µs on
   main, against 223, 209 and 216 µs; `deep/128/4` 184, 185 and 195 µs,
   against 185, 166 and 191 µs. That is within run-to-run spread.
+- **When termination came to count only sinks.** `remaining` then moves
+  only when a sink finishes. A mix graph has about one (tracks → master →
+  output), so with `remaining` alone as the signal the budget ran from the
+  caller going idle until the master finished, and ordinary imbalance near
+  the end of a long block yielded. Each helper now counts its own
+  completions on a cache line of its own (a `Relaxed` load and store by its
+  one writer, no shared RMW), the caller counts its own, and the waiting
+  caller reads the helpers' counters once per 64 waits. Measured with a
+  scratch harness (not committed): `root → lanes → master`, one sink, a
+  4-participant `WorkerPool` under `chrt -f 1`, 2000 blocks per variant,
+  run in one process, alternating; yields counted in the caller's
+  `SpinThenYield`; the VM at a load of 16 to 22 from other builds.
+
+  | graph | every task counted | sinks only, no counters | sinks + counters |
+  |---|---|---|---|
+  | 9 lanes of 30 µs, then 200, 300 and 450 µs, master 50 µs (blocks ~620 µs) | 5, 79, 41, 228, 50, 155 | 1407, 1319, 1167, 1197, 1131, 1308 | 257, 37, 285, 10, 60, 197 |
+  | 24 lanes of 20 to 300 µs, master 50 µs (blocks ~1.06 ms) | 101, 338, 82, 229, 76, 459 | 279, 90, 111, 87, 63, 245 | 207, 71, 391, 66, 214, 26 |
+
+  The first row is the case: the three heavy lanes land 100 to 150 µs
+  apart, but 450 µs after the caller runs out of work, and without the
+  counters about two blocks in three yielded. With them the counts are
+  main's, the background of helpers off their cores at that load. The
+  second row is that background throughout. The dispatch gain of counting
+  only sinks survives the counters (same harness, `root → n → sink`,
+  per-block median, two runs): n=64 of tiny tasks −11% and −13% against
+  every task counted (−16%, −11% without the counters); n=256 −16%, −13%
+  (−22%, −12%); n=256 of empty tasks −16%, −14% (−17%, −13%); n=16 of
+  heavy tasks 0% (−2%, 0%).
 - **What it does not fix.** A yield moves a FIFO thread behind threads of
   its own priority only. A helper below the callback's priority (a
   `SCHED_OTHER` helper, the default when a host gives

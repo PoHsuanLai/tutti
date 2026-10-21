@@ -131,3 +131,7 @@ hound = "3.5"
 [[bench]]
 name = "voice_pool"
 harness = false
+
+[[bench]]
+name = "ring_read"
+harness = false

@@ -185,6 +185,9 @@ impl RingWindow {
 pub struct PosRing {
     stride: usize,
     frames: usize,
+    /// `ceil(2^64 / frames)` (wrapping to 0 for one frame): [`slot`](Self::slot)'s
+    /// reciprocal.
+    recip: u64,
     /// Positions the writer keeps behind where the reader plays.
     keep_behind: u64,
     /// `frames * stride` samples, as `f32` bits.
@@ -226,6 +229,7 @@ impl PosRing {
         let ring = Arc::new(Self {
             stride,
             frames,
+            recip: recip(frames as u64),
             keep_behind,
             slots: (0..frames * stride).map(|_| AtomicU32::new(0)).collect(),
             window: AtomicU64::new(0),
@@ -249,6 +253,25 @@ impl PosRing {
     /// Returns the samples per frame.
     pub fn stride(&self) -> usize {
         self.stride
+    }
+
+    /// Returns the slot of position `s`, `s mod frames`, without a divide.
+    ///
+    /// Lemire, Kaser and Kurz's direct remainder ("Faster Remainder by Direct
+    /// Computation", 2019, Theorem 1): with `c = ceil(2^64 / d)`, the low 64
+    /// bits of `c * s`, times `d`, shifted down 64, are `s mod d` for every
+    /// `s < 2^N` once `c * d - 2^64 <= 2^(64 - N)`. Here `c * d - 2^64 < d <
+    /// 2^24` and `N = 40`, the bounds the window word puts on a ring
+    /// ([`MAX_POS_RING_FRAMES`]) and on a position, so it is exact for every
+    /// position a window can hold. (For one frame `c` wraps to 0, and so does
+    /// the slot.) Whatever `s`, the result is below `frames`: a position past
+    /// `2^40` maps to a wrong slot, never out of bounds.
+    ///
+    /// The reader's taps call this per frame (four per output frame in the
+    /// sampler's cubic), where a `u64` divide was most of a tap's cost.
+    #[inline]
+    fn slot(&self, s: u64) -> usize {
+        rem(s, self.recip, self.frames as u64) as usize
     }
 
     /// Returns the window now: a glance for status, not a claim (nothing may
@@ -464,7 +487,7 @@ impl PosWriter {
             .take((end - to) as usize)
             .enumerate()
         {
-            let slot = ((to + i as u64) % frames) as usize;
+            let slot = ring.slot(to + i as u64);
             for (c, &s) in frame.iter().enumerate() {
                 ring.slots[slot * ch + c].store(s.to_bits(), Ordering::Relaxed);
             }
@@ -583,7 +606,7 @@ impl<'a> PosClaim<'a> {
             "position {s} outside the claimed ranges"
         );
         let ch = self.ring.stride;
-        let slot = (s % self.ring.frames as u64) as usize;
+        let slot = self.ring.slot(s);
         PosFrame(&self.ring.slots[slot * ch..(slot + 1) * ch])
     }
 
@@ -617,6 +640,18 @@ impl PosFrame<'_> {
             .get(c)
             .map_or(0.0, |s| f32::from_bits(s.load(Ordering::Relaxed)))
     }
+}
+
+/// `ceil(2^64 / d)`, wrapping to 0 for `d == 1`: [`rem`]'s reciprocal.
+fn recip(d: u64) -> u64 {
+    (u64::MAX / d).wrapping_add(1)
+}
+
+/// `s mod d` from `c = recip(d)`, exact for `s < 2^40` and `d < 2^24` (see
+/// [`PosRing::slot`]); below `d` for any `s`.
+#[inline]
+fn rem(s: u64, c: u64, d: u64) -> u64 {
+    ((u128::from(c.wrapping_mul(s)) * u128::from(d)) >> 64) as u64
 }
 
 /// The first position at or past `to` whose slot also holds a position of the

@@ -39,6 +39,18 @@ session (an unfollowed `MeterSlot`, a clip, harmony track, voice or plugin
 meter in a graph it drives itself) calls its `reclaim` from its own
 control-side tick.
 
+### Changed — `Participant::Helper` names which helper it is
+
+`tutti_types::Participant::Helper` is now `Helper(usize)`, the helper's
+index among the participants (the pool's `1..`). `TaskGraph` counts only
+sink tasks for termination, so a waiting caller can no longer read every
+task's completion off `remaining`; each helper instead counts its own
+completions on a cache line of its own, chosen by this index, and the
+caller reads those counters to decide when to yield.
+
+Migration: pass the participant index, `Participant::Helper(w)` where you
+passed `Participant::Helper` (`w` is what `Pool::run` hands the job).
+
 ### Changed — the stretch filter's cells are written only through its setters
 
 `tutti_sampler`'s stretch `Unit` no longer hands out its raw cells:

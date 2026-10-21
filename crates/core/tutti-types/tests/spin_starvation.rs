@@ -142,7 +142,7 @@ fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Out
                 g.abort();
                 return;
             }
-            g.work(Participant::Helper, |t| {
+            g.work(Participant::Helper(1), |t| {
                 if t == 0 {
                     holding.store(true, Ordering::Release);
                     burn(iters);

@@ -142,7 +142,7 @@ impl Node for MidiOutNode {
 struct Discarding;
 
 impl ForkSource for Discarding {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(MidiOutNode::discarding())))
     }
 }

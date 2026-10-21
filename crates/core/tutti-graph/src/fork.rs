@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source, Topology};
-use tutti_types::{NodeKey, OfflineTransport};
+use tutti_types::NodeKey;
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
@@ -28,15 +28,14 @@ use crate::spec::{EventIn, GraphSpec};
 /// source asks the live instance for its saved state.)
 pub trait ForkSource: Send {
     /// A fresh unit for `mode`, sharing no state with the live one: severed
-    /// from every live input, rebound onto the offline context in
-    /// [`ForkMode::Offline`], and reset. The editor prepares it.
+    /// from every live input and reset. The editor prepares it.
     ///
     /// An `Err` fails the whole fork as [`ForkError::Source`], naming the key.
     /// A source whose copy is a clone cannot fail; one that has to build its
     /// unit from outside the process — a hosted plugin, loaded afresh and
     /// handed the live instance's state — can, and must say so rather than
     /// fall back to anything that shares the live unit.
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause>;
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause>;
 
     /// The control-thread half of a fork ([`Editor::fork_gather`]): read
     /// what the fork must take from the live node **now**, and say where the
@@ -57,7 +56,7 @@ pub trait ForkSource: Send {
     /// launch).
     ///
     /// An `Err` fails the fork as [`ForkError::Source`], naming the key.
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::pinned)
     }
 }
@@ -466,39 +465,17 @@ impl fmt::Display for ForkCause {
 }
 
 /// What a fork is for.
-#[derive(Clone, Copy)]
-pub enum ForkMode<'a> {
-    /// A live duplicate: isolated and reset, still bound to whatever
-    /// transport the node was bound to.
+///
+/// Neither mode carries a timeline: a forked node reads musical time from
+/// its block's `Env`, which the fork's executor hands it like the live one's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForkMode {
+    /// A live duplicate: isolated and reset.
     Live,
-    /// An offline render: isolated, then rebound onto the render's
-    /// timeline, then reset.
-    ///
-    /// Typed: the timeline is one shape, [`OfflineTransport`], for every
-    /// [`ForkSource`] that reads it. It was a `&dyn Any` each unit downcast, and a context of any other type (a
-    /// reference to a reference, the timeline inside it) silently rebound
-    /// nothing; it is now a compile error:
-    ///
-    /// ```compile_fail,E0308
-    /// let wrong = 0.5_f64;
-    /// let _ = tutti_graph::ForkMode::Offline(&wrong);
-    /// ```
-    Offline(&'a OfflineTransport),
-}
-
-impl fmt::Debug for ForkMode<'_> {
-    /// A timeline is not `Debug`; its position is what tells two renders
-    /// apart.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Live => f.write_str("Live"),
-            Self::Offline(t) => f
-                .debug_struct("Offline")
-                .field("beat", &t.beat())
-                .field("tempo", &t.tempo())
-                .finish(),
-        }
-    }
+    /// An offline render: isolated and reset. A source that renders
+    /// differently offline reads this (a hosted plugin is told it renders
+    /// offline); a sampler's disk voice refuses [`Live`](Self::Live).
+    Offline,
 }
 
 /// What [`Editor::fork`] copies.
@@ -586,8 +563,8 @@ impl Error for ForkError {
 /// nothing about sharing, so no node is forkable by clone unless inserted
 /// this way (a bare [`Node`] is not an [`IntoNode`] at all; see
 /// [`Unforkable`] for the other answer). A generator that reads only its
-/// block's [`Env`](crate::Env) (a click, an LFO) needs no rebinding offline: the fork's renderer hands it the render's
-/// transport.
+/// block's [`Env`](crate::Env) (a click, an LFO) needs nothing more
+/// offline: the fork's renderer hands it the render's transport.
 ///
 /// ```
 /// use tutti_graph::{Editor, ForkByClone, ForkMode, ForkTarget, Prepare};
@@ -616,7 +593,7 @@ pub struct ForkByClone<N>(pub N);
 struct CloneFork<N>(N);
 
 impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         let mut node = self.0.clone();
         node.reset();
         Ok(Forked::new(Box::new(node)))
@@ -630,7 +607,7 @@ impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
     /// before the fork was split. A node whose controls must be frozen at
     /// the fork is a `ParamNode` ([`ParamFork`](crate::ParamFork) reads the
     /// cells here and detaches its own) or brings its own source.
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::ready)
     }
 }
@@ -826,7 +803,7 @@ impl Editor {
     pub fn fork(
         &self,
         target: ForkTarget,
-        mode: ForkMode<'_>,
+        mode: ForkMode,
         prepare: Prepare,
     ) -> Result<(Editor, Executor), ForkError> {
         // Whatever was built is dropped here, on the thread that gathered
@@ -887,7 +864,7 @@ impl Editor {
     pub fn fork_gather(
         &self,
         target: ForkTarget,
-        mode: ForkMode<'_>,
+        mode: ForkMode,
         prepare: Prepare,
     ) -> Result<PendingFork, ForkError> {
         let live = self.spec();

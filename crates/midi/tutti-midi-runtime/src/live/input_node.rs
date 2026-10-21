@@ -235,7 +235,7 @@ impl Node for MidiInputNode {
 struct SilentInput;
 
 impl ForkSource for SilentInput {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(MidiInputNode::new(None))))
     }
 }

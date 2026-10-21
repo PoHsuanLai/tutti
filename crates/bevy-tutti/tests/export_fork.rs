@@ -435,7 +435,7 @@ fn a_graph_with_no_outputs_says_so() {
 /// the voice at beat 0 sounds. (The voice reads the render's `Env`, not the
 /// fork's offline timeline: `ExportClock::offline` answering the stopped
 /// timeline for a named one passes here, and fails `export_surface`'s
-/// rebinding tests. `Stopped::is_rolling` answering `true` passes here: no
+/// prepare-hook timeline tests. `Stopped::is_rolling` answering `true` passes here: no
 /// node reads the frozen fork's timeline while the render's transport is
 /// stopped. A `PrepareEdit` does: `tutti-session`'s
 /// `a_frozen_exports_timeline_is_stopped_at_beat_zero` pins it.)
@@ -543,7 +543,7 @@ struct Counter {
 struct CounterFork;
 
 impl ForkSource for CounterFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         let n = Arc::new(AtomicU64::new(0));
         Ok(Forked::new(Box::new(Counter { n })))
     }
@@ -1900,11 +1900,11 @@ mod off_thread {
     }
 
     impl ForkSource for SlowFork {
-        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
             unreachable!("an export gathers")
         }
 
-        fn gather(&self, _mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        fn gather(&self, _mode: ForkMode) -> Result<ForkBuild, ForkCause> {
             // Read now, in the frame the export starts.
             let level = f32::from_bits(self.level.load(Ordering::SeqCst));
             let wait = self.wait.lock().unwrap().take();
@@ -2153,14 +2153,14 @@ mod off_thread {
     struct PinnedFork(Arc<Threads>);
 
     impl ForkSource for PinnedFork {
-        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
             here(&self.0.built);
             Ok(Forked::new(Box::new(Pinned {
                 threads: Arc::clone(&self.0),
             })))
         }
 
-        fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
             self.fork(mode).map(ForkBuild::pinned)
         }
     }
@@ -2330,10 +2330,10 @@ mod off_thread {
     struct BrokenFork;
 
     impl ForkSource for BrokenFork {
-        fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
             unreachable!("an export gathers")
         }
-        fn gather(&self, _mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+        fn gather(&self, _mode: ForkMode) -> Result<ForkBuild, ForkCause> {
             Ok(ForkBuild::deferred(|| Err(ForkCause::new(NoServer))))
         }
     }

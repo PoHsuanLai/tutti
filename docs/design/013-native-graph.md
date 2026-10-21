@@ -319,7 +319,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
-| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them; `AudioUnit::rebind_offline`, `MidiUnitIn::rebind_offline` and `MidiInPort::rebind_offline_into` take the same type | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
+| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them; `AudioUnit::rebind_offline`, `MidiUnitIn::rebind_offline` and `MidiInPort::rebind_offline_into` take the same type. **Since superseded:** once every node read `Env`, no fork read the timeline, so `ForkMode::Offline` carries nothing and `Timeline`/`OfflineClock`/`OfflineTransport` are tutti-core's again ([item 4's transport half](#item-4s-transport-half-landed)). `OfflineTransport` keeps its `OfflineClock` guard: it is what an export hands its `PrepareEdit` | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
 | **`Timeline::segment_generation() -> u64`**, required; `FrameClock::generation` moves on at every segment restart (seek, tempo or rate change, loop wrap) and at a play start, published by the engine's clock before the beat | A playhead read as a bare beat, with no way to tell a jump that lands on the same beat from no jump | The sampler's seat running on through a seek to the beat it stood on, or a one-block transport loop, instead of re-seating (`interp.rs` `Seat`, both tiers) |
 | **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
 | **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)` (new), `Legacy`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | #38's B1 (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
@@ -617,10 +617,10 @@ place that loses precision to be written out explicitly:
    - **One rule for "which frame".** `first_frame_at_or_after(frames_ahead)
      = ceil(frames_ahead - FRAME_TOLERANCE)`, the first frame at or after a
      beat within a millionth of a frame, is the one beat→frame conversion
-     (`TimelineSegment::frame_of`, `reached_by`). `Env::due`, the sampler's
+     (`TimelineSegment::frame_of`, `reached_by`). `Env::due` (MIDI clips,
+     harmony changes), the sampler's
      placement gate (`window_position`: entered once the start is reached
-     by frame; left once the end is), `BeatWindow::place` (MIDI clips,
-     harmony changes), the MIDI snapshot reader's offsets and the MIDI
+     by frame; left once the end is), the MIDI snapshot reader's offsets and the MIDI
      clock's 24-PPQN ticks all use it and compare integer frames. Tiled
      blocks then place every beat in exactly one of them: a beat between a
      block's last frame and its end is the next block's frame 0, where beat
@@ -2761,7 +2761,7 @@ could not be ported and are dropped, each named where it was: the PDC-switch tes
 (its native half stays, `pdc_is_the_compilers`); the engine-export test's
 `Net` early return (it only checked lengths there); and
 `a_master_export_says_whether_it_was_rebound`'s `None` for `Net`, now
-`a_master_export_is_rebound_onto_the_callers_timeline`. The native
+`a_master_exports_prepare_hook_sees_the_callers_timeline`. The native
 `has_compensation()` assertion in `latency`'s
 `publishes_the_compensation_its_commit_sends` became "both channels still
 read the nodes they were wired to". (The restart test's "`Net` publishes the
@@ -4139,7 +4139,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | **Done (item 6).** `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
 | `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar` kernel in `tutti-types` |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
-| `TransportClock`, `BeatWindow`/`BeatCursor` state | The executor advances the transport once per block and publishes `Env { frame, beat_window, tempo, rate, transport_epoch }`. Nodes keep `last_epoch: u64`. The arithmetic in `beat_window.rs` is kept, and all 8 `rebind_offline` impls go |
+| `TransportClock`, `BeatWindow`/`BeatCursor` state | **Done (item 4).** The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | **Done (item 4, plugin half).** A pure function of `Env` plus the meter (`transport_source::from_env`) |
 | Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass |
 | `MidiInPort`, `MidiPostBlock`/`MidiOutSink`, bevy `MidiTargetRegistry` | Events ports. Event edges join the one topological order, so arp → synth delivers **in the same block**. The uniform `MIDI_OUT_LATENCY_BLOCKS = 1` is paid only on actual `Feedback` edges. Addressing becomes `(NodeKey, InPort::Events(n))` |
@@ -4166,7 +4166,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). A candidate for batching same-kind siblings |
 | `Compressor` / `Gate` (thin) | An optional sidechain port: when it is unconnected in `Io`, the node keys off its own input (today's fallback can never fire). Params read once per block. Readings go out through `Controls` (fixes D6). Block detector kernels |
 | `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` becomes a `Topology` fragment |
-| `ClickNode` | `BeatWindow::offset_of(onset)` against `Env` gives sample-accurate onsets (fixes D8). Mono output |
+| `ClickNode` | **Done.** `Env::for_each_beat` gives sample-accurate onsets (fixes D8) |
 
 **Port mechanically (drop the shell, keep the body):** `DistortionNode` (curves
 move to `kernel`, drive becomes an a-rate port), `LimiterNode` (ring sized in
@@ -4196,7 +4196,7 @@ vocoder retirement channel for voices the pool removes.
 | 1 | **Done.** **Latency defects D1–D3, plus D5, D7, D8** (D1–D3 in #3; D5 with the SoA bank, D7 with the strip's per-block ramp, D8 with the click's per-sample onset off `EnvClock`'s beat ports) | These are bugs, and small | No |
 | 2 | **Done (#5).** **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks shrinking the surface and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10; the Strip in the per-node port).** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
-| 4 | **`Env` + plugin typestate**. **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
+| 4 | **Done.** **`Env` + plugin typestate** (plugin half: [below](#item-4s-plugin-half-landed); transport half: every node reads `Env::transport_at` / `Cx::transport_at`, [below](#item-4s-transport-half-landed)) | Deleted `TransportSource`, the six `BeatCursor` copies and then `BeatCursor`/`BeatWindow` themselves, the 8 `rebind_offline` impls and `ForkMode::Offline`'s timeline, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>`. `TransportClock` lost its node half (with `Net`) and stays as the engine's playhead, which publishes each block's `Env` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done.** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (`VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
@@ -4321,6 +4321,29 @@ vocoder retirement channel for voices the pool removes.
   fault (`PluginRenderFault::LatencyChanged`), never a silently misaligned
   export. Pinned by `an_export_is_aligned_when_the_plugin_latency_moves_offline`
   (the reference plugin adds 24 frames in offline mode).
+
+#### Item 4's transport half landed
+
+Every node reads musical time from its block's `Env` (`transport_at`,
+`segments`, `for_each_beat`) or, behind a latent path, `Cx::transport_at`;
+no node holds a `Timeline`. What that left behind is gone:
+
+- **`BeatCursor`, `BeatWindow`, `BeatWindowSync`, `BeatPlacement`**
+  (`tutti-core`'s `transport/beat_window.rs`) had no user outside their own
+  tests and are deleted. `Env::due` and `Env::for_each_beat` place beats in
+  a block.
+- **`ForkMode::Offline` carries nothing.** Its `&OfflineTransport` was the
+  timeline each `rebind_offline` read; no `ForkSource` read it after those
+  went (the plugin and VST2 forks and the disk voice match only the
+  variant). `ForkMode` lost its lifetime.
+- **`Timeline`, `OfflineClock` and `OfflineTransport` are tutti-core's
+  again** (`tutti_core::transport`): tutti-graph no longer names them, so
+  tutti-types does not hold them. `OfflineTransport` is what an export hands
+  its `PrepareEdit` (`PreparedGraph::ctx`), still built only from an
+  `OfflineClock`.
+- **`TransportClock` stays**, as the engine's playhead: it counts frames,
+  and the engine hands each block's transport to
+  `Executor::process_with_changes`.
 
 #### Arrival-aligned transport landed
 
@@ -5503,8 +5526,8 @@ refused (`PoolTooWide`) rather than declaring outputs it never writes, and a
 `VoiceNode` that wide (its constructor is infallible) clears the channels
 past it.
 
-**Also kept:** `BeatCursor` still clones by sharing its cells (the pool's
-and the node's `isolate` drop it); it goes with `Env` (item 4). The
+**Also kept:** `BeatCursor` still cloned by sharing its cells (the pool's
+and the node's `isolate` dropped it); it went with `Env` (item 4). The
 `profile_stretch_clone` example is now a record of the `Net` era (its
 commits deep-clone again, a cost nothing pays) until fundsp went.
 

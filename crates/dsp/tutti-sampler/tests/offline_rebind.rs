@@ -90,17 +90,8 @@ fn stopped() -> Transport {
 
 /// The offline fork of `ed`'s graph (what the export takes), applied.
 fn fork(ed: &Editor) -> Executor {
-    let clock = Arc::new(tutti_core::OfflineTimeline::new(
-        &tutti_core::OfflineTimelineConfig {
-            start_beat: Beat(0.0),
-            tempo: Bpm(120.0),
-            sample_rate: RATE,
-            loop_range: None,
-        },
-    ));
-    let ctx = tutti_core::transport::OfflineTransport::new(clock);
     let (_ed, mut exec) = ed
-        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), prepare())
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare())
         .expect("forks");
     exec.apply_pending();
     exec
@@ -168,9 +159,8 @@ fn a_forked_voice_node_reads_its_renders_transport_not_the_live_one() {
 }
 
 /// **A bare `MemorySource`** sitting directly in the graph, wrapped in neither
-/// a pool nor a voice node: the node `rebind_net_transport`'s type ladder
-/// once skipped. It forks through `param_parts`, and reads its render's
-/// transport like the others.
+/// a pool nor a voice node. It forks through `param_parts`, and reads its
+/// render's transport like the others.
 ///
 /// Mutation (run): `ParamNode::fork_fresh` for `MemorySource` leaving the
 /// copy free-running (`placed = false`) → the fork plays its stopped cursor:

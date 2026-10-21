@@ -184,14 +184,14 @@ impl<N: ParamNode> ParamFork<N> {
 }
 
 impl<N: ParamNode> ForkSource for ParamFork<N> {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.fork_node())))
     }
 
     /// The cells are read here, at the gather: a param set after
     /// it does not reach the fork. The fork's cells are its own, so it can
     /// be prepared on any thread.
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::ready)
     }
 }

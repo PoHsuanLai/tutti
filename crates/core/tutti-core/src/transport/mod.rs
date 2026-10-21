@@ -6,12 +6,12 @@
 //! the two halves as one handle, and [`TransportClock`] is the engine's
 //! playhead, which the graph reads from each block's `Env`.
 //!
-//! The traits below are the read side: [`Timeline`] is what a node consults,
+//! The traits below are the read side: [`Timeline`] is what a reader outside
+//! the graph consults (a node reads its block's `Env`),
 //! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
-//! live-session facts (record, loop) a hosted plugin asks for.
+//! live-session facts (record, loop).
 
 mod beat_walk;
-mod beat_window;
 mod click;
 mod clock;
 pub(crate) mod fsm;
@@ -22,8 +22,8 @@ mod project_meter;
 mod settings;
 mod state;
 mod timed;
+mod timeline;
 
-pub use beat_window::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub(crate) use clock::Control;
 pub use clock::TransportClock;
@@ -41,15 +41,11 @@ pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
 // host adapter, `bevy_tutti::graph`, not to this crate.
 
-// `Timeline` and `OfflineTransport` live in tutti-types, so tutti-graph can
-// name the offline context its forks hand every unit (`ForkMode::Offline`)
-// instead of passing it as `&dyn Any`. Re-exported here, where every
-// transport-aware crate already imports them from.
-pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
+pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 
 /// A clock an offline render drives, one block at a time.
 ///
-/// [`Timeline`] is read-only — `beat`/`tempo`/`is_rolling` are what a *node*
+/// [`Timeline`] is read-only — `beat`/`tempo`/`is_rolling` are what a reader
 /// consults. Something has to move that position forward, and in a live session
 /// it is the audio callback. Offline there is no callback, so the renderer does
 /// it: after each block it reports how many frames it produced, and the clock

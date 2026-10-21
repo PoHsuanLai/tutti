@@ -43,7 +43,7 @@ pub enum ExportSource {
     ///
     /// A **fork** of what the global outputs hear (`ForkTarget::Master`: a
     /// node no output reaches is not copied, and need not be forkable): every
-    /// node isolated, rebound onto the request's [`ExportClock`] and reset, so
+    /// node isolated and reset, reading the request's [`ExportClock`], so
     /// it renders what the graph is *driven* to play from that timeline,
     /// starting silent — not a copy of what is sounding now.
     Master,

@@ -31,7 +31,7 @@ struct Forkable(Kind);
 struct KindFork(Kind);
 
 impl ForkSource for KindFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(TestNode::new(self.0.clone()))))
     }
 }
@@ -533,9 +533,8 @@ fn an_offline_fork_renders_the_same_on_a_pool() {
     let (live_ed, _live) = pair(1);
     let pre = prepare(256);
     let fork = |workers: usize| {
-        let ctx = tutti_types::OfflineTransport::new(std::sync::Arc::new(Frozen));
         let (ed, mut exec) = live_ed
-            .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
+            .fork(ForkTarget::Master, ForkMode::Offline, pre)
             .expect("every node forks");
         if workers > 1 {
             exec.set_pool(Some(test_pool(workers)));
@@ -555,26 +554,6 @@ fn an_offline_fork_renders_the_same_on_a_pool() {
         }
     }
 }
-
-/// The offline fork's timeline: frozen at beat 0 (nothing here reads it).
-struct Frozen;
-
-impl tutti_types::Timeline for Frozen {
-    fn beat(&self) -> Beat {
-        Beat(0.0)
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm(120.0)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
-
-impl tutti_types::OfflineClock for Frozen {}
 
 /// A node that panics on a worker aborts the block, and the caller panics
 /// with a message naming the cause once every participant has left.

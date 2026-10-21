@@ -148,7 +148,7 @@ impl Vst2Fork {
     }
 
     /// The six steps in the module docs, in order.
-    fn instance(&self, mode: ForkMode<'_>) -> Result<InProcessVst2Client, PluginForkError> {
+    fn instance(&self, mode: ForkMode) -> Result<InProcessVst2Client, PluginForkError> {
         // First, so a plugin that cannot save costs no second instance. The
         // `Arc` is dropped straight after: the fork holds no strong reference.
         let live = self.live.upgrade().ok_or(PluginForkError::LiveGone)?;
@@ -195,7 +195,7 @@ impl Vst2Fork {
                 .set_state(&state)
                 .map_err(|e| PluginForkError::LoadState(StateError::Rejected(e.to_string())))?;
             let offline = match mode {
-                ForkMode::Offline(_) => true,
+                ForkMode::Offline => true,
                 ForkMode::Live => live_offline,
             };
             instance.set_offline_render(offline);
@@ -209,7 +209,7 @@ impl Vst2Fork {
 }
 
 impl ForkSource for Vst2Fork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         let fork = self.instance(mode).map_err(ForkCause::new)?;
         // In this process: nothing can fail while it renders that the render
         // would not see, so no health probe. Boxed bare: no fork of its own.
@@ -221,7 +221,7 @@ impl ForkSource for Vst2Fork {
     /// `prepare` (which tells the plugin the fork's rate,
     /// `RateDelivery::InPrepare`) runs there too, on the main thread the
     /// gather is called on. Only rendering it leaves that thread.
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::pinned)
     }
 }
@@ -259,10 +259,7 @@ impl InProcessVst2Client {
     /// plugin that cannot be instantiated twice), it is a different plugin,
     /// or it refused the program or the state. A second instance that was
     /// built is closed before this returns.
-    pub fn fork_instance(
-        &self,
-        mode: ForkMode<'_>,
-    ) -> Result<InProcessVst2Client, PluginForkError> {
+    pub fn fork_instance(&self, mode: ForkMode) -> Result<InProcessVst2Client, PluginForkError> {
         Vst2Fork::of(self).instance(mode)
     }
 }

@@ -15,10 +15,7 @@ use tutti_graph::{
     ParamSet, PendingFork, Prepare, Renderer, Shape, Status, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{
-    Amplitude, Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, Param, Samples,
-    Tail, Timeline, UnitParam,
-};
+use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail, UnitParam};
 
 /// Output `c` is `base + c`, so which port feeds a channel reads straight off
 /// the render. Its `Clone` shares nothing, so it is inserted [`ForkByClone`].
@@ -88,30 +85,6 @@ impl Node for Sine {
     }
 }
 
-/// An offline context standing still at `beat`.
-struct At(f64);
-
-impl Timeline for At {
-    fn beat(&self) -> Beat {
-        Beat(self.0)
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm(120.0)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
-
-impl OfflineClock for At {}
-
-fn at(beat: f64) -> OfflineTransport {
-    OfflineTransport::new(Arc::new(At(beat)))
-}
-
 /// A ramp whose position lives in an `Arc` cell its clones **share** — the
 /// shape of a node holding a live handle. Its fork source hands the fork a
 /// cell of its own, from 0; the live node's cell is never the fork's.
@@ -138,7 +111,7 @@ impl Node for Shared {
 struct SharedFork;
 
 impl ForkSource for SharedFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(Shared {
             pos: Arc::new(AtomicU32::new(0)),
         })))
@@ -207,7 +180,7 @@ struct Forkable(Kind);
 struct KindFork(Kind);
 
 impl ForkSource for KindFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(TestNode::new(self.0.clone()))))
     }
 }
@@ -286,17 +259,17 @@ fn a_forked_chain_renders_like_a_fresh_build() {
     assert!(fresh[1].iter().any(|&x| x != 0.0), "not vacuous");
 }
 
-/// Forks as its fork source was asked to: a constant of the offline
-/// render's beat, or 0 for a live duplicate. The one thing a source reads
-/// from the [`ForkMode`].
+/// Forks as its fork source was asked to: a constant 0.75 for an offline
+/// render, or 0 for a live duplicate. The one thing a source reads from the
+/// [`ForkMode`].
 struct ReadsMode;
 
 struct ModeFork;
 
 impl ForkSource for ModeFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         let value = match mode {
-            ForkMode::Offline(t) => t.beat().get() as f32,
+            ForkMode::Offline => 0.75,
             ForkMode::Live => 0.0,
         };
         Ok(Forked::new(Box::new(Consts {
@@ -320,23 +293,24 @@ impl IntoNode for ReadsMode {
     }
 }
 
-/// **An offline fork hands each fork source the render's timeline; a live
-/// fork hands it none.** The live node keeps its own value throughout.
+/// **Each fork source is handed the mode the fork was asked for**: offline
+/// for an offline fork, live for a live one. The live node keeps its own
+/// value throughout.
 ///
 /// Mutation (run): `Editor::fork` handing every source `ForkMode::Live` →
-/// the offline fork renders 0 → fails.
+/// the offline fork renders 0 → fails. `ForkMode::Offline` to every source
+/// → the live duplicate renders 0.75 → fails.
 #[test]
-fn an_offline_fork_hands_its_sources_the_render_timeline() {
+fn a_fork_hands_its_sources_its_mode() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let key = g.add(ReadsMode);
     g.pipe_output(key);
     let mut live = g.renderer(prepare(64)).expect("builds");
     assert!(live.render(64)[0].iter().all(|&x| x == 0.25));
 
-    let ctx = at(0.75);
     let (ed, exec) = live
         .editor()
-        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), prepare(64))
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare(64))
         .expect("forks");
     let offline = render(ed, exec, 64);
     assert!(
@@ -507,7 +481,7 @@ impl IntoNode for Watched {
 struct WatchedFork(Arc<Flag>);
 
 impl ForkSource for WatchedFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         let node = Box::new(TestNode::new(Kind::Const {
             value: 1.0,
             width: 1,
@@ -568,7 +542,7 @@ impl std::error::Error for RefusedState {}
 struct FailingFork;
 
 impl ForkSource for FailingFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Err(ForkCause::new(RefusedState("bad chunk")))
     }
 }
@@ -1173,7 +1147,7 @@ struct WitnessFork {
 }
 
 impl ForkSource for WitnessFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         here(&self.threads.built);
         Ok(Forked::new(Box::new(Witness {
             value: self.value.load(Ordering::SeqCst) as f32,
@@ -1181,7 +1155,7 @@ impl ForkSource for WitnessFork {
         })))
     }
 
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         Ok(match self.how {
             // The trait's own default, by not overriding: see `Defaulted`.
             How::Default => unreachable!("a `Default` witness forks through `Defaulted`"),
@@ -1210,7 +1184,7 @@ impl ForkSource for WitnessFork {
 struct Defaulted(WitnessFork);
 
 impl ForkSource for Defaulted {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         self.0.fork(mode)
     }
 }

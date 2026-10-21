@@ -26,7 +26,7 @@ struct Template<N>(N);
 impl<N: FreshFork> ForkSource for Template<N> {
     /// Neither panner reads time, so a live and an offline fork are the same
     /// copy.
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.0.fork_fresh())))
     }
 }

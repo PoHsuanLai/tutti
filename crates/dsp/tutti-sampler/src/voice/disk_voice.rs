@@ -945,7 +945,7 @@ impl DiskVoiceControls {
 struct DiskVoiceFork(DiskVoice);
 
 impl ForkSource for DiskVoiceFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         if matches!(mode, ForkMode::Live) {
             return Err(ForkCause::new(LiveDiskFork));
         }
@@ -1404,17 +1404,8 @@ mod tests {
             "a copy moved the live gain"
         );
 
-        let clock = Arc::new(tutti_core::transport::OfflineTimeline::new(
-            &tutti_core::transport::OfflineTimelineConfig {
-                start_beat: Beat::new(0.0),
-                tempo: Bpm::new(120.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            },
-        ));
-        let ctx = tutti_core::transport::OfflineTransport::new(clock);
         let source = DiskVoiceFork(live.clone());
-        assert!(source.fork(ForkMode::Offline(&ctx)).is_ok());
+        assert!(source.fork(ForkMode::Offline).is_ok());
         let refused = source
             .fork(ForkMode::Live)
             .err()

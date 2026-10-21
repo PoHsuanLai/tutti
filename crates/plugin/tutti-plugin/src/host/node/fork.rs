@@ -289,13 +289,13 @@ impl PluginFork {
     }
 
     /// The five steps in the module docs, in order.
-    fn instance(&self, mode: ForkMode<'_>) -> Result<PluginClient<Bound>, PluginForkError> {
+    fn instance(&self, mode: ForkMode) -> Result<PluginClient<Bound>, PluginForkError> {
         self.capture(mode)?.build()
     }
 
     /// Step 1, and everything else the fork reads of the live node: what the
     /// gather takes on the control thread ("Threads" in the module docs).
-    fn capture(&self, mode: ForkMode<'_>) -> Result<Capture, PluginForkError> {
+    fn capture(&self, mode: ForkMode) -> Result<Capture, PluginForkError> {
         // First, so a plugin that cannot save costs no subprocess. The `Arc`
         // is dropped straight after: the fork holds no strong reference.
         let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
@@ -317,7 +317,7 @@ impl PluginFork {
             id: self.id.clone(),
             sample_rate: self.controls.sample_rate(),
             sources: self.controls.sources_now(),
-            offline: matches!(mode, ForkMode::Offline(_)),
+            offline: matches!(mode, ForkMode::Offline),
         })
     }
 }
@@ -407,7 +407,7 @@ fn forked(fork: PluginClient<Bound>) -> Forked {
 }
 
 impl ForkSource for PluginFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         self.instance(mode).map(forked).map_err(ForkCause::new)
     }
 
@@ -415,7 +415,7 @@ impl ForkSource for PluginFork {
     /// gather; the `plugin-server` launch and the state load, half a second
     /// or more, are the build's, on whichever thread runs it (bevy-tutti's
     /// export: its compute pool).
-    fn gather(&self, mode: ForkMode<'_>) -> Result<ForkBuild, ForkCause> {
+    fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         let capture = self.capture(mode).map_err(ForkCause::new)?;
         Ok(ForkBuild::deferred(move || {
             capture.build().map(forked).map_err(ForkCause::new)
@@ -431,12 +431,10 @@ impl<S> PluginClient<S> {
     /// on a subprocess launch and two state transfers (half a second or
     /// more).
     ///
-    /// `mode` is the graph's: [`ForkMode::Offline`] with a
-    /// `&OfflineTransport` binds the fork's timeline-driven sources to that
-    /// timeline, tells the plugin it is rendering offline, and makes it wait
-    /// for each chunk; [`ForkMode::Live`] keeps its sources on the live
-    /// transport. Either way the fork reads the transport from the `Env` of
-    /// the graph it is rendered in. A fork does not carry live MIDI or running
+    /// `mode` is the graph's: [`ForkMode::Offline`] tells the plugin it is
+    /// rendering offline and makes it wait for each chunk; [`ForkMode::Live`]
+    /// does neither. Either way the fork reads the transport from the `Env`
+    /// of the graph it is rendered in. A fork does not carry live MIDI or running
     /// DSP state (voices, delay lines, a reverb's tail): the state is what the
     /// plugin saves for a project, so a fork starts silent.
     ///
@@ -453,10 +451,7 @@ impl<S> PluginClient<S> {
     /// instance is gone or would not save its state, the new instance failed
     /// to load, it turned out to be a different plugin, or it refused the
     /// state. A partly started fork is shut down before this returns.
-    pub fn fork_instance(
-        &self,
-        mode: ForkMode<'_>,
-    ) -> Result<PluginClient<Bound>, PluginForkError> {
+    pub fn fork_instance(&self, mode: ForkMode) -> Result<PluginClient<Bound>, PluginForkError> {
         PluginFork::of(self).instance(mode)
     }
 

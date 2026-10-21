@@ -9,7 +9,6 @@
 
 use std::sync::Arc;
 
-use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, ForkMode,
     ForkTarget, Io, Node, Offset, ParamIn, ParamRange, ParamSegment, Prepare, Shape, Status,
@@ -23,8 +22,8 @@ use tutti_nodes::automation::{ControlLaneNode, CONTROL_STEP};
 use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
-    Amplitude, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, NodeKey,
-    OfflineTransport, ParamKey, SampleRate, Samples, Seconds, UnitParam,
+    Amplitude, AtomicF32, Beat, Bpm, ChannelLayout, Depth, FrameClock, Hz, NodeKey, ParamKey,
+    SampleRate, Samples, Seconds, UnitParam,
 };
 
 const RATE: f64 = 48_000.0;
@@ -429,13 +428,6 @@ fn ragged(total: usize, max: usize) -> Vec<usize> {
         i += 1;
     }
     v
-}
-
-fn offline() -> OfflineTransport {
-    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(RATE),
-        ..Default::default()
-    })))
 }
 
 /// The host's playhead: a frame clock from beat 0 at `TEMPO`.
@@ -966,11 +958,10 @@ fn an_export_is_the_live_render_for_signal_sources() {
         before[1][383] > 0.3,
         "the held key raised live's envelope target"
     );
-    let offline = offline();
     let (mut fed, mut fexec) = ed
         .fork(
             ForkTarget::Master,
-            ForkMode::Offline(&offline),
+            ForkMode::Offline,
             Prepare::new(SampleRate(RATE), Samples(1024)),
         )
         .expect("forks");

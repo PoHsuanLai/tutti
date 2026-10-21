@@ -3,10 +3,7 @@
 //!
 //! 120 BPM at 48 kHz: a beat is 24 000 frames.
 
-use std::sync::Arc;
-
 use tutti_core::graph::{OutPort, Source};
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
@@ -112,13 +109,9 @@ fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let (live, _exec) = graph(1_000);
-    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(RATE),
-        ..Default::default()
-    })));
     let prepare = *live.prepare();
     let (fork, fork_exec) = live
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("a clip and a synth fork");
     let out = render(fork, fork_exec, 2_048);
     assert_eq!(onset(&out), Some(1_000 + lead()));

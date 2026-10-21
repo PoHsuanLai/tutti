@@ -1085,7 +1085,7 @@ struct LaneFork {
 }
 
 impl ForkSource for LaneFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(ControlLaneNode::fresh_over(
             &self.shared,
             &self.make,

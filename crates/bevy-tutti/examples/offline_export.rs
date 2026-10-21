@@ -137,7 +137,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     // `Node` isolates: everything downstream is severed, so this is "what does
     // the filter actually sound like" rather than its contribution to the mix.
     //
-    // An isolated clone is rebound onto an offline timeline, seeded at the
+    // An isolated copy renders on an offline timeline, seeded at the
     // session's real tempo. `ExportClock::timeline` is the clock the renderer advances
     // AND the timeline the nodes read, from one argument — they are the same
     // object, and any other arrangement is a bug.

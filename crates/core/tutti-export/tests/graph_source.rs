@@ -42,7 +42,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_core::{Amplitude, Beat, Bpm, Hz, SampleRate};
 use tutti_export::{
     render_normalized_to_file, render_to_buffers, render_to_file, write_buffers, AudioFormat,
@@ -124,18 +124,8 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
-    let timeline: OfflineTransport =
-        OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            sample_rate: RATE,
-            ..Default::default()
-        })));
-    RenderGraph::fork(
-        &live,
-        ForkTarget::Master,
-        ForkMode::Offline(&timeline),
-        RATE,
-    )
-    .expect("every node here is forkable")
+    RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
+        .expect("every node here is forkable")
 }
 
 /// `graph` into buffers under `config`.
@@ -944,8 +934,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
         "sanity: the live reader played before the fork"
     );
     let graph_clock = timeline();
-    let rebind: OfflineTransport = OfflineTransport::new(graph_clock.clone());
-    let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)
+    let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, RATE)
         .expect("a memory source is forkable");
     let b = render_under(forked, &graph_clock, ChannelLayout::MONO);
     assert_audible(&b);

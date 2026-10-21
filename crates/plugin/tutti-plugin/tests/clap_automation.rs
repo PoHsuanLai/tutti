@@ -13,7 +13,7 @@ use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_core::{Beat, SampleRate, Samples};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
@@ -95,9 +95,8 @@ fn automation_reaches_the_plugin_through_its_event_input() {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let offline = OfflineTransport::new(timeline.clone());
     let (_fork_ed, mut fork_exec) = live
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("the lane and the plugin fork");
 
     let mut block = vec![0.0f32; BLOCK];
@@ -157,9 +156,8 @@ fn render_gain(
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
     }));
-    let offline = OfflineTransport::new(timeline.clone());
     let (mut fork_ed, mut fork_exec) = live
-        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .fork(ForkTarget::Master, ForkMode::Offline, prepare)
         .expect("the graph forks");
     for &(frame, kind) in schedule {
         fork_ed

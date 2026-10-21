@@ -293,7 +293,7 @@ struct ClipFork {
 }
 
 impl ForkSource for ClipFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         let clip = self.shared.current();
         let shared = Arc::new(Shared {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&clip))),

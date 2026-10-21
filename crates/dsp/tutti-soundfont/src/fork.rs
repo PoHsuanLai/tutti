@@ -34,7 +34,7 @@ pub(crate) struct SoundFontFork {
 }
 
 impl ForkSource for SoundFontFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
         Ok(Forked::new(Box::new(self.template.fork_instance())))
     }
 }

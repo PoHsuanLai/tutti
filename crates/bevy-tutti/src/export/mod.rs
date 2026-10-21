@@ -89,8 +89,8 @@
 //!
 //! An export renders a **fork** of the live graph (`Editor::fork`): what the
 //! global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
-//! feeding one node for [`ExportSource::Node`], every node isolated, rebound
-//! onto the request's [`ExportClock`] and reset. The live graph is not
+//! feeding one node for [`ExportSource::Node`], every node isolated and
+//! reset, reading the request's [`ExportClock`] through its `Env`. The live graph is not
 //! touched and keeps playing while the render runs on the pool.
 //!
 //! - **It renders what the graph is driven to play, from silence.** A fork
@@ -104,16 +104,16 @@
 //!   input.
 //! - **A hosted plugin is forked by state transfer**: a fresh instance in a
 //!   new `plugin-server` process, loaded with the live one's state, told it
-//!   is rendering offline. Its MIDI clip comes with it, rebound onto the
+//!   is rendering offline. Its MIDI clip comes with it and plays on the
 //!   render's timeline, so an exported instrument plays its notes; its live
 //!   MIDI inbox does not. Its state is taken in the frame the export
 //!   starts; the new server is launched and loaded on the compute pool, so
 //!   that frame does not wait for it.
 //! - **A built-in synth plays its clip too**: a `PolySynth` or
-//!   `SoundFontUnit` forks through its own source, which rebinds the clip
-//!   installed on the live synth's port onto the render's timeline (a
+//!   `SoundFontUnit` forks through its own source, and the clip installed
+//!   on the live synth's port plays on the render's timeline (a
 //!   SoundFont fork also renders at the export's rate). A MIDI source that
-//!   cannot be rebound refuses the export by name
+//!   cannot be forked refuses the export by name
 //!   ([`ExportError::ForkSource`]) rather than render its notes as silence,
 //!   for a synth as for a plugin.
 //! - **A disk-streamed sampler voice reads its file itself.** Its copy

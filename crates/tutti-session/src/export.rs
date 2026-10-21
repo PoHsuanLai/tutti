@@ -200,8 +200,7 @@ impl std::fmt::Debug for ExportRequest {
 /// cannot be handed one and its nodes another.
 ///
 /// - [`frozen`](Self::frozen): no musical time (an effect tail, a synth
-///   patch, a test tone). The renderer's transport is stopped at beat 0,
-///   and the nodes are rebound onto a timeline stopped at beat 0 too.
+///   patch, a test tone). The renderer's transport is stopped at beat 0.
 /// - [`timeline`](Self::timeline): an `OfflineTimeline` (or any clock that
 ///   is also an `OfflineClock`: never the live transport), seeded at the
 ///   tempo and beat to render from, at the render's rate.
@@ -224,7 +223,7 @@ impl ExportClock {
     }
 
     /// Renders against `timeline`: the renderer advances it, and every
-    /// transport-aware node is rebound onto it.
+    /// node reads its block's transport from it through `Env`.
     pub fn timeline<T>(timeline: Arc<T>) -> Self
     where
         T: RenderClock + tutti_core::transport::OfflineClock + 'static,
@@ -243,7 +242,7 @@ impl ExportClock {
         }
     }
 
-    /// What the nodes are rebound onto.
+    /// The render's timeline, as [`PreparedGraph::ctx`] hands it.
     fn offline(&self) -> OfflineTransport {
         match &self.0 {
             Clock::Frozen => OfflineTransport::new(Arc::new(Stopped)),
@@ -303,8 +302,9 @@ impl tutti_core::Timeline for Stopped {
 pub struct PreparedGraph<'a> {
     /// The graph about to be rendered.
     pub graph: &'a mut RenderGraph,
-    /// The render's offline transport, which every node of the fork was
-    /// rebound onto. A node built here binds to this, not the live one.
+    /// The render's timeline, which the renderer advances. A node in the
+    /// graph reads it through its block's `Env`; this is for the edit
+    /// itself (to place what it inserts, say).
     pub ctx: &'a OfflineTransport,
 }
 
@@ -601,8 +601,8 @@ impl Session {
     /// then [`finish_export`](Self::finish_export) what it returns.
     ///
     /// The fork renders what the graph is driven to play from the request's
-    /// clock, from silence: every node isolated, rebound onto that clock
-    /// and reset; controls as they are now; a hosted plugin forked by state
+    /// clock, from silence: every node isolated and reset, reading that
+    /// clock through its `Env`; controls as they are now; a hosted plugin forked by state
     /// transfer (a fresh instance in a new `plugin-server`, loaded with the
     /// live one's state).
     ///
@@ -632,13 +632,13 @@ impl Session {
             ExportSource::Mix => AudioNodeTarget::Master,
             ExportSource::Node(node) => AudioNodeTarget::Node(node),
         };
-        // The timeline every transport-aware node of the fork is re-seated
-        // on: the request's clock, the same object the renderer advances, or
-        // a timeline stopped at beat 0 for a frozen one.
+        // The render's timeline, for the edit hook: the request's clock, the
+        // same object the renderer advances, or a timeline stopped at beat 0
+        // for a frozen one.
         let ctx = clock.offline();
         let pending = match self
             .graph
-            .gather_for_export(node, &ctx, config.render.sample_rate)
+            .gather_for_export(node, config.render.sample_rate)
         {
             Ok(pending) => pending,
             Err(tutti_export::Error::Fork(

@@ -119,6 +119,16 @@ impl MidiClipControls {
         self.set_events([]);
     }
 
+    /// Frees the clips the node has let go of since the last
+    /// [`set_events`](Self::set_events) (one a block still held when it was
+    /// replaced), without publishing; returns how many are still held.
+    /// Control thread, from the owner's tick (a session's `Reclaim` phase
+    /// sweeps its own clips); with nothing retired it is a lock and a length
+    /// check.
+    pub fn reclaim(&self) -> usize {
+        self.shared.cell.reclaim()
+    }
+
     /// How many events the clip holds.
     pub fn event_count(&self) -> usize {
         self.shared.current().events.len()
@@ -383,5 +393,35 @@ impl HeldNotes {
         self.bits.fill(0);
         self.count = 0;
         self.owed = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_core::Beat;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    /// **A clip a block still held when `set_events` replaced it is freed by
+    /// the next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `MidiClipControls::reclaim` returning 0 without
+    /// reclaiming → the first clip is still alive, fails.
+    #[test]
+    fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
+        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
+        let controls = MidiClipControls {
+            shared: Arc::clone(&node.shared),
+        };
+        let gone = Arc::downgrade(&node.shared.current());
+        {
+            // A block in progress across the replacement.
+            let _held = node.clip.lend();
+            controls.clear();
+        }
+        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
+        assert_eq!(controls.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the reclaim");
     }
 }

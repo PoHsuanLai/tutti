@@ -83,6 +83,19 @@ struct Shared {
     unranged: AtomicU64,
 }
 
+/// A reader on a lane's cell ([`LaneControls::probe_reader`]): what a test
+/// of an owner's sweep lends through to stand in for a block. Not API.
+#[doc(hidden)]
+pub struct LaneProbe(Reader<Published>);
+
+impl LaneProbe {
+    /// Borrows the program as the node does once per block; the borrow pins
+    /// it until it drops.
+    pub fn lend(&mut self) -> impl Sized + '_ {
+        self.0.lend()
+    }
+}
+
 /// The handles a [`ControlLaneNode`]'s owner keeps: the program it
 /// evaluates, its knob, its range (a plugin lane's), and its counters.
 /// Cheap to clone; every clone reaches the same lane.
@@ -105,6 +118,32 @@ impl LaneControls {
             generation,
             program,
         }));
+    }
+
+    /// Frees the programs the lane has let go of since the last publish (one
+    /// a block still held when [`publish`](Self::publish) replaced it),
+    /// without publishing; returns how many are still held. Control thread,
+    /// every tick of its owner (the [`Modulation`](crate::Modulation)
+    /// reconciler's [`reclaim`](crate::Modulation::reclaim)); with nothing
+    /// retired it is a lock and a length check.
+    pub fn reclaim(&self) -> usize {
+        self.0.program.reclaim()
+    }
+
+    /// How many programs the lane's cell holds retired: replaced, and not
+    /// yet freed by a publish or a [`reclaim`](Self::reclaim). Control side.
+    /// For a test of an owner's sweep; not API.
+    #[doc(hidden)]
+    pub fn retired_programs(&self) -> usize {
+        self.0.program.retired_len()
+    }
+
+    /// A reader registered on the lane's cell, as the node's own is, so a
+    /// test of an owner's sweep can hold a block's borrow across a publish.
+    /// Control thread: registering may allocate. Not API.
+    #[doc(hidden)]
+    pub fn probe_reader(&self) -> LaneProbe {
+        LaneProbe(self.0.program.reader())
     }
 
     /// The program last published (or built with).
@@ -1072,5 +1111,36 @@ impl IntoNode for ControlLaneNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program() -> Arc<ControlProgram> {
+        Arc::new(ControlProgram::default())
+    }
+
+    /// **A program a block still held when the lane was republished is freed
+    /// by the next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `LaneControls::reclaim` returning 0 without
+    /// reclaiming → the first program is still alive, fails.
+    #[test]
+    fn reclaim_frees_a_program_a_block_held_across_its_replacement() {
+        let mut node = ControlLaneNode::for_foreign(0, ControlProgram::default(), None, (0.0, 1.0));
+        let controls = node.controls();
+        let first = program();
+        let gone = Arc::downgrade(&first);
+        controls.publish_arc(first);
+        {
+            // A block in progress across the republish.
+            let _held = node.program.lend();
+            controls.publish_arc(program());
+        }
+        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
+        assert_eq!(controls.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the reclaim");
     }
 }

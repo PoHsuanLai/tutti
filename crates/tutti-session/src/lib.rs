@@ -84,7 +84,7 @@ pub use midi::{
 pub use modulation::{
     declare_targets, ModRefusal, ModState, Mods, ParamRef, Take, UNRESOLVED_WARNING,
 };
-pub use node::SessionNode;
+pub use node::{Reclaimer, SessionNode};
 #[cfg(feature = "plugin")]
 pub use plugin::{
     HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginSnapshot,

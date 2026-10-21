@@ -387,11 +387,12 @@ impl HardwareMidiInputs {
     /// with it every removed port only those sets kept alive. Returns how many
     /// retired sets are still held (by a drain in progress).
     ///
-    /// Control-thread only. Cheap when there is nothing to do (a lock and a
-    /// load); otherwise one scan of the drains' readers
+    /// Control-thread only. Cheap when there is nothing to do (two locks and
+    /// a length check); otherwise one scan of the drains' readers
     /// ([`ArcLend::reclaim`]), publishing nothing. A host that removes ports
     /// and then makes no further change calls this from a periodic
-    /// control-side task to get the memory back.
+    /// control-side task to get the memory back (a `tutti-session` session
+    /// does, in its `Reclaim` phase).
     pub fn collect(&self) -> usize {
         // Held so a change racing this call frees in one order: `reclaim`
         // takes the cell's publisher lock too, but the record's lock is the
@@ -401,6 +402,14 @@ impl HardwareMidiInputs {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         self.input_ports.reclaim()
+    }
+
+    /// How many port sets are retired and not yet freed (by a change or a
+    /// [`collect`](Self::collect)). Control side. For a test of an owner's
+    /// sweep; not API.
+    #[doc(hidden)]
+    pub fn retired_sets(&self) -> usize {
+        self.input_ports.retired_len()
     }
 
     /// The port set last published, as the control side recorded it: what

@@ -472,3 +472,60 @@ fn dropped_ticks_are_reported_at_most_once_a_second() {
         "a second on, the new total"
     );
 }
+
+/// **The session's own MIDI nodes go in through `add`**, so the reclaim
+/// phase sweeps their published cells: a clip `play_clip` made (its events)
+/// and the builder's live input (its MPE mode). What each reclaimer frees is
+/// pinned in `tutti-midi-runtime` with a held loan, and the sweep of the
+/// graph's reclaimers in `tests/graph.rs`.
+///
+/// Mutations (run): `Midi::play_clip` inserting its clip with
+/// `Graph::insert` → no reclaimer kept, fails; the builder inserting the
+/// live input with `Graph::insert` → fails; `MidiClipNode`'s `SessionNode`
+/// impl returning `None` from `reclaimer` → fails.
+#[test]
+fn the_sessions_midi_nodes_keep_their_reclaimers() {
+    let mut s = offline();
+    let (synth, _) = tap(&mut s);
+    let clip = s
+        .midi()
+        .play_clip(synth, note(60, Beat(0.0), BeatDuration(1.0)))
+        .expect("the tap takes MIDI");
+    assert!(s.graph_ref().keeps_reclaimer(clip), "the clip's");
+    let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
+    assert!(s.graph_ref().keeps_reclaimer(input), "the live input's");
+    assert!(
+        !s.graph_ref().keeps_reclaimer(synth),
+        "a tap publishes nothing"
+    );
+}
+
+/// **The update frees a port set a drain held across a port's removal**:
+/// with the OS MIDI layer open, a port removed while the engine's drain
+/// borrows the port set retires the set, and the next update's `Reclaim`
+/// phase frees it (`HardwareMidiInputs::collect`) with no further change.
+///
+/// Mutation (run): `Session::reclaim` leaving out the hardware ports
+/// (`io.ports().collect()`) → the set is still retired after the update,
+/// fails.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
+    let mut s = Session::builder()
+        .midi_hardware(true)
+        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .expect("builds");
+    let ports = Arc::clone(s.midi_io().expect("the OS MIDI layer").ports());
+    let mut handle = ports.create_input_port("Gone");
+    let id = handle.port_id();
+    assert!(handle.push(MidiEvent::noop(), Instant::now()));
+    drop(handle);
+
+    // A block in progress: the drain borrows the set while the port goes.
+    tutti_midi_hardware::HardwareMidiDrain::new(Arc::clone(&ports))
+        .cycle_start_read_all_inputs(512, |_, _| assert!(ports.remove_input_port(id)));
+    assert_eq!(ports.retired_sets(), 1, "the drain held the set");
+
+    s.update();
+    assert_eq!(ports.retired_sets(), 0, "the update freed it");
+}

@@ -76,8 +76,7 @@ impl RegionMap {
         self.writers.get_mut(idx)
     }
 
-    /// Read-only slice (tests).
-    #[cfg(test)]
+    /// Every live writer, read-only: the cycle's sweep of retired maps.
     pub(super) fn writers(&self) -> &[RegionOut] {
         &self.writers
     }

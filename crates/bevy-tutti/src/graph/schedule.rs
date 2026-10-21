@@ -65,9 +65,10 @@ pub enum GraphReconcileSystems {
 ///   after `Spawn`, before `Params`;
 /// - `Commit` ([`commit_graph`](super::commit_graph)): in `Commit`;
 /// - `AfterCommit` (`ModulationSystems::AfterCommit`), `MidiOut`
-///   (`pump_clock_out_system`, feature `midi`) and `Poll`
+///   (`pump_clock_out_system`, feature `midi`), `Poll`
 ///   (`device_fault_poll`, added by
-///   [`TuttiPlugin`](crate::TuttiPlugin)): after `Commit`.
+///   [`TuttiPlugin`](crate::TuttiPlugin)) and `Reclaim`
+///   ([`reclaim_graph`](super::reclaim_graph)): after `Commit`.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SessionPhaseSystems(pub Phase);
 
@@ -100,7 +101,7 @@ pub(crate) fn configure_phases(app: &mut App) {
             Phase::Commit => {
                 app.configure_sets(Update, set.in_set(GraphReconcileSystems::Commit));
             }
-            // `AfterCommit`, `MidiOut`, `Poll`, and a phase added later: after
+            // `AfterCommit`, `MidiOut`, `Poll`, `Reclaim`, and a phase added later: after
             // the frame's commit, where the chain above already orders them.
             _ => {
                 app.configure_sets(Update, set.after(GraphReconcileSystems::Commit));
@@ -262,7 +263,7 @@ mod tests {
 
         // The phases with a system here, each frame.
         #[allow(unused_mut)]
-        let mut every_frame = vec![Phase::Collect, Phase::Commit, Phase::Poll];
+        let mut every_frame = vec![Phase::Collect, Phase::Commit, Phase::Poll, Phase::Reclaim];
         #[cfg(feature = "plugin")]
         every_frame.push(Phase::Plugins);
         #[cfg(all(feature = "plugin", feature = "export"))]

@@ -404,8 +404,13 @@ pub struct Graph { /* today's GraphRuntime: Editor, nodes, feeds, pool */ }
 pub struct Device { driver: TuttiDriver, _not_send: PhantomData<*const ()> }
 
 /// A node that may enter the graph: today's `GraphNode`, renamed.
-/// `params` says which of its controls is a `ParamSet`.
-pub trait SessionNode: IntoNode { fn params(c: &Self::Controls) -> Option<ParamSet> { None } }
+/// `params` says which of its controls is a `ParamSet`; `reclaimer` (added
+/// later) how to free what its published cells retired, which the graph
+/// keeps by node and `Phase::Reclaim` runs.
+pub trait SessionNode: IntoNode {
+    fn params(c: &Self::Controls) -> Option<ParamSet> { None }
+    fn reclaimer(c: &Self::Controls) -> Option<Reclaimer> { None }
+}
 
 pub enum SessionEvent {
     PluginDied { node: AudioNode },           // after the debounce (§4.4)
@@ -658,6 +663,7 @@ pub const PHASES: &[Phase] = &[
     Phase::AfterCommit,      // modulation re-apply while unresolved, resyncs
     Phase::MidiOut,          // hardware out drains, clock out
     Phase::Poll,             // device faults, through the session's clone of the Device's Arc<StreamFaults>
+    Phase::Reclaim,          // every published cell's retired values freed (ArcLend::reclaim)
 ];
 
 /// What one phase reads besides the session.

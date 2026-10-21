@@ -515,3 +515,38 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
         "and its per-channel figures"
     );
 }
+
+/// **The update frees a lane's program a block held across its
+/// replacement**: a route's depth edited while a borrow on the lane's cell
+/// (a block in progress) is held republishes the lane's program, and once
+/// the borrow goes the next update's `Reclaim` phase frees the old one with
+/// nothing published again. The lanes are inserted by the reconciler, not
+/// through `Graph::add`, so the session sweeps them itself.
+///
+/// Mutation (run): `Session::reclaim` leaving out the modulation
+/// (`self.mods.state.reclaim()`) → the old program is still retired after
+/// the update, fails.
+#[test]
+fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
+    let mut s = offline();
+    let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let mut m = s.mods();
+    m.range(cutoff, 0.0, 1_000.0);
+    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
+    let route = m.route(lfo, cutoff, Depth(0.5));
+    settle(&mut s);
+    let (_, lane) = s.mod_state().lane(cutoff.key()).expect("the lane");
+    let lane = lane.clone();
+    assert_eq!(lane.retired_programs(), 0, "settled");
+
+    let mut block = lane.probe_reader();
+    {
+        let _held = block.lend();
+        s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
+        s.update();
+        assert_eq!(lane.retired_programs(), 1, "republished, the old held");
+    }
+    s.update();
+    assert_eq!(lane.retired_programs(), 0, "the update freed it");
+}

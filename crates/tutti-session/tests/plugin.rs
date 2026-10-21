@@ -394,3 +394,34 @@ fn export_leftovers_drop_on_the_main_thread() {
         "a copy was dropped off the main thread: {drops:?} (main {main:?})"
     );
 }
+
+/// **The update frees a hosted plugin's meter cleared while a block held
+/// it**: once cleared the node's meter slot follows no project meter, so
+/// only the session's sweep of its plugins' meters reaches what the clear
+/// retired, on the next update with nothing published again.
+///
+/// Mutation (run): `Graph::reclaim` leaving out the plugins' meters → the
+/// cleared meter is still retired after the update, fails.
+#[test]
+fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
+    let mut s = session(&[]);
+    let probe = add_probe(&mut s);
+    s.update();
+    let meter = s
+        .plugin(probe)
+        .expect("hosted")
+        .meter()
+        .expect("a CLAP node has a meter")
+        .clone();
+    assert!(meter.has_meter(), "the session installed the project's");
+
+    let mut block = meter.probe_reader();
+    {
+        let _held = block.lend();
+        meter.clear_meter();
+        s.update();
+        assert_eq!(meter.retired_len(), 1, "held across the clear");
+    }
+    s.update();
+    assert_eq!(meter.retired_len(), 0, "the update freed it");
+}

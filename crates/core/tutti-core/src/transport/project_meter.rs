@@ -98,6 +98,25 @@ impl ProjectMeter {
         });
     }
 
+    /// Frees the meters the metronome and every following slot have let go
+    /// of since the last publish (a meter a block still held when
+    /// [`set_meter`](Self::set_meter) replaced it), without publishing.
+    /// Returns how many are still held. Control thread: a host calls it
+    /// every tick (a session does, in its `Reclaim` phase); with nothing
+    /// retired it is a lock and a length check per cell.
+    pub fn reclaim(&self) -> usize {
+        let mut state = self.state();
+        let mut pinned = self.0.cell.reclaim();
+        state.followers.retain(|follower| match follower.upgrade() {
+            Some(cell) => {
+                pinned += cell.reclaim();
+                true
+            }
+            None => false,
+        });
+        pinned
+    }
+
     /// The meter last published. Control side: a lock and an `Arc` clone,
     /// never a read of the cell the audio thread reads.
     pub fn current(&self) -> Arc<MeterMap> {
@@ -234,6 +253,15 @@ impl MeterSlot {
             old.forget(&self.0.cell);
         }
         self.0.cell.publish(Arc::new(None));
+    }
+
+    /// Frees what the slot's node has let go of since the last publish into
+    /// it, without publishing; returns how many values are still held.
+    /// Control thread. A followed slot is swept by its meter's
+    /// [`ProjectMeter::reclaim`]; this is for one that follows nothing (an
+    /// [`unfollow`](Self::unfollow) retired the meter it read).
+    pub fn reclaim(&self) -> usize {
+        self.0.cell.reclaim()
     }
 
     /// The project meter followed, if any. Control side: a lock, never a read
@@ -383,5 +411,50 @@ mod tests {
         project.set_meter(meter_of(3));
         assert_eq!(project.state().followers.len(), 1);
         assert!(kept.is_following());
+    }
+
+    /// **A meter a block still held when `set_meter` replaced it is freed by
+    /// the next `reclaim`**, with no further publish: in the metronome's cell
+    /// and in a following slot's.
+    ///
+    /// Mutations (run): `ProjectMeter::reclaim` not reclaiming the
+    /// metronome's cell → the old meter is still alive, fails; not
+    /// reclaiming the followers → still alive (the slot's retired value
+    /// holds it), fails; `MeterSlot::reclaim` returning 0 without
+    /// reclaiming → the unfollowed slot's old meter is still alive, fails.
+    #[test]
+    fn reclaim_frees_a_meter_a_block_held_across_its_replacement() {
+        let old = meter_of(3);
+        let gone = Arc::downgrade(&old);
+        let project = ProjectMeter::new(MeterMap::clone(&old));
+        project.set_meter(old);
+        let slot = MeterSlot::following_meter(Some(project.clone()));
+        let (mut metronome, mut node) = (project.reader(), slot.reader());
+        {
+            // A block in progress on each reader across the replacement.
+            let held = (metronome.lend(), node.lend());
+            project.set_meter(meter_of(5));
+            assert_eq!(
+                held.0.changes()[0].signature,
+                TimeSignature::from_parts(3, 4)
+            );
+        }
+        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
+        assert_eq!(project.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the reclaim");
+
+        // A slot that stops following: `unfollow` retires what its node held.
+        let old = meter_of(7);
+        let gone = Arc::downgrade(&old);
+        project.set_meter(old);
+        {
+            let _held = node.lend();
+            slot.unfollow();
+        }
+        // Only the slot's retired value holds it now.
+        drop((project, metronome));
+        assert!(gone.upgrade().is_some());
+        assert_eq!(slot.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the slot's reclaim");
     }
 }

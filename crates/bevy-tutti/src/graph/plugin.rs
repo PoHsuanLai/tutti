@@ -13,8 +13,8 @@ use tutti_session::Phase;
 
 use crate::graph::schedule::configure_phases;
 use crate::graph::{
-    collect_graph, commit_graph, engine_ready, reconcile_node_despawn, GraphReconcileSystems,
-    SessionPhaseSystems,
+    collect_graph, commit_graph, engine_ready, reclaim_graph, reconcile_node_despawn,
+    GraphReconcileSystems, SessionPhaseSystems,
 };
 
 /// Reconciles declared ECS state into the audio graph every frame.
@@ -25,7 +25,7 @@ use crate::graph::{
 /// ([`GraphWirePlugin`](crate::graph::GraphWirePlugin),
 /// [`GraphEventsPlugin`](crate::graph::GraphEventsPlugin)), the
 /// [`reconcile_node_despawn`] observer, [`collect_graph`] and
-/// [`commit_graph`], the session's phases in `PHASES` order
+/// [`commit_graph`], [`reclaim_graph`], the session's phases in `PHASES` order
 /// ([`SessionPhaseSystems`]), and initializes
 /// [`ChannelCompensation`](crate::ChannelCompensation),
 /// [`GraphLatency`](crate::GraphLatency) and
@@ -84,6 +84,7 @@ impl Plugin for GraphReconcilePlugin {
             (
                 collect_graph.in_set(SessionPhaseSystems(Phase::Collect)),
                 commit_graph.in_set(SessionPhaseSystems(Phase::Commit)),
+                reclaim_graph.in_set(SessionPhaseSystems(Phase::Reclaim)),
             )
                 .run_if(engine_ready),
         );

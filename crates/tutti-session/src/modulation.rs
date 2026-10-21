@@ -342,6 +342,11 @@ impl ModState {
         }
     }
 
+    /// The lanes' retired programs, freed (`Phase::Reclaim`).
+    pub(crate) fn reclaim(&self) -> usize {
+        self.modulation.reclaim()
+    }
+
     /// Why the declarations are refused now; `None` while they apply.
     pub fn refusal(&self) -> Option<&ModRefusal> {
         self.refusal.as_ref()

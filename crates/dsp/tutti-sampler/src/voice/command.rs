@@ -496,6 +496,16 @@ impl VoiceNodeHandle {
         drop(placed);
     }
 
+    /// Frees the windows the node has let go of since the last
+    /// [`set_placement`](Self::set_placement) (one a block still held when it
+    /// was replaced), without publishing; returns how many are still held.
+    /// Control thread, from the owner's tick (`bevy-tutti` sweeps every
+    /// voice entity's handle each frame); with nothing retired it is a lock
+    /// and a length check.
+    pub fn reclaim(&self) -> usize {
+        self.placement.reclaim()
+    }
+
     /// Sets the voice's gain, from the node's next block on. A write to a
     /// shared cell: never lost, never queued.
     pub fn set_gain(&self, gain: Amplitude) {

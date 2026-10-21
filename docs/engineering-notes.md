@@ -252,12 +252,31 @@ Rules:
   (`lend` takes `&mut self`); a second live loan of one cell on one thread
   needs a second reader.
 - **The design's cost is memory, not waiting.** A publish never waits on a
-  reader. A reader preempted between claiming its slot and announcing what it
-  loaded pins what is retired while it is preempted, freed by the first scan
-  after it announces. `retired_len()` reports what is waiting and `reclaim()`
-  frees what it can without publishing; a control-side cell with no further
-  publishes (the hardware MIDI port set, `HardwareMidiInputs::collect`) calls
-  `reclaim` to get memory back.
+  reader. A value a block holds when a publish replaces it stays retired
+  until a scan after the block ends, and a reader preempted between claiming
+  its slot and announcing what it loaded pins what is retired while it is
+  preempted, freed by the first scan after it announces. `retired_len()`
+  reports what is waiting and `reclaim()` frees what it can without
+  publishing. Only a publish or a reclaim scans, so a cell published once
+  and then left alone (a clip edited once, a meter changed once) kept the
+  value a block held across that publish for as long as the cell lived,
+  when the only `reclaim` caller was the hardware MIDI port set's owner.
+  Every publisher now reclaims on a control-side tick it already has: the
+  session's `Phase::Reclaim` sweeps its graph's table (each node's
+  `Reclaimer`, which `SessionNode::reclaimer` hands the graph as the node
+  goes in through `add` or `crossfade` and which leaves with the node:
+  clips, harmony, the MIDI input, voices; and each hosted plugin's
+  `PluginMeter`, which a `clear_meter` leaves following no project meter)
+  and its own cells (`ProjectMeter`, `Modulation`, the compensation table,
+  `HardwareMidiInputs::collect`). `bevy-tutti`'s `reclaim_graph` only runs
+  that phase. A first cut had the adapter sweep the clip and voice controls
+  on its node entities, so a headless host swept fewer cells than a Bevy
+  one: which nodes publish is a fact of the node type, so the type says it
+  and the session keeps it by node. The butler's cycle sweeps its rings'
+  maps. Derived at each owner rather than registered in a global list: an
+  owner with a tick already knows its cells. `reclaim` returns at once when
+  nothing is retired, so the per-tick sweep costs a lock and a length check
+  per cell.
 - **Never `publish` from the audio thread** — it takes the publisher's lock
   *and* frees inside it.
 - Nullable hot-swap slots go through `ArcLend` as well, as

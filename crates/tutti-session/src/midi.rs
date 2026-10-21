@@ -476,7 +476,7 @@ impl Midi<'_> {
                 clip
             }
             None => {
-                let (clip, controls) = self.graph.insert(MidiClipNode::new(events));
+                let (clip, controls) = self.graph.add(MidiClipNode::new(events));
                 self.state.clips.insert(clip, Clip { controls, target });
                 clip
             }

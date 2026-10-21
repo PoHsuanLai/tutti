@@ -177,7 +177,7 @@ impl SessionBuilder {
             #[cfg(not(feature = "midi-hardware"))]
             let wire: Option<Box<dyn tutti_midi_types::MidiIn>> = None;
             let (input, input_controls) =
-                graph.insert(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
+                graph.add(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
             let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());
             let (hardware_out, out_controls) = graph.insert(tutti_midi_runtime::MidiOutNode::new());
             graph.set_feed(hardware_out, "clock", vec![clock.into()]);

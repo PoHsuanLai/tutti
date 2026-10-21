@@ -198,6 +198,20 @@ impl Ring {
         self.map.publish(Arc::new(map));
     }
 
+    /// Butler: free the maps the reader has let go of since the last
+    /// [`publish_map`](Self::publish_map), without publishing. A ring whose
+    /// map stops changing would otherwise keep one a block held across its
+    /// last publish for as long as the ring lives.
+    pub(crate) fn reclaim_maps(&self) -> usize {
+        self.map.reclaim()
+    }
+
+    /// Maps retired and not yet freed (tests).
+    #[cfg(test)]
+    pub(crate) fn retired_maps(&self) -> usize {
+        self.map.retired_len()
+    }
+
     /// Butler: the channel's PDC preroll.
     pub(crate) fn set_preroll(&self, preroll: u64) {
         self.preroll.store(preroll, Ordering::Relaxed);

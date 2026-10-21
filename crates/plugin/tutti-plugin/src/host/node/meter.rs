@@ -49,6 +49,17 @@ impl PluginMeter {
         self.0.unfollow();
     }
 
+    /// Frees what the node has let go of since the last publish into its
+    /// cell, without publishing; returns how many values are still held.
+    /// Control thread. A [`clear_meter`](Self::clear_meter) during a block
+    /// retires the meter the block reads, and the slot then follows no
+    /// [`ProjectMeter`] whose [`reclaim`](ProjectMeter::reclaim) would reach
+    /// it: the host's control tick calls this (a session's reclaim phase
+    /// does, for every plugin it hosts). Cheap when nothing is retired.
+    pub fn reclaim(&self) -> usize {
+        self.0.reclaim()
+    }
+
     /// Whether a meter is installed. Control side: reads the slot's own
     /// record, never the node's cell.
     pub fn has_meter(&self) -> bool {
@@ -61,6 +72,21 @@ impl PluginMeter {
     /// when it drops.
     pub(crate) fn reader(&self) -> MeterSlotReader {
         self.0.reader()
+    }
+
+    /// A reader registered on the node's cell, as the node's own is, so a
+    /// test of a host's sweep can hold a block's borrow across a clear.
+    /// Control thread: registering may allocate. Not API.
+    #[doc(hidden)]
+    pub fn probe_reader(&self) -> MeterSlotReader {
+        self.0.reader()
+    }
+
+    /// How many values the node's cell holds retired and not yet freed.
+    /// Control side. For a test of a host's sweep; not API.
+    #[doc(hidden)]
+    pub fn retired_len(&self) -> usize {
+        self.0.cell().retired_len()
     }
 
     /// The meter installed now, to give a fork (whose slot is its own).
@@ -97,6 +123,27 @@ mod tests {
             Beat(0.0),
             TimeSignature::from_parts(n, 4),
         )]))
+    }
+
+    /// **A meter cleared while a block held it is freed by `reclaim`**,
+    /// with nothing published again: once cleared, the slot follows no
+    /// project meter whose own `reclaim` would reach it.
+    ///
+    /// Mutation (run): `PluginMeter::reclaim` returning 0 without reclaiming
+    /// → the cleared meter is still retired, fails.
+    #[test]
+    fn reclaim_frees_a_meter_cleared_while_a_block_held_it() {
+        let slot = PluginMeter::default();
+        let mut node = slot.reader();
+        slot.set_meter(meter_of(3));
+        {
+            // A block in progress across the clear.
+            let _held = node.lend();
+            slot.clear_meter();
+        }
+        assert_eq!(slot.retired_len(), 1, "retired, pinned until a scan");
+        assert_eq!(slot.reclaim(), 0, "nothing is still held");
+        assert_eq!(slot.retired_len(), 0, "freed by the reclaim");
     }
 
     /// Installing or clearing the meter while the node reads it frees nothing

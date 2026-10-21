@@ -379,7 +379,7 @@ Each block holds *depth* reads of the cell at once (summing each), then drops th
 
 ## 6. Retained memory
 
-Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher makes 20000 publishes flat out. *Staircase*: one reader takes 12 nested reads, one more after each of the first publishes (arc-lend: through 12 registered readers, as the E2 run's 8 slots and 4 epochs), and holds them all. A parked reader lets go once every publish is done, or once the publisher has made no progress for 200 ms (it is waiting for the reader). *live after*: once the readers are gone and the writer has published once more and settled.
+Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher makes 20000 publishes flat out. *Staircase*: one reader takes 12 nested reads, one more after each of the first publishes (arc-lend: through 12 registered readers, one per level), and holds them all. A parked reader lets go once every publish is done, or once the publisher has made no progress for 200 ms (it is waiting for the reader). *live after*: once the readers are gone and the writer has published once more and settled.
 
 | contender | scenario | live @25% | @50% | @75% | @100% | max live | publishes done at release | live after | publish p50 | publish max | reader frees | values freed on reader |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -450,7 +450,7 @@ Live payloads (published values not yet freed, counted by the payload's own cons
 
 ### 7.2. arc-lend: against retired values pinned
 
-Retired values pinned by parked loans: one registered reader per pinned value, each parking a loan before a publish retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's filter (refinement P2).
+Retired values pinned by parked loans: one registered reader per pinned value, each parking a loan before a publish retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's filter.
 
 | pinned | pinned publish p50 | p99 | p99.9 | p99.99 | max | retired at release | release publish | plain free |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|

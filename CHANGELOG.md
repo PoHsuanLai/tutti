@@ -37,8 +37,8 @@ Migration: register a `Reader` per reading thread (and per nesting level)
 where the reading structure is built, store it beside the cell, and call
 `lend` on it; replace `epoch_stalls()` with `reclaim()` or `retired_len()`.
 
-tutti's read sites (the ones E3a gave one cell each) now hold a `Reader`,
-registered where the reading node or structure is built:
+tutti's read sites now hold a `Reader`, registered where the reading node
+or structure is built:
 
 | Was | Now |
 |---|---|
@@ -56,14 +56,13 @@ in-process VST2), the hardware MIDI drain, and the butler's compensation feed
 (a `PdcFeed` per butler cycle, no longer `Clone`). `ClickNode` and the VST2
 `TransportFeed` keep a derived `Clone`, which now registers a new reader.
 
-### Changed — every `ArcLend` read site reads one cell it owns (arc-lend E3a)
+### Changed — every `ArcLend` read site reads one cell it owns
 
-Preparation for `arc-lend`'s registered readers. Each audio-thread read now
-sits on the node (or butler step) that reads, over one cell fixed when the
-reader is built. No control-side `&self` method reads a cell the audio thread
-reads: each keeps a mirror written in the call that publishes. The plugin
-meter is flattened from a cell of cells to one cell per node, which follows
-the project meter.
+Each audio-thread read now sits on the node (or butler step) that reads,
+over one cell fixed when the reader is built. No control-side `&self` method
+reads a cell the audio thread reads: each keeps a mirror written in the call
+that publishes. The plugin meter is flattened from a cell of cells to one
+cell per node, which follows the project meter.
 
 | Was | Now |
 |---|---|

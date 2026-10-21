@@ -16,9 +16,7 @@
 //! it again inside its closure on the same handle. arc-lend's handle is
 //! therefore a stack of registered readers, one per nesting level
 //! ([`ArcLendReaders`]), sized by [`Contender::nest`] before the measured
-//! window: the mapping `BENCHMARKS.md` planned for E3, so the rows compare
-//! like for like with the E2 run. Every other contender's handle is what it
-//! was, and its `nest` does nothing.
+//! window. Every other contender's `nest` does nothing.
 
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, RwLock};
@@ -567,9 +565,8 @@ pub struct PinnedCost {
 }
 
 impl ArcLendCell {
-    /// Publish cost against the number of retired values pinned, for
-    /// refinement P2 (the retired list's filter, which E2's `remove(i)` made
-    /// quadratic in the list's length).
+    /// Publish cost against the number of retired values pinned: the scan
+    /// and the retired list's filter.
     ///
     /// arc-lend-specific. A parked `Loan` pins at most one value per
     /// registered `Reader`, so pinning `pinned` values takes `pinned` readers,

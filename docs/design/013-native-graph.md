@@ -235,81 +235,31 @@ the interpreter.
   `RtPublish<Option<Arc<RtPublish<MeterMap>>>>`: the node borrows the
   installed cell, so an install or clear mid-block retires it for the control
   side, whether or not the host kept a clone. Its read is nested, one slot in
-  each of two cells (flattened since, by arc-lend E3a below). The plugin
+  each of two cells (flattened since; see below). The plugin
   tail, which no audio thread reads, is a `Mutex`. `arc-swap` is now only
   `tutti-types`' bench baseline (since the move below, `arc-lend`'s).
-- **Landed (arc-lend E1): the cell is its own crate.** `RtPublish`/`RtRef`
-  are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`, which names nothing
-  of tutti's and is re-exported as `tutti_types::{ArcLend, Loan}`; `read()`
-  is `lend()`. The protocol is unchanged (the loom model, its mutation
-  record, the stress test and the bench moved with it, to
-  `arc-lend/tests/loom.rs` and `arc-lend/benches/lend.rs`). The slot and
-  epoch counts became const parameters with the old values as defaults
-  (`ArcLend<T, SLOTS = 8, EPOCHS = 4>`), and the debug assertion at 1024
-  retired values went: a library does not assert on its host's behaviour,
-  and `retired_len()`/`epoch_stalls()` are what a host polls. The paths in
-  the bullet above are as they were when #15 landed.
-- **Landed (arc-lend E2): the comparison benchmark.** `crates/arc-lend/compare`
-  (`arc-lend-compare`, unpublished) measures `ArcLend` against `arc-swap`
-  (best config, `IndependentStrategy`, and the naive misuse), `basedrop`,
-  `left-right`, `Mutex` and `RwLock`: reader tails, reader allocations and
-  frees, publisher latency, retained memory, and publish cost. The method and
-  one recorded run are in `crates/arc-lend/BENCHMARKS.md`. No `ArcLend` reader
-  allocated or freed. It lost on readers sharing one cell (one cache line of
-  slots), on nested lends, on publisher tails when a reader is preempted
-  mid-lend, and in the parked-loan staircase. E3 (registered per-reader slots)
-  targets those, and re-runs the same harness.
-- **Landed (arc-lend E3a): every read site reads one cell it owns, from
-  the thread that reads.** The preparation for E3's registered readers,
-  with today's `lend()`. A registered reader is built for one cell before
-  the thread that reads it runs, so each audio read now sits on the node (or
-  butler step) that reads, over one cell whose identity is fixed when that
-  reader is built, and no control-side `&self` method reads a cell the audio
-  thread reads: each keeps a mirror written in the call that publishes
-  (`ClickSettings`, the voice node's placement, `MidiInputControls`'
-  pending MPE mode, `HarmonyControls`, `HardwareMidiInputs`' port list,
-  `PluginMeter::has_meter`). The plugin meter is no longer nested: the
-  project meter is a `tutti_core::ProjectMeter` (the metronome's cell and a
-  list of followers), each plugin node reads its own `MeterSlot` cell, and
-  `ProjectMeter::set_meter` publishes into the metronome's cell and every
-  follower's before it returns, so a block after it reads the same meter in
-  each, as the shared cell did. `MidiIn::poll_block` takes `&mut self`: the
-  node owns its input, and the hardware ports are drained through a
-  `HardwareMidiDrain` that owns the drain's scratch. The butler reads PDC
-  through a `PdcFeed` built by `ButlerThread::with_pdc` and owned by the
-  cycle. Fork templates (`ClickFork`, `LaneFork`, `HarmonyFork`,
-  `VoiceNodeFork`) hold cells or control records, never a node, so they need
-  no reader.
-- **Landed (arc-lend E3): registered readers only; the publisher never
-  waits.** The anonymous `lend()`, its shared slots and the overflow epochs
-  are gone. A thread registers an `arc_lend::Reader` on the control side
-  (`ArcLend::reader`, from an `Arc` of the cell; it may allocate a block of
-  slots) and lends through it (`Reader::lend(&mut self)`), one reader per
-  nesting level. Each reader owns one cache line of a growable, append-only
-  slot list, and a lend writes only that. A publish scans the slots once and
-  never waits: a reader between claiming its slot and announcing what it
-  loaded carries a generation in its claim, and the publisher keeps
-  everything that reader could load until a later scan sees it has moved
-  on. `epoch_stalls()` is replaced by `reclaim()`. The loom model runs the
-  new code, with a new mutation record. In the re-run
-  (`crates/arc-lend/BENCHMARKS.md`, E2 to E3) readers stopped contending
-  (41-42 ns p50 at one to four readers, from E2's 47-300 ns), nested lends
-  stopped overflowing, the staircase stays at one value per parked loan,
-  and the publisher's preemption tails went. The new costs: a publish scans
-  every registered reader, and a reader preempted mid-lend under a
-  flat-out publisher pins what is retired meanwhile (2902 values at peak
-  on the shared VM). tutti's read sites hold `Reader`s, each registered
-  where its node (or the butler's cycle, or the MIDI drain) is built, and a
-  fork's node registers on its own new cell. `debug_check_reclaiming` and
-  `PARKED_LOAN_LIMIT` are gone. A parked loan pins one value per reader; a
-  reader preempted mid-lend pins what is retired meanwhile, until the next
-  scan after it resumes (hosts poll `retired_len()`). The count check
-  measured the overflow epochs' hazard, which no longer exists: a node
-  cannot park a `Loan` across blocks (it would need a self-referential
-  borrow of its own `Reader`), and a `mem::forget` pins one value per
-  reader (`parked_loans_pin_one_value_per_reader`).
-  Hosts register a reader of the compensation table with
-  `ChannelCompensation::reader` or `Session::compensation_reader`.
+- **Landed: the cell is the `arc-lend` crate, with registered readers.**
+  `RtPublish`/`RtRef` are `arc_lend::{ArcLend, Loan}` in `crates/arc-lend`,
+  which names nothing of tutti's and is re-exported from `tutti_types`. A
+  thread registers a `Reader` on the control side (`ArcLend::reader`, from
+  an `Arc` of the cell) and lends through it (`Reader::lend(&mut self)`),
+  one reader per nesting level. Each reader owns one cache line of a
+  growable slot list; a publish scans them once and never waits on a
+  reader. The cost is memory: a reader preempted mid-lend pins what is
+  retired meanwhile, until the next scan after it resumes (hosts poll
+  `retired_len()`; `reclaim()` frees without publishing). Every read site
+  reads one cell it owns, registered where its node (or the butler's cycle,
+  or the MIDI drain) is built; a fork's node registers on its own new cell,
+  and a control-side `&self` method keeps a mirror instead of reading a
+  cell the audio thread reads. The plugin meter is one cell per node
+  (`MeterSlot`), which `ProjectMeter::set_meter` publishes into before it
+  returns. `MidiIn::poll_block` takes `&mut self`. `debug_check_reclaiming`
+  and `PARKED_LOAN_LIMIT` are gone: a node cannot park a `Loan` across
+  blocks, and a `mem::forget` pins one value per reader. Hosts register a
+  reader of the compensation table with `ChannelCompensation::reader` or
+  `Session::compensation_reader`. `crates/arc-lend/BENCHMARKS.md` compares
+  the cell with `arc-swap`, `basedrop`, `left-right` and the locks, and
+  with the shared-slot design it replaced.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
@@ -3168,9 +3118,8 @@ same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
 anticipative partition for nodes with no live-input dependency, with export as
 its degenerate case.
 
-`RtPublish` (now `arc-lend`'s `ArcLend`; since arc-lend E3 every reader is
-registered and owns a cache line of its own, so the concern below is
-historical) under the parallel executor: its eight reader slots per cell share
+`RtPublish` (now `arc-lend`'s `ArcLend`, whose registered readers each own
+a cache line, so the concern below is historical) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
 bounce that line between them, and past eight concurrent readers the rest take
 the overflow epochs (safe and bounded, but coarser reclamation). If profiling

@@ -266,8 +266,8 @@ fn a_loan_protects_only_the_value_it_announced() {
     );
 }
 
-/// The E3 bound: a parked loan pins at most one value per registered reader,
-/// however many publishes pass. Nesting takes one reader per level, and each
+/// A parked loan pins at most one value per registered reader, however many
+/// publishes pass. Nesting takes one reader per level, and each
 /// level pins only the value it lent.
 ///
 /// Mutation: in `scan`, make an announcement pin everything (`floor = 0` in
@@ -310,8 +310,7 @@ fn parked_loans_pin_one_value_per_reader() {
 /// again on the next publish.
 ///
 /// The publishes run on another thread with a deadline, so a publisher that
-/// waited for the claim (the E2 protocol's spin) fails by timeout rather than
-/// hanging the suite.
+/// waited for the claim fails by timeout rather than hanging the suite.
 ///
 /// Mutation: in `scan`, wait while a slot holds a claim
 /// (`while word & 1 == 1 { yield_now(); word = slot.0.word.load(Acquire) }`).
@@ -539,7 +538,7 @@ fn a_panicking_destructor_does_not_poison_the_cell() {
 
 /// The publisher's buffers are reused: a publish that frees a value leaves
 /// the emptied buffer for the next, so a steady stream of publishes stops
-/// allocating one per publish (refinement P1).
+/// allocating one per publish.
 ///
 /// Mutation: make `free` drop the buffer instead of returning it. `spare`
 /// then has no capacity after a publish and the assertion fails.

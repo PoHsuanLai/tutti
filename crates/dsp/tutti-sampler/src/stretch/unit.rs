@@ -157,8 +157,8 @@ impl Unit {
         Self::from_vocoders(
             (0..n).map(|_| Vocoder::new(geometry)).collect(),
             width,
-            StretchFactor::UNITY.get(),
-            0.0,
+            StretchFactor::UNITY,
+            Cents(0.0),
             true,
         )
     }
@@ -169,8 +169,8 @@ impl Unit {
     fn from_vocoders(
         vocoders: Vec<Vocoder>,
         width: ChannelLayout,
-        stretch_factor: f32,
-        pitch_cents: f32,
+        stretch_factor: StretchFactor,
+        pitch_cents: Cents,
         enabled: bool,
     ) -> Self {
         let n = vocoders.len();
@@ -186,8 +186,8 @@ impl Unit {
                 scratch_out: scratch(),
             }),
             width,
-            stretch_factor: AtomicF32::new(stretch_factor),
-            pitch_cents: AtomicF32::new(pitch_cents),
+            stretch_factor: AtomicF32::new(StretchFactor::new_clamped(stretch_factor.get()).get()),
+            pitch_cents: AtomicF32::new(clamp_pitch(pitch_cents).get()),
             enabled,
             intake_debt: 0.0,
         }
@@ -249,15 +249,8 @@ impl Unit {
     /// hops. `&self` and a single atomic store, so it is safe alongside a
     /// running audio thread.
     pub fn set_pitch_cents(&self, cents: Cents) {
-        let cents = cents.get();
-        // `f32::clamp` passes NaN through, and a NaN transposition is a NaN
-        // effective stretch: hops and intake rate with it.
-        let cents = if cents.is_finite() {
-            cents.clamp(MIN_PITCH_CENTS, MAX_PITCH_CENTS)
-        } else {
-            0.0
-        };
-        self.pitch_cents.store(cents, Ordering::Release);
+        self.pitch_cents
+            .store(clamp_pitch(cents).get(), Ordering::Release);
     }
 
     /// The transposition currently in force, as last clamped and stored.
@@ -469,9 +462,20 @@ const STRETCH_EPSILON: f32 = 0.001;
 /// Half a cent — beneath the threshold of hearing.
 const PITCH_EPSILON_CENTS: f32 = 0.5;
 /// Two octaves down.
-pub(super) const MIN_PITCH_CENTS: f32 = -2400.0;
+pub(super) const MIN_PITCH: Cents = Cents(-2400.0);
 /// Two octaves up.
-pub(super) const MAX_PITCH_CENTS: f32 = 2400.0;
+pub(super) const MAX_PITCH: Cents = Cents(2400.0);
+
+/// `cents` within [`MIN_PITCH`]..=[`MAX_PITCH`]; a non-finite value is no
+/// transposition. `Cents::clamp` alone passes NaN through, and a NaN
+/// transposition is a NaN effective stretch: hops and intake rate with it.
+pub(super) fn clamp_pitch(cents: Cents) -> Cents {
+    if cents.get().is_finite() {
+        cents.clamp(MIN_PITCH, MAX_PITCH)
+    } else {
+        Cents(0.0)
+    }
+}
 
 impl Unit {
     /// Filter frames `frames` of the lanes `input` into the same frames of
@@ -560,8 +564,8 @@ impl Clone for Unit {
         Self::from_vocoders(
             self.ch.vocoders.iter().map(Vocoder::clone_fresh).collect(),
             self.width,
-            self.stretch_factor.load(Ordering::Acquire),
-            self.pitch_cents.load(Ordering::Acquire),
+            self.stretch_factor(),
+            self.pitch_cents(),
             self.enabled,
         )
     }

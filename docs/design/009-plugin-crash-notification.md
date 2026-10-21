@@ -1,6 +1,6 @@
 # 009 — Telling a host its plugin died
 
-Status: **landed** (option (a), latch the cause). The code lives in
+The host latches the cause (option (a) below). The code lives in
 `tutti-plugin`: `BridgeEvent::Crashed { cause }` fires from the bridge
 thread's crash sites (`host/ipc_client/audio/thread.rs`), the cause is latched
 by `Lifecycle::mark_crashed` (`host/ipc_client/audio/lifecycle.rs`), a host

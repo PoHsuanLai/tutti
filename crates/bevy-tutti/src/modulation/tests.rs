@@ -218,7 +218,7 @@ fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
     assert!((last - 620.0).abs() < 0.5, "the follower raises it: {last}");
 }
 
-/// **A depth slider keeps the LFO's phase (M2).** Dragging a route's depth
+/// **A depth slider keeps the LFO's phase.** Dragging a route's depth
 /// is a store into the lane's program: the wave goes on from where it was,
 /// at the new depth, on the frame the next block starts. The old driver
 /// rebuilt the source's node on a depth change, restarting the wave.

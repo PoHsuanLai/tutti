@@ -99,7 +99,7 @@ impl crate::graph::SessionNode for Knob {
 /// from the values its cells hold. A modulated param
 /// is written the same way (its cell is its lane's knob: one writer,
 /// doc 014 §8.2), and its lane is a graph node, so the fork renders the
-/// same modulation as live (M3).
+/// same modulation as live.
 ///
 /// The paths, one knob each, rendered on one global output each:
 /// `AudioParam` on an unmodulated param (`write_param` → `set_param`);

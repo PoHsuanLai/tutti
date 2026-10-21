@@ -260,7 +260,7 @@ fn equal_declarations_in_any_order_compile_equal() {
     }
 }
 
-/// M1 closed: for every source kind (LFO, macro, follower, note envelope,
+/// One depth convention: for every source kind (LFO, macro, follower, note envelope,
 /// and an LFO scaled by a macro through `depth_by`), each polarity and
 /// curve, the offset at raw ±1 is `shape(±1, depth, polarity, curve) ×
 /// span`, and at raw ±0.5 likewise (where the curve bends: every curve

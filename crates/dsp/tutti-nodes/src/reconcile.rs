@@ -282,7 +282,7 @@ struct SourcePlan {
 /// target**: a target with a new program gets a lane, one whose program
 /// changed has it republished (no commit), one with no program loses its
 /// lane; a new signal source gets its node, input and edges, a gone one
-/// loses them (M10). A range edit is a store into the port's range cell (or
+/// loses them. A range edit is a store into the port's range cell (or
 /// a plugin lane's own), never a recompile of anything else. What needs a
 /// commit is reported ([`Applied::commit`]); [`commit`](Self::commit)
 /// commits and then sends the resyncs the apply queued.

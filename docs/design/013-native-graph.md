@@ -5050,7 +5050,7 @@ under both.
 > on entities (`Mods`, `ModRoute`, `ModRange`, `Automation`, `ParamRef`)
 > and `TuttiModulationPlugin` applies it through `Modulation` on the
 > graph's editor, so every modulated param, a hosted plugin's included,
-> is a lane in the graph an export forks (014 §8.2 "As landed",
+> is a lane in the graph an export forks (014 §8.2,
 > §12.5). The frame-rate driver and `plugin_bind_params` are
 > unscheduled (`modulation::legacy`); `ParamSet::set_authored` is gone.
 >

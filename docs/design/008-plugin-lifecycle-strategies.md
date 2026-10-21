@@ -1,6 +1,6 @@
 # 008 — Plugin lifecycle: four formats, four shapes, one rule
 
-Status: **describes what is built.** No migration is proposed. This exists because
+This **describes what is built** and proposes no migration. It exists because
 the four format hosts model their lifecycles differently, that difference looks
 like drift, and it is not — each shape is the smallest one its ABI admits.
 

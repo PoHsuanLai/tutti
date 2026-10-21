@@ -39,24 +39,24 @@ shape. tutti modelled modulation twice, both times as an engine mechanism:
 the graph's fused step `clamp(base + Σ shape_j(source_j))`
 (`crates/core/tutti-graph/src/param.rs:11`), and a control-rate tier on
 Bevy's frame clock (`tutti-mod`'s `routing`, `bevy-tutti`'s driver, the
-plugin path's `PluginAutomation`). M3 is the structural defect: a mechanism
+plugin path's `PluginAutomation`). Modulation that never reaches an export is the structural defect: a mechanism
 driven from outside the graph cannot be in a fork. The rest are second
 copies of something the graph already does.
 
-| # | Defect | Evidence |
-|---|---|---|
-| M1 | **Depth means different things per tier.** `PerFrame`/`PerBlock` scale by the span; `PerSample` does not. Ranged 0..10 at `Depth(0.5)` swings ±5 against ±0.5. | `crates/core/tutti-mod/src/driver.rs:335-339`, `curve_source.rs:182-184` against `crates/dsp/tutti-nodes/src/param_mod.rs:46-55`, `crates/bevy-tutti/src/modulation/audio_rate.rs:300-307` |
-| M2 | **A depth edit restarts every free LFO.** `Changed<ModRoute>` rebuilds every `Sourced` from phase 0. | `crates/bevy-tutti/src/modulation/source.rs:225-232`, `:305-331`; `driver.rs:1-6` |
-| M3 | **Control-rate and plugin modulation never reach an export.** A fork freezes a plugin target to its authored part; there is no offline driver. | `crates/plugin/tutti-plugin/src/host/node/param_automation_source.rs:336-353`; `crates/core/tutti-graph/src/controls.rs:14-27`; doc 013 lines 1193-1200 |
-| M4 | **Plugin delivery drops parameters past 16**, uncounted. | `crates/plugin/tutti-plugin/src/host/node/automation_node.rs:249-270`, `graph_node.rs:297`, `crates/plugin/tutti-plugin-types/src/automation.rs:175-178` |
-| M5 | **Plugin params are re-sent every block**, overwriting GUI edits. | `automation_node.rs:151-180` |
-| M6 | **Free modulation on a plugin stops with the transport.** | `automation_node.rs:164` |
-| M7 | **Nested `RtPublish` reads per point** on the audio thread. | `automation_node.rs:156-170`, `param_automation_source.rs:327-334` |
-| M8 | **Automation is an offset, not a value.** 200→2000 Hz under a 1000 Hz knob renders 1200→3000 Hz. | `param.rs:173-185`, `crates/dsp/tutti-nodes/src/automation/lane.rs:191-201` |
-| M9 | **Two writers; a rebuild reseeds the base** from `ModParamRange.base`. | `crates/bevy-tutti/src/modulation/driver.rs` (`rebuild`); `crates/bevy-tutti/src/graph/param.rs:147-174` |
-| M10 | **The per-sample source node goes stale and leaks.** | `audio_rate.rs:149-189` |
-| M11 | **The sum is order-dependent** (`Vec` insertion order). | `crates/core/tutti-mod/src/layered.rs` (`value_at`) |
-| M12 | **Two producers for one job** into a plugin input. | `automation_node.rs`, `lane.rs:203-210` |
+| Defect | Evidence |
+|---|---|
+| **Depth means different things per tier.** `PerFrame`/`PerBlock` scale by the span; `PerSample` does not. Ranged 0..10 at `Depth(0.5)` swings ±5 against ±0.5. | `crates/core/tutti-mod/src/driver.rs:335-339`, `curve_source.rs:182-184` against `crates/dsp/tutti-nodes/src/param_mod.rs:46-55`, `crates/bevy-tutti/src/modulation/audio_rate.rs:300-307` |
+| **A depth edit restarts every free LFO.** `Changed<ModRoute>` rebuilds every `Sourced` from phase 0. | `crates/bevy-tutti/src/modulation/source.rs:225-232`, `:305-331`; `driver.rs:1-6` |
+| **Control-rate and plugin modulation never reach an export.** A fork freezes a plugin target to its authored part; there is no offline driver. | `crates/plugin/tutti-plugin/src/host/node/param_automation_source.rs:336-353`; `crates/core/tutti-graph/src/controls.rs:14-27`; doc 013 lines 1193-1200 |
+| **Plugin delivery drops parameters past 16**, uncounted. | `crates/plugin/tutti-plugin/src/host/node/automation_node.rs:249-270`, `graph_node.rs:297`, `crates/plugin/tutti-plugin-types/src/automation.rs:175-178` |
+| **Plugin params are re-sent every block**, overwriting GUI edits. | `automation_node.rs:151-180` |
+| **Free modulation on a plugin stops with the transport.** | `automation_node.rs:164` |
+| **Nested `RtPublish` reads per point** on the audio thread. | `automation_node.rs:156-170`, `param_automation_source.rs:327-334` |
+| **Automation is an offset, not a value.** 200→2000 Hz under a 1000 Hz knob renders 1200→3000 Hz. | `param.rs:173-185`, `crates/dsp/tutti-nodes/src/automation/lane.rs:191-201` |
+| **Two writers; a rebuild reseeds the base** from `ModParamRange.base`. | `crates/bevy-tutti/src/modulation/driver.rs` (`rebuild`); `crates/bevy-tutti/src/graph/param.rs:147-174` |
+| **The per-sample source node goes stale and leaks.** | `audio_rate.rs:149-189` |
+| **The sum is order-dependent** (`Vec` insertion order). | `crates/core/tutti-mod/src/layered.rs` (`value_at`) |
+| **Two producers for one job** into a plugin input. | `automation_node.rs`, `lane.rs:203-210` |
 
 ## 2. The value rule
 
@@ -71,7 +71,7 @@ base(t)  = automation(t)  where the lane's automation has a value at t
   disabled), the knob holds: `Curve::value_at`'s `Option`.
 - **Modulation adds**, in the target's units:
   `offset = shape(raw, depth, polarity, curve) × span`, one convention for
-  every source kind (it fixes M1). Depth is a fraction of the range; `span =
+  every source kind. Depth is a fraction of the range; `span =
   range.max − range.min` is derived by the lane from the live range cell,
   read once per block, so a range edit rescales every route on the next
   block with no republish (§4.2).
@@ -84,10 +84,10 @@ base(t)  = automation(t)  where the lane's automation has a value at t
 
 | Path | Today | After |
 |---|---|---|
-| Native param, automated | knob + curve (M8) | curve |
+| Native param, automated | knob + curve | curve |
 | Native param, LFO `PerFrame` | `ModParamRange.base` + LFO × span, Bevy frame rate, not exported | knob (or automation) + LFO × span, per the control step, exported |
-| Native param, LFO `PerSample` | knob + LFO, no span (M1) | as above |
-| Plugin param | host base + layers, every block while playing (M5, M6) | knob (or automation) + Σ layers, changes only, rolling or not |
+| Native param, LFO `PerSample` | knob + LFO, no span | as above |
+| Plugin param | host base + layers, every block while playing | knob (or automation) + Σ layers, changes only, rolling or not |
 | Unmodulated, unautomated | knob | knob (no lane, no events) |
 
 **Breaking:** "automation adds to the base" goes (§5.6, §12.2).
@@ -219,7 +219,7 @@ pub struct Corners { pub beat: Option<Beat>, pub play: Option<Frame> }
 ```
 
 - **A depth edit is a republish, never a reset.** Phase is a function of
-  time, not of the program's age (it fixes M2).
+  time, not of the program's age.
 - **Why layers are summed in the lane.** LFOs at unrelated rates share no
   period, so no single curve holds their sum.
 - **Why the lane holds `Amount` rather than a baked offset curve.** One
@@ -230,7 +230,7 @@ pub struct Corners { pub beat: Option<Beat>, pub play: Option<Frame> }
 - **`depth_by`** costs one evaluation and one multiply per point; its
   corners join the layer's.
 
-**As landed.** The sketch above, as the code has it:
+The code has the sketch above, with these specifics:
 `ControlProgram`'s fields are private behind `ControlProgram::new`, which
 sorts by id and refuses past the caps, duplicate ids, a bad drawing and
 a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
@@ -265,7 +265,7 @@ a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
 | Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` holds a `PackedAtomic<ParamRange>` per port, with a public accessor) and loads it once per block for the span only. | A lane-owned `PackedAtomic<ParamRange>`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
 | Program | `ArcLend<ControlProgram>` (`LaneControls::publish`) | same |
 
-**As landed.** `Editor::param_range_cell(at)` hands out a
+`Editor::param_range_cell(at)` hands out a
 read-only view of the port's cell (`ParamRangeReader`, `load` only). The
 spec is the range's one writer: `set_param_range` stores into the spec and
 the cell together, and every commit rewrites the cells from the spec, so a
@@ -288,7 +288,7 @@ not a step: the piece in flight is cut there and the next piece runs from
 the in-flight value to the new value at the next point. That is a declick of
 at most `CONTROL_STEP` frames with no extra state.
 
-**As landed.** Two refinements keep the glide from depending on
+Two refinements keep the glide from depending on
 where blocks fall. A glide that would send the piece already in flight
 again (the same end value to the bit and the same next point; in exact
 mode also the same start, shape and length) sends nothing, so a republish
@@ -306,7 +306,7 @@ beat at the frame. The beat is closed form from the segment's frame count
 any block size. Seeks and loop wraps are followed; stopped, the beat holds.
 
 **Seconds: one graph-wide play clock.** A free layer needs a time that runs
-while stopped (M6) and ignores seeks, loops and tempo. It is **`Env::play`**,
+while stopped and ignores seeks, loops and tempo. It is **`Env::play`**,
 a `Frame` the executor keeps:
 
 - it advances one per frame, rolling or stopped;
@@ -317,7 +317,7 @@ a `Frame` the executor keeps:
   process-wide counter, so no fork's epoch equals a live one;
 - nothing else resets it.
 
-**As landed.** `Env::play` is a `PlayClock`, not a bare `Frame`
+In the code `Env::play` is a `PlayClock`, not a bare `Frame`
 plus `Env::play_epoch`: `{ start: PlayReading, next_epoch }`, the reading
 at the block's first frame and the epoch the block's first in-block start
 takes (the `k`-th takes `next_epoch + k`, reserved by the executor before
@@ -360,14 +360,14 @@ program and the play clock; the lane keeps no phase state.
 - An anchor whose epoch is not the current `play_epoch` is ignored: phase is
   `frac(rate · play + phase)`, so a play start (or a fork) restarts it at the
   declared phase.
-- **As landed: the anchor is the source's.** `Compiled::clocks`
+- **The anchor is the source's.** `Compiled::clocks`
   holds each LFO's dated clock, and every layer and `depth_by` the LFO
   drives uses it. So a route added after a rate edit, a route moved to
   another LFO (which takes that LFO's own clock, not a continuation of the
   first's phase) and a route whose `depth_by` changes (a new `LayerId`)
   all read the anchor the LFO's other layers read, and one LFO stays
   phase-coherent across its targets.
-- **As landed: a second edit while an anchor is pending.** One anchor
+- **A second edit while an anchor is pending.** One anchor
   holds one rate change, so R0 → R1 → R2 cannot be expressed exactly. If
   the pending anchor `a` is still at least `2 × max_block` (8192 frames)
   ahead, the second edit reuses its frame (the publish has room to land
@@ -417,8 +417,7 @@ the 32-byte event are unchanged.
 ### 4.5 Publication
 
 - **One read per block**, at the first frame, dropped before returning. The
-  program holds frozen `Arc`s, not further cells, so there is no nested read
-  (it fixes M7).
+  program holds frozen `Arc`s, not further cells, so there is no nested read.
 - **The fork's copy comes from the control side.** `RtRef` only `Deref`s
   (`crates/core/tutti-types/src/rt/publish.rs:786`; now arc-lend's `Loan`,
   in its `lend.rs`) and must not leave the
@@ -441,7 +440,7 @@ the 32-byte event are unchanged.
 | Event capacity | `LANE_EVENT_CAPACITY` = **256** (today 128) |
 | Tail | `Tail::Unbounded` |
 | Latency | none; modulation lag is musical delay (§6) |
-| Cost | `Cost::Moderate`, measured (§5.3, "As landed"); `Light` was the estimate |
+| Cost | `Cost::Moderate`, measured (§5.3); `Light` was the estimate |
 | Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()`, `truncated()`, `unranged()` |
 | Fork | the last published program (`Arc`), knob and range values at the gather, the address; fresh state (§5.6) |
 
@@ -475,7 +474,7 @@ its output to the target, so each value lands on its own frame.
 5. **A piece in flight at frame 0 with nothing changed** is left alone,
    not recomputed: the lane keeps the piece and its next point across
    blocks, so a piece is the same whatever the block boundaries.
-   **As landed:** it is not re-sent either. A re-send would be
+   It is not re-sent either. A re-send would be
    bit-exact at a native port only while the segment's `f32` position
    rounds alike in every block, and a plugin's delivery would see an extra
    point at each block edge; sending nothing is exact by construction. A
@@ -553,7 +552,7 @@ point to the chunk's end). That needs at least
 so **plugin export == live holds at the same chunk size**, and the
 adapter's test pins the chunk.
 
-*As landed:* `SegmentPoints` also sends a segment's value on each
+`SegmentPoints` also sends a segment's value on each
 frame in flight whose play count is a multiple of 32, as a grid point. A
 lane's pieces run grid frame to grid frame, so it adds nothing to a lane;
 it keeps a segment scheduled by hand (`ParamSegment` on the event input,
@@ -568,7 +567,7 @@ order of 1–3 % of one core in all, and about a microsecond per lane per
 512-frame block. That is `Light`; the lane is measured and declares from
 the measurement, as doc 013's cost model did.
 
-**As landed: `Moderate`.** Measured on the 4-core container, 200
+**Measured, the lane is `Moderate`.** On the 4-core container, 200
 lanes of one moving layer each (every layer kind in turn) into 25 eight-param
 probes at 512-frame blocks: about 2.3–3.3 ms a block in all, of which
 the lanes' own `process` is about a third (callgrind), about 3.7 µs per
@@ -614,7 +613,7 @@ chunks; VST3 interpolates between points, so it hears the pieces.
 |---|---|---|---|
 | Seek, loop wrap | a point, re-evaluated at the new beat | continue | continue |
 | Tempo change | a point | continue | continue |
-| Stop | hold | keep running (it fixes M6) | keep following |
+| Stop | hold | keep running | keep following |
 | Start | a point | play clock 0, new epoch (stale anchors ignored) | per §6 |
 | No usable tempo | hold | continue | continue |
 
@@ -627,7 +626,7 @@ ignores it and a plugin's changes-only filter drops it.
 event source (`GraphInvalid` refuses a second, by name); its value replaces
 the base from its first event, and before that the port reads the base;
 its shaping must be `Identity`; connect and disconnect crossfade over
-`PARAM_DECLICK`. **As landed:** the crossfade covers the block of
+`PARAM_DECLICK`. The crossfade covers the block of
 the connect; a first event that lands in a later block is not declicked (a
 first `ParamSegment` jumps from the base on its frame; a first `ParamRamp`
 starts from the base). A lane sends on its first block, at frame 0,
@@ -641,7 +640,7 @@ reach the fork. Fresh state: no piece in flight, inputs at 0
 until their (also forked) sources send. With a fresh lane sending at its
 first frame and replace semantics, the fork needs nothing from the
 audio thread, which is why `ParamTap` and the fork seeds are gone (§10).
-**As landed:** a fresh lane has nothing in flight, so it sends on
+A fresh lane has nothing in flight, so it sends on
 its first frame (the lane never re-sends at a block edge, §5.2); the fork
 reads its value at frame 0 that way. A live lane re-wired to another
 target is not fresh, and sends nothing until something moves: its owner
@@ -655,7 +654,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
 
 | Node | In | Sends | Cost |
 |---|---|---|---|
-| `EnvelopeFollowerNode` | audio, any width (peak over channels; as landed, below) | On the play-clock grid: at grid point `g`, a linear piece `env(g − step) → env(g)` over `[g, g + step)`, raw in `[0, 1]`, addressed `ParamAddr::Id(source.0)`. One-pole attack and release in `Seconds`, per frame. Capacity 256. | `Moderate` |
+| `EnvelopeFollowerNode` | audio, any width (peak over channels, below) | On the play-clock grid: at grid point `g`, a linear piece `env(g − step) → env(g)` over `[g, g + step)`, raw in `[0, 1]`, addressed `ParamAddr::Id(source.0)`. One-pole attack and release in `Seconds`, per frame. Capacity 256. | `Moderate` |
 | `NoteEnvelopeNode` | 1 MIDI event input | An ADSR's stages as linear segments at note-on, note-off and each stage boundary: exact, no grid. Mono, last-note priority, retrigger. | `Light` |
 
 - **The follower runs one grid step late** (32 frames), so its output
@@ -675,7 +674,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
 - **A cycle is refused**, reported by route.
   Feedback through an event feedback edge would delay by `MaxBlock`, which
   differs live and offline, so feedback modulation is out of scope.
-  **As landed:** the compiler sees no audio graph, so it cannot see
+  The compiler sees no audio graph, so it cannot see
   a follower downstream of its own target and has no `Cycle` refusal. The
   reconcile refuses that case by route when it adds the edges, and the
   graph refuses any cycle at commit regardless. `Modulation::apply` refuses it
@@ -685,12 +684,12 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
   the spec's direct audio, event and param edges less the reconciler's own
   nodes, plus each source's feed and each wanted edge as source → target
   node.
-- **As landed:** the compiler gives each signal source a
+- The compiler gives each signal source a
   `SourceNode { id, kind }`: a pure description (`SignalKind::Follower
   { attack, release }` or `SignalKind::NoteEnvelope { adsr }`) carrying
   everything construction needs and nothing runtime. The nodes and their
   `from_decl` constructors are §12.4's.
-- **As landed** in `tutti-nodes` (`src/signal/`), with these
+- The nodes are in `tutti-nodes` (`src/signal/`), with these
   choices the table left open:
   - **Peak over channels**, not RMS: a frame's level is `max |x_c|`,
     clamped to `[0, 1]` (a NaN sample reads 0). A frame's RMS over
@@ -746,7 +745,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     re-sends where it stands, as a resumed segment, as it already does
     after a refused segment. It is the reconcile's, where the host knows
     which routes it adds (§12.5).
-    **As landed:** `EventKind::Resync`, a generic event: a request
+    It is `EventKind::Resync`, a generic event: a request
     to an event source to re-send where it stands. The note envelope
     answers it on its input (a resumed segment, or 0 when idle);
     `Modulation::commit` schedules one (`Editor::schedule`, `At::NextBlock`)
@@ -837,7 +836,7 @@ pub fn compile(decl: &Declarations<'_>, prev: Option<&Compiled>,
     -> Result<Compiled, CompileError>;
 ```
 
-**As landed** in `compile.rs`, with these choices the sketch left
+The compiler is `compile.rs`, with these choices the sketch left
 open:
 
 - `compile` takes `rate: SampleRate`: a new anchor's phase is the old
@@ -881,11 +880,11 @@ open:
 - **Pure**: no clock, no state, no `ArcLend`. Equal declarations compile
   equal; `Compiled` is `Eq`, so a host republishes only what changed.
 - **Stable `LayerId`s** from `(RouteKey, depth-by RouteKey)`: identity and
-  sum order survive a republish (it fixes M11).
+  sum order survive a republish.
 - **Refusals, by name** (`CompileError`): past `MAX_LANE_LAYERS`
   (`TooManyLayers`) or `MAX_LANE_INPUTS` (`TooManyInputs`); a NaN range
   bound (`NanRange`); a `depth_by` chain deeper than one (`DepthByChain`);
-  an automation curve that is not frozen (`LiveCurve`). As landed, also: a
+  an automation curve that is not frozen (`LiveCurve`). Also: a
   duplicate key (`DuplicateSource`, `DuplicateRoute`, `DuplicateTarget`); a
   route naming an undeclared source, route or target (`UnknownSource`,
   `UnknownRoute`, `UndeclaredTarget`); a source or route outside its domain
@@ -921,7 +920,7 @@ fn setup(mut mods: Mods, scene: Res<Scene>) {
 }
 ```
 
-(As landed: there are no typed node refs such as
+(There are no typed node refs such as
 `filter.cutoff()`; a `ParamRef` is built from the entity and the param.
 A route needs a `ModRange` on its target. The example is
 `tests/mod_lanes.rs`'s `the_8_1_example_renders_its_analytic_values`.)
@@ -942,7 +941,7 @@ A route needs a `ModRange` on its target. The example is
 
 ### 8.2 The reconcile step
 
-**As landed: the reconcile is Bevy-free**, `tutti_nodes::Modulation`
+**The reconcile is Bevy-free**, `tutti_nodes::Modulation`
 (`src/reconcile.rs`). `apply(&Declarations, &mut Editor, &dyn ModHost)`
 compiles against the last `Compiled` it holds, diffs per target and
 applies the rules below to a plain `Editor`, reporting whether a commit is
@@ -977,7 +976,7 @@ a fresh key.
 `bevy-tutti`'s system collects the declarations, implements
 `ModHost` over its entities and calls it.
 
-**As landed.** `modulation::reconcile`, in
+In `bevy-tutti`, `modulation::reconcile`, in
 `ModulationSystems::Apply` (after `GraphReconcileSystems::Spawn`, before
 `Params`), collects the declarations, keyed by entity
 (`Entity::to_bits`: `SourceKey`, `RouteKey`, `TargetKey::node`), and
@@ -1028,9 +1027,8 @@ The rules, as designed:
 - **A changed program** is republished: no commit.
 - **A target without a program** loses its lane; its port crossfades back
   to the node's control.
-- **A new signal source** gets its node and edges; a gone one loses them
-  (it fixes M10).
-- **Diff per target, not the whole `Compiled`** (as landed): a rate
+- **A new signal source** gets its node and edges; a gone one loses them.
+- **Diff per target, not the whole `Compiled`**: a rate
   edit of an LFO no route reads changes `Compiled::clocks` and no program,
   so the reconcile compares `programs`, `nodes` and `edges` entry by entry
   and republishes only the programs that differ.
@@ -1043,7 +1041,7 @@ The rules, as designed:
 | Knob (`AudioParam`, `write_param`) | one store into the node's `Param` cell; a plugin lane's `set_knob` |
 | Automation curve | republish |
 
-**One writer per knob** (it fixes M9): `write_param` loses its modulated
+**One writer per knob**: `write_param` loses its modulated
 branch and `set_param_snapshot`; `ParamSet` loses `set_authored` and
 `ParamSet::authored`. The node's `Param` cell is the value a fork of the node starts
 from: a fork's template shares it (`ParamFork::fork_node` is the
@@ -1051,8 +1049,8 @@ template's `fork_fresh`), and `get` reads it. One cell per param, one
 writer.
 
 **A plugin's GUI** edit reaches the host through `ParameterChangeSink`; for
-a parameter with a lane, it is written into the lane's knob. (As landed,
-and moved to `tutti-plugin` by design 015:
+a parameter with a lane, it is written into the lane's knob. (In the code,
+which design 015 moved to `tutti-plugin`,
 `PluginParamValues::start` installs the handle's `on_parameter_changed`
 callback, which queues each report, and hands back the `ParamRead` job
 that fills the mirror; `plugin_param_edits`, in
@@ -1062,7 +1060,7 @@ base, so the knob shows again when the automation or its take goes.
 Design 015 moved the mirror into `tutti-session`'s plugin record and
 the drain into its `Phase::Plugins`.)
 
-**As landed: VST2 only.** Only VST2 reports a value the plugin
+**VST2 only.** Only VST2 reports a value the plugin
 moves itself (`audioMasterAutomate`, in process and through the
 plugin-server's `ParameterChanged`). CLAP, VST3 and AU emit no
 `ParameterChanged` through the server (`tutti-plugin-server`'s
@@ -1087,7 +1085,7 @@ a drag during modulation sets the knob to the dragged value.
 
 **Recording.** While a touch or latch take is open, the reconcile
 republishes with `automation: None`, so the knob (the gesture) drives the
-param; on release it republishes with the finished envelope. (As landed:
+param; on release it republishes with the finished envelope. (It is
 an `AutomationTake` component on the `Automation`'s entity, holding a
 `Recorder`; `close_takes`, before the reconcile, swaps a finished take's
 envelope into the `Automation` and removes the take.)
@@ -1098,11 +1096,11 @@ Requirements 1–5 are the plugin delivery's own (§12.1); 6 came with the
 control lane (§12.2).
 
 1. **Every listed parameter** can be delivered in every chunk, with no
-   allocation on the audio thread, for any parameter count the plugin lists
-   (it fixes M4). Each has a queue reserved off the audio thread; its points
-   are stored as the point-storage note below says.
+   allocation on the audio thread, for any parameter count the plugin lists.
+   Each has a queue reserved off the audio thread; its points are stored as
+   the point-storage note below says.
 2. **Changes only**, compared with the last *delivered* value. A value that
-   cannot go now is owed to the next chunk, never dropped (it fixes M5).
+   cannot go now is owed to the next chunk, never dropped.
 3. **Unknown addresses** (not in the list at bind) are bounded and counted,
    never silent.
 4. **The delivered record is what the host last delivered to this plugin
@@ -1147,13 +1145,13 @@ control lane (§12.2).
    bytes = 47.4 KB at 2064 queues and a 4096-frame chunk. A buffer of
    another room never reaches it: the bridge's pool drops one whose queues
    or point room differ from its reservation (`PayloadPool::return_params`).
-   **As landed:** a point is a grid point by its frame alone (its
+   A point is a grid point by its frame alone (its
    play count a multiple of 32, `param_input::take`), so a lane corner
    that lands on a grid frame is dropped as a grid point. It loses nothing
    a grid point would not: the lane's piece starting there carries the
    same value. A ramp is always a corner.
 
-**Point storage (the arena follow-up, landed).** A queue's logical room
+**Point storage.** A queue's logical room
 (`ParameterQueue::chunk_room`, requirement 6) is decoupled from its storage,
 and no storage on the parameter path can grow. A queue's points are a
 `PointBuf`: a boxed slice of points and a length, its capacity fixed when it
@@ -1353,7 +1351,7 @@ compiler's tests); `param_set_routes.rs` is ported; `bevy-tutti`'s
 ported to lanes; `tutti-polysynth`'s `AtomicTarget` route tests become
 `ParamSet` writes.
 
-**As landed.** Every item in the table is deleted, with these
+Every item in the table is deleted, with these
 differences from it:
 
 - **`tutti-graph`:** `ParamFrom` is gone as a type, not collapsed to one
@@ -1447,7 +1445,7 @@ requirement as a host meets it) and in `tutti-nodes`' `control_lane.rs`
 `a_fork_modulates_as_the_live_graph_does`.
 
 **`EventKind::Resync` is how a hand-wired event source meets the fork
-requirement above** (as landed with the reconcile, §6). A `ForkByClone` fork of a
+requirement above** (it came with the reconcile, §6). A `ForkByClone` fork of a
 source driven by live input cannot know the value it holds; a source that
 answers a `Resync` on an event input by re-sending where it stands (a
 ramp's in-flight move as `ParamSegment::resumed`, a held value as a step)
@@ -1466,7 +1464,7 @@ param port and every node that sends nothing a sink could miss ignores it.
 - **Feedback modulation**: refused (§6).
 - **Slew per route**: only the ≤ one-step glide (§4.2).
 
-## 12. How it landed
+## 12. How it was built
 
 Every new test carries its mutation record. Bit-for-bit comparisons are
 serial against parallel and live against fork, on one target; anything
@@ -1479,7 +1477,7 @@ digest on its recording target. The `audio-automation` pin and the bevy
 §9's requirements 1–5; the in-process VST2 node runs the same delivery
 (§13).
 
-**Parameter-change memory (landed).** The shared point
+**Parameter-change memory.** The shared point
 pool of §9's point-storage note replaced the reservations below; its new
 per-instance figures are there. What it replaced: the delivery reserved every
 parameter-change buffer at `params × points_for(chunk)` points, and the
@@ -1488,16 +1486,14 @@ bridge holds `PARAM_BUFFERS` of them: about 43 MB for 2000 parameters at a
 reserves for the same points again per instance: the CLAP host's input
 event list (64-byte events plus an 8-byte sort key, uncapped) about 19 MB
 at 2000 parameters and 157 MB at 16k, the VST3 host's input queues about
-35 MB at 16k (4096 frames). The CLAP host's output side (PR #92) reserves
+35 MB at 16k (4096 frames). The CLAP host's output side (#92) reserves
 the same again per instance, for the plugin's own parameter output: the
 output event list (64-byte events, a parameter room of `params × points`
 beside 256 for notes and MIDI) about 16.9 MB, plus the reserved output
 queues (`out_param_changes`) about 4.6 MB, so about 21.5 MB at 2000
-parameters and 4096 frames, and about 172 MB at 16k. Replace all of them
-with a shared per-chunk point arena, or a small per-queue room with a
-counted, shared overflow, so the memory follows the points a chunk carries
-rather than the parameter count; the follow-up covers the input and the
-output side alike. The in-process VST2 node reserves the same room
+parameters and 4096 frames, and about 172 MB at 16k. The pool replaces all
+of them, on the input and the output side alike, so the memory follows the
+points a chunk carries rather than the parameter count. The in-process VST2 node reserves the same room
 and applies only each queue's last point (VST 2.4 has no sample-accurate
 parameter events), so its per-queue point room is mostly wasted: about
 400 KB per node at 200 parameters and a 4096-frame block; one point per
@@ -1510,7 +1506,7 @@ Requirement 6 moves the room from `ceil(chunk / 32) + 4` to
 20 to 273 at 512. Reserved per queue, as the delivery first did, that would have been
 about 235 MB per CLAP instance of 2000 parameters at 4096 frames and
 168 MB at 512 (about 940 MB in the node's buffers alone at 16k). The raise
-landed on the shared pool instead, so only the pool's blocks grow with the
+went to the shared pool instead, so only the pool's blocks grow with the
 room: per instance at 2000 parameters a CLAP plugin holds about 34.2 MB at
 4096 frames and 25.2 MB at 512, a VST3 plugin about 19.8 MB and 14.8 MB,
 the plugin-server's output included
@@ -1525,7 +1521,7 @@ block's, lent only to a queue that moves.
 `Editor::param_range_cell`; the play
 clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`,
 `TransportHistory` carrying it, `Editor::play_reading`, forks at 0, see
-§4.3 "As landed"); and the port rule (§5.6) in the executor, the
+§4.3); and the port rule (§5.6) in the executor, the
 reference, `GraphSpec::validate` (`GraphInvalid::TooManyEventParamSources`,
 `ShapedEventParamSource`), the verifier's rule 9 and the differential
 proptest. The rule was checked against main before it changed: no
@@ -1535,7 +1531,7 @@ breaks no live feature. **The lane** is the rest of the scope below:
 `ControlProgram`, the lane, the signal sources, `SegmentPoints`, the
 automation constructors and the lane's tests.
 
-**The lane: landed** (branch `claude/control-lane-node`), but for the signal
+**The lane** (branch `claude/control-lane-node`), without the signal
 sources:
 
 - `tutti_mod::ControlProgram` (§4.1) with layers, input layers, rate
@@ -1592,7 +1588,7 @@ sources:
   exact mode jumps on a republish (§4.2); the lane is `Moderate`, measured
   (§5.3); a fresh lane, a fork's included, sends at its first frame
   (§5.6).
-- **Left for a follow-up:** `EnvelopeFollowerNode` and
+- **Not in this part:** `EnvelopeFollowerNode` and
   `NoteEnvelopeNode` (§6), with their properties below (export == live for
   a follower and a note envelope; the follower's one-step lag and
   play-start restart); a sine within the bound for each bounded curve
@@ -1610,7 +1606,7 @@ and `LaneControls` (§5), exact mode on the grid, thinning, the fork;
 rule (§5.6) with interpreter, verifier and proptest; `SegmentPoints` on
 piece endpoints and the point capacity (§9.6); `AutomationLaneNode::for_param`
 and `for_foreign` become thin `ControlLaneNode` constructors; doc 013's
-pointer gets a "landed" note.
+pointer names this design.
 
 **Properties tested.**
 
@@ -1685,8 +1681,8 @@ not base + value; at most one event source per port, `Identity` shaping.
 Migration: remove knob-to-zero workarounds; sum two event sources in one
 lane or a node. Also: `LANE_EVENT_CAPACITY` 256, `CONTROL_STEP`, `Env::play`.
 
-**Exit.** M8 and M11 closed; the lane measured and declared `Light`.
-**As landed:** measured and declared `Moderate` (§5.3).
+**Exit.** Automation replaces the knob and the sum is order-independent;
+the lane is measured and declares the measurement (`Moderate`, §5.3).
 
 ### 12.3 `tutti-mod` as a pure compiler
 
@@ -1697,10 +1693,10 @@ followers, note envelopes, `depth_by`; `Lfo`, `SampleHold`, `RandomState`,
 
 **Properties.** Equal declarations (in any order) compile equal; for every
 source kind, polarity and curve the offset at raw ±1 is
-`shape(±1, …) × span` (it closes M1); a depth edit changes only its target's
+`shape(±1, …) × span`; a depth edit changes only its target's
 program and keeps its ids; each refusal fires by name; a macro move changes
 exactly the programs it reaches; a rate edit anchors continuously from the
-previous program. **Breaking**, as landed (CHANGELOG): `Layer::depth_by`
+previous program. **Breaking** (CHANGELOG): `Layer::depth_by`
 became `DepthBy` (a depth route has its own amount, §4.1);
 `ProgramError` gained `NotANumber` (a program refuses NaN so `Compiled` is
 `Eq`); and `tutti_nodes::{Lfo, Modulator}` became `tutti-nodes`' own
@@ -1709,7 +1705,7 @@ copies (§3), so they are no longer `tutti-mod`'s types.
 **Exit.** Compiling anything `bevy-tutti` expresses needs no runtime; the
 crate builds with and without `--features bevy`.
 
-**As landed.**
+**What it holds.**
 
 - `compile.rs` (ungated) holds the keys, `Source`, `RouteDecl`,
   `RouteTarget`, `TargetDecl`, `Declarations`, `Adsr`, `SourceNode`,
@@ -1743,7 +1739,7 @@ crate builds with and without `--features bevy`.
 **Scope.** `EnvelopeFollowerNode`, `NoteEnvelopeNode` and their
 `from_decl` constructors (§6); §7's stale-slot hazard.
 
-**Landed** (branch `claude/mod-signal-nodes`), with §6's "As landed"
+Built on branch `claude/mod-signal-nodes`, with §6's
 choices: peak over channels, linear ADSR segments, play start read as
 an epoch change at the input's time, `ForkByClone`, `from_decl` in
 `tutti-nodes`. The hazard closed in both the lane and the compiler (§7).
@@ -1777,9 +1773,9 @@ adapter** is `bevy-tutti`: the declarations, the adapter implementing `ModHost`
 over entities, the knob and plugin-GUI paths, takes, and the properties
 that need an app or a plugin.
 
-**The reconcile: landed** (branch `claude/mod-reconciler`):
+**The reconcile** (branch `claude/mod-reconciler`):
 
-- `tutti_nodes::Modulation` (`src/reconcile.rs`, §8.2 "As landed"):
+- `tutti_nodes::Modulation` (`src/reconcile.rs`, §8.2):
   `apply(&Declarations, &mut Editor, &dyn ModHost) -> Result<Applied,
   ReconcileError>`, `commit`, `send_resyncs`, `lane`, `source`,
   `compiled`. The seam is `ModHost` (`target`, `feed`) with `Target`
@@ -1793,8 +1789,8 @@ that need an app or a plugin.
   one refused for good is dropped and counted (`resyncs_dropped`).
 - `EventKind::Resync` and `Event::resync` (`tutti-graph`): every
   exhaustive match on `EventKind` names it (param ports, the plugin
-  nodes, the reference). The note envelope answers it (§6 "As
-  landed"); `EnvelopeFollowerNode::replacing` covers a rebuilt follower.
+  nodes, the reference). The note envelope answers it
+  (§6); `EnvelopeFollowerNode::replacing` covers a rebuilt follower.
 - `ParamSegment::unit(UnitParam, …)` and `ControlLaneNode::for_unit`:
   the erased constructors a reconcile holding a `ParamAddr` needs, which
   also reach params with no `ParamKey` (`Pan`, `RoomSize`, …).
@@ -1806,10 +1802,10 @@ that need an app or a plugin.
   `Modulation`.
 - **Properties, each a test** (`tutti-nodes/tests/modulation_reconcile.rs`
   unless named): the §8.1 example's analytic cutoff and the pad's
-  analytic dip; a depth edit keeps phase (M2) with no plan and no commit;
+  analytic dip; a depth edit keeps phase with no plan and no commit;
   range and depth edits need no commit and a follower route exactly one;
-  a removed source leaves no node and no layer (M10); a knob written
-  after a route edit is the knob (M9); a held note envelope newly routed
+  a removed source leaves no node and no layer; a knob written
+  after a route edit is the knob; a held note envelope newly routed
   reads its level from the first grid piece; a route dropped and re-added
   between commits resyncs (the trigger is the program's read set); a
   follower takes no resync; a follower downstream of its target, directly
@@ -1828,7 +1824,7 @@ that need an app or a plugin.
   undoing a taken lane's wiring keeps the host's own edges; and
   no allocation on the audio thread across an apply that republishes
   (`rt_no_alloc_modulation.rs`).
-- **Left for the adapter:** export == live on the reference CLAP plugin's gain
+- **In the adapter part:** export == live on the reference CLAP plugin's gain
   at a pinned chunk size (a plugin is `tutti-plugin`'s, which
   `tutti-nodes` cannot name; the foreign seam is exercised here on a
   capture node standing in for a plugin), a plugin GUI edit becoming the knob, takes,
@@ -1836,15 +1832,15 @@ that need an app or a plugin.
 
 **Scope (the adapter).** §8: `Mods`, `ModRange`, `Automation`, `ParamRef`, the
 adapter onto `Modulation`, knob and plugin-GUI paths, takes, plugin
-targets as lanes. The old driver is unscheduled, not yet deleted.
+targets as lanes. This part unschedules the old driver; §12.6 deletes it.
 
 **Properties.** The §8.1 example renders the analytic cutoff within
 tolerance and the pad dips with the kick; a depth slider keeps phase at
-render level (M2); export == live in an app on a native param and on the
-reference CLAP plugin's gain at a pinned chunk size (M3: fails on `main`);
-a despawned source leaves no node or layer (M10); range and depth edits send
+render level; export == live in an app on a native param and on the
+reference CLAP plugin's gain at a pinned chunk size (it fails on `main`);
+a despawned source leaves no node or layer; range and depth edits send
 no plan, a follower route one commit; a knob written after a route edit is
-the knob (M9); a route added to a note envelope that is held reads the
+the knob; a route added to a note envelope that is held reads the
 envelope's level at once (a source-side resync beside
 `LaneControls::resync`: the source re-sends where it stands, resumed, as
 it does after a refused segment; §6); a plugin GUI edit becomes the knob; a take suspends then
@@ -1857,17 +1853,19 @@ route.
 span-scaled everywhere, so an old `PerSample` route is `max − min` times
 stronger (divide its depth by the span).
 
-**Exit.** `bevy-tutti` modulation runs on lanes only; M1–M3, M6, M7, M9,
-M10, M12 closed there.
+**Exit.** `bevy-tutti` modulation runs on lanes only, which fixes §1's
+defects there but for the plugin delivery's (dropped and re-sent
+parameters) and the value rule's (automation as an offset, the
+order-dependent sum).
 
-**The adapter: landed** (branch `claude/mod-bevy-adapter`):
+**The adapter** (branch `claude/mod-bevy-adapter`):
 
 - `bevy_tutti::modulation`: `Mods`, `ModSource` (`Lfo`, `Macro`,
   `Follower`, `NoteEnvelope`, or a host's `ModSourceKind::declare`),
   `ModRoute`, `ModRange::new(param, min, max)`, `Automation`,
   `AutomationTake`, `ParamRef` (`unit`, `plugin`), `ModulationState`,
   `ModulationRefused` and `TuttiModulationPlugin`, whose systems are
-  `ModulationSystems::Apply` and `AfterCommit` (§8.2 "As landed").
+  `ModulationSystems::Apply` and `AfterCommit` (§8.2).
 - Plugin targets are lanes on the plugin's event input
   (`Target::Foreign`, port 0), their knobs seeded from
   `PluginParamValues` and moved by the plugin's GUI
@@ -1880,13 +1878,13 @@ M10, M12 closed there.
 - **Properties, each a test in an app** (`bevy-tutti/tests/mod_lanes.rs`,
   `tests/mod_plugin.rs`, and `src/modulation/tests.rs` for the ones that
   read the plan sent): the §8.1 example's analytic cutoff and the pad's
-  analytic dip; a depth slider keeps phase at render level with no plan
-  (M2); range and depth edits send no plan, a follower route exactly one;
+  analytic dip; a depth slider keeps phase at render level with no plan;
+  range and depth edits send no plan, a follower route exactly one;
   export == live bit for bit on a native param (ragged live blocks) and
   on the reference CLAP plugin's gain at the pinned 1024-frame chunk
-  (M3: on `main` 7bc1d6f3 the export rendered the authored gain, 0.0631,
+  (on `main` 7bc1d6f3 the export rendered the authored gain, 0.0631,
   against live's modulated 0.5012); a despawned source leaves no node and
-  no layer (M10); a knob written after a route edit is the knob (M9); an
+  no layer; a knob written after a route edit is the knob; an
   authored write to a modulated param moves the knob; a held note
   envelope newly routed reads its level at once; a plugin GUI edit
   becomes the knob (the in-process VST2 probe); a take suspends the
@@ -1900,7 +1898,7 @@ M10, M12 closed there.
   span-scaled everywhere (divide an old `PerSample` route's depth by the
   span); `set_authored` and `set_param_snapshot` go; the old types live
   in `modulation::legacy`.
-- **Left for the deletion:** deleting `modulation::legacy`, `plugin_bind_params`
+- **In the deletion part:** deleting `modulation::legacy`, `plugin_bind_params`
   and the legacy suites that run against them; `crossfade_plugin_node`
   does not re-read `PluginParamValues` or refresh `PluginEmitter` for the
   incoming plugin (its lanes keep their knobs and stay wired, but the
@@ -1922,9 +1920,9 @@ canonical-paths gate are green; every ported suite stays green.
 **Exit.** `grep` finds none of §10; a param port holds at most one event
 source; `tutti-mod` has no runtime.
 
-**Landed** (branch `claude/mod-delete-old`).
+Built on branch `claude/mod-delete-old`.
 Every item of §10's table is deleted, crate by crate, with the corrections
-recorded under §10's "As landed": tutti-graph's param port is
+recorded under §10: tutti-graph's param port is
 `ParamMod { range, source: Option<EventOut> }` and its fused step is
 `clamp(held, range)` (`ParamFrom`, `ParamShaping`, the shape LUT, `ParamTap`
 and the fork seeds gone; `ParamSet::authored` with them); tutti-mod keeps
@@ -1937,7 +1935,7 @@ bevy-tutti drops `modulation::legacy`, `LegacyModulationPlugin`,
 node's params are addressed at insert by `GraphNode::params`).
 `AudioGraphRes::set_param_mod` takes an `Option<AudioNode>` event source
 and a range. Every param a node addresses is a port a lane can drive,
-except the bus strip's `Mute` (§10 "As landed"). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
+except the bus strip's `Mute` (§10). Audio-rate modulation (`ParamFrom::Audio`) went with nothing
 in its place but §11's: a node's own audio input.
 
 Tests went with what they tested. Ported: bevy-tutti's
@@ -1983,11 +1981,10 @@ No questions remain open. These were open in review and are now decided:
 
 1. **A plugin whose parameter list grows after load** (CLAP `rescan`, VST3
    `restartComponent`): rely on the delivery's spare headroom and count overflow
-   (requirement 3). Re-binding the node on the plugin's rescan notice is a
-   follow-up.
+   (requirement 3). The node is not re-bound on the plugin's rescan notice.
 2. **The in-process VST2 node drops parameter events**
    (`crates/plugin/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
-   **Landed**: the node runs the plugin delivery (requirements 1–5, with requirement 4 as
+   the node runs the plugin delivery (requirements 1–5, with requirement 4 as
    amended: its fork is seeded from the live record), with the block as
    its chunk and each parameter's last point in the block set before the
    plugin processes it, as the out-of-process VST2 loader does with a

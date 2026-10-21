@@ -1,7 +1,6 @@
 # 015: a Bevy-free tutti API layer
 
-Status: **complete**. Every step of §9 has landed; each says so in a
-"Landed" note. The user has made every
+Every step of §9 is built, and the user has made every
 decision it asked for (§11). §2's file:line citations are the survey of
 `bevy-tutti` before the migration.
 
@@ -935,7 +934,7 @@ today (`export/request.rs:116-120`).
 Three engine changes this example needs, each a **(c)** move in §9:
 
 - `MidiFile::read`, with `timed()` yielding `(Beat, MidiEvent)` for both
-  containers, plus `tempo()` and `end()` (landed; `tempo()` is the
+  containers, plus `tempo()` and `end()` (`tempo()` is the
   tempo at beat 0 as an `Option<Bpm>`, since a Clip File may declare none,
   and `tempo_map()` holds every change);
 - `TimedMidiEvent: From<(Beat, MidiEvent)>`, which exists;
@@ -1198,7 +1197,7 @@ unchanged: their assertions are equivalent, with the types renamed
 (`MidiFileContents` → `MidiFile`, `MidiFileLoaderError` → `Error`). The
 route, loader-extension, write and prelude tests are unchanged.
 
-**Landed.** What moved, old → new:
+What moved, old → new:
 
 - `bevy_tutti::midi::MidiFileContents` → `tutti_midi_file::MidiFile`, its
   sniff-and-decode (`MidiFileAsset::from_bytes`) → `MidiFile::from_bytes`,
@@ -1263,7 +1262,7 @@ not the loader; the loader-extension and write tests stay unchanged, as do
 **Exit:** `plugin_host/health.rs`'s, `params.rs`'s and
 `modulation/tests.rs`'s tests pass, calling the moved types.
 
-**Landed.** As scoped, with these specifics:
+The step is as scoped, with these specifics:
 
 - `tutti_plugin::{PluginParamValues, ParamRead, Liveness, Verdict,
   needs_announcement}` at the crate root. `PluginParamValues` is still a
@@ -1300,7 +1299,7 @@ joining) run in `tutti-io`.
 
 **Exit:** `bevy-tutti`'s pump systems compile over the moved type.
 
-**Landed.** The two loops were one loop: `AudioPump`'s thread ran
+The two loops were one loop: `AudioPump`'s thread ran
 `Recorder`'s `ThreadDriver` body (poll, park on `Starved`, break on
 `EndOfStream`, finalize once, join) line for line. `Recorder` stays and
 `AudioPump`'s loop goes, because `Recorder` already had what the component
@@ -1390,7 +1389,7 @@ they are. Each splits in two:
 session. `headless_engine.rs` is rewritten on `Session` and is under 20
 lines.
 
-**Landed.** `crates/tutti-session`: every module private (`builder`,
+`crates/tutti-session` has every module private (`builder`,
 `device`, `error`, `graph`, `node`, `session`), `#![forbid(unsafe_code)]`,
 `default = []`. What moved, old → new:
 
@@ -1469,9 +1468,9 @@ Where the code differs from the text above:
 - **`Session::remove` does not assert the main thread** (§4.2): the free
   is guarded at the editor's collect, every path to which asserts.
 
-Deferred: `GraphReconcileSystems` is not yet built from `PHASES` (the sets
-run the same steps in the same order by hand), and Bevy does not run
-`Phase::Poll` (its device poll stays a system). The modulation reconcile
+Here `GraphReconcileSystems`' sets run the same steps in the same order as
+`PHASES` by hand, and Bevy's device poll stays a system; §9.7 builds the
+schedule from `PHASES` and runs `Phase::Poll`. The modulation reconcile
 loop, MIDI wiring, plugins and export are §9.5's and §9.6's.
 
 ### 9.5 Modulation and MIDI in the session
@@ -1500,7 +1499,7 @@ loop, MIDI wiring, plugins and export are §9.5's and §9.6's.
 **Exit:** `tests/mod_lanes.rs` and the MIDI suites pass.
 `headless_modulation.rs` moves to `tutti-session/examples` as §5.1.
 
-**Landed.** Two private modules, `modulation` (feature `modulation`) and
+Two private modules, `modulation` (feature `modulation`) and
 `midi` (feature `midi`). What moved, old → new:
 
 | Was (`bevy-tutti`) | Now (`tutti-session`) |
@@ -1554,7 +1553,7 @@ the same node, since a skipped re-aim now makes a second clip that plays
 rather than none. `a_host_edit_committed_for_a_target_publishes_its_latency`
 says what it covers: since §9.4 the frame's own commit takes a host's edit,
 so in that scene the re-apply's commit adds a macro's lane and moves no
-figure (the old mutation had already survived once §9.4 landed). A
+figure (the old mutation had already survived since §9.4). A
 re-apply can move the latency (a follower of a latent node reaches its
 target's param port only through the lane the re-apply builds): the
 session's `a_re_apply_that_moves_the_latency_publishes_it` and Bevy's
@@ -1639,7 +1638,7 @@ and the §5.2 example under `tutti-session/examples`, run in CI offline with
 the CLAP test plugin. All of them fail, not skip, without
 `tutti-plugin-server`.
 
-**Landed.** Two private modules, `plugin` (feature `plugin`) and `export`
+Two private modules, `plugin` (feature `plugin`) and `export`
 (feature `export`; the render mode needs both). What moved, old → new:
 
 | Was (`bevy-tutti`) | Now (`tutti-session`) |
@@ -1790,7 +1789,7 @@ Where the code differs from the text above:
 **Exit:** `just ci` is green, and `scripts/check-adapter.sh` reports no
 denied type in `bevy-tutti/src`.
 
-**Landed.** As scoped, plus a reproducible toolchain (the user's
+The step is as scoped, plus a reproducible toolchain (the user's
 addition). Specifics:
 
 - **`scripts/check-adapter.sh`** holds §8 checks 3 and 4 (check 4 moved
@@ -1843,7 +1842,7 @@ addition). Specifics:
   plugin only with `export` or `vst2`); the file is gated on them, and
   dark-features lints that combination and `tutti --features
   clap,export,modulation`.
-- **Since done:** Bevy runs `Phase::Poll` too: `device_fault_poll`, in
+- **Bevy runs `Phase::Poll` too:** `device_fault_poll`, in
   its set last in the chain, writes each `SessionEvent::DeviceFault` as an
   `AudioDeviceFault` message and into `AudioDeviceState`, as a headless
   `update()` reports it. `tutti-plugin`'s `bevy` feature, unused since

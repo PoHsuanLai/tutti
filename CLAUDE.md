@@ -120,10 +120,12 @@ just test-all                      # both
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
-- **Bevy-free floor:** `bevy` is an optional, off-by-default feature on every
-  engine crate. `bevy-tutti` is the only crate that requires Bevy. Check with
-  `cargo check -p <crate>` and `--features bevy`. `--no-default-features` is
-  *not* this check.
+- **Bevy-free floor:** five engine crates have an optional, off-by-default
+  `bevy` feature (`tutti-core`, `tutti-types`, `tutti-io`, `tutti-mod`,
+  `tutti-sampler`); the rest have none, and `tutti-session` and `tutti-graph`
+  must never grow one. `bevy-tutti` is the only crate that requires Bevy.
+  Check a crate that has the feature with `cargo check -p <crate>` and
+  `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
   through its modules. Only `check-canonical-paths.sh` enforces this.
 

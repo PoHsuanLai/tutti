@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the stretch filter's cells are written only through its setters
+
+`tutti_sampler`'s stretch `Unit` no longer hands out its raw cells:
+`stretch_factor_arc()` and `pitch_cents_arc()` are removed. A write through
+them skipped the clamp, so a stretch factor of 0 became an infinite analysis
+hop (`usize::MAX`). `set_stretch_factor` and `set_pitch_cents` are now the
+cells' only writers: a zero or negative factor lands at
+`StretchFactor::MIN`, a non-finite one at `UNITY`, and a non-finite
+transposition at 0 cents (it used to pass NaN through `clamp`).
+
+Migration: write through `Unit::set_stretch_factor` / `set_pitch_cents`
+instead of storing into the returned `Arc<AtomicF32>`.
+
 ### Removed — `tutti-plugin`'s `bevy` feature
 
 It derived `Component` on `PluginParamValues`, which no crate has used

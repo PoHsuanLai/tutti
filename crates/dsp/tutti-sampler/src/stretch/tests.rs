@@ -402,6 +402,62 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
     assert!(u.intake_rate() > 0.0);
 }
 
+/// A degenerate factor or transposition (zero, negative, NaN, infinite)
+/// never reaches the hops: the setters are the cells' only writers, and each
+/// lands it inside its clamp, so the analysis hop stays a finite stride (at
+/// most the synthesis hop over the smallest effective stretch, 0.25 × two
+/// octaves down) and the unit still produces finite audio.
+///
+/// Mutations, each failed, then reverted:
+/// - `set_stretch_factor` storing `factor.get()` unclamped: a factor of 0
+///   is stored as 0 (whose analysis hop is `inf as usize`, `usize::MAX`).
+/// - `set_pitch_cents` without its `is_finite` arm (`clamp` alone): NaN
+///   passes through, and the pitch it reads back is not finite.
+#[test]
+fn a_degenerate_factor_or_transposition_never_reaches_the_hops() {
+    let u = Unit::with_channels(44_100.0, 1usize);
+    let (_, synthesis) = u.hops();
+    let longest = (synthesis as f32
+        / (StretchFactor::MIN.get() * Cents::new(MIN_PITCH_CENTS).to_pitch_ratio()))
+    .round() as usize;
+    let bad = [
+        0.0,
+        -0.0,
+        -1.0,
+        f32::MIN_POSITIVE,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for stretch in bad {
+        for pitch in bad {
+            let mut u = Unit::with_channels(44_100.0, 1usize);
+            u.set_stretch_factor(StretchFactor::new(stretch));
+            u.set_pitch_cents(Cents::new(pitch));
+            let f = u.stretch_factor().get();
+            assert!(
+                (StretchFactor::MIN.get()..=StretchFactor::MAX.get()).contains(&f),
+                "stretch {stretch} stored as {f}"
+            );
+            let c = u.pitch_cents().get();
+            assert!(
+                (MIN_PITCH_CENTS..=MAX_PITCH_CENTS).contains(&c),
+                "pitch {pitch} stored as {c}"
+            );
+            let (analysis, _) = u.hops();
+            assert!(
+                (1..=longest).contains(&analysis),
+                "stretch {stretch}, pitch {pitch}: analysis hop {analysis} (at most {longest})"
+            );
+            let mut out = [0.0f32];
+            for i in 0..4_096 {
+                u.tick(&[(i as f32 * 0.05).sin()], &mut out);
+                assert!(out[0].is_finite(), "stretch {stretch}, pitch {pitch}");
+            }
+        }
+    }
+}
+
 /// The caller's rate is bounded too, for a different reason: it scales a
 /// source cursor rather than a loop, so an unbounded value reads off the end
 /// of a wave rather than spinning the callback.

@@ -32,7 +32,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, Tail, UnitParam};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_graph::{
+    Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 
 /// The params a [`BusStripNode`] lets the graph modulate, in port order.
 pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
@@ -110,34 +112,6 @@ struct StripGains {
 }
 
 impl StripGains {
-    /// `from` at `t = 0`, `to` at `t = 1` — and *exactly* `to` there.
-    ///
-    /// Written as `from·(1−t) + to·t` rather than `from + (to−from)·t` for that
-    /// endpoint: the second form rounds, so a ramp to silence could end a few
-    /// ulps above zero and a muted strip would leak. Not an `Amplitude` operator
-    /// because `Amplitude` deliberately has no `Add` (cascading gains multiply);
-    /// an interpolation between two gains is a different operation, and this is
-    /// its one home.
-    #[inline]
-    fn lerp(from: Self, to: Self, t: f32) -> Self {
-        let mix = |a: Amplitude, b: Amplitude| Amplitude(a.get() * (1.0 - t) + b.get() * t);
-        Self {
-            left: mix(from.left, to.left),
-            right: mix(from.right, to.right),
-            rest: mix(from.rest, to.rest),
-        }
-    }
-
-    /// Two gain stages in series. They multiply — see [`Amplitude`].
-    #[inline]
-    fn cascade(self, other: Self) -> Self {
-        Self {
-            left: self.left * other.left.get(),
-            right: self.right * other.right.get(),
-            rest: self.rest * other.rest.get(),
-        }
-    }
-
     /// The gain for channel `c`.
     #[inline]
     fn channel(self, c: usize) -> Amplitude {
@@ -271,8 +245,18 @@ impl BusStripNode {
     /// derived gain is silent.
     #[inline]
     fn balance_gains(pan: Pan) -> (Amplitude, Amplitude) {
+        (
+            Self::balance_side(pan, false),
+            Self::balance_side(pan, true),
+        )
+    }
+
+    /// One side of [`balance_gains`](Self::balance_gains): the right
+    /// channel's gain if `right`, else the left's.
+    #[inline(always)]
+    fn balance_side(pan: Pan, right: bool) -> Amplitude {
         let p = pan.get().clamp(-1.0, 1.0);
-        (Amplitude((1.0 - p).min(1.0)), Amplitude((1.0 + p).min(1.0)))
+        Amplitude(if right { 1.0 + p } else { 1.0 - p }.min(1.0))
     }
 
     /// Gains for a fader at `volume`, balance at `pan`, and `live` (the mute as
@@ -305,7 +289,7 @@ impl BusStripNode {
     /// The gains the **control cells** ask for — the ramp's target.
     ///
     /// A control the graph modulates (`fed`: volume, pan) contributes unity
-    /// here, and its value comes from [`fed_gains`](Self::fed_gains) per
+    /// here, and its value comes from [`fed_gain`](Self::fed_gain) per
     /// sample instead. Mute is never modulated, so it is always here.
     ///
     /// Reads three atomics; called once per block, never per sample.
@@ -322,25 +306,7 @@ impl BusStripNode {
         Self::gains_for(volume, pan, self.live_factor())
     }
 
-    /// The gains the fed params ask for at one sample — unity for one that
-    /// is not fed.
-    ///
-    /// The param port carries raw values, so this is the boundary where an untyped
-    /// float becomes a typed quantity again — named rather than inlined so there
-    /// is one place that decision happens.
-    ///
-    /// Not ramped: a fed value is already a signal, one value per sample, and
-    /// the graph that feeds it owns its continuity.
-    #[inline]
-    fn fed_gains(volume: Option<f32>, pan: Option<f32>) -> StripGains {
-        Self::gains_for(
-            volume.map_or(Amplitude::UNITY, Amplitude),
-            pan.map_or(Pan::CENTER, Pan),
-            1.0,
-        )
-    }
-
-    /// Render `size` frames: the one gain path.
+    /// Render one block: the one gain path.
     ///
     /// Reads the control cells **once**, then ramps linearly from the gains the
     /// previous call ended on to the ones just read, landing exactly on them at
@@ -352,14 +318,22 @@ impl BusStripNode {
     /// turn a mute's step into a slope with no broadband click, short enough
     /// that the mute is silent from the end of that block on. A caller that
     /// renders one frame at a time gets a step.
+    ///
+    /// # Channel-major, so it vectorises along time
+    ///
+    /// Each channel is one pass over its two slices with a gain that is a
+    /// function of the frame alone: no per-sample branch, channel lookup or
+    /// slice fetch, so the compiler runs it in SIMD lanes. Every sample takes
+    /// the same arithmetic in the same order as one gain per frame applied to
+    /// every channel would, so the order of the loops changes no bit.
     #[inline]
     fn render(
         &mut self,
+        inputs: &Inputs<'_>,
+        outputs: &mut Outputs<'_, '_>,
         size: usize,
-        get: impl Fn(usize, usize) -> f32,
         volume: Option<&[f32]>,
         pan: Option<&[f32]>,
-        mut put: impl FnMut(usize, usize, f32),
     ) {
         let fed = (volume.is_some(), pan.is_some());
         let fed_bits = u8::from(fed.0) | u8::from(fed.1) << 1;
@@ -374,32 +348,93 @@ impl BusStripNode {
             target
         };
         self.last_fed = fed_bits;
-        // Hoisted: whether to ramp and whether to read the feed are both
-        // per-block facts. The steady case skips the interpolation outright,
-        // which also keeps its output bit-identical to the unramped arithmetic.
+        // Per-block facts; each channel picks its loop once. The steady case skips the
+        // interpolation outright, which also keeps its output bit-identical
+        // to the unramped arithmetic.
         let ramping = from != target;
-        let has_fed = fed_bits != 0;
-        let channels = self.channels();
+        let (volume, pan) = (volume.map(|v| &v[..size]), pan.map(|p| &p[..size]));
 
-        for i in 0..size {
-            let mut gains = match ramping {
-                // `(i + 1) / size`, not `(i + 1) * (1 / size)`: the division is
-                // exact at the last frame (`size / size == 1`), so the ramp
-                // lands on the target rather than an ulp beside it.
-                true => StripGains::lerp(from, target, (i + 1) as f32 / size as f32),
-                false => target,
-            };
-            if has_fed {
-                gains = gains.cascade(Self::fed_gains(volume.map(|v| v[i]), pan.map(|v| v[i])));
-            }
-            for c in 0..channels {
-                // The one place a gain meets a sample. `get(c, i)` is a raw
-                // sample, not an `Amplitude` — a sample is a signal value, not a
-                // gain — so the unit comes off here rather than the sample being
-                // wrapped.
-                put(c, i, get(c, i) * gains.channel(c).get());
+        for c in 0..self.channels() {
+            // The one place a gain meets a sample. A sample is a signal
+            // value, not a gain, so the unit comes off the gain here rather
+            // than the sample being wrapped.
+            let (x, y) = (&inputs.get(c)[..size], &mut outputs.get(c)[..size]);
+            let (start, end) = (from.channel(c), target.channel(c));
+            // `(i + 1) / size`, not `(i + 1) * (1 / size)`: the division is
+            // exact at the last frame (`size / size == 1`), so the ramp lands
+            // on the target rather than an ulp beside it. Through `i32`, which
+            // has a SIMD conversion; it rounds as `usize` would.
+            debug_assert!(i32::try_from(size).is_ok());
+            let n = size as i32 as f32;
+            let ramp = |i: usize| lerp(start, end, (i + 1) as i32 as f32 / n).get();
+            let steady = end.get();
+            match (ramping, volume.is_some() || pan.is_some()) {
+                (false, false) => scale(x, y, |_| steady),
+                (true, false) => scale(x, y, ramp),
+                (false, true) => Self::scale_fed(x, y, |_| steady, volume, pan, c),
+                (true, true) => Self::scale_fed(x, y, ramp, volume, pan, c),
             }
         }
+    }
+
+    /// [`scale`] by `base(i)` times channel `c`'s [`fed_gain`](Self::fed_gain),
+    /// with `c` a constant in each loop so only its side is computed.
+    #[inline(always)]
+    fn scale_fed(
+        x: &[f32],
+        y: &mut [f32],
+        base: impl Fn(usize) -> f32,
+        volume: Option<&[f32]>,
+        pan: Option<&[f32]>,
+        c: usize,
+    ) {
+        match c {
+            0 => scale(x, y, |i| base(i) * Self::fed_gain(volume, pan, i, 0)),
+            1 => scale(x, y, |i| base(i) * Self::fed_gain(volume, pan, i, 1)),
+            _ => scale(x, y, |i| base(i) * Self::fed_gain(volume, pan, i, 2)),
+        }
+    }
+
+    /// Channel `c`'s gain from the fed params at frame `i`, unity for one
+    /// that is not fed: [`gains_for`](Self::gains_for) with the mute factor
+    /// at 1, computing only what channel `c` takes (past the pair, the
+    /// fader alone).
+    ///
+    /// The param port carries raw values, so this is the boundary where an
+    /// untyped float becomes a typed quantity again. Not ramped: a fed value
+    /// is already a signal, and the graph that feeds it owns its continuity.
+    #[inline(always)]
+    fn fed_gain(volume: Option<&[f32]>, pan: Option<&[f32]>, i: usize, c: usize) -> f32 {
+        let fader = volume.map_or(Amplitude::UNITY, |v| Amplitude(v[i])) * 1.0;
+        if c >= 2 {
+            return fader.get();
+        }
+        let pan = pan.map_or(Pan::CENTER, |p| Pan(p[i]));
+        (Self::balance_side(pan, c == 1) * fader.get()).get()
+    }
+}
+
+/// `from` at `t = 0`, `to` at `t = 1` — and *exactly* `to` there.
+///
+/// Written as `from·(1−t) + to·t` rather than `from + (to−from)·t` for that
+/// endpoint: the second form rounds, so a ramp to silence could end a few
+/// ulps above zero and a muted strip would leak. Not an `Amplitude` operator
+/// because `Amplitude` deliberately has no `Add` (cascading gains multiply);
+/// an interpolation between two gains is a different operation, and this is
+/// its one home.
+#[inline(always)]
+fn lerp(from: Amplitude, to: Amplitude, t: f32) -> Amplitude {
+    Amplitude(from.get() * (1.0 - t) + to.get() * t)
+}
+
+/// `y = x · gain(frame)`, over one channel's block.
+///
+/// `#[inline(always)]` so each caller's `gain` is compiled into the loop and
+/// the loop vectorises with it.
+#[inline(always)]
+fn scale(x: &[f32], y: &mut [f32], gain: impl Fn(usize) -> f32) {
+    for (i, (y, &x)) in y.iter_mut().zip(x).enumerate() {
+        *y = x * gain(i);
     }
 }
 
@@ -415,10 +450,13 @@ impl Node for BusStripNode {
     /// stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
-            // Volume, pan and mute as ramped per-frame gains:
-            // measured 3.7 ns per frame and channel, against a gain's 0.22
-            // and `SvfFilterNode`'s 7.2, past the `Light`/`Moderate`
-            // boundary (about 2.8; doc 013, "The cost model and coarsening").
+            // Classed from the frame-major kernel's 3.7 ns per frame and
+            // channel, against a gain's 0.22 and `SvfFilterNode`'s 7.2, past
+            // the `Light`/`Moderate` boundary (about 2.8; doc 013, "The cost
+            // model and coarsening"). The channel-major kernel measures about
+            // 0.15 steady and 0.6 ramping (`benches/bus_strip.rs`), which the
+            // nearest-class rule puts in `Light`; the class stays until that
+            // table is re-measured by its own method.
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)
@@ -432,13 +470,7 @@ impl Node for BusStripNode {
         let size = io.frames();
         let (volume, pan) = (io.param(0).frames(), io.param(1).frames());
         let (inputs, mut outputs) = io.split();
-        self.render(
-            size,
-            |c, i| inputs.get(c)[i],
-            volume,
-            pan,
-            |c, i, v| outputs.get(c)[i] = v,
-        );
+        self.render(&inputs, &mut outputs, size, volume, pan);
         Status::Modified
     }
 
@@ -725,7 +757,7 @@ mod tests {
     /// One block renders what the same frames do one at a time, while the
     /// controls hold: the ramp is the only thing block length changes.
     ///
-    /// Mutation (run): read frame 0 for every frame in `render`'s `get` →
+    /// Mutation (run): read frame 0 for every frame in `render` →
     /// a frame at a time is unchanged, the block is not → fails.
     #[test]
     fn a_block_matches_its_frames() {
@@ -887,5 +919,73 @@ mod tests {
         assert!(process_dc(&mut s, 16, 1.0, 1.0)
             .iter()
             .all(|f| *f == [0.25, 0.25]));
+    }
+
+    /// Every channel, the ones past the balanced pair included, follows the
+    /// linear ramp `from·(1−t) + to·t` at `t = (i+1)/n`, at a block length
+    /// no SIMD width divides (so a vectorised loop's tail is covered), and
+    /// lands exactly on the target.
+    ///
+    /// Mutations (run): the ramping branch of `render` applying the steady
+    /// target alone → frame 0 is 0.5, not ≈1 → fails; the ramp's `t` as
+    /// `i / n` → the last frame misses the target → fails.
+    #[test]
+    fn every_channel_ramps_linearly_past_the_simd_width() {
+        const N: usize = 67;
+        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
+        s.set_pan(Pan(-0.5));
+        let ones = [1.0f32; N];
+        let _ = drive(&mut s, RATE, &[&ones, &ones, &ones], &[]);
+        s.set_volume(Amplitude(0.5));
+        let out = drive(&mut s, RATE, &[&ones, &ones, &ones], &[]);
+        // Balance at -0.5: left takes the fader, right half of it, the rest
+        // the fader.
+        let (from, to) = ([1.0f32, 0.5, 1.0], [0.5f32, 0.25, 0.5]);
+        for (c, y) in out.iter().enumerate() {
+            for (i, &y) in y.iter().enumerate() {
+                let t = (i + 1) as f32 / N as f32;
+                let want = from[c] + (to[c] - from[c]) * t;
+                assert!(
+                    (y - want).abs() < 1e-6,
+                    "channel {c} frame {i}: {y} against {want}"
+                );
+            }
+            assert_eq!(y[N - 1], to[c], "channel {c} lands on the target");
+        }
+    }
+
+    /// A mute ramp under fed volume and pan is the product of the three:
+    /// `(1 − t) · volume[i] · balance(pan[i])` on each channel, frame by
+    /// frame.
+    ///
+    /// Mutations (run): the ramping-and-fed branch of `render` dropping the
+    /// ramp (`steady · fed`) → every frame is silent → fails; `fed_gain`
+    /// taking the left side for both channels of the pair → the right is
+    /// halved → fails; `fed_gain` without its past-the-pair case → the
+    /// third channel takes the left side's balance → fails.
+    #[test]
+    fn a_mute_ramp_under_fed_params_is_their_product() {
+        const N: usize = 37;
+        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
+        let ones = [1.0f32; N];
+        let volume: Vec<f32> = (0..N).map(|i| 0.25 + i as f32 / N as f32).collect();
+        let pan = [0.5f32; N];
+        let fed = [Some(&volume[..]), Some(&pan[..])];
+        let _ = drive(&mut s, RATE, &[&ones, &ones, &ones], &fed);
+        s.set_muted(true);
+        let out = drive(&mut s, RATE, &[&ones, &ones, &ones], &fed);
+        // Balance at 0.5: left halved, right at unity, the rest unbalanced.
+        let balance = [0.5f32, 1.0, 1.0];
+        for (c, (y, &bal)) in out.iter().zip(&balance).enumerate() {
+            for (i, (&y, &v)) in y.iter().zip(&volume).enumerate() {
+                let live = 1.0 - (i + 1) as f32 / N as f32;
+                let want = live * v * bal;
+                assert!(
+                    (y - want).abs() < 1e-6,
+                    "channel {c} frame {i}: {y} against {want}"
+                );
+            }
+            assert_eq!(y[N - 1], 0.0, "channel {c} ends silent");
+        }
     }
 }

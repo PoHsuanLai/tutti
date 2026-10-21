@@ -739,8 +739,10 @@ that the running plan holds the edit.
   voice state SoA (`[f32x8; N/8]`, Surge `QuadFilterChain` / Vital `poly_float`),
   grouped by filter type. That is a node-internal change, independent of the
   graph, and the biggest single CPU win for dense patches.
-- Later, the compiler can batch same-kind siblings in one level (N bus strips,
-  N meters) into one SoA kernel call.
+- Batching same-kind siblings into one SoA kernel call in the compiler was
+  measured and not built: the win is real only for recursive kernels, and
+  the graphs tutti builds hold none as siblings (see "Same-kind sibling
+  batching: measured, not built" under "Go fast").
 
 ## Migration
 
@@ -3097,10 +3099,12 @@ units, `AudioIn`/`AudioOut` edges, `ChannelLayout`.
 
 ### Go fast
 
-Parallel executor + coarsening + cost model; SoA voices in polysynth/sampler;
-same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
-anticipative partition for nodes with no live-input dependency, with export as
-its degenerate case.
+Parallel executor + coarsening + cost model (landed); SoA voices (the
+polysynth's voice bank is SoA; the sampler renders each voice a block at a
+time, vectorised along time, and stays per voice: see below); same-kind
+sibling batching (measured, not built: see below); `clap.thread-pool`; then
+(optional) REAPER-style anticipative partition for nodes with no live-input
+dependency, with export as its degenerate case.
 
 `RtPublish` (now `arc-lend`'s `ArcLend`, whose registered readers each own
 a cache line, so the concern below is historical) under the parallel executor: its eight reader slots per cell share
@@ -3614,6 +3618,126 @@ What they show:
   rows' one-participant figures agree, as they must: the serial walk ignores
   tasks, and the review's callgrind count of the serial walk, this branch
   against `main`, differs by 0.009%.
+
+#### Same-kind sibling batching: measured, not built
+
+**Status: measured, not built** (2026-10-21). The question was whether
+the compiler should run `N` sibling nodes of one kind (N bus strips, N
+filters) as one SoA kernel call, past what packing already does (packing
+runs cheap siblings in one *task*, but each is still its own op and its
+own `process` call). The answer is no: the win is large only for recursive
+kernels, the graphs tutti builds have no recursive siblings to batch, and
+the same-kind siblings they do have gain less than 1.5×.
+
+The bench (`tutti-nodes/benches/sibling_batch.rs`) renders one block
+through a serial `Executor`, with `members` siblings of one kind. Each
+member reads the global input and writes outputs of its own, so the rows
+differ only in the members. Rows:
+
+- `none`: the input copied to every output, with no members. It is
+  subtracted from every other row below.
+- `nodes`: one node per member, as today.
+- `batched`: one node running every member's kernel in turn. This saves
+  only the per-op cost.
+- `soa`: one node running eight members at a time in `f32x8` lanes,
+  gathered from and scattered to their planar buffers. This is the
+  ceiling for a cross-member kernel.
+
+`batched` and `soa` are checked bit for bit against `nodes` before they
+are timed: each lane runs its member's own arithmetic in the same order,
+with no fused multiply-add. Kinds:
+
+- `strip`: a stereo gain ramp, written channel-major so it vectorises
+  along time.
+- `biquad`: a mono TDF-II low-pass, a recurrence that cannot vectorise
+  along time.
+- `busstrip`: the production `BusStripNode`, steady (not ramping), as
+  nodes only.
+
+The figures are medians of three runs, in µs, with `none` subtracted, on
+the 4-core container used above. The machine was **not idle**: other
+builds ran, and each run started when the one-minute load was under 4.
+The speed-up range across the three runs is in brackets.
+
+| kind | members × frames | `nodes` | `batched` | `soa` |
+|---|---|---|---|---|
+| `strip` | 16 × 64 | 3.01 | 2.57 (1.17×; 1.06–1.44) | 2.27 (1.32×; 1.28–1.64) |
+| `strip` | 16 × 128 | 6.10 | 5.63 (1.08×; 1.07–1.19) | 4.65 (1.31×; 1.03–1.45) |
+| `strip` | 16 × 512 | 18.68 | 19.63 (0.95×) | 15.32 (1.22×) |
+| `strip` | 32 × 128 | 10.94 | 9.95 (1.10×; 1.06–1.10) | 9.46 (1.16×; 1.09–1.25) |
+| `strip` | 32 × 512 | 39.45 | 37.46 (1.05×) | 33.96 (1.16×) |
+| `biquad` | 16 × 64 | 4.96 | 3.71 (1.34×) | 0.97 (5.1×; 2.3–5.4) |
+| `biquad` | 16 × 128 | 8.32 | 8.26 (1.01×) | 1.94 (4.3×; 4.3–5.0) |
+| `biquad` | 16 × 512 | 32.75 | 31.55 (1.04×) | 7.42 (4.4×) |
+| `biquad` | 64 × 128 | 35.84 | 30.48 (1.18×; 1.12–1.18) | 8.69 (4.1×; 3.8–4.3) |
+| `biquad` | 64 × 512 | 129.72 | 129.50 (1.00×) | 31.83 (4.1×) |
+| `busstrip` | 16 × 128 | 17.69 | — | — |
+| `busstrip` | 32 × 128 | 33.14 | — | — |
+
+What they show:
+
+- **A plain batch saves only the per-op cost: about 30–80 ns a member.**
+  This shows at 64 frames (1.2–1.4×), and is gone by 512.
+- **A cross-member SoA kernel pays only on a recurrence.** A biquad
+  member is latency-bound, one dependent multiply-add chain per sample.
+  Eight members in lanes run 4–5× faster at every length. A gain is
+  already vectorised along time, so lanes across members add 1.2–1.3×,
+  below the 1.5× bar this was held to at 128 frames.
+- **The strip's own kernel is the larger cost.** Sixteen production
+  `BusStripNode`s at 128 frames take 17.7 µs. Sixteen channel-major ramps
+  doing more work (ramping every block, where the production strips were
+  steady) take 6.1 µs: about 2.9×, and 3.0× at 32 members. That is a
+  change to one node (its frame-major loop through closures), not to the
+  compiler. Where the time goes inside it was not profiled here.
+
+Why the biquad ceiling does not carry over to tutti's graphs:
+
+- **No recursive siblings.** The same-kind sets that occur are:
+  - **One `BusStripNode` per track:** a gain kernel, where the ceiling is
+    under 1.5×.
+  - **One `ControlLaneNode` per modulated param:** event output, a
+    different program in each lane, and branchy. This is not an SoA
+    kernel.
+  - **Each track's own filters:** these sit on that track's chain, not
+    beside a sibling. The polysynth's lanes are already SoA inside the
+    node, and a multi-channel filter already runs its channels side by
+    side.
+- **Batching across chains undoes the parallel executor.** A batch of
+  members on different chains waits for all of their chains, then runs
+  every member on one thread. Coarsening refuses any merge that lengthens
+  the critical path. So a batch would be safe only inside a task that
+  already holds every member, which means a pack of siblings priced under
+  `GRAIN` at the plan's maximum block. A mono `Moderate` filter passes
+  `GRAIN` at 225 frames, so at a maximum block of 256 or more, filters
+  never pack. The kernels that do pack are the streaming ones, with the
+  small ceiling.
+- **The mechanism is not small.** It would need:
+  - a grouping pass in the compiler;
+  - an op that borrows every member's unit and up to `MAX_PORTS` (64)
+    slots through `AudioSlots`;
+  - per-member params, events, silence masks, `Status` and tails;
+  - members dropping out of the batch while they crossfade.
+
+  All of that buys a gain the cases that exist do not reach.
+
+**If a graph does need it**, for example a filter bank or a multiband
+split of `N` same-kind recursive filters off one source, build it as one
+node holding the bank in lanes, as the polysynth's voice bank does. That
+gets the 4–5× above without touching the compiler.
+
+**SoA voices.**
+- The polysynth's voice bank is SoA (`bank.rs`, `kernel.rs`: `f32x8`
+  lanes per sub-voice, one group per eight lanes).
+- The sampler renders each voice a block at a time into planar lanes,
+  vectorised along time (`lanes.rs`).
+- Cross-voice SoA for the sampler is not done, on purpose. Each voice
+  reads a different wave at a different fractional position, so lanes
+  across voices would gather. A sampler voice has no recursive filter (its
+  `filter_lanes` is the phase vocoder), so the biquad result above does
+  not apply.
+- Doing it would restructure `PlaybackSlot` and `VoicePool` around lane
+  groups with gathered Hermite reads: roughly 1–1.5k lines with their
+  tests. Measure a gathered kernel against the per-voice one first.
 
 #### SmallVec removed
 
@@ -4163,7 +4287,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `Chorus` / `Flanger` | One width-generic `ModDelay{config}` node with per-channel phase offsets. The LFO is computed as a block buffer. Removes 4 atomic loads and 2 `sin` per sample |
 | `Phaser` + `StereoPhaser` | One node: the coefficient is computed once (not once per channel, with 2 `tan` each), then the all-pass stages run SoA over channels |
 | `Convolver` + `StereoConvolver` | Stored once, IR as `Arc<[f32]>`, planar block convolution, width-generic, and the dry path delayed inside the node (fixes D3). Needs `Fork` |
-| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). A candidate for batching same-kind siblings |
+| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). Batching strips was measured and does not pay; its own kernel does ("Same-kind sibling batching: measured, not built") |
 | `Compressor` / `Gate` (thin) | An optional sidechain port: when it is unconnected in `Io`, the node keys off its own input (today's fallback can never fire). Params read once per block. Readings go out through `Controls` (fixes D6). Block detector kernels |
 | `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` becomes a `Topology` fragment |
 | `ClickNode` | `BeatWindow::offset_of(onset)` against `Env` gives sample-accurate onsets (fixes D8). Mono output |

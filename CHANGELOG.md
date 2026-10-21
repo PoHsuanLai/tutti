@@ -22,7 +22,7 @@ are unchanged in substance (the models now run a `[u32; 3]` and a
 | `SeqReader<W>::read() -> Option<[u64; W]>`: `None` for both "never written" and "eight copies overlapped a write" | `SeqReader<T>::read(retries) -> Result<Option<T>, Contended>`: `Ok(None)` never written, `Err(Contended)` every one of `1 + retries` copies overlapped a write |
 | `SEQ_CELL_READ_RETRIES` | removed; the caller passes its own count |
 | — | `tutti_types::Contended` (`Error`) |
-| `RangeCell::new(min, max)`, `unbounded()`, `store(min, max)`, `load() -> (f32, f32)`, `Default` | `PackedAtomic<T: NoUninit + AnyBitPattern>` with `size_of::<T>() <= 8` (checked at compile time): `new(T)`, `store(T)`, `load() -> T`; `Release`/`Acquire` as before |
+| `RangeCell::new(min, max)`, `unbounded()`, `store(min, max)`, `load() -> (f32, f32)`, `Default` | `PackedAtomic<T: NoUninit + AnyBitPattern>` with `size_of::<T>() <= 8` (checked when built, not by `cargo check`): `new(T)`, `store(T)`, `load() -> T`; `Release`/`Acquire` as before. `new` is not `const` (`RangeCell::new` and `unbounded` were `const fn`) |
 | `tutti_graph::ParamRange`: `Clone, Copy, Debug` | also `#[repr(C)]`, `bytemuck::Pod`, `Zeroable`; a port's live range is a `PackedAtomic<ParamRange>` |
 
 Migration: pack nothing by hand. Give the value a `#[repr(C)]` type that

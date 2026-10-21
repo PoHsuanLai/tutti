@@ -169,6 +169,8 @@ impl<T: NoUninit + AnyBitPattern> SeqWriter<T> {
         for (word, chunk) in words.iter().zip(bytemuck::bytes_of(&value).chunks(WORD)) {
             word.store(word_of(chunk), Ordering::Relaxed);
         }
+        // Wraps to 0 ("never written") after 2^63 writes: unreachable (a
+        // write per microsecond takes ~290,000 years).
         self.seq = self.seq.wrapping_add(2);
         seq.store(self.seq, Ordering::Release);
         self.last = Some(value);
@@ -198,7 +200,8 @@ impl<T: NoUninit + AnyBitPattern + std::fmt::Debug> std::fmt::Debug for SeqWrite
 }
 
 /// A [`SeqReader::read`] gave up: every copy it was allowed overlapped a
-/// write. The cell has been written; a later read can succeed.
+/// write. A write has begun (perhaps only the first, still in flight); a
+/// later read can succeed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Contended;
 

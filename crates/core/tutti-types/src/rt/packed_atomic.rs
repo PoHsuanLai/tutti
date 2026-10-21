@@ -29,7 +29,8 @@ const WORD: usize = std::mem::size_of::<u64>();
 /// [`NoUninit`] (its bytes can be copied out: no padding) and
 /// [`AnyBitPattern`] (any bytes are a `T`), so both conversions are
 /// `bytemuck`'s and the type has no `unsafe`. A `T` larger than the word is
-/// refused when the cell is built, at compile time; one smaller packs as
+/// refused when the code using it is built (`cargo build` or `test`, which
+/// monomorphise; `cargo check` and clippy do not); one smaller packs as
 /// well (the word is the atomic, whatever `T`'s size), so the bound is
 /// `size_of::<T>() <= 8`, not a native atomic width.
 ///
@@ -62,8 +63,8 @@ pub struct PackedAtomic<T> {
 }
 
 impl<T: NoUninit + AnyBitPattern> PackedAtomic<T> {
-    /// Refuses, when [`new`](Self::new) is instantiated, a `T` that does not
-    /// fit the word.
+    /// Refuses a `T` that does not fit the word, when a method naming it is
+    /// monomorphised (a build, not a `cargo check`).
     const FITS: () = assert!(
         std::mem::size_of::<T>() <= WORD,
         "a PackedAtomic holds at most eight bytes"
@@ -81,12 +82,14 @@ impl<T: NoUninit + AnyBitPattern> PackedAtomic<T> {
     /// Replaces the value. Wait-free.
     #[inline]
     pub fn store(&self, value: T) {
+        let () = Self::FITS;
         self.word.store(pack(value), Ordering::Release);
     }
 
     /// The value, as one store left it. Wait-free.
     #[inline]
     pub fn load(&self) -> T {
+        let () = Self::FITS;
         unpack(self.word.load(Ordering::Acquire))
     }
 }

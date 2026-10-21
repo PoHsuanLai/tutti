@@ -3688,7 +3688,9 @@ What they show:
   doing more work (ramping every block, where the production strips were
   steady) take 6.1 µs: about 2.9×, and 3.0× at 32 members. That is a
   change to one node (its frame-major loop through closures), not to the
-  compiler. Where the time goes inside it was not profiled here.
+  compiler. The `busstrip` rows above are that frame-major kernel; the
+  channel-major one that replaced it is in the `BusStripNode` row of the
+  node table.
 
 Why the biquad ceiling does not carry over to tutti's graphs:
 
@@ -4287,7 +4289,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `Chorus` / `Flanger` | One width-generic `ModDelay{config}` node with per-channel phase offsets. The LFO is computed as a block buffer. Removes 4 atomic loads and 2 `sin` per sample |
 | `Phaser` + `StereoPhaser` | One node: the coefficient is computed once (not once per channel, with 2 `tan` each), then the all-pass stages run SoA over channels |
 | `Convolver` + `StereoConvolver` | Stored once, IR as `Arc<[f32]>`, planar block convolution, width-generic, and the dry path delayed inside the node (fixes D3). Needs `Fork` |
-| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). Batching strips was measured and does not pay; its own kernel does ("Same-kind sibling batching") |
+| `BusStripNode` | `Controls { volume, pan, mute }`, gain applied as a per-block linear ramp (fixes D7). Batching strips was measured and does not pay; its own kernel does ("Same-kind sibling batching"). The kernel is channel-major, one pass per channel with the gain a function of the frame, so it vectorises along time; its output is bit-identical to the frame-major kernel it replaced. `benches/bus_strip.rs` (one stereo strip, 128 frames, through `contract::Direct`, whose empty node costs 108 ns; criterion medians of three runs on the 4-core container, load average 1–2.5, not idle), frame-major → channel-major: steady 874 → 152 ns, ramping 1075 → 249 (a bare hand-written ramp, the bench's `reference`, takes 255), volume fed 1062 → 416; at six channels 2005 → 221, 2261 → 539, 2469 → 1019. `sibling_batch`'s `busstrip/nodes` rows (sixteen steady strips through a serial `Executor` at 128 frames, less the copy-only graph): 14.9 → 2.1 µs (thirty-two: 29.9 → 3.7) |
 | `Compressor` / `Gate` (thin) | An optional sidechain port: when it is unconnected in `Io`, the node keys off its own input (today's fallback can never fire). Params read once per block. Readings go out through `Controls` (fixes D6). Block detector kernels |
 | `VbapPannerNode` `process` | Solve the gains once per block, or every 32 samples, then ramp the gain vector. Today it does two VBAP solves per sample, which is probably the largest waste per node in `tutti-nodes`. `build_vbap_mix` becomes a `Topology` fragment |
 | `ClickNode` | `Env::for_each_beat` gives sample-accurate onsets (fixes D8) |

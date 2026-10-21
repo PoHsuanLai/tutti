@@ -482,7 +482,7 @@ impl Modulation {
         let mut applied = Applied::default();
 
         // Nodes the reconciler built whose key a host has since replaced or
-        // removed (N2): their records go, and their wiring is undone.
+        // removed: their records go, and their wiring is undone.
         let taken_lanes: BTreeSet<TargetKey> = self
             .lanes
             .iter()

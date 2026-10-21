@@ -1832,7 +1832,9 @@ that need an app or a plugin.
 
 **Scope (the adapter).** §8: `Mods`, `ModRange`, `Automation`, `ParamRef`, the
 adapter onto `Modulation`, knob and plugin-GUI paths, takes, plugin
-targets as lanes. This part unschedules the old driver; §12.6 deletes it.
+targets as lanes. This step unschedules the old driver
+(`modulation::legacy`, `LegacyModulationPlugin`) and `plugin_bind_params`;
+§12.6 deletes them.
 
 **Properties.** The §8.1 example renders the analytic cutoff within
 tolerance and the pad dips with the kick; a depth slider keeps phase at
@@ -1981,7 +1983,8 @@ No questions remain open. These were open in review and are now decided:
 
 1. **A plugin whose parameter list grows after load** (CLAP `rescan`, VST3
    `restartComponent`): rely on the delivery's spare headroom and count overflow
-   (requirement 3). The node is not re-bound on the plugin's rescan notice.
+   (requirement 3). Re-binding the node on the plugin's rescan notice is
+   still to do.
 2. **The in-process VST2 node drops parameter events**
    (`crates/plugin/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
    the node runs the plugin delivery (requirements 1–5, with requirement 4 as

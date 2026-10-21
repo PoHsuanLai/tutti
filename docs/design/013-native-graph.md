@@ -17,7 +17,8 @@ out): the session runs them as `Phase::{Modulation, AfterCommit, MidiOut}`,
 and `bevy-tutti`'s systems collect their declarations and call it. With
 `Net` no longer a runtime and `Legacy` gone, "native" no longer
 distinguishes anything: the design's title and this file's name keep it,
-but the code and the crate docs say "the graph" (see "The per-node port").
+but the code and the crate docs say "the graph" (see
+[Rewrite order, by payoff](#rewrite-order-by-payoff)).
 The work that does not need the graph is in too: the misreported-latency
 fixes (#3), shrinking the surface (#14, see
 [below](#shrink-the-surface-no-behaviour-change)), the re-exports (#6),
@@ -328,7 +329,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
 | **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)`, `Legacy`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | A finding of #38's review (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
 
-**Smart types 2: follow-ups.**
+**Smart types 2: #51 and #48.**
 
 - **#51 (`feat/plugin-typestate`) dropped `PluginNode`.** It
   wrapped the plugin client only because the blanket `impl<N: Node>
@@ -719,18 +720,12 @@ that the running plan holds the edit.
   to 8, one declaring `Frames(8)` but 9 frames late, a mispinned latency,
   an audio row asked for an event path. A fan-in tie at equal offsets goes
   by source order.
-- **Deferred to the native ports.** The polysynth, the SoundFont player and plugin
-  instruments take MIDI through a mailbox, out of band: their events are
-  neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
-  calls a unit in 64-frame chunks, and a mailbox offset is relative to
-  whichever chunk polls it), so they cannot honour the contract and get
-  rows when events become their ports. So do the sampler's time-stretch
-  unit (a declared latency not yet rowed) and every other node as it is
-  ported natively; a native port adds its row with the same harness. The
-  sampler's clip readers are in the same position for time rather than
-  events: they poll a timeline once per 64-frame call (a graph holding
-  them renders chunk-major), so a clip lands on its chunk, not its frame,
-  until they read `Env::transport_at`.
+- **Instruments and the sampler.** The polysynth and the SoundFont player
+  take MIDI on an event input and have rows of their own (`tests/contract.rs`
+  in `tutti-polysynth` and `tutti-soundfont`); a plugin instrument takes it
+  on its event input too. Any other node adds its row with the same
+  harness. The sampler's clip readers read `Env::transport_at`, so a clip
+  lands on its frame.
 
 ### SIMD and DOD, concretely
 
@@ -1108,7 +1103,7 @@ Seven gaps had to close before the flip:
    editor passed to `controlled` flushes held settings on every `collect`,
    so a burst that goes quiet is still delivered.
 3. **No replace-with-fade** for `crossfade_audio_node`.
-   `Editor::replace`, below, is it.
+   `Editor::replace` (below) adds it.
 4. **No runtime latency change** for a plugin's latency atomic.
    `Editor::set_latency(key, Latency)` updates the spec
    and the shape; the next commit moves PDC without touching the unit. It is
@@ -2653,9 +2648,8 @@ never touches the live ring; a free-running source follows a relayed seek).
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the
   transport's shared rate):
-  - `SoundFontUnit` (`tutti-soundfont`) is re-rated: rustysynth
-    still fixes a `Synthesizer`'s rate, but the graph node's `prepare`
-    rebuilds it at the prepared rate (keeping the preset, losing the
+  - Not `SoundFontUnit` (`tutti-soundfont`): rustysynth still fixes a
+    `Synthesizer`'s rate, but the graph node's `prepare` rebuilds it at the prepared rate (keeping the preset, losing the
     sounding voices; on failure, a rate rustysynth refuses, it keeps the
     old rate), so a restart's re-prepare re-rates it.
   - A host-built `UmpOut` (`midi-hardware`; connected with
@@ -3106,8 +3100,8 @@ sibling batching (measured; it does not pay: see below); `clap.thread-pool`; the
 (optional) REAPER-style anticipative partition for nodes with no live-input
 dependency, with export as its degenerate case.
 
-`RtPublish` (now `arc-lend`'s `ArcLend`, whose registered readers each own
-a cache line, so the concern below is historical) under the parallel executor: its eight reader slots per cell share
+`RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
+applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
 bounce that line between them, and past eight concurrent readers the rest take
 the overflow epochs (safe and bounded, but coarser reclamation). If profiling
@@ -3856,7 +3850,7 @@ loads again cannot hide behind one of them, and every recorded mutation
 fails in each. The same limit under-explores `job_gate`
 (17% fewer executions), `rt_publish`'s `two_publishers_and_a_reader`
 (15.6%) and several `pos_ring` models (4 to 24%); mutation sweeps there
-found no hidden bug, and those models are left as they are.
+found no hidden bug, and fixing them is separate work.
 
 #### Sampler real-time fixes
 
@@ -4654,17 +4648,14 @@ The merge of the mono/stereo twins (#10). Everything below is still an
 - **CPU.** Bench tables are in #10. Examples: VBAP about 8× faster, a swept
   SVF 2.6–4× faster, and nothing slower than the twins.
 
-**Deferred.**
+The IR is stored once: its transformed spectra sit behind one `Arc`,
+shared by every convolver built from it and by a fork. The delay rings are
+allocated in `prepare`, and `BusStripNode` is a node of its own (see the
+verdicts table). These remain open:
 
-- **IR stored once as `Arc<[f32]>`.** fft-convolver owns each channel's
-  transformed IR, so sharing waits on `Fork` (the `Fork` sweep). `shared_ir` clones one
-  convolver, so the IR is transformed only once.
 - **`copy_within` fast path** for integer delays.
-- **Filter type switchable live via `Controls`.** Needs the graph's `Controls`.
-  `set_filter_type` is still `&mut self`.
-- **Buffers allocated in `prepare`.** The delay rings are an example; there is
-  no `prepare` before the node contract.
-- **`BusStripNode`.** It is in the merge's list but was outside #10's slice.
+- **Filter type switchable live via `Controls`.** `set_filter_type` is
+  still `&mut self`.
 - **A `tanh` approximation for the ladder.** The engine has none, and `tanh`
   now dominates the ladder's cost. Adding one changes the sound, so it is a
   separate decision.
@@ -5060,11 +5051,11 @@ under both.
 > on entities (`Mods`, `ModRoute`, `ModRange`, `Automation`, `ParamRef`)
 > and `TuttiModulationPlugin` applies it through `Modulation` on the
 > graph's editor, so every modulated param, a hosted plugin's included,
-> is a lane in the graph an export forks (014 §8.2,
-> §12.5). The frame-rate driver and `plugin_bind_params` are
-> unscheduled (`modulation::legacy`); `ParamSet::set_authored` is gone.
+> is a lane in the graph an export forks (014 §8.2, §12.5); the
+> frame-rate driver, `plugin_bind_params` and `ParamSet::set_authored`
+> are gone (014 §12.6).
 >
-> **The deletion**, and this section is now history (014 §10, §12.6). A
+> **The deletion** (014 §10, §12.6). A
 > param port has at most one source, an
 > event output (`connect_param(at, from: EventOut)`); the fused step is
 > `clamp(held, range)`. Gone: audio sources (`ParamFrom::Audio`; audio-rate
@@ -5377,7 +5368,7 @@ carried.
   piece with no segment shape goes on the play-clock grid, not at block
   edges; the capacity is 256 and past it the lane thins its grid and
   counts; a hosted plugin receives each piece's endpoints, not stride
-  points (014 §5.3, §5.4). As first built, the
+  points (014 §5.3, §5.4). Before 014, the
   lane, made with one of these, has one event output (no audio) and sends
   its curve as segments for one param. It is still a pure function of its
   block's `Env`: per transport piece (`Env::segments`) it walks the beat
@@ -6281,7 +6272,7 @@ metronome's meter is 7/8.
 
 ## Decisions for the owner
 
-The owner delegated these on 2026-09-24. The migration uses the proposed
+The owner delegated these. The migration uses the proposed
 option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
 ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
 now (**reversed**, see 8). Decision 5 was taken when the surface shrank:

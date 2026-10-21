@@ -145,7 +145,7 @@ The ordered bootstrap in `build_on`, step by step:
 | `GraphNode` trait, `param_graph_node!` list | `graph/events.rs:112-280` | logic (which controls are a `ParamSet`) | `tutti_session::SessionNode` |
 | Event `reconcile` | `graph/events.rs:292-347` | glue | stays |
 | `AudioParam<U, P>` | `graph/param.rs` | glue | stays |
-| `AudioPump` thread loop | `graph/pump.rs:135-240` | logic | **(c)** `tutti-io`: **done**, the loop was `Recorder`'s; `AudioPump` now holds a `Recorder` |
+| `AudioPump` thread loop | `graph/pump.rs:135-240` | logic | **(c)** `tutti-io`: the loop was `Recorder`'s; `AudioPump` now holds a `Recorder` |
 | Pump drain/finalize systems | `graph/pump.rs:266-383` | glue | stays |
 | Transport, tap and metering resource wrappers | `graph/transport.rs`, `tap.rs`, `metering.rs` | glue | stays |
 
@@ -950,7 +950,7 @@ Three engine changes this example needs, each a **(c)** move in §9:
 | `graph/schedule.rs` | `GraphReconcileSystems`, `GraphDirty` | the sets, built from `PHASES`; `GraphDirty` deleted (§4.4) |
 | `graph/topology.rs`, `wire.rs`, `spawn.rs`, `despawn.rs`, `param.rs` | glue | unchanged but for two calls: the crossfade calls `Graph::crossfade`, the re-bind calls `Graph::move_feeds` |
 | `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `tutti_session::SessionNode`; feeds keyed by `AudioNode`, in the session |
-| `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s `Recorder` (done) |
+| `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s `Recorder` |
 | `modulation/` | declare + reconcile | components and `Mods` stay; `Declared: ModKeys`; the two systems collect and call `run_phase` with a `ModInput` |
 | `plugin_host/` | load, health, latency, params, render mode, windows, scan | load, param read and snapshot are jobs on the task pool (two loads at a time); health, latency, params and render mode are session phases; windows, scan and catalog stay |
 | `midi/` | nodes, sequence, routes, hardware out, files | components call `Session::midi()`; the asset loader wraps `MidiFile`; MIDI-CI negotiation and device state stay |
@@ -1591,9 +1591,9 @@ Where the code differs from the text above:
 - **The §5.1 example** uses `build_offline` and `Graph::add`, not a
   device and `insert`, and an LFO and a follower on an SVF.
 
-§9.4's deferred items stay deferred: building `GraphReconcileSystems` from
-`PHASES` waits for `Phase::Plugins` (§9.6) and is §9.7's; Bevy's device
-poll is not modulation or MIDI, and stays a system until then. Bevy runs
+As in §9.4, building `GraphReconcileSystems` from `PHASES` waits for
+`Phase::Plugins` (§9.6) and is §9.7's; Bevy's device poll is not modulation
+or MIDI, and stays a system until then. Bevy runs
 `Phase::{Modulation, AfterCommit}` from its modulation systems and
 `Phase::MidiOut` from the clock pump.
 

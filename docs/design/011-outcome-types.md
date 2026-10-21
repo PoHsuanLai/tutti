@@ -291,8 +291,8 @@ type, not the behaviour.
    cases above. One has a single honest cause, the other is already solved by
    the capability accessor.
 
-This is separate from the parameter-grouping change, which spans four themes
-already.
+This is separate from the parameter-grouping change, which is eight commits
+across four themes already.
 
 ## Outcome
 

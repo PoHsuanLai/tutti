@@ -45,18 +45,54 @@
 //! A task's writes happen-before its successors' reads: the counter
 //! decrement is `AcqRel` (so the decrement that reaches zero has acquired
 //! every earlier one's release), a push stores `Release` and a pop loads
-//! `Acquire`. Every task's writes happen-before [`work`] returning on any
-//! participant, through the `remaining` count. The `loom` model in
-//! `tests/task_graph_loom.rs` checks both against the shipped code.
+//! `Acquire`, and a successor run inline is in the same thread's program
+//! order.
+//!
+//! Every task's writes happen-before [`work`] returning on any participant,
+//! and only the **sinks** (tasks with no successor) are counted for it:
+//! `remaining` starts at the sink count, and a sink decrements it
+//! (`Release`) after it runs. A participant returns once it loads 0
+//! (`Acquire`). The argument:
+//!
+//! 1. Every task `t` has a sink descendant `s`: follow any successor from
+//!    `t`; the graph is finite and acyclic (`new` refuses a cycle), so the
+//!    walk ends at a task with none.
+//! 2. Along that path each step is the ordering above: the task's run, then
+//!    its `AcqRel` decrement of the next task's counter, which the decrement
+//!    that reaches zero acquires (the counter's RMWs form one release
+//!    sequence), then the next task's run on that thread or, through the
+//!    push's `Release` and the pop's `Acquire`, on another. So `t`'s writes
+//!    happen-before `s` runs, and before `s`'s `Release` decrement of
+//!    `remaining`.
+//! 3. `remaining` only ever changes by RMW after `begin`, so a load that
+//!    reads 0 reads the last of them and synchronises with every sink's
+//!    `Release` decrement. So every sink, and by 2 every task, happens-before
+//!    the load, and before `work` returns.
+//!
+//! Counting every task would make each one an RMW on the one line every
+//! participant polls; counting the sinks leaves that line to the few tasks
+//! that end the block. An aborted block still reports not done
+//! ([`done`](TaskGraph::done)): a sink can only run after every task it
+//! descends from, so `remaining` reaches 0 only when every task has run.
+//! The `loom` model in `tests/task_graph_loom.rs` checks both properties
+//! against the shipped code, the second on a graph whose tasks read nothing,
+//! so only the counted sinks order a task before the return.
 //!
 //! # Waiting
 //!
 //! A participant with nothing to take while tasks are still running spins.
 //! The audio thread ([`Participant::Caller`]) waits until the block is done:
-//! it spins, and on Linux, once `remaining` has not moved for 250 µs, it
-//! yields its core once and spins again (`SpinThenYield`, `src/rt/spin.rs`).
-//! A healthy block never waits that long without a task finishing, so its
-//! wait is the plain spin it always was. The yield is for a helper queued
+//! it spins, and on Linux, once no task has finished anywhere for 250 µs,
+//! it yields its core once and spins again (`SpinThenYield`,
+//! `src/rt/spin.rs`). A healthy block rarely waits that long without a task
+//! finishing, so its wait is the plain spin. `remaining` counts only sinks,
+//! so it is not that signal: each helper also counts the tasks it finishes
+//! on a counter of its own (`progress`, a cache line per helper, a plain
+//! `Relaxed` load and store by its one writer), the caller counts its own,
+//! and the waiting caller reads the helpers' counters once per
+//! `PROGRESS_EVERY` waits. That costs a helper no RMW on a shared line, and
+//! a line transfer only when a waiting caller has just read it. The yield
+//! is for a helper queued
 //! behind the caller on the caller's own core: under `SCHED_FIFO`, which
 //! does not time-slice, a caller that only spun would keep it off that core
 //! until the kernel migrated it, or for good. Under `SCHED_FIFO` or
@@ -98,6 +134,16 @@ const HELPER_SPINS: u32 = if cfg!(loom) { 2 } else { 1024 };
 /// An empty ready-list entry.
 const EMPTY: u32 = u32::MAX;
 
+/// Helpers' completion counters ([`TaskGraph`]'s `progress`): helper `i`
+/// counts on slot `i % PROGRESS_SLOTS`.
+const PROGRESS_SLOTS: usize = 8;
+
+/// Waits between two reads of the helpers' completion counters by a waiting
+/// caller: each read takes the counters' lines from their helpers, so it is
+/// rare next to the caller's 250 µs budget (a wait is 10 to 100 ns, see
+/// `HELPER_SPINS`). Under loom, every wait.
+const PROGRESS_EVERY: u32 = if cfg!(loom) { 1 } else { 64 };
+
 /// An atomic on a cache line pair of its own (128 bytes: adjacent-line
 /// prefetch pulls lines in pairs on x86), so counters different threads hit
 /// do not bounce one line between them.
@@ -111,9 +157,11 @@ pub enum Participant {
     /// once per 250 µs in which no task finished (see the module docs,
     /// "Waiting").
     Caller,
-    /// A worker thread: spins a bounded number of times, then leaves the
-    /// block to the others (see `HELPER_SPINS`).
-    Helper,
+    /// A worker thread, by its index among the participants (the pool's
+    /// `1..`; it picks the completion counter the caller watches): spins a
+    /// bounded number of times, then leaves the block to the others (see
+    /// `HELPER_SPINS`).
+    Helper(usize),
 }
 
 /// A DAG of tasks, run once per block. See the module docs
@@ -128,13 +176,19 @@ pub struct TaskGraph {
     targets: Box<[u32]>,
     /// Tasks with no predecessor, in task order.
     roots: Box<[u32]>,
+    /// Tasks with no successor.
+    sinks: u32,
     ready: Box<[AtomicU32]>,
     head: Padded<AtomicU32>,
     tail: Padded<AtomicU32>,
-    /// Tasks not yet finished this block.
+    /// Sinks not yet finished this block (module docs, "Ordering").
     remaining: Padded<AtomicU32>,
     /// Set by [`abort`](Self::abort): every participant leaves.
     aborted: AtomicBool,
+    /// Tasks each helper has finished, ever (wrapping), one line per slot:
+    /// the waiting caller's progress signal (module docs, "Waiting"). Never
+    /// reset, so a new block needs no pass over them.
+    progress: Box<[Padded<AtomicU32>]>,
 }
 
 impl TaskGraph {
@@ -182,11 +236,15 @@ impl TaskGraph {
             roots: (0..n as u32)
                 .filter(|&t| initial[t as usize] == 0)
                 .collect(),
+            sinks: (0..n).filter(|&t| offsets[t] == offsets[t + 1]).count() as u32,
             ready: (0..n).map(|_| AtomicU32::new(EMPTY)).collect(),
             head: Padded(AtomicU32::new(0)),
             tail: Padded(AtomicU32::new(0)),
             remaining: Padded(AtomicU32::new(0)),
             aborted: AtomicBool::new(false),
+            progress: (0..PROGRESS_SLOTS)
+                .map(|_| Padded(AtomicU32::new(0)))
+                .collect(),
         }
     }
 
@@ -222,7 +280,7 @@ impl TaskGraph {
         self.tail
             .0
             .store(self.roots.len() as u32, Ordering::Relaxed);
-        self.remaining.0.store(self.len() as u32, Ordering::Relaxed);
+        self.remaining.0.store(self.sinks, Ordering::Relaxed);
         self.aborted.store(false, Ordering::Relaxed);
     }
 
@@ -282,8 +340,16 @@ impl TaskGraph {
     pub fn work(&self, who: Participant, mut run: impl FnMut(u32)) {
         // Helper: waits in a row with nothing to take.
         let mut idle = 0u32;
-        // Caller: its wait on `remaining`.
+        // Caller: its wait, on every task finishing anywhere: the sinks'
+        // `remaining`, its own tasks, and the helpers' counters, read once
+        // per `PROGRESS_EVERY` waits.
         let mut caller = SpinThenYield::new(u32::MAX);
+        let (mut mine, mut theirs, mut polls) = (0u32, 0u32, 0u32);
+        // Helper: its completion counter.
+        let progress = match who {
+            Participant::Caller => None,
+            Participant::Helper(i) => Some(&self.progress[i % PROGRESS_SLOTS].0),
+        };
         let mut next = None;
         loop {
             if self.aborted.load(Ordering::Relaxed) {
@@ -297,8 +363,17 @@ impl TaskGraph {
                         return;
                     }
                     match who {
-                        Participant::Caller => caller.wait(left),
-                        Participant::Helper => {
+                        Participant::Caller => {
+                            if polls == 0 {
+                                theirs = self
+                                    .progress
+                                    .iter()
+                                    .fold(0u32, |n, p| n.wrapping_add(p.0.load(Ordering::Relaxed)));
+                            }
+                            polls = (polls + 1) % PROGRESS_EVERY;
+                            caller.wait(left.wrapping_add(mine).wrapping_add(theirs));
+                        }
+                        Participant::Helper(_) => {
                             idle += 1;
                             if idle > HELPER_SPINS {
                                 return;
@@ -311,7 +386,19 @@ impl TaskGraph {
             };
             idle = 0;
             run(t);
+            // Progress for a waiting caller. The one writer of its slot
+            // (unless more than `PROGRESS_SLOTS` helpers share one, when a
+            // lost count only delays a yield), on a line of its own: a
+            // plain load and store, no RMW on a shared line.
+            match progress {
+                Some(p) => p.store(p.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed),
+                None => mine = mine.wrapping_add(1),
+            }
             let row = self.offsets[t as usize] as usize..self.offsets[t as usize + 1] as usize;
+            if row.is_empty() {
+                self.remaining.0.fetch_sub(1, Ordering::Release);
+                continue;
+            }
             for &s in &self.targets[row] {
                 if self.pending[s as usize].0.fetch_sub(1, Ordering::AcqRel) == 1 {
                     if next.is_none() {
@@ -321,7 +408,6 @@ impl TaskGraph {
                     }
                 }
             }
-            self.remaining.0.fetch_sub(1, Ordering::Release);
         }
     }
 }
@@ -425,7 +511,7 @@ mod tests {
                         let who = if w == 0 {
                             Participant::Caller
                         } else {
-                            Participant::Helper
+                            Participant::Helper(w)
                         };
                         g.work(who, |t| {
                             if t == 33 {
@@ -474,7 +560,7 @@ mod tests {
             let helper = s.spawn(move || {
                 go_rx.recv().unwrap();
                 let mut n = 0;
-                g.work(Participant::Helper, |_| n += 1);
+                g.work(Participant::Helper(1), |_| n += 1);
                 left_tx.send(g.done()).unwrap();
                 n
             });
@@ -525,7 +611,7 @@ mod tests {
         let saw_yield = std::thread::scope(|s| {
             let helper = s.spawn(move || {
                 let mut saw = false;
-                g.work(Participant::Helper, |t| {
+                g.work(Participant::Helper(1), |t| {
                     if t != 0 {
                         return;
                     }
@@ -554,6 +640,26 @@ mod tests {
             "the caller never yielded while the helper held task 0"
         );
         assert!(g.done());
+    }
+
+    /// Every task a helper finishes, sink or not, moves its completion
+    /// counter (slot `i % PROGRESS_SLOTS` for helper `i`), and the caller's
+    /// own tasks touch no counter: what the waiting caller reads as
+    /// progress, now that `remaining` moves only for sinks.
+    ///
+    /// Mutations (run): the helper's store dropped → fails (0, not 5); the
+    /// slot taken as `0` whatever the helper → fails (slot 1 unmoved).
+    #[test]
+    fn a_helpers_every_task_moves_its_completion_counter() {
+        let slot = |g: &TaskGraph, i: usize| g.progress[i].0.load(Ordering::Relaxed);
+        let mut g = diamond();
+        g.begin();
+        g.work(Participant::Helper(PROGRESS_SLOTS + 1), |_| {});
+        assert!(g.done());
+        assert_eq!(slot(&g, 1), 5, "five tasks, one of them a sink");
+        g.begin();
+        g.work(Participant::Caller, |_| {});
+        assert!((0..PROGRESS_SLOTS).all(|i| slot(&g, i) == if i == 1 { 5 } else { 0 }));
     }
 
     /// An abort makes every participant leave with work pending.

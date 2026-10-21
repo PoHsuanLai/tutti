@@ -376,7 +376,7 @@ impl Shared<'_, '_> {
         let who = if w == 0 {
             Participant::Caller
         } else {
-            Participant::Helper
+            Participant::Helper(w)
         };
         let r = catch_unwind(AssertUnwindSafe(|| {
             self.graph.work(who, |t| {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tutti_core::{
-    ArcLend, AudioNode, AudioTap, ClickSettings, MasterMeter, Reader, Samples, Transport,
+    AudioNode, AudioTap, ClickSettings, MasterMeter, PrerollTable, Samples, Transport,
 };
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
@@ -55,8 +55,8 @@ pub enum Phase {
     /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
     Poll,
     /// Frees, here, what the audio thread let go of in every cell the
-    /// session publishes to (`ArcLend::reclaim`): the compensation table,
-    /// the project meter and the plugin slots following it, the modulation
+    /// session publishes to (`ArcLend::reclaim`): the project meter and the
+    /// plugin slots following it, the modulation
     /// lanes' programs, the session's clips, the hardware input's MPE
     /// request and port set. A value a block still held when it was
     /// replaced stays retired until a scan after the block ends; a cell
@@ -328,7 +328,7 @@ pub struct Session {
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
     /// the graph (a disk stream), republished with every plan.
-    pub(crate) compensation: Arc<ArcLend<Vec<Samples>>>,
+    pub(crate) compensation: Arc<PrerollTable>,
     /// The total latency of the plan sent last.
     pub(crate) latency: Samples,
     /// A re-prepare resumed in this update's collect: its plan's figures
@@ -497,12 +497,11 @@ impl Session {
     /// The nodes are the graph's table: each node's reclaimer, kept by node
     /// as it went in ([`SessionNode::reclaimer`](crate::SessionNode::reclaimer)),
     /// and each hosted plugin's meter. Beside it, the cells the session
-    /// publishes to itself: the compensation table, the project meter (and
+    /// publishes to itself: the project meter (and
     /// every slot following it), the modulation lanes (inserted by the
     /// reconciler, not through `add`) and the hardware ports' table.
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
-        pinned += self.compensation.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
         #[cfg(feature = "modulation")]
         {
@@ -533,7 +532,7 @@ impl Session {
     pub(crate) fn publish_sent(&mut self) {
         if let Some((channels, total)) = self.graph.sent_compensation() {
             self.latency = total;
-            self.compensation.publish(Arc::new(channels));
+            self.compensation.set(&channels);
         }
     }
 
@@ -630,20 +629,12 @@ impl Session {
     /// the graph (a disk stream seeks by it). Republished with every plan;
     /// empty until the first.
     ///
-    /// The cell, to subscribe a reading structure to (the sampler's butler
-    /// takes it). To read it, register a reader with
-    /// [`compensation_reader`](Self::compensation_reader).
-    pub fn compensation(&self) -> &Arc<ArcLend<Vec<Samples>>> {
+    /// Shared, not copied: a clone of the `Arc` (the sampler's butler takes
+    /// one) reads every later plan's table. Read a channel with
+    /// [`PrerollTable::preroll`], `None` past the table's end. No audio
+    /// thread reads it, so it is a plain lock, not a published cell.
+    pub fn compensation(&self) -> &Arc<PrerollTable> {
         &self.compensation
-    }
-
-    /// A reader of [`compensation`](Self::compensation): register one per
-    /// reading thread, keep it, and `lend` through it for each read
-    /// (`reader.lend().get(channel)`, `None` past the table's end).
-    /// Registering takes the cell's publisher lock and may allocate, so it
-    /// belongs off the audio thread.
-    pub fn compensation_reader(&self) -> Reader<Vec<Samples>> {
-        self.compensation.reader()
     }
 
     /// The total latency of the plan sent last: what a DAW displays.

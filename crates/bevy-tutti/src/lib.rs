@@ -217,6 +217,8 @@ pub mod __private {
 // them. `TuttiPlugin` does not add `LatencyCompensationPlugin`: the graph
 // compensates and publishes without it. See the `graph::latency` module docs.
 pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
+/// The table [`ChannelCompensation`] shares.
+pub use tutti_core::PrerollTable;
 
 #[cfg(feature = "plugin")]
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};

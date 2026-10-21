@@ -143,7 +143,7 @@ impl Live {
     fn with(path: &Path, setup: Setup) -> Self {
         let mut config = DiskStreamerConfig::default();
         if setup.preroll > 0 {
-            config.pdc = Some(Arc::new(tutti_core::ArcLend::new(vec![
+            config.pdc = Some(Arc::new(tutti_core::PrerollTable::new(vec![
                 tutti_core::Samples(setup.preroll),
             ])));
         }

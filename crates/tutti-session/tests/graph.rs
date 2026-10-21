@@ -625,7 +625,7 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     s.update();
     assert_eq!(s.latency(), Samples(N), "the total is published");
     assert_eq!(
-        s.compensation_reader().lend().as_slice(),
+        s.compensation().to_vec().as_slice(),
         [Samples(N), Samples(0)],
         "the dry channel pre-rolls by the latent one's latency"
     );
@@ -694,20 +694,21 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
 }
 
 /// **The update's `Reclaim` phase frees what a block held across a
-/// replacement**, in a cell nothing publishes to again: the compensation
-/// table a commit replaced, and the meter a following plugin slot (a
-/// `MeterSlot`, as a plugin node holds) read when the project meter changed.
-/// A held `Loan` stands in for a block in progress across the publish.
+/// replacement**, in a cell nothing publishes to again: the meter a
+/// following plugin slot (a `MeterSlot`, as a plugin node holds) read when
+/// the project meter changed. A held `Loan` stands in for a block in
+/// progress across the publish.
 ///
 /// The nodes' cells are the graph's table, pinned by
 /// `the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph`; the
 /// modulation lanes by `tests/modulation.rs`, the hardware ports by
 /// `tests/midi.rs` (`midi-hardware`), a plugin's meter by `tests/plugin.rs`.
+/// (The compensation table is a plain lock, not a published cell: nothing
+/// to reclaim.)
 ///
-/// Mutations (run): the `Reclaim` phase doing nothing → the old table and
-/// the old meter are still retired after the update, fails; `Session::reclaim`
-/// leaving out the compensation cell → fails; leaving out the project
-/// meter → fails.
+/// Mutations (run): the `Reclaim` phase doing nothing → the old meter is
+/// still retired after the update, fails; `Session::reclaim` leaving out
+/// the project meter → fails.
 #[test]
 fn an_update_frees_what_a_block_held_across_a_replacement() {
     use tutti_core::{Beat, MeterChange, MeterMap, MeterSlot, TimeSignature};
@@ -726,21 +727,17 @@ fn an_update_frees_what_a_block_held_across_a_replacement() {
     let gone = Arc::downgrade(&old);
     meter.set_meter(old);
 
-    let (mut table, mut node) = (s.compensation_reader(), slot.reader());
+    let mut node = slot.reader();
     {
-        // A block in progress across both publishes.
-        let _held = (table.lend(), node.lend());
-        s.graph().insert(Const::mono(0.25));
-        s.update();
+        // A block in progress across the publish.
+        let _held = node.lend();
         meter.set_meter(Arc::new(MeterMap::default()));
-        // Still held: this update's own reclaim leaves them.
+        // Still held: this update's own reclaim leaves it.
         s.update();
     }
-    assert_eq!(s.compensation().retired_len(), 1, "the table is retired");
     assert!(gone.upgrade().is_some(), "the meter is retired");
 
     s.update();
-    assert_eq!(s.compensation().retired_len(), 0, "the table is freed");
     assert!(gone.upgrade().is_none(), "the meter is freed");
 }
 

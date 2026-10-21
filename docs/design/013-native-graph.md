@@ -247,19 +247,21 @@ the interpreter.
   and a length check with nothing retired). Every publisher reclaims on a
   control-side tick it has: the session's `Phase::Reclaim` (its nodes'
   through `SessionNode::reclaimer`, kept by node; `bevy-tutti`'s
-  `reclaim_graph` runs it), the butler's cycle. Every read site
-  reads one cell it owns, registered where its node (or the butler's cycle,
-  or the MIDI drain) is built; a fork's node registers on its own new cell,
+  `reclaim_graph` runs it), the butler's cycle (its rings' maps). Every
+  read site reads one cell it owns, registered where its node (or the MIDI
+  drain) is built; a fork's node registers on its own new cell,
   and a control-side `&self` method keeps a mirror instead of reading a
   cell the audio thread reads. The plugin meter is one cell per node
   (`MeterSlot`), which `ProjectMeter::set_meter` publishes into before it
   returns. `MidiIn::poll_block` takes `&mut self`. `debug_check_reclaiming`
   and `PARKED_LOAN_LIMIT` are gone: a node cannot park a `Loan` across
-  blocks, and a `mem::forget` pins one value per reader. Hosts register a
-  reader of the compensation table with `ChannelCompensation::reader` or
-  `Session::compensation_reader`. `crates/arc-lend/BENCHMARKS.md` compares
-  the cell with `arc-swap`, `basedrop`, `left-right` and the locks, and
-  with the shared-slot design it replaced.
+  blocks, and a `mem::forget` pins one value per reader. The per-channel
+  compensation table is not a cell: no audio thread reads it (the butler
+  and the host do), so it is a `tutti_core::PrerollTable`, a plain lock
+  (`Session::compensation`, `ChannelCompensation`).
+  `crates/arc-lend/BENCHMARKS.md` compares the cell with `arc-swap`,
+  `basedrop`, `left-right` and the locks, and with the shared-slot design
+  it replaced.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is

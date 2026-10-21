@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the PDC compensation table is a plain lock, not an `ArcLend`
+
+No audio thread reads the per-channel compensation table: the session
+writes it with every plan, and the sampler's butler and the host read it.
+A registered reader per thread and a retirement list bought nothing there,
+so it is now `tutti_core::PrerollTable`, a `Mutex<Vec<Samples>>` shared as
+an `Arc`. Every cell the audio thread reads is still an `ArcLend`.
+
+| Was | Now |
+|---|---|
+| `Session::compensation() -> &Arc<ArcLend<Vec<Samples>>>` | `-> &Arc<PrerollTable>` |
+| `Session::compensation_reader()` | removed: `session.compensation().preroll(channel)` or `.to_vec()` |
+| `ChannelCompensation(pub Arc<ArcLend<Vec<Samples>>>)`, `ChannelCompensation::reader()` (bevy-tutti) | `ChannelCompensation(pub Arc<PrerollTable>)`, `preroll(channel)`, `to_vec()` |
+| `DiskStreamerConfig::pdc: Option<Arc<ArcLend<Vec<Samples>>>>`, `ButlerThread::with_pdc(Arc<ArcLend<Vec<Samples>>>)` | `Option<Arc<PrerollTable>>`, `with_pdc(Arc<PrerollTable>)` |
+| `cell.publish(Arc::new(vec))` | `table.set(&channels)` (in place) |
+| `Session::compensation().retired_len()`, `.reclaim()`; the table swept by `Phase::Reclaim` | gone: a `PrerollTable` retires nothing, and `Phase::Reclaim` no longer sweeps it |
+
+Migration: drop the `Reader`; read `table.preroll(channel)` (`None` past
+the end), `table.to_vec()`, or `table.with(|channels| …)` for one view of a
+pass over several channels. A host that kept a clone of the resource's
+`Arc` still re-clones it when the resource is rebound.
+
 ### Added — every published cell is reclaimed on its owner's tick
 
 `ArcLend` freed a value a block held across its replacement only at the
@@ -21,7 +43,7 @@ every tick costs nothing.
 | What | Change |
 |---|---|
 | `ArcLend::reclaim` | returns `0` without scanning when nothing is retired |
-| `tutti_session::Phase` | new last phase, `Phase::Reclaim` (in `PHASES` after `Poll`): runs the graph's table (each node's `Reclaimer`, and each hosted plugin's `PluginMeter`, a cleared one included) and reclaims the session's own cells: the compensation table, the project meter and every slot following it, the modulation lanes, the hardware port set (`HardwareMidiInputs::collect`). `Session::update` runs it; a host running the phases itself runs it last |
+| `tutti_session::Phase` | new last phase, `Phase::Reclaim` (in `PHASES` after `Poll`): runs the graph's table (each node's `Reclaimer`, and each hosted plugin's `PluginMeter`, a cleared one included) and reclaims the session's own cells: the project meter and every slot following it, the modulation lanes, the hardware port set (`HardwareMidiInputs::collect`). `Session::update` runs it; a host running the phases itself runs it last |
 | `tutti_session::SessionNode` | new provided method `reclaimer(controls) -> Option<Reclaimer>` (default `None`), beside `params`. The graph keeps it by node from `Graph::add` and `Graph::crossfade` until the node is removed or swapped (`Graph::insert` and `Graph::replace` keep none). `MidiClipNode`, `MidiInputNode`, `VoiceNode` return one; `HarmonyNode` is a new `SessionNode` that does |
 | `tutti_session::Reclaimer` | new: a boxed `Fn() -> usize + Send` over a clone of a node's controls (`Reclaimer::new`, `Reclaimer::reclaim`); re-exported as `bevy_tutti::graph::Reclaimer` |
 | the session's clips and the builder's MIDI input | go in through `Graph::add` (were `insert`), so their reclaimers are kept |

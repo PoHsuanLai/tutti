@@ -68,7 +68,7 @@ pub fn collect_graph(
 /// [`ChannelCompensation`] must see the plan the audio thread runs, not a
 /// table nothing fills. The session publishes them as it sends the plan (and
 /// when a re-prepare resumes); [`ChannelCompensation`] is the session's own
-/// cell, and [`GraphLatency`] mirrors its total.
+/// table, and [`GraphLatency`] mirrors its total.
 ///
 /// **Pinned to the main thread**, as [`collect_graph`] is: the session
 /// asserts it in this phase too.
@@ -106,5 +106,60 @@ pub fn commit_graph(
 pub fn reclaim_graph(graph: Option<ResMut<AudioGraphRes>>) {
     if let Some(mut graph) = graph {
         let _ = graph.run_phase(Phase::Reclaim, std::time::Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bevy_app::App;
+    use tutti_core::{Beat, MeterChange, MeterMap, MeterSlot, TimeSignature};
+
+    use crate::graph::AudioGraphRes;
+
+    /// **A frame's `Reclaim` phase frees what a block held across a
+    /// replacement**, on a later frame with no publish: the adapter
+    /// schedules the phase every frame. The cell is the session's project
+    /// meter, read through a following `MeterSlot` (as a plugin node reads
+    /// it); a held `Loan` stands in for the block.
+    ///
+    /// Mutation (run): `reclaim_graph` not running the session's phase →
+    /// the old meter is still alive after the frame, fails.
+    ///
+    /// Which cells the phase sweeps is the session's, pinned in
+    /// `tutti-session`'s tests; this pins only that the adapter runs it.
+    #[test]
+    fn a_frame_frees_a_meter_a_block_held_across_its_replacement() {
+        let mut app = App::new();
+        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(crate::AudioEngineState::Running);
+        app.add_plugins(crate::graph::GraphReconcilePlugin);
+        app.update();
+
+        let meter = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .read()
+            .click_settings()
+            .project_meter();
+        let slot = MeterSlot::following_meter(Some(meter.clone()));
+        let old = Arc::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::from_parts(3, 4),
+        )]));
+        let gone = Arc::downgrade(&old);
+        meter.set_meter(old);
+
+        let mut reader = slot.reader();
+        {
+            let _held = reader.lend();
+            meter.set_meter(Arc::new(MeterMap::default()));
+            // Still held: this frame's reclaim leaves it.
+            app.update();
+        }
+        assert!(gone.upgrade().is_some(), "retired, held across the set");
+        app.update();
+        assert!(gone.upgrade().is_none(), "freed by the frame's reclaim");
     }
 }

@@ -267,7 +267,7 @@ Scalars use `Param<U>`.
   controls publish returns a `Reclaimer` from `SessionNode::reclaimer`,
   which the graph keeps by node from `add`/`crossfade` until the node goes;
   the graph sweeps its hosted plugins' meters; the session sweeps its own
-  cells (compensation, project meter, modulation lanes, hardware ports). A
+  cells (project meter, modulation lanes, hardware ports). A
   new cell joins its owner's sweep in the same change. `reclaim()` is a
   lock and a length check when nothing is retired; it is control-thread
   only, like `publish`.

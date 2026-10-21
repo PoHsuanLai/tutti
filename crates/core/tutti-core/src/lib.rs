@@ -73,6 +73,11 @@ pub use metering::{
 pub use tutti_types::latency::{self, Compensation, LatencyGraph};
 pub use tutti_types::value::Samples;
 
+// What a source outside the graph pre-rolls by, per channel: the plan's
+// compensation, republished with every plan.
+mod preroll;
+pub use preroll::PrerollTable;
+
 // How long a graph rings after its input stops. Same as latency above: the
 // walk is graph-agnostic and lives in `tutti-types`.
 pub use tutti_types::tail::{self, graph_tail, GraphTail, TailGraph};

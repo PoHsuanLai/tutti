@@ -92,7 +92,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
-use tutti_core::{ArcLend, Reader, Samples};
+use tutti_core::{PrerollTable, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
 ///
@@ -101,26 +101,28 @@ use tutti_core::{ArcLend, Reader, Samples};
 /// sends. The sampler holds one of these; a host wanting to display or apply
 /// the figures elsewhere can clone it from the resource.
 ///
-/// To read it, register a [`Reader`] with [`reader`](Self::reader), keep it
-/// where the reading code runs (a system's `Local`, a struct field), and
-/// read a channel with `reader.lend().get(channel)`, which is `None` for a
+/// Read a channel with [`preroll`](Self::preroll), which is `None` for a
 /// channel past the end of the table. The table is empty until the first
-/// plan is sent.
+/// plan is sent. No audio thread reads it, so it is a plain lock
+/// ([`PrerollTable`]), not a published cell.
 ///
-/// The resource can be rebound to another cell (once, when the graph's own
-/// replaces the one a plugin initialized before it was inserted): a reader
-/// registered before that keeps reading the old cell. Register again when
-/// the resource changes (`Res::is_changed`), or compare
-/// [`Reader::cell`] with `.0`.
+/// The resource can be rebound to another table (once, when the graph's own
+/// replaces the one a plugin initialized before it was inserted): a clone of
+/// `.0` taken before that keeps reading the old table. Clone it again when
+/// the resource changes (`Res::is_changed`), or compare it with `.0`
+/// (`Arc::ptr_eq`).
 #[derive(Resource, Clone, Default)]
-pub struct ChannelCompensation(pub Arc<ArcLend<Vec<Samples>>>);
+pub struct ChannelCompensation(pub Arc<PrerollTable>);
 
 impl ChannelCompensation {
-    /// A reader of the table: one per reading thread, registered off the
-    /// audio thread (it takes the cell's publisher lock and may allocate),
-    /// kept, and lent through for each read.
-    pub fn reader(&self) -> Reader<Vec<Samples>> {
-        self.0.reader()
+    /// `channel`'s pre-roll, or `None` past the end of the table.
+    pub fn preroll(&self, channel: usize) -> Option<Samples> {
+        self.0.preroll(channel)
+    }
+
+    /// The whole table, copied.
+    pub fn to_vec(&self) -> Vec<Samples> {
+        self.0.to_vec()
     }
 }
 
@@ -144,7 +146,7 @@ impl GraphLatency {
 }
 
 /// Mirror the session's published figures into the world: the
-/// [`ChannelCompensation`] resource holds the session's own cell (rebound
+/// [`ChannelCompensation`] resource holds the session's own table (rebound
 /// once, when it is another, as one a reconcile plugin initialized before
 /// the graph was inserted), and [`GraphLatency`] its total, marked changed
 /// only when it moved.
@@ -154,9 +156,9 @@ pub(crate) fn mirror(
     total: Option<ResMut<GraphLatency>>,
 ) {
     if let Some(mut table) = table {
-        let cell = graph.compensation();
-        if !Arc::ptr_eq(&table.0, &cell) {
-            table.0 = cell;
+        let shared = graph.compensation();
+        if !Arc::ptr_eq(&table.0, &shared) {
+            table.0 = shared;
         }
     }
     if let Some(mut total) = total {
@@ -309,8 +311,7 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        let mut reader = published.reader();
-        let table = reader.lend();
+        let table = published.to_vec();
         assert_eq!(table.first().copied(), Some(Samples(0)));
         assert_eq!(table.get(1).copied(), Some(eff_lat));
     }
@@ -332,8 +333,7 @@ mod tests {
         assert!(!app.world().resource::<GraphLatency>().is_empty());
 
         // The point: reading it off the table gives the wrong answer.
-        let mut reader = app.world().resource::<ChannelCompensation>().reader();
-        let table = reader.lend();
+        let table = app.world().resource::<ChannelCompensation>().to_vec();
         assert_eq!(
             table.first().copied(),
             Some(Samples(0)),
@@ -377,45 +377,12 @@ mod tests {
         app.world()
             .resource::<ChannelCompensation>()
             .0
-            .publish(std::sync::Arc::new(sentinel.clone()));
+            .set(&sentinel);
 
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert_eq!(*published.reader().lend(), sentinel, "no table published");
-    }
-
-    /// **A frame's `Reclaim` phase frees a table a block held across the
-    /// commit that replaced it**, on a later frame with no edit (so no
-    /// publish): the adapter schedules the phase every frame. A held `Loan`
-    /// stands in for the block.
-    ///
-    /// Mutation (run): `reclaim_graph` not running the session's phase →
-    /// the old table is still retired, fails.
-    ///
-    /// Which cells the phase sweeps is the session's, pinned in
-    /// `tutti-session`'s tests (the nodes' reclaimers in `tests/graph.rs`);
-    /// this pins only that the adapter runs it.
-    #[test]
-    fn a_frame_frees_a_table_a_block_held_across_its_replacement() {
-        let (graph, _) = skewed_graph();
-        let mut app = test_app(graph);
-        app.update();
-        let table = app.world().resource::<ChannelCompensation>().0.clone();
-        let mut reader = table.reader();
-        {
-            let _held = reader.lend();
-            app.world_mut()
-                .resource_mut::<AudioGraphRes>()
-                .insert(Const::mono(0.5));
-            // The commit replaces the table under the loan; this frame's
-            // reclaim leaves it.
-            app.update();
-        }
-        assert_eq!(table.retired_len(), 1, "retired, held across the commit");
-        app.update();
-        assert!(!app.world().resource::<AudioGraphRes>().is_edited());
-        assert_eq!(table.retired_len(), 0, "freed by the frame's reclaim");
+        assert_eq!(published.to_vec(), sentinel, "no table published");
     }
 
     /// The check reads the edit flag; it never clears it.
@@ -485,9 +452,8 @@ mod tests {
             .resource::<AudioGraphRes>()
             .sent_compensation()
             .expect("the commit sent a plan");
-        let mut reader = app.world().resource::<ChannelCompensation>().reader();
-        let table = reader.lend();
-        assert_eq!(&*table, &sent_channels[..], "per-channel pre-roll");
+        let table = app.world().resource::<ChannelCompensation>().to_vec();
+        assert_eq!(table, sent_channels, "per-channel pre-roll");
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
             sent_total,
@@ -547,8 +513,7 @@ mod tests {
         assert_eq!(
             app.world()
                 .resource::<ChannelCompensation>()
-                .reader()
-                .lend()
+                .to_vec()
                 .get(1),
             Some(&at_48k),
             "the dry channel pre-rolls by the new figure"

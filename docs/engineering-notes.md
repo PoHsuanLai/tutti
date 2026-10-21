@@ -267,7 +267,7 @@ Rules:
   goes in through `add` or `crossfade` and which leaves with the node:
   clips, harmony, the MIDI input, voices; and each hosted plugin's
   `PluginMeter`, which a `clear_meter` leaves following no project meter)
-  and its own cells (`ProjectMeter`, `Modulation`, the compensation table,
+  and its own cells (`ProjectMeter`, `Modulation`,
   `HardwareMidiInputs::collect`). `bevy-tutti`'s `reclaim_graph` only runs
   that phase. A first cut had the adapter sweep the clip and voice controls
   on its node entities, so a headless host swept fewer cells than a Bevy
@@ -286,9 +286,12 @@ Rules:
   free the whole cell on the audio thread (the guard-debt hazard below).
   Each plugin node now reads a `MeterSlot` cell of its own, holding the
   project's `MeterMap` or nothing, and `ProjectMeter::set_meter` publishes
-  into every follower. Control-thread-only cells (device enumeration in
-  `tutti-midi-hardware`) stay plain; its per-block port set is an `ArcLend`
-  behind a publisher lock.
+  into every follower. Cells no audio thread reads stay plain: device
+  enumeration in `tutti-midi-hardware`, and the per-channel compensation
+  table (`PrerollTable`, a lock), which the session writes and only the
+  sampler's butler and the host read. The hardware MIDI per-block port set,
+  which the audio thread does read, is an `ArcLend` behind a publisher
+  lock.
 
 **The guarantee is structural.** The cell (then `RtPublish`) used to wrap `ArcSwap`, which made
 RT deallocation very unlikely and bounded but not *impossible*: a guard whose

@@ -4,9 +4,8 @@ use super::{BufferConfig, ButlerSender, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use std::sync::Arc;
-use tutti_core::ArcLend;
+use tutti_core::PrerollTable;
 use tutti_core::SampleRate;
-use tutti_core::Samples;
 
 /// The disk-streaming engine: owns the butler thread that reads files into
 /// per-stream rings for [`DiskVoice`](crate::DiskVoice)s to play.
@@ -223,13 +222,13 @@ pub struct DiskStreamerConfig {
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
     /// Subscription to a per-channel delay-compensation table, indexed by
-    /// channel index and denominated in [`Samples`].
+    /// channel index and denominated in [`Samples`](tutti_core::Samples).
     ///
     /// While set, the butler pre-rolls each stream by its channel's entry so
     /// downstream effects stay sample-aligned. Published by whoever runs
     /// `tutti_core::latency::compensate` over the audio graph — the table is
     /// [`Compensation::channels`](tutti_core::Compensation::channels).
-    pub pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
+    pub pdc: Option<Arc<PrerollTable>>,
 }
 
 // Hand-rolled: print the buffer config + whether a subscription is set, not
@@ -246,6 +245,7 @@ impl std::fmt::Debug for DiskStreamerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_core::Samples;
 
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
@@ -513,22 +513,31 @@ mod tests {
         butler.start();
     }
 
+    /// **The butler reads the caller's table, not a copy of it**: a figure
+    /// the caller sets after the streamer is built reaches the butler's
+    /// cycle (`manual`), and the threaded streamer (`new`) hands its
+    /// threads the caller's own table.
+    ///
+    /// Mutations (run): `DiskStreamer::manual` handing the butler a copy of
+    /// the table → the cycle still reads 100, fails; `DiskStreamer::new`
+    /// handing a copy → not the same table, fails.
     #[test]
     fn pdc_subscription_is_shared_not_copied() {
-        // The caller owns the table and keeps publishing to it after the
-        // sampler is built; the sampler must observe those later stores.
-        let pdc = Arc::new(ArcLend::new(vec![Samples(100), Samples(0)]));
+        let pdc = Arc::new(PrerollTable::new(vec![Samples(100), Samples(0)]));
+        let config = DiskStreamerConfig {
+            pdc: Some(Arc::clone(&pdc)),
+            ..Default::default()
+        };
 
-        let _sampler = DiskStreamer::new(
-            44100.0,
-            DiskStreamerConfig {
-                pdc: Some(Arc::clone(&pdc)),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let mut stepped = DiskStreamer::manual(44100.0, config.clone()).unwrap();
+        let _ = stepped.step_once();
+        assert_eq!(stepped.butler.manual_preroll(0), Some(100));
+        pdc.set(&[Samples(512), Samples(0)]);
+        let _ = stepped.step_once();
+        assert_eq!(stepped.butler.manual_preroll(0), Some(512));
 
-        pdc.publish(Arc::new(vec![Samples(512), Samples(0)]));
-        assert_eq!(pdc.reader().lend()[0], Samples(512));
+        let threaded = DiskStreamer::new(44100.0, config).unwrap();
+        let held = threaded.butler.pdc_table().expect("subscribed");
+        assert!(Arc::ptr_eq(held, &pdc), "the caller's table, not a copy");
     }
 }

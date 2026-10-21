@@ -85,7 +85,7 @@ pub(crate) fn build_on(
         sample_rate: device.spec().sample_rate,
         channels: device.spec().channels,
     };
-    // The session's own cell: the disk streamer pre-rolls by it.
+    // The session's own table: the disk streamer pre-rolls by it.
     // `GraphReconcilePlugin` (and `LatencyCompensationPlugin`) use
     // `init_resource`, which leaves it.
     let compensation =

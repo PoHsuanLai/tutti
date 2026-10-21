@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use tutti_core::{
-    ArcLend, AudioNode, AudioTap, ChannelLayout, ClickNode, ClickSettings, MasterMeter, SampleRate,
-    Samples, Transport, MAX_ROOT_CHANNELS,
+    AudioNode, AudioTap, ChannelLayout, ClickNode, ClickSettings, MasterMeter, PrerollTable,
+    SampleRate, Samples, Transport, MAX_ROOT_CHANNELS,
 };
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
@@ -64,7 +64,7 @@ struct Parts {
     transport: Transport,
     click: Option<AudioNode>,
     click_settings: Arc<ClickSettings>,
-    compensation: Arc<ArcLend<Vec<Samples>>>,
+    compensation: Arc<PrerollTable>,
     #[cfg(feature = "midi")]
     midi: Option<crate::MidiNodes>,
     #[cfg(feature = "midi-hardware")]

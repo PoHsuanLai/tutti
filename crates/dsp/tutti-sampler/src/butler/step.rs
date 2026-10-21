@@ -96,8 +96,8 @@ impl ButlerCycle {
 
     /// The feed this cycle reads compensation through (tests).
     #[cfg(test)]
-    pub(crate) fn pdc(&mut self) -> &mut PdcFeed {
-        &mut self.local.pdc
+    pub(crate) fn pdc(&self) -> &PdcFeed {
+        &self.local.pdc
     }
 
     /// Run one cycle: drain every queued command, free every ring's retired
@@ -134,7 +134,7 @@ impl ButlerCycle {
             return StepOutcome::Idle;
         }
 
-        apply_pdc_updates(&mut self.local.pdc, &shared.plans);
+        apply_pdc_updates(&self.local.pdc, &shared.plans);
         self.apply_directions(shared);
 
         // Frames resident across every streaming ring, sampled before the

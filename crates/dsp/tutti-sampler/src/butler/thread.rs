@@ -10,9 +10,8 @@ use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
 use thread_priority::ThreadPriority;
-use tutti_core::ArcLend;
+use tutti_core::PrerollTable;
 use tutti_core::SampleRate;
-use tutti_core::Samples;
 
 use super::cache::LruCache;
 use super::command::ButlerCommand;
@@ -42,24 +41,16 @@ pub struct ButlerThread {
     shared: Handles,
     config: BufferConfig,
     /// The delay-compensation table subscribed with
-    /// [`with_pdc`](Self::with_pdc), if any. Each cycle owns a read state on
-    /// it ([`PdcFeed`]), registered here on the control thread when the
-    /// cycle is built.
-    pdc: Option<Arc<ArcLend<Vec<Samples>>>>,
+    /// [`with_pdc`](Self::with_pdc), if any, handed to each cycle built.
+    pdc: Option<Arc<PrerollTable>>,
     /// How long the thread parks between cycles.
     pacing: Pacing,
     /// The synchronous cycle, when this controller is being driven by hand
     /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
     /// has been called on an unstarted controller; `start` refuses once it is
     /// set, so the two drivers can never both own `Local`.
-    ///
-    /// The `Mutex` exists only to keep `ButlerThread` `Sync` (a Bevy
-    /// resource holds it): the cycle's compensation feed holds an
-    /// `arc_lend::Reader`, which is `Send` but not `Sync`. It is only ever
-    /// used through `Mutex::get_mut` (via `manual_cycle`, from `&mut self`),
-    /// so it is never locked.
     #[cfg(any(test, feature = "test-support"))]
-    manual: Option<std::sync::Mutex<ButlerCycle>>,
+    manual: Option<ButlerCycle>,
 }
 
 impl ButlerThread {
@@ -102,23 +93,22 @@ impl ButlerThread {
     }
 
     /// Subscribe to a per-channel delay-compensation table, indexed by channel
-    /// index and denominated in [`Samples`].
+    /// index and denominated in [`Samples`](tutti_core::Samples).
     ///
-    /// Published by whoever runs `tutti_core::latency::compensate` over the
-    /// audio graph; the butler takes a fresh snapshot (a `Reader::lend`) each
-    /// refill cycle and pre-rolls each stream by its channel's entry. The
-    /// subscription is shared, not copied, so later publications are observed.
+    /// Set by whoever runs `tutti_core::latency::compensate` over the audio
+    /// graph (a session republishes it with every plan); the butler reads it
+    /// each refill cycle and pre-rolls each stream by its channel's entry.
+    /// The subscription is shared, not copied, so later sets are observed.
     ///
-    /// The butler's read state on the table (a reader registered on it) is
-    /// built on the calling thread for each cycle: the one
+    /// Each cycle is handed the table when it is built: the one
     /// [`start`](Self::start) runs, and a controller already stepped by hand
-    /// gets one for that cycle here, keeping the cycle's streams (dropping
+    /// hands it to that cycle here, keeping the cycle's streams (dropping
     /// the cycle would drop their rings' writers while the plans still name
     /// them).
-    pub fn with_pdc(mut self, snapshot: Arc<ArcLend<Vec<Samples>>>) -> Self {
+    pub fn with_pdc(mut self, snapshot: Arc<PrerollTable>) -> Self {
         #[cfg(any(test, feature = "test-support"))]
         if let Some(cycle) = self.manual.as_mut() {
-            manual_cycle(cycle).set_pdc(PdcFeed::over(Some(&snapshot)));
+            cycle.set_pdc(PdcFeed::over(Some(&snapshot)));
         }
         self.pdc = Some(snapshot);
         self
@@ -127,9 +117,24 @@ impl ButlerThread {
     /// The cycle state a driver owns: the thread [`start`](Self::start)
     /// spawns, or [`step_once`](Self::step_once). Built here, on the control
     /// thread, by both, so the hand-stepped tests build what the thread runs,
-    /// the compensation read state included.
+    /// the compensation table included.
     fn cycle(&self) -> ButlerCycle {
         ButlerCycle::new(self.config, PdcFeed::over(self.pdc.as_ref()))
+    }
+
+    /// The hand-stepped cycle's preroll for `channel`, `None` before the
+    /// first hand step (tests).
+    #[cfg(test)]
+    pub(crate) fn manual_preroll(&self, channel: usize) -> Option<u64> {
+        self.manual
+            .as_ref()
+            .map(|cycle| cycle.pdc().preroll(channel))
+    }
+
+    /// The table every cycle is handed, if subscribed (tests).
+    #[cfg(test)]
+    pub(crate) fn pdc_table(&self) -> Option<&Arc<PrerollTable>> {
+        self.pdc.as_ref()
     }
 
     /// A cloneable sender onto the butler's command queue.
@@ -255,9 +260,9 @@ impl ButlerThread {
         );
         let queue = Arc::clone(&self.queue);
         if self.manual.is_none() {
-            self.manual = Some(std::sync::Mutex::new(self.cycle()));
+            self.manual = Some(self.cycle());
         }
-        let cycle = manual_cycle(self.manual.as_mut().expect("set just above"));
+        let cycle = self.manual.as_mut().expect("set just above");
         cycle.step(&self.shared, || queue.pop())
     }
 
@@ -297,16 +302,6 @@ impl Drop for ButlerThread {
     }
 }
 
-/// The hand-stepped cycle, through `&mut` (no lock is taken). A poisoned
-/// mutex still holds a whole cycle: a step that panicked left it as a
-/// thread's cycle would be after the same panic.
-#[cfg(any(test, feature = "test-support"))]
-fn manual_cycle(cycle: &mut std::sync::Mutex<ButlerCycle>) -> &mut ButlerCycle {
-    cycle
-        .get_mut()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -315,6 +310,17 @@ mod tests {
     use crate::butler::loop_body::Pacing;
     use crate::butler::ButlerGone;
     use crate::ports::{Command, Commands};
+    use tutti_core::Samples;
+
+    /// The controller is `Sync` (a Bevy resource holds it), with its
+    /// hand-stepped cycle held plainly: a compile-time check.
+    ///
+    /// Mutation (run): a `std::cell::Cell<u8>` field in `ButlerCycle` →
+    /// does not compile.
+    const _: () = {
+        fn sync<T: Sync>() {}
+        let _ = sync::<ButlerThread>;
+    };
 
     /// **A table subscribed after the first hand step reaches the cycle**:
     /// the step's cycle is built once and kept, so `with_pdc` must hand the
@@ -327,9 +333,9 @@ mod tests {
         let mut butler =
             ButlerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
         let _ = butler.step_once();
-        let mut butler = butler.with_pdc(Arc::new(ArcLend::new(vec![Samples(7)])));
+        let mut butler = butler.with_pdc(Arc::new(PrerollTable::new(vec![Samples(7)])));
         let _ = butler.step_once();
-        let cycle = manual_cycle(butler.manual.as_mut().expect("stepped by hand"));
+        let cycle = butler.manual.as_ref().expect("stepped by hand");
         assert_eq!(cycle.pdc().preroll(0), 7);
     }
 

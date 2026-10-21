@@ -81,7 +81,7 @@ test-all: test test-features test-editor test-doc
 #                         modulation-gated plugin parameter lanes compile
 #                         with it
 #                         (`plugin,modulation` alone: tests/mod_plugin.rs's
-#                         helpers with no test, until PR 7 gated them)
+#                         helpers with no test, until they were gated)
 #   tutti-session/clap  — hosted plugins and the plugin half of export
 #                         (tests/plugin.rs); `export,modulation` beside it
 #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
@@ -134,7 +134,7 @@ test-features:
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
 # Miri over the non-FFI unsafe: the aliasing in `tutti-types`' `AudioThreadCell`
-# and `arc-lend`'s hazard-slot reclamation (`ArcLend`) (and, until doc 013 Phase 5 deleted
+# and `arc-lend`'s hazard-slot reclamation (`ArcLend`) (and, until doc 013 deleted
 # it, the pointer arithmetic in `tutti-node`'s planar buffers). See
 # `docs/design/012-unsafe-policy.md` for why this crate and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI

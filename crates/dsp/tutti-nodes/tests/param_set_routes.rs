@@ -8,7 +8,7 @@
 //! `UnitParam` alone, and each cell has one address (the compressor's makeup
 //! is `GainDb`).
 //!
-//! Ported in doc 014 PR 5 from routes through a `ModMatrix` onto an
+//! Ported from routes through a `ModMatrix` onto an
 //! `AtomicTarget` mirroring the cell (both deleted, §10): the address checks
 //! now write through `ParamSet::set`, and the end-to-end check drives a
 //! control lane whose knob is the filter's cell.
@@ -258,15 +258,13 @@ fn render_chorus(
 /// rate cell: a +2 Hz offset on the 1 Hz knob renders the chorus as it
 /// renders at 3 Hz, and not as it does at 1 Hz, and the cell still holds
 /// the knob (the lane sends to the port and never writes it, doc 014
-/// §4.2). The rate is a port since doc 014 PR 5 ([`MOD_DELAY_PARAMS`]);
-/// before, a route onto it was refused with `NoSuchParam` once the
-/// frame-rate driver (which wrote the cell) went. The claim the old
+/// §4.2). The rate is a port ([`MOD_DELAY_PARAMS`]). The claim the old
 /// `chorus_rate_route_moves_the_nodes_own_cell` made, on the lane.
 ///
-/// Mutation (run, PR 5): `ModDelayNode` not declaring its ports (the
+/// Mutation (run): `ModDelayNode` not declaring its ports (the
 /// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the lane's port does not
-/// exist and the connect is refused at commit → fails. Mutation (run, PR
-/// 5): `LfoDrive::fill_block` ignoring the driven rate → the chorus runs at
+/// exist and the connect is refused at commit → fails. Mutation (run):
+/// `LfoDrive::fill_block` ignoring the driven rate → the chorus runs at
 /// 1 Hz → fails.
 ///
 /// [`MOD_DELAY_PARAMS`]: tutti_nodes::MOD_DELAY_PARAMS
@@ -394,15 +392,15 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
     (out, knob.load(Ordering::Acquire))
 }
 
-/// **A lane drives an `LfoNode`'s depth and rate** (doc 014 PR 5,
-/// [`LFO_PARAMS`]), each around the LFO's own cell. The depth knob at 0.25
+/// **A lane drives an `LfoNode`'s depth and rate** ([`LFO_PARAMS`]), each
+/// around the LFO's own cell. The depth knob at 0.25
 /// plus half of a 0..1 range swings the 1 Hz sine to ±0.75; the 1 Hz rate
 /// knob plus a fifth of a 0..10 Hz range runs it at 3 Hz, three rising
 /// zero crossings in a second where 1 Hz has one. Neither cell moves.
 ///
-/// Mutation (run, PR 5): the LFO reading its depth cell, not the driven
+/// Mutation (run): the LFO reading its depth cell, not the driven
 /// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
-/// fails. Mutation (run, PR 5): reading its rate cell (`block_driven(&io,
+/// fails. Mutation (run): reading its rate cell (`block_driven(&io,
 /// 1)` replaced by `None`) → one crossing → fails.
 ///
 /// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
@@ -486,7 +484,7 @@ fn peak(x: &[f32]) -> f32 {
 /// quiet tone comes back at its own level (the gain reduction released),
 /// not held down at the burst's.
 ///
-/// Mutation (run, PR 5 review): `update_coefficients` without
+/// Mutation (run): `update_coefficients` without
 /// `clamp_release` (the driven value as is) → the follower's coefficient
 /// is 1.0 (`time_to_coeff` at `<= 0`), the envelope freezes at the burst's
 /// reduction and the tone stays about 12 dB down → fails.
@@ -526,10 +524,10 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
 /// And the depth gets `set_depth`'s clamp: driven to 8 it sounds as it
 /// does driven to exactly 1 (the knob at 1, nothing added).
 ///
-/// Mutation (run, PR 5 review): `LinearModMix::load` without
+/// Mutation (run): `LinearModMix::load` without
 /// `Depth::new_clamped` → the sweep hold keeps the +8 drive bounded, but it
-/// sweeps unlike depth 1 → the last assertion fails. Mutation (run, PR 5
-/// review): `allpass_coeff` without the sweep hold → the −7.5 drive
+/// sweeps unlike depth 1 → the last assertion fails. Mutation (run):
+/// `allpass_coeff` without the sweep hold → the −7.5 drive
 /// diverges → fails. (A depth of −1 reaches the second through `set_depth` itself, so
 /// the hold also fixes a divergence that predates the port.)
 #[test]
@@ -583,9 +581,9 @@ fn a_phaser_driven_past_its_depth_range_stays_stable() {
 /// (range `-10..=10`), below `set_rate`'s 0.01 Hz floor, as it does at a
 /// 0.01 Hz knob.
 ///
-/// Mutation (run, PR 5 review): the block's depth without
+/// Mutation (run): the block's depth without
 /// `ModDelayConfig::clamp_depth` → a 0.5 s sweep reads past the line's
-/// capacity, unlike 40 ms → fails. Mutation (run, PR 5 review):
+/// capacity, unlike 40 ms → fails. Mutation (run):
 /// `LfoDrive::fill_block` taking a driven rate unclamped → the LFO runs
 /// backwards at 5 Hz → fails.
 #[test]

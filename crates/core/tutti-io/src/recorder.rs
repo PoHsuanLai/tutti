@@ -10,7 +10,7 @@
 //!
 //! This is the workspace's only `AudioIn → AudioOut` thread loop. `bevy-tutti`
 //! had a second one (its `AudioPump` component ran the same poll / park /
-//! break / finalize body on its own thread); design 015 PR 3 folded it into
+//! break / finalize body on its own thread); design 015 folded it into
 //! this one. The component now holds a `Recorder` and adds only what an ECS
 //! needs on top: polling for the end without blocking
 //! ([`is_finished`](Recorder::is_finished)), asking for the end without

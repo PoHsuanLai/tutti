@@ -749,7 +749,7 @@ fn param_output_burst_does_not_allocate() {
 ///   point past the room replaced the last one); 4 × 9 points a block are
 ///   counted. (Reworded with the one layout: a queue kept its room, 273.)
 ///
-/// Changed in doc 014 PR 2b: the room per queue is `ceil(512 / 32) + 1 +
+/// Changed in doc 014 §12.2: the room per queue is `ceil(512 / 32) + 1 +
 /// 256` = 273 (it was 20; with the carried slot 274, it was 21), so the second burst is 283 points a parameter
 /// (it was 30); the property is the same.
 ///
@@ -825,7 +825,7 @@ fn param_output_past_the_room_is_counted_not_grown() {
 /// (`ClapActive::output_events_refused`) instead of growing its list in the
 /// plugin's `try_push` on the audio thread.
 ///
-/// Changed in doc 014 PR 2b: the parameter room is 4384 (it was 336), so
+/// Changed in doc 014 §12.2: the parameter room is 4384 (it was 336), so
 /// the plugin pushes 120 points a parameter (it was 20); the property is
 /// the same.
 ///
@@ -890,7 +890,7 @@ fn set_param_output_own(points: u32) {
 /// (15 + 2199 + 2199 overwritten), and parameter 1's latest replaces its
 /// queue's last point (1 more). 8250.
 ///
-/// Changed in doc 014 PR 2b: the parameter room is 4384 and a queue's 274
+/// Changed in doc 014 §12.2: the parameter room is 4384 and a queue's 274
 /// (they were 336 and 21), so the flood is 2200 points a parameter (it was
 /// 200) and the count 8250 a block (it was 756): as before, two parameters
 /// are table-only.
@@ -901,8 +901,8 @@ fn set_param_output_own(points: u32) {
 /// (`coalesce_param` refusing every push) → the 4416 values past the room
 /// are refused (parameters 2 and 3 would end with no queue) and the refusal
 /// assertion fails. Mutation (run): the parameter room check removed → the
-/// flood grows the list inside the gate and aborts. Mutation (run, the PR
-/// 2b review's): the table never opening a queue (`None if ix < nl &&
+/// flood grows the list inside the gate and aborts. Mutation (run, from
+/// review): the table never opening a queue (`None if ix < nl &&
 /// out.open_queue(addr)` in `fill_param_changes`) → parameters 2 and 3
 /// have no queue → fails.
 #[test]

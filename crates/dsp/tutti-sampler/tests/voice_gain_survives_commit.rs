@@ -142,7 +142,7 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
 /// the fader the user set. And the fork shares nothing: a live move after the
 /// fork does not reach it.
 ///
-/// Ported in doc 014 PR 5: this also pinned the fork reading the
+/// Ported: this also pinned the fork reading the
 /// "authored" value rather than a modulation driver's composite left in the
 /// live cell. The driver and `ParamSet::authored` are deleted (§10): a lane
 /// sends its composite to the param port and never writes the cell, so the
@@ -151,7 +151,7 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
 ///
 /// Mutation (run): `VoiceNodeFork::fork` leaving the copy's `play.gain` as
 /// inserted (the `voice.play.gain = gain` write removed) → the fork renders
-/// at unity → fails. Mutation (run, PR 5): the forked node's gain `Param`
+/// at unity → fails. Mutation (run): the forked node's gain `Param`
 /// set to a handle of the live node's (`node.gain = live_gain.handle()`)
 /// → the live move to 0.75 reaches the fork → fails.
 #[test]
@@ -200,14 +200,12 @@ fn an_unowned_param_is_ignored() {
 /// 014 §4.2): the knob at 0.25 plus a constant half of a 0..1 range renders
 /// every sample of the flat wave at 0.75, the cell still holds 0.25 (the
 /// lane sends to the port and never writes it), and a knob write rides
-/// under the lane's offset (0.5 + 0.5 = 1.0). The gain is a port since doc
-/// 014 PR 5 ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)); before, a route
-/// onto it was refused with `NoSuchParam` once the frame-rate driver (which
-/// wrote the cell) went.
+/// under the lane's offset (0.5 + 0.5 = 1.0). The gain is a port
+/// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)).
 ///
-/// Mutation (run, PR 5): `VoiceNode::process` passing `None` to
+/// Mutation (run): `VoiceNode::process` passing `None` to
 /// `drain_commands` (the port ignored) → the block renders at 0.25 →
-/// fails. Mutation (run, PR 5): `VOICE_PARAMS` not declared in the shape →
+/// fails. Mutation (run): `VOICE_PARAMS` not declared in the shape →
 /// `param_range_cell` is `None` → fails.
 #[test]
 fn a_lane_drives_the_voice_gain_around_its_cell() {
@@ -282,12 +280,12 @@ fn drive_volume(ed: &mut tutti_graph::Editor, at: ParamIn, knob: Arc<AtomicF32>,
 
 /// **A control lane drives a standalone memory source's gain too**: a
 /// `MemorySource` inserted as its own node addresses its gain as `Volume`
-/// and declares it as a port (doc 014 PR 5), so the knob at 0.25 plus a
+/// and declares it as a port, so the knob at 0.25 plus a
 /// constant half of a 0..1 range renders the flat wave at 0.75, and the
 /// cell still holds 0.25.
 ///
-/// Mutation (run, PR 5): `MemorySource::process` leaving `driven_gain` at
-/// `None` (the port ignored) → 0.25 → fails. Mutation (run, PR 5): its
+/// Mutation (run): `MemorySource::process` leaving `driven_gain` at
+/// `None` (the port ignored) → 0.25 → fails. Mutation (run): its
 /// shape not declaring `VOICE_PARAMS` → `param_range_cell` is `None` →
 /// fails.
 #[test]
@@ -317,11 +315,11 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     );
 }
 
-/// **A voice's gain is a port, its base the cell** (doc 014 PR 5,
-/// [`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
+/// **A voice's gain is a port, its base the cell**
+/// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
 /// starts its connect crossfade from.
 ///
-/// Mutation (run, PR 5): `VoiceNode::param_base` answering unity → fails.
+/// Mutation (run): `VoiceNode::param_base` answering unity → fails.
 #[test]
 fn a_voices_gain_port_reads_its_cell_as_its_base() {
     use tutti_graph::Node;

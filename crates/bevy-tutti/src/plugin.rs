@@ -102,8 +102,8 @@ pub struct TuttiPlugin {
     /// plugin — and any host plugin that schedules against its sets — on a
     /// machine with no sound card.
     pub disabled: bool,
-    /// How many threads render a block, the audio callback included (doc 013
-    /// Phase 6, the parallel executor). `1`, the default, renders on the
+    /// How many threads render a block, the audio callback included (doc 013,
+    /// "The parallel executor"). `1`, the default, renders on the
     /// callback alone; more starts a `tutti_core::WorkerPool` of that many
     /// participants, over which each block's independent nodes spread, and
     /// an export forks onto a pool of its own of the same size. `0` means

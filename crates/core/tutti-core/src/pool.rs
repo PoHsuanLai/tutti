@@ -1,5 +1,5 @@
 //! [`WorkerPool`]: the threads the parallel graph executor runs a block on
-//! (doc 013 §4 and Phase 6).
+//! (doc 013 §4 and "The parallel executor").
 //!
 //! The graph defines what it needs of a pool (`tutti_graph::Pool`: run one
 //! job on the caller and up to `participants - 1` other threads, return when

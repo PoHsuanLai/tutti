@@ -1,4 +1,4 @@
-//! The cost model and coarsening (doc 013, "Phase 6, part (b)"): a graph
+//! The cost model and coarsening (doc 013): a graph
 //! too cheap to spread renders serially on a pool, a wide one spreads, and
 //! cheap siblings packed into one task render bit for bit what the serial
 //! walk renders.
@@ -142,7 +142,7 @@ fn ragged() -> Vec<usize> {
 /// `tiny/16`: sixteen light gains pack into two tasks of eight (about two
 /// grains of work), and the plan, too cheap to pay for dispatch, renders
 /// serially on a pool. The same graph with gains that declare nothing
-/// spreads, a task per gain, as part (a) ran it.
+/// spreads, a task per gain.
 ///
 /// Mutations: drop pass 2 (`pack`) from `coarsen` → the light plan keeps
 /// its eighteen tasks → fails; make `cost::schedule`'s `pays` always true
@@ -174,7 +174,7 @@ fn a_tiny_plan_packs_and_renders_serially() {
 ///
 /// Mutations: make `cost::schedule`'s `pays` always true (always
 /// parallel) → fails; make `par_for` build the parallel state whenever the
-/// plan has two tasks, ignoring the schedule (part (a)) → the
+/// plan has two tasks, ignoring the schedule → the
 /// `is_parallel` assert fails.
 #[test]
 fn a_cheap_plan_of_several_tasks_renders_serially() {

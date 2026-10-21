@@ -65,14 +65,14 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// Mutation: let a chunk's parameter queue grow past its point room (no
 /// `has_room` check in `ParamDelivery::place`) → eight blocks of points
 /// outgrow the queue's reserved storage → aborts.
-/// Mutation (run, doc 014 PR 5, on the lanes' segments): allocate where
+/// Mutation (run, on the lanes' segments): allocate where
 /// the node starts following a segment (a `Vec` per
 /// `SegmentPoints::start`) → aborts. (Growing the slots past what
 /// `prepare` reserved is not seen here: each lane has one segment in
 /// flight on its own parameter, so two slots are ever live; the overflow
 /// path's fallback is pinned by `segment_points`' unit tests.)
 ///
-/// Ported in doc 014 PR 5: the LFO was an `LfoCurve` sampled by the deleted
+/// Ported: the LFO was an `LfoCurve` sampled by the deleted
 /// `PluginAutomation` node; it is a lane's LFO layer around its knob now.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {

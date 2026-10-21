@@ -20,7 +20,7 @@
 # `SlabHeader` is not possible either way: it is `repr(C)` over `std` atomics at
 # fixed offsets in an mmap, which loom's types cannot be).
 #
-# That `lfqueue` edge went with the fundsp fork (design doc 013, Phase 5). The
+# That `lfqueue` edge went with the fundsp fork. The
 # crate stays separate anyway: the flag still reaches every dependency
 # `tutti-plugin` has, and an empty dependency list is the only one that stays
 # unpolluted as that tree changes.

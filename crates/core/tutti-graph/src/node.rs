@@ -120,8 +120,8 @@ pub struct Shape {
     pub params: ParamPorts,
     /// About how much work the node does per sample and channel: the
     /// compiler's cost model packs cheap siblings into one task and keeps a
-    /// graph too cheap to spread on one thread (doc 013, "Phase 6, part
-    /// (b)"). [`Cost::Heavy`] unless set with [`with_cost`](Self::with_cost):
+    /// graph too cheap to spread on one thread (doc 013, "The cost model and
+    /// coarsening"). [`Cost::Heavy`] unless set with [`with_cost`](Self::with_cost):
     /// a node that declares nothing is assumed worth a thread of its own.
     /// A speed hint only — it never changes a sample.
     pub cost: Cost,

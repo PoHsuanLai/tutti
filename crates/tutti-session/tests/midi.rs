@@ -201,7 +201,7 @@ fn a_target_without_an_event_input_takes_no_clip() {
     ));
 }
 
-/// **A clip and a live input survive their target's re-bind** (the PR 4
+/// **A clip and a live input survive their target's re-bind** (a past
 /// regression, at the session): the target is removed, a new node takes
 /// its place, and the host re-aims both at it. The same clip and queue
 /// nodes play the new node, and the removed one hears nothing.

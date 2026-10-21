@@ -5,7 +5,7 @@
 //! every call.
 //!
 //! Each gate runs twice: on the serial executor and on the parallel one
-//! (doc 013 Phase 6, `src/par.rs`), whose every participant — the helper
+//! (`src/par.rs`), whose every participant — the helper
 //! threads as well as the caller — runs its share of each block inside
 //! `assert_no_alloc` (`common::TestPool::no_alloc`), so an allocation or a
 //! free on any of them aborts. What the parallel gate cannot see: the pool's

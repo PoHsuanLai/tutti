@@ -1,4 +1,4 @@
-//! Modulation on control lanes, in an `App` (doc 014 §8, §12 "PR 4b").
+//! Modulation on control lanes, in an `App` (doc 014 §8, §12.5).
 //!
 //! Every test declares its modulation as components ([`Mods`], `ModSource`,
 //! `ModRoute`, `ModRange`, `Automation`), runs the app's frames, and asserts
@@ -509,7 +509,7 @@ fn a_knob_written_after_a_route_edit_is_the_knob() {
 /// sustain: from the first grid piece after the frame it lands in, probe 2
 /// reads `0.1 + 0.5 · 0.4`, not its knob until the next note.
 ///
-/// Mutation (run, against the session's loop since design 015 PR 5):
+/// Mutation (run, against the session's loop):
 /// `Phase::AfterCommit` not sending the resyncs owed (`ModSession::resync`
 /// skipped) fails: the resync stays owed. Neutral, not a gap: the
 /// modulation phase asking for a commit on `Applied::resync` too (as it
@@ -579,8 +579,7 @@ fn a_held_note_envelope_newly_routed_reads_its_level_at_once() {
 /// (the automation plays through it: 800, not 300); `close_takes` leaving
 /// the curve (the old 800 is back after the release, not 650);
 /// `tutti_session::Take::is_done` ignoring a touch take's release (the
-/// take stays open: 300; re-run against the session's `Take`, design 015
-/// PR 5).
+/// take stays open: 300; re-run against the session's `Take`).
 #[test]
 fn a_take_suspends_the_automation_then_restores_it() {
     let (mut app, mut side) = app(1);
@@ -636,8 +635,8 @@ fn a_take_suspends_the_automation_then_restores_it() {
 /// `ModulationState::refusal`, and nothing is built. Dropping the route
 /// applies the rest, and clears the refusal.
 ///
-/// Mutations (run, against the session's loop since design 015 PR 5), each
-/// fails: the adapter's `run` not forwarding the session's
+/// Mutations (run, against the session's loop), each fails: the adapter's
+/// `run` not forwarding the session's
 /// `ModulationRefused` (no message); `tutti_session::ModRefusal::route`
 /// mapping `Cycle` to `None`; a refusal reported every update (the
 /// session's `ModState::refuse` comparing to nothing: two messages across
@@ -709,7 +708,7 @@ fn a_follower_downstream_of_its_target_is_refused_by_route() {
 /// same way.
 ///
 /// Mutations (run, against `tutti_session::declare_targets`, which
-/// `Declared::collect` calls since design 015 PR 5), each fails with no
+/// `Declared::collect` calls), each fails with no
 /// message: a second range replacing the first (merged); a second
 /// automation merged into the first (`automated.insert`'s answer
 /// ignored).
@@ -784,8 +783,8 @@ fn two_ranges_or_automations_on_one_param_are_refused() {
 /// a plan) the new node plays `400 + 250`, and a range edit after it lands
 /// on the new node (`+500`).
 ///
-/// Mutations (run, against the session's `Phase::AfterCommit` since design
-/// 015 PR 5), each fails: not re-applying while a target is unresolved
+/// Mutations (run, against the session's `Phase::AfterCommit`), each fails:
+/// not re-applying while a target is unresolved
 /// (`ModSession::reapply` returning `false`: the new node's first frame
 /// plays its bare knob, 400, and only the next frame's apply resolves it);
 /// the re-apply's commit skipped (`self.commit()` deleted: the lanes the
@@ -868,13 +867,13 @@ impl tutti_graph::Node for Late {
 /// and [`GraphLatency`](bevy_tutti::GraphLatency) is that plan's latency
 /// on that frame; the re-apply after it resolves the target.
 ///
-/// Not a mutation this can see (run, design 015 PR 5): the session's
+/// Not a mutation this can see (run): the session's
 /// re-apply commit not publishing (`self.graph.commit()` for
-/// `self.commit()`), or Bevy's `after_commit` not mirroring. Since PR 4
-/// the frame's own commit takes every staged edit (`Graph::is_edited`),
+/// `self.commit()`), or Bevy's `after_commit` not mirroring. The frame's
+/// own commit takes every staged edit (`Graph::is_edited`),
 /// so here the re-apply's plan adds a macro's lane, which moves no latency
 /// figure; the old record (`after_commit` calling `graph.commit()`, not
-/// `commit_and_publish`) already survived on the PR 4 merge.
+/// `commit_and_publish`) already survived.
 /// `a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame` covers
 /// both. The mutation that fails here: the frame's figures mirrored by
 /// neither system (the `mirror` calls in `commit_graph` and `after_commit`
@@ -955,7 +954,7 @@ fn a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame() {
 
 // ------------------------------------- ported from the old driver --
 //
-// Doc 014 PR 5 deleted the frame-rate driver (`modulation::legacy`) and its
+// Doc 014 §10 deleted the frame-rate driver (`modulation::legacy`) and its
 // suites (`mod_value_path.rs`, `mod_audio_rate.rs`,
 // `graph_value_modulation.rs`). The properties below were theirs and still
 // hold of the declarations; each is asserted on the lanes now.
@@ -980,7 +979,7 @@ fn assert_holds(out: &[f32], want: f32, what: &str) {
 /// `two_routes_onto_one_param_sum_instead_of_overwriting` and
 /// `a_disabled_route_contributes_nothing`.
 ///
-/// Mutations (run, PR 5), each fails: `Declared::collect` ignoring
+/// Mutations (run), each fails: `Declared::collect` ignoring
 /// `enabled` (the disabled route still adds: 800 for 600); the lane's
 /// program keeping only its last layer (`ControlProgram::new` given
 /// `layers.split_off(len - 1)`: 700 for 800).
@@ -1026,7 +1025,7 @@ fn two_routes_on_one_param_sum_and_a_disabled_one_adds_nothing() {
 /// Ported from `mod_value_path.rs`'s
 /// `removing_a_route_returns_the_param_to_its_base`.
 ///
-/// Mutation (run, PR 5): `Modulation::apply`'s lane sweep keeping a lane
+/// Mutation (run): `Modulation::apply`'s lane sweep keeping a lane
 /// whose target has no bind left (the `gone` filter's
 /// `binds.get(t).is_none_or(..)` as `is_some_and(..)`) → the lane stays on
 /// the port with its stale program → fails.
@@ -1088,7 +1087,7 @@ impl bevy_tutti::modulation::ModSourceKind for HalfMacro {
 /// idempotent` went with the registration: a `ModSource` holds its kind,
 /// and nothing is registered.)
 ///
-/// Mutation (run, PR 5): `Declared::collect` declaring every source as a
+/// Mutation (run): `Declared::collect` declaring every source as a
 /// macro at 1 (`Source::Macro { value: 1.0 }` for `s.kind.declare()`) →
 /// 900 → fails.
 #[test]
@@ -1122,7 +1121,7 @@ fn a_hosts_own_source_kind_drives_a_param() {
 /// Ported from `mod_audio_rate.rs`'s
 /// `a_route_declared_before_its_sinks_node_still_binds`.
 ///
-/// Mutation (run, PR 5): `Modulation::apply` refusing a target it cannot
+/// Mutation (run): `Modulation::apply` refusing a target it cannot
 /// resolve (`WrongTarget` for `unresolved_targets.push`) → the nodeless
 /// target is refused → fails.
 #[test]
@@ -1161,7 +1160,7 @@ fn a_route_declared_before_its_targets_node_binds_once_it_is_in() {
 /// `a_bus_strips_volume_and_pan_reach_audio_rate` (its audio-rate half
 /// went with `ParamFrom::Audio`, doc 014 §11).
 ///
-/// Mutation (run, PR 5): `Pan` dropped from `STRIP_PARAMS` → the route is
+/// Mutation (run): `Pan` dropped from `STRIP_PARAMS` → the route is
 /// refused (`NoSuchParam`) → fails.
 #[test]
 fn a_bus_strips_volume_and_pan_take_lanes() {
@@ -1188,14 +1187,14 @@ fn a_bus_strips_volume_and_pan_take_lanes() {
 }
 
 /// **A chorus's rate and a phaser's mix take lanes.** Their params were
-/// knobs the old frame-rate driver wrote; doc 014 PR 5 declares them as
+/// knobs the old frame-rate driver wrote; the nodes now declare them as
 /// ports (`MOD_DELAY_PARAMS`, `PHASER_PARAMS`), so a route onto each resolves to a lane, with nothing
 /// refused. What a lane on them sounds like is pinned where the nodes live
 /// (`tutti-nodes`' `a_lane_modulates_a_chorus_rate_around_its_own_cell`
 /// and `each_fed_param_is_the_one_the_dsp_reads`, `tutti-polysynth`'s
 /// `param_lanes.rs`).
 ///
-/// Mutation (run, PR 5): `ModDelayNode` not declaring its ports (the
+/// Mutation (run): `ModDelayNode` not declaring its ports (the
 /// `.with_params(&MOD_DELAY_PARAMS)` dropped) → the chorus route is refused
 /// (`NoSuchParam`) → fails.
 #[test]

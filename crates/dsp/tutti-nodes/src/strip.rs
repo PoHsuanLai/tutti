@@ -418,7 +418,7 @@ impl Node for BusStripNode {
             // Volume, pan and mute as ramped per-frame gains:
             // measured 3.7 ns per frame and channel, against a gain's 0.22
             // and `SvfFilterNode`'s 7.2, past the `Light`/`Moderate`
-            // boundary (about 2.8; doc 013, "Phase 6, part (b)").
+            // boundary (about 2.8; doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)

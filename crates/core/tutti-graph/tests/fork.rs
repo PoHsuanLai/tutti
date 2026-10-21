@@ -365,7 +365,7 @@ fn an_offline_fork_hands_its_sources_the_render_timeline() {
 ///
 /// Mutation (run): `ParamFork::new` keeping a template detached at insert
 /// (`node.fork_fresh()`) → the fork renders the constructed 0.5 → fails.
-/// (Re-run in doc 014 PR 5, with the authored copy gone: the fork reads
+/// (Re-run with the authored copy gone: the fork reads
 /// the shared cells, so a detached template is all that can lose the set.)
 #[test]
 fn a_value_set_after_insert_reaches_the_fork() {
@@ -779,7 +779,7 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
 /// clones share a cell with it (`Shared`), which its fork source severs, and
 /// a [`ParamNode`] whose fork is taken from its [`ParamSet`].
 ///
-/// Changed in doc 014 PR 5: a live-only write to the level's cell (a
+/// Changed in doc 014 §12.6: a live-only write to the level's cell (a
 /// modulation driver's) is gone with the authored copy (§10); a fork reads
 /// the cells, and the test now moves the live level after the fork.
 ///

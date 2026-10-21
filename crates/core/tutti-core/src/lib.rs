@@ -18,7 +18,7 @@ pub use tutti_types::value::{
 
 mod engine;
 
-// The threads the parallel graph executor runs a block on (doc 013 Phase 6):
+// The threads the parallel graph executor runs a block on (doc 013, "The parallel executor"):
 // the engine's implementation of `tutti_graph::Pool`, which a host hands to
 // `Executor::set_pool` before the executor goes to the audio thread.
 mod pool;

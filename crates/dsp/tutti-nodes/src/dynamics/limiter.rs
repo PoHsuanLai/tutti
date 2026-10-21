@@ -979,11 +979,11 @@ mod tests {
 
     /// The shapes declare ceiling, threshold and release (and the brickwall
     /// its ceiling), and never change the arity: a modulatable limiter is as
-    /// wide as it was built. (Doc 014 PR 5 widened the list: a route onto
+    /// wide as it was built. (Doc 014 §12.6 widened the list: a route onto
     /// any of these was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
-    /// fails. Mutation (run, PR 5): `param_base(2)` answering the threshold
+    /// fails. Mutation (run): `param_base(2)` answering the threshold
     /// cell → fails.
     #[test]
     fn the_shapes_declare_ceiling_threshold_and_release() {

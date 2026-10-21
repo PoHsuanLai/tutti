@@ -232,7 +232,7 @@ impl VoiceNode {
     /// What the node declares to the cost model: `Moderate` for a plain
     /// read, `Heavy` with a time-stretch filter.
     ///
-    /// Measured (doc 013, "Phase 6, part (b)"): a plain memory voice 13 ns
+    /// Measured (doc 013, "The cost model and coarsening"): a plain memory voice 13 ns
     /// per frame and channel, a stretched one 288 (the phase vocoder),
     /// against `SvfFilterNode`'s 7.2 and `Heavy`'s 256. A node's filter is
     /// built with it or never (`UpdateStretch` reaches only a pool's

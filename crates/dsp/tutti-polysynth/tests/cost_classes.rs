@@ -1,5 +1,5 @@
 //! The synth declares a cost class from its oscillator lanes (doc 013,
-//! "Phase 6, part (b)"): `Moderate` up to sixteen (`max_voices` × unison),
+//! "The cost model and coarsening"): `Moderate` up to sixteen (`max_voices` × unison),
 //! `Heavy` past them. Declaring one changes only the parallel schedule:
 //! sibling synths pack into fewer tasks than undeclared ones, and the render
 //! on a pool is bit for bit the serial one.

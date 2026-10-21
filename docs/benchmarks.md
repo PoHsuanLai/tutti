@@ -32,7 +32,7 @@ actionable and "0.9% of the block budget" is. Criterion's `elem/s` divided by
 Cost of `Engine::process` against the number of DSP nodes in the graph, at a
 64-frame block.
 
-The bench moved from `tutti-core` to `tutti-nodes` (design doc 013, Phase 0b)
+The bench moved from `tutti-core` to `tutti-nodes`
 when its graph switched from fundsp's `lowpass_hz`/`bell_hz`/`pan` to the
 engine's own `SvfFilterNode`/`EqBandNode`/`BusStripNode` — `tutti-core` cannot
 depend on the crate those live in. **The figures below were recorded on the

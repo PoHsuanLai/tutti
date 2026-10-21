@@ -131,7 +131,7 @@ tutti-export = { path = "../../core/tutti-export", default-features = false }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests, and
 # the control lane (`ControlLaneNode::for_foreign`) that drives a plugin's
 # parameters through its event input: what replaced the crate's own
-# automation node (doc 014 PR 5). Dev-only: the node itself names no lane.
+# automation node. Dev-only: the node itself names no lane.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 # The lane's `ControlProgram`, for the tests and the example that build one.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false }

@@ -21,7 +21,7 @@
 //! Replacing `CapturedControls::for_hosted(hosted)` in `plugin_load_promote`
 //! with `CapturedControls::default()` fails with no shadow and no meter
 //! bind (run, failed); the latency still reaches the graph, which is the
-//! session's and no longer the shadow's (design 015 PR 6).
+//! session's and no longer the shadow's.
 //!
 //! # The two artifacts
 //!

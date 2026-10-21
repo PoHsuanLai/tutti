@@ -217,8 +217,7 @@ impl Plugin for ExportPlugin {
         // Its set runs after `GraphReconcileSystems::Spawn` and before
         // `Params` (`configure_phases`), so with `plugin` this also forces
         // `start_exports`, which forks the live graph, before the frame's
-        // `Params` and `Commit`. Before design 015 PR 7 the two were
-        // unordered. Without `plugin`, they still are.
+        // `Params` and `Commit`. Without `plugin`, the two are unordered.
         #[cfg(feature = "plugin")]
         app.add_systems(
             Update,

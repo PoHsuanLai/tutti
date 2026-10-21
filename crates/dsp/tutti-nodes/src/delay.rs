@@ -1105,7 +1105,7 @@ mod tests {
 
     /// The node declares feedback, delay time and mix as its params, and
     /// never changes the arity: a modulatable delay is as wide as it was
-    /// built, in and out. (Doc 014 PR 5 widened the list: a route onto any of these was
+    /// built, in and out. (Doc 014 §12.6 widened the list: a route onto any of these was
     /// refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion

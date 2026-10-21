@@ -56,7 +56,7 @@ fn smf_bytes() -> Vec<u8> {
 //
 // The decode itself is `tutti_midi_file::MidiFile::from_bytes`, and its tests
 // (an SMF to its tracks, a clip file by its magic, neither format, a truncated
-// SMF) moved there with it (design 015, PR 1). What stays is the loader's own
+// SMF) moved there with it. What stays is the loader's own
 // claim.
 
 /// The loader claims the extensions both containers are found under.

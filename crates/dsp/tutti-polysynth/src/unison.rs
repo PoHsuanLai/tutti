@@ -276,7 +276,7 @@ mod tests {
     /// the engine detunes by 0, as `set_detune(-10)` leaves it, and does not
     /// recompute again for the same drive.
     ///
-    /// Mutation (run, PR 5 review): `sync_from_atomics` without
+    /// Mutation (run): `sync_from_atomics` without
     /// `clamp_detune` (the driven value as is) → the config holds −10 → fails.
     #[test]
     fn a_driven_detune_is_floored_as_the_setter_floors_it() {

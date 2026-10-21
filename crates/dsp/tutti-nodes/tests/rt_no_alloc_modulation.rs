@@ -321,7 +321,7 @@ impl tutti_core::Pool for GatedPool {
 /// for an `Elastic` piece and for a curve with no pieces, ragged blocks;
 /// serial, and on a pool whose helpers run under the gate too.
 ///
-/// Changed in doc 014 PR 2b: the lanes are `ControlLaneNode`s, and the
+/// Changed in doc 014 §12.2: the lanes are `ControlLaneNode`s, and the
 /// `Elastic` and sine lanes send grid points of the play clock; the
 /// no-allocation property stands.
 ///

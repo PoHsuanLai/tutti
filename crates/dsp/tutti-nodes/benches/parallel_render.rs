@@ -1,4 +1,4 @@
-//! The parallel executor against the serial one (doc 013 Phase 6), on this
+//! The parallel executor against the serial one (doc 013, "The parallel executor"), on this
 //! crate's filters, at 1, 2, 4 and 8 participants.
 //!
 //! Shapes, each one block of `FRAMES` at 48 kHz, driven through the
@@ -16,7 +16,7 @@
 //!   `Cost::Light`, so the cost model (doc 013 step 6) packs them and keeps
 //!   the block serial. `tiny/<lanes>-undeclared` is the same graph with
 //!   gains that declare nothing: every gain its own task, spread over the
-//!   pool, as part (a) ran every graph — where a pool loses.
+//!   pool — where a pool loses.
 //! - `mixed/<lanes>x<depth>x<fan>` — `lanes` chains of `depth` filters,
 //!   each fanned out to `fan` light gains and summed back: heavy work with
 //!   cheap siblings, where packing the siblings (and not dispatching each)
@@ -32,7 +32,7 @@
 //! cargo bench -p tutti-nodes --bench parallel_render
 //! ```
 //!
-//! The figures in doc 013 ("Phase 6") were taken on the machine named
+//! The figures in doc 013 ("Go fast") were taken on the machine named
 //! there; they do not travel. Eight participants on a four-core machine
 //! oversubscribe it and are reported as measured, not dropped.
 
@@ -101,8 +101,7 @@ fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
 
 /// A gain: one multiply per sample, the cheapest node there is. It
 /// declares `Cost::Light` when `light`, and nothing (`Cost::Heavy`, the
-/// default) otherwise: the second is the part (a) behaviour, every gain a
-/// task of its own and any two independent ones spread.
+/// default) otherwise: every gain a task of its own and any two independent ones spread.
 struct Gain {
     gain: f32,
     light: bool,
@@ -167,8 +166,7 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
     ed.collect();
     // The cost model keeps the declared-light graph on one thread (its
     // gains pack into two tasks of eight, four tasks in all, too cheap to
-    // spread); the undeclared one spreads a task per gain, as part (a)
-    // did.
+    // spread); the undeclared one spreads a task per gain.
     assert_eq!(exec.is_parallel(), workers > 1 && !light);
     exec
 }

@@ -97,7 +97,7 @@ fn lookahead_row() -> Row {
 /// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
 /// PDC path through the compiler's delay of the early param source.
 ///
-/// Mutations (re-run in doc 014 PR 5, the source an event pulse): in
+/// Mutations (re-run with the source an event pulse): in
 /// `compile`, never lower a param source's delay (no
 /// `DelayKey::ParamEvent`) → the PDC paths fail. In `render_ramps`, take
 /// each event one frame late → every path fails.

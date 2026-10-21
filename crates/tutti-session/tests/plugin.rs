@@ -1,4 +1,4 @@
-//! Hosted plugins and exports in the session (design 015 §4.3, §9 PR 6),
+//! Hosted plugins and exports in the session (design 015 §4.3, §9.6),
 //! end to end over the reference CLAP plugin in a real `plugin-server`.
 //!
 //! The render mode a plugin was told is read back through its latency: with

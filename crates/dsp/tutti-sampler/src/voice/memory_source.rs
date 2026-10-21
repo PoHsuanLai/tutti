@@ -1280,7 +1280,7 @@ impl Node for MemorySource {
             // A cubic Hermite read per frame and channel, behind the
             // placement gate: measured 16–17 ns per frame and channel,
             // placed or free-running, against `SvfFilterNode`'s 7.2 and
-            // `Heavy`'s 256 (doc 013, "Phase 6, part (b)").
+            // `Heavy`'s 256 (doc 013, "The cost model and coarsening").
             .with_cost(tutti_graph::Cost::Moderate)
             // Its gain, as a voice's ([`VOICE_PARAMS`](super::VOICE_PARAMS)):
             // block-rate, read on the block's last frame.
@@ -2658,10 +2658,10 @@ mod tests {
         tutti_graph::contract::assert_param_fork(MemorySource::new(ramp_wave(48_000, 48_000.0)));
     }
 
-    /// **Its gain is a port, its base the cell** (doc 014 PR 5,
-    /// [`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
+    /// **Its gain is a port, its base the cell**
+    /// ([`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
     ///
-    /// Mutation (run, PR 5): `param_base` answering unity → fails.
+    /// Mutation (run): `param_base` answering unity → fails.
     #[test]
     fn the_shape_declares_its_gain() {
         let s = MemorySource::new(ramp_wave(64, 48_000.0));

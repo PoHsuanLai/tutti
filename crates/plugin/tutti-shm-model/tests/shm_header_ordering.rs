@@ -41,8 +41,8 @@
 //! RUSTFLAG, so it reaches every crate in the graph, and `lfqueue` — which
 //! carries its own `cfg(loom)` support and was then a mandatory transitive
 //! dependency of `tutti-plugin` (fundsp-tutti → tutti-core) — failed to
-//! compile under it. That edge went with the fundsp fork (design doc 013,
-//! Phase 5), but there is still no per-crate scope for the flag, so the model
+//! compile under it. That edge went with the fundsp fork, but there is still
+//! no per-crate scope for the flag, so the model
 //! stays in a crate with an empty dependency list. Full note in this crate's
 //! `Cargo.toml`.
 

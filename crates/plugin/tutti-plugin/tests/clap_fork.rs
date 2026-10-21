@@ -1119,7 +1119,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
 }
 
 /// **An export renders a graph of plugins the same on a worker pool as
-/// alone** (doc 013 Phase 6): two out-of-process probes side by side, each
+/// alone** (doc 013, "The parallel executor"): two out-of-process probes side by side, each
 /// at its own gain, forked offline twice — once rendered on the export's
 /// thread, once on a four-participant `WorkerPool`, where the two plugins'
 /// blocks go to their servers from different threads at once — and the two

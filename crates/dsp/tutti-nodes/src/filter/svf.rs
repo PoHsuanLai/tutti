@@ -1029,12 +1029,12 @@ mod tests {
 
     /// The shape is as wide as the filter was built, in and out, declares
     /// cutoff, Q and gain as its modulatable params, and reports
-    /// `Tail::Unknown`. (Doc 014 PR 5 added the gain port: a route onto an
+    /// `Tail::Unknown`. (Doc 014 §12.6 added the gain port: a route onto an
     /// SVF's gain was refused once the frame-rate driver went.)
     ///
     /// Mutation (run): swap `SVF_PARAMS`' order → the params assertion fails.
     /// Mutation (run): drop `.with_tail(Tail::Unknown)` → the shape's default
-    /// `Tail::None` → the tail assertion fails. Mutation (run, PR 5):
+    /// `Tail::None` → the tail assertion fails. Mutation (run):
     /// `param_base(2)` answering the Q cell → fails.
     #[test]
     fn the_shape_is_the_width_and_declares_cutoff_q_and_gain() {

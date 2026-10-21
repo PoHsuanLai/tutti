@@ -898,8 +898,8 @@ impl Node for VoicePool {
             .with_tail(Tail::Unbounded)
             // Its voices arrive while it plays, each a `VoiceNode`'s cost:
             // measured 13 ns per frame and channel at one plain voice, 82 at
-            // eight, and one stretched voice alone is 288 (doc 013, "Phase
-            // 6, part (b)"). The default, stated.
+            // eight, and one stretched voice alone is 288 (doc 013, "The
+            // cost model and coarsening"). The default, stated.
             .with_cost(tutti_graph::Cost::Heavy)
     }
 

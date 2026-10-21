@@ -11,7 +11,7 @@
 //! registered with `param_graph_node!`, and an engine node,
 //! `DistortionNode`.
 //!
-//! Ported in doc 014 PR 5 from `capture_controls.rs`, which pinned the same
+//! Ported from `capture_controls.rs`, which pinned the same
 //! paths through the deleted `ModParamsHandle` (a capture the old driver
 //! resolved routes on), on a `DriveUnit` that declared no param port (the
 //! old driver wrote its cell; a lane needs the port, so the fixture went). Its `removing_the_node_drops_the_captured_handle`
@@ -22,7 +22,7 @@
 //! `a_crossfaded_synth_keeps_its_modulation` is
 //! `a_crossfade_hands_the_lane_the_incoming_nodes_cell` below.
 //!
-//! Mutations (run, PR 5), each fails: `insert_and_bind` not addressing the
+//! Mutations (run), each fails: `insert_and_bind` not addressing the
 //! params (no `set_node_params`: the lane has no knob) → the three
 //! insertion tests; `Swap::swap` not addressing the incoming node's params
 //! → the crossfade test (the lane keeps the outgoing cell).

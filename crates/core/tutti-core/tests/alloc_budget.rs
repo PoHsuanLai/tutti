@@ -307,7 +307,7 @@ fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
 
 /// **The parallel executor's state costs a bounded amount per plan.**
 /// Applying a plan on a pool also builds its task graph, claim tables and
-/// per-worker scratch (doc 013 Phase 6); that must scale with the graph, not
+/// per-worker scratch (doc 013, "The parallel executor"); that must scale with the graph, not
 /// worse, and stay within a small multiple of what applying costs without
 /// the pool. (Applying runs on the thread that calls `apply_pending`, so the
 /// count sees all of it; the pool's own threads are spawned before the

@@ -2658,7 +2658,7 @@ mod tests {
                 }
                 assert!(changes.make_room(i), "within the budget");
                 // A frame a point: a full room (273 at 512 frames) fits the
-                // block. (Changed in doc 014 PR 2b: every third frame, which
+                // block. (Changed in doc 014 §12.2: every third frame, which
                 // put a 273-point room's points past a 512-frame block.)
                 changes.queues[i].add_point(k as i32, pooled_value(id, k));
             }

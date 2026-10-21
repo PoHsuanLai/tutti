@@ -32,6 +32,10 @@ thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
+# `Pool`, the worker-pool contract `clap.thread-pool` requests are served on
+# (`ClapLoaded::set_thread_pool`). No cycle: `tutti-graph` names only
+# `tutti-types`.
+tutti-graph = { path = "../../../core/tutti-graph" }
 
 [build-dependencies]
 # Shared with the other three crates that locate a reference plugin
@@ -42,6 +46,8 @@ tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
 # The shared resolver; see its docs for the newest-wins rule.
 tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
 assert_no_alloc = { version = "1", default-features = false }
+# `WorkerPool`, the pool the `clap.thread-pool` suite serves requests on.
+tutti-core = { path = "../../../core/tutti-core", default-features = false }
 tempfile = "3"
 # The reference plugin used by the clap_conformance harness. As a
 # dev-dependency, Cargo builds its cdylib in the same `cargo test`

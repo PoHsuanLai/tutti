@@ -282,6 +282,7 @@ impl ClapLoaded {
             audio,
             ports,
             flags: LifecycleFlags::default(),
+            thread_pool: None,
         })
     }
 

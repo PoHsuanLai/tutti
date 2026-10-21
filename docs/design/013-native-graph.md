@@ -301,7 +301,10 @@ the interpreter.
   to a per-worker LIFO deque with FIFO stealing; bounded wakeups (Ardour
   `run_one`); workers spin → yield → park (crill progressive backoff) and never
   make the callback wait on a syscall; RT priority, `os_workgroup` join,
-  MMCSS. `clap.thread-pool` is served from the same pool, re-entrant.
+  MMCSS. `clap.thread-pool` is served from a worker pool, but not the
+  engine's: tutti runs CLAP audio in the plugin server, so the server's own
+  pool serves it, and a request that finds the pool busy is refused (see
+  ["`clap.thread-pool`"](#clapthread-pool)).
 - **Block size is a `Prepare` parameter**, not `MAX_BUFFER_SIZE = 64`. The live
   path runs at the device quantum; export runs at 1024+.
 
@@ -3153,7 +3156,10 @@ What each layer holds:
   yield, then park between jobs (crill's progressive backoff); the caller
   wakes at most `wake - 1` parked helpers per block (`Thread::unpark`, the
   one system call the audio thread makes for the pool) and never waits for a
-  helper to wake. `WorkerPoolBuilder::on_start` runs a host hook on each
+  helper to wake. It runs one job at a time: a `run` that finds it busy
+  runs its job alone on the caller, and `Pool::try_run` runs nothing and
+  returns `false`, for a caller with a fallback of its own (a CLAP plugin's
+  thread-pool request). `WorkerPoolBuilder::on_start` runs a host hook on each
   helper before it takes work: where RT priority, MMCSS or a macOS audio
   workgroup join goes. The engine does not promote threads itself, for the
   reason it does not promote the callback. The helpers must run at the
@@ -4167,6 +4173,60 @@ all three into fresh `Vec`s to keep only the restart flags.
 - **Deferred.** `CALLER_YIELD_AFTER` could be a per-pool setting in the
   planned crate extraction. `HELPER_SPINS` is still a count, so how long a
   helper stays in a block still differs across cores.
+
+#### `clap.thread-pool`
+
+A CLAP plugin's `request_exec(host, n)`,
+made from its `process`, runs `exec(plugin, 0..n)` on a `tutti_graph::Pool`
+and returns once every task has run; before, the host refused every
+request and a plugin that parallelises its own voices ran them serially.
+
+- **Which calls are served.** `ext/thread-pool.h` allows the call only from
+  the audio thread inside `process`, never from the pool. `do_process`
+  serves a request (the pool, the plugin and its `exec`) through a
+  thread-local for exactly the span of the plugin's `process`
+  (`PoolRequest::serve`, which clears it on return or unwind); a call is
+  served only on that thread, for that instance (its host is checked), and
+  the request is taken while its tasks run. Any other call — outside
+  `process`, from a pool thread or the plugin's own, naming another
+  instance's host, from inside a task — returns `false`, and the plugin
+  runs the tasks itself.
+- **Running them.** One job on the pool; each participant claims indices
+  from a shared counter until none is left, so every index runs once with
+  any number of participants, under `ScopedNoDenormals` on every one. The
+  request lives on the caller's stack: nothing allocates, locks or frees
+  (`tests/clap_thread_pool.rs` gates the caller and every helper).
+- **A busy pool refuses.** The caller may itself be a participant of a
+  graph block on the same pool (an in-process host that gives the instance
+  the engine's pool). `WorkerPool` runs one job at a time, so the request
+  goes through `Pool::try_run` (`JobGate::try_run`, loom-checked against a
+  running job): a busy pool runs nothing and the request returns `false`.
+  It never waits on the job it was called from, and the plugin's fallback
+  costs no more than running the tasks alone on the caller would. A
+  second gate, so a nested request could borrow the idle helpers, would
+  give every helper two gates to watch for a case tutti does not have: its
+  CLAP audio runs in the server, whose pool runs no graph.
+- **Served tasks follow the audio thread's rules.** The audio thread waits
+  for every task, so a task is held to its rules on whichever thread runs
+  it: a thread-local flag set around each participant's share, beside
+  `ScopedNoDenormals`, makes `clap.log` count the line as dropped rather
+  than format, print and keep it, as it does on the audio thread
+  (`is_audio_thread` still answers only for the audio thread).
+- **No pool, or a pool of one participant:** refused. The header's fallback
+  for `false` is the plugin's own (a serial loop at worst, its own threads
+  at best), never worse than this host running the tasks inline.
+- **Out of process.** tutti hosts CLAP audio in `plugin-server`, so the
+  engine's pool is in another process and a request cannot reach it. The
+  server builds its own `WorkerPool` the first time a plugin that
+  implements the extension loads, with helpers raised to the audio phase's
+  realtime priority; a plugin without it costs no threads. It takes half
+  the cores, at most 4, the server's audio thread included: every pooled
+  instance has a server and so a pool of its own, and the engine's pool
+  wants the same cores. Below 2 participants (fewer than 4 cores) no pool
+  is built and requests are refused. Its helpers spin 10 µs and yield 50 µs
+  before parking (the engine's pool: 50 and 500), since a request is one
+  short span per block. A request never waits for a helper that has not
+  started a task; a helper preempted mid-task delays the request.
 
 #### RT primitive cleanups (landed)
 

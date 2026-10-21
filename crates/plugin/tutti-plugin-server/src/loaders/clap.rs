@@ -40,6 +40,66 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
     }
 }
 
+/// The pool this process serves `clap.thread-pool` requests on, built the
+/// first time a plugin that implements the extension loads; `None` on a
+/// machine too small for one (below).
+///
+/// The engine's own pool lives in the host process, and a plugin's `process`
+/// runs here, in another: a request cannot reach it. So the server keeps a
+/// `WorkerPool` of its own, with its helpers raised to the audio thread's
+/// realtime priority, as `tutti_core::WorkerPool` requires of helpers. A
+/// plugin that does not implement the extension costs no threads.
+///
+/// Sized by [`pool_participants`]: half the cores, at most 4, the server's
+/// audio thread included. Each plugin instance has a server process of its
+/// own, so every pooled instance adds a pool, and the engine's pool in the
+/// host wants the same cores; half leaves the other half to them, and the cap
+/// keeps a few pooled instances from oversubscribing a large machine, where
+/// one block's tasks rarely keep more than a few threads busy anyway. Below
+/// two participants (fewer than 4 cores) no pool is built, and requests are
+/// refused: the plugin's own fallback does as well as a pool of one.
+///
+/// A request is one span of one block, so its helpers spin only briefly and
+/// park soon after (10 µs, then 50 µs of yielding) rather than holding cores
+/// the engine could use between blocks. That costs a request nothing: it
+/// never waits for a helper that has not started a task (the audio thread
+/// runs tasks from the start, and helpers join as they arrive), though a
+/// helper preempted mid-task delays the request.
+#[cfg(feature = "clap")]
+fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
+    THREAD_POOL
+        .get_or_init(|| {
+            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let participants = pool_participants(cores);
+            (participants >= 2).then(|| {
+                std::sync::Arc::new(
+                    tutti_core::WorkerPool::builder(participants)
+                        .name("tutti-clap-pool")
+                        .spin(std::time::Duration::from_micros(10))
+                        .idle(std::time::Duration::from_micros(50))
+                        .on_start(std::sync::Arc::new(|_| {
+                            crate::server::raise_to_realtime("a clap.thread-pool helper")
+                        }))
+                        .build(),
+                )
+            })
+        })
+        .clone()
+        .map(|pool| pool as std::sync::Arc<dyn tutti_core::Pool>)
+}
+
+/// Participants of the server's pool on a machine with `cores` cores (see
+/// [`thread_pool`]): half of them, at most 4.
+#[cfg(feature = "clap")]
+fn pool_participants(cores: usize) -> usize {
+    (cores / 2).min(4)
+}
+
+/// [`thread_pool`]'s pool, once decided.
+#[cfg(feature = "clap")]
+static THREAD_POOL: std::sync::OnceLock<Option<std::sync::Arc<tutti_core::WorkerPool>>> =
+    std::sync::OnceLock::new();
+
 /// What the two editor answers mean for the three capability bits.
 struct EditorBits {
     /// `Features::EDITOR` — is there a UI at all?
@@ -185,7 +245,7 @@ impl ClapInstance {
             } else {
                 None
             };
-            let loaded =
+            let mut loaded =
                 ClapLoaded::load_with_library(path, library_path, sample_rate, block_size as u32)
                     .map_err(|e| BridgeError::LoadFailed {
                     path: path.to_path_buf(),
@@ -197,6 +257,10 @@ impl ClapInstance {
                     },
                     reason: e.to_string(),
                 })?;
+
+            if loaded.supports_thread_pool() {
+                loaded.set_thread_pool(thread_pool());
+            }
 
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
@@ -1034,6 +1098,114 @@ mod tests {
             "Parameter value should be finite, got {}",
             value
         );
+    }
+
+    /// Arm (or, with 0, disarm) the reference plugin's thread-pool probe on
+    /// the image the loader opens; see `set_clap_probe_render_mode` for why
+    /// through `dlopen`.
+    fn set_thread_pool_tasks(tasks: u32) {
+        // SAFETY: `#[no_mangle] extern "C" fn(u32)` in the reference plugin.
+        unsafe {
+            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
+            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
+                .get(b"tutti_test_plugin_set_thread_pool_tasks\0")
+                .expect("thread-pool switch exported");
+            set(tasks);
+            // Leaked: closing it before the load would unmap the switch.
+            std::mem::forget(lib);
+        }
+    }
+
+    fn thread_pool_capture() -> tutti_clap_test_plugin::ThreadPoolCapture {
+        // SAFETY: `#[no_mangle] extern "C" fn() -> ThreadPoolCapture`, the
+        // same `#[repr(C)]` type as the rlib's.
+        unsafe {
+            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
+            let get: libloading::Symbol<
+                unsafe extern "C" fn() -> tutti_clap_test_plugin::ThreadPoolCapture,
+            > = lib
+                .get(b"tutti_test_plugin_thread_pool_capture\0")
+                .expect("thread-pool capture exported");
+            let cap = get();
+            std::mem::forget(lib);
+            cap
+        }
+    }
+
+    fn process_blocks(instance: &mut ClapInstance, blocks: usize) {
+        let num_samples = 64;
+        let input_data = vec![vec![0.0f32; num_samples]; 2];
+        let mut output_data = vec![vec![0.0f32; num_samples]; 2];
+        for _ in 0..blocks {
+            let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
+            let mut output_slices: Vec<&mut [f32]> =
+                output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
+            let buffer = tutti_plugin::server::AudioBuffer {
+                inputs: &input_slices,
+                outputs: &mut output_slices,
+                num_samples,
+                sample_rate: 44100.0,
+            };
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            instance
+                .process(
+                    tutti_plugin::server::AudioBufferMut::F32(buffer),
+                    &ProcessContext::new(),
+                    &mut out,
+                )
+                .expect("block processes");
+        }
+    }
+
+    /// A plugin that implements `clap.thread-pool` has its requests served
+    /// by the server's own pool: the host's pool is in another process.
+    ///
+    /// Mutation: drop the `set_thread_pool` call in `ClapInstance::load` →
+    /// every request is refused → `accepted` is 0 → fails (on 4 cores or
+    /// more; below that the server builds no pool and the test checks the
+    /// refusal).
+    #[test]
+    fn a_thread_pool_plugin_has_its_requests_served_here() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        set_thread_pool_tasks(8);
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+            .expect("Failed to load CLAP plugin");
+        process_blocks(&mut instance, 4);
+        set_thread_pool_tasks(0);
+        let cap = thread_pool_capture();
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        // Below 4 cores the server builds no pool, and requests are refused.
+        let served = if pool_participants(cores) >= 2 { 4 } else { 0 };
+        assert_eq!(cap.requests, 4, "{cap:?}");
+        assert_eq!((cap.accepted, cap.refused), (served, 4 - served), "{cap:?}");
+        assert_eq!(cap.accepted_incomplete, 0);
+    }
+
+    /// A plugin without the extension costs no threads: the pool is built
+    /// only for one that has it.
+    ///
+    /// `THREAD_POOL` is process-global, so this relies on nextest running
+    /// each test in its own process: under `cargo test`, a thread-pool test
+    /// that ran first in the same process would have built it.
+    ///
+    /// Mutation: build the pool unconditionally in `ClapInstance::load` →
+    /// it exists after this load → fails.
+    /// Half the cores, at most 4, and below 2 no pool.
+    ///
+    /// Mutation: drop the `.min(4)` → 64 cores give 32 → fails.
+    #[test]
+    fn the_server_pool_takes_half_the_cores_up_to_four() {
+        let sizes: Vec<usize> = [1, 2, 3, 4, 6, 8, 64].map(pool_participants).to_vec();
+        assert_eq!(sizes, [0, 1, 1, 2, 3, 4, 4]);
+    }
+
+    #[test]
+    fn a_plugin_without_a_thread_pool_builds_no_pool() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        set_thread_pool_tasks(0);
+        let _instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+            .expect("Failed to load CLAP plugin");
+        assert!(THREAD_POOL.get().is_none());
     }
 
     #[test]

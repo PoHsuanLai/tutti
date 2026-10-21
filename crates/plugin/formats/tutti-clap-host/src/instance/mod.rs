@@ -38,6 +38,7 @@ mod ports;
 #[cfg(feature = "clap-extras")]
 mod resources;
 mod state;
+mod thread_pool;
 // Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
 #[cfg(feature = "clap-extras")]
 mod undo;
@@ -79,6 +80,9 @@ pub struct ClapLoaded {
     pub(crate) audio: AudioConfig,
     pub(crate) ports: PortLayout,
     pub(crate) flags: LifecycleFlags,
+    /// The pool `clap.thread-pool` requests run on, or `None` to refuse them
+    /// ([`set_thread_pool`](ClapLoaded::set_thread_pool)).
+    pub(crate) thread_pool: Option<Arc<dyn tutti_graph::Pool>>,
 }
 
 /// A fully-active CLAP plugin ready to [`process`](ClapActive::process) audio.

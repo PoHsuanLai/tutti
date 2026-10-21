@@ -215,14 +215,15 @@ mod tests {
         );
     }
 
-    /// A **cancelled** export restores `Realtime` on the next frame.
+    /// A **cancelled** export restores `Realtime`.
     ///
     /// `cancel` fires no `ExportDone` and `poll_exports` never sees the
     /// entity; despawning is the harsher shape, since it destroys any
     /// component a guard might have lived on. The token went with the task.
     ///
     /// Mutation (run, failed): the system not running the phase → the mode
-    /// stays `Offline`.
+    /// stays `Offline`. Checking once, right after the despawn, failed 50 of
+    /// 60 runs with `bevy_tasks/multi_threaded`: the job was still running.
     #[test]
     fn a_cancelled_export_restores_realtime() {
         let mut app = test_app();
@@ -235,8 +236,16 @@ mod tests {
             "precondition: the render must have started"
         );
 
+        // A multi-threaded pool may still be running the job when the task
+        // is dropped; its token goes when the job returns, so allow frames.
         app.world_mut().entity_mut(entity).despawn();
-        app.update();
+        for _ in 0..2000 {
+            app.update();
+            if mode(&app) == RenderMode::Realtime {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         assert_eq!(
             mode(&app),

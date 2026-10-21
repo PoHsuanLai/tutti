@@ -26,11 +26,11 @@ use tutti_plugin::Result;
 ///
 /// Failure is logged and ignored — elevation needs privileges a sandbox or CI
 /// runner may not grant, and degraded quality beats refusing to run.
-fn raise_to_realtime() {
+pub(crate) fn raise_to_realtime(what: &str) {
     match thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
-        Ok(()) => tracing::debug!("plugin-server audio phase running at realtime priority"),
+        Ok(()) => tracing::debug!("plugin-server: {what} running at realtime priority"),
         Err(e) => tracing::info!(
-            "could not raise the audio phase to realtime priority ({e:?}); \
+            "could not raise {what} to realtime priority ({e:?}); \
              continuing at normal priority — expect more dropped blocks under load"
         ),
     }
@@ -108,7 +108,7 @@ impl PluginServer {
         audio.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,
         })?;
-        raise_to_realtime();
+        raise_to_realtime("the audio phase");
         self.audio_phase(&mut audio)
     }
 

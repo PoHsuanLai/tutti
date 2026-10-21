@@ -5,6 +5,9 @@
 mod callbacks;
 pub mod state;
 pub mod streams;
+mod thread_pool;
+
+pub(crate) use thread_pool::{ExecFn, PoolRequest};
 
 pub use state::*;
 pub use streams::{InputStream, OutputStream};

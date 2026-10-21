@@ -18,7 +18,7 @@
 //!
 //! 1. takes the gate (`busy`; a caller that finds it taken — another
 //!    executor, or a re-entrant call from inside a job — runs the job alone
-//!    as participant 0 and returns);
+//!    as participant 0 and returns, or with `try_run` returns at once);
 //! 2. writes the job, then opens the next generation (`Release`);
 //! 3. runs the job as participant 0;
 //! 4. closes the gate, issues a `SeqCst` fence, then waits (`Acquire`) until
@@ -135,12 +135,22 @@ impl JobGate {
     /// gate still closes and waits for the helpers inside before the panic
     /// continues.
     pub fn run(&self, job: &(dyn Fn(usize) + Sync), opened: impl FnOnce()) -> bool {
+        if self.try_run(job, opened) {
+            return true;
+        }
+        job(0);
+        false
+    }
+
+    /// [`run`](Self::run), except that a busy gate runs nothing: returns
+    /// `false` at once, without calling `job`, so the caller can try another
+    /// gate. Returns `true` once `job` has run as in `run`.
+    pub fn try_run(&self, job: &(dyn Fn(usize) + Sync), opened: impl FnOnce()) -> bool {
         if self
             .busy
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            job(0);
             return false;
         }
         // SAFETY: only the lifetime changes. The pointer is read by helpers
@@ -384,6 +394,36 @@ mod tests {
                     },
                     || {}
                 ));
+            },
+            || {}
+        ));
+        assert_eq!(inner.load(Ordering::Relaxed), 1);
+    }
+
+    /// A busy gate refuses `try_run` without calling the job, and a free
+    /// one runs it.
+    ///
+    /// Mutation: run `job(0)` in `try_run`'s busy branch (as `run` does) →
+    /// the inner job runs and the count is 1 → fails.
+    #[test]
+    fn try_run_on_a_busy_gate_runs_nothing() {
+        let gate = JobGate::new(2);
+        let inner = AtomicUsize::new(0);
+        assert!(gate.try_run(
+            &|_| {
+                assert!(!gate.try_run(
+                    &|_| {
+                        inner.fetch_add(1, Ordering::Relaxed);
+                    },
+                    || {}
+                ));
+            },
+            || {}
+        ));
+        assert_eq!(inner.load(Ordering::Relaxed), 0);
+        assert!(gate.try_run(
+            &|_| {
+                inner.fetch_add(1, Ordering::Relaxed);
             },
             || {}
         ));

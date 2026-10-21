@@ -17,7 +17,9 @@
 //!   second's job with the first's index twice (each helper serves a
 //!   generation once; checked by the per-run counts);
 //! - **indices are distinct** — each participant index runs at most once per
-//!   call.
+//!   call;
+//! - **a busy `try_run` runs nothing** (`a_busy_try_run_runs_nothing`, with
+//!   its own mutation record).
 //!
 //! # Mutation record
 //!
@@ -99,6 +101,64 @@ fn a_helper_never_outlives_the_call() {
             b.value.with_mut(|p| unsafe { *p = u32::MAX });
             assert_eq!(b.ran[0].load(Ordering::Relaxed), 1);
         }
+        helper.join().unwrap();
+    });
+}
+
+/// Two callers race `try_run` on one gate, with a helper waiting: a caller
+/// that finds the gate busy runs nothing and returns `false`, and the two
+/// jobs never overlap (so no helper runs one caller's job with the other's
+/// state, and the refused caller never writes the job cell while the open
+/// one's helper may read it).
+///
+/// Mutation record (`LOOM_MAX_PREEMPTIONS=3`):
+///
+/// - `try_run`'s busy branch made to run `job(0)` before returning `false`
+///   → "a refused job ran";
+/// - `try_run`'s `busy` compare-exchange made not to refuse (every caller
+///   proceeds) → a causality violation: concurrent writes to the job cell.
+#[test]
+fn a_busy_try_run_runs_nothing() {
+    loom::model(|| {
+        let gate = Arc::new(JobGate::new(2));
+        // Participants inside each caller's job: a job's own helper may be
+        // inside it with the caller, never inside the other caller's.
+        let inside = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
+        let helper = {
+            let gate = Arc::clone(&gate);
+            thread::spawn(move || {
+                let mut served = 0;
+                for _ in 0..2 {
+                    gate.help(&mut served);
+                    thread::yield_now();
+                }
+            })
+        };
+        let caller = |me: usize, gate: &JobGate, inside: &[AtomicU32; 2]| {
+            let ran = AtomicU32::new(0);
+            let accepted = gate.try_run(
+                &|_| {
+                    inside[me].fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(
+                        inside[1 - me].load(Ordering::SeqCst),
+                        0,
+                        "two jobs overlapped"
+                    );
+                    ran.fetch_add(1, Ordering::Relaxed);
+                    inside[me].fetch_sub(1, Ordering::SeqCst);
+                },
+                || {},
+            );
+            if !accepted {
+                assert_eq!(ran.load(Ordering::Relaxed), 0, "a refused job ran");
+            }
+        };
+        let other = {
+            let (gate, inside) = (Arc::clone(&gate), Arc::clone(&inside));
+            thread::spawn(move || caller(1, &gate, &inside))
+        };
+        caller(0, &gate, &inside);
+        other.join().unwrap();
         helper.join().unwrap();
     });
 }

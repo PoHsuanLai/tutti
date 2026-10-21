@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `clap.thread-pool` served from a worker pool
+
+`tutti-clap-host` runs a plugin's `clap.thread-pool` requests on a
+`tutti_graph::Pool` instead of refusing them: `ClapLoaded::set_thread_pool`
+(and `supports_thread_pool`). A request is served only from inside the
+plugin's `process` on the calling thread, for that instance, and returns
+once every task has run; with no pool (the default), or a busy one (a
+request made from inside a graph block on the same pool), it is refused as
+before and the plugin runs its tasks itself. A served task is held to the
+audio thread's rules on whichever thread runs it: its `clap.log` lines are
+counted as dropped, not printed. The plugin server gives a plugin that
+implements the extension a pool of its own: half the cores, at most 4, and
+none below 4 cores.
+
+| Was | Now |
+|---|---|
+| `ClapLoaded::thread_pool_exec(task_index)` (`clap-extras`) | removed: the host runs the tasks while serving the plugin's request. A caller that ran them itself gives the instance a pool with `set_thread_pool` |
+| `tutti_graph::Pool` | new provided method `try_run(wake, job) -> bool`: run the job, or run nothing and return `false` when the pool is busy. The default always runs; a pool that implements `Pool` itself needs no change. The contract no longer says a pool runs one job at a time: a `run` called from inside a job of the pool must not wait for that job, and may run `job(0)` alone |
+| `tutti_core::WorkerPool` | implements `try_run` (refuses while a job is running) |
+| `tutti_types::JobGate` | new `try_run(job, opened) -> bool`: a busy gate runs nothing; `run` is `try_run` with the caller-alone fallback |
+
 ### Removed — `BeatCursor`/`BeatWindow`, and `ForkMode::Offline`'s timeline
 
 Every graph node reads musical time from its block's `Env`, so what served

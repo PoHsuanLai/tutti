@@ -1,8 +1,7 @@
 # Modulation is a noun of the API, not of the engine
 
-Status: **done** (proposed 2026-10-14). Supersedes the
-param-modulation design of [doc 013](013-native-graph.md) ("Item 6 landed:
-compiler-owned param modulation" and the control-rate tier it sits beside).
+Supersedes the param-modulation design of [doc 013](013-native-graph.md)
+("Compiler-owned param modulation" and the control-rate tier it sits beside).
 
 All file references are to `main` at `8ae55f4b`.
 
@@ -1343,7 +1342,7 @@ point at its target value on its last frame, as today. Only lane pieces
 | `tutti-polysynth` | The `ModParams` impl's `AtomicTarget::with_mirror` (`polysynth.rs:1221`); its params are reached through `ParamSet` |
 | `tutti-plugin` | `PluginAutomation`, `AutomationControls`, `AUTOMATION_EVENT_CAPACITY`, `TimedParam`, `PluginParamTarget`, `LfoCurve`, `LfoOffset`, `OffsetCurve`, `stride_for`, `MAX_POINTS`; `PluginControls::automation`, `param_target`; `impl ModParams for PluginClient` (`host/node/mod.rs:650`) |
 | `bevy-tutti` | `modulation/driver.rs` (with its `ParamKey`), `target.rs` (with `ModTargetResolver`), `audio_rate.rs`, most of `source.rs`; `ModulationMatrix`, `ModTargetRegistry`, `ModBusRes`, `ModParamsHandle`, `ModRateCell`, `CollectedModSources`, `ModSourceSystems`, `AudioRateRoutes`, `ModDelivery`, `ModParamRange`; the modulation role of `CapturedControls::for_params` (`graph/capture.rs:109`, its row in the table at `:14`); `write_param`'s modulated branch, `set_param_snapshot`; `plugin_bind_params`, `PluginParamsBound`, `PluginAutomationNode`, `remove_plugin_automation`; `AudioGraphRes::set_param_mod`'s source list |
-| Docs | doc 013's fork note (lines 1193-1200) and item 6 become history; CLAUDE.md's "Control-rate modulation resolves on the same set … `ModTargetRegistry::insert_target`" line is rewritten |
+| Docs | doc 013's fork note (lines 1193-1200) and its "Compiler-owned param modulation" section become history; CLAUDE.md's "Control-rate modulation resolves on the same set … `ModTargetRegistry::insert_target`" line is rewritten |
 
 Tests go with what they test, each with its disposition named. `param_mod.rs`'s `a_fork_carries_its_event_sources_ramps` is
 **ported** to "a lane-fed fork reads its value at frame 0": the property (a

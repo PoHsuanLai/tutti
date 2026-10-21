@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — `tutti-plugin`'s `bevy` feature
+
+It derived `Component` on `PluginParamValues`, which no crate has used
+since the parameter mirror moved into the session; nothing enabled it.
+The optional `bevy_ecs` dependency goes with it.
+
+Migration: a host that enabled `tutti-plugin/bevy` to keep a
+`PluginParamValues` on an entity wraps it in its own component.
+
 ### Changed — `bevy-tutti` runs the session's `Poll` phase
 
 A Bevy app now reports a device fault as a headless `Session::update()`

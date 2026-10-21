@@ -39,9 +39,6 @@ type Edits = Arc<Mutex<Vec<(u32, f32)>>>;
 /// Ids are the `u32` a `ParamAddr::Id` names: a CLAP, VST3 or AU parameter
 /// id, or a VST2 index. Values are the plugin's own `f32`, untyped because
 /// they cross the plugin boundary as the format gives them.
-///
-/// With the `bevy` feature it is a `Component`, on the plugin's entity.
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::component::Component))]
 pub struct PluginParamValues {
     values: Option<HashMap<u32, f32>>,
     edits: Edits,

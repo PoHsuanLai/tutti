@@ -1840,8 +1840,8 @@ addition). Specifics:
 - **Since done:** Bevy runs `Phase::Poll` too: `device_fault_poll`, in
   its set last in the chain, writes each `SessionEvent::DeviceFault` as an
   `AudioDeviceFault` message and into `AudioDeviceState`, as a headless
-  `update()` reports it. `tutti-plugin`'s `bevy` feature (unused since
-  §9.6) is left for a cleanup.
+  `update()` reports it. `tutti-plugin`'s `bevy` feature, unused since
+  §9.6, is removed.
 
 ## 10. Out of scope
 

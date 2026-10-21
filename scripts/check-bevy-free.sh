@@ -10,8 +10,8 @@
 #    optional feature is absent from the default tree. `-e normal`, because
 #    `bevy-tutti` is a workspace member and a dev-dependency walk would reach
 #    it.
-# 2. No `bevy` feature in its manifest. Every other engine crate has one,
-#    off by default; this crate must never grow one, which is a stronger rule
+# 2. No `bevy` feature in its manifest. Some engine crates have one, off
+#    by default; this crate must never grow one, which is a stronger rule
 #    than (1) can state while the feature has no dependency behind it yet.
 #
 # Its former third check, no whole-crate re-export (§8 check 4), is

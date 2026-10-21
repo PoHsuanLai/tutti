@@ -130,8 +130,6 @@ subprocess, with no editor support.
   instance, so the two cannot live in separate processes; with this feature,
   [`Plugin::open`](catalog::Plugin::open) hosts `.vst` plugins in the host
   process.
-- `bevy` — `Component` on [`PluginParamValues`], so a Bevy host keeps the
-  mirror on the plugin's entity. ECS derives only.
 
 ## Capability model
 

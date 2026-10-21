@@ -351,7 +351,7 @@ the race. Every type below exists because the audit found the bug it prevents.
   already told. The crate's test clock (`MockTransport::seek`) moves its
   generation.
 
-**Deleted, once the native graph lands.** Each existed to work around fundsp:
+**Workarounds for fundsp.** Each existed to work around fundsp:
 
 - `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
   `reset_owner`. All three exist so `Arc`-shared state survives
@@ -362,8 +362,8 @@ the race. Every type below exists because the audit found the bug it prevents.
   state and `MotionFsm`'s FSM behind a `Clone` handle — and now checks its
   one-borrow contract in release builds too, so safe code sharing one can
   no longer alias it. Splitting `MotionFsm` into a control handle and an
-  engine-owned audio half, which would make that FSM a plain field, is the
-  follow-up.) Units owned once by the audio thread only need `&mut self`.
+  engine-owned audio half, which would make that FSM a plain field, is
+  still to do.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.

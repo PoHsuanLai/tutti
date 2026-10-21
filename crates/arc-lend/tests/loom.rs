@@ -361,6 +361,38 @@ fn reclaim_while_a_reader_lends() {
     });
 }
 
+/// A reclaim with nothing retired (the early return, no fence, no scan)
+/// before a publish, and a reclaim after it, while a reader lends twice: the
+/// skipped scan must leave the claim bookkeeping as safe as a scan would.
+///
+/// Mutation (run, this model alone): the reader's `fence(SeqCst)` removed →
+/// fails. The early return itself has no unsafe mutation for this model to
+/// catch: with nothing retired, a skipped scan (or a reclaim that never
+/// scans) only keeps more. That it still frees once something is retired is
+/// the unit test `reclaim_frees_without_publishing_and_reports_what_is_pinned`.
+#[test]
+fn reclaim_with_nothing_retired() {
+    model(|| {
+        let tracker = Tracker::new(3);
+        let cell = cell(&tracker);
+        let mut r = cell.reader();
+        let reader = thread::spawn(move || {
+            r.lend().check();
+            r.lend().check();
+            drop(r);
+            thread::current().id()
+        });
+
+        cell.reclaim();
+        cell.publish(tracker.make(1));
+        cell.reclaim();
+        cell.publish(tracker.make(2));
+
+        let reader = reader.join().unwrap();
+        finish(cell, &tracker, &[reader]);
+    });
+}
+
 /// Readers registered and dropped while a publisher runs, on a list of
 /// two-slot blocks: the first reader's slot is freed and handed to the third
 /// while the second holds the other slot, so the third registration reuses a

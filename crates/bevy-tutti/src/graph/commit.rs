@@ -88,3 +88,35 @@ pub fn commit_graph(
     let _ = graph.run_phase(Phase::Commit, std::time::Instant::now());
     crate::graph::latency::mirror(&graph, table, total);
 }
+
+/// The session's `Reclaim` phase, last in the frame
+/// ([`SessionPhaseSystems`](super::SessionPhaseSystems)`(Phase::Reclaim)`,
+/// after [`GraphReconcileSystems::Commit`](super::GraphReconcileSystems::Commit)):
+/// frees what the audio thread let go of in every cell the session
+/// publishes to, and in the published cells of the controls kept on node
+/// entities ([`NodeControls`](super::NodeControls)): a MIDI clip's
+/// (feature `midi`) and a voice's placement (feature `sampler`).
+///
+/// A value a block still held when it was replaced stays retired until a
+/// scan after the block ends; a cell that is not published again gets that
+/// scan here, every frame. A lock and a length check per cell when nothing
+/// is retired. Frees no unit, so it runs on any thread.
+pub fn reclaim_graph(
+    graph: Option<ResMut<AudioGraphRes>>,
+    #[cfg(feature = "midi")] clips: Query<
+        &super::NodeControls<tutti_midi_runtime::MidiClipControls>,
+    >,
+    #[cfg(feature = "sampler")] voices: Query<&crate::sampler::VoiceCommands>,
+) {
+    if let Some(mut graph) = graph {
+        let _ = graph.run_phase(Phase::Reclaim, std::time::Instant::now());
+    }
+    #[cfg(feature = "midi")]
+    for clip in &clips {
+        clip.0.reclaim();
+    }
+    #[cfg(feature = "sampler")]
+    for voice in &voices {
+        voice.0.reclaim();
+    }
+}

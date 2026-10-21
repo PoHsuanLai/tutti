@@ -692,3 +692,55 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
     assert!(panicked, "a commit off the main thread frees, and asserts");
     drop(s);
 }
+
+/// **The update's `Reclaim` phase frees what a block held across a
+/// replacement**, in a cell nothing publishes to again: the compensation
+/// table a commit replaced, and the meter a following plugin slot (a
+/// `MeterSlot`, as a plugin node holds) read when the project meter changed.
+/// A held `Loan` stands in for a block in progress across the publish.
+///
+/// The session's other cells (the modulation lanes, its clips, the hardware
+/// input's MPE request and port set) are read only by nodes the executor
+/// owns, so no loan on them can be taken from here; each owner's `reclaim`
+/// is pinned with a held loan in its own crate, and removing one of their
+/// lines from `Session::reclaim` is not caught by this test.
+///
+/// Mutations (run): the `Reclaim` phase doing nothing → the old table and
+/// the old meter are still retired after the update, fails; `Session::reclaim`
+/// leaving out the compensation cell → fails; leaving out the project
+/// meter → fails.
+#[test]
+fn an_update_frees_what_a_block_held_across_a_replacement() {
+    use tutti_core::{Beat, MeterChange, MeterMap, MeterSlot, TimeSignature};
+
+    let mut s = detached(1);
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.update();
+
+    let meter = s.click_settings().project_meter();
+    let slot = MeterSlot::following_meter(Some(meter.clone()));
+    let old = Arc::new(MeterMap::new([MeterChange::new(
+        Beat(0.0),
+        TimeSignature::from_parts(3, 4),
+    )]));
+    let gone = Arc::downgrade(&old);
+    meter.set_meter(old);
+
+    let (mut table, mut node) = (s.compensation_reader(), slot.reader());
+    {
+        // A block in progress across both publishes.
+        let _held = (table.lend(), node.lend());
+        s.graph().insert(Const::mono(0.25));
+        s.update();
+        meter.set_meter(Arc::new(MeterMap::default()));
+        // Still held: this update's own reclaim leaves them.
+        s.update();
+    }
+    assert_eq!(s.compensation().retired_len(), 1, "the table is retired");
+    assert!(gone.upgrade().is_some(), "the meter is retired");
+
+    s.update();
+    assert_eq!(s.compensation().retired_len(), 0, "the table is freed");
+    assert!(gone.upgrade().is_none(), "the meter is freed");
+}

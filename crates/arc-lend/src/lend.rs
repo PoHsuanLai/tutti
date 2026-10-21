@@ -328,10 +328,21 @@ impl<T> ArcLend<T> {
     /// loan, or possibly about to be loaded by a reader caught mid-lend. A
     /// host that wants the memory back without a new value calls this from a
     /// periodic task; what to do when the count stays high is its policy.
+    ///
+    /// Cheap when nothing is retired: the lock and a length check, no fence
+    /// and no scan of the slots. So a host can call it every tick of its
+    /// control loop for every cell it publishes to.
     pub fn reclaim(&self) -> usize {
         let (freeable, pinned) = {
             let mut control = self.lock();
             let control = &mut *control;
+            // Nothing to free. Skipping the scan is the same as not calling
+            // `reclaim` at all: the claims it would have refreshed stay as
+            // the last scan left them, which only makes the next scan keep
+            // more, never less.
+            if control.retired.is_empty() {
+                return 0;
+            }
             let mut freeable = std::mem::take(&mut control.spare);
             freeable.reserve(control.retired.len());
             self.scan(control, &mut freeable);

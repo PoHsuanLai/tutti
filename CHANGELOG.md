@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — every published cell is reclaimed on its owner's tick
+
+`ArcLend` freed a value a block held across its replacement only at the
+cell's next `publish` or an explicit `reclaim`, and only the hardware MIDI
+port set's owner ever called `reclaim`. A cell that went quiet (a clip
+edited once, a lane republished once, a meter changed once) kept that value
+for as long as it lived. Each publisher now reclaims on a control-side tick
+it already has, and `ArcLend::reclaim` returns at once (the lock and a
+length check, no fence, no scan) when nothing is retired, so calling it
+every tick costs nothing.
+
+| What | Change |
+|---|---|
+| `ArcLend::reclaim` | returns `0` without scanning when nothing is retired |
+| `tutti_session::Phase` | new last phase, `Phase::Reclaim` (in `PHASES` after `Poll`): reclaims the compensation table, the project meter and the plugin meter slots following it, the modulation lanes, the session's clips, the hardware input's MPE request and port set (`HardwareMidiInputs::collect`). `Session::update` runs it; a host running the phases itself runs it last |
+| `bevy_tutti::graph::reclaim_graph` | new system in `SessionPhaseSystems(Phase::Reclaim)`, added by `GraphReconcilePlugin`: the session's phase, plus every `NodeControls<MidiClipControls>` (feature `midi`) and `VoiceCommands` (feature `sampler`) on an entity |
+| the sampler's butler | each cycle reclaims every ring's read map |
+| `reclaim(&self) -> usize` | new on `ProjectMeter` (its cell and every live follower), `MeterSlot`, `LaneControls`, `Modulation` (every lane), `MidiClipControls`, `HarmonyControls`, `MidiInputControls`, `VoiceNodeHandle`; each returns how many retired values are still held |
+
+Migration: a host that runs `Session::run_phase` itself adds
+`Phase::Reclaim` (iterating `PHASES` already does). A host that keeps a
+handle outside a session (`HarmonyControls`, an unfollowed `MeterSlot`, a
+`MidiClipControls` or `VoiceNodeHandle` not on a Bevy entity) calls its
+`reclaim` from its own control-side tick.
+
 ### Changed — the stretch filter's cells are written only through its setters
 
 `tutti_sampler`'s stretch `Unit` no longer hands out its raw cells:

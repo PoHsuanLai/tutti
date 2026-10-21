@@ -155,6 +155,15 @@ impl MidiInputControls {
         self.request.cell.publish(Arc::new(Some(mode)));
     }
 
+    /// Frees the requests the node has let go of since the last
+    /// [`set_mpe_mode`](Self::set_mpe_mode), without publishing; returns how
+    /// many are still held. Control thread, from the owner's tick (a
+    /// session's `Reclaim` phase sweeps its hardware input's); with nothing
+    /// retired it is a lock and a length check.
+    pub fn reclaim(&self) -> usize {
+        self.request.cell.reclaim()
+    }
+
     /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
     /// if any: what was asked, not what is in force (they differ for a block
     /// after a change, and for good if the graph never runs). Control side:
@@ -279,6 +288,28 @@ mod tests {
         };
         node.adopt_mpe_request();
         assert_eq!(*node.mpe.mode(), upper, "the node adopts it");
+    }
+
+    /// **A request the node held across the next `set_mpe_mode` is freed by
+    /// the next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `MidiInputControls::reclaim` returning 0 without
+    /// reclaiming → one request is still retired, fails.
+    #[test]
+    fn reclaim_frees_a_request_a_block_held_across_the_next() {
+        use tutti_midi_types::mpe::MpeZoneConfig;
+        let mut node = MidiInputNode::new(None);
+        let controls = MidiInputControls {
+            request: Arc::clone(&node.request),
+        };
+        {
+            // A block in progress across the request.
+            let _held = node.mpe_request.lend();
+            controls.set_mpe_mode(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+        }
+        assert_eq!(node.request.cell.retired_len(), 1, "pinned until a scan");
+        assert_eq!(controls.reclaim(), 0);
+        assert_eq!(node.request.cell.retired_len(), 0, "freed by the reclaim");
     }
 
     /// A listener on one channel takes that channel's port and the

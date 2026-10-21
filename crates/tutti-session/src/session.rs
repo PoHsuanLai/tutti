@@ -54,6 +54,15 @@ pub enum Phase {
     MidiOut,
     /// The device's faults, as `SessionEvent::DeviceFault` (feature `device`).
     Poll,
+    /// Frees, here, what the audio thread let go of in every cell the
+    /// session publishes to (`ArcLend::reclaim`): the compensation table,
+    /// the project meter and the plugin slots following it, the modulation
+    /// lanes' programs, the session's clips, the hardware input's MPE
+    /// request and port set. A value a block still held when it was
+    /// replaced stays retired until a scan after the block ends; a cell
+    /// that is not published again gets that scan here. A lock and a
+    /// length check per cell when nothing is retired.
+    Reclaim,
 }
 
 /// Every [`Phase`], in the order [`Session::update`] runs them.
@@ -66,6 +75,7 @@ pub const PHASES: &[Phase] = &[
     Phase::AfterCommit,
     Phase::MidiOut,
     Phase::Poll,
+    Phase::Reclaim,
 ];
 
 /// What one phase reads besides the session.
@@ -472,7 +482,36 @@ impl Session {
                     }
                 }
             }
+            Phase::Reclaim => {
+                // Any thread that owns the session: what it frees is
+                // tables, meters, programs and clips, never a unit.
+                self.reclaim();
+            }
         }
+    }
+
+    /// The [`Reclaim`](Phase::Reclaim) phase: every cell the session
+    /// publishes to, scanned and what no block holds freed. Returns how many
+    /// retired values are still held (by a block in progress).
+    pub(crate) fn reclaim(&self) -> usize {
+        let mut pinned = self.compensation.reclaim();
+        pinned += self.click_settings.project_meter().reclaim();
+        #[cfg(feature = "modulation")]
+        {
+            pinned += self.mods.state.reclaim();
+        }
+        #[cfg(feature = "midi")]
+        {
+            pinned += self.midi_state.reclaim();
+            if let Some(nodes) = &self.midi {
+                pinned += nodes.input_controls.reclaim();
+            }
+        }
+        #[cfg(feature = "midi-hardware")]
+        if let Some(io) = &self.midi_io {
+            pinned += io.ports().collect();
+        }
+        pinned
     }
 
     /// Commits every edit since the last commit, now, and on `Sent`

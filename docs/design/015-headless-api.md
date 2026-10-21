@@ -658,6 +658,7 @@ pub const PHASES: &[Phase] = &[
     Phase::AfterCommit,      // modulation re-apply while unresolved, resyncs
     Phase::MidiOut,          // hardware out drains, clock out
     Phase::Poll,             // device faults, through the session's clone of the Device's Arc<StreamFaults>
+    Phase::Reclaim,          // every published cell's retired values freed (ArcLend::reclaim)
 ];
 
 /// What one phase reads besides the session.

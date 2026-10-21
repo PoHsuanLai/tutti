@@ -241,9 +241,12 @@ the interpreter.
   an `Arc` of the cell) and lends through it (`Reader::lend(&mut self)`),
   one reader per nesting level. Each reader owns one cache line of a
   growable slot list; a publish scans them once and never waits on a
-  reader. The cost is memory: a reader preempted mid-lend pins what is
-  retired meanwhile, until the next scan after it resumes (hosts poll
-  `retired_len()`; `reclaim()` frees without publishing). Every read site
+  reader. The cost is memory: a block holding a value when it is replaced,
+  or a reader preempted mid-lend, pins it until the next scan after (hosts
+  poll `retired_len()`; `reclaim()` frees without publishing, and is a lock
+  and a length check with nothing retired). Every publisher reclaims on a
+  control-side tick it has: the session's `Phase::Reclaim`, `bevy-tutti`'s
+  `reclaim_graph`, the butler's cycle. Every read site
   reads one cell it owns, registered where its node (or the butler's cycle,
   or the MIDI drain) is built; a fork's node registers on its own new cell,
   and a control-side `&self` method keeps a mirror instead of reading a

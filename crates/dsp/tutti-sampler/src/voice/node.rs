@@ -400,3 +400,34 @@ impl IntoNode for VoiceNode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MemorySource, Playback, VoiceSource};
+    use tutti_core::Beat;
+
+    /// **A window the node held across the next `set_placement` is freed by
+    /// the next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `VoiceNodeHandle::reclaim` returning 0 without
+    /// reclaiming → one window is still retired, fails.
+    #[test]
+    fn reclaim_frees_a_window_a_block_held_across_the_next() {
+        let wave = Arc::new(tutti_io::Wave::from_samples(48_000.0, &[0.0; 64]));
+        let voice = Voice {
+            source: VoiceSource::Memory(MemorySource::new(wave)),
+            play: Playback::default(),
+            channel_index: None,
+        };
+        let (mut node, handle) = VoiceNode::new(voice).with_handle();
+        {
+            // A block in progress across the move.
+            let _held = node.placement_reader.lend();
+            handle.set_placement(Beat::new(1.0), None);
+        }
+        assert_eq!(node.placement.retired_len(), 1, "pinned until a scan");
+        assert_eq!(handle.reclaim(), 0);
+        assert_eq!(node.placement.retired_len(), 0, "freed by the reclaim");
+    }
+}

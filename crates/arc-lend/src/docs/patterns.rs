@@ -87,7 +87,10 @@
 //! Retired values are freed by the next publish after their readers let go.
 //! A publisher with nothing new to publish calls
 //! [`reclaim`](crate::ArcLend::reclaim) from a periodic task; it returns how
-//! many retired values are still pinned.
+//! many retired values are still pinned. With nothing retired it returns at
+//! once (the lock and a length check), so a publisher that calls it every
+//! tick of its control loop, for every cell it publishes to, pays for a scan
+//! only when there is something to free.
 //!
 //! ```
 //! use std::sync::Arc;

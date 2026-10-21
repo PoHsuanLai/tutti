@@ -11,8 +11,9 @@
 //!   [`engine_ready`] gate), [`spawn`] ([`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
 //!   node: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
-//!   [`commit`] ([`collect_graph`] and [`commit_graph`], the session's
-//!   `Collect` and `Commit` phases) — composed by [`GraphReconcilePlugin`],
+//!   [`commit`] ([`collect_graph`], [`commit_graph`] and [`reclaim_graph`],
+//!   the session's `Collect`, `Commit` and `Reclaim` phases) — composed by
+//!   [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
 //!   same phase that wires, so every static question (latency, tail, "did
@@ -45,7 +46,7 @@ pub mod transport;
 pub mod wire;
 
 pub use capture::CapturedControls;
-pub use commit::{collect_graph, commit_graph};
+pub use commit::{collect_graph, commit_graph, reclaim_graph};
 pub use despawn::reconcile_node_despawn;
 pub use events::{
     EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls, DECLARED,

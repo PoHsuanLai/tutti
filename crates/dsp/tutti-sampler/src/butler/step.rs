@@ -100,9 +100,9 @@ impl ButlerCycle {
         &mut self.local.pdc
     }
 
-    /// Run one cycle: drain every queued command, then — when any channel is
-    /// streaming — publish PDC preroll changes, apply direction changes, and
-    /// refill the rings.
+    /// Run one cycle: drain every queued command, free every ring's retired
+    /// maps, then — when any channel is streaming — publish PDC preroll
+    /// changes, apply direction changes, and refill the rings.
     ///
     /// Direction changes are applied *before* refill so the refill writes the
     /// new mapping this cycle.
@@ -120,6 +120,14 @@ impl ButlerCycle {
                 return StepOutcome::Shutdown;
             }
             handle_command(cmd, shared, &self.config, &mut self.local);
+        }
+
+        // Every ring's retired maps, whether or not this cycle publishes
+        // one: the butler is their only publisher, and its cycle is the
+        // control-side tick they get. A lock and a length check per ring
+        // when nothing is retired.
+        for writer in self.local.regions.writers() {
+            writer.ring().reclaim_maps();
         }
 
         if shared.plans.is_empty() {
@@ -236,4 +244,56 @@ fn buffers_healthy(
         }
         plan.rt_state.buffer_fill() >= fill_threshold
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use dashmap::DashMap;
+    use tutti_core::SampleRate;
+
+    use super::super::cache::LruCache;
+    use super::super::command::RegionId;
+    use super::super::handlers::SessionRate;
+    use super::super::loops::{Arrangement, RingMap};
+    use super::super::metrics::Metrics;
+    use super::super::prefetch::RegionBuffer;
+    use super::*;
+
+    /// **A map the reader held across the butler's last publish is freed by
+    /// the butler's next cycle**, with no further publish, while no channel
+    /// streams (the cycle returns `Idle`).
+    ///
+    /// Mutation (run): the cycle's per-ring `reclaim_maps` loop removed → the
+    /// map is still retired after the step, fails.
+    #[test]
+    fn a_cycle_frees_a_map_the_reader_held_across_its_replacement() {
+        let config = BufferConfig::default();
+        let shared = Handles {
+            plans: Arc::new(DashMap::new()),
+            cache: Arc::new(LruCache::new(
+                config.cache_max_entries,
+                config.cache_max_bytes,
+            )),
+            metrics: Arc::new(Metrics::new()),
+            session_rate: SessionRate::new(SampleRate(48_000.0)),
+        };
+        let mut cycle = ButlerCycle::new(config, PdcFeed::over(None));
+        let id = RegionId(1);
+        let (writer, _reader) = RegionBuffer::with_capacity(id, PathBuf::from("t.wav"), 1024, 1u16);
+        let ring = Arc::clone(writer.ring());
+        cycle.local.regions.register(id, writer);
+
+        let mut map = ring.map_reader();
+        {
+            // A block in progress across the publish.
+            let _held = map.lend();
+            ring.publish_map(RingMap::plain(Arrangement::plain(64), 1));
+        }
+        assert_eq!(ring.retired_maps(), 1, "pinned until a scan");
+        assert!(matches!(cycle.step(&shared, || None), StepOutcome::Idle));
+        assert_eq!(ring.retired_maps(), 0, "freed by the cycle");
+    }
 }

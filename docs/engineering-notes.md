@@ -252,12 +252,24 @@ Rules:
   (`lend` takes `&mut self`); a second live loan of one cell on one thread
   needs a second reader.
 - **The design's cost is memory, not waiting.** A publish never waits on a
-  reader. A reader preempted between claiming its slot and announcing what it
-  loaded pins what is retired while it is preempted, freed by the first scan
-  after it announces. `retired_len()` reports what is waiting and `reclaim()`
-  frees what it can without publishing; a control-side cell with no further
-  publishes (the hardware MIDI port set, `HardwareMidiInputs::collect`) calls
-  `reclaim` to get memory back.
+  reader. A value a block holds when a publish replaces it stays retired
+  until a scan after the block ends, and a reader preempted between claiming
+  its slot and announcing what it loaded pins what is retired while it is
+  preempted, freed by the first scan after it announces. `retired_len()`
+  reports what is waiting and `reclaim()` frees what it can without
+  publishing. Only a publish or a reclaim scans, so a cell published once
+  and then left alone (a clip edited once, a meter changed once) kept the
+  value a block held across that publish for as long as the cell lived,
+  when the only `reclaim` caller was the hardware MIDI port set's owner.
+  Every publisher now reclaims on a control-side tick it already has: the
+  session's `Phase::Reclaim` sweeps its cells through each owner's
+  `reclaim` (`ProjectMeter`, `Modulation`, the clips, the MIDI input's
+  controls, `HardwareMidiInputs::collect`), `bevy-tutti`'s `reclaim_graph`
+  runs that phase and sweeps the clip and voice controls on node entities,
+  and the butler's cycle sweeps its rings' maps. Derived at each owner
+  rather than registered in a global list: an owner with a tick already
+  knows its cells. `reclaim` returns at once when nothing is retired, so
+  the per-tick sweep costs a lock and a length check per cell.
 - **Never `publish` from the audio thread** — it takes the publisher's lock
   *and* frees inside it.
 - Nullable hot-swap slots go through `ArcLend` as well, as

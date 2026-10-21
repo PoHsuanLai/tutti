@@ -391,7 +391,8 @@ impl HardwareMidiInputs {
     /// load); otherwise one scan of the drains' readers
     /// ([`ArcLend::reclaim`]), publishing nothing. A host that removes ports
     /// and then makes no further change calls this from a periodic
-    /// control-side task to get the memory back.
+    /// control-side task to get the memory back (a `tutti-session` session
+    /// does, in its `Reclaim` phase).
     pub fn collect(&self) -> usize {
         // Held so a change racing this call frees in one order: `reclaim`
         // takes the cell's publisher lock too, but the record's lock is the

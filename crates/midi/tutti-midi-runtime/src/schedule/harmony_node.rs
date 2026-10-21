@@ -177,6 +177,15 @@ impl HarmonyControls {
         self.set([]);
     }
 
+    /// Frees the lanes the node has let go of since the last
+    /// [`set`](Self::set) (ones a block still held when they were replaced),
+    /// without publishing; returns how many are still held. Control thread,
+    /// from the owner's tick; with nothing retired it is a lock and a length
+    /// check.
+    pub fn reclaim(&self) -> usize {
+        self.shared.cell.reclaim()
+    }
+
     /// How many changes the lanes hold.
     pub fn len(&self) -> usize {
         self.shared.current().changes.len()
@@ -290,5 +299,34 @@ impl IntoNode for HarmonyNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_graph::Harmony;
+
+    /// **Lanes a block still held when `set` replaced them are freed by the
+    /// next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `HarmonyControls::reclaim` returning 0 without
+    /// reclaiming → the first lanes are still alive, fails.
+    #[test]
+    fn reclaim_frees_lanes_a_block_held_across_their_replacement() {
+        let c_major = Harmony::chord(60, 60, 0b1001_0001);
+        let mut node = HarmonyNode::new([TimedHarmony::new(Beat(0.0), c_major)]);
+        let controls = HarmonyControls {
+            shared: Arc::clone(&node.shared),
+        };
+        let gone = Arc::downgrade(&node.shared.current());
+        {
+            // A block in progress across the replacement.
+            let _held = node.lanes.lend();
+            controls.clear();
+        }
+        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
+        assert_eq!(controls.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the reclaim");
     }
 }

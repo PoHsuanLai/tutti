@@ -385,6 +385,40 @@ mod tests {
         assert_eq!(*published.reader().lend(), sentinel, "no table published");
     }
 
+    /// **A frame's `Reclaim` phase frees a table a block held across the
+    /// commit that replaced it**, on a later frame with no edit (so no
+    /// publish): the adapter schedules the phase every frame. A held `Loan`
+    /// stands in for the block.
+    ///
+    /// Mutation (run): `reclaim_graph` not running the session's phase →
+    /// the old table is still retired, fails.
+    ///
+    /// Not pinned here: `reclaim_graph`'s sweep of the clip and voice
+    /// controls on node entities. Their cells are read only by nodes the
+    /// executor owns, so no loan on them can be taken from a test; each
+    /// handle's `reclaim` is pinned with a held loan in its own crate.
+    #[test]
+    fn a_frame_frees_a_table_a_block_held_across_its_replacement() {
+        let (graph, _) = skewed_graph();
+        let mut app = test_app(graph);
+        app.update();
+        let table = app.world().resource::<ChannelCompensation>().0.clone();
+        let mut reader = table.reader();
+        {
+            let _held = reader.lend();
+            app.world_mut()
+                .resource_mut::<AudioGraphRes>()
+                .insert(Const::mono(0.5));
+            // The commit replaces the table under the loan; this frame's
+            // reclaim leaves it.
+            app.update();
+        }
+        assert_eq!(table.retired_len(), 1, "retired, held across the commit");
+        app.update();
+        assert!(!app.world().resource::<AudioGraphRes>().is_edited());
+        assert_eq!(table.retired_len(), 0, "freed by the frame's reclaim");
+    }
+
     /// The check reads the edit flag; it never clears it.
     ///
     /// Mutation (run): `compensate_graph` committing the graph after its

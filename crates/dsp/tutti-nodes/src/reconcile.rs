@@ -427,6 +427,19 @@ impl Modulation {
         self.lanes.get(&target).map(|l| (l.key, &l.controls))
     }
 
+    /// Frees, on this thread, the programs every lane has let go of since
+    /// its last publish ([`LaneControls::reclaim`]), without publishing;
+    /// returns how many are still held. A lane republished once and then
+    /// left alone would otherwise keep a program a block held across that
+    /// publish until the lane is published again. Control thread, once per
+    /// tick of the host's loop (a session's `Reclaim` phase).
+    pub fn reclaim(&self) -> usize {
+        self.lanes
+            .values()
+            .map(|lane| lane.controls.reclaim())
+            .sum()
+    }
+
     /// Signal source `source`'s node, `None` while it has none.
     pub fn source(&self, source: SourceKey) -> Option<NodeKey> {
         self.sources.get(&source).map(|s| s.key)

@@ -107,6 +107,16 @@ impl LaneControls {
         }));
     }
 
+    /// Frees the programs the lane has let go of since the last publish (one
+    /// a block still held when [`publish`](Self::publish) replaced it),
+    /// without publishing; returns how many are still held. Control thread,
+    /// every tick of its owner (the [`Modulation`](crate::Modulation)
+    /// reconciler's [`reclaim`](crate::Modulation::reclaim)); with nothing
+    /// retired it is a lock and a length check.
+    pub fn reclaim(&self) -> usize {
+        self.0.program.reclaim()
+    }
+
     /// The program last published (or built with).
     pub fn program(&self) -> Arc<ControlProgram> {
         Arc::clone(&self.0.last.lock().unwrap_or_else(|e| e.into_inner()).1)
@@ -1072,5 +1082,36 @@ impl IntoNode for ControlLaneNode {
             controls,
             fork: Some(Box::new(fork)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program() -> Arc<ControlProgram> {
+        Arc::new(ControlProgram::default())
+    }
+
+    /// **A program a block still held when the lane was republished is freed
+    /// by the next `reclaim`**, with no further publish.
+    ///
+    /// Mutation (run): `LaneControls::reclaim` returning 0 without
+    /// reclaiming → the first program is still alive, fails.
+    #[test]
+    fn reclaim_frees_a_program_a_block_held_across_its_replacement() {
+        let mut node = ControlLaneNode::for_foreign(0, ControlProgram::default(), None, (0.0, 1.0));
+        let controls = node.controls();
+        let first = program();
+        let gone = Arc::downgrade(&first);
+        controls.publish_arc(first);
+        {
+            // A block in progress across the republish.
+            let _held = node.program.lend();
+            controls.publish_arc(program());
+        }
+        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
+        assert_eq!(controls.reclaim(), 0);
+        assert!(gone.upgrade().is_none(), "freed by the reclaim");
     }
 }

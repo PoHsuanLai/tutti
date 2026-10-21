@@ -3663,20 +3663,25 @@ text past it, since the plugin holds pointers into it for the block.
   `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone); a
   `compile_fail` doctest pins that it cannot be cloned.
 - **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
-  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<W>`
-  and `SeqReader<W>`: `W` atomic words, so a read racing a write copies
-  stale words rather than racing on memory, with no `unsafe` anywhere, and a
-  loom model (`tests/seq_cell_loom.rs`) that runs the shipped code with a
-  mutation record. The single writer is structural: `SeqWriter` is not
-  `Clone` and writes through `&mut self` (two writers could take the
-  sequence 1, 2, 3, 2 and a reader would accept words of two writes; a
-  `compile_fail` doctest pins each). The VST2 host keeps the
-  `TransportWriter` in the instance, written by `update_transport(&mut
-  self)`, which takes the previous snapshot from the writer's own copy, and
-  a `TransportReader` in `HostState` for `audioMasterGetTime`; they only
-  pack a `TimeInfo` into eleven words. `RtPublish` does not fit: its writer
-  is the control thread and it allocates per publish, while this writer is
-  the audio thread.
+  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<T>`
+  and `SeqReader<T>`, typed over a `T: NoUninit + AnyBitPattern` held as
+  its bytes in whole atomic `u64` words, so a read racing a write copies
+  stale words rather than racing on memory, with no `unsafe` anywhere (the
+  byte views are `bytemuck`'s), and a loom model (`tests/seq_cell_loom.rs`)
+  that runs the shipped code with a mutation record. The single writer is
+  structural: `SeqWriter` is not `Clone` and writes through `&mut self`
+  (two writers could take the sequence 1, 2, 3, 2 and a reader would accept
+  bytes of two writes; a `compile_fail` doctest pins each). A read takes the
+  caller's retry count and returns `Result<Option<T>, Contended>`, so "never
+  written" and "every copy overlapped a write" stay apart. The VST2 host
+  keeps the `TransportWriter` in the instance, written by
+  `update_transport(&mut self)`, which takes the previous snapshot from the
+  writer's own copy, and a `TransportReader` in `HostState` for
+  `audioMasterGetTime`; the cell holds a `Pod` mirror of `TimeInfo` (whose
+  frame-rate enum is not every bit pattern), and the plugin sees a null
+  `VstTimeInfo` both before the first write and when a read gives up.
+  `RtPublish` does not fit: its writer is the control thread and it
+  allocates per publish, while this writer is the audio thread.
 - **Unused dependencies:** `ringbuf` in tutti-plugin, `crossbeam-channel`
   and `parking_lot` in tutti-plugin-server.
 

@@ -5,58 +5,89 @@
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test seq_cell_loom
 //! ```
 //!
-//! Each write stores one value in every word, so a copy mixing two writes
-//! shows as unequal words. It asserts, over every interleaving of one writer
-//! and one reader, with the writer on either thread:
+//! The value is a `[u32; 3]`: twelve bytes, so two words, the second only
+//! half used, and the model covers the padding too. Each write stores one
+//! number in every element, so a copy mixing two writes shows as unequal
+//! elements. It asserts, over every interleaving of one writer and one
+//! reader, with the writer on either thread:
 //!
-//! - **no mixed copy**: a read returns `None` or the words of one write,
-//!   never words of two;
+//! - **no mixed copy**: a read returns "never written", `Contended`, or the
+//!   value of one write, never bytes of two;
 //! - **no going back**: two reads in program order never return an older
-//!   write after a newer one;
-//! - **the last write is read** once the writer is done.
+//!   write after a newer one, nor "never written" after a write;
+//! - **the last write is read**, on the first copy, once the writer is done.
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/seq_cell.rs` (re-run against `SeqWriter`) and
-//! both models failed, at `LOOM_MAX_PREEMPTIONS=3` and unbounded (the pair
-//! runs in about three and a half seconds):
+//! Each was applied to `rt/seq_cell.rs` (re-run against the typed
+//! `SeqWriter<T>`) and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
+//! unbounded (the pair runs in about four seconds):
 //!
-//! - the writer's `Release` fence deleted → "a mixed copy: [1, 2]";
-//! - the reader's `Acquire` fence deleted → "a mixed copy: [1, 2]";
+//! - the writer's `Release` fence deleted → "a mixed copy: [1, 1, 2]" (the
+//!   first word from one write, the second from the other);
+//! - the reader's `Acquire` fence deleted → the same;
 //! - the reader's re-check of the sequence deleted (the copy returned as
-//!   loaded) → "a mixed copy: [1, 2]";
+//!   loaded) → the same;
 //! - the reader not refusing an odd sequence (copying mid-write) → "a mixed
-//!   copy: [0, 0]" (words no write stored);
-//! - the writer's closing store weakened to `Relaxed` → the same (with the
-//!   writer spawned, "a mixed copy: [1, 2]");
-//! - the reader's first sequence load weakened to `Relaxed` → the same.
+//!   copy: [0, 0, 0]" (bytes no write stored);
+//! - the writer's closing store weakened to `Relaxed` → the same;
+//! - the reader's first sequence load weakened to `Relaxed` → the same;
+//! - the reader returning "never written" for an odd sequence → "\"never
+//!   written\" after Write(1)".
+//!
+//! Not covered here: `Contended` reported as "never written" when the
+//! retries run out passes, because one remaining write cannot outlast the
+//! retries of a read that already saw the first. The unit test
+//! `a_read_tells_never_written_from_contended` pins that, on a cell held
+//! mid-write.
 
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::{SeqReader, SeqWriter};
+use tutti_types::{Contended, SeqReader, SeqWriter};
 
-/// The writes, in order. Words are the write's index, so 0 is "none".
-const WRITES: [u64; 2] = [1, 2];
+type Value = [u32; 3];
 
-/// The write a copy came from, or a panic on a mixed one.
-fn which(copy: Option<[u64; 2]>) -> u64 {
-    match copy {
-        None => 0,
-        Some([a, b]) if a == b && WRITES.contains(&a) => a,
-        // Unequal words, or words no write stored.
-        Some(words) => panic!("a mixed copy: {words:?}"),
+/// The writes, in order. Elements are the write's index, so 0 is "never
+/// written".
+const WRITES: [u32; 2] = [1, 2];
+
+/// The retries a read is allowed: as many copies as the VST2 host allows.
+const RETRIES: usize = 7;
+
+/// What a read saw.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Seen {
+    Never,
+    GaveUp,
+    Write(u32),
+}
+
+/// What a read returned, or a panic on a mixed copy.
+fn which(read: Result<Option<Value>, Contended>) -> Seen {
+    match read {
+        Ok(None) => Seen::Never,
+        Err(Contended) => Seen::GaveUp,
+        Ok(Some([a, b, c])) if a == b && b == c && WRITES.contains(&a) => Seen::Write(a),
+        // Unequal elements, or elements no write stored.
+        Ok(Some(value)) => panic!("a mixed copy: {value:?}"),
     }
 }
 
-/// Two reads in program order: each a write or none, the second never older.
-fn two_reads(reader: &SeqReader<2>) {
-    let first = which(reader.read());
-    let second = which(reader.read());
-    // A `None` is a read that gave up, not an older write: only two `Some`s
-    // are ordered.
-    if first != 0 && second != 0 {
-        assert!(second >= first, "a read went back from {first} to {second}");
+/// Two reads in program order: the second never older than the first, and
+/// never "never written" after a write.
+fn two_reads(reader: &SeqReader<Value>) {
+    let first = which(reader.read(RETRIES));
+    let second = which(reader.read(RETRIES));
+    match (first, second) {
+        (Seen::Write(a), Seen::Write(b)) => {
+            assert!(b >= a, "a read went back from {a} to {b}");
+        }
+        (Seen::Write(_) | Seen::GaveUp, Seen::Never) => {
+            panic!("\"never written\" after {first:?}");
+        }
+        // A `Contended` is a read that gave up, not an older write.
+        _ => {}
     }
 }
 
@@ -78,17 +109,17 @@ fn two_reads(reader: &SeqReader<2>) {
 #[test]
 fn a_spawned_reader_never_sees_a_mixed_or_older_copy() {
     loom::model(|| {
-        let mut writer = SeqWriter::<2>::new();
+        let mut writer = SeqWriter::<Value>::new();
         let reader = writer.reader();
         let handle = {
             let reader = reader.clone();
             thread::spawn(move || two_reads(&reader))
         };
         for w in WRITES {
-            writer.write([w, w]);
+            writer.write([w, w, w]);
         }
         handle.join().unwrap();
-        assert_eq!(reader.read(), Some([2, 2]), "the last write is read");
+        assert_eq!(reader.read(0), Ok(Some([2; 3])), "the last write is read");
     });
 }
 
@@ -96,15 +127,15 @@ fn a_spawned_reader_never_sees_a_mixed_or_older_copy() {
 #[test]
 fn a_reader_beside_a_spawned_writer_never_sees_a_mixed_or_older_copy() {
     loom::model(|| {
-        let mut writer = SeqWriter::<2>::new();
+        let mut writer = SeqWriter::<Value>::new();
         let reader = writer.reader();
         let handle = thread::spawn(move || {
             for w in WRITES {
-                writer.write([w, w]);
+                writer.write([w, w, w]);
             }
         });
         two_reads(&reader);
         handle.join().unwrap();
-        assert_eq!(reader.read(), Some([2, 2]), "the last write is read");
+        assert_eq!(reader.read(0), Ok(Some([2; 3])), "the last write is read");
     });
 }

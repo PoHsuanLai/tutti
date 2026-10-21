@@ -8,12 +8,12 @@ use std::sync::{Arc, Mutex};
 use tutti_core::ChannelLayout;
 use tutti_graph::{
     Cost, Cx, Event, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, Offset, ParamRangeReader, ParamSegment, PlayReading, Prepare, SegmentShape, Shape,
-    Status, Transport,
+    NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare,
+    SegmentShape, Shape, Status, Transport,
 };
 use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
 use tutti_types::{
-    ArcLend, AtomicF32, Beat, Frame, ParamAddr, ParamKey, RangeCell, Reader, SamplePosition,
+    ArcLend, AtomicF32, Beat, Frame, PackedAtomic, ParamAddr, ParamKey, Reader, SamplePosition,
     Samples, Tail, Unit, UnitParam,
 };
 
@@ -42,20 +42,17 @@ enum RangeSource {
     /// clamps, the lane reads the span.
     Port(ParamRangeReader),
     /// The lane's own cell (a plugin parameter): the span, and the clamp.
-    Own(RangeCell),
+    Own(PackedAtomic<ParamRange>),
     /// None: an unranged target takes no modulation.
     None,
 }
 
 impl RangeSource {
-    fn load(&self) -> (f32, f32) {
+    fn load(&self) -> ParamRange {
         match self {
-            Self::Port(r) => {
-                let r = r.load();
-                (r.min, r.max)
-            }
+            Self::Port(r) => r.load(),
             Self::Own(c) => c.load(),
-            Self::None => (f32::NEG_INFINITY, f32::INFINITY),
+            Self::None => ParamRange::UNBOUNDED,
         }
     }
 }
@@ -150,7 +147,7 @@ impl LaneControls {
     pub fn set_range(&self, min: f32, max: f32) -> bool {
         match &self.0.range {
             RangeSource::Own(c) => {
-                c.store(min, max);
+                c.store(ParamRange::new(min, max));
                 true
             }
             _ => false,
@@ -159,7 +156,8 @@ impl LaneControls {
 
     /// The range the lane reads, `(min, max)`; unbounded when it has none.
     pub fn range(&self) -> (f32, f32) {
-        self.0.range.load()
+        let r = self.0.range.load();
+        (r.min, r.max)
     }
 
     /// Blocks whose grid the lane thinned to stay within
@@ -369,7 +367,7 @@ impl ControlLaneNode {
         Self::build(
             Arc::new(program),
             knob.map(|k| Arc::new(AtomicF32::new(k))),
-            RangeSource::Own(RangeCell::new(range.0, range.1)),
+            RangeSource::Own(PackedAtomic::new(ParamRange::new(range.0, range.1))),
             Arc::new(move |from, to, shape| ParamSegment::foreign(id, from, to, Samples(0), shape)),
             false,
         )
@@ -399,10 +397,7 @@ impl ControlLaneNode {
             .map(|k| Arc::new(AtomicF32::new(k.load(Ordering::Acquire))));
         let range = match &s.range {
             RangeSource::None => RangeSource::None,
-            r => {
-                let (lo, hi) = r.load();
-                RangeSource::Own(RangeCell::new(lo, hi))
-            }
+            r => RangeSource::Own(PackedAtomic::new(r.load())),
         };
         Self::build(program, knob, range, Arc::clone(make), native)
     }
@@ -932,7 +927,8 @@ impl Node for ControlLaneNode {
             .as_ref()
             .map(|k| k.load(Ordering::Acquire))
             .filter(|k| k.is_finite());
-        let range = s.range.load();
+        let ParamRange { min, max } = s.range.load();
+        let range = (min, max);
         let span = f64::from(range.1) - f64::from(range.0);
         let span = if span.is_finite() && span >= 0.0 {
             span

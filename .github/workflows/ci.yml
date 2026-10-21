@@ -638,9 +638,9 @@ jobs:
       - run: cargo test --locked -p tutti-types --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
-      # `RangeCell`'s one property (no torn `(min, max)`), against the
+      # `PackedAtomic`'s one property (no torn `[min, max]`), against the
       # shipped code: one model, seconds.
-      - run: cargo test --locked -p tutti-types --release --test range_cell_loom
+      - run: cargo test --locked -p tutti-types --release --test packed_atomic_loom
       # `SeqWriter`/`SeqReader`'s one property (no copy mixing two writes),
       # against the shipped code: two models (the writer on either thread),
       # unbounded, about four seconds.

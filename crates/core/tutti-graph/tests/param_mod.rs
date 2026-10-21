@@ -2198,13 +2198,12 @@ proptest! {
 /// every cell from the spec) leaves it reading the same range. A param the
 /// node does not declare, or a key no commit has placed, has none.
 ///
-/// Changed in review of doc 014 §12.2: the handle was an `Arc<RangeCell>`
-/// and the test stored through it; a store there was undone by the next
-/// commit, so the handle is read-only and the test writes through the
-/// supported path, `set_param_range`, still asserting the handle sees it.
+/// The handle is read-only: a store into the cell alone would be undone by
+/// the next commit, so the test writes through the supported path,
+/// `set_param_range`, and asserts the handle sees it.
 ///
 /// Mutations (run): `param_range_cell` returning a view of a fresh cell
-/// holding the current range (`RangeCell::new` of the stored bounds) → the
+/// holding the current range (`PackedAtomic::new` of the stored range) → the
 /// handle misses the later `set_param_range` → fails. `ParamRanges::new`
 /// sharing one cell between all ports → the range set on Cutoff clamps Q's
 /// port, which reads past it → fails. `set_param_range` not updating the

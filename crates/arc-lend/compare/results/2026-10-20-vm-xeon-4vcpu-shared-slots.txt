@@ -406,12 +406,12 @@ Live payloads (published values not yet freed, counted by the payload's own cons
 | basedrop | staircase of 12 parked reads | 13 | 13 | 13 | 13 | 13 | 20000 | 1 | 120 ns | 35.1 µs | 0 | 0 |
 | left-right | staircase of 12 parked reads | 2 | 2 | 2 | 2 | 2 | 1 | 2 | 143 ns | 2202.0 ms | 0 | 0 |
 
-## 7. Publish cost (for E3)
+## 7. Publish cost
 
 
 ### 7.1. Against reader handles registered
 
-20000 publishes on one thread, no reader reading, with *registered* reader handles alive. A handle is a left-right `ReadHandle` (registered with the writer, which scans them on publish) and a clone of the shared cell for every other contender, so today only left-right's cost can depend on it. arc-lend's E3 registered readers will (each publish scans the slot list up to its high-water mark); re-run this table then.
+20000 publishes on one thread, no reader reading, with *registered* reader handles alive. A handle is a left-right `ReadHandle` (registered with the writer, which scans them on publish) and a clone of the shared cell for every other contender, so today only left-right's cost can depend on it. arc-lend's planned registered readers will (each publish scans the slot list up to its high-water mark); re-run this table then.
 
 | contender | registered | p50 | p99 | p99.9 | p99.99 | max |
 |---|---:|---:|---:|---:|---:|---:|
@@ -450,7 +450,7 @@ Live payloads (published values not yet freed, counted by the payload's own cons
 
 ### 7.2. arc-lend: against retired values pinned
 
-Retired values pinned by parked loans in every slot and epoch (the epoch-stall state, `docs::limitations`). *pinned publish*: 100 publishes while that many are pinned (each adds one). *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's `remove(i)` (refinement P2).
+Retired values pinned by parked loans in every slot and epoch (the epoch-stall state, `docs::limitations`). *pinned publish*: 100 publishes while that many are pinned (each adds one). *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's `remove(i)`.
 
 | pinned | epoch stalls | pinned publish p50 | p99 | p99.9 | p99.99 | max | retired at release | release publish | plain free |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

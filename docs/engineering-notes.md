@@ -243,14 +243,11 @@ Rules:
   parked loan pins one value per reader, the one it holds. A reader
   preempted mid-lend pins what is retired meanwhile, until the next scan
   after it resumes; that is not bounded by the reader count (the bench
-  measured 2902 values at peak). Poll `retired_len()` to see it. (Before E3
-  a parked overflow loan could pin every value retired after it, and tutti
-  ran a debug-build count check, `debug_check_reclaiming`, at the busiest
-  publishes. E3 deleted it with its tests: a node cannot park a `Loan`
-  across blocks, since that needs a self-referential borrow of its own
-  `Reader`, and a `mem::forget` pins one value per reader
-  (`arc-lend`'s `parked_loans_pin_one_value_per_reader`). The count
-  measured the overflow epochs' hazard, which no longer exists.)
+  measured 2902 values at peak). Poll `retired_len()` to see it. There is
+  no debug-build count check: a node cannot park a `Loan` across blocks,
+  since that needs a self-referential borrow of its own `Reader`, and a
+  `mem::forget` pins one value per reader (`arc-lend`'s
+  `parked_loans_pin_one_value_per_reader`).
 - **One reader per nesting level.** A `Reader` lends one `Loan` at a time
   (`lend` takes `&mut self`); a second live loan of one cell on one thread
   needs a second reader.
@@ -268,7 +265,7 @@ Rules:
   installed meter cell's `Arc`; it was `ArcSwapOption` until a host that
   installed a meter it did not keep, then replaced it mid-block, was shown to
   free the whole cell on the audio thread (the guard-debt hazard below).
-  Since E3a each plugin node reads a `MeterSlot` cell of its own, holding the
+  Each plugin node now reads a `MeterSlot` cell of its own, holding the
   project's `MeterMap` or nothing, and `ProjectMeter::set_meter` publishes
   into every follower. Control-thread-only cells (device enumeration in
   `tutti-midi-hardware`) stay plain; its per-block port set is an `ArcLend`

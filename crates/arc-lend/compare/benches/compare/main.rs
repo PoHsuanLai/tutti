@@ -40,7 +40,7 @@
 //!    arc-lend nests one registered reader per level.
 //! 6. **Retained memory**: live payloads while publishing, normally and with
 //!    a reader parked across publishes (one read, and a staircase of nested
-//!    reads, which drove E2's arc-lend into its epoch-fallback worst case).
+//!    reads).
 //! 7. **Publish cost** against readers registered (all contenders) and
 //!    against retired values pinned (arc-lend).
 //!
@@ -1023,7 +1023,7 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     println!(
         "Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher \
          makes {} publishes flat out. *Staircase*: one reader takes {} nested reads, one more after each of the first publishes \
-         (arc-lend: through 12 registered readers, as the E2 run's 8 slots and 4 epochs), and holds them all. A parked reader lets go once \
+         (arc-lend: through 12 registered readers, one per level), and holds them all. A parked reader lets go once \
          every publish is done, or once the publisher has made no progress for {} ms (it is waiting for the reader). \
          *live after*: once the readers are gone and the writer has published once more and settled.\n",
         plan.retained_publishes,
@@ -1061,9 +1061,8 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     }
 }
 
-/// Twelve parked reads: the E2 run's 8 slot loans and 4 overflow loans (one
-/// per epoch), which occupied every slot and epoch of that version's cell.
-/// Kept at 12 so the rows compare across the two runs.
+/// Twelve parked reads, the count of the recorded runs, so new rows compare
+/// with them.
 const STAIRCASE: usize = 12;
 
 // ---------------------------------------------------------------------------
@@ -1122,7 +1121,7 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
          retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many \
          are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after \
          the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same \
-         thread, the free cost alone. The difference is the retired list's filter (refinement P2).\n"
+         thread, the free cost alone. The difference is the retired list's filter.\n"
     );
     println!(
         "| pinned | pinned publish {TAIL_HEAD} | retired at release | release publish | plain free |"

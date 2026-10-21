@@ -6,14 +6,17 @@ what a reader allocates and frees, how long the publisher takes while
 readers are reading, and how much retired memory a parked reader holds.
 arc-lend loses some of these, and the losses are reported with the wins.
 
-This is the **E3** run: registered readers only, and a publisher that never
+The design measured has registered readers only, and a publisher that never
 waits on a reader. The harness is the `arc-lend-compare` crate beside this
 file ([`compare/`](compare/)). Every number below is copied by script from
 one recorded run, whose raw output is committed as
-[`compare/results/2026-10-20-vm-xeon-4vcpu-e3.txt`](compare/results/2026-10-20-vm-xeon-4vcpu-e3.txt). The E2 run (hazard slots shared per cell, overflow
-epochs) is kept beside it as
-[`compare/results/2026-10-20-vm-xeon-4vcpu.txt`](compare/results/2026-10-20-vm-xeon-4vcpu.txt), and [E2 to E3](#e2-to-e3) compares the two. No figure
-was edited by hand.
+[`compare/results/2026-10-20-vm-xeon-4vcpu-registered-readers.txt`](compare/results/2026-10-20-vm-xeon-4vcpu-registered-readers.txt).
+The run of the previous, shared-slot design (anonymous `lend()`, hazard
+slots shared per cell, overflow epochs) is kept beside it as
+[`compare/results/2026-10-20-vm-xeon-4vcpu-shared-slots.txt`](compare/results/2026-10-20-vm-xeon-4vcpu-shared-slots.txt),
+and [Shared slots to registered readers](#shared-slots-to-registered-readers)
+compares the two. No figure was edited by hand. The two raw files' label
+wording was edited after recording; their numbers were not.
 
 > **Read these numbers as indicative.** The run was on a shared cloud VM
 > (4 vCPUs, the CPU reports the `hypervisor` flag) while other jobs ran,
@@ -42,44 +45,39 @@ What arc-lend wins:
 - **Readers do not contend.** Each reader has its own cache line, so the
   reader p50 is flat in the reader count: 42 ns, 41 ns, 41 ns and 42 ns at
   1 to 4 readers with no publisher, against 51 ns for arc-swap and
-  53 ns for left-right, on a 30 ns timer floor (section 2.1). E2's
-  shared slots cost 300 ns at four readers.
-- **A flat-out publisher no longer slows the reader**: 45 ns p50 at one
-  reader, against 51 ns for arc-swap (E2: 120 ns) (section 2.4).
-- **The publisher never waits on a reader.** Its tails no longer grow with
+  53 ns for left-right, on a 30 ns timer floor (section 2.1).
+- **A flat-out publisher does not slow the reader**: 45 ns p50 at one
+  reader, against 51 ns for arc-swap (section 2.4).
+- **The publisher never waits on a reader.** Its tails do not grow with
   the readers: at 2 and 3 readers and 1 kHz its p99.9 is 9703 ns and
-  16.9 µs (E2: 681.0 µs and 641.0 µs), and at four readers flat out it
-  made 1139802 publishes, against 518337 for arc-swap best (E2:
-  165909) (section 3).
+  16.9 µs, and at four readers flat out it made 1139802 publishes, against
+  518337 for arc-swap best (section 3).
 - **A held loan never blocks the publisher** (sections 4 and 6).
   left-right's writer is blocked by a read held across two publishes, and
   the locks' writers by any held read.
 - **Nested reads cost what flat ones do**: one reader per level, so 8
   nested reads on each of 4 readers take 128 ns per block against
-  191 ns for arc-swap (E2: 5539 ns), and 16 take 226 ns against
-  1965 ns, past arc-swap's 8 debt slots per thread (section 5).
+  191 ns for arc-swap, and 16 take 226 ns against 1965 ns, past arc-swap's 8 debt slots per thread (section 5).
 - **Parked loans pin one value each**: the staircase of 12 parked reads
-  holds 13 values live, like arc-swap and basedrop (13); E2 grew to
-  20001 (section 6).
+  holds 13 values live, like arc-swap and basedrop (13) (section 6).
 - **A publish is cheap**: 138 ns with one reader registered and no reader
   reading, against 576 ns for arc-swap (whose graveyard sweep or debt
   walk is counted), behind basedrop (99 ns) and the locks
   (87-89 ns) (section 7.1). Freeing a long retired list costs what
   freeing a `Vec` of it does: 2444.3 µs for 30000 values against
-  2466.5 µs (E2: 169.9 ms for 30100) (section 7.2).
+  2466.5 µs (section 7.2).
 
 What arc-lend loses:
 
 - **A reader preempted mid-lend pins what is retired meanwhile.** With no
   loan parked, two readers lending in a loop and a flat-out publisher, the
-  live count peaked at 2902 values (at 50% of the run it was
-  2458), where arc-swap held 3 and basedrop 2; E2 held
-  2 (section 6). The publisher does not wait for a reader caught
-  between claiming its slot and announcing what it loaded, so it keeps
-  everything that reader could still load until a scan sees it has moved
-  on. On this shared VM a reader is descheduled often enough for that to
-  show; all of it was freed (live after: 1). This is E2's
-  publisher spin traded for memory, and `docs::limitations` describes it.
+  live count peaked at 2902 values (at 50% of the run it was 2458), where
+  arc-swap held 3 and basedrop 2 (section 6). The publisher does not wait
+  for a reader caught between claiming its slot and announcing what it
+  loaded, so it keeps everything that reader could still load until a scan
+  sees it has moved on. On this shared VM a reader is descheduled often
+  enough for that to show; all of it was freed (live after: 1).
+  `docs::limitations` describes it.
 - **A publish scans every registered reader**: 1343 ns p50 with 1000
   registered, against 138 ns with one (left-right: 2365 ns; the other
   cells are flat) (section 7.1). With 30000 readers each parking a loan, a
@@ -91,8 +89,6 @@ What arc-lend loses:
   readers the publisher runs less often and the gap is gone
   (128 ns against 191 ns). Under a flat-out publisher at two
   readers the flat p50 is 57 ns against 51 ns.
-- **The publish with a read held** is a little slower than E2's: 462 ns
-  against 390 ns (section 4).
 
 **Best-config arc-swap showed no failure here.** With a graveyard on the
 writer and a prewarmed reader, it never freed or allocated on a reader, and
@@ -107,39 +103,28 @@ not. arc-lend makes the first two a property of the type, and the third
 does not apply to it; what it asks instead is that each reading thread
 register a `Reader` ahead of time.
 
-## E2 to E3
+## Shared slots to registered readers
 
-arc-lend's own figures, this run against the E2 run on the same VM (both
-shared, so a difference within noise is marked *same*: within 10%). Tails
-on a shared VM are one or two samples each; read the medians first.
-17 wins, 5 losses.
+arc-lend's own figures, this run against the shared-slot run on the same VM
+(both shared; tails on a shared VM are one or two samples each, so read the
+medians first). Of 24 measurements compared, 17 were wins, 2 the same
+within 10% and 5 losses; the table keeps every loss and the main wins.
 
-| measurement (arc-lend) | E2 | E3 | |
+| measurement (arc-lend) | shared slots | registered readers | |
 |---|---:|---:|---|
-| 2.1 reader p50, 1 reader, no publisher | 47 ns | 42 ns | win |
-| 2.1 reader p50, 2 readers, no publisher | 137 ns | 41 ns | win |
 | 2.1 reader p50, 4 readers, no publisher | 300 ns | 42 ns | win |
-| 2.1 reader p99.9, 4 readers, no publisher | 3757 ns | 84 ns | win |
 | 2.4 reader p50, 1 reader, publisher flat out | 120 ns | 45 ns | win |
-| 2.4 reader p50, 4 readers, publisher flat out | 293 ns | 42 ns | win |
-| 2.4 reader p99.9, 1 reader, publisher flat out | 533 ns | 569 ns | same |
-| 3 publish p50, 1 reader, flat out | 659 ns | 389 ns | win |
 | 3 publish p99.9, 2 readers, 1 kHz | 681.0 µs | 9703 ns | win |
-| 3 publish p99.9, 3 readers, 1 kHz | 641.0 µs | 16.9 µs | win |
 | 3 publish max, 4 readers, 1 kHz | 37.0 ms | 3445 ns | win |
 | 3 publishes made, 4 readers, flat out (more is better) | 165909 | 1139802 | win |
 | 4 publish p50, a read held | 390 ns | 462 ns | loss |
-| 5 block p50, depth 8, 1 reader, no publisher | 356 ns | 127 ns | win |
 | 5 block p50, depth 8, 4 readers, no publisher | 5539 ns | 128 ns | win |
-| 5 block p50, depth 16, 4 readers, no publisher | 11.6 µs | 226 ns | win |
 | 6 max live values, no parked read | 2 | 2902 | loss |
 | 6 max live values, one parked read | 3 | 9 | loss |
 | 6 max live values, staircase of 12 parked reads | 20001 | 13 | win |
-| 6 publish p50, staircase | 47.2 µs | 214 ns | win |
-| 7.1 publish p50, 1 registered | 132 ns | 138 ns | same |
 | 7.1 publish p50, 1000 registered | 125 ns | 1343 ns | loss |
-| 7.2 publish p50, 30000 pinned (E2: through 12 loans and epoch stalls) | 175.1 µs | 1215.5 µs | loss |
-| 7.2 release publish, 30000 pinned (E2: 30100) | 169.9 ms | 2444.3 µs | win |
+| 7.2 publish p50, 30000 pinned (shared slots: through 12 loans and epoch stalls) | 175.1 µs | 1215.5 µs | loss |
+| 7.2 release publish, 30000 pinned (shared slots: 30100) | 169.9 ms | 2444.3 µs | win |
 
 ## Method
 
@@ -319,8 +304,7 @@ One block is one read, a sum of the 16-element payload, and the drop. Latencies 
   (42-58 ns p50) on a 30 ns timer floor. arc-lend is at 42 ns.
 - More readers: arc-lend stays at 41-42 ns p50, arc-swap and
   left-right at 51-53 ns. basedrop (388-440 ns) and the
-  locks are slower. E2's arc-lend rose to 137 ns, 197 ns and 300 ns here,
-  because its readers contended on one cache line of slots.
+  locks are slower.
 - No contender allocates or frees on a reader here. Naive arc-swap's 0
   allocations in this section are not a first-load figure: its reader
   threads reuse debt nodes that earlier runs in this process left free.
@@ -449,9 +433,8 @@ One block is one read, a sum of the 16-element payload, and the drop. Latencies 
 - This is adversarial case 4, a heavy writer during reads. Best-config
   arc-swap's reader p50 stays at 51 ns and it never allocates or frees:
   no failure.
-- arc-lend's p50 is 45 ns at one reader and 42 ns at four (E2: 120 ns and
-  293 ns). Its p99.9 (569 ns at one reader) is close to arc-swap's
-  (592 ns).
+- arc-lend's p50 is 45 ns at one reader and 42 ns at four. Its p99.9
+  (569 ns at one reader) is close to arc-swap's (592 ns).
 - With four readers, left-right's readers look fast (53 ns) because its
   writer barely runs (10868 publishes in section 3): it waits for readers
   on a shared core.
@@ -563,14 +546,11 @@ Per publish (the payload is built before the clock starts; the time includes any
 - arc-lend's publish p50 is below arc-swap best's in every row
   (flat out at one reader: 389 ns against 876 ns), and near basedrop's
   (385 ns) and the locks' (349-518 ns).
-- **Its tails no longer grow with the readers.** E2's publisher spun on a
-  reader caught between claiming a slot and announcing it, and when that
-  reader was preempted it spun until the reader ran again: at 2 readers and
-  1 kHz its p99.9 was 681.0 µs, and at four readers it made 513 of about
-  1500 publishes at 1 kHz with a 37.0 ms max. E3's publisher never waits:
-  9703 ns and 1467 publishes with a 3445 ns max in the same rows.
+- **Its tails do not grow with the readers**, because the publisher never
+  waits on a reader: at 2 readers and 1 kHz its p99.9 is 9703 ns, and at
+  four readers and 1 kHz it made 1467 publishes with a 3445 ns max.
   Flat out at four readers it made 1139802 publishes, the most of any
-  contender (arc-swap best 518337, E2 165909).
+  contender (arc-swap best 518337).
 - The 1 kHz rows hold about 1500 publishes, so p99.9 is about the
   second-worst sample and p99.99 is the max. The 4 ms and 8 ms maxima
   that recur in the 100 kHz and flat-out rows, for every contender, are
@@ -673,15 +653,14 @@ Each block holds *depth* reads of the cell at once (summing each), then drops th
   226 ns at depth 16, with no publisher. Under a flat-out publisher on
   one reader it loses to arc-swap at depth 8 (420 ns against
   192 ns): each level's lend misses on the pointer and on its own slot
-  line, which the publisher's scan has just read. E2's lends scanned shared slots from slot 0 and
-  overflowed into epochs: 356 ns, 5539 ns, 965 ns and 11.6 µs.
+  line, which the publisher's scan has just read.
 - left-right is fastest at depth 8 on one reader (81 ns): a nested
   `enter()` on one handle is a counter increment.
 - No contender but naive arc-swap frees on its readers.
 
 ## 6. Retained memory
 
-Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher makes 20000 publishes flat out. *Staircase*: one reader takes 12 nested reads, one more after each of the first publishes (arc-lend: through 12 registered readers, as the E2 run's 8 slots and 4 epochs), and holds them all. A parked reader lets go once every publish is done, or once the publisher has made no progress for 200 ms (it is waiting for the reader). *live after*: once the readers are gone and the writer has published once more and settled.
+Live payloads (published values not yet freed, counted by the payload's own constructor and destructor) while the publisher makes 20000 publishes flat out. *Staircase*: one reader takes 12 nested reads, one more after each of the first publishes (arc-lend: through 12 registered readers, one per level), and holds them all. A parked reader lets go once every publish is done, or once the publisher has made no progress for 200 ms (it is waiting for the reader). *live after*: once the readers are gone and the writer has published once more and settled.
 
 | contender | scenario | live @25% | @50% | @75% | @100% | max live | publishes done at release | live after | publish p50 | publish max | reader frees | values freed on reader |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -717,16 +696,14 @@ Live payloads (published values not yet freed, counted by the payload's own cons
   until a scan sees it has moved on, and a flat-out publisher retires one
   every 486 ns or so. The episodes are most likely the VM's
   preemptions (the readers' cores are shared with other jobs); every value
-  went once the reader ran again (1 live after). E2's publisher spun instead, and kept
-  2.
+  went once the reader ran again (1 live after).
 - **One parked read:** arc-swap and basedrop keep 3 alive at most,
   arc-lend 9 (the same preemption as above, much shorter), and all three
   complete all 20000 publishes. left-right's writer, `Mutex` and `RwLock`
   are blocked by the parked read until the harness gives up after 200 ms.
 - **Staircase of 12 parked reads:** arc-lend keeps 13 (the 12 held plus the
-  current one), like arc-swap and basedrop, with a 214 ns publish p50. E2's
-  8 slots and 4 epochs filled, and every later retired value was pinned:
-  20001 live, and a 47.2 µs publish p50. left-right's writer is blocked.
+  current one), like arc-swap and basedrop, with a 214 ns publish p50.
+  left-right's writer is blocked.
 
 ## 7. Publish cost
 
@@ -780,7 +757,7 @@ Live payloads (published values not yet freed, counted by the payload's own cons
 
 ### 7.2. arc-lend: against retired values pinned
 
-Retired values pinned by parked loans: one registered reader per pinned value, each parking a loan before a publish retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's filter (refinement P2).
+Retired values pinned by parked loans: one registered reader per pinned value, each parking a loan before a publish retires what it holds (a parked loan pins at most one value per reader). *pinned publish*: 100 publishes while that many are pinned, each scanning that many slots and filtering that many retired values. *release publish*: the one publish after the loans drop, which frees the whole list; *plain free*: freeing that many `Arc<Payload>` from a `Vec` on the same thread, the free cost alone. The difference is the retired list's filter.
 
 | pinned | pinned publish p50 | p99 | p99.9 | p99.99 | max | retired at release | release publish | plain free |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -792,40 +769,18 @@ Retired values pinned by parked loans: one registered reader per pinned value, e
 
 - A publish while values are pinned grows linearly with the pinned count
   (29.2 µs at 1000, 1215.5 µs at 30000): each scans that many slots and
-  filters that many retired values. E2's rows are not like for like (12
-  loans and the epoch-stall state pinned E2's values, so its scan read 8
-  slots): 175.1 µs at 30000.
-- The release publish is now linear: 707.1 µs for 10000 values and
+  filters that many retired values.
+- The release publish is linear: 707.1 µs for 10000 values and
   2444.3 µs for 30000, against 743.7 µs and 2466.5 µs to free the same values
-  from a `Vec`. E2's `remove(i)` made it quadratic: 18.2 ms and
-  169.9 ms (for 10100 and 30100).
+  from a `Vec`.
 
-## What E3 changed, and what is left
+## What is left
 
-E3 replaced anonymous `lend()` and the overflow epochs with registered
-per-reader slots on a growable list, lent through `Reader::lend(&mut
-self)`, and a publisher that never waits on a reader. Against what E2's
-write-up expected of it:
-
-- **Section 2:** the multi-reader p50 flattened to the one-reader figure.
-  Done.
-- **Section 3:** the publisher's tails under preemption are gone, because
-  it no longer spins on a reader mid-lend. Done, at a cost in section 6.
-- **Section 5:** nested lends no longer overflow; each level costs a flat
-  lend. Done.
-- **Section 6:** the staircase stays bounded at one value per reader. Done.
-  New: a reader preempted mid-lend pins what is retired while it is
-  preempted (the *no parked read* row).
-- **Section 7.1:** the publish depends on the registered count, as
-  expected.
-- **Section 7.2:** the epoch-stall state is gone, and the release publish
-  is linear (refinement P2). Done.
-
-What is left: the preempted-reader pinning is bounded by the publishes
-made during the preemption, not by a constant. A host that publishes at a
-bounded rate bounds it in time; one that publishes flat out does not. A
-publisher could bound it further only by waiting on the reader, which is
-what E3 removed.
+The preempted-reader pinning is bounded by the publishes made during the
+preemption, not by a constant. A host that publishes at a bounded rate
+bounds it in time; one that publishes flat out does not. A publisher could
+bound it further only by waiting on the reader, which this design rules
+out.
 
 ## How the harness was checked
 
@@ -849,11 +804,11 @@ output checked. Each is recorded in a comment beside the code.
   arc-lend loan and its reader's drop do not (mutation: make
   `Reader::drop` reclaim). Their mutations are in the file.
 
-These were checked on the E2 harness. E3 changed only arc-lend's adapter
-(registered readers, and `Contender::nest` for the levels), the section
-texts, and section 7's axes, so the allocation mutation was repeated on
-the new adapter: with a `Box::new(0u64)` in its read, arc-lend's section 2
-"allocs" and "frees" again equalled its block counts in a smoke run.
+These were checked before arc-lend's adapter moved to registered readers
+(with `Contender::nest` for the levels), so the allocation mutation was
+repeated on the new adapter: with a `Box::new(0u64)` in its read, arc-lend's
+section 2 "allocs" and "frees" again equalled its block counts in a smoke
+run.
 
 ## Reproduce
 
@@ -867,7 +822,7 @@ just bench-compare --test
 
 `just bench-compare` is
 `cargo bench --locked -p arc-lend-compare --bench compare -- <args>`; the
-E3 run used that command directly. Close other work first, and on Linux
+recorded run used that command directly. Close other work first, and on Linux
 check `cat /sys/devices/system/clocksource/clocksource0/current_clocksource`
 is `tsc`. To regenerate this file from a new run, splice its tables in by
 heading rather than editing numbers by hand.

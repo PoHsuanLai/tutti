@@ -59,8 +59,8 @@ use crate::soundfont::TuttiSoundFontPlugin;
 /// [`build_into`](crate::engine::build_into), which lists the resources it
 /// inserts.
 ///
-/// Besides the engine, it always adds
-/// [`GraphReconcilePlugin`], keeps [`AudioDeviceState`](crate::AudioDeviceState) in sync and runs the
+/// Besides the engine, it always adds [`GraphReconcilePlugin`], keeps
+/// [`AudioDeviceState`](crate::AudioDeviceState) in sync and runs the
 /// session's `Poll` phase (device faults as
 /// [`AudioDeviceFault`](crate::AudioDeviceFault) messages). Which
 /// subsystem plugins it adds is governed by this crate's Cargo features:

@@ -32,13 +32,15 @@ Migration: a host that enabled `tutti-plugin/bevy` to keep a
 ### Changed — `bevy-tutti` runs the session's `Poll` phase
 
 A Bevy app now reports a device fault as a headless `Session::update()`
-does: `device_fault_poll` runs `Phase::Poll` in
+does: a crate-private system runs `Phase::Poll` in
 `SessionPhaseSystems(Phase::Poll)`, after the frame's commit, and writes
-each `SessionEvent::DeviceFault` as an `AudioDeviceFault` message.
-`AudioDeviceState::last_fault` is that fault's message;
-`device_state_sync_system` mirrors only the run state, the layout and the
-fault count. `TuttiPlugin` adds both (through a crate-private
-`DeviceStatePlugin`). `StreamFault` and `StreamFaultKind` are re-exported
+each `SessionEvent::DeviceFault` as an `AudioDeviceFault` message. The same
+system owns `AudioDeviceState`'s fault fields (`stream_faults`,
+`last_fault`, which is the reported fault's message);
+`device_state_sync_system` mirrors only the run state and the layout.
+`TuttiPlugin` adds both (through a crate-private `DeviceStatePlugin`).
+A host that calls `Device::take_fault()` before the phase runs consumes the
+fault: it is counted, not reported. `StreamFault` and `StreamFaultKind` are re-exported
 from `bevy_tutti`.
 
 Migration: none for a `TuttiPlugin` app. A host that read faults off the

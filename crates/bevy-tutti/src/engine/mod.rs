@@ -19,7 +19,7 @@ mod state;
 
 pub use crate::error::{Error, Result};
 pub use build::build_into;
-pub use device_state::{device_fault_poll, AudioDeviceFault, AudioDeviceState};
+pub use device_state::{AudioDeviceFault, AudioDeviceState};
 pub use restart::{restart_device, restart_device_on, DeviceRestart};
 pub use state::AudioEngineState;
 

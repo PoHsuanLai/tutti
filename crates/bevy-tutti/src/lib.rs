@@ -232,9 +232,7 @@ mod error;
 pub use error::{Error, Result};
 
 pub use engine::AudioEngineState;
-pub use engine::{
-    device_fault_poll, AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKind,
-};
+pub use engine::{AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKind};
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {

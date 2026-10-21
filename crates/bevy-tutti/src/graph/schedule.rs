@@ -66,7 +66,7 @@ pub enum GraphReconcileSystems {
 /// - `Commit` ([`commit_graph`](super::commit_graph)): in `Commit`;
 /// - `AfterCommit` (`ModulationSystems::AfterCommit`), `MidiOut`
 ///   (`pump_clock_out_system`, feature `midi`) and `Poll`
-///   ([`device_fault_poll`](crate::device_fault_poll), added by
+///   (`device_fault_poll`, added by
 ///   [`TuttiPlugin`](crate::TuttiPlugin)): after `Commit`.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SessionPhaseSystems(pub Phase);

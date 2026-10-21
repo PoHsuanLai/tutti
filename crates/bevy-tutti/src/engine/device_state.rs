@@ -60,9 +60,8 @@ impl Default for AudioDeviceState {
     }
 }
 
-/// Refreshes the per-frame half of [`AudioDeviceState`]: run state, channel
-/// layout and the fault count. The fault itself is the session's report
-/// ([`device_fault_poll`]).
+/// Refreshes the per-frame half of [`AudioDeviceState`]: run state and
+/// channel layout. The fault half is [`device_fault_poll`]'s.
 ///
 /// Device *names* are not refreshed here — enumeration is an OS call, and doing
 /// it every frame to learn something that changes on hot-plug would be paying a
@@ -79,15 +78,15 @@ pub fn device_state_sync_system(
     if let Some(cfg) = config {
         state.channels = cfg.channels;
     }
-    // One atomic load; the message is the session's `Poll` phase's.
-    state.stream_faults = driver.faults().count();
 }
 
 /// The audio backend reported a fault (a device unplugged mid-session): the
 /// most recent one since the last frame, as the session's `Poll` phase
 /// reports it (`tutti_session::SessionEvent::DeviceFault`). A frame with
 /// several faults reports the last; [`AudioDeviceState::stream_faults`]
-/// counts them all.
+/// counts them all. A host that takes the fault off the device
+/// (`Device::take_fault`) before the phase runs consumes it: it is counted,
+/// not reported.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct AudioDeviceFault(pub StreamFault);
 
@@ -95,14 +94,19 @@ pub struct AudioDeviceFault(pub StreamFault);
 /// ([`SessionPhaseSystems`]`(Phase::Poll)`, last in the frame), as
 /// `Session::update` runs it last: each device fault it reports is written
 /// as an [`AudioDeviceFault`] and becomes
-/// [`AudioDeviceState::last_fault`].
-pub fn device_fault_poll(
+/// [`AudioDeviceState::last_fault`]. This system owns both fault fields, so
+/// the resource never shows a count without its fault.
+pub(crate) fn device_fault_poll(
+    driver: Option<NonSend<Device>>,
     graph: Option<ResMut<AudioGraphRes>>,
     mut state: Option<ResMut<AudioDeviceState>>,
     mut faults: MessageWriter<AudioDeviceFault>,
 ) {
     // `engine_ready` reads a state a host may insert without an engine.
     let Some(mut graph) = graph else { return };
+    // The count before the phase reads it: never ahead of what the phase
+    // reports (a fault landing in between is counted next frame).
+    let count = driver.map(|d| d.faults().count());
     let events = graph
         .bypass_change_detection()
         .run_phase(Phase::Poll, std::time::Instant::now());
@@ -112,6 +116,15 @@ pub fn device_fault_poll(
                 state.last_fault.clone_from(&fault.message);
             }
             faults.write(AudioDeviceFault(fault));
+        }
+    }
+    if let (Some(count), Some(state)) = (count, state.as_mut()) {
+        if count != state.stream_faults {
+            // A restart clears the device's record, and the fault with it.
+            if count < state.stream_faults {
+                state.last_fault.clear();
+            }
+            state.stream_faults = count;
         }
     }
 }

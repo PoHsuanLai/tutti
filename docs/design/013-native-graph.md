@@ -2397,7 +2397,12 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   retraction freed positions a block in flight still held). Ordered by fences
   and release/acquire, not by `SeqCst` accesses, which loom does not model as
   totally ordered. A threaded stress test (a real writer and reader, random
-  claims, tagged samples) runs at a scale loom cannot.
+  claims, tagged samples) runs at a scale loom cannot. The slot map
+  (`s mod N`) is a pure function the protocol only needs to be the same on
+  both sides; it is a multiply by a reciprocal taken once at `new`, not a
+  `u64` divide, because the voice's cubic reads four taps per output frame
+  (exact for the positions and ring lengths the window word allows, and
+  checked against `%` in `PosRing`'s tests).
 - **One writer and one reader, by type** (the review of `PosRing`):
   `PosRing::new` returns a `PosWriter` (its methods `&mut self`) and a
   `PosReader` whose `claim` returns a `PosClaim` borrowing it — samples are

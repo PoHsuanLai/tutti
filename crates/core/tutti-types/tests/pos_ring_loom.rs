@@ -16,7 +16,11 @@
 //!
 //! # What each model asserts
 //!
-//! A ring of 4 slots, 2 channels. Every sample the writer stores is a tag of
+//! A ring of 4 slots, 2 channels. (The slot map, `s mod N` by a
+//! reciprocal multiply, is a pure function the protocol only needs both
+//! sides to share; `PosRing`'s unit test
+//! `the_slot_map_is_the_position_mod_the_ring` checks it against `%` for
+//! every ring length class, which a 4-slot model cannot.) Every sample the writer stores is a tag of
 //! its position, the generation it was written under and its channel. A
 //! reader thread makes two claims (one, in the models whose writer does
 //! most) of two ranges each; for every position of a claim's ranges its

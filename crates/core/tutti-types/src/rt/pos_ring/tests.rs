@@ -30,6 +30,63 @@ fn a_window_packs_into_one_word_and_back() {
     }
 }
 
+/// **The slot map is `s mod frames`**, without a divide: for every ring
+/// length up to [`MAX_POS_RING_FRAMES`] it agrees with `%` at the edges of
+/// each period, at the last position a window can hold (`2^40 - 1`) and at
+/// pseudo-random positions between.
+///
+/// Mutations (run), each failing at `1 mod 2`: the reciprocal one short
+/// (`u64::MAX / d`, no `+ 1`); the final shift 63 instead of 64; the
+/// product taken in `u64` (`c * s * d >> 40`) instead of `u128`.
+#[test]
+fn the_slot_map_is_the_position_mod_the_ring() {
+    let last = (1u64 << 40) - 1;
+    let mut lcg = 0x2545_f491_4f6c_dd1du64;
+    let max = MAX_POS_RING_FRAMES as u64;
+    for d in [
+        1,
+        2,
+        3,
+        5,
+        7,
+        4_095,
+        4_096,
+        4_097,
+        48_000,
+        144_000,
+        1_440_000,
+        1 << 23,
+        max - 2,
+        max - 1,
+        max,
+    ] {
+        let c = recip(d);
+        let check = |s: u64| assert_eq!(rem(s, c, d), s % d, "{s} mod {d}");
+        // The top multiple of `d` a position can reach, and either side.
+        let top = last / d * d;
+        for s in [
+            0,
+            1,
+            d - 1,
+            d,
+            d + 1,
+            2 * d - 1,
+            top - 1,
+            top,
+            top.saturating_add(1).min(last),
+            last - d,
+            last - 1,
+            last,
+        ] {
+            check(s);
+        }
+        for _ in 0..if cfg!(miri) { 16 } else { 4_096 } {
+            lcg = lcg.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            check(lcg >> 24);
+        }
+    }
+}
+
 /// **Frames land at the window's end and read back by position**, every
 /// channel in its place at six channels, a trailing partial frame
 /// dropped.
@@ -262,30 +319,54 @@ fn first_alias_is_the_first_slot_another_position_of_the_range_holds() {
 /// a model: it complements `tests/pos_ring_loom.rs` at a scale loom cannot
 /// explore.
 ///
+/// The run lasts until the reader has checked `CHECKS` frames (and the
+/// writer taken `STEPS` steps), about 0.8 s in a release build and 5 s in
+/// a debug one here, not a fixed number of
+/// writer steps: those could end before the reader thread was ever
+/// scheduled (with six CPU hogs beside it, 1 run in 60 checked 0 frames).
+///
 /// Mutation (run): the generation check removed from `push` → a torn or
-/// rewritten frame under a claim within the run → fails.
+/// rewritten frame under a claim → fails 28 release runs of 30. It is a
+/// stress test, so this is a rate, not a certainty (200 000 steps caught it
+/// 9 times in 30, 1 000 000 steps 23); the loom model's
+/// `retract_then_push` and `reset_then_push` catch it every time.
 #[test]
 #[cfg_attr(
     miri,
-    ignore = "200 000 writer steps against a spinning reader never finish under miri's \
+    ignore = "4 000 000 writer steps against a spinning reader never finish under miri's \
               interpreter and cooperative scheduler; the protocol's interleavings are \
               the loom model's (tests/pos_ring_loom.rs), and this native run is its scale"
 )]
 fn a_writer_and_a_reader_thread_never_tear() {
-    use std::sync::atomic::{AtomicBool, Ordering as O};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as O};
+    use std::time::{Duration, Instant};
     const N: usize = 64;
+    /// Frames the reader checks before the writer stops, and steps the
+    /// writer takes at least.
+    const CHECKS: u64 = 1_000_000;
+    const STEPS: u64 = 4_000_000;
     let (mut writer, mut reader) = ring(N, 2, 2);
     let watch = writer.watch();
     let done = std::sync::Arc::new(AtomicBool::new(false));
+    // The writer runs until the reader has checked `CHECKS` frames, not for
+    // a fixed count alone: under load the reader thread may not be scheduled
+    // before a fixed count of steps is over (seen: 0 frames checked).
+    let checked = std::sync::Arc::new(AtomicU64::new(0));
     // A tag: the position, the rewrite generation, the channel — kept
     // under 2^24, where an `f32` holds every integer exactly.
     let tag =
         |pos: u64, gen: u64, c: usize| ((pos % 8_192) * 128 + (gen % 32) * 2 + c as u64) as f32;
     let reading = {
-        let done = std::sync::Arc::clone(&done);
+        let (done, checked) = (
+            std::sync::Arc::clone(&done),
+            std::sync::Arc::clone(&checked),
+        );
         std::thread::spawn(move || {
             let mut seed = 0x9e37_79b9_u64;
-            let mut checked = 0u64;
+            // Counted here and published once per claim (its one writer, a
+            // plain store), so the count adds no shared-line RMW per frame
+            // to the interleaving under test.
+            let mut total = 0u64;
             while !done.load(O::Relaxed) {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
@@ -309,16 +390,28 @@ fn a_writer_and_a_reader_thread_never_tear() {
                     assert_eq!(pos, s % 8_192, "position {s} held another's frame");
                     assert_eq!(x1, x0 + 1.0, "position {s} torn across channels");
                     assert_eq!(y0, x0, "position {s} rewritten under the claim");
-                    checked += 1;
+                    total += 1;
                 }
+                checked.store(total, O::Relaxed);
             }
-            checked
         })
     };
     let mut seed = 0x2545_f491_u64;
     let mut gen = 0u64;
     let mut buf = Vec::new();
-    for _ in 0..200_000 {
+    // A bound only for a reader that never runs at all, so that fails
+    // rather than hangs.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut step = 0u64;
+    // A reader that stopped (it panicked on a torn frame) ends the run too.
+    // The count is read once per 1 024 steps, past the first `STEPS`.
+    while step < STEPS
+        || !step.is_multiple_of(1_024)
+        || (checked.load(O::Relaxed) < CHECKS
+            && !reading.is_finished()
+            && Instant::now() < deadline)
+    {
+        step += 1;
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
@@ -350,6 +443,10 @@ fn a_writer_and_a_reader_thread_never_tear() {
         }
     }
     done.store(true, O::Relaxed);
-    let checked = reading.join().expect("the reader never saw a torn frame");
-    assert!(checked > 1_000, "the reader checked only {checked} frames");
+    reading.join().expect("the reader never saw a torn frame");
+    let checked = checked.load(O::Relaxed);
+    assert!(
+        checked >= CHECKS,
+        "the reader checked only {checked} frames in 120 s"
+    );
 }

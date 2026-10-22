@@ -4832,15 +4832,17 @@ under both.
   chunk's MIDI at the chunk's frames (sorted at submission, dropped and
   counted past the inline capacity rather than allocate). Pinned by `clap_fork`'s
   `a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame`.
-- **bevy-tutti's event wiring.** `spawn_graph_node` inserts any node with its
-  own `IntoNode` (controls kept on the entity as `NodeControls<C>`, a synth's
-  port still captured as its `MidiTarget`); `EventSources` on a sink declares
-  its event input's sources, a list since event inputs fan in, and
-  `GraphEventsPlugin` writes what differs before `Compensate`. A
-  `MidiSourceInstall` on a target with an event input (a graph-node synth, a
-  plugin) plays through a clip node of its own (`SequencedClips`, fed through
-  `EventFeeds`), edited in place with `set_events`; a `Legacy` target keeps
-  its port source. Found in review and fixed: removing a clip node (the last
+- **bevy-tutti's event wiring.** `spawn_audio_node` inserts any node with
+  its own `IntoNode` (its controls kept on the entity as `NodeControls<C>`);
+  `EventSources` on a sink declares its event input's sources, a list since
+  event inputs fan in, and `GraphEventsPlugin` writes them as one of the
+  sink's feeds (`AudioGraphRes::set_feed`, under `DECLARED`) before
+  `Compensate`. A `MidiSourceInstall` on a target with an event input (a
+  synth, a SoundFont player or a plugin inserted as a graph node) plays
+  through the session's clip for that target (`Midi::play_clip`, a
+  `MidiClipNode` wired to its event input through the session's feeds;
+  `SequencedClips`), edited in place with `set_events`; a target with no
+  event input takes no MIDI. Found in review and fixed: removing a clip node (the last
   install gone, or the target off the event path) sends an all-notes-off
   through the target's port, as the port path does; a loop that wraps exactly
   at a block's end ends the notes held across it; a non-finite beat is
@@ -5014,17 +5016,53 @@ under both.
   not retried. The capacity is sized for any real clip at the largest block;
   a cursor that resumes after a refusal is the fix if one is not. (Note-offs
   it owes are retried: `HeldNotes::owed`.)
-- **A loop shorter than a block plays every pass it holds.** After its
-  first wrap in a segment the walk (`schedule/walk.rs`, `Passes`) places
-  pass `p`'s events by the one beat→frame rule, `(end - now) + (p - 1) ×
-  span + (beat - start)` beats from the segment's first frame, and makes the
-  jump a wrap is at each pass's first frame. A loop shorter than a frame
-  plays the pass in force at each frame. Pinned by `clip_node`'s
-  `a_loop_shorter_than_a_block_plays_every_pass`.
+- **A loop shorter than a block plays every pass it holds.** The walk
+  (`schedule/walk.rs`) follows the host's own clock through each segment
+  (`Transport::clock`, stepped with `FrameClock::advance_to_wrap`): each
+  wrap is on the frame that clock wraps on, at the beat it wraps to, and a
+  pass's events are placed from that beat by the one beat→frame rule. No
+  arithmetic of its own counts passes, so the walk lands where the
+  transport does, bit for bit, at any tempo and loop length. A wrap is at
+  least a frame after the last, so a segment of `n` frames costs at most
+  `n` passes, whatever the loop: a loop shorter than a frame (one ulp wide,
+  or so short that `beat + span == beat`) plays one pass a frame. The
+  executor's `Playhead`, which unwraps the next block's start against the
+  loop to tell a wrap from a seek, decides a period no wider than its
+  window at once rather than stepping a period at a time (it stepped ~1e13
+  times for a one-ulp loop). Pinned by `clip_node`'s
+  `a_loop_shorter_than_a_block_plays_every_pass`,
+  `a_pass_ending_on_a_block_edge_ends_what_it_held`,
+  `a_tempo_change_inside_a_block_re_times_the_passes`,
+  `every_pass_lands_where_the_hosts_clock_reaches_it` (97 BPM, a loop of
+  about 37.3 frames, against the clock walked a frame at a time) and
+  `a_loop_shorter_than_a_frame_costs_one_pass_a_frame`, `time`'s
+  `a_loop_shorter_than_a_frame_is_unwrapped_at_once`, and `rt_no_alloc`'s
+  `a_block_of_many_loop_passes_walks_without_allocating`.
+  Every pass's events share the block's one event port, so a dense clip or
+  a very short loop can fill `CLIP_EVENT_CAPACITY` (256 a block): a loop of
+  a few frames with a note in it is a note-on and a note-off a pass. Past
+  it the port refuses and the executor counts the refusal
+  (`dropped_events`); the note-offs a refusal leaves owed are retried. A
+  harmony node's wraps inside a block re-state only the chord or scale
+  that differs from what it last sent (a receiver holds the context), so a
+  loop with no change in it costs nothing a pass, and one with a change
+  costs that change and its re-statement, bounded the same way by
+  `HARMONY_EVENT_CAPACITY` (64). Pinned by `harmony_node`'s
+  `a_loop_pass_restates_only_what_changed`.
+  Not addressed: a beat after a wrap's last frame and before the loop's
+  end (the fraction of a frame the clock skips as it wraps) is not played
+  on that pass.
 - **A clip holds a key or not** (the MIDI convention its `HeldNotes` keeps):
-  a note-on of a key it holds ends that note first, on the same frame, so
-  what it feeds never has two of its voices on one key (whatever a receiver
-  does with a repeated note-on) and one note-off ends the key. Pinned by
+  a note-on of a key it holds ends the sounding note first, on the same
+  frame, so what it feeds never has two of its voices on one key (whatever a
+  receiver does with a repeated note-on). The newer note keeps its whole
+  length, as a DAW plays overlapping notes of one key: the older note's
+  note-off, when it comes, is swallowed (`HeldNotes::restarted`, a second
+  bitmap of the same shape), and the newer note's own note-off ends the key.
+  One overlap is tracked a key: a third note-on of a key restarted and not
+  yet released is ended by the second note's note-off. Pinned by
+  `overlapping_notes_of_one_key_keep_the_newer_whole` (A on 0, off 100; B on
+  50, off 150: one note-off at 50, one at 150, none at 100) and
   `a_note_started_twice_and_ended_once_leaves_nothing_sounding`.
 - **A plugin node counts the MIDI its event input loses.** A chunk carries
   at most `MIDI_STACK_CAPACITY` events to the plugin, inline so the audio
@@ -5828,8 +5866,9 @@ reference):
 3. Delete its `AudioUnit` impl: `tick`, `route`, `footprint`, `get_id`,
    `as_any`, `set(Setting)`, `isolate`, `rebind_offline`, `param_feed`. A
    reader of `Arc<dyn Timeline>` / `BeatCursor` reads `Env::transport_at`.
-4. bevy-tutti: add the type to `param_graph_node!`; its spawns become
-   `spawn_graph_node`, its crossfades `crossfade_graph_node`.
+4. bevy-tutti: add the type to `param_graph_node!`; it spawns through
+   `spawn_audio_node` and crossfades through `crossfade_audio_node`, as
+   every node does.
 5. Tests move, never shrink: `drive`/`prepared` for unit tests that look
    inside the node, `Solo` for renders, `assert_param_fork` for its
    `IsolateRow`, `BlockRig` / `Direct` for its allocation gate and benches, a

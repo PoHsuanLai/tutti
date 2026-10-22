@@ -14,9 +14,13 @@
 //! ([`HeldNotes`]): when playback stops, jumps (a seek, a loop wrap), or the
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
 //! each with a note-off on the frame the jump happens. A key is held or not
-//! (the MIDI convention): a note-on of a key it already holds ends the held
-//! note first, on the same frame, so what it feeds never has two of its
-//! voices on one key, and a single note-off ends the key.
+//! (the MIDI convention), and the newest note of a key keeps its full length
+//! (as a DAW plays overlapping notes of one key): a note-on of a key it
+//! already holds ends the held note first, on the same frame, and the
+//! ended note's own note-off, when it comes, is swallowed. So what it feeds
+//! never has two of its voices on one key, and nothing is left sounding.
+//! One level of overlap is tracked per key: a third note-on of a key whose
+//! restarted note has not ended yet is ended by the second note's note-off.
 //!
 //! The clip itself is published to the node with [`ArcLend`]
 //! ([`MidiClipControls::set_events`]); the node reads it once per block.
@@ -219,14 +223,7 @@ impl Visit<TimedMidiEvent> for Playing<'_, '_> {
     }
 
     fn event(&mut self, at: Offset, e: &TimedMidiEvent) {
-        // A note-on of a key the clip holds is a retrigger: the held note
-        // ends first, on the same frame, so the receiver sounds one voice
-        // per key (whatever it does with a repeated note-on) and the next
-        // note-off of that key ends what is sounding.
-        self.held.end_before_restart(self.out, at, &e.event);
-        if self.out.push(Event::midi(at, e.event.data)).is_ok() {
-            self.held.track(&e.event);
-        }
+        self.held.play(self.out, at, &e.event);
     }
 }
 
@@ -316,6 +313,10 @@ impl ForkSource for ClipFork {
 struct HeldNotes {
     /// `bits[group * 16 + channel]`, bit `note`.
     bits: Box<[u128; 256]>,
+    /// Keys a note-on restarted while held (laid out as `bits`): the next
+    /// note-off of each is the restarted note's, already sent, and is
+    /// swallowed so the newer note keeps its length.
+    restarted: Box<[u128; 256]>,
     count: usize,
     /// A release the port refused part of: the rest goes out at the next
     /// block's first frame, and every block's after, until none is held.
@@ -346,6 +347,7 @@ impl HeldNotes {
     fn new() -> Self {
         Self {
             bits: Box::new([0; 256]),
+            restarted: Box::new([0; 256]),
             count: 0,
             owed: false,
         }
@@ -369,26 +371,42 @@ impl HeldNotes {
         }
     }
 
-    /// When `e` starts a note this holds, end it at `at` first (a note-off
-    /// the port refuses leaves it held: the port is full, and `e` will be
-    /// refused too).
-    fn end_before_restart(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent) {
-        let Some((g, c, n, true)) = note_of(e) else {
-            return;
-        };
-        let (slot, bit) = (&mut self.bits[g * 16 + c], 1u128 << n);
-        if *slot & bit == 0 {
-            return;
+    /// Write `e` at `at`, keeping one note per key (the newest, at its full
+    /// length): a note-on of a key this holds ends the held note first, on
+    /// the same frame, and the next note-off of that key (the ended note's)
+    /// is swallowed. A note-off the port refuses leaves the key held (the
+    /// port is full, and the note-on is refused and counted after it).
+    fn play(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent) {
+        if let Some((g, c, n, on)) = note_of(e) {
+            let (i, bit) = (g * 16 + c, 1u128 << n);
+            let held = self.bits[i] & bit != 0;
+            if on && held {
+                let off = MidiEvent::note_off(
+                    MidiGroup::new(g as u8),
+                    MidiChannel::new(c as u8),
+                    n as u8,
+                    0,
+                );
+                if out.push(Event::midi(at, off.data)).is_err() {
+                    let _ = out.push(Event::midi(at, e.data));
+                    return;
+                }
+                if out.push(Event::midi(at, e.data)).is_ok() {
+                    self.restarted[i] |= bit;
+                } else {
+                    self.bits[i] &= !bit;
+                    self.restarted[i] &= !bit;
+                    self.count -= 1;
+                }
+                return;
+            }
+            if !on && self.restarted[i] & bit != 0 {
+                self.restarted[i] &= !bit;
+                return;
+            }
         }
-        let off = MidiEvent::note_off(
-            MidiGroup::new(g as u8),
-            MidiChannel::new(c as u8),
-            n as u8,
-            0,
-        );
-        if out.push(Event::midi(at, off.data)).is_ok() {
-            *slot &= !bit;
-            self.count -= 1;
+        if out.push(Event::midi(at, e.data)).is_ok() {
+            self.track(e);
         }
     }
 
@@ -413,6 +431,7 @@ impl HeldNotes {
                     return;
                 }
                 *slot &= !(1u128 << n);
+                self.restarted[i] &= !(1u128 << n);
                 self.count -= 1;
             }
         }
@@ -421,6 +440,7 @@ impl HeldNotes {
 
     fn clear(&mut self) {
         self.bits.fill(0);
+        self.restarted.fill(0);
         self.count = 0;
         self.owed = false;
     }

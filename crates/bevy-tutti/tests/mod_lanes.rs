@@ -1233,16 +1233,19 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
 /// Mutation (run): the synth registered with no params (the session's
 /// `impl SessionNode for PolySynth {}` in place of `param_session_node!`)
 /// → the lane has no knob (the synth's volume cell is not reached) → fails.
+/// Mutation (run): the synth's `ParamSet` handing `Volume` a fresh cell
+/// rather than the synth's own → the knob does not follow a store into the
+/// synth's volume → fails.
 #[cfg(feature = "synth")]
 #[test]
 fn a_spawned_synth_is_a_modulation_target() {
+    use std::sync::atomic::Ordering;
     use tutti_polysynth::{PolySynth, SynthConfig};
 
     let (mut app, _side) = app(2);
-    let synth = spawn(
-        &mut app,
-        PolySynth::new(SynthConfig::default()).expect("builds a synth"),
-    );
+    let node = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+    let cell = node.volume_atomic();
+    let synth = spawn(&mut app, node);
     master(&mut app, &[synth, synth]);
     let volume = ParamRef::unit(synth, UnitParam::Volume);
     let world = app.world_mut();
@@ -1252,5 +1255,10 @@ fn a_spawned_synth_is_a_modulation_target() {
     settle(&mut app);
     let state = app.world().resource::<AudioGraphRes>().modulation();
     let (_, lane) = state.lane(volume).expect("the volume has a lane");
-    assert!(lane.knob().is_some(), "its knob is the synth's volume cell");
+    // The knob is read from its cell: a store into the synth's own volume
+    // cell is what the lane reads, value for value.
+    for v in [0.37, 0.81] {
+        cell.store(v, Ordering::Release);
+        assert_eq!(lane.knob(), Some(v), "its knob is the synth's volume cell");
+    }
 }

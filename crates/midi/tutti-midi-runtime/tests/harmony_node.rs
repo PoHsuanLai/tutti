@@ -194,6 +194,56 @@ fn a_loop_wrap_restates_the_context_at_the_wrap() {
     assert_eq!(at_wrap, vec![G, C_MAJOR], "{seen:?}");
 }
 
+/// **A loop pass re-states only what changed since the last.** Lanes: C and
+/// C major at 0, G at beat 0.5 (frame 12 000). Beats are sixty-fourths, so
+/// every wrap lands on an exact frame.
+///
+/// A loop with no change in it, [0.5 + 1/64, 0.5 + 2/64) (375 frames), in
+/// one 2 048-frame block from its start: the start re-states G and C major,
+/// and its five wraps send nothing, the context they start in being the one
+/// already sent. A loop with G inside, [0.5 - 1/64, 0.5 + 1/64) (750
+/// frames), from its start: C and C major at the start, G at 375, and at
+/// each wrap (750, 1 500) the chord in force at the loop's start, C, which
+/// differs from the G sent; C major, unchanged, is not re-sent.
+///
+/// Mutation (run): a wrap re-stating like any jump (`changed_only`
+/// ignored) → G and C major at every wrap of the first loop → fails.
+#[test]
+fn a_loop_pass_restates_only_what_changed() {
+    const SIXTY_FOURTH: u64 = 375;
+    let lanes = || vec![at(0, C), at(0, C_MAJOR), at(12_000, G)];
+    let render = |start: u64, end: u64| {
+        let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes()), 2_048);
+        let lp = Some(LoopRange {
+            start: beat_of(start),
+            end: beat_of(end),
+        });
+        block(
+            &mut exec,
+            2_048,
+            Transport::new(true, Bpm(120.0), beat_of(start), lp),
+        );
+        let seen = seen.lock().unwrap().clone();
+        seen
+    };
+    assert_eq!(
+        render(12_000 + SIXTY_FOURTH, 12_000 + 2 * SIXTY_FOURTH),
+        vec![(0, G), (0, C_MAJOR)]
+    );
+    assert_eq!(
+        render(12_000 - SIXTY_FOURTH, 12_000 + SIXTY_FOURTH),
+        vec![
+            (0, C),
+            (0, C_MAJOR),
+            (375, G),
+            (750, C),
+            (1_125, G),
+            (1_500, C),
+            (1_875, G)
+        ]
+    );
+}
+
 /// **New lanes re-state from the next block; the same lanes cut nothing.**
 ///
 /// Mutation: `set` publishing whatever the lanes → the same lanes re-state

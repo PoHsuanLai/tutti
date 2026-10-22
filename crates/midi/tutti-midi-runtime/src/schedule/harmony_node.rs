@@ -12,6 +12,13 @@
 //! mid-lane therefore always has the context, which the timeline-polling
 //! source this replaces left out ("priming-on-join").
 //!
+//! A loop wrap inside a block re-states only what differs from what the node
+//! last sent: a receiver holds the context until the next change, so a short
+//! loop whose passes start in the context they end in sends only its
+//! changes, not two events a pass. Those changes are still bounded per block
+//! by [`HARMONY_EVENT_CAPACITY`] (a loop of a few frames with a change in it
+//! sends one a pass); past it the port refuses, and the executor counts it.
+//!
 //! The lanes are published to the node with [`ArcLend`]
 //! ([`HarmonyControls::set`]); the node reads them once per block.
 
@@ -121,6 +128,9 @@ pub struct HarmonyNode {
     /// The generation of the lanes this node last walked.
     generation: u64,
     walk: Walk,
+    /// The chord and the scale this node last sent: a loop wrap re-states
+    /// only what differs.
+    sent: Sent,
 }
 
 impl HarmonyNode {
@@ -138,6 +148,7 @@ impl HarmonyNode {
             shared,
             generation,
             walk: Walk::default(),
+            sent: Sent::default(),
         }
     }
 }
@@ -197,13 +208,55 @@ impl HarmonyControls {
     }
 }
 
-/// The harmony side of the walk: each change on its frame, and at a jump the
-/// chord and the scale in force there.
+/// The chord and the scale a node last sent, by [`HarmonyKind`]: `None`
+/// before it sent one, and after a reset or a replacement of its lanes.
+#[derive(Clone, Copy, Debug, Default)]
+struct Sent([Option<Harmony>; 2]);
+
+impl Sent {
+    fn slot(&mut self, kind: HarmonyKind) -> &mut Option<Harmony> {
+        &mut self.0[usize::from(kind == HarmonyKind::Scale)]
+    }
+}
+
+/// The harmony side of the walk: each change on its frame, at a jump the
+/// chord and the scale in force there, and at a loop wrap those of them that
+/// differ from what was sent.
 struct Sending<'a, 'w> {
     out: &'a mut EventWriter<'w>,
+    sent: &'a mut Sent,
 }
 
 impl Sending<'_, '_> {
+    /// Send `h` at `at`, recording it when the port takes it.
+    fn send(&mut self, at: Offset, h: Harmony) {
+        // Refused past the capacity: counted by the executor.
+        if self.out.push(Event::harmony(at, h)).is_ok() {
+            *self.sent.slot(h.kind()) = Some(h);
+        }
+    }
+}
+
+impl Sending<'_, '_> {
+    /// Send the chord and the scale in force before `beat` at `at`; with
+    /// `changed_only`, only those that differ from what was last sent.
+    fn restate(
+        &mut self,
+        at: Option<Offset>,
+        beat: f64,
+        changes: &[TimedHarmony],
+        changed_only: bool,
+    ) {
+        let Some(at) = at else { return };
+        for kind in [HarmonyKind::Chord, HarmonyKind::Scale] {
+            if let Some(h) = Self::in_force(changes, beat, kind) {
+                if !changed_only || *self.sent.slot(kind) != Some(h) {
+                    self.send(at, h);
+                }
+            }
+        }
+    }
+
     /// The latest change of `kind` strictly before `beat`.
     fn in_force(changes: &[TimedHarmony], beat: f64, kind: HarmonyKind) -> Option<Harmony> {
         let before = changes.partition_point(|c| c.beat.get() < beat);
@@ -222,17 +275,18 @@ impl Visit<TimedHarmony> for Sending<'_, '_> {
     /// change within that frame is sent by the walk itself, on the same
     /// frame, after this).
     fn jump(&mut self, at: Option<Offset>, beat: f64, changes: &[TimedHarmony]) {
-        let Some(at) = at else { return };
-        for kind in [HarmonyKind::Chord, HarmonyKind::Scale] {
-            if let Some(h) = Self::in_force(changes, beat, kind) {
-                // Refused past the capacity: counted by the executor.
-                let _ = self.out.push(Event::harmony(at, h));
-            }
-        }
+        self.restate(at, beat, changes, false);
+    }
+
+    /// A loop pass re-states only what differs from what was last sent: a
+    /// receiver holds the context, so a pass that starts in the context the
+    /// last one ended in sends nothing here.
+    fn wrap(&mut self, at: Option<Offset>, beat: f64, changes: &[TimedHarmony]) {
+        self.restate(at, beat, changes, true);
     }
 
     fn event(&mut self, at: Offset, c: &TimedHarmony) {
-        let _ = self.out.push(Event::harmony(at, c.harmony));
+        self.send(at, c.harmony);
     }
 }
 
@@ -254,9 +308,11 @@ impl Node for HarmonyNode {
         if lanes.generation != self.generation {
             self.generation = lanes.generation;
             self.walk.forget();
+            self.sent = Sent::default();
         }
         let mut sending = Sending {
             out: io.event_out(0),
+            sent: &mut self.sent,
         };
         for (start, seg) in cx.env.segments() {
             self.walk
@@ -268,6 +324,7 @@ impl Node for HarmonyNode {
     /// Start over: the next block re-states the context.
     fn reset(&mut self) {
         self.walk.forget();
+        self.sent = Sent::default();
     }
 }
 

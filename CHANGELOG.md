@@ -10,11 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 
 - **A clip plays every pass of a loop shorter than a block** (it played the
-  first wrap of each segment only). `HarmonyNode` shares the walk.
-- **A clip ends a held key before it starts it again**: a note-on of a key
-  the clip holds is preceded by a note-off on the same frame, so one
-  note-off ends the key whatever the receiver does with a repeated note-on.
-  A clip with overlapping notes of one key now sends that extra note-off.
+  first wrap of each segment only), on the frames the transport's own
+  `FrameClock` wraps on, at any loop length: a loop shorter than a frame
+  plays a pass a frame. `HarmonyNode` shares the walk; a wrap inside a block
+  re-states only the chord or scale that differs from what it last sent.
+- **A loop shorter than a frame no longer stalls the executor**: the
+  `Playhead` that tells a wrap from a seek stepped through the loop one
+  period at a time (~1e13 steps for a one-ulp loop).
+- **Overlapping notes of one key**: a note-on of a key the clip holds is
+  preceded by a note-off on the same frame, and the older note's note-off
+  is swallowed, so the newer note sounds its whole length and one note-off
+  ends the key, whatever the receiver does with a repeated note-on. A clip
+  with overlapping notes of one key now sends the note-off at the restart
+  and no longer sends one at the older note's end.
 - **The session's event feeds are partial.** `Graph::set_feed` (the
   sequencer, route rules, live inputs, bevy-tutti's `EventSources`) no
   longer replaces edges a host wired on the sink's event input 0 itself,
@@ -28,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Was | Now |
 |---|---|
 | the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()` |
+| `FrameClock::advance` only | new `FrameClock::advance_to_wrap(frames, looping) -> Option<Samples>`: rolls to the loop's next wrap within `frames` and returns the frames rolled, or rolls them all and returns `None` |
 
 ### Changed — `BusStripNode` declares `Cost::Light`
 

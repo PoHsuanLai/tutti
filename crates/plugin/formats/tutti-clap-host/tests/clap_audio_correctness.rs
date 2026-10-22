@@ -925,3 +925,144 @@ fn probe_tags_and_inputs_are_mutually_distinguishing() {
         }
     }
 }
+
+/// Drain the probe's record of the SysEx messages it received: `(count, the
+/// last one's time, its bytes)`.
+fn take_sysex_input(controls: &ProbeControls) -> (u32, u32, Vec<u8>) {
+    let take = unsafe {
+        *controls
+            ._lib
+            .get::<unsafe extern "C" fn(*mut u8, usize, *mut u32, *mut usize) -> u32>(
+                b"tutti_test_plugin_take_sysex_input\0",
+            )
+            .expect("take_sysex_input symbol present")
+    };
+    let mut buf = vec![0u8; tutti_clap_test_plugin::SYSEX_CAPTURE_BYTES];
+    let (mut time, mut len) = (0u32, 0usize);
+    let count = unsafe { take(buf.as_mut_ptr(), buf.len(), &mut time, &mut len) };
+    buf.truncate(len);
+    (count, time, buf)
+}
+
+/// Run one block carrying `midi`.
+fn drive_midi_block(inst: &mut ClapActive<f32>, midi: &[tutti_clap_host::MidiEvent]) {
+    let frames = 64;
+    let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
+    let mut outs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
+    let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+    let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut buffer = AudioBuffer32 {
+        inputs: &in_refs,
+        outputs: &mut out_refs,
+        num_samples: frames,
+        sample_rate: SAMPLE_RATE,
+    };
+    let ctx = ClapProcessContext {
+        midi,
+        ..ClapProcessContext::default()
+    };
+    inst.process(&mut buffer, &ctx).expect("process succeeds");
+}
+
+/// **A SysEx spanning several UMP packets, and two blocks, reaches a real
+/// CLAP plugin as one `CLAP_EVENT_MIDI_SYSEX`**, `0xF0 … 0xF7`, read by the
+/// plugin through the pointer it was handed, in the block of its `END`; and a
+/// message left open by a later `START` never reaches it, counted.
+///
+/// Mutation (run): `InputEventList::add_midi` without the reassembler (every
+/// event through `ClapEvent::from_midi`) → the plugin receives no SysEx →
+/// fails; the assembler's `START` not dropping the open message → the two
+/// are spliced and delivered → fails.
+#[test]
+fn a_multi_packet_sysex_reaches_the_plugin_whole() {
+    use tutti_midi_types::MidiGroup;
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+    let mut inst = session.activate();
+    let _ = take_sysex_input(&session.controls);
+
+    let payload: Vec<u8> = (0..100u8).map(|i| i % 0x7F).collect();
+    let mut packets = Vec::new();
+    tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    assert!(packets.len() > 3);
+    let packets: Vec<_> = packets
+        .into_iter()
+        .map(|p| p.with_frame_offset(5))
+        .collect();
+    let (first, second) = packets.split_at(2);
+
+    drive_midi_block(&mut inst, first);
+    assert_eq!(
+        take_sysex_input(&session.controls).0,
+        0,
+        "nothing before END"
+    );
+    drive_midi_block(&mut inst, second);
+    let mut framed = vec![0xF0];
+    framed.extend_from_slice(&payload);
+    framed.push(0xF7);
+    assert_eq!(take_sysex_input(&session.controls), (1, 5, framed));
+    assert_eq!(inst.sysex_dropped(), 0);
+
+    // A START left open by the next START: only the second arrives.
+    let mut midi = packets[..2].to_vec();
+    let mut short = Vec::new();
+    tutti_clap_host::MidiEvent::sysex7_fragments(
+        MidiGroup::FIRST,
+        &[1, 2, 3, 4, 5, 6, 7],
+        &mut short,
+    );
+    midi.extend(short);
+    drive_midi_block(&mut inst, &midi);
+    assert_eq!(
+        take_sysex_input(&session.controls),
+        (1, 0, vec![0xF0, 1, 2, 3, 4, 5, 6, 7, 0xF7])
+    );
+    assert_eq!(inst.sysex_dropped(), 1);
+}
+
+/// **A SysEx open across a reset, or an in-place re-activation, never
+/// completes on the far side of it**: its remaining packets reach a plugin
+/// that has forgotten its start, so the message is dropped whole, counted,
+/// and the next one arrives whole.
+///
+/// Mutation (run): `InputEventList::reset_sysex` a no-op → the packets after
+/// the reset complete the message → fails at the reset; the
+/// `reset_sysex` call removed from `reconfigure` only → fails at the
+/// re-activation.
+#[test]
+fn a_sysex_open_across_a_reset_is_dropped() {
+    use tutti_midi_types::MidiGroup;
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+    let mut inst = session.activate();
+    let _ = take_sysex_input(&session.controls);
+
+    let payload: Vec<u8> = (0..60u8).collect();
+    let mut packets = Vec::new();
+    tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let (first, rest) = packets.split_at(3);
+    let mut framed = vec![0xF0];
+    framed.extend_from_slice(&payload);
+    framed.push(0xF7);
+
+    drive_midi_block(&mut inst, first);
+    inst.reset();
+    drive_midi_block(&mut inst, rest);
+    assert_eq!(take_sysex_input(&session.controls).0, 0, "after a reset");
+    assert_eq!(inst.sysex_dropped(), 1);
+
+    drive_midi_block(&mut inst, first);
+    inst.set_sample_rate(SAMPLE_RATE * 2.0)
+        .expect("the probe accepts the new rate");
+    drive_midi_block(&mut inst, rest);
+    assert_eq!(
+        take_sysex_input(&session.controls).0,
+        0,
+        "after a re-activation"
+    );
+    assert_eq!(inst.sysex_dropped(), 2);
+
+    // The next message is whole.
+    drive_midi_block(&mut inst, &packets);
+    assert_eq!(take_sysex_input(&session.controls), (1, 0, framed));
+    assert_eq!(inst.sysex_dropped(), 2);
+}

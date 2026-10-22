@@ -29,23 +29,16 @@
 //! binary can install.
 
 use tracing::warn;
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::ump::{MidiEvent, SYSEX7_MAX_PAYLOAD};
 use tutti_midi_types::MidiGroup;
 
-/// Ceiling on one in-flight SysEx payload, in bytes.
-///
-/// A dump that exceeds this is abandoned rather than buffered forever. The
-/// hazard is not a large dump — it is a **lost `0xF7`**: a device unplugged
-/// mid-dump, or a dropped buffer, leaves the assembler mid-run with no
-/// terminator ever arriving, and an uncapped `Vec` then grows for the lifetime
-/// of the connection.
-///
-/// 64 KiB is chosen to sit above real traffic and below anything alarming: the
-/// largest thing MIDI-CI negotiates is a Property Exchange chunk, and CI's own
-/// `max_sysex_size` is a 28-bit field that devices populate with values in the
-/// hundreds-to-low-thousands of bytes. A dump past this is a fault, not a big
-/// message.
-const MAX_SYSEX_BYTES: usize = 64 * 1024;
+/// Ceiling on one in-flight SysEx payload, in bytes: the engine's
+/// [`SYSEX7_MAX_PAYLOAD`], which the plugin hosts' reassemblers also hold.
+/// A dump's packets are emitted together, so how much of a dump reaches a
+/// plugin is set by the event caps after this, not by this cap: a plugin
+/// node takes at most 256 MIDI events a chunk (a device callback; a block
+/// for the in-process VST2 node), 1536 SysEx payload bytes.
+const MAX_SYSEX_BYTES: usize = SYSEX7_MAX_PAYLOAD;
 
 /// Reassembles MIDI 1.0 SysEx runs across transport buffers and emits them as
 /// UMP SysEx7 packets.

@@ -27,7 +27,7 @@
 //! shared cell like the others, and the node's `prepare` updates it for every
 //! holder.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
@@ -88,9 +88,6 @@ pub struct PluginControls {
     /// ([`missed_chunks`](Self::missed_chunks),
     /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
     chunks: Arc<super::batcher::ChunkCounters>,
-    /// MIDI events on the node's event input that did not fit their chunk
-    /// ([`dropped_midi_in`](Self::dropped_midi_in)).
-    midi_in_dropped: Arc<AtomicU64>,
 }
 
 impl PluginControls {
@@ -109,24 +106,7 @@ impl PluginControls {
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
             delivery: Arc::default(),
             chunks: Arc::default(),
-            midi_in_dropped: Arc::default(),
         }
-    }
-
-    /// The cell the node counts the MIDI it could not send in, for the node.
-    pub(super) fn midi_in_dropped_cell(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.midi_in_dropped)
-    }
-
-    /// How many MIDI events on the node's event input were dropped since the
-    /// plugin was bound: a chunk carries at most
-    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY)
-    /// events to the plugin (its list is inline, so the audio thread never
-    /// allocates), and the rest of that chunk's are dropped here. Zero unless
-    /// the input fans in more MIDI than that in one chunk. RT-safe: one
-    /// relaxed load.
-    pub fn dropped_midi_in(&self) -> u64 {
-        self.midi_in_dropped.load(Ordering::Relaxed)
     }
 
     /// The cells the node's IPC pipeline reports to, for the node.
@@ -178,6 +158,27 @@ impl PluginControls {
     /// [`ParamDeliveryStats::points_merged`]: super::ParamDeliveryStats::points_merged
     pub fn param_delivery(&self) -> super::ParamDeliveryStats {
         self.delivery.snapshot()
+    }
+
+    /// MIDI events on the node's event input that never reached the
+    /// plugin-server, since the plugin was bound. Counted: an event past the
+    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a chunk
+    /// carries; every event of a chunk that was not sent (its audio could
+    /// not be staged, the bridge refused it because its queue was full or
+    /// the server had crashed, the bridge thread skipped it as stale, or it
+    /// was still queued when the server crashed); the events taken towards
+    /// the next chunk when the node is reset or re-prepared; and the rest of
+    /// every SysEx message that lost a packet in any of those ways or was
+    /// open at a reset or re-prepare, so a message never reaches the plugin
+    /// with a gap (the plugin's host counts it as one dropped SysEx). A
+    /// chunk sent and then not answered in time is not counted here: the
+    /// server still runs it. Nor is a chunk queued in the instant after the
+    /// bridge thread drained its queue at a crash and exited: it was accepted,
+    /// and nothing reads it again (and no message can splice past a dead
+    /// server).
+    /// RT-safe: two relaxed loads.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.delivery.dropped_midi_in()
     }
 
     /// What the node has delivered so far, per listed parameter: what a fork

@@ -434,3 +434,106 @@ fn the_park_switch_is_off_unless_armed() {
          longer a control"
     );
 }
+
+/// **A reset drops the MIDI taken towards the next chunk, counted, and the
+/// SysEx open in it stays cut past the reset.** The server keeps its
+/// reassembler's open message across the node's reset, so a tail taken after
+/// it would complete the message with a gap.
+///
+/// Mutation (run): the `intake.lose` in the node's `reset` removed → nothing
+/// counted, and the tail is taken → fails.
+#[test]
+fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
+    use tutti_graph::Node as _;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    let _lock = probe_lock::acquire();
+    let mut env = ProbeEnv::new();
+    let (client, _handle) = load_probe(&mut env, 1);
+    let mut node = client.bind();
+    let payload: Vec<u8> = (0..30).collect();
+    let mut dump = Vec::new();
+    crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let state = &mut node.state;
+    for &e in dump[..3].iter().chain([&note]) {
+        assert!(state.intake.push(&mut state.pending.midi, e));
+    }
+
+    node.reset();
+
+    assert_eq!(node.controls.dropped_midi_in(), 4);
+    let state = &mut node.state;
+    assert!(state.pending.midi.is_empty());
+    assert!(
+        !state.intake.push(&mut state.pending.midi, dump[3]),
+        "the tail is cut"
+    );
+    assert!(!state.intake.push(&mut state.pending.midi, dump[4]));
+    assert!(state.intake.push(&mut state.pending.midi, note));
+}
+
+/// **A re-prepare drops the MIDI taken towards the next chunk, counted, and
+/// the SysEx open in it stays cut.** A same-rate re-prepare (a device
+/// restart to another callback size) starts the batcher over, and the next
+/// chunk's `begin` would overwrite what was taken; the server does nothing
+/// for a rate it already has, so its reassembler keeps the open message.
+///
+/// Mutation (run): the `intake.lose` in the node's `prepare` removed → the
+/// four events are not counted, and the tail is taken → fails.
+#[test]
+fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
+    use tutti_graph::Node as _;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    let _lock = probe_lock::acquire();
+    let mut env = ProbeEnv::new();
+    let (client, _handle) = load_probe(&mut env, 1);
+    let mut node = client.bind();
+    node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let payload: Vec<u8> = (0..30).collect();
+    let mut dump = Vec::new();
+    crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let state = &mut node.state;
+    for &e in dump[..3].iter().chain([&note]) {
+        assert!(state.intake.push(&mut state.pending.midi, e));
+    }
+
+    // The same rate, another callback size.
+    node.prepare(&Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK * 2)));
+
+    assert_eq!(node.controls.dropped_midi_in(), 4);
+    let state = &mut node.state;
+    assert!(state.pending.midi.is_empty());
+    assert!(
+        !state.intake.push(&mut state.pending.midi, dump[3]),
+        "the tail is cut"
+    );
+    assert!(!state.intake.push(&mut state.pending.midi, dump[4]));
+    assert!(state.intake.push(&mut state.pending.midi, note));
+}
+
+/// **The controls' MIDI count folds in the bridge thread's.** The node
+/// counts what it drops itself; the bridge thread counts what it skips as
+/// stale or filters out, in its own cell, which `bind` attaches to the
+/// node's counters. The bridge's cell is bumped here directly: driving a
+/// stale skip through a real server is `two_stale_blocks`'s job.
+///
+/// Mutation (run): the `attach_bridge_midi` call removed from `bind` → the
+/// controls read the node's 2 only → fails. Mutation (run): `+ bridge`
+/// dropped from `DeliveryCounters::dropped_midi_in` → the same → fails.
+#[test]
+fn the_controls_count_the_bridges_dropped_midi_too() {
+    use std::sync::atomic::Ordering;
+
+    let _lock = probe_lock::acquire();
+    let mut env = ProbeEnv::new();
+    let (client, _handle) = load_probe(&mut env, 1);
+    let node = client.bind();
+    node.state.params.count_midi_dropped(2);
+    node.bridge
+        .dropped_midi_cell()
+        .fetch_add(5, Ordering::Relaxed);
+    assert_eq!(node.controls.dropped_midi_in(), 2 + 5);
+}

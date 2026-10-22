@@ -5166,7 +5166,9 @@ under both.
   Counted rather than carried to the next chunk (which would play them a
   chunk late, against the audio they belong to) or a larger list (fan-in has
   no bound a fixed list could honestly meet). Pinned by `clap_fork`'s and
-  `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`.
+  `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`. The same
+  counter takes every event of a chunk lost whole and the rest of a SysEx
+  cut by a loss, which is never spliced (doc 004, A-4).
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,
   bevy-tutti's `EventSources`) own only the sources they put on a sink's

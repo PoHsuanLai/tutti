@@ -63,6 +63,10 @@ pub(super) struct Channels {
     /// because more arrived during one command than its inbox holds, ever.
     /// Each drop also raises a `Resync(ParamValues)`, so the host re-reads.
     dropped_param_events: Arc<AtomicU64>,
+    /// MIDI events the bridge thread did not send, ever: a stale block's,
+    /// and the rest of a SysEx that lost packets with it. Shared with the
+    /// plugin node's controls, which add it to the node's own count.
+    dropped_midi: Arc<AtomicU64>,
 }
 
 impl Channels {
@@ -76,6 +80,7 @@ impl Channels {
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
             dropped_param_events: Arc::new(AtomicU64::new(0)),
+            dropped_midi: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -149,6 +154,19 @@ impl Channels {
         if n > 0 {
             self.dropped_param_events.fetch_add(n, Ordering::Relaxed);
         }
+    }
+
+    /// Record `n` MIDI events not sent. Bridge thread only; `Relaxed`: a
+    /// count nothing branches on.
+    pub(super) fn note_dropped_midi(&self, n: u64) {
+        if n > 0 {
+            self.dropped_midi.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// The cell [`note_dropped_midi`](Self::note_dropped_midi) counts into.
+    pub(super) fn dropped_midi_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.dropped_midi)
     }
 
     /// How many unsolicited parameter events were dropped, over the life of

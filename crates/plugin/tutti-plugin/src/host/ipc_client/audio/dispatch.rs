@@ -5,6 +5,7 @@ use super::messages::{AudioResponse, Command, ResyncKind, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
+use crate::host::node::MidiIntake;
 use crate::protocol::{
     midi_from_wire, BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamAddress,
     ParameterChanges, ParameterPoint, ParameterQueue, ProcessAudioData,
@@ -151,6 +152,10 @@ pub(super) struct Owed {
     /// last value, on frame 0: sent on the first frame of the next block that
     /// goes. A plain list, cleared (its capacity kept) once merged.
     carried: Vec<(ParamAddress, ParameterPoint)>,
+    /// The MIDI of the blocks that go, filtered: once a stale block is
+    /// skipped, the rest of every SysEx open in it is not sent, so the
+    /// server's reassembler never completes one with a gap.
+    intake: MidiIntake,
 }
 
 impl Owed {
@@ -355,6 +360,15 @@ pub(super) fn handle(
             // payload so the pool doesn't leak, and push nothing — the audio
             // thread stopped expecting this block two blocks ago.
             if is_stale(seq, channels.newest_submitted()) {
+                // Its MIDI is lost, counted, and so is the rest of every
+                // SysEx open in it: the server's reassembler would otherwise
+                // complete it from the next block's packets, with these
+                // missing. (No wire change: a gap is never sent.)
+                for e in &payload.midi_events {
+                    owed.intake.admit(e);
+                }
+                owed.intake.lost();
+                channels.note_dropped_midi(payload.midi_events.len() as u64);
                 owed.carry(&payload.param_changes);
                 payloads.return_params(core::mem::take(&mut payload.param_changes));
                 payloads.recycle(payload);
@@ -364,6 +378,9 @@ pub(super) fn handle(
             if !owed.carried.is_empty() {
                 owed.merge_carried(&mut payload.param_changes);
             }
+            let before = payload.midi_events.len();
+            payload.midi_events.retain(|e| owed.intake.admit(e));
+            channels.note_dropped_midi((before - payload.midi_events.len()) as u64);
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 seq: payload.seq,
                 num_samples: payload.num_samples,

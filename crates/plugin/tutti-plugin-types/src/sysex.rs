@@ -22,12 +22,12 @@ use crate::{MidiEvent, MIDI_STACK_CAPACITY};
 /// length alone.
 ///
 /// This is the reassembler's limit, not the delivery path's. A plugin node
-/// takes at most [`MIDI_STACK_CAPACITY`] MIDI events a block, so a message
-/// longer than that many packets (1536 payload bytes, less the block's
-/// other events) reaches a plugin only from a source that spreads its
-/// packets over blocks. The live hardware input does not: it emits a dump's
-/// packets together, into one block. See
-/// [`SysExAssembler`]'s policy.
+/// takes at most [`MIDI_STACK_CAPACITY`] MIDI events a chunk (a device
+/// callback; a block for the in-process VST2 node), so a message longer
+/// than that many packets (1536 payload bytes, less the chunk's other
+/// events) reaches a plugin only from a source that spreads its packets
+/// over chunks. The live hardware input does not: it emits a dump's packets
+/// together, into one block. See [`SysExAssembler`]'s policy.
 pub const SYSEX_MESSAGE_CAPACITY: usize = SYSEX7_MAX_PAYLOAD + 2;
 
 /// The most bytes one SysEx7 packet adds to the buffer: six payload bytes and
@@ -94,17 +94,17 @@ enum Run {
 ///
 /// # Policy
 ///
-/// - **A message spans blocks.** One block carries at most
-///   [`MIDI_STACK_CAPACITY`] packets (1536 payload bytes), so a dump longer
-///   than that cannot arrive in one. A run left open at the end of a block
-///   continues in the next.
+/// - **A message spans blocks.** One chunk (a device callback; a block for
+///   the in-process VST2 node) carries at most [`MIDI_STACK_CAPACITY`]
+///   packets (1536 payload bytes), so a dump longer than that cannot arrive
+///   in one. A run left open at the end of a block continues in the next.
 /// - **A source that delivers a whole dump in one block is limited by the
-///   block's cap.** The live hardware input does (its input node keeps 512
-///   events a block, the plugin node 256): the plugin node drops, counted,
-///   the events past its cap and the rest of a SysEx that lost a packet
-///   there, so the message never gets its `END` here and is dropped whole,
-///   counted at the next `START`. On that path a dump reaches a plugin only
-///   if its packets and the block's other MIDI fit in
+///   chunk's cap.** The live hardware input does (its input node keeps 512
+///   events a block, the plugin node 256 a chunk): the plugin node drops,
+///   counted, the events past its cap and the rest of a SysEx that lost a
+///   packet there, so the message never gets its `END` here and is dropped
+///   whole, counted at the next `START`. On that path a dump reaches a
+///   plugin only if its packets and the chunk's other MIDI fit in
 ///   [`MIDI_STACK_CAPACITY`] events.
 /// - **One multi-packet message at a time, across all groups.** A `START`
 ///   while another is still open, on any group, drops the open one, whole,

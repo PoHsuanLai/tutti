@@ -184,6 +184,9 @@ pub(crate) struct DeliveryCounters {
     grid_dropped: AtomicU64,
     /// MIDI events the node did not deliver (`midi_intake`).
     pub(super) midi_dropped: AtomicU64,
+    /// The bridge thread's count of the MIDI events it did not send, set
+    /// once at bind (an out-of-process node only).
+    pub(super) bridge_midi_dropped: OnceLock<Arc<AtomicU64>>,
     /// Set once, at bind ([`ParamDelivery::new`]).
     record: OnceLock<Arc<DeliveredRecord>>,
 }

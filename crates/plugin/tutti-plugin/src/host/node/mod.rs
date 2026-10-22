@@ -448,6 +448,9 @@ impl PluginClient<Unbound> {
     pub fn bind(self) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
         chunks.attach(self.bridge.audio_buffer());
+        self.controls
+            .delivery_counters()
+            .attach_bridge_midi(self.bridge.dropped_midi_cell());
         let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling)
             .with_counters(chunks);
         // A slot per parameter: every parameter can move in one chunk. The

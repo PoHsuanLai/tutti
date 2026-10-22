@@ -306,25 +306,46 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
   messages anyway, and the hardware input puts all its traffic on group 1.
 - Other messages between a message's packets do not end it: the event list
   merges sources, and a note played during a dump should not cost the dump.
-- **No gap is ever spliced.** Every list between a node's event input and
-  the reassembler holds a block's whole MIDI cap or, when it overflows,
-  drops the open message: the plugin node (and the in-process VST2 node)
-  drops the events past `MIDI_STACK_CAPACITY` and the rest of a SysEx that
-  lost a packet there, counted (`PluginControls::midi_events_dropped`,
-  `InProcessVst2Controls::midi_events_dropped`); the VST3 host's
-  `IMidiMapping` route holds `MIDI_STACK_CAPACITY` events (it held 64, and
-  silently cut a mapped plugin's dump into a shorter message that looked
-  complete) and, past it, drops the open message; the VST2 host's staging
-  lists are reserved for `MIDI_STACK_CAPACITY` and refuse, counted
-  (`Vst2Instance::dropped_midi_in`), rather than grow on the audio thread;
-  the wire's `midi_from_wire` keeps `MIDI_STACK_CAPACITY`, as many as the
-  node sends.
+- **No gap is spliced on any path the hosts see.** Each of these drops the
+  open message rather than splice what follows it onto it, and counts what
+  it drops:
+  - the events past `MIDI_STACK_CAPACITY` in a chunk (a device callback; a
+    block for the in-process VST2 node), and the rest of a SysEx that lost a
+    packet there;
+  - a whole chunk of MIDI lost on its way out of process: not staged,
+    refused (queue full, server crashed), or skipped by the bridge thread as
+    stale. The node's `MidiIntake` marks every group with a message open in
+    it as cut, and the bridge filters each chunk it sends through its own
+    intake, so a stale skip cuts too (filtering on the bridge needs no wire
+    or server change);
+  - a reset: the events taken towards the next chunk are dropped, and a cut
+    stays cut across it, because the server's reassembler is not reset with
+    the node (out of process) and the in-process VST2 node's reset does not
+    reach `Vst2Instance`;
+  - an in-process VST2 block skipped because its lock was contended;
+  - the VST3 host's `IMidiMapping` route, which holds `MIDI_STACK_CAPACITY`
+    events (it held 64, and silently cut a mapped plugin's dump into a
+    shorter message that looked complete) and, past it, drops the open
+    message; the VST2 host's staging lists, reserved for
+    `MIDI_STACK_CAPACITY`, which refuse, counted
+    (`Vst2Instance::dropped_midi_in`), rather than grow on the audio thread;
+    the wire's `midi_from_wire`, which keeps `MIDI_STACK_CAPACITY`, as many
+    as the node sends;
+  - a CLAP reset or re-activation and a VST3 `setActive`.
+
+  The node counts are `PluginControls::midi_events_dropped` and
+  `InProcessVst2Controls::midi_events_dropped`. Upstream of the plugin node
+  the intake sees nothing: a graph event port refuses events past 512 a
+  block and a push out of order (`EventRejected::OutOfOrder`), so a packet lost there
+  reaches the plugin as a gap the hosts cannot detect; this matters only for
+  a graph block spanning two or more chunks (a callback over `MAX_CHUNK`) or
+  an upstream node pushing a packet out of order.
 
 **Known limit: a dump delivered in one block is capped by the block.** The
 live hardware input emits a dump's packets together, into one block; its
-input node keeps 512 events a block and the plugin node 256. So on the live
-path a dump reaches a plugin only if its packets and the block's other MIDI
-fit in 256 events (1536 payload bytes with nothing else); a longer one is
+input node keeps 512 events a block and the plugin node 256 a chunk. So on
+the live path a dump reaches a plugin only if its packets and the chunk's
+other MIDI fit in 256 events (1536 payload bytes with nothing else); a longer one is
 dropped whole and counted, as above. Holding the excess over to the next
 block would lift this, and is out of scope here: it delays every held event
 to a later block than its timestamp (wrong for the notes beside the dump),

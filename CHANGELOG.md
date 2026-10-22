@@ -17,20 +17,28 @@ when a message spans them) and hands the plugin one complete `0xF0 … 0xF7`
 message at its `END` packet's frame, without allocating on the audio thread.
 A message longer than `SYSEX_MESSAGE_CAPACITY` (64 KiB of payload, the cap the
 hardware input already had), one left open by a later `START`, one open when
-the plugin is reset or re-activated, or one that lost packets to a list on its
-way in is dropped whole and counted. One message is open at a time across all
+the plugin is reset or re-activated, or one that lost packets or a whole
+chunk on its way in is dropped whole and counted. One message is open at a time across all
 UMP groups (no plugin format has a SysEx group). Out of process the subprocess
 reassembles; the wire already carried every packet intact.
 
-A plugin node takes at most `MIDI_STACK_CAPACITY` (256) MIDI events a block.
-Past it, events were dropped silently; now they are counted, and the rest of a
-SysEx that lost a packet there is dropped too, so no message reaches a plugin
-with a gap. A VST3 plugin with an `IMidiMapping` table lost every event past 64
+A plugin node takes at most `MIDI_STACK_CAPACITY` (256) MIDI events a chunk
+(a device callback; a block for the in-process VST2 node). Past it, events
+were dropped silently; now they are counted, and the rest of a SysEx that lost
+a packet there is dropped too. Whole chunks of MIDI were also dropped silently
+(a chunk not staged, one refused because the queue was full or the server
+crashed, one the bridge skipped as stale, the events taken towards a chunk at
+a reset, an in-process VST2 block whose lock was contended); each is now
+counted, and a SysEx open in it is cut: its tail is dropped, counted, and
+never spliced onto a later message. The bridge filters what it sends with the
+same logic, so a stale skip cuts too. A reset no longer clears that cut: the
+server keeps its reassembler across a reset, so a cut message's tail is still
+dropped after one. VST3 plugin with an `IMidiMapping` table lost every event past 64
 a block (its CC route's scratch), and so got a long dump as a shorter message
 that looked complete; the route now holds the block's whole cap. The live
 hardware input emits a dump's packets into one block, so on that path a dump
-reaches a plugin only if it fits the block's 256 events (1536 payload bytes
-with nothing else in the block); see doc 004, A-4.
+reaches a plugin only if it fits the chunk's 256 events (1536 payload bytes
+with nothing else in the chunk); see doc 004, A-4.
 
 | Was | Now |
 |---|---|
@@ -39,7 +47,7 @@ with nothing else in the block); see doc 004, A-4.
 | `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
 | `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
 | — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
-| — | `PluginControls::midi_events_dropped`, `InProcessVst2Controls::midi_events_dropped`: MIDI events the node did not deliver (past a chunk's cap, or the rest of a SysEx cut there) |
+| — | `PluginControls::midi_events_dropped`, `InProcessVst2Controls::midi_events_dropped`: MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent or skipped as stale, the events taken towards a chunk at a reset, and the rest of a SysEx cut by any of these |
 | VST2 staging grew its event lists on the audio thread past 64 events a block | reserved for `MIDI_STACK_CAPACITY`, never grown; past it an event is refused and counted by the new `Vst2Instance::dropped_midi_in` |
 | — | `SysExAssembler::reset` (the plugin's reset or re-activation: the open message is dropped, counted) and `SysExAssembler::lost_tail` (an upstream list overflowed: the open message is dropped, counted) |
 | — | `InputEventList::reset_sysex`, which `ClapActive::reset` and an in-place re-activation now call; a list you drive yourself calls it on the plugin's reset |

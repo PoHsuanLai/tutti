@@ -434,3 +434,41 @@ fn the_park_switch_is_off_unless_armed() {
          longer a control"
     );
 }
+
+/// **A reset drops the MIDI taken towards the next chunk, counted, and the
+/// SysEx open in it stays cut past the reset.** The server keeps its
+/// reassembler's open message across the node's reset, so a tail taken after
+/// it would complete the message with a gap.
+///
+/// Mutation (run): the `intake.lose` in the node's `reset` removed → nothing
+/// counted, and the tail is taken → fails.
+#[test]
+fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
+    use tutti_graph::Node as _;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    let _lock = probe_lock::acquire();
+    let mut env = ProbeEnv::new();
+    let (client, _handle) = load_probe(&mut env, 1);
+    let mut node = client.bind();
+    let payload: Vec<u8> = (0..30).collect();
+    let mut dump = Vec::new();
+    crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut dump);
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let state = &mut node.state;
+    for &e in dump[..3].iter().chain([&note]) {
+        assert!(state.intake.push(&mut state.pending.midi, e));
+    }
+
+    node.reset();
+
+    assert_eq!(node.controls.midi_events_dropped(), 4);
+    let state = &mut node.state;
+    assert!(state.pending.midi.is_empty());
+    assert!(
+        !state.intake.push(&mut state.pending.midi, dump[3]),
+        "the tail is cut"
+    );
+    assert!(!state.intake.push(&mut state.pending.midi, dump[4]));
+    assert!(state.intake.push(&mut state.pending.midi, note));
+}

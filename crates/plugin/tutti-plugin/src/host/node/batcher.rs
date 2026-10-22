@@ -194,6 +194,13 @@ pub(super) trait Chunks {
     /// Whether the chunk's parameter changes went with it, once it is
     /// submitted.
     fn handed_off(&mut self, _delivered: bool) {}
+    /// The chunk being submitted could not be staged: what
+    /// [`begin`](Self::begin) gathered for it never reaches the plugin.
+    fn unsent(&mut self) {}
+    /// The bridge refused the chunk just handed over in its
+    /// [`payload`](Self::payload), with its `midi` MIDI events: they never
+    /// reach the plugin.
+    fn refused(&mut self, _midi: usize) {}
     /// The plugin's MIDI-out for the chunk the ring now holds, at that
     /// chunk's frames, sorted: handed over once, as its output starts to
     /// play.
@@ -523,13 +530,15 @@ impl Batcher {
         if !staged {
             // The chunk will never be collectable; its output plays as silence.
             // Its parameter changes did not go either: the host keeps them for
-            // the next chunk.
+            // the next chunk. Its MIDI is lost (`Chunks::unsent`).
             self.expect_seq = None;
             host.handed_off(false);
+            host.unsent();
             return;
         }
         bridge.audio_buffer().publish_input(seq);
         let p = host.payload(chunk);
+        let midi = p.midi.len();
         let mut none = ParameterChanges::new();
         let submitted = bridge.submit(
             seq,
@@ -547,6 +556,7 @@ impl Batcher {
             self.counters.in_flight.store(seq, Ordering::Release);
         } else {
             self.expect_seq = None;
+            host.refused(midi);
         }
     }
 

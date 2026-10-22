@@ -160,12 +160,19 @@ impl PluginControls {
         self.delivery.snapshot()
     }
 
-    /// MIDI events on the node's event input not delivered to the plugin
-    /// since it was bound: past the
+    /// MIDI events on the node's event input that never reached the
+    /// plugin-server, since the plugin was bound. Counted: an event past the
     /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a chunk
-    /// carries, or the rest of a SysEx message that lost a packet there (a
-    /// message is never delivered with a gap; the plugin's host counts it
-    /// as a dropped SysEx). RT-safe: one relaxed load.
+    /// carries; every event of a chunk that was not sent (its audio could
+    /// not be staged, the bridge refused it because its queue was full or
+    /// the server had crashed, or the bridge thread skipped it as stale);
+    /// the events taken towards the next chunk when the node is reset; and
+    /// the rest of every SysEx message that lost a packet in any of those
+    /// ways or was open at a reset, so a message never reaches the plugin
+    /// with a gap or across a reset (the plugin's
+    /// host counts it as one dropped SysEx). A chunk sent and then not
+    /// answered in time is not counted here: the server still runs it.
+    /// RT-safe: two relaxed loads.
     pub fn midi_events_dropped(&self) -> u64 {
         self.delivery.midi_events_dropped()
     }

@@ -28,10 +28,11 @@ pub const SYSEX7_STATUS_END: u8 = 0x3;
 
 /// The longest SysEx payload (the bytes between `0xF0` and `0xF7`) the engine
 /// carries: the hardware input abandons a longer dump, and the plugin hosts
-/// reserve room to reassemble one this long. A path's per-block event caps
-/// can be lower: a plugin node takes at most 256 MIDI events a block, so a
-/// dump whose packets arrive in one block (as the hardware input's do)
-/// reaches a plugin only up to 1536 payload bytes.
+/// reserve room to reassemble one this long. A path's event caps can be
+/// lower: a plugin node takes at most 256 MIDI events a chunk (a device
+/// callback; a block for the in-process VST2 node), so a dump whose packets
+/// arrive in one block (as the hardware input's do) reaches a plugin only up
+/// to 1536 payload bytes.
 ///
 /// A cap exists because the hazard is not a large dump but a **lost
 /// terminator**: a device unplugged mid-dump, or a dropped buffer, leaves a

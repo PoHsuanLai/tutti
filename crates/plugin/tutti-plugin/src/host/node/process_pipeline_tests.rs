@@ -1524,3 +1524,237 @@ fn stamped_server(
 
     (bridge, bridge_thread, server_thread)
 }
+
+/// A host whose every chunk carries `midi` MIDI events, recording what the
+/// batcher reports lost: chunks not sent ([`Chunks::unsent`]) and the MIDI
+/// of chunks the bridge refused ([`Chunks::refused`]).
+///
+/// [`Chunks::unsent`]: super::batcher::Chunks::unsent
+/// [`Chunks::refused`]: super::batcher::Chunks::refused
+#[derive(Default)]
+struct LossProbe {
+    midi: usize,
+    unsent: usize,
+    refused: Vec<usize>,
+    out: MidiEventVec,
+}
+
+impl super::batcher::Chunks for LossProbe {
+    fn begin(&mut self, _at: usize, _chunk: usize) {}
+    fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
+
+    fn payload(&mut self, _frames: usize) -> BlockPayload {
+        let note = crate::protocol::MidiEvent::note_on(
+            tutti_midi_types::MidiGroup::FIRST,
+            tutti_midi_types::MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
+        BlockPayload {
+            midi: std::iter::repeat_n(note, self.midi).collect(),
+            ..BlockPayload::default()
+        }
+    }
+
+    fn unsent(&mut self) {
+        self.unsent += 1;
+    }
+
+    fn refused(&mut self, midi: usize) {
+        self.refused.push(midi);
+    }
+
+    fn midi_out(&mut self, events: &MidiEventVec) {
+        self.out.clone_from(events);
+    }
+
+    fn emit(&mut self, _frame: usize, _event: crate::protocol::MidiEvent) {}
+}
+
+/// **A chunk whose audio cannot be staged reports its MIDI lost**, so the
+/// plugin node counts it and cuts the SysEx open in it. A batcher wider
+/// than the slab fails to stage its third channel on every chunk.
+///
+/// Mutation (run): the `host.unsent()` call removed from `submit` → nothing
+/// reported → fails.
+#[test]
+fn an_unstaged_chunk_reports_its_midi_lost() {
+    let _lock = exclusive();
+    let (bridge, _thread, _server) = bridge_with_doubling_server();
+    let mut batcher = Batcher::new(3, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+    let silence = vec![0.0f32; BATCH_SIZE];
+    let mut out = Planar::new();
+    let mut host = LossProbe {
+        midi: 4,
+        ..LossProbe::default()
+    };
+    for _ in 0..3 {
+        batcher.process(
+            &bridge,
+            BATCH_SIZE,
+            &[&silence, &silence, &silence],
+            &mut out.outs(),
+            &mut host,
+        );
+    }
+    assert_eq!(host.unsent, 3);
+    assert!(host.refused.is_empty());
+}
+
+/// **A chunk the bridge refuses reports its MIDI lost, with how many events
+/// it carried.** A bridge that never connected is crashed, and refuses
+/// every chunk.
+///
+/// Mutation (run): the `host.refused(midi)` call removed from `submit` →
+/// nothing reported → fails.
+#[test]
+fn a_refused_chunk_reports_its_midi_lost() {
+    let _lock = exclusive();
+    let path = unique_socket_path("refused");
+    let _ = std::fs::remove_file(&path);
+    let slab = Arc::new(AudioSlab::create(unique_shm_name("refused"), stereo_layout()).unwrap());
+    let (bridge, _thread) =
+        PluginBridge::new(path, slab, std::path::PathBuf::from("test.vst3"), 48_000.0).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !bridge.is_crashed() {
+        assert!(std::time::Instant::now() < deadline, "never crashed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+    let input = Planar::new();
+    let mut out = Planar::new();
+    let mut host = LossProbe {
+        midi: 7,
+        ..LossProbe::default()
+    };
+    for _ in 0..2 {
+        batcher.process(
+            &bridge,
+            BATCH_SIZE,
+            &input.ins(),
+            &mut out.outs(),
+            &mut host,
+        );
+    }
+    assert_eq!(host.refused, vec![7, 7]);
+    assert_eq!(host.unsent, 0);
+}
+
+/// **A block the bridge thread skips as stale never lets the SysEx open in
+/// it through with a gap.** The mock server holds its `Ready` until four
+/// blocks are queued, so the bridge thread finds the first two stale
+/// (`RING_SLOTS` = 2) and skips them: their MIDI is lost, counted, and the
+/// rest of the message open in them (in block 3) is not sent either. The
+/// message after it, and a note, arrive.
+///
+/// Mutation (run): the bridge's `retain` through its intake removed → the
+/// cut message's tail reaches the server → fails. Mutation (run): the stale
+/// branch's `owed.intake.lost()` removed, or its loop admitting the stale
+/// payload's events → the same → fails. Mutation (run): the stale payload's
+/// MIDI not counted → the count is short by six → fails.
+#[test]
+fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    let _lock = exclusive();
+    assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
+    let path = unique_socket_path("stale-midi");
+    let _ = std::fs::remove_file(&path);
+    let name = crate::util::transport::control::socket_name(&path).unwrap();
+    let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+    let slab = Arc::new(AudioSlab::create(unique_shm_name("stale-midi"), stereo_layout()).unwrap());
+    let (bridge, thread) = PluginBridge::new(
+        path.clone(),
+        slab,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
+    let server_stream = listener.accept().unwrap();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (got_tx, got) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        released.recv().unwrap();
+        send_bridge_msg(
+            &server_stream,
+            &BridgeMessage::Ready {
+                protocol_version: PROTOCOL_VERSION,
+            },
+        );
+        while let Some(msg) = recv_host_msg(&server_stream) {
+            if let HostMessage::ProcessAudio(data) = msg {
+                let midi: Vec<crate::protocol::MidiEvent> = data
+                    .midi_events
+                    .iter()
+                    .map(crate::protocol::IpcMidiEvent::to_midi_event)
+                    .collect();
+                let _ = got_tx.send((data.seq, midi));
+                send_bridge_msg(
+                    &server_stream,
+                    &BridgeMessage::AudioProcessed {
+                        latency_us: 0,
+                        seq: data.seq,
+                        midi_out: Default::default(),
+                    },
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    });
+
+    let fragments = |len: usize| {
+        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+        let mut out = Vec::new();
+        crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        out
+    };
+    let cut = fragments(60); // 10 packets
+    let next = fragments(12); // 2 packets
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let blocks: [Vec<crate::protocol::MidiEvent>; 4] = [
+        cut[..3].to_vec(),
+        cut[3..6].to_vec(),
+        cut[6..]
+            .iter()
+            .chain(&next)
+            .copied()
+            .chain([note])
+            .collect(),
+        vec![note],
+    ];
+    for (i, midi) in blocks.iter().enumerate() {
+        let submitted = bridge.submit(
+            i as u64 + 1,
+            BATCH_SIZE,
+            midi.iter().copied().collect(),
+            &mut crate::protocol::ParameterChanges::new(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        assert!(submitted.block);
+    }
+    release.send(()).unwrap();
+    let wait = std::time::Duration::from_secs(5);
+    let three = got.recv_timeout(wait).expect("block 3 sent");
+    let four = got.recv_timeout(wait).expect("block 4 sent");
+    let mut expected_three = next.clone();
+    expected_three.push(note);
+    assert_eq!(
+        three,
+        (3, expected_three),
+        "the cut message's tail is not sent"
+    );
+    assert_eq!(four, (4, vec![note]));
+    assert_eq!(
+        bridge
+            .dropped_midi_cell()
+            .load(std::sync::atomic::Ordering::Relaxed),
+        (3 + 3 + 4) as u64,
+        "blocks 1 and 2, and the cut message's tail"
+    );
+    drop(thread);
+    drop(bridge);
+    server.join().unwrap();
+}

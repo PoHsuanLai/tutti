@@ -35,9 +35,9 @@ use tutti_midi_types::MidiGroup;
 /// Ceiling on one in-flight SysEx payload, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`], which the plugin hosts' reassemblers also hold.
 /// A dump's packets are emitted together, so how much of a dump reaches a
-/// plugin is set by the per-block event caps after this, not by this cap: a
-/// plugin node takes at most 256 MIDI events a block (1536 SysEx payload
-/// bytes).
+/// plugin is set by the event caps after this, not by this cap: a plugin
+/// node takes at most 256 MIDI events a chunk (a device callback; a block
+/// for the in-process VST2 node), 1536 SysEx payload bytes.
 const MAX_SYSEX_BYTES: usize = SYSEX7_MAX_PAYLOAD;
 
 /// Reassembles MIDI 1.0 SysEx runs across transport buffers and emits them as

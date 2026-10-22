@@ -314,9 +314,11 @@ impl EventList {
     /// SysEx messages dropped whole since the list was made: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
     /// `START`, cut by a lost tail ([`lose_sysex_tail`](Self::lose_sysex_tail))
-    /// or open at a [`reset_sysex`](Self::reset_sysex), or staged as one
-    /// event past the list's room (counted in [`dropped`](Self::dropped)
-    /// instead). See [`SysExAssembler`] for the policy.
+    /// or open at a [`reset_sysex`](Self::reset_sysex). See
+    /// [`SysExAssembler`] for the policy.
+    ///
+    /// A message completed but refused because the block's list was full is
+    /// not counted here: it is one event in [`dropped`](Self::dropped).
     pub fn sysex_dropped(&self) -> u64 {
         self.inner.borrow().sysex.dropped()
     }

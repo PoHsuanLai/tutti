@@ -23,9 +23,19 @@
 //! transform that also wrote an expression table would be a second owner of a
 //! value the voices already hold.
 //!
-//! Each input event yields **at most one** output event, so the transform
-//! returns `Option<MidiEvent>` (like
-//! [`Midi1ToMidi2Translator`](tutti_midi_types::Midi1ToMidi2Translator)).
+//! # Bend ranges
+//!
+//! A pitch-bend sensitivity (RPN #00/00) on the master channel sets the
+//! master channel's own bend range, and passes through. On a member channel
+//! it sets the range of every member channel's bends (MPE, RP-053 §2.4),
+//! which this transform has just made per-note bends: so it becomes a
+//! per-note bend sensitivity (RPN #00/07, M2-104 §7.4.13) on each of the
+//! zone's member channels, the message a per-note receiver
+//! ([`PerNoteBendRanges`](tutti_midi_types::PerNoteBendRanges)) follows.
+//!
+//! An input event therefore yields none, one, or (that bend range) one per
+//! member channel: [`translate`](MpeIngest::translate) returns a
+//! [`Translated`], an iterator that holds no allocation.
 //!
 //! # Real-time safety
 //!
@@ -39,8 +49,74 @@ use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::ump::{
+    MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+    RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+};
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+
+/// What [`MpeIngest::translate`] makes of one event, in order: nothing, the
+/// event or its per-note form, or a per-note bend range for each member
+/// channel of a zone. A fixed-size value: iterating allocates nothing.
+#[derive(Clone, Debug)]
+pub struct Translated(Out);
+
+#[derive(Clone, Debug)]
+enum Out {
+    One(Option<MidiEvent>),
+    /// RPN #00/07 carrying `data` on each channel of `channels`.
+    PerNoteBendRange {
+        group: MidiGroup,
+        channels: core::ops::RangeInclusive<u8>,
+        data: u32,
+        frame_offset: u32,
+    },
+}
+
+impl From<Option<MidiEvent>> for Translated {
+    fn from(event: Option<MidiEvent>) -> Self {
+        Self(Out::One(event))
+    }
+}
+
+impl Iterator for Translated {
+    type Item = MidiEvent;
+
+    fn next(&mut self) -> Option<MidiEvent> {
+        match &mut self.0 {
+            Out::One(event) => event.take(),
+            Out::PerNoteBendRange {
+                group,
+                channels,
+                data,
+                frame_offset,
+            } => {
+                let channel = channels.next()?;
+                Some(
+                    MidiEvent::registered_controller(
+                        *group,
+                        MidiChannel::new(channel),
+                        RPN_BANK_MPE,
+                        RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                        *data,
+                    )
+                    .with_frame_offset(*frame_offset),
+                )
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = match &self.0 {
+            Out::One(event) => usize::from(event.is_some()),
+            Out::PerNoteBendRange { channels, .. } => channels.clone().count(),
+        };
+        (n, Some(n))
+    }
+}
+
+impl ExactSizeIterator for Translated {}
+impl core::iter::FusedIterator for Translated {}
 
 /// Rewrites classic-MPE channel-spread into native MIDI-2 per-note messages.
 ///
@@ -108,15 +184,22 @@ impl MpeIngest {
 
     /// Rewrite one already-normalized (MIDI-2) event.
     ///
-    /// Returns the event to forward downstream:
+    /// Yields the events to forward downstream, in order:
     /// - a member-channel bend/pressure/CC74 becomes its native per-note form;
+    /// - a member-channel bend sensitivity (RPN #00/00) becomes a per-note
+    ///   bend sensitivity (RPN #00/07) on each of the zone's member channels;
     /// - note-on/off and master-channel messages pass through (with the channel
     ///   map updated for note-on/off so later channel messages resolve);
     /// - already-native per-note messages pass through unchanged.
     ///
-    /// `None` means "drop this event" (e.g. a member-channel message with no note
-    /// currently held on that channel).
-    pub fn translate(&mut self, event: &MidiEvent) -> Option<MidiEvent> {
+    /// Nothing means "drop this event" (e.g. a member-channel message with no
+    /// note currently held on that channel).
+    pub fn translate(&mut self, event: &MidiEvent) -> Translated {
+        self.translate_one(event).unwrap_or_else(|| None.into())
+    }
+
+    /// [`translate`](Self::translate), with `None` for nothing.
+    fn translate_one(&mut self, event: &MidiEvent) -> Option<Translated> {
         // An MPE Configuration Message (RPN 0x00/0x06, M2-104 §7.4.7) reconfigures
         // the zone from the wire — handled in *any* mode, including Disabled (a
         // controller declaring its zone should enable MPE). Absorbed (returns
@@ -131,18 +214,54 @@ impl MpeIngest {
         }
 
         if matches!(self.mode, MpeMode::Disabled) {
-            return Some(*event);
+            return Some(Some(*event).into());
         }
 
         let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.data_words()) else {
             // Not a channel-voice-2 message (System, SysEx, …) — pass through.
-            return Some(*event);
+            return Some(Some(*event).into());
         };
 
         if let MpeMode::SingleChannelRotation { channel } = self.mode {
-            return self.translate_rotation(channel, event, cv2);
+            return Some(self.translate_rotation(channel, event, cv2).into());
         }
-        self.translate_zoned(event, cv2)
+        if let Some(members) = self.member_bend_range(event, &cv2) {
+            return Some(members);
+        }
+        Some(self.translate_zoned(event, cv2).into())
+    }
+
+    /// A bend sensitivity (RPN #00/00) on a member channel, as a per-note
+    /// bend sensitivity (RPN #00/07) on each of its zone's member channels;
+    /// `None` for anything else (the master channel's passes through).
+    fn member_bend_range(
+        &self,
+        event: &MidiEvent,
+        cv2: &ChannelVoice2<&[u32]>,
+    ) -> Option<Translated> {
+        let ChannelVoice2::RegisteredController(m) = cv2 else {
+            return None;
+        };
+        if u8::from(m.bank()) != RPN_BANK_MPE
+            || u8::from(m.index()) != RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY
+        {
+            return None;
+        }
+        let zone = self.get_zone_info(u8::from(m.channel()))?;
+        if !zone.is_member {
+            return None;
+        }
+        let config = match (&self.mode, zone.is_lower_zone) {
+            (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, true)
+            | (MpeMode::UpperZone(c) | MpeMode::DualZone { upper: c, .. }, false) => c,
+            _ => return None,
+        };
+        Some(Translated(Out::PerNoteBendRange {
+            group: event.group(),
+            channels: config.member_channel_range(),
+            data: m.controller_data(),
+            frame_offset: event.frame_offset,
+        }))
     }
 
     /// Apply an MPE Configuration Message: a master channel of 0 selects the lower
@@ -440,9 +559,16 @@ mod tests {
     fn member_channel_bend_becomes_per_note_pitch_bend() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         // Note held on member channel 2.
-        assert!(ingest.translate(&note_on(2, 60, 100)).unwrap().is_note_on());
+        assert!(ingest
+            .translate(&note_on(2, 60, 100))
+            .next()
+            .unwrap()
+            .is_note_on());
         // Channel bend on ch2 → per-note bend on note 60.
-        let out = ingest.translate(&pitch_bend14(2, 16383)).expect("emits");
+        let out = ingest
+            .translate(&pitch_bend14(2, 16383))
+            .next()
+            .expect("emits");
         assert_cv2!(
             out,
             ChannelVoice2::PerNotePitchBend(m)
@@ -456,6 +582,7 @@ mod tests {
         // Master channel of a lower zone is channel 0.
         let out = ingest
             .translate(&pitch_bend14(0, 12288))
+            .next()
             .expect("passes through");
         assert_cv2!(out, ChannelVoice2::ChannelPitchBend(_));
     }
@@ -466,6 +593,7 @@ mod tests {
         ingest.translate(&note_on(3, 64, 100));
         let out = ingest
             .translate(&cc(3, CCNumber::BRIGHTNESS, 127))
+            .next()
             .expect("emits");
         assert_cv2!(
             out,
@@ -484,6 +612,7 @@ mod tests {
                 MidiChannel::new(2),
                 0xFFFF_FFFF,
             ))
+            .next()
             .expect("emits");
         assert_cv2!(out, ChannelVoice2::KeyPressure(m) if u8::from(m.note_number()) == 60);
     }
@@ -492,7 +621,7 @@ mod tests {
     fn bend_with_no_held_note_is_dropped() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         // No note on ch2 yet → member-channel bend has nothing to address.
-        assert!(ingest.translate(&pitch_bend14(2, 16383)).is_none());
+        assert!(ingest.translate(&pitch_bend14(2, 16383)).next().is_none());
     }
 
     #[test]
@@ -500,14 +629,17 @@ mod tests {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         let native =
             MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF);
-        let out = ingest.translate(&native).expect("passes");
+        let out = ingest.translate(&native).next().expect("passes");
         assert_cv2!(out, ChannelVoice2::PerNotePitchBend(_));
     }
 
     #[test]
     fn disabled_mode_passes_everything_through() {
         let mut ingest = MpeIngest::new(MpeMode::Disabled);
-        let out = ingest.translate(&pitch_bend14(2, 16383)).expect("passes");
+        let out = ingest
+            .translate(&pitch_bend14(2, 16383))
+            .next()
+            .expect("passes");
         assert_cv2!(out, ChannelVoice2::ChannelPitchBend(_));
     }
 
@@ -515,9 +647,9 @@ mod tests {
     fn rotation_ignores_off_channel() {
         let mut ingest = MpeIngest::new(MpeMode::SingleChannelRotation { channel: 5 });
         // On-channel note passes.
-        assert!(ingest.translate(&note_on(5, 60, 100)).is_some());
+        assert!(ingest.translate(&note_on(5, 60, 100)).next().is_some());
         // Off-channel note is ignored (this mode owns channel 5).
-        assert!(ingest.translate(&note_on(7, 64, 100)).is_none());
+        assert!(ingest.translate(&note_on(7, 64, 100)).next().is_none());
     }
 
     #[test]
@@ -528,12 +660,15 @@ mod tests {
         let mcm = MpeZoneConfig::lower(7).to_mcm();
 
         // The MCM is absorbed (configuration, not a musical event).
-        assert!(ingest.translate(&mcm).is_none());
+        assert!(ingest.translate(&mcm).next().is_none());
         assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
 
         // Now a member-channel bend folds to per-note, proving the zone is live.
         ingest.translate(&note_on(1, 60, 100));
-        let out = ingest.translate(&pitch_bend14(1, 16383)).expect("emits");
+        let out = ingest
+            .translate(&pitch_bend14(1, 16383))
+            .next()
+            .expect("emits");
         assert_cv2!(out, ChannelVoice2::PerNotePitchBend(m) if u8::from(m.note_number()) == 60);
     }
 
@@ -550,7 +685,68 @@ mod tests {
             tutti_midi_types::ump::RPN_INDEX_MCM,
             0, // 0 members → disable
         );
-        assert!(ingest.translate(&disable).is_none());
+        assert!(ingest.translate(&disable).next().is_none());
         assert!(matches!(ingest.mode(), MpeMode::Disabled));
+    }
+
+    fn bend_sensitivity(channel: u8, semitones: u8) -> MidiEvent {
+        MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            tutti_midi_types::PitchBendSensitivity::from_semitones(semitones).to_rpn_bits(),
+        )
+        .with_frame_offset(17)
+    }
+
+    /// **A member channel's bend range is every member's per-note range; the
+    /// master's is its own.** Dual zones of three members each (lower 1..=3,
+    /// upper 12..=14): RPN #00/00 on member 2 becomes RPN #00/07 on 1, 2 and
+    /// 3, on member 13 on 12, 13 and 14, at the event's offset; on master 0 it
+    /// passes through as it came. A per-note receiver reading the output then
+    /// bends those channels' notes by the new range and the rest by ±48.
+    ///
+    /// Mutation (run): the fan-out drops its `is_member` check → the master's
+    /// sensitivity fans out too → fails.
+    /// Mutation (run): the fan-out emits index #00/00 → the receiver keeps
+    /// ±48 → fails.
+    /// Mutation (run): the fan-out takes the lower zone's config for both
+    /// sides → member 13's fans out over 1..=3 → fails.
+    /// Mutation (run): one channel (`ch..=ch`) instead of the zone's range →
+    /// fails.
+    #[test]
+    fn a_member_channels_bend_range_becomes_every_members_per_note_range() {
+        use tutti_midi_types::PerNoteBendRanges;
+        let mut ingest = MpeIngest::new(MpeMode::DualZone {
+            lower: MpeZoneConfig::lower(3),
+            upper: MpeZoneConfig::upper(3),
+        });
+        let mut receiver = PerNoteBendRanges::default();
+
+        let master = bend_sensitivity(0, 2);
+        let out: Vec<MidiEvent> = ingest.translate(&master).collect();
+        assert_eq!(out, vec![master], "the master's own range passes through");
+        assert!(!receiver.observe(&out[0]));
+
+        for (member, semitones, channels) in [(2, 12, 1..=3), (13, 24, 12..=14)] {
+            let fanned = ingest.translate(&bend_sensitivity(member, semitones));
+            assert_eq!(fanned.len(), 3);
+            let mut seen = Vec::new();
+            for ev in fanned {
+                assert_eq!(ev.frame_offset, 17);
+                assert!(receiver.observe(&ev), "{ev:?} is RPN #00/07");
+                seen.push(ev.channel().map(MidiChannel::get));
+            }
+            assert_eq!(seen, channels.map(Some).collect::<Vec<_>>());
+        }
+        for channel in 0..16u8 {
+            let want = match channel {
+                1..=3 => 12.0,
+                12..=14 => 24.0,
+                _ => 48.0,
+            };
+            assert_eq!(receiver.semitones(channel), want, "channel {channel}");
+        }
     }
 }

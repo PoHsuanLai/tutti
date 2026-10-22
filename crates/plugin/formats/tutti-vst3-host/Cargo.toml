@@ -69,6 +69,10 @@ cc = "1"
 # production builds.
 tutti-vst3-host = { path = ".", features = ["conformance"] }
 assert_no_alloc = { version = "1", default-features = false }
+# The CLAP host, to feed one MIDI stream to both formats' event lists and
+# check they read a per-note bend at the same range. Acyclic: it does not
+# depend on this crate.
+tutti-clap-host = { path = "../tutti-clap-host" }
 tempfile = "3"
 winit = "0.30"
 raw-window-handle = "0.6"

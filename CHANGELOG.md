@@ -7,18 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — a VST3 plugin is told a per-note pitch bend's real tuning
+### Fixed — a plugin is told a per-note pitch bend's real tuning
 
 `tutti-vst3-host` turned a MIDI 2 per-note pitch bend into a tuning note
 expression by mapping the bend's full scale onto VST3's whole ±120-semitone
 tuning range, so the same MIDI bent a VST3 plugin 2.5 times as far as a
-CLAP plugin or the engine's own synth (both ±48, the MPE default). The
-bend is now read over its channel's per-note bend range: ±48 until the
-stream sends "Sensitivity of Per-Note Pitch Bend" (RPN #00/07), which a
-plugin's event list now follows per channel, across blocks. The
-sensitivity message is consumed there (VST3 has no event for it).
-`Vst3Event::from_midi`, which converts one event with no stream state,
-reads at ±48. No API change.
+CLAP plugin or the engine's own synth (both ±48, the MPE default). Both
+hosts now read the bend over its channel's per-note bend range: ±48 until
+the stream sends "Sensitivity of Per-Note Pitch Bend" (RPN #00/07), which
+each plugin's event list follows per channel, across blocks, and consumes
+(neither format has an event for it). The range is keyed by channel, not
+group; a fork (an export) starts at ±48.
+
+The MIDI input node's MPE ingest turns a pitch-bend sensitivity (RPN
+#00/00) on a member channel, which in MPE sets every member's range, into
+RPN #00/07 on each of the zone's member channels. On the master channel it
+passes through as before.
+
+| Was | Now |
+|---|---|
+| `Vst3Event::from_midi(&MidiEvent)` | removed: it converted one event with no stream state. The plugin's event list (`EventList::update_from_sources`) encodes MIDI at the stream's bend ranges |
+| `ClapEvent::from_midi(&MidiEvent)` | `ClapEvent::from_midi(&MidiEvent, &PerNoteBendRanges)`; `InputEventList::add_midi` keeps the ranges and passes them |
+| — | `tutti_midi_types::PerNoteBendRanges` (`Default` ±48 per channel, `observe`, `get`, `semitones`) |
+| `MpeIngest::translate(&MidiEvent) -> Option<MidiEvent>` | `-> tutti_midi_runtime::Translated`, an allocation-free `ExactSizeIterator` of zero, one or (a member channel's bend range) one event per member channel |
+
+Migration: a caller of `ClapEvent::from_midi` passes
+`&PerNoteBendRanges::default()` for one event on a fresh stream, or keeps a
+`PerNoteBendRanges` and calls `observe` on each event first. A caller of
+`Vst3Event::from_midi` stages its MIDI through the plugin's `EventList`. A
+caller of `MpeIngest::translate` iterates the result (`.next()` is the old
+`Option` for every event but a member channel's bend range).
 
 ### Added — `clap.thread-pool` served from a worker pool
 

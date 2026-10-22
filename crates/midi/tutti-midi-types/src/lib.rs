@@ -50,7 +50,7 @@ pub use message::{
     ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
 };
 pub use mpe::{
-    MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
+    MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator, PerNoteBendRanges,
     PitchBendSensitivity, ZoneInfo,
 };
 pub use note_id::{NoteId, PerNoteMap};

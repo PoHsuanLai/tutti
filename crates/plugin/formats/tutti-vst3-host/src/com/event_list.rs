@@ -26,9 +26,10 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, PerNoteBendRanges, TextArena, Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi, TextArena, Vst3Event,
     Vst3InputEvents, K_NOTE_OFF_EVENT,
 };
+use tutti_midi_types::PerNoteBendRanges;
 // Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
 // goes through `RtMidiEvents`.
 #[cfg(test)]
@@ -187,9 +188,12 @@ impl EventList {
     pub fn update_from_midi(&self, midi_events: &[MidiEvent]) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
-        inner
-            .events
-            .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
+        let mut ranges = PerNoteBendRanges::default();
+        inner.events.extend(
+            midi_events
+                .iter()
+                .filter_map(|e| vst3_event_from_midi(e, &mut ranges)),
+        );
     }
 
     /// Stage every input event source into the list: MIDI (transcoded; a
@@ -212,7 +216,7 @@ impl EventList {
         // In frame order, so a per-note bend sensitivity applies to the
         // per-note bends after it.
         for midi in src.midi {
-            if let Some(event) = inner.bend_ranges.encode(midi) {
+            if let Some(event) = vst3_event_from_midi(midi, &mut inner.bend_ranges) {
                 inner.push(event);
             }
         }
@@ -441,6 +445,83 @@ mod tests {
                 assert!((e.value - (0.5 + 6.0 / 240.0)).abs() < 1e-6, "{}", e.value);
             }
             other => panic!("expected one tuning expression, got {other:?}"),
+        }
+    }
+
+    /// **VST3 and CLAP read one stream's per-note bends at the same range.**
+    /// The same two blocks go to both formats' event lists: a per-note bend
+    /// sensitivity of 24 on channel 1, then a quarter bend there and on
+    /// channel 2, and a block later another quarter bend on channel 1. Both
+    /// tell their plugin 6 semitones on channel 1 (in either block) and 12
+    /// on channel 2 (the ±48 default). VST3 carries semitones as
+    /// `0.5 + st / 240`, CLAP as semitones.
+    ///
+    /// Mutation (run): CLAP back to the fixed ±48 (`from_midi` reading
+    /// `emitted_bend_range_semitones()`) → CLAP says 12 on channel 1 → fails.
+    /// Mutation (run): `InputEventList`'s `clear` resets its ranges → CLAP's
+    /// second block says 12 → fails.
+    #[test]
+    fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
+        use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
+        use tutti_midi_types::convert::signed_f32_to_bend_u32;
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        use tutti_midi_types::PitchBendSensitivity;
+
+        let bend = |channel: u8| {
+            MidiEvent::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                60,
+                signed_f32_to_bend_u32(0.25),
+            )
+        };
+        let first = [
+            MidiEvent::registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                RPN_BANK_MPE,
+                RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+            ),
+            bend(0),
+            bend(1),
+        ];
+        let second = [bend(0)];
+
+        let vst3 = EventList::new();
+        let mut clap = InputEventList::new();
+        for (block, want) in [(&first[..], &[6.0, 12.0][..]), (&second[..], &[6.0][..])] {
+            vst3.update_from_sources(&Vst3InputEvents {
+                midi: block,
+                ..Default::default()
+            });
+            clap.clear();
+            clap.add_midi_events(block);
+
+            let vst3_st: Vec<f64> = vst3
+                .inner
+                .borrow()
+                .events
+                .iter()
+                .map(|e| match e {
+                    Vst3Event::NoteExpression(e) => (e.value - 0.5) * 240.0,
+                    other => panic!("VST3: expected a tuning, got {other:?}"),
+                })
+                .collect();
+            let clap_st: Vec<f64> = clap
+                .events()
+                .iter()
+                .map(|e| match e {
+                    ClapEvent::NoteExpression(e) => e.value,
+                    _ => panic!("CLAP: expected a tuning"),
+                })
+                .collect();
+            assert_eq!(vst3_st.len(), want.len());
+            assert_eq!(clap_st.len(), want.len());
+            for ((v, c), w) in vst3_st.iter().zip(&clap_st).zip(want) {
+                assert!((v - w).abs() < 1e-4, "VST3 {v} st, want {w}");
+                assert!((c - w).abs() < 1e-4, "CLAP {c} st, want {w}");
+            }
         }
     }
 

@@ -204,6 +204,48 @@ fn a_requested_mpe_mode_is_adopted_once() {
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
 
+/// **A member channel's bend range reaches every member's port as a per-note
+/// range, without losing the events polled after it.** With a lower zone of
+/// seven members, a MIDI 1.0 RPN 0 run (12 semitones) on member 2 and then a
+/// note on member 1: ports 1 to 7 each receive RPN #00/07 at 12 semitones,
+/// and port 1 the note too.
+///
+/// Mutation (run): the node writes translated events back into its poll
+/// buffer, as it did when each event made at most one → the seven-event
+/// fan-out overwrites the unread note → fails.
+#[test]
+fn a_member_bend_range_fans_out_over_the_zones_ports() {
+    use tutti_midi_types::PerNoteBendRanges;
+    let wire = Wire::new(vec![vec![
+        cc_ev(2, cc::RPN_MSB, 0),
+        cc_ev(2, cc::RPN_LSB, 0),
+        cc_ev(2, cc::DATA_ENTRY, 12),
+        note(1, 60, 5),
+    ]]);
+    let node = MidiInputNode::new(Some(wire)).with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+    let (_ed, mut exec, _c, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    let mut ranges = PerNoteBendRanges::default();
+    let mut range_ports = Vec::new();
+    for (port, _, ev) in seen.iter() {
+        if ranges.observe(ev) {
+            assert_eq!(ev.channel().map(MidiChannel::get), Some(*port as u8));
+            range_ports.push(*port);
+        }
+    }
+    assert_eq!(range_ports, (1..=7).collect::<Vec<_>>(), "{seen:?}");
+    for channel in 1..=7 {
+        assert_eq!(ranges.semitones(channel), 12.0, "channel {channel}");
+    }
+    let notes: Vec<(usize, u64)> = seen
+        .iter()
+        .filter(|s| s.2.is_note_on())
+        .map(|s| (s.0, s.1))
+        .collect();
+    assert_eq!(notes, vec![(1, 5)]);
+}
+
 /// **An input node's fork reads no wire.**
 ///
 /// Mutation: the fork polling the live wire → it takes the batch → fails.

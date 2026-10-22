@@ -6283,20 +6283,41 @@ note-expression value events bound to the note-on's `noteId`
 - **Per-note pitch bend** becomes `kTuningTypeID`: the bend over its
   channel's per-note bend range, in semitones, on VST3's ±120-semitone
   scale (`0.5 + semitones / 240`). The range starts at the MPE default, ±48
-  (what the engine's own synth and the CLAP host assume), and follows the
-  stream's "Sensitivity of Per-Note Pitch Bend" (RPN #00/07) per channel
-  (`PerNoteBendRanges`, kept by the list across blocks; the message itself
-  is consumed). Before this, a full-scale bend was mapped to ±120
+  (what the engine's own synth assumes), and follows the stream's
+  "Sensitivity of Per-Note Pitch Bend" (RPN #00/07) per channel
+  (`tutti_midi_types::PerNoteBendRanges`, kept by the list across blocks;
+  the message itself is consumed). The range is keyed by channel alone,
+  ignoring the UMP group, as the note id is; a fork (an export) starts
+  every channel at ±48, since it does not carry the live MIDI that set
+  them. Before this, a full-scale bend was mapped to ±120
   semitones, so a VST3 plugin was bent 2.5 times as far as a CLAP plugin or
   the engine's synth by the same MIDI.
 - **Per-note controllers** (registered and assignable, indices 7, 10 and
   74) become volume, pan and brightness; others have no VST3 dimension and
   are dropped.
 
+The CLAP host reads the same stream the same way: its `InputEventList`
+keeps a `PerNoteBendRanges` across blocks, consumes RPN #00/07, and tells
+the plugin `CLAP_NOTE_EXPRESSION_TUNING` as the bend over its channel's
+range, in semitones. A tuning a CLAP plugin emits goes back on the wire
+over the ±48 default, since the host sends no sensitivity with it.
+
+A classic MPE controller sets the bend range with RPN #00/00 on a member
+channel, which in MPE (RP-053) sets every member channel's range. The
+input node's `MpeIngest`, which has already made those channels' bends
+per-note bends, turns it into RPN #00/07 on each of the zone's member
+channels (its `translate` yields an allocation-free iterator, since one
+event can become up to fifteen); RPN #00/00 on the master channel sets the
+master's own channel bend range and passes through.
+
 Pinned by `a_per_note_bend_is_tuned_over_its_channels_range`,
-`a_per_note_bend_range_outlives_its_block` and, through the SDK-built
-probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`. The CLAP host
-reads a per-note bend at the fixed ±48 and does not yet follow RPN #00/07.
+`a_per_note_bend_range_outlives_its_block`,
+`vst3_and_clap_bend_one_stream_by_the_same_semitones` (one stream into
+both formats' lists, across two blocks),
+`a_member_channels_bend_range_becomes_every_members_per_note_range`,
+`a_member_bend_range_fans_out_over_the_zones_ports`,
+`the_mpe_bend_range_fan_out_processes_without_allocating` and, through the
+SDK-built probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`.
 
 ## Decisions for the owner
 

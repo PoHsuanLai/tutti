@@ -4776,6 +4776,7 @@ dependencies = [
  "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-clap-host",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",

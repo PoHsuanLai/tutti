@@ -75,7 +75,11 @@ pub struct MidiInputNode {
     /// The edge this node polls, owned: whatever state a poll keeps (a
     /// hardware drain's scratch, its read of the port set) is the node's.
     input: Option<Box<dyn MidiIn>>,
+    /// What the wire's poll fills.
     scratch: Box<[MidiEvent]>,
+    /// What the block sends: the translated events, which may outnumber the
+    /// polled ones (a member channel's bend range fans out over its zone).
+    out: Box<[MidiEvent]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
     request: Arc<MpeRequest>,
@@ -108,6 +112,7 @@ impl MidiInputNode {
             mpe_request: request.cell.reader(),
             input,
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
+            out: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
             request,
@@ -207,17 +212,19 @@ impl Node for MidiInputNode {
         let block_len = cx.env.block_len;
         let n = input.poll_block(block_len.get(), &mut self.scratch);
         let mut kept = 0;
-        for i in 0..n.min(self.scratch.len()) {
-            let raw = self.scratch[i];
-            let Some(ev) = self.translator.translate(&raw) else {
+        for raw in &self.scratch[..n.min(self.scratch.len())] {
+            let Some(ev) = self.translator.translate(raw) else {
                 continue;
             };
-            if let Some(ev) = self.mpe.translate(&ev) {
-                self.scratch[kept] = ev;
-                kept += 1;
+            for ev in self.mpe.translate(&ev) {
+                // Past the edge's capacity a block truncates, as a poll does.
+                if let Some(slot) = self.out.get_mut(kept) {
+                    *slot = ev;
+                    kept += 1;
+                }
             }
         }
-        let events = &mut self.scratch[..kept];
+        let events = &mut self.out[..kept];
         in_offset_order(events);
         for ev in events.iter() {
             // Refused past the capacity: counted by the executor.

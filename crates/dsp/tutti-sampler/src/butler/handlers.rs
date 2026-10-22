@@ -151,19 +151,24 @@ pub(super) fn handle_command(
 
         ButlerCommand::SetStreamLoop {
             channel_index,
+            stream,
             range,
             crossfade_frames,
         } => {
             handle_set_stream_loop(
                 channel_index,
+                stream,
                 Some((range, crossfade_frames)),
                 shared,
                 config,
                 local,
             );
         }
-        ButlerCommand::ClearStreamLoop { channel_index } => {
-            handle_set_stream_loop(channel_index, None, shared, config, local);
+        ButlerCommand::ClearStreamLoop {
+            channel_index,
+            stream,
+        } => {
+            handle_set_stream_loop(channel_index, stream, None, shared, config, local);
         }
 
         ButlerCommand::SeekStream {
@@ -376,9 +381,13 @@ fn handle_stream_file(
 /// record says (so a fork plays it hard too).
 ///
 /// No-op when the channel isn't currently streaming (no `link`) — the loop
-/// config has nowhere to live without an active stream.
+/// config has nowhere to live without an active stream — and when `stream`
+/// names a stream other than the one the channel carries: the loop was set
+/// on a voice whose stream has since stopped or been replaced, and is not
+/// the new stream's.
 fn handle_set_stream_loop(
     channel_index: usize,
+    stream: Option<RegionId>,
     setting: Option<((u64, u64), usize)>,
     shared: &Handles,
     config: &BufferConfig,
@@ -386,6 +395,9 @@ fn handle_set_stream_loop(
 ) {
     let Some((region_id, len, rate)) = shared.plans.get(&channel_index).and_then(|plan| {
         let link = plan.link.as_ref()?;
+        if stream.is_some_and(|stream| stream != link.region_id) {
+            return None;
+        }
         Some((
             link.region_id,
             link.file_frames as usize,

@@ -83,7 +83,9 @@ use crate::transport::{
     FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
 };
 use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
-use crate::{AudioThreadCell, InterleavedMut, SampleRate, Samples};
+use crate::{AudioThreadCell, InterleavedMut, LoadMeter, SampleRate, Samples, Seconds};
+use std::sync::Arc;
+use std::time::Instant;
 use tutti_types::{At, Frame};
 
 /// The widest graph root an engine renders — the most global outputs it
@@ -165,6 +167,9 @@ pub struct Engine {
     fader: AudioThreadCell<Fader>,
     /// The block capacity (the editor's `MaxBlock` limit).
     capacity: Samples,
+    /// Each block's render time against its budget. Built here, on the
+    /// control side; the audio thread only stores into its atomics.
+    load: Arc<LoadMeter>,
 }
 
 /// The graph's executor, the clock that feeds its `Env`, and the
@@ -287,6 +292,7 @@ impl Engine {
             }),
             fader: AudioThreadCell::new(Fader::new()),
             capacity: Samples(stride),
+            load: Arc::new(LoadMeter::new()),
         })
     }
 
@@ -294,6 +300,23 @@ impl Engine {
     /// to.
     pub fn block_capacity(&self) -> Samples {
         self.capacity
+    }
+
+    /// The DSP-load meter every [`process`](Self::process) and
+    /// [`process_segment`](Self::process_segment) call feeds: the call's
+    /// wall time against its block's real-time budget. Clone the `Arc` to
+    /// read it from another thread.
+    ///
+    /// What it times is the whole call, which is what a device deadline
+    /// counts; a driver's own work around it (tutti-cpal's master meter and
+    /// sample-format conversion, one linear pass each) is not in it. The
+    /// budget is each graph block's frames at the rate that block ran at,
+    /// summed, so a call that straddles a re-prepare's rate change is held
+    /// to the rate in effect for each piece. A block refused the graph
+    /// (rendered silent, an audible dropout) is not timed; it is counted in
+    /// [`LoadReading::silenced`](crate::LoadReading::silenced).
+    pub fn load_meter(&self) -> &Arc<LoadMeter> {
+        &self.load
     }
 
     /// Renders the whole of `output` with no transport motion and no declick.
@@ -323,6 +346,11 @@ impl Engine {
     /// rather than merely unlikely.
     #[inline]
     pub fn process_segment(&self, output: &mut InterleavedMut<'_>) {
+        // A monotonic clock read, two per call, no lock and no allocation:
+        // normally a vDSO read on Linux (a real syscall if the clocksource
+        // is not vDSO-capable, e.g. some VMs), the commpage on macOS, QPC
+        // on Windows.
+        let start = Instant::now();
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
@@ -330,13 +358,16 @@ impl Engine {
         // (`settle_graph` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.load.record_silenced();
             return;
         };
         let g = &mut *graph;
         let mut done = 0;
+        let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle(self.motion.timed());
             let len = (frames - done).min(bound);
+            budget += Samples(len).to_seconds(rate);
             let control = Control::read(self.motion.settings());
             let t = g.clock.begin(&control, true);
             // Kept current, so a later `process` tells a late beat from one
@@ -353,6 +384,8 @@ impl Engine {
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
             done += len;
         }
+        self.load
+            .record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
 
     /// Renders one block into `output`, an interleaved device buffer.
@@ -368,6 +401,8 @@ impl Engine {
     /// allocation, no locks, no I/O.
     #[inline]
     pub fn process(&self, output: &mut InterleavedMut<'_>) {
+        // Timed for the load meter (`load_meter`): see `process_segment`.
+        let start = Instant::now();
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
@@ -381,15 +416,18 @@ impl Engine {
         // reached only under the graph borrow (here, or `settle_graph`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.load.record_silenced();
             return;
         };
         // A refusal leaves the events queued for the next block.
         let _ = self.motion.drain();
         let g = &mut *graph;
         let mut done = 0;
+        let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle(self.motion.timed());
             let len = (frames - done).min(bound);
+            budget += Samples(len).to_seconds(rate);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {
                 clock: &mut g.clock,
@@ -406,6 +444,8 @@ impl Engine {
                 .apply(&walk.gain, frame0, output, out_ch, done, len);
             done += len;
         }
+        self.load
+            .record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
 
     /// Walks one block's scheduled transport commands in time order, running
@@ -1112,5 +1152,33 @@ mod tests {
         );
         assert_eq!(walk.gain.len, 1);
         assert_eq!(walk.gain.items[0], (0, Gain::Aim(Some(Frame(812)))));
+    }
+
+    /// A block refused the graph is a dropout the meter counts, not times:
+    /// `silenced` counts both entry points, `blocks` neither, and a reset
+    /// zeroes it.
+    ///
+    /// Mutations (run): `process` not counting the refusal → `silenced` is
+    /// 1 → fails; the same in `process_segment` → fails; `reset` leaving
+    /// `silenced` → fails.
+    #[test]
+    fn a_block_refused_the_graph_counts_as_silenced() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let mut buf = vec![0.0f32; 64 * 2];
+        {
+            let _control = engine.graph.borrow_mut();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process_segment(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        }
+        let r = engine.load_meter().peek();
+        assert_eq!((r.silenced, r.blocks), (2, 0));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        let r = engine.load_meter().peek();
+        assert_eq!((r.silenced, r.blocks), (2, 1));
+        engine.load_meter().reset();
+        assert_eq!(engine.load_meter().peek().silenced, 0);
     }
 }

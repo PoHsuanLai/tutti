@@ -40,6 +40,25 @@ fn the_session_publishes_the_tap_its_callback_feeds() {
     assert_eq!(frames, 64, "the callback's block reached the session's tap");
 }
 
+/// **The session's load meter is the one its callback's engine feeds**:
+/// each block the device renders is one block measured.
+///
+/// Mutation (run): `build_on` leaving `Session::load` at the engine-less
+/// `None` → `load_meter()` is `None` → fails; giving the session a fresh
+/// `LoadMeter` instead of the engine's → no block measured → fails.
+#[test]
+fn the_session_reads_the_load_its_callback_measures() {
+    let (driver, stream) = ManualStreamDriver::new();
+    let (session, _device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device");
+    let meter = std::sync::Arc::clone(session.load_meter().expect("a device's engine"));
+    for _ in 0..3 {
+        stream.render_block(64).expect("the stream is open");
+    }
+    assert_eq!(meter.take().blocks, 3);
+}
+
 /// **A rerate from 48 kHz to 96 kHz keeps the published compensation in
 /// step with the plan.** A 1 kHz sine dry on output 0 and through a
 /// lookahead limiter on output 1: the dry channel pre-rolls by the

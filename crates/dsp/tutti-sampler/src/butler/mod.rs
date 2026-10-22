@@ -16,14 +16,13 @@ mod metrics;
 mod plan;
 mod prefetch;
 mod preroll;
-mod queue;
 mod region_map;
 mod rt_state;
 mod step;
 mod streamer;
 mod thread;
 
-pub(crate) use command::ButlerCommand;
+pub(crate) use command::{ButlerCommand, RegionId};
 pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
 #[cfg(test)]
@@ -31,11 +30,14 @@ pub(crate) use loops::GUARD_FRAMES;
 pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
-#[cfg(test)]
-pub(crate) use queue::ButlerQueue;
-pub(crate) use queue::{ButlerSender, TrySendError};
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
+
+/// The sending end of the butler's command queue: a bounded
+/// `crossbeam_channel`, sent on by control threads only. A send waits while
+/// the queue is full and fails once the butler has gone (every receiver
+/// dropped: the thread's on its exit, the controller's on `stop`).
+pub(crate) type ButlerSender = crossbeam_channel::Sender<ButlerCommand>;
 
 // The butler's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
@@ -51,7 +53,5 @@ pub use step::StepOutcome;
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
 // `units::disk_voice`) that build readers directly. Gated so they
 // do not count as dead code in normal builds.
-#[cfg(test)]
-pub(crate) use command::RegionId;
 #[cfg(test)]
 pub(crate) use prefetch::RegionBuffer;

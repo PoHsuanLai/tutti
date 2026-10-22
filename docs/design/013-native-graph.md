@@ -3105,6 +3105,55 @@ sibling batching (measured; it does not pay: see below); `clap.thread-pool`; the
 (optional) REAPER-style anticipative partition for nodes with no live-input
 dependency, with export as its degenerate case.
 
+**The load meter decides whether render-ahead is worth building.**
+`Engine::process` (and `process_segment`) times each call against its
+block's budget (`frames / sample_rate`) into a `tutti_core::LoadMeter`,
+read through `Engine::load_meter`, `Session::load_meter` and
+`AudioGraphRes::load_meter`: the last block's load, a mean smoothed over
+0.3 s, the peak since the last `take` (`peek` reads without taking), the
+blocks over budget, and the blocks rendered silent because the graph was
+held (`silenced`). Render-ahead helps only when blocks miss because of
+spikes (max/mean high, mean well under 1.0), not because the mean is too
+high; build it only if the meter shows that on real sessions on a device.
+
+Offline, on `tutti-session`'s `render_load` scene (8 polysynths × 16 held
+notes, 4 sampler tracks × 8 voices transposed by varispeed, strips, sends
+into a stereo 2 s convolution reverb at a 512-frame partition, a master
+strip and limiter; 48 kHz; a four-core container shared with other work).
+Two runs at a 1-minute load average of 2.3–4.8 with the bench in it, given
+as run A / run B (run A started the sampler voices 256 frames in, which
+changes nothing for varispeed voices; `vocoder-dry` was added for run B);
+two later runs at load average 6.5–20 are left out as contaminated:
+
+| scene | block | workers | mean | p99 | max | over budget |
+|---|---|---|---|---|---|---|
+| main (varispeed) | 64 | 1 | 0.087 / 0.081 | 0.270 / 0.235 | 1.68 / 2.30 | 5 / 1 of 7500 |
+| main (varispeed) | 64 | 4 | 0.087 / 0.069 | 0.294 / 0.243 | 8.99 / 2.98 | 18 / 10 of 7500 |
+| main (varispeed) | 128 | 1 | 0.084 / 0.080 | 0.157 / 0.150 | 0.46 / 1.10 | 0 / 1 of 3750 |
+| main (varispeed) | 128 | 4 | 0.088 / 0.056 | 0.209 / 0.149 | 12.1 / 1.19 | 23 / 1 of 3750 |
+| no reverb | 64 | 1 | 0.062 / 0.066 | 0.103 / 0.122 | 1.07 / 1.22 | 1 / 1 of 7500 |
+| 32 vocoder voices, no reverb | 64 | 1 | 0.764 (B) | 2.78 | 55.2 † | 1321 of 7500 |
+| 32 vocoder voices, no reverb | 64 | 4 | 0.549 (B) | 3.53 | 18.4 | 349 of 7500 |
+
+† Probably preemption: a re-run at load average 22–29 put this
+configuration's maximum at 139 and 418 (and the no-reverb scene's at 99),
+the top blocks at scattered indices and cycle positions.
+
+The main scene runs at under a tenth of its budget. Its one structural
+spike is the convolver's: the block that completes each 512 frames
+averages 0.18 against 0.06 for the others at 64 frames, about 0.12 of the
+budget, and absent without the reverb. Its over-budget blocks (0–23 per
+configuration, maxima 0.46–12, the worst on the pool in run A) were not
+separated from preemption by other work on this machine. With 32
+pitch-shifted sampler voices the mean is near the budget (0.76 serial at
+64 frames on their own), and the tail is wide (p99 3.6× the mean, 17.6% of
+blocks over budget, while only the vocoder's hop position, one block in
+eight, averages above 1.0), so most of its misses are block-to-block
+variance rather than the mean. That tail could not be separated from
+preemption here either, so it neither makes nor rules out a case for
+render-ahead. A device's real-time thread, out-of-process plugins and
+third-party plugins are outside this measurement.
+
 `RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
 applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will
@@ -3882,64 +3931,59 @@ The audit's findings in `tutti-sampler`
 (collections and channels more complex, or less real-time, than they
 need to be), and what review of the fix turned up:
 
-- **The butler send from `process` no longer blocks.** A `VoicePool`'s
-  drain forwards a streaming voice's loop to the butler (`Command::Loop`)
-  from inside `process`, and `Commands::send` used `send_blocking` on the
-  butler's bounded (256) queue: a stalled butler held the callback. That
-  forward is the only butler send reachable from `process` (a `Seek` is
-  sent only by control code), and it is now `Commands::try_send`: a full
-  or closed queue refuses the command, the intent stays unrecorded, and
-  the refusal is counted. `Commands::send` stays blocking for the control
-  thread, waiting while the queue is full.
-- **The butler's queue takes no lock and allocates nothing** (lock-free,
-  not wait-free; below). It was a
-  `smol` channel, whose successful send woke the butler through a listener
-  list behind a `Mutex`, allocated on the channel's first notify. It is
-  now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
-  butler's `Thread` (registered by the thread before its first cycle) and
-  a `closed` flag. A send is a push then an `unpark`; the
-  butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
-  yields when a ring needs a refill, and a push between its drain and its
-  park leaves the token set, so no wake is lost. A control-thread send on
-  a full queue retries every 100 µs, waking the butler each time, and
-  stops when the queue closes. `smol` and `futures-lite` are no longer
-  dependencies.
-- **The audio thread's send is lock-free, not wait-free.** crossbeam's
-  `ArrayQueue::pop` moves `head` and only then frees the slot's stamp; a
-  push into a full queue whose tail lands on that slot sees `head` moved
-  and spins until the stamp is stored, rather than report `Full`. The
-  wait is the butler's two-instruction window, long only if the butler is
-  preempted inside it, and only on a full queue; senders also retry
-  against each other's tail claims. **Deferred:** the wait-free design is
-  a single-producer ring (`rtrb`) per sender, which the butler polls. The
-  parallel executor makes the send multi-producer (pools rendering on
-  several workers), so that is a ring per producer and a registry of
-  them.
-- **Closing cannot strand a command.** The thread closes the queue on
-  exit, however it exits (and `stop` closes it too, for a controller that
-  never started): it sets `closed`, then a `SeqCst` fence, then drains and
-  drops what is queued. A sender checks `closed`, pushes, then a `SeqCst`
-  fence, then checks `closed` again and reports `ButlerGone` if it is set.
-  That is the store-buffering pattern: either the drain sees the push or
-  the sender sees the flag, so an `Ok` command is always popped (run, or
-  dropped by the final drain) and every send that starts after the close
-  reports `ButlerGone`. A `ButlerGone` command may still have run, if the
-  butler's last cycle popped it while the sender was descheduled. This
-  handshake is an ordering argument the queue owns, which CLAUDE.md would
-  put in `tutti-types` under a loom model; crossbeam has no loom build, so
-  a model could check only a stand-in, and the exception and its argument
-  are in `docs/engineering-notes.md` ("The butler queue's close
-  handshake").
-- **A loop the butler refuses is not recorded on an add either.** An
-  `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
-  loop out of the voice (`Off` left behind) before the slot is built, and
-  records it only when the forward lands. A control-thread `insert_voice`
-  waits for room rather than refuse; the drain refuses.
+- **The audio thread sends no butler commands.** A streaming voice's loop
+  is butler-owned (`Command::Loop`), and it is forwarded from the control
+  thread: `VoicePoolHandle::send` resolves the slot to its butler channel
+  and stream from a table it keeps of every streaming voice it added (and
+  of those the pool held when the handle was made), forwards the loop with
+  a waiting send, and queues the `UpdateLoop`, `ClearLoop` or `AddVoice`
+  for the drain only once the butler has taken it; a control-thread
+  `insert_voice` forwards the same way until the handle is taken. The
+  pool's butler sender moves into the handle then, so the node in the
+  graph holds none. The drain only records the loop (and primes an
+  in-memory one), and decides that from the command alone: a queued loop
+  carries the stream the handle forwarded it to, and a streaming slot
+  records it only when that is its own stream. A loop for a slot the
+  table does not know (a voice `insert_voice` added after the handle was
+  taken, or one since replaced) is counted (`loops_not_forwarded`) and
+  not recorded.
+- **Commands that never reach the butler never wait on it.** The table's
+  lock is held for a lookup or a queueing, never across a forward; a
+  second lock, held across each forward, keeps forwards and the commands
+  queued behind them in one order. A loop whose slot was removed (or
+  replaced in memory) while its forward waited is ordered before that
+  command and not queued. What the audio thread shares with the butler is
+  state, not commands: the position a voice publishes, read by the butler
+  through the ring.
+- **A loop names its stream.** The forwarded loop carries the stream's
+  identity (its ring's region), and the butler ignores it once the channel
+  carries another stream, so a loop set on a voice whose channel the host
+  has restarted on another file never loops the new one. A host's own
+  `Command::Loop` names only the channel, as every other command does.
+- **The butler's queue is a bounded `crossbeam_channel`.** Every sender is
+  a control thread, so a send waits while the queue is full and fails as
+  `ButlerGone` once every receiver is dropped: the butler thread's on its
+  exit (however it exits), the controller's on `stop` (which covers a
+  controller that never started). The butler waits on the queue with a
+  timeout between cycles (1 ms idle, 3 ms healthy) and yields when a ring
+  needs a refill; a command sent at any point after a cycle's drain is in
+  the queue, so the wait returns with it and no wake is lost.
+- **A loop the butler did not take is not recorded.** An `AddVoice` or
+  `insert_voice` of a streaming voice whose forward fails (no butler, no
+  butler channel, a butler that exited) is queued with its loop `Off`, and
+  an `UpdateLoop` whose forward fails is not queued. A `send` that returns
+  `Err` leaves the butler on the loop it had: a full queue is refused
+  before the forward, and a forward whose command another thread then
+  crowds out of the queue is undone by forwarding the slot's previous
+  loop again, which the table keeps. A loop the butler ignores (its
+  stream gone from the channel) is still recorded, harmlessly: the slot
+  no longer plays from that stream.
 - **Drops are counted, not logged.** The pool's `tracing::warn!`s are
-  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops refused by a
-  full or a gone butler, `On` loops lost for want of one, `ReplaceWave`s ignored on a streaming
-  voice, voices refused at the cap, values freed in the callback because
-  the retirement channel was full).
+  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops lost to a
+  gone butler, `On` loops lost for want of one, both counted where the
+  forward is made; loops the drain refused as unforwarded; `ReplaceWave`s ignored on a streaming voice, voices
+  refused at the cap, values freed in the callback because the retirement
+  channel was full).
 - **The voice vector never grows on the audio thread.** It was reserved to
   64 slots and pushed past them in the drain. An `AddVoice` for a new slot
   in a full pool is now refused and handed back whole (box and filter)

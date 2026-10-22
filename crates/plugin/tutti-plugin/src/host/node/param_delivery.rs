@@ -182,6 +182,11 @@ pub(crate) struct DeliveryCounters {
     dropped: AtomicU64,
     merged: AtomicU64,
     grid_dropped: AtomicU64,
+    /// MIDI events the node did not deliver (`midi_intake`).
+    pub(super) midi_dropped: AtomicU64,
+    /// The bridge thread's count of the MIDI events it did not send, set
+    /// once at bind (an out-of-process node only).
+    pub(super) bridge_midi_dropped: OnceLock<Arc<AtomicU64>>,
     /// Set once, at bind ([`ParamDelivery::new`]).
     record: OnceLock<Arc<DeliveredRecord>>,
 }
@@ -551,6 +556,12 @@ impl ParamDelivery {
         self.changes = ParameterChanges::reserved_bridged(self.room(), self.points);
         self.grid = GridBits::new(self.room(), self.points);
         self.points
+    }
+
+    /// `n` MIDI events the node did not deliver
+    /// ([`DeliveryCounters::count_midi_dropped`]). RT-safe.
+    pub(crate) fn count_midi_dropped(&self, n: u64) {
+        self.counters.count_midi_dropped(n);
     }
 
     /// The counters and record this delivery writes, for the node's

@@ -30,7 +30,7 @@
 //! de-zippered direction vector).
 
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
-use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
+use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
 
 use crate::AngleSmoother;
 
@@ -236,6 +236,11 @@ impl OverlapTails {
 
 /// Turns a target azimuth/elevation (degrees) into a de-zippered direction
 /// vector: one-pole smoothers on each angle, stepped once per rendered frame.
+///
+/// The smoothers are stepped once per frame, so they are built with a
+/// stride of `FRAME_LEN` samples and the 50 ms time constant is 50 ms of
+/// audio. With a stride of one, each step would move the fraction meant for
+/// one sample, and the glide would take `FRAME_LEN` times as long.
 struct PositionSmoother {
     smoother: AngleSmoother,
     target_azimuth: Azimuth,
@@ -245,7 +250,7 @@ struct PositionSmoother {
 impl PositionSmoother {
     fn new(sample_rate: SampleRate) -> Self {
         Self {
-            smoother: AngleSmoother::new(sample_rate),
+            smoother: AngleSmoother::new(sample_rate, Samples(FRAME_LEN)),
             target_azimuth: Azimuth(0.0),
             target_elevation: Elevation(0.0),
         }
@@ -434,5 +439,54 @@ fn direction_from_degrees(azimuth: Azimuth, elevation: Elevation) -> Vec3 {
         x: -az.sin() * cos_el,
         y: el.sin(),
         z: -az.cos() * cos_el,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Remaining fraction of a step from 0 to 90 degrees of height after
+    /// `frames` rendered frames.
+    fn remaining_after(smoother: &mut PositionSmoother, frames: usize) -> f32 {
+        smoother.aim_at(Azimuth::FRONT, Elevation(0.0));
+        smoother.reset_state();
+        smoother.aim_at(Azimuth::FRONT, Elevation(90.0));
+        for _ in 0..frames {
+            smoother.step();
+        }
+        let (_, el) = smoother.smoother.current();
+        (90.0 - el.get()) / 90.0
+    }
+
+    /// The de-zipper's time constant is 50 ms of audio: after 50 ms of
+    /// frames a step has `e^-1` of its distance left. At 51.2 kHz, 50 ms is
+    /// 2560 samples, exactly five 512-sample frames; at 102.4 kHz (after a
+    /// retune) it is ten.
+    ///
+    /// Mutations (run):
+    /// - build with a stride of one (`AngleSmoother::new(sample_rate,
+    ///   Samples(1))`) → after five frames almost all of the step is left
+    ///   (`e^-(5/2560)`, about 0.998) and the assertion fails.
+    /// - drop `self.stride` from `ExponentialSmoother::set_sample_rate`
+    ///   (retune with a stride of one) → the 102.4 kHz half fails.
+    #[test]
+    fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
+        assert_eq!(FRAME_LEN, 512, "the rates below assume 512-sample frames");
+        let e_inv = (-1.0f32).exp();
+
+        let mut s = PositionSmoother::new(SampleRate(51_200.0));
+        let left = remaining_after(&mut s, 5);
+        assert!(
+            (left - e_inv).abs() < 1e-4,
+            "after 50 ms at 51.2 kHz {left} of the step is left, expected e^-1 = {e_inv}"
+        );
+
+        s.retune(SampleRate(102_400.0));
+        let left = remaining_after(&mut s, 10);
+        assert!(
+            (left - e_inv).abs() < 1e-4,
+            "after 50 ms at 102.4 kHz {left} of the step is left, expected e^-1 = {e_inv}"
+        );
     }
 }

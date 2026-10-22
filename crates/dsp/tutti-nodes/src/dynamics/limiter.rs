@@ -78,11 +78,9 @@ impl LookaheadRing {
             b.push(frame[c]);
         }
 
+        // The deque's window is the lookahead: the push drops the gain
+        // leaving it before adding this one.
         self.min_deque.push(self.sample_counter, gain);
-        let window_start = self
-            .sample_counter
-            .saturating_sub(self.lookahead_samples as u64 - 1);
-        self.min_deque.evict_older_than(window_start);
         self.sample_counter = self.sample_counter.wrapping_add(1);
 
         self.min_deque.min().unwrap_or(gain)

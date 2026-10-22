@@ -26,8 +26,15 @@ use vst3::Steinberg::Vst::{
     IEditController, IMidiMapping, IMidiMappingTrait, ParamID,
 };
 
-use crate::types::{MidiEvent, ParameterChanges};
-use tutti_plugin_types::{ParamAddress, RtMidiEvents};
+use crate::com::EventList;
+use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
+use tutti_plugin_types::{ParamAddress, MIDI_STACK_CAPACITY};
+use tutti_types::RtVec;
+
+/// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
+/// never drops an event the plugin node delivered. Dropping one would cut a
+/// multi-packet SysEx the event list is reassembling.
+pub(crate) type FilteredMidi = RtVec<MidiEvent, MIDI_STACK_CAPACITY>;
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -190,7 +197,7 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
 pub(crate) fn route_cc_events(
     mapping: &MidiCcMapping,
     midi_events: &[MidiEvent],
-    out_filtered: &mut RtMidiEvents,
+    out_filtered: &mut FilteredMidi,
     out_params: &mut ParameterChanges,
 ) {
     for event in midi_events {
@@ -212,9 +219,9 @@ pub(crate) fn route_cc_events(
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.
                 //
-                // A refused push (pool at capacity) drops the event rather
-                // than allocating on the audio thread; `out_filtered
-                // .overflowed()` reports it to the caller.
+                // A refused push (more than a block's MIDI cap in) drops the
+                // event rather than allocating on the audio thread;
+                // `out_filtered.overflowed()` reports it to the caller.
                 None => {
                     let _ = out_filtered.push(*event);
                 }
@@ -225,6 +232,34 @@ pub(crate) fn route_cc_events(
             }
         }
     }
+}
+
+/// Stage a block's input events into `list`, the MIDI through `cc` first
+/// (mapped controllers become parameter changes), and return the parameter
+/// changes to forward: the route's merged ones, or `param_changes` when the
+/// plugin maps nothing. When the route dropped MIDI past its cap, the list
+/// drops its open SysEx ([`EventList::lose_sysex_tail`]) so a message never
+/// reaches the plugin with a gap in it. Never allocates.
+pub(crate) fn stage_input_events<'a>(
+    cc: &'a mut CcRoute,
+    list: &EventList,
+    events: &Vst3InputEvents<'_>,
+    param_changes: Option<&'a ParameterChanges>,
+) -> Option<&'a ParameterChanges> {
+    let (midi, params, lost_tail) = match cc.route(events.midi, param_changes) {
+        Some((midi, params)) => (midi.as_slice(), Some(params), midi.overflowed()),
+        None => (events.midi, param_changes, false),
+    };
+    let effective = Vst3InputEvents { midi, ..*events };
+    if effective.is_empty() {
+        list.clear();
+    } else {
+        list.update_from_sources(&effective);
+    }
+    if lost_tail {
+        list.lose_sysex_tail();
+    }
+    params
 }
 
 /// Sorts every queue's points into ascending `sample_offset` order, as VST3's
@@ -279,7 +314,7 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// non-empty mapping over unreserved scratch.
 pub(crate) struct CcRoute {
     mapping: MidiCcMapping,
-    filtered_midi: RtMidiEvents,
+    filtered_midi: FilteredMidi,
     param_changes: ParameterChanges,
     /// The parameter queues to reserve (the host's chunk's: the plugin's
     /// parameter count and the spare ones).
@@ -295,8 +330,8 @@ pub(crate) struct CcRoute {
 }
 
 impl CcRoute {
-    /// Builds with `mapping` and empty scratch. The MIDI scratch is capped
-    /// and never grows. When `mapping` is non-empty, `param_changes` is
+    /// Builds with `mapping` and empty scratch. The MIDI scratch holds a
+    /// block's MIDI cap ([`MIDI_STACK_CAPACITY`]) and never grows. When `mapping` is non-empty, `param_changes` is
     /// reserved with `queues` parameter queues (the host's chunk's) for a
     /// chunk room of `room` (the host input list's) in the layout
     /// (`ParameterChanges::reserved`: a floor of `FLOOR_POINTS + 1` each and
@@ -309,7 +344,7 @@ impl CcRoute {
     pub(crate) fn new(mapping: MidiCcMapping, queues: usize, room: usize) -> Self {
         let mut route = Self {
             mapping: MidiCcMapping::empty(),
-            filtered_midi: RtMidiEvents::new(),
+            filtered_midi: FilteredMidi::new(),
             param_changes: ParameterChanges::new(),
             queues,
             room,
@@ -359,6 +394,10 @@ impl CcRoute {
     /// Unmapped events (notes, unmapped CCs, …) pass through unchanged. Returns
     /// `Some((filtered_midi, merged_params))` borrowing the scratch.
     ///
+    /// More than [`MIDI_STACK_CAPACITY`] events in drop the rest, which the
+    /// returned list's `overflowed()` reports; the plugin node never
+    /// delivers more.
+    ///
     /// Returns `None` when the plugin has no mapping — the common case for
     /// effects and simple instruments, so the caller forwards its inputs
     /// untouched and the hot path pays nothing.
@@ -370,7 +409,7 @@ impl CcRoute {
         &mut self,
         midi_events: &[MidiEvent],
         param_changes: Option<&ParameterChanges>,
-    ) -> Option<(&[MidiEvent], &ParameterChanges)> {
+    ) -> Option<(&FilteredMidi, &ParameterChanges)> {
         if self.mapping.is_empty() {
             return None;
         }
@@ -547,7 +586,7 @@ mod tests {
             .with_frame_offset(0),
         ];
 
-        let mut filtered = RtMidiEvents::new();
+        let mut filtered = FilteredMidi::new();
         let mut params = ParameterChanges::reserved(1, 1);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
@@ -578,7 +617,7 @@ mod tests {
         )
         .with_frame_offset(0)];
 
-        let mut filtered = RtMidiEvents::new();
+        let mut filtered = FilteredMidi::new();
         let mut params = ParameterChanges::reserved(2, 1);
         // Pre-seed with a host automation point (as the audio path does).
         params.add_change(ParamAddress::Opaque(42u32.into()), 0, 0.25);
@@ -625,7 +664,7 @@ mod tests {
             .with_frame_offset(10),
         ];
 
-        let mut filtered = RtMidiEvents::new();
+        let mut filtered = FilteredMidi::new();
         let mut params = ParameterChanges::reserved(2, 3);
         // Seed the SAME param (500) with host automation at a middle offset,
         // plus a separate param to prove per-queue sorting.
@@ -1164,5 +1203,113 @@ mod tests {
                 assert_eq!(params.queues.len(), 2, "host automation + the CC");
             }
         });
+    }
+
+    /// The SysEx messages `list` hands the plugin, as `getEvent` reads them.
+    fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
+        use crate::types::{K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX};
+        use vst3::Steinberg::Vst::{Event, IEventListTrait};
+        let mut out = Vec::new();
+        unsafe {
+            for i in 0..list.getEventCount() {
+                let mut e: Event = std::mem::zeroed();
+                assert_eq!(list.getEvent(i, &mut e), vst3::Steinberg::kResultOk);
+                if e.r#type != K_DATA_EVENT || e.__field0.data.r#type != K_DATA_TYPE_MIDI_SYSEX {
+                    continue;
+                }
+                let d = e.__field0.data;
+                out.push(std::slice::from_raw_parts(d.bytes, d.size as usize).to_vec());
+            }
+        }
+        out
+    }
+
+    fn sysex_packets(payload: &[u8]) -> Vec<MidiEvent> {
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out
+    }
+
+    /// **A plugin with a CC mapping gets a SysEx spanning blocks whole**: a
+    /// block of the node's whole MIDI cap (a mapped CC and 255 SysEx packets)
+    /// and the rest of the message in the next block arrive as one complete
+    /// message, nothing dropped.
+    ///
+    /// Mutation (run): the route's MIDI scratch back to `RtMidiEvents` (64
+    /// events) → the first block's packets past 64 are lost, the message is
+    /// dropped → fails.
+    #[test]
+    fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        // 266 packets: 255 in the first block, 11 in the second.
+        let payload: Vec<u8> = (0..1596).map(|i| (i % 0x7F) as u8).collect();
+        let packets = sysex_packets(&payload);
+        assert_eq!(packets.len(), 266);
+        let cc = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        );
+        let first: Vec<MidiEvent> = std::iter::once(cc)
+            .chain(packets[..MIDI_STACK_CAPACITY - 1].iter().copied())
+            .collect();
+        assert_eq!(first.len(), MIDI_STACK_CAPACITY);
+        let mut route = CcRoute::new(mod_wheel_mapping(500), 1, 64);
+        let list = EventList::input();
+
+        let one = Vst3InputEvents {
+            midi: &first,
+            ..Default::default()
+        };
+        let params = stage_input_events(&mut route, &list, &one, None);
+        assert_eq!(
+            params.map(|p| p.queues.len()),
+            Some(1),
+            "the CC became a param"
+        );
+        assert!(sysex_in(&list).is_empty(), "the message is still open");
+
+        let two = Vst3InputEvents {
+            midi: &packets[MIDI_STACK_CAPACITY - 1..],
+            ..Default::default()
+        };
+        stage_input_events(&mut route, &list, &two, None);
+        let mut framed = vec![0xF0];
+        framed.extend_from_slice(&payload);
+        framed.push(0xF7);
+        assert_eq!(sysex_in(&list), vec![framed]);
+        assert_eq!(list.sysex_dropped(), 0);
+    }
+
+    /// **More MIDI than the route holds drops the open SysEx, counted, rather
+    /// than splicing its later packets onto the kept ones.** A direct caller
+    /// may stage more than a block's cap; the route keeps the first
+    /// [`MIDI_STACK_CAPACITY`].
+    ///
+    /// Mutation (run): the `lose_sysex_tail` call removed from
+    /// `stage_input_events` → the next block's packets complete the message
+    /// with the lost ones missing → fails.
+    #[test]
+    fn a_route_overflow_drops_the_open_sysex() {
+        let payload: Vec<u8> = (0..6 * 400).map(|i| (i % 0x7F) as u8).collect();
+        let packets = sysex_packets(&payload);
+        assert_eq!(packets.len(), 400);
+        let mut route = CcRoute::new(mod_wheel_mapping(500), 1, 64);
+        let list = EventList::input();
+        // 300 packets in one call: the route keeps 256 and loses 44.
+        let one = Vst3InputEvents {
+            midi: &packets[..300],
+            ..Default::default()
+        };
+        stage_input_events(&mut route, &list, &one, None);
+        assert_eq!(list.sysex_dropped(), 1);
+        let two = Vst3InputEvents {
+            midi: &packets[300..],
+            ..Default::default()
+        };
+        stage_input_events(&mut route, &list, &two, None);
+        assert!(sysex_in(&list).is_empty(), "no message with a gap in it");
+        assert_eq!(list.sysex_dropped(), 1);
     }
 }

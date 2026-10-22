@@ -9,10 +9,18 @@
 //! the `vst` crate, so [`MidiSendBuffer`] hand-assembles it into an
 //! aligned `Vec<u64>`. The buffer is reused across calls so the audio
 //! thread never allocates after warmup.
+//!
+//! SysEx, which has no 3-byte form, goes to the plugin as a `kVstSysExType`
+//! event: [`MidiSendBuffer`] reassembles the UMP SysEx7 packets
+//! ([`SysExAssembler`]) and hands the plugin one complete `0xF0 … 0xF7`
+//! message at its `END` packet's frame. A message may span blocks; one past
+//! [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY) is
+//! dropped whole and counted.
 
 use crate::types::{MidiEvent, MidiEventVec};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
+use tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, MIDI_STACK_CAPACITY};
 
 /// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
@@ -75,7 +83,9 @@ pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
 /// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
 /// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
 /// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
-/// program change (everything with a 3-byte MIDI-1 form).
+/// program change (everything with a 3-byte MIDI-1 form). SysEx is not a
+/// `MidiEvent` in VST2: [`MidiSendBuffer::stage`] reassembles it into a
+/// `SysExEvent`.
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond
 /// 7/14 bits.
@@ -126,14 +136,30 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
 /// array struct.
 ///
 /// One instance lives on each [`MidiIo`]; [`Self::stage`]
-/// rebuilds the contents in place for the next process call. Capacity
-/// grows on demand (rarely, only if a block carries more events than
-/// any prior block) — sized at construction to a generous default so
-/// steady-state operation is allocation-free.
+/// rebuilds the contents in place for the next process call. Every list is
+/// reserved at construction for a block's whole MIDI cap
+/// ([`MIDI_STACK_CAPACITY`]: no caller hands it more) and never grows: an
+/// event past it is refused and counted
+/// ([`events_dropped`](Self::events_dropped)), so staging never allocates.
 pub(crate) struct MidiSendBuffer {
+    /// The most events one block stages; every list below holds this many.
+    room: usize,
+    /// Events refused past `room` since the buffer was made.
+    events_dropped: u64,
     /// Plugin-side `api::MidiEvent` storage (the structs the pointer
     /// table points at).
     api_events: Vec<vst::api::MidiEvent>,
+    /// Reassembled SysEx messages, whose `system_data` points into
+    /// `sysex`'s buffer.
+    sysex_events: Vec<vst::api::SysExEvent>,
+    /// The block's events in staging order, as indices into `api_events`
+    /// or `sysex_events`: the pointer table is built from it once every
+    /// event is in place, so a growing Vec cannot move an event a pointer
+    /// was already taken to.
+    order: Vec<Staged>,
+    /// Reassembles SysEx7 packets and owns the bytes a `SysExEvent` points
+    /// at. Reserved at construction; an open message carries across blocks.
+    sysex: SysExAssembler,
     /// Pointer table — one `*mut api::Event` per event, laid out into
     /// the trailing flexible-array region of `header`.
     event_ptrs: Vec<*mut vst::api::Event>,
@@ -143,25 +169,37 @@ pub(crate) struct MidiSendBuffer {
     header: Vec<u64>,
 }
 
+/// Where one staged event lives.
+#[derive(Clone, Copy)]
+enum Staged {
+    Midi(usize),
+    SysEx(usize),
+}
+
 // SAFETY: the raw pointers inside `event_ptrs` point into this struct's own
-// `api_events` Vec; both are never shared between threads. Same justification
+// `api_events` / `sysex_events` Vecs, and the ones in `sysex_events` into
+// `sysex`'s buffer; none is shared between threads. Same justification
 // as `RenderScratch` — callers serialize externally.
 unsafe impl Send for MidiSendBuffer {}
 unsafe impl Sync for MidiSendBuffer {}
 
-/// Default per-block event capacity. Most blocks carry 0–8 events; the
-/// hot path does not touch the allocator at all unless a block exceeds this,
-/// in which case it grows once and the new capacity sticks.
-const DEFAULT_EVENT_CAPACITY: usize = 64;
-
 impl MidiSendBuffer {
+    /// A buffer for a block's whole MIDI cap: every event a plugin node
+    /// delivers (out of process, `midi_from_wire` keeps at most that many).
     pub(crate) fn new() -> Self {
-        Self::with_capacity(DEFAULT_EVENT_CAPACITY)
+        Self::with_capacity(MIDI_STACK_CAPACITY)
     }
 
+    /// A buffer staging at most `events` events a block. Control thread:
+    /// allocates.
     pub(crate) fn with_capacity(events: usize) -> Self {
         let mut buf = Self {
+            room: events,
+            events_dropped: 0,
             api_events: Vec::with_capacity(events),
+            sysex_events: Vec::with_capacity(events),
+            order: Vec::with_capacity(events),
+            sysex: SysExAssembler::reserved(),
             event_ptrs: Vec::with_capacity(events),
             header: Vec::with_capacity(header_words(events)),
         };
@@ -172,7 +210,9 @@ impl MidiSendBuffer {
     }
 
     /// Stage `midi_events` into the reusable buffers and return a raw
-    /// pointer to the populated `api::Events` header.
+    /// pointer to the populated `api::Events` header. Never allocates: an
+    /// event past the buffer's room is refused and counted (every SysEx
+    /// packet still reaches the assembler, so a message is never spliced).
     ///
     /// Returns `None` if no events convert successfully (in which case
     /// the caller skips dispatch entirely).
@@ -189,35 +229,60 @@ impl MidiSendBuffer {
             return None;
         }
 
-        // Reuse api_events storage. `clear()` doesn't drop the backing
-        // allocation; the subsequent `extend` reuses it as long as
-        // capacity holds.
+        // Reuse the storage. `clear()` doesn't drop the backing
+        // allocation; the pushes below reuse it as long as capacity holds.
+        // The last block's SysEx bytes are released here: the plugin had to
+        // copy them before its `process_events` returned.
         self.api_events.clear();
+        self.sysex_events.clear();
+        self.order.clear();
+        self.sysex.begin_block();
         for ev in midi_events {
-            if let Some(api) = from_midi(ev) {
-                self.api_events.push(api);
+            let step = self.sysex.push(ev);
+            let full = self.order.len() == self.room;
+            match step {
+                SysExStep::NotSysEx => {
+                    if let Some(api) = from_midi(ev) {
+                        if full {
+                            self.events_dropped += 1;
+                            continue;
+                        }
+                        self.order.push(Staged::Midi(self.api_events.len()));
+                        self.api_events.push(api);
+                    }
+                }
+                SysExStep::Held => {}
+                SysExStep::Complete(_) if full => self.events_dropped += 1,
+                SysExStep::Complete(message) => {
+                    let event = self.sysex_event(ev, message);
+                    self.order.push(Staged::SysEx(self.sysex_events.len()));
+                    self.sysex_events.push(event);
+                }
             }
         }
-        if self.api_events.is_empty() {
+        if self.order.is_empty() {
             return None;
         }
 
-        let num_events = self.api_events.len();
+        let num_events = self.order.len();
 
-        // Rebuild pointer table in place.
+        // Rebuild pointer table in place, now that no Vec will move again.
         self.event_ptrs.clear();
-        for ev in self.api_events.iter_mut() {
-            self.event_ptrs
-                .push(ev as *mut api::MidiEvent as *mut api::Event);
+        for staged in &self.order {
+            let ptr = match *staged {
+                Staged::Midi(i) => {
+                    &mut self.api_events[i] as *mut api::MidiEvent as *mut api::Event
+                }
+                Staged::SysEx(i) => {
+                    &mut self.sysex_events[i] as *mut api::SysExEvent as *mut api::Event
+                }
+            };
+            self.event_ptrs.push(ptr);
         }
 
-        // Grow the header buffer if the event count exceeds the size it was
-        // last given. `resize` keeps prior capacity when shrinking is implied,
-        // so steady-state is allocation-free.
+        // The header was sized for `room` events at construction.
         let words = header_words(num_events);
-        if self.header.len() < words {
-            self.header.resize(words, 0);
-        }
+        debug_assert!(words <= self.header.len());
         // Zero only the bytes that will be touched — keeps Drop semantics clean.
         // (Header carries 2 i32s + a pointer table; the rest doesn't
         // matter because the plugin reads `num_events` first.)
@@ -237,6 +302,42 @@ impl MidiSendBuffer {
                 *base.add(i) = *ptr;
             }
             Some(p as *mut api::Events)
+        }
+    }
+}
+
+impl MidiSendBuffer {
+    /// SysEx messages dropped whole since this buffer was made: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
+    /// or left without their `END` by a later `START`.
+    pub(crate) fn sysex_dropped(&self) -> u64 {
+        self.sysex.dropped()
+    }
+
+    /// Events refused since this buffer was made because a block staged more
+    /// than its room ([`MIDI_STACK_CAPACITY`]); a refused SysEx is a whole
+    /// message.
+    pub(crate) fn events_dropped(&self) -> u64 {
+        self.events_dropped
+    }
+
+    /// The `SysExEvent` for a reassembled message, at `end`'s frame.
+    fn sysex_event(&self, end: &MidiEvent, message: SysExRef) -> vst::api::SysExEvent {
+        let bytes = self.sysex.message(message);
+        vst::api::SysExEvent {
+            event_type: vst::api::EventType::SysEx,
+            byte_size: std::mem::size_of::<vst::api::SysExEvent>() as i32,
+            // Saturating, as `from_midi` does: a wrapped offset is an
+            // out-of-bounds index inside the plugin.
+            delta_frames: i32::try_from(end.frame_offset).unwrap_or(i32::MAX),
+            _flags: 0,
+            data_size: bytes.len() as i32,
+            _reserved1: 0,
+            // The plugin reads, never writes, these bytes; VST2 types the
+            // pointer `*mut`. The buffer never grows and nothing in it moves
+            // until the next `stage`.
+            system_data: bytes.as_ptr().cast_mut(),
+            _reserved2: 0,
         }
     }
 }
@@ -521,5 +622,137 @@ mod tests {
             assert_eq!(buf.event_ptrs.capacity(), ptr_cap);
             assert_eq!(buf.header.capacity(), hdr_cap);
         }
+    }
+
+    /// What the plugin reads from a staged `api::Events`: per event, its
+    /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
+    /// through the pointers it is handed.
+    fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {
+        use vst::api;
+        let mut out = Vec::new();
+        unsafe {
+            let events = &*events;
+            let table = events.events.as_ptr();
+            for i in 0..events.num_events as usize {
+                let ev = *table.add(i);
+                match (*ev).event_type {
+                    api::EventType::Midi => {
+                        let m = &*(ev as *const api::MidiEvent);
+                        out.push((m.delta_frames, m.midi_data.to_vec()));
+                    }
+                    api::EventType::SysEx => {
+                        let x = &*(ev as *const api::SysExEvent);
+                        assert_eq!(x.byte_size as usize, std::mem::size_of::<api::SysExEvent>());
+                        let bytes = std::slice::from_raw_parts(x.system_data, x.data_size as usize);
+                        out.push((x.delta_frames, bytes.to_vec()));
+                    }
+                    _ => panic!("unexpected event type"),
+                }
+            }
+        }
+        out
+    }
+
+    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.into_iter()
+            .map(|e| e.with_frame_offset(frame))
+            .collect()
+    }
+
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![0xF0];
+        v.extend_from_slice(payload);
+        v.push(0xF7);
+        v
+    }
+
+    /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
+    /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
+    /// arrives in the second.
+    ///
+    /// Mutation (run): `stage` sending every event through `from_midi` (no
+    /// reassembly) → no SysEx event → fails.
+    #[test]
+    fn a_multi_packet_sysex_reaches_the_plugin_whole() {
+        let body: Vec<u8> = (0..40).collect();
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(0),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let mut midi = vec![note.with_frame_offset(1)];
+        midi.extend(sysex_packets(&body, 3));
+        midi.push(note.with_frame_offset(4));
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage(&midi).expect("events staged"));
+        assert_eq!(
+            staged,
+            vec![
+                (1, vec![0x90, 60, 100]),
+                (3, framed(&body)),
+                (4, vec![0x90, 60, 100]),
+            ]
+        );
+
+        let long: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
+        let packets = sysex_packets(&long, 0);
+        let (first, second) = packets.split_at(10);
+        assert!(buf.stage(first).is_none(), "nothing before END");
+        let staged = read_staged(buf.stage(second).expect("events staged"));
+        assert_eq!(staged, vec![(0, framed(&long))]);
+        assert_eq!(buf.sysex_dropped(), 0);
+    }
+
+    /// **Staging a block's whole MIDI cap does not allocate, and an event
+    /// past it is refused and counted.** Notes and complete SysEx messages
+    /// fill every list (`api_events`, `sysex_events`, `order`, `header`) to
+    /// [`MIDI_STACK_CAPACITY`]; then one more of each.
+    ///
+    /// Mutation (run): `new()` reserving the old 64 events → the lists grow
+    /// inside the gate → aborts. Mutation (run): the `full` refusal removed
+    /// → the lists grow past their room → aborts.
+    #[test]
+    fn staging_the_whole_cap_does_not_allocate() {
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(0),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let single = sysex_packets(&[1, 2, 3], 0);
+        assert_eq!(single.len(), 1);
+        // Half notes, half one-packet SysEx, then one past the cap of each.
+        let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY / 2 + 1)
+            .flat_map(|_| [note, single[0]])
+            .collect();
+        let mut buf = MidiSendBuffer::new();
+        let mut staged = 0;
+        assert_no_alloc::assert_no_alloc(|| {
+            let events = buf.stage(&midi).expect("events staged");
+            staged = unsafe { (*events).num_events } as usize;
+        });
+        assert_eq!(staged, MIDI_STACK_CAPACITY);
+        assert_eq!(buf.events_dropped(), 2);
+        assert_eq!(buf.sysex_dropped(), 0);
+    }
+
+    /// **A SysEx left open by a later `START` is dropped whole and counted**,
+    /// and the later one arrives.
+    ///
+    /// Mutation (run): the assembler's `START` not abandoning the open run
+    /// → the two are spliced and delivered → fails.
+    #[test]
+    fn a_start_left_open_is_dropped_and_counted() {
+        let a: Vec<u8> = (0..30).collect();
+        let mut midi = sysex_packets(&a, 0);
+        midi.truncate(2);
+        midi.extend(sysex_packets(&[1, 2, 3, 4, 5, 6, 7], 2));
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage(&midi).expect("events staged"));
+        assert_eq!(staged, vec![(2, framed(&[1, 2, 3, 4, 5, 6, 7]))]);
+        assert_eq!(buf.sysex_dropped(), 1);
     }
 }

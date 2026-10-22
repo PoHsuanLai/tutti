@@ -30,7 +30,9 @@
 
 pub use tutti_midi_types::MidiEvent;
 
-use tutti_plugin_types::{is_usable, note_id_for, NoteExpressionType, NoteExpressionValue};
+use tutti_plugin_types::{
+    is_usable, note_id_for, NoteExpressionType, NoteExpressionValue, SysExRef,
+};
 
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
 use vst3::Steinberg::Vst::Event_::EventTypes_;
@@ -209,6 +211,19 @@ pub struct DataEvent {
     pub bytes: [u8; 16],
 }
 
+/// A complete SysEx message, `0xF0 … 0xF7`, too long for [`DataEvent`]'s
+/// inline bytes: the event list reassembled it from SysEx7 packets, and its
+/// bytes live in the list's reassembly buffer, which [`bytes`](Self::bytes)
+/// indexes. The plugin receives it as a `kDataEvent` with the `kMidiSysEx`
+/// subtype. Input only: a plugin's output never produces one.
+#[derive(Debug, Clone, Copy)]
+pub struct SysExEvent {
+    /// Bus, frame offset (its `END` packet's) and the `kDataEvent` type.
+    pub header: EventHeader,
+    /// Where the message lies in the owning event list's SysEx buffer.
+    pub bytes: SysExRef,
+}
+
 /// Polyphonic pressure (per-note aftertouch).
 #[derive(Debug, Clone, Copy)]
 pub struct PolyPressureEvent {
@@ -347,6 +362,8 @@ pub enum Vst3Event {
     NoteOff(NoteOffEvent),
     /// Raw bytes: CC, pitch bend, program change, channel pressure or SysEx.
     Data(DataEvent),
+    /// A reassembled SysEx message held in the event list's buffer.
+    SysEx(SysExEvent),
     /// Per-note aftertouch.
     PolyPressure(PolyPressureEvent),
     /// A continuous per-note expression value.
@@ -376,6 +393,7 @@ impl Vst3Event {
             Vst3Event::NoteOn(e) => &e.header,
             Vst3Event::NoteOff(e) => &e.header,
             Vst3Event::Data(e) => &e.header,
+            Vst3Event::SysEx(e) => &e.header,
             Vst3Event::PolyPressure(e) => &e.header,
             Vst3Event::NoteExpression(e) => &e.header,
             Vst3Event::NoteExpressionText(e) => &e.header,
@@ -428,11 +446,13 @@ impl Vst3Event {
 /// the VST3 struct fields they feed are exactly those widths.
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "arena offsets and text lengths are bounded by MAX_EVENT_TEXT_LEN"
+    reason = "arena offsets and text lengths are bounded by MAX_EVENT_TEXT_LEN, \
+              and a SysEx message by SYSEX_MESSAGE_CAPACITY"
 )]
 pub(crate) fn to_c_event<'a>(
     event: &'a Vst3Event,
     text_arena: &'a [u16],
+    sysex: &'a [u8],
 ) -> vst3::Steinberg::Vst::Event {
     let header = event.header();
 
@@ -483,6 +503,19 @@ pub(crate) fn to_c_event<'a>(
                 size: e.size,
                 r#type: e.event_type,
                 bytes: e.bytes.as_ptr(),
+            };
+        }
+        Vst3Event::SysEx(e) => {
+            // A null pointer with size 0 when the ref is out of range
+            // (defensive: staging keeps it valid).
+            let (bytes, size) = match sysex.get(e.bytes.range()) {
+                Some(slice) => (slice.as_ptr(), slice.len() as u32),
+                None => (std::ptr::null(), 0),
+            };
+            out.__field0.data = vst3::Steinberg::Vst::DataEvent {
+                size,
+                r#type: K_DATA_TYPE_MIDI_SYSEX,
+                bytes,
             };
         }
         Vst3Event::PolyPressure(e) => {
@@ -722,10 +755,11 @@ fn tuning_expression(bend: f32, range: f32) -> f64 {
 /// its 16-bit velocity. MIDI-2 per-note pitch bend and per-note controllers
 /// become [`Vst3Event::NoteExpression`] events bound to the matching voice via
 /// [`note_id_for`]. Everything else (CC, channel-wide pitch bend, program change,
-/// channel pressure, SysEx) becomes a [`Vst3Event::Data`] event, which is a
-/// 3-byte MIDI-1 frame by definition, so that branch stays on the byte form.
-/// Returns `None` only for messages with no MIDI-1 byte representation and no
-/// per-note mapping.
+/// channel pressure, a single-packet SysEx) becomes a [`Vst3Event::Data`]
+/// event, which is a MIDI-1 frame by definition, so that branch stays on the
+/// byte form. Returns `None` for messages with no MIDI-1 byte representation
+/// and no per-note mapping, and for a packet of a multi-packet SysEx, which
+/// the event list reassembles into a [`Vst3Event::SysEx`].
 /// Text sizes are bounded as in `to_c_event`.
 ///
 /// **`cast_possible_wrap` is deliberately NOT allowed here.** Listing it to
@@ -870,63 +904,29 @@ pub(crate) fn vst3_event_from_midi(
     }
 
     // SysEx → DataEvent with the kMidiSysEx subtype. VST3 wants the complete
-    // message *with* its 0xF0 … 0xF7 delimiters, carried inline in the flat
-    // event's fixed `[u8; 16]` slot.
-    //
-    // Single-packet (`SINGLE`) SysEx is fully supported: the payload fits a UMP
-    // type-0x3 packet (≤ 6 bytes → ≤ 8 with delimiters), well within 16 bytes.
-    //
-    // Multi-packet SysEx is a KNOWN LIMITATION, not silently swallowed:
-    // reassembling Start/Continue/End fragments into one message requires an
-    // owned, growable buffer that spans events — which would force
-    // [`Vst3Event`] to heap-allocate and lose its `Copy` + no-alloc RT
-    // guarantee (see `vst3_event_is_copy` and the RT no-alloc harness). Rather
-    // than pay that cost for a rare case, it degrades explicitly:
-    // - `START`  → forward the opening 0xF0 + first-packet bytes (no 0xF7; the
-    //   message is deliberately left unterminated because the rest didn't fit).
-    //   A plugin sees the message *begin*; it is not dropped without trace.
-    // - `CONTINUE` / `END` → dropped, because a mid/tail fragment carries no
-    //   0xF0 start and cannot stand alone as a VST3 Data event.
-    //
-    // TODO: if a plugin that streams large SysEx (firmware/sample dumps) turns
-    // up, add a per-instance reassembly buffer *outside* the per-event converter
-    // (in the block-scoped EventList) and emit one complete Data event on `END`.
+    // message *with* its 0xF0 … 0xF7 delimiters. A single-packet (`SINGLE`)
+    // message fits the inline `[u8; 16]` (≤ 6 bytes, ≤ 8 framed). A packet of
+    // a multi-packet message cannot stand alone: the event list reassembles
+    // those (`SysExAssembler`) and stages the whole message as
+    // `Vst3Event::SysEx`, so here they map to nothing.
     if let Some((status, payload, n)) = event.sysex7_payload() {
-        use tutti_midi_types::ump::{SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START};
-        if status == SYSEX7_STATUS_SINGLE {
-            let mut bytes = [0u8; 16];
-            bytes[0] = 0xF0;
-            bytes[1..1 + n].copy_from_slice(&payload[..n]);
-            bytes[1 + n] = 0xF7;
-            return Some(Vst3Event::Data(DataEvent {
-                header: EventHeader {
-                    event_type: K_DATA_EVENT,
-                    ..header
-                },
-                size: (n + 2) as u32,
-                event_type: K_DATA_TYPE_MIDI_SYSEX,
-                bytes,
-            }));
+        use tutti_midi_types::ump::SYSEX7_STATUS_SINGLE;
+        if status != SYSEX7_STATUS_SINGLE {
+            return None;
         }
-        if status == SYSEX7_STATUS_START {
-            // Best-effort: forward the message opening so a multi-packet SysEx is
-            // not dropped silently. Intentionally unterminated (no 0xF7) — the
-            // continuation fragments can't be reassembled here (see above).
-            let mut bytes = [0u8; 16];
-            bytes[0] = 0xF0;
-            bytes[1..1 + n].copy_from_slice(&payload[..n]);
-            return Some(Vst3Event::Data(DataEvent {
-                header: EventHeader {
-                    event_type: K_DATA_EVENT,
-                    ..header
-                },
-                size: (n + 1) as u32,
-                event_type: K_DATA_TYPE_MIDI_SYSEX,
-                bytes,
-            }));
-        }
-        // CONTINUE / END fragments carry no 0xF0 start and can't stand alone.
-        return None;
+        let mut bytes = [0u8; 16];
+        bytes[0] = 0xF0;
+        bytes[1..1 + n].copy_from_slice(&payload[..n]);
+        bytes[1 + n] = 0xF7;
+        return Some(Vst3Event::Data(DataEvent {
+            header: EventHeader {
+                event_type: K_DATA_EVENT,
+                ..header
+            },
+            size: (n + 2) as u32,
+            event_type: K_DATA_TYPE_MIDI_SYSEX,
+            bytes,
+        }));
     }
 
     // Data event: the VST3 carrier for any 3-byte MIDI-1 message. VST3 defines
@@ -993,6 +993,7 @@ fn registered_controller_expression(
 /// MIDI-1 bytes. A plugin-emitted [`Vst3Event::LegacyMidiCcOut`] is rebuilt as
 /// the CC / pitch-bend / poly-pressure UMP message it stands for. Returns `None`
 /// for the non-MIDI events (note-expression value/text/int, chord, scale), for
+/// a reassembled [`Vst3Event::SysEx`] (input-only), for
 /// `Data` payloads shorter than 2 bytes, and for a SysEx too long for one UMP
 /// packet.
 /// A VST3 `i16` channel field as a 4-bit MIDI channel.
@@ -1087,6 +1088,9 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             return legacy_cc_to_midi(e, frame);
         }
         // Not channel-voice MIDI messages.
+        // Input-only, and its bytes are in the event list's buffer, which
+        // this conversion has no access to.
+        Vst3Event::SysEx(_) => return None,
         Vst3Event::NoteExpression(_)
         | Vst3Event::NoteExpressionText(_)
         | Vst3Event::Chord(_)
@@ -2245,38 +2249,19 @@ mod tests {
         assert_eq!(back.frame_offset, 7);
     }
 
+    /// **No packet of a multi-packet SysEx converts on its own**: a lone
+    /// `START` would hand the plugin an unterminated message. The event list
+    /// reassembles them (`com::event_list`'s SysEx tests pin that).
+    ///
+    /// Mutation (run): the old best-effort `START` forwarding restored → the
+    /// `START` converts → fails.
     #[test]
-    fn fragmented_sysex_start_forwards_opening_rest_dropped() {
-        // A multi-packet SysEx (>6 bytes) produces Start/Continue/End fragments.
-        // Reassembly across events is impossible without breaking the Copy/no-alloc
-        // event invariant, so the host degrades explicitly (not silently):
-        // the START fragment forwards the message opening (0xF0 + first bytes,
-        // deliberately unterminated), while CONTINUE/END — which carry no 0xF0
-        // start — are dropped.
-        use tutti_midi_types::ump::SYSEX7_STATUS_START;
-
+    fn a_sysex_fragment_does_not_convert_alone() {
         let mut frags = Vec::new();
         MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
         assert!(frags.len() > 1);
-
         for frag in &frags {
-            let (status, payload, n) = frag.sysex7_payload().expect("is a sysex7 packet");
-            match encode(frag) {
-                Some(Vst3Event::Data(d)) => {
-                    // Only the START fragment forwards, as the message opening.
-                    assert_eq!(status, SYSEX7_STATUS_START);
-                    assert_eq!(d.event_type, K_DATA_TYPE_MIDI_SYSEX);
-                    assert_eq!(d.bytes[0], 0xF0);
-                    assert_eq!(&d.bytes[1..1 + n], &payload[..n]);
-                    // Unterminated: no 0xF7 appended (the rest didn't fit).
-                    assert_eq!(d.size, (n + 1) as u32);
-                }
-                Some(other) => panic!("unexpected non-Data event: {other:?}"),
-                None => {
-                    // CONTINUE / END fragments are dropped — never START.
-                    assert_ne!(status, SYSEX7_STATUS_START);
-                }
-            }
+            assert!(encode(frag).is_none(), "fragment {frag:?} converted alone");
         }
     }
 
@@ -2332,7 +2317,7 @@ mod tests {
         assert_eq!(ev.header().event_type, K_CHORD_EVENT);
 
         // Encode to the C struct, pointing into the staging arena.
-        let c = to_c_event(&ev, &in_arena);
+        let c = to_c_event(&ev, &in_arena, &[]);
         assert_eq!(c.r#type, K_CHORD_EVENT);
         unsafe {
             assert_eq!(c.__field0.chord.root, 60);
@@ -2374,7 +2359,7 @@ mod tests {
 
         let mut out = TextArena::new();
         for (ev, expect_scale) in [(scale_ev, true), (text_ev, false)] {
-            let c = to_c_event(&ev, &in_arena);
+            let c = to_c_event(&ev, &in_arena, &[]);
             let decoded = unsafe { from_c_event(&c, &mut out) }.expect("decodes");
             if expect_scale {
                 let s = vst3_to_scale(&decoded, &out).expect("scale");
@@ -2400,7 +2385,7 @@ mod tests {
         };
         let ev = host.to_vst3_event();
         assert_eq!(ev.header().event_type, K_NOTE_EXPRESSION_INT_VALUE_EVENT);
-        let c = to_c_event(&ev, &[]);
+        let c = to_c_event(&ev, &[], &[]);
         let mut arena = TextArena::new();
         let decoded = unsafe { from_c_event(&c, &mut arena) }.expect("decodes");
         let back = vst3_to_note_expression_int(&decoded).expect("int expr");

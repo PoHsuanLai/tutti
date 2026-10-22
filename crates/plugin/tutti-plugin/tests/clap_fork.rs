@@ -1162,3 +1162,50 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
     };
     assert_eq!(bits(&serial), bits(&pooled));
 }
+
+/// **MIDI past a chunk's inline capacity is counted, not lost silently.** The
+/// out-of-process node sends a chunk's MIDI in an inline list of
+/// `MIDI_STACK_CAPACITY` (256); 300 note-ons on its event input in one
+/// 512-frame chunk send 256 and count the other 44 on its controls. A chunk
+/// within the cap adds nothing.
+///
+/// Mutation (run): the drop not counted (`fetch_add` removed from
+/// `PluginChunks::take`) → the count stays 0 → fails.
+#[test]
+fn midi_past_the_chunks_capacity_is_counted() {
+    use tutti_graph::contract::Direct;
+    use tutti_graph::{Event, Offset};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_plugin_types::MIDI_STACK_CAPACITY;
+
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    let controls = probe.client.controls();
+    let mut node = Direct::new(probe.client.bind(), SampleRate(SAMPLE_RATE), 512);
+    let notes = |n: usize| -> Vec<Event> {
+        (0..n)
+            .map(|i| {
+                let on = MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0xFFFF,
+                );
+                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.data)
+            })
+            .collect()
+    };
+    node.events(0, &notes(300));
+    node.block();
+    assert_eq!(
+        controls.dropped_midi_in(),
+        (300 - MIDI_STACK_CAPACITY) as u64
+    );
+    node.events(0, &notes(10));
+    node.block();
+    assert_eq!(
+        controls.dropped_midi_in(),
+        (300 - MIDI_STACK_CAPACITY) as u64
+    );
+}

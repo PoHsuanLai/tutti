@@ -182,6 +182,9 @@ pub struct Bound {
     /// The chunk's parameter changes: a slot per parameter of the plugin,
     /// sized at bind, sending changes only (`param_delivery`).
     params: param_delivery::ParamDelivery,
+    /// Counts the event input's MIDI a chunk had no room for (the
+    /// controls' [`dropped_midi_in`](PluginControls::dropped_midi_in)).
+    midi_in_dropped: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl std::fmt::Debug for Bound {
@@ -453,6 +456,7 @@ impl PluginClient<Unbound> {
             self.controls.delivery_counters(),
         );
         let meter = self.controls.meter.reader();
+        let midi_in_dropped = self.controls.midi_in_dropped_cell();
         let Self {
             bridge,
             descriptor,
@@ -496,6 +500,7 @@ impl PluginClient<Unbound> {
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),
                 params,
+                midi_in_dropped,
             },
         }
     }

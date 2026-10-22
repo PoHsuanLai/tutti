@@ -27,7 +27,7 @@
 //! shared cell like the others, and the node's `prepare` updates it for every
 //! holder.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
@@ -88,6 +88,9 @@ pub struct PluginControls {
     /// ([`missed_chunks`](Self::missed_chunks),
     /// [`chunk_in_flight_answered`](Self::chunk_in_flight_answered)).
     chunks: Arc<super::batcher::ChunkCounters>,
+    /// MIDI events on the node's event input that did not fit their chunk
+    /// ([`dropped_midi_in`](Self::dropped_midi_in)).
+    midi_in_dropped: Arc<AtomicU64>,
 }
 
 impl PluginControls {
@@ -106,7 +109,24 @@ impl PluginControls {
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
             delivery: Arc::default(),
             chunks: Arc::default(),
+            midi_in_dropped: Arc::default(),
         }
+    }
+
+    /// The cell the node counts the MIDI it could not send in, for the node.
+    pub(super) fn midi_in_dropped_cell(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.midi_in_dropped)
+    }
+
+    /// How many MIDI events on the node's event input were dropped since the
+    /// plugin was bound: a chunk carries at most
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY)
+    /// events to the plugin (its list is inline, so the audio thread never
+    /// allocates), and the rest of that chunk's are dropped here. Zero unless
+    /// the input fans in more MIDI than that in one chunk. RT-safe: one
+    /// relaxed load.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.midi_in_dropped.load(Ordering::Relaxed)
     }
 
     /// The cells the node's IPC pipeline reports to, for the node.

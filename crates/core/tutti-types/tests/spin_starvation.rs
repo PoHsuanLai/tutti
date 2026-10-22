@@ -52,7 +52,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tutti_types::{Participant, TaskGraph};
+use tutti_types::{BlockWaits, Participant, TaskGraph};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Policy {
@@ -142,7 +142,7 @@ fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Out
                 g.abort();
                 return;
             }
-            g.work(Participant::Helper(1), |t| {
+            g.work(Participant::Helper(1), BlockWaits::DEFAULT, |t| {
                 if t == 0 {
                     holding.store(true, Ordering::Release);
                     burn(iters);
@@ -179,7 +179,7 @@ fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Out
                 std::thread::sleep(Duration::from_micros(20));
             }
             let t = Instant::now();
-            g.work(Participant::Caller, |_| {});
+            g.work(Participant::Caller, BlockWaits::DEFAULT, |_| {});
             let wait = t.elapsed();
             // Back to `OTHER` before the scope joins the others.
             set_policy(Policy::Other);

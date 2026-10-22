@@ -37,6 +37,10 @@
 //! - `help` made not to record the generation it served → "index 1 ran
 //!   twice".
 //!
+//! When the close's budget became the gate's own (`JobGate::with_waits`,
+//! ignored under loom, so no ordering changed), the deleted wait and the
+//! exit's `Release` weakened were re-run: each still fails as recorded.
+//!
 //! The close's spin-then-yield is a scheduling change, not an ordering one:
 //! its progress check is the same `Acquire` load of `entered` the exit test
 //! makes, and loom's `spin_loop` and `yield_now` both just schedule another

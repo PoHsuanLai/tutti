@@ -731,8 +731,21 @@ impl TestPool {
         Self::build(participants, true)
     }
 
+    /// A pool whose gate holds `waits`, which it reports to the executor.
+    pub fn with_waits(participants: usize, waits: tutti_graph::BlockWaits) -> Arc<Self> {
+        Self::build_with(participants, false, waits)
+    }
+
     fn build(participants: usize, no_alloc: bool) -> Arc<Self> {
-        let gate = Arc::new(tutti_types::JobGate::new(participants));
+        Self::build_with(participants, no_alloc, tutti_graph::BlockWaits::DEFAULT)
+    }
+
+    fn build_with(
+        participants: usize,
+        no_alloc: bool,
+        waits: tutti_graph::BlockWaits,
+    ) -> Arc<Self> {
+        let gate = Arc::new(tutti_types::JobGate::with_waits(participants, waits));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let helpers = (1..participants)
             .map(|_| {
@@ -768,6 +781,10 @@ impl tutti_graph::Pool for TestPool {
         } else {
             self.gate.run(job, || {});
         }
+    }
+
+    fn waits(&self) -> tutti_graph::BlockWaits {
+        self.gate.waits()
     }
 }
 

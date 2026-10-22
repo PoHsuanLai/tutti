@@ -14,8 +14,11 @@ block's real-time budget (`frames / sample_rate`, each graph block at the
 rate it ran at) and record it into a `tutti_core::LoadMeter`: the last
 block's load, a mean smoothed over `LOAD_MEAN_TIME_CONSTANT` (0.3 s) of
 audio, the peak since the last `take()` (take-and-reset, so a UI polling at
-frame rate sees every spike once), and the count of blocks over budget
-(load above 1.0) since the start or `reset()`. A load is render time over
+frame rate sees every spike once; `peek()` reads without taking, and the
+reset is shared by every holder of the `Arc`), the count of blocks over
+budget (load above 1.0), and the count of blocks rendered silent because
+the graph was held on the control side (`silenced`, not timed), both since
+the start or `reset()`. A load is render time over
 budget: above 1.0 the block missed its deadline. Always on; the audio side
 is two monotonic clock reads and a few relaxed atomics per call, with no
 allocation or lock.
@@ -28,7 +31,37 @@ migration: nothing existing changed.
 `tutti-session`'s `render_load` bench (`--features
 synth,sampler,convolution,midi`) renders a heavy scene of the engine's own
 nodes block by block and reports mean, p99 and max load, blocks over budget
-and max/mean, serial and on the worker pool.
+and max/mean, serial and on the worker pool, for three variants: sampler
+voices transposed by varispeed (the main scene), the same voices
+pitch-shifted through the phase vocoder, and the main scene without the
+convolution reverb.
+
+### Changed — the in-block waits are per-pool settings, both timed
+
+How long the audio thread waits on a helper before yielding its core once,
+and how long a helper with nothing to take spins before leaving the block,
+were constants in `tutti-types` (`CALLER_YIELD_AFTER`, 250 µs, and
+`HELPER_SPINS`, a count of 1024 waits whose duration differed by CPU). Both
+are now `tutti_types::BlockWaits` (re-exported as `tutti_graph::BlockWaits`
+and `tutti_core::BlockWaits`), set per pool, and both are durations. The
+defaults keep the old behaviour: 250 µs, and 15 µs, which is what 1024
+helper waits took where it was measured (`BlockWaits::helper_leave_after`'s
+docs).
+
+| Was | Now |
+|---|---|
+| — | `tutti_core::WorkerPoolBuilder::caller_yield_after(Duration)` and `::helper_leave_after(Duration)`, beside `spin` and `idle` |
+| — | `tutti_types::BlockWaits { caller_yield_after, helper_leave_after }`, `BlockWaits::DEFAULT` (also `Default`) |
+| `tutti_graph::Pool` | new required method `waits(&self) -> BlockWaits`, read once per block by the executor. Required rather than defaulted so a pool that wraps another cannot silently drop its inner pool's waits |
+| — | `tutti_types::JobGate::with_waits(participants, waits)` and `JobGate::waits()`; `JobGate::new` uses the defaults |
+| `TaskGraph::work(who, run)` | `TaskGraph::work(who, waits, run)` |
+
+Migration: a direct caller of `TaskGraph::work` passes its pool's
+`BlockWaits` (or `BlockWaits::DEFAULT`). Every `Pool` implementation adds
+`waits`: a pool that wraps another returns `inner.waits()`; one built on a
+`JobGate` returns `gate.waits()` (building the gate with `with_waits` for
+non-default waits); one with no settings of its own returns
+`BlockWaits::DEFAULT`.
 
 ### Changed — `BusStripNode` declares `Cost::Light`
 

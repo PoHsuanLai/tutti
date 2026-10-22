@@ -98,8 +98,9 @@ impl ParamRamp {
     /// over `duration`. The value is in the foreign unit's own terms (see the
     /// type docs).
     ///
-    /// A hosted plugin's node starts the ramp from the value it last gave
-    /// the parameter (or the segment it is on). On a parameter the node has
+    /// A hosted plugin's node starts the ramp from where the parameter
+    /// stood at the end of the frame before the ramp's (the segment it was
+    /// on, else the value the node last gave it). On a parameter the node has
     /// never given a value it knows no start, and the ramp is a jump to
     /// `target` on its frame, whatever its duration and shape.
     pub fn foreign(id: u32, target: f32, duration: Samples) -> Self {

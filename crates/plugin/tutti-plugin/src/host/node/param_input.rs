@@ -23,9 +23,9 @@ use super::segment_points::SegmentPoints;
 /// - A ramp moves from where its parameter stood at the end of the frame
 ///   before its own (the segment in flight there, else the value the node
 ///   last gave it; an event earlier on the ramp's frame does not count, as
-///   in a param port) to its target, along its shape over its duration: it is sent as
-///   the [`ParamSegment`] that makes, so its points are a segment's, its
-///   first a corner. A ramp with no duration, or on a parameter the node
+///   in a param port) to its target, along its shape over its duration: it
+///   is sent as the [`ParamSegment`] that makes, so its points are a
+///   segment's, its first a corner. A ramp with no duration, or on a parameter the node
 ///   has given no value yet, is one point, its target on its frame. Either
 ///   way it stops a segment in flight on its parameter.
 /// - A segment is its value on its frame, then its value on the play-grid
@@ -349,6 +349,104 @@ mod tests {
         for ((o, v), (wo, wv)) in points.iter().zip(want) {
             assert_eq!(*o, wo, "{points:?}");
             assert!((v - wv).abs() <= TOL, "frame {o}: {v} vs {wv}: {points:?}");
+        }
+    }
+
+    /// The queue of `address` in the chunk being filled, as `(frame, value)`.
+    fn queue(params: &mut ParamDelivery, address: ParamAddress) -> Vec<(i32, f64)> {
+        params
+            .changes()
+            .queues
+            .iter()
+            .find(|q| q.param_id == address)
+            .map(|q| {
+                q.points
+                    .iter()
+                    .map(|p| (p.sample_offset, p.value.get()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `take` over a whole `len`-frame block of `events`, its play clock
+    /// starting at 1.
+    fn walk(
+        events: &[Event],
+        len: usize,
+        segments: &mut SegmentPoints,
+        params: &mut ParamDelivery,
+    ) {
+        let env = env(len, 1);
+        let cx = Cx {
+            env: &env,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        };
+        take(events, 0, len, 0, &cx, false, segments, params, |_, _| {});
+    }
+
+    /// **A parameter the plugin's list did not name keeps its start too.**
+    /// Opaque id 9 on a delivery that lists nothing, never given a value: a
+    /// step to 0.4 and then a ramp to 1 over 4 frames, both on frame 10.
+    /// The step learns a spare slot; the ramp still finds no start before
+    /// its frame, so it is a jump to 1, as on a listed parameter.
+    ///
+    /// Mutation (run): `frame_start` not learning the slot (an address
+    /// with none read straight from `stood`, uncached) → the ramp starts
+    /// from the step's 0.4 and sends 0.55 and 1 on frame 13 → fails.
+    #[test]
+    fn an_unlisted_parameter_keeps_its_start_on_the_frame() {
+        let address = ParamAddress::Opaque(ParamId::new(9));
+        let mut params =
+            ParamDelivery::new(std::iter::empty(), Arc::new(DeliveryCounters::default()));
+        params.prepare(64);
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
+        params.begin();
+        segments.begin(64);
+        let off = |i: usize| Offset::new(i, Samples(64)).expect("inside");
+        let events = [
+            Event::ramp(off(10), ParamRamp::foreign(9, 0.4, Samples(0))),
+            Event::ramp(off(10), ParamRamp::foreign(9, 1.0, Samples(4))),
+        ];
+        walk(&events, 64, &mut segments, &mut params);
+        assert_eq!(
+            queue(&mut params, address),
+            vec![(10, f64::from(0.4f32)), (10, 1.0)]
+        );
+    }
+
+    /// **A frame's start is the walk's own.** A step to 0.2 on frame 10 of
+    /// one block, whose chunk does not go (the value is owed); a ramp to 1
+    /// over 4 frames on frame 10 of the next block starts from that 0.2:
+    /// the owed value on frame 0, 0.4 on frame 10, 1 on frame 13.
+    ///
+    /// Mutation (run): `begin_walk` a no-op → the second block's frame 10
+    /// reads the first block's start (none: nothing was given yet) and the
+    /// ramp jumps to 1 on frame 10 → fails.
+    #[test]
+    fn a_frame_start_is_not_kept_from_an_earlier_block() {
+        let address = ParamAddress::Opaque(ParamId::new(7));
+        let mut params = ParamDelivery::new([address], Arc::new(DeliveryCounters::default()));
+        params.prepare(64);
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
+        params.begin();
+        segments.begin(64);
+        let off = |i: usize| Offset::new(i, Samples(64)).expect("inside");
+        let step = [Event::ramp(off(10), ParamRamp::foreign(7, 0.2, Samples(0)))];
+        walk(&step, 64, &mut segments, &mut params);
+        params.handed_off(false);
+        params.begin();
+        segments.begin(64);
+        let ramp = [Event::ramp(off(10), ParamRamp::foreign(7, 1.0, Samples(4)))];
+        walk(&ramp, 64, &mut segments, &mut params);
+        let got = queue(&mut params, address);
+        let want = [(0, 0.2), (10, 0.4), (13, 1.0)];
+        assert_eq!(got.len(), want.len(), "{got:?}");
+        for ((o, v), (wo, wv)) in got.iter().zip(want) {
+            assert_eq!(*o, wo, "{got:?}");
+            assert!((v - wv).abs() <= 1e-6, "frame {o}: {v} vs {wv}: {got:?}");
         }
     }
 

@@ -667,15 +667,17 @@ impl ParamDelivery {
     /// Where `address` stood before any event on frame `frame` of this
     /// walk: `stood` at the first call for the address and frame, that same
     /// value at every later one, so an event earlier on the frame (a step,
-    /// a segment) does not move a ramp's start. An address with no slot
-    /// gets `stood` (its points are refused anyway). Allocation-free.
+    /// a segment) does not move a ramp's start. An address the delivery
+    /// has not met learns a spare slot here, as its first point would, so
+    /// its start is kept like a listed one's; with no slot free it gets
+    /// `stood`, and its points are refused. Allocation-free.
     pub(crate) fn frame_start(
         &mut self,
         address: ParamAddress,
         frame: usize,
         stood: impl FnOnce(&Self) -> Option<f32>,
     ) -> Option<f32> {
-        let Ok(i) = self.slots.binary_search_by(|s| s.address.cmp(&address)) else {
+        let Some(i) = self.slot(address) else {
             return stood(self);
         };
         let key = Some((self.walk, frame));

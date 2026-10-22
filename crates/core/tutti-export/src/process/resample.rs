@@ -121,8 +121,14 @@ mod streaming {
         inner: FftFixedIn<f32>,
         channels: usize,
         ratio: f64,
-        /// Input frames not yet consumed, per channel.
+        /// Input frames per channel, consumed up to `head`.
         carry: Vec<Vec<f32>>,
+        /// Frames at the front of every `carry` plane already handed to
+        /// rubato. A chunk advances it instead of shifting the plane down, so a
+        /// push of the whole signal (the two-pass path) costs O(N) rather than
+        /// one memmove of the rest per chunk; `drain` drops the consumed
+        /// prefix once, on its way out.
+        head: usize,
         /// Output frames still to be discarded as filter warm-up.
         skip: usize,
         /// Real input frames fed so far (excludes the flush padding), which is
@@ -164,6 +170,7 @@ mod streaming {
                 channels,
                 ratio: target_hz / source_hz,
                 carry: vec![Vec::new(); channels],
+                head: 0,
                 skip,
                 fed: 0,
                 emitted: 0,
@@ -213,9 +220,19 @@ mod streaming {
         }
 
         fn drain(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
+            let result = self.drain_chunks(out, flushing);
+            // Drop the consumed prefix once per call, not once per chunk.
+            for c in self.carry.iter_mut() {
+                c.drain(..self.head);
+            }
+            self.head = 0;
+            result
+        }
+
+        fn drain_chunks(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
             loop {
                 let need = self.inner.input_frames_next();
-                let have = self.carry.first().map_or(0, |c| c.len());
+                let have = self.carry.first().map_or(0, |c| c.len()) - self.head;
                 if have < need {
                     if !flushing {
                         return Ok(());
@@ -225,18 +242,17 @@ mod streaming {
                         return Ok(());
                     }
                     for c in self.carry.iter_mut() {
-                        c.resize(need, 0.0);
+                        c.resize(self.head + need, 0.0);
                     }
                 }
 
+                let chunk = self.head..self.head + need;
                 for (c, scratch) in self.in_scratch.iter_mut().enumerate() {
                     scratch.clear();
-                    scratch.extend_from_slice(&self.carry[c][..need]);
+                    scratch.extend_from_slice(&self.carry[c][chunk.clone()]);
                 }
                 let produced = self.inner.process(&self.in_scratch, None)?;
-                for c in self.carry.iter_mut() {
-                    c.drain(..need);
-                }
+                self.head += need;
 
                 // Drop warm-up frames at the head before anything is kept.
                 let produced_len = produced.first().map_or(0, |p| p.len());
@@ -250,7 +266,7 @@ mod streaming {
                 }
                 self.emitted += take;
 
-                if flushing && self.carry.first().is_none_or(|c| c.is_empty()) {
+                if flushing && self.carry.first().is_none_or(|c| c.len() == self.head) {
                     return Ok(());
                 }
             }
@@ -288,6 +304,185 @@ pub(crate) fn resample_rendered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streaming resampler as it was before its input carry kept a head
+    /// offset: every chunk shifted the rest of the carry down
+    /// (`drain(..need)`), which made a whole-signal push quadratic. Kept here
+    /// only as the reference for `the_head_offset_carry_is_bit_identical_to_the_shifting_one`.
+    mod shifting {
+        use super::super::*;
+        use rubato::{FftFixedIn, Resampler as _};
+
+        pub(super) struct OldResampler {
+            inner: FftFixedIn<f32>,
+            channels: usize,
+            ratio: f64,
+            carry: Vec<Vec<f32>>,
+            skip: usize,
+            fed: usize,
+            emitted: usize,
+            in_scratch: Vec<Vec<f32>>,
+        }
+
+        impl OldResampler {
+            pub(super) fn new(
+                channels: usize,
+                source_rate: SampleRate,
+                target_rate: SampleRate,
+                chunk: ChunkSize,
+            ) -> Result<Self> {
+                let (source_hz, target_hz) = (source_rate.get(), target_rate.get());
+                let inner = FftFixedIn::<f32>::new(
+                    source_hz.round() as usize,
+                    target_hz.round() as usize,
+                    chunk.chunk().get(),
+                    chunk.sub_chunks(),
+                    channels,
+                )?;
+                let skip = inner.output_delay();
+                Ok(Self {
+                    inner,
+                    channels,
+                    ratio: target_hz / source_hz,
+                    carry: vec![Vec::new(); channels],
+                    skip,
+                    fed: 0,
+                    emitted: 0,
+                    in_scratch: vec![Vec::new(); channels],
+                })
+            }
+
+            pub(super) fn push(&mut self, planes: &[Vec<f32>], out: &mut [Vec<f32>]) -> Result<()> {
+                let n = planes.first().map_or(0, |p| p.len());
+                for (c, p) in planes.iter().enumerate().take(self.channels) {
+                    self.carry[c].extend_from_slice(p);
+                }
+                self.fed += n;
+                self.drain(out, false)
+            }
+
+            pub(super) fn finish(&mut self, out: &mut [Vec<f32>]) -> Result<()> {
+                // Enough silence to clear the filter's delay plus one whole chunk,
+                // so the final partial chunk is emitted too.
+                let pad = self.inner.output_delay() + self.inner.input_frames_next();
+                let silence: Vec<Vec<f32>> = vec![vec![0.0; pad]; self.channels];
+                for (c, p) in silence.iter().enumerate().take(self.channels) {
+                    self.carry[c].extend_from_slice(p);
+                }
+                self.drain(out, true)
+            }
+
+            fn budget(&self) -> usize {
+                let want = (self.fed as f64 * self.ratio).round() as usize;
+                want.saturating_sub(self.emitted)
+            }
+
+            fn drain(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
+                loop {
+                    let need = self.inner.input_frames_next();
+                    let have = self.carry.first().map_or(0, |c| c.len());
+                    if have < need {
+                        if !flushing {
+                            return Ok(());
+                        }
+                        // Pad the last partial chunk so rubato can emit it.
+                        if have == 0 {
+                            return Ok(());
+                        }
+                        for c in self.carry.iter_mut() {
+                            c.resize(need, 0.0);
+                        }
+                    }
+
+                    for (c, scratch) in self.in_scratch.iter_mut().enumerate() {
+                        scratch.clear();
+                        scratch.extend_from_slice(&self.carry[c][..need]);
+                    }
+                    let produced = self.inner.process(&self.in_scratch, None)?;
+                    for c in self.carry.iter_mut() {
+                        c.drain(..need);
+                    }
+
+                    // Drop warm-up frames at the head before anything is kept.
+                    let produced_len = produced.first().map_or(0, |p| p.len());
+                    let drop = self.skip.min(produced_len);
+                    self.skip -= drop;
+                    // Emit at most what is still owed, so the flush padding that
+                    // pushed the tail out does not itself become output.
+                    let take = (produced_len - drop).min(self.budget());
+                    for (c, p) in produced.iter().enumerate().take(out.len()) {
+                        out[c].extend_from_slice(&p[drop..drop + take]);
+                    }
+                    self.emitted += take;
+
+                    if flushing && self.carry.first().is_none_or(|c| c.is_empty()) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    /// **A refactor-equivalence check of one algorithm, not a render compared
+    /// with a render.** The carry's head offset changes only where the input
+    /// waits between chunks, never which frames rubato is handed or what is
+    /// kept of its output, so the output must be bit for bit what the
+    /// shifting carry (kept above as `shifting::OldResampler`) produces.
+    /// Covered: a whole-signal push (the two-pass path), uneven block pushes
+    /// (the streaming encode), every preset chunk size, up- and down-sampling,
+    /// and lengths that end mid-chunk.
+    ///
+    /// Mutation (run): read each chunk from the start of the carry instead
+    /// of the head (`let chunk = 0..need;`) → the outputs differ at the
+    /// second chunk of a whole-signal push (44.1→48 k, `N512`, n = 1000).
+    #[test]
+    fn the_head_offset_carry_is_bit_identical_to_the_shifting_one() {
+        let signal = |n: usize, c: usize| -> Vec<f32> {
+            (0..n)
+                .map(|i| ((i * 7 + c * 13) % 101) as f32 / 101.0 - 0.5)
+                .collect()
+        };
+        for (from, to) in [(44_100u32, 48_000u32), (48_000, 44_100), (48_000, 96_000)] {
+            for chunk in ChunkSize::PRESETS {
+                for n in [0usize, 1, 1000, 4096, 10_007] {
+                    let planes: Vec<Vec<f32>> = (0..2).map(|c| signal(n, c)).collect();
+                    for block in [None, Some(64usize), Some(333)] {
+                        let mut new = Resampler::new(2, from.into(), to.into(), chunk).unwrap();
+                        let mut old =
+                            shifting::OldResampler::new(2, from.into(), to.into(), chunk).unwrap();
+                        let (mut a, mut b) = (vec![Vec::new(); 2], vec![Vec::new(); 2]);
+                        match block {
+                            None => {
+                                new.push(&planes, &mut a).unwrap();
+                                old.push(&planes, &mut b).unwrap();
+                            }
+                            Some(len) => {
+                                for start in (0..n).step_by(len) {
+                                    let end = (start + len).min(n);
+                                    let part: Vec<Vec<f32>> =
+                                        planes.iter().map(|p| p[start..end].to_vec()).collect();
+                                    new.push(&part, &mut a).unwrap();
+                                    old.push(&part, &mut b).unwrap();
+                                }
+                            }
+                        }
+                        new.finish(&mut a).unwrap();
+                        old.finish(&mut b).unwrap();
+                        let bits = |p: &[Vec<f32>]| -> Vec<Vec<u32>> {
+                            p.iter()
+                                .map(|c| c.iter().map(|s| s.to_bits()).collect())
+                                .collect()
+                        };
+                        assert_eq!(
+                            bits(&a),
+                            bits(&b),
+                            "{from}->{to} {chunk:?} n={n} block={block:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn resample(planes: &[Vec<f32>], from: u32, to: u32, chunk: ChunkSize) -> Vec<Vec<f32>> {
         // The `u32`s keep the call sites below reading as plain rates; the

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the two-pass export's sample-rate conversion is linear
+
+`render_normalized_to_file` with a `Resample` pushes the whole render into
+the converter at once, and the converter shifted the rest of its input down
+after every chunk, so the conversion cost grew with the square of the
+duration. Its input now keeps a read offset and drops the consumed prefix
+once per call. The output is bit-identical. Nothing to migrate.
+
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 
 - **A clip plays every pass of a loop shorter than a block** (it played the

@@ -26,10 +26,8 @@
 //!
 //! # A FIFO, so every chunk is whole
 //!
-//! The calls the node is handed need not line up with chunks: the engine
-//! renders a device callback in 64-frame passes while a `Legacy` node is in
-//! the graph, a host may call in any lengths, and an export may render
-//! 100-frame blocks. Shipping each call as it came (a 36-frame submission,
+//! The calls the node is handed need not line up with chunks: a host may
+//! call in any lengths, and an export may render 100-frame blocks. Shipping each call as it came (a 36-frame submission,
 //! then a 64-frame one collecting it) would drop or zero-pad frames wherever
 //! consecutive lengths differ. So a
 //! call's input only ever fills the FIFO, a submission is always one whole

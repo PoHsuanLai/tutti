@@ -33,6 +33,12 @@ The input node stages each event's translation whole: past its 512 slots
 in a block, a translation is dropped in full rather than cut partway, and
 counted by the new `MidiInputControls::dropped_events()`.
 
+`MpeZoneConfig`'s default bend ranges were the wrong way round: a zone now
+starts with its master channel at ±2 semitones and its members at ±48, as
+MPE specifies (they were ±48 and ±2). `MpeZoneConfig::single_channel` keeps
+±2 for both. Migration: a caller that relied on the old defaults sets them
+with `with_master_pitch_bend_range` / `with_member_pitch_bend_range`.
+
 | Was | Now |
 |---|---|
 | `Vst3Event::from_midi(&MidiEvent)` | removed: it converted one event with no stream state. The plugin's event list (`EventList::update_from_sources`) encodes MIDI at the stream's bend ranges |

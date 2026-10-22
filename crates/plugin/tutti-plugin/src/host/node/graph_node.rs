@@ -9,6 +9,8 @@
 //! hands back its [`PluginControls`](super::PluginControls) and a fork source.
 //! Only [`Bound`] is either: an unbound client is not a node.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape, SortedEvents,
@@ -134,6 +136,7 @@ impl Node for PluginClient<Bound> {
             steady,
             segments,
             params,
+            midi_in_dropped,
         } = &mut c.state;
         out_events.clear();
 
@@ -160,6 +163,7 @@ impl Node for PluginClient<Bound> {
             indexed,
             segments,
             params,
+            midi_in_dropped,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -235,6 +239,8 @@ struct PluginChunks<'a> {
     segments: &'a mut SegmentPoints,
     /// The chunk's parameter changes: a queue per parameter, changes only.
     params: &'a mut ParamDelivery,
+    /// Counts the MIDI a chunk had no room for.
+    midi_in_dropped: &'a AtomicU64,
 }
 
 impl Chunks for PluginChunks<'_> {
@@ -271,7 +277,8 @@ impl Chunks for PluginChunks<'_> {
     /// passes on changes only (`param_delivery`); the walk is `param_input`'s,
     /// which the in-process VST2 node shares. Past the MIDI and harmony
     /// caps events are dropped: the lists are inline and cannot grow, so
-    /// nothing allocates on the audio thread.
+    /// nothing allocates on the audio thread. A dropped MIDI event is
+    /// counted ([`PluginControls::dropped_midi_in`](super::PluginControls::dropped_midi_in)).
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let Self {
             cx,
@@ -281,6 +288,7 @@ impl Chunks for PluginChunks<'_> {
             indexed,
             segments,
             params,
+            midi_in_dropped,
             ..
         } = self;
         let features = *features;
@@ -296,10 +304,14 @@ impl Chunks for PluginChunks<'_> {
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
                     // Past the cap the event is dropped (`MidiEventVec` is
-                    // inline and cannot grow).
-                    let _ = pending
+                    // inline and cannot grow), and counted.
+                    if pending
                         .midi
-                        .try_push(MidiEvent::from_ump(frame as u32, &ump.0));
+                        .try_push(MidiEvent::from_ump(frame as u32, &ump.0))
+                        .is_err()
+                    {
+                        midi_in_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);

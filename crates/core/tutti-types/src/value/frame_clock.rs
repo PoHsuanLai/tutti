@@ -289,20 +289,38 @@ impl FrameClock {
     /// single frames land, bit for bit: both find the same wrap frames and
     /// compute the same closed form.
     pub fn advance(&mut self, frames: Samples, looping: Option<LoopRange>) {
-        let target = self.at + frames;
+        let mut left = frames;
+        while let Some(rolled) = self.advance_to_wrap(left, looping) {
+            left = Samples(left.get() - rolled.get());
+        }
+    }
+
+    /// Rolls forward to the loop's next wrap, if it falls within `frames`:
+    /// returns the frames rolled, the clock on the wrap's frame at the
+    /// wrapped beat (as [`advance`](Self::advance) leaves it there).
+    /// Otherwise rolls all `frames` and returns `None`.
+    ///
+    /// For a reader that walks a block pass by pass: a wrap is at least a
+    /// frame after the last, so a block of `n` frames has at most `n`,
+    /// however short the loop.
+    pub fn advance_to_wrap(
+        &mut self,
+        frames: Samples,
+        looping: Option<LoopRange>,
+    ) -> Option<Samples> {
+        let (from, target) = (self.at, self.at + frames);
         if let Some(region) = looping {
-            if self.segment.frames_per_beat().is_some() {
-                while self.beat() < region.end() {
-                    let Some(wrap) = self.wrap_frame(region.end(), target) else {
-                        break;
-                    };
+            if self.segment.frames_per_beat().is_some() && self.beat() < region.end() {
+                if let Some(wrap) = self.wrap_frame(region.end(), target) {
                     let reached = self.segment.beat_at(wrap);
                     self.at = wrap;
                     self.restart(region.wrap(reached));
+                    return Some(Samples((wrap.get() - from.get()) as usize));
                 }
             }
         }
         self.at = target;
+        None
     }
 
     /// The first frame after this one, and no later than `limit`, whose beat
@@ -494,6 +512,42 @@ mod tests {
         let mut c = FrameClock::new(Beat(3.0), Bpm(90.0), SR);
         c.advance(Samples(32_000), behind);
         assert_eq!(c.beat(), Beat(4.0), "armed behind: plays on");
+    }
+
+    /// `advance_to_wrap` stops on each wrap and reports the frames it rolled,
+    /// and rolls the rest when no wrap falls in them; its stops add up to
+    /// `advance`, bit for bit. 4 beats at 90 BPM is 128 000 frames; a loop
+    /// of a third of a frame wraps on every frame.
+    ///
+    /// Mutation (run): report the frames to the frame before the wrap
+    /// (`wrap - from - 1`) → 127 999 → fails. Mutation (run): roll on past
+    /// the wrap to `frames` → the clock is not on the loop's start → fails.
+    #[test]
+    fn advance_to_wrap_stops_on_each_wrap() {
+        let four = LoopRange::new(0.0, 4.0);
+        let mut c = FrameClock::new(Beat(0.0), Bpm(90.0), SR);
+        assert_eq!(
+            c.advance_to_wrap(Samples(200_000), four),
+            Some(Samples(128_000))
+        );
+        assert_eq!(c.beat(), Beat(0.0), "on the wrap's frame, at the start");
+        assert_eq!(c.advance_to_wrap(Samples(96_000), four), None);
+        assert_eq!(c.beat(), Beat(3.0), "no wrap: every frame rolled");
+
+        // A third of a frame at 90 BPM and 48 kHz.
+        let tiny = LoopRange::new(1.0, 1.0 + 1.0 / 96_000.0);
+        let mut walked = FrameClock::new(Beat(1.0), Bpm(90.0), SR);
+        let mut whole = walked;
+        let mut stops = 0;
+        let mut left = 64;
+        while let Some(rolled) = walked.advance_to_wrap(Samples(left), tiny) {
+            assert_eq!(rolled, Samples(1), "a wrap a frame");
+            left -= rolled.get();
+            stops += 1;
+        }
+        assert_eq!(stops, 64);
+        whole.advance(Samples(64), tiny);
+        assert_eq!(walked.beat(), whole.beat());
     }
 
     /// After N blocks at any tempo and rate, the beat equals the closed form

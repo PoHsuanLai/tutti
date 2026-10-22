@@ -25,6 +25,7 @@
 //! live node and its fork read the transport the same way: from the block's
 //! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
@@ -82,7 +83,7 @@ impl Node for InProcessVst2Client {
         // No clamp and no size check: `prepare` sized the scratch to the
         // prepared `MaxBlock`, and a block is never longer.
         // The event input: its MIDI, in its (sorted) order, past the cap
-        // dropped (the list is inline and cannot grow); its parameter events
+        // dropped and counted (the list is inline and cannot grow); its parameter events
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
         self.midi.clear();
@@ -93,6 +94,7 @@ impl Node for InProcessVst2Client {
             SortedEvents::EMPTY
         };
         let midi = &mut self.midi;
+        let midi_in_dropped = &self.midi_in_dropped;
         param_input::take(
             events.as_slice(),
             0,
@@ -104,11 +106,16 @@ impl Node for InProcessVst2Client {
             &mut self.params,
             |e, _| match e.kind {
                 EventKind::Midi(Ump(data)) => {
-                    // Past the cap the event is dropped.
-                    let _ = midi.try_push(MidiEvent {
-                        frame_offset: e.offset.get(),
-                        data,
-                    });
+                    // Past the cap the event is dropped, and counted.
+                    if midi
+                        .try_push(MidiEvent {
+                            frame_offset: e.offset.get(),
+                            data,
+                        })
+                        .is_err()
+                    {
+                        midi_in_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
                 // parameter events for itself; a plugin re-sends nothing.
@@ -237,6 +244,7 @@ impl IntoNode for InProcessVst2Client {
 pub struct InProcessVst2Controls {
     meter: PluginMeter,
     delivery: Arc<DeliveryCounters>,
+    midi_in_dropped: Arc<AtomicU64>,
 }
 
 impl InProcessVst2Controls {
@@ -261,6 +269,16 @@ impl InProcessVst2Controls {
         self.meter.clone()
     }
 
+    /// How many MIDI events on the node's event input were dropped since the
+    /// plugin was loaded: a block hands the plugin at most
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY)
+    /// events (its list is inline, so the audio thread never allocates), and
+    /// the rest of that block's are dropped. Zero unless the input fans in
+    /// more MIDI than that in one block. RT-safe: one relaxed load.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.midi_in_dropped.load(Ordering::Relaxed)
+    }
+
     /// What the node has done with the parameter events on its event input
     /// since the plugin was loaded: points sent (changes only), blocks whose
     /// changes went a block late (the instance was locked), points dropped
@@ -282,6 +300,7 @@ impl InProcessVst2Client {
         InProcessVst2Controls {
             meter: self.meter(),
             delivery: self.params.counters(),
+            midi_in_dropped: Arc::clone(&self.midi_in_dropped),
         }
     }
 

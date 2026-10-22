@@ -369,3 +369,427 @@ fn a_note_lands_on_its_frame_at_ninety_bpm() {
         vec![(32_000, word(on(60))), (96_000, word(on(62)))]
     );
 }
+
+/// **A loop shorter than a block plays every pass the block holds.** The
+/// loop is 100 frames (beats [0, 100 / 24 000)); note 60 is on at loop frame
+/// 10 and off at 60. Two 512-frame blocks, the second from where the first
+/// left the playhead (loop frame 12): the note plays on every pass, eleven
+/// times, and is ended within each.
+///
+/// Mutation (run): walk only the first wrap of a segment (the pass loop
+/// broken after one iteration) → the first block plays passes 0 and 1 only →
+/// fails. Mutation (run): the continuity check's `next` wrapped once rather
+/// than modulo the loop → the second block reads as a jump and the note held
+/// across the block edge is ended at its first frame → fails.
+#[test]
+fn a_loop_shorter_than_a_block_plays_every_pass() {
+    let clip = MidiClipNode::new([at(10, on(60)), at(60, off(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let lp = Some(LoopRange {
+        start: Beat(0.0),
+        end: beat_of(100),
+    });
+    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    exec.process(512, &looping(0), &[], &mut []);
+    exec.process(512, &looping(12), &[], &mut []);
+    let mut want: Vec<(u64, u32)> = (0..11)
+        .map(|k| (10 + 100 * k, word(on(60))))
+        .chain((0..10).map(|k| (60 + 100 * k, word(off(60)))))
+        .collect();
+    want.sort_unstable();
+    assert_eq!(*seen.lock().unwrap(), want);
+}
+
+/// **A note started twice and ended once leaves nothing sounding.** A key is
+/// held or not: the second note-on of note 60 (frame 20, while it holds) is
+/// preceded by a note-off on its frame, so a receiver that stacks a voice per
+/// note-on still has one. The one note-off (frame 30) is the first note's,
+/// already ended, and is swallowed: the second note sounds on until the seek
+/// at frame 64 ends it.
+///
+/// Mutation (run): the clip's event visit writing each event as it is (no
+/// `HeldNotes::play`) → the stream is on, on, off: a stacking receiver keeps
+/// a voice the clip no longer holds, and the seek ends nothing → fails.
+#[test]
+fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
+    let clip = MidiClipNode::new([at(10, on(60)), at(20, on(60)), at(30, off(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    exec.process(64, &rolling(48_000), &[], &mut []);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        *seen,
+        vec![
+            (10, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (64, word(off(60))),
+        ]
+    );
+    // A receiver that starts a voice per note-on and ends one per note-off.
+    let voices = seen.iter().fold(0i32, |v, &(_, w)| match (w >> 20) & 0xf {
+        0x9 => v + 1,
+        0x8 => (v - 1).max(0),
+        _ => v,
+    });
+    assert_eq!(voices, 0, "nothing left sounding");
+}
+
+/// **Overlapping notes of one key: the newer keeps its full length.** A is
+/// on 0..100, B (the same key) on 50..150. The stream is A on at 0, A ended
+/// and B on at 50, and B's note-off at 150: nothing at 100 (A's own
+/// note-off, swallowed), so B is not cut there and no stray note-off
+/// follows it.
+///
+/// Mutation (run): a note-off pairs with the latest-listed note-on of its
+/// key (the pairing scan in `sorted` reversed) → the note-off at 100 is B's
+/// and cuts it → fails.
+/// Mutation (run): no note-off before the restart → B's note-on stacks on A
+/// → fails.
+#[test]
+fn overlapping_notes_of_one_key_keep_the_newer_whole() {
+    let clip = MidiClipNode::new([
+        at(0, on(60)),
+        at(50, on(60)),
+        at(100, off(60)),
+        at(150, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (0, word(on(60))),
+            (50, word(off(60))),
+            (50, word(on(60))),
+            (150, word(off(60))),
+        ]
+    );
+}
+
+/// **A note nested inside a longer one of the same key ends at its own
+/// end.** A is on 0..100, B on 20..50, each listed with its note-off. B's
+/// note-on ends A on its frame; B's note-off at 50 ends the key; A's own
+/// note-off at 100 is swallowed, so nothing follows.
+///
+/// Mutation (run): the pairing dropped (every note-off of no note, written
+/// as it comes) → a stray note-off at 100 → fails. Mutation (run): the
+/// pairing scan in `sorted` reversed (latest-listed note-on first) → A's
+/// note-off is paired to B and B's to A: B's note-off at 50 is swallowed and
+/// B sounds to 100 → fails.
+#[test]
+fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
+    let clip = MidiClipNode::new([
+        at(0, on(60)),
+        at(100, off(60)),
+        at(20, on(60)),
+        at(50, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (0, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (50, word(off(60))),
+        ]
+    );
+}
+
+/// **Three overlapping notes of one key: the newest sounds to its end, and
+/// no stray note-off follows.** A on 0..30, B on 10..40, C on 20..50. Each
+/// note-on ends the one sounding; A's and B's note-offs (30, 40) are
+/// swallowed, C's ends the key at 50.
+///
+/// Mutation (run): a note-off ends its key whoever owns it (the
+/// `owner[key] == note` check dropped) → A's note-off cuts C at 30 → fails.
+/// Mutation (run): a restart not taking the key (`owner[key] = note` dropped
+/// from the held branch of `HeldNotes::play`) → A still owns the key, and
+/// its note-off cuts C at 30 → fails.
+#[test]
+fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {
+    let clip = MidiClipNode::new([
+        at(0, on(60)),
+        at(30, off(60)),
+        at(10, on(60)),
+        at(40, off(60)),
+        at(20, on(60)),
+        at(50, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (0, word(on(60))),
+            (10, word(off(60))),
+            (10, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (50, word(off(60))),
+        ]
+    );
+}
+
+/// **A key's owner starts over at a loop wrap.** A 100-frame loop, six
+/// passes: A on
+/// 10..30, B on 50 and off past the loop's end, so B holds the key at every
+/// wrap and the wrap ends it. Each pass then plays A whole: A's note-on owns
+/// the key again, and its note-off at 30 ends it.
+///
+/// Mutation (run): a note-on of an unheld key not taking it → A's note-off
+/// is swallowed, and A sounds to 50 → fails. Mutation (run): that note-on
+/// taking the key only when it has no owner, with `release` leaving the
+/// owner set → the first pass is right, but after the wrap the owner is
+/// still B and A sounds on to B's note-on → fails.
+#[test]
+fn a_keys_owner_starts_over_at_a_loop_wrap() {
+    let clip = MidiClipNode::new([
+        at(10, on(60)),
+        at(30, off(60)),
+        at(50, on(60)),
+        at(150, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    // Three passes, then a block from the loop's start (the third wrap falls
+    // on the first block's edge, and is ended on the next block's first frame).
+    for _ in 0..2 {
+        exec.process(
+            300,
+            &looping_at(120.0, Beat(0.0), Beat(0.0), beat_of(100)),
+            &[],
+            &mut [],
+        );
+    }
+    let want: Vec<(u64, u32)> = (0..6)
+        .flat_map(|k| {
+            let p = 100 * k;
+            [
+                (p + 10, word(on(60))),
+                (p + 30, word(off(60))),
+                (p + 50, word(on(60))),
+                (p + 100, word(off(60))),
+            ]
+        })
+        .filter(|&(f, _)| f < 600)
+        .collect();
+    assert_eq!(*seen.lock().unwrap(), want);
+}
+
+/// A loop of `[start, end)` beats under `tempo`, rolling from `beat`.
+fn looping_at(tempo: f64, beat: Beat, start: Beat, end: Beat) -> Transport {
+    Transport::new(true, Bpm(tempo), beat, Some(LoopRange { start, end }))
+}
+
+/// **A pass that ends exactly on a block's edge ends what it held at the
+/// next block's first frame.** A 100-frame loop, 500-frame blocks: note 60 on
+/// at loop frame 95 and never off, so every wrap ends it. The fifth wrap of
+/// the first block falls on its end (frame 500); the next block starts on
+/// the loop's start, which reads as continuous, and still ends the note on
+/// its first frame.
+///
+/// Mutation (run): `wraps_at_end` left false for a pass after the first →
+/// the note held across frame 500 is not ended there → fails.
+#[test]
+fn a_pass_ending_on_a_block_edge_ends_what_it_held() {
+    let clip = MidiClipNode::new([at(95, on(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    exec.process(
+        500,
+        &looping_at(120.0, Beat(0.0), Beat(0.0), beat_of(100)),
+        &[],
+        &mut [],
+    );
+    exec.process(
+        500,
+        &looping_at(120.0, Beat(0.0), Beat(0.0), beat_of(100)),
+        &[],
+        &mut [],
+    );
+    let offs: Vec<u64> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|&&(_, w)| w == word(off(60)))
+        .map(|&(f, _)| f)
+        .collect();
+    assert_eq!(offs, (1..10).map(|k| 100 * k).collect::<Vec<u64>>());
+}
+
+/// **A tempo change inside a block re-times the passes after it.** A
+/// 100-frame loop at 120 BPM (beats [0, 100 / 24 000)); note 60 on at loop
+/// frame 10, off at 60. At frame 250 (loop frame 50) the tempo doubles, so a
+/// pass is 50 frames: the note-off still owed in that pass lands 5 frames
+/// on (255), the loop wraps at 275, and each 50-frame pass after plays the
+/// note 5 frames in and ends it 30 frames in.
+///
+/// Mutation (run): every segment walked with the block's first transport
+/// (`block.transport` for `seg.transport` in `Walk::segment`) → the passes
+/// after the change keep the old tempo's length → fails.
+#[test]
+fn a_tempo_change_inside_a_block_re_times_the_passes() {
+    let clip = MidiClipNode::new([at(10, on(60)), at(60, off(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(
+            Offset::new(250, Samples(512)).unwrap(),
+            looping_at(240.0, beat_of(50), Beat(0.0), beat_of(100)),
+        )
+        .unwrap();
+    exec.process_with_changes(
+        512,
+        &looping_at(120.0, Beat(0.0), Beat(0.0), beat_of(100)),
+        &changes,
+        &[],
+        &mut [],
+    );
+    let seen = seen.lock().unwrap();
+    let frames = |w: u32| -> Vec<u64> {
+        seen.iter()
+            .filter(|&&(_, x)| x == w)
+            .map(|&(f, _)| f)
+            .collect()
+    };
+    assert_eq!(
+        frames(word(on(60))),
+        vec![10, 110, 210, 280, 330, 380, 430, 480]
+    );
+    assert_eq!(
+        frames(word(off(60))),
+        vec![60, 160, 255, 305, 355, 405, 455, 505]
+    );
+}
+
+/// **Every pass lands where the host's clock reaches its beats**, at a tempo
+/// and a loop that are no whole number of frames (97 BPM at 48 kHz, a loop
+/// of 0.00126 beat ≈ 37.4 frames), over four 512-frame blocks, each started
+/// where the clock stands. The reference is `FrameClock` walked frame by
+/// frame (an analytic walk, not a render): a note fires on the first frame
+/// whose beat reaches it, and on a wrap's frame for a beat the wrap
+/// crossed.
+///
+/// Mutation (run): pass events placed from the loop's start rather than the
+/// beat the clock wrapped to (`from` = `l.start()`) → notes land a frame
+/// early where a wrap overshoots → fails.
+#[test]
+fn every_pass_lands_where_the_hosts_clock_reaches_it() {
+    use tutti_core::{FrameClock, LoopRange as Region, FRAME_TOLERANCE};
+    const TEMPO: f64 = 97.0;
+    let (start, end) = (Beat(3.0), Beat(3.00126));
+    let fpb = RATE * 60.0 / TEMPO;
+    let notes = [3.000_1, 3.000_5, 3.001_1];
+    let clip = MidiClipNode::new(
+        notes
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| TimedMidiEvent::new(Beat(b), on(60 + i as u8))),
+    );
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let region = Region::new(start, end).unwrap();
+    let mut clock = FrameClock::new(Beat(2.999), tutti_core::Bpm(TEMPO), SampleRate(RATE));
+    for _ in 0..4 {
+        exec.process(
+            512,
+            &looping_at(TEMPO, clock.beat(), start, end),
+            &[],
+            &mut [],
+        );
+        clock.advance(Samples(512), Some(region));
+    }
+
+    // The reference walk.
+    let tol = FRAME_TOLERANCE / fpb;
+    let mut want = Vec::new();
+    let mut walk = FrameClock::new(Beat(2.999), tutti_core::Bpm(TEMPO), SampleRate(RATE));
+    let mut prev: Option<f64> = None;
+    for f in 0..4 * 512u64 {
+        let b = walk.beat().get();
+        let wrapped = prev.is_some_and(|p| b < p);
+        for (i, &n) in notes.iter().enumerate() {
+            let reached = b + tol >= n;
+            let fresh = match prev {
+                None => true,
+                Some(_) if wrapped => n >= start.get(),
+                Some(p) => p + tol < n,
+            };
+            if reached && fresh {
+                want.push((f, word(on(60 + i as u8))));
+            }
+        }
+        prev = Some(b);
+        walk.advance(Samples(1), Some(region));
+    }
+    assert!(
+        want.len() > 100,
+        "the loop passes many times: {}",
+        want.len()
+    );
+    // The clip also ends what it held at each wrap; the reference counts
+    // only where each pass's note-ons land.
+    let ons: Vec<u32> = (0..notes.len()).map(|i| word(on(60 + i as u8))).collect();
+    let mut got: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|(_, w)| ons.contains(w))
+        .collect();
+    got.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(got, want);
+}
+
+/// Renders four 64-frame blocks of a clip with one note at the loop's start,
+/// rolling from it, on a thread, and returns what the sink saw, or `None`
+/// when that takes longer than a generous deadline.
+fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, u32)>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
+        let (_ed, mut exec, _c, seen) = rig(clip, 64);
+        let mut clock =
+            tutti_core::FrameClock::new(start, tutti_core::Bpm(120.0), SampleRate(RATE));
+        let region = tutti_core::LoopRange::new(start, end).unwrap();
+        for _ in 0..4 {
+            exec.process(
+                64,
+                &looping_at(120.0, clock.beat(), start, end),
+                &[],
+                &mut [],
+            );
+            clock.advance(Samples(64), Some(region));
+        }
+        let _ = tx.send(seen.lock().unwrap().clone());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10)).ok()
+}
+
+/// **A loop shorter than a frame costs one pass a frame.** A one-ulp loop
+/// at beat 4 (`4.0.next_up()`, a realistic host input) and a loop of 1e-300
+/// beat at 0: each frame wraps once, so the note at the loop's start plays
+/// on every frame (ended on the next), and four 64-frame blocks finish at
+/// once.
+///
+/// Mutation (run): the passes found by arithmetic on the loop's span (the
+/// walk before it followed the clock, which counted passes from an
+/// estimate that saturated near beat 0) → the 1e-300 loop never finishes
+/// (deadline) → fails. Mutation (run): the executor's `Playhead`
+/// unwrapping the next block's start one loop period at a time → the
+/// one-ulp loop never finishes → fails.
+#[cfg_attr(miri, ignore = "a wall-clock deadline")]
+#[test]
+fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
+    for (start, end) in [
+        (Beat(4.0), Beat(4.0f64.next_up())),
+        (Beat(0.0), Beat(1e-300)),
+    ] {
+        let seen = sub_frame_loop(start, end)
+            .unwrap_or_else(|| panic!("[{start:?}, {end:?}) did not finish"));
+        let ons = seen.iter().filter(|&&(_, w)| w == word(on(60))).count();
+        let offs = seen.iter().filter(|&&(_, w)| w == word(off(60))).count();
+        assert_eq!((ons, offs), (256, 255), "[{start:?}, {end:?})");
+    }
+}

@@ -268,9 +268,10 @@ impl Chunks for PluginChunks<'_> {
     /// The event input's events on these frames join the chunk at the
     /// chunk's frames: MIDI to its MIDI, a parameter ramp or segment (from
     /// a foreign control lane, `ControlLaneNode::for_foreign`) to its parameter
-    /// points, in this plugin's address model (a ramp as its target, a curve
-    /// segment as points along it until it lands: a plugin takes point
-    /// values; see `segment_points`), and a chord or scale to its
+    /// points, in this plugin's address model (a step as its target, a
+    /// ramp with a duration and a curve segment as points along it until it
+    /// lands: a plugin takes point values; see `param_input` and
+    /// `segment_points`), and a chord or scale to its
     /// harmony, for a plugin that takes sequencer context (no display text:
     /// the degrees are what a plugin acts on). Parameter points go through
     /// the node's delivery, which has a queue for every parameter and

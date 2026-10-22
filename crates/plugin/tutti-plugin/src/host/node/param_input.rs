@@ -20,9 +20,10 @@ use super::segment_points::SegmentPoints;
 /// The events of `events` (sorted by frame) on block frames
 /// `from..from + n`, placed on chunk frames from `at` on.
 ///
-/// - A ramp moves from where its parameter stands on the frame before its
-///   own (the segment in flight there, else the value the node last gave
-///   it) to its target, along its shape over its duration: it is sent as
+/// - A ramp moves from where its parameter stood at the end of the frame
+///   before its own (the segment in flight there, else the value the node
+///   last gave it; an event earlier on the ramp's frame does not count, as
+///   in a param port) to its target, along its shape over its duration: it is sent as
 ///   the [`ParamSegment`] that makes, so its points are a segment's, its
 ///   first a corner. A ramp with no duration, or on a parameter the node
 ///   has given no value yet, is one point, its target on its frame. Either
@@ -64,6 +65,7 @@ pub(crate) fn take(
     mut other: impl FnMut(&Event, usize),
 ) {
     let first = events.partition_point(|e| e.offset.index() < from);
+    params.begin_walk();
     // This call's frame `i` as the node's absolute frame.
     let base = cx.env.frame.get();
     let abs = |i: usize| base + i as u64;
@@ -100,12 +102,10 @@ pub(crate) fn take(
                 else {
                     continue;
                 };
-                // Where the parameter stands on the frame before the ramp's:
-                // a param port's ramp starts from there too.
-                let stands = abs(o)
-                    .checked_sub(1)
-                    .and_then(|f| segments.value_at(address, f))
-                    .or_else(|| params.current(address));
+                // Where the parameter stood at the end of the frame before
+                // the ramp's, whatever came earlier on its own frame: a
+                // param port's ramp starts from there too.
+                let stands = stood(segments, params, address, o, abs(o));
                 match stands {
                     Some(stands) if ramp.duration() > Samples(0) => {
                         let seg =
@@ -130,6 +130,9 @@ pub(crate) fn take(
                 let Some(address) = address(id, indexed) else {
                     continue;
                 };
+                // Noted before the segment moves it, for a ramp later on
+                // this frame.
+                stood(segments, params, address, o, abs(o));
                 segments.start(params, address, seg, abs(o), frame, grid(abs(o)));
             }
             EventKind::Midi(_) | EventKind::Harmony(_) => other(e, frame),
@@ -138,6 +141,25 @@ pub(crate) fn take(
         }
     }
     segments.points(params, abs(done), abs(from + n), at + done - from, grid);
+}
+
+/// Where `address` stood at the end of the frame before block frame `o`
+/// (absolute frame `abs`): the segment in flight there, else the value the
+/// node last gave it. Read at the parameter's first event on the frame and
+/// kept for the frame ([`ParamDelivery::frame_start`]), so a step or a
+/// segment earlier on the frame does not move it.
+fn stood(
+    segments: &SegmentPoints,
+    params: &mut ParamDelivery,
+    address: ParamAddress,
+    o: usize,
+    abs: u64,
+) -> Option<f32> {
+    params.frame_start(address, o, |params| {
+        abs.checked_sub(1)
+            .and_then(|f| segments.value_at(address, f))
+            .or_else(|| params.current(address))
+    })
 }
 
 /// The address a ramp's or segment's number names on a plugin that
@@ -256,6 +278,77 @@ mod tests {
         for ((o, v), (wo, wv)) in points.iter().zip(want) {
             assert_eq!(*o, wo, "{points:?}");
             assert!((v - wv).abs() <= TOL, "frame {o}: {v} vs {wv}");
+        }
+    }
+
+    /// **A ramp starts from where its parameter stood before its frame,**
+    /// whatever came earlier on that frame, as a param port's does. A step
+    /// to 0.2 at frame 0; at frame 10 a step to 0.4, then a ramp to 1 over
+    /// 4 frames: the ramp starts from 0.2, so frame 10 reads 0.4 (sent once,
+    /// changes only) and 13 reads 1. At frame 20 a segment, then a ramp to 0
+    /// over 2 frames: the ramp starts from the 1 held before the frame, half
+    /// way on frame 20.
+    ///
+    /// Mutation (run): `ParamDelivery::frame_start` reading `stood` at every
+    /// call (no per-frame value) → the ramp at 10 starts from 0.4 and sends
+    /// 0.55 → fails.
+    #[test]
+    fn a_ramp_starts_from_the_value_before_its_frame() {
+        const TOL: f64 = 1e-6;
+        let address = ParamAddress::Opaque(ParamId::new(7));
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut params = ParamDelivery::new([address], Arc::clone(&counters));
+        params.prepare(64);
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
+        params.begin();
+        segments.begin(64);
+        let len = 64;
+        let env = env(len, 1);
+        let cx = Cx {
+            env: &env,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        };
+        let off = |i: usize| Offset::new(i, Samples(len)).expect("inside");
+        let events = [
+            Event::ramp(off(0), ParamRamp::foreign(7, 0.2, Samples(0))),
+            Event::ramp(off(10), ParamRamp::foreign(7, 0.4, Samples(0))),
+            Event::ramp(off(10), ParamRamp::foreign(7, 1.0, Samples(4))),
+            Event::segment(
+                off(20),
+                ParamSegment::foreign(7, 0.9, 0.9, Samples(2), SegmentShape::Linear),
+            ),
+            Event::ramp(off(20), ParamRamp::foreign(7, 0.0, Samples(2))),
+        ];
+        take(
+            &events,
+            0,
+            len,
+            0,
+            &cx,
+            false,
+            &mut segments,
+            &mut params,
+            |_, _| {},
+        );
+        let points: Vec<(i32, f64)> = params.changes().queues[0]
+            .points
+            .iter()
+            .map(|p| (p.sample_offset, p.value.get()))
+            .collect();
+        let want = [
+            (0, 0.2),
+            (10, 0.4),
+            (13, 1.0),
+            (20, 0.9),
+            (20, 0.5),
+            (21, 0.0),
+        ];
+        assert_eq!(points.len(), want.len(), "{points:?}");
+        for ((o, v), (wo, wv)) in points.iter().zip(want) {
+            assert_eq!(*o, wo, "{points:?}");
+            assert!((v - wv).abs() <= TOL, "frame {o}: {v} vs {wv}: {points:?}");
         }
     }
 

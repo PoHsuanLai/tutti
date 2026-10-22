@@ -264,6 +264,11 @@ struct Slot {
     owed: bool,
     /// Its index in the [`DeliveredRecord`], or [`NO_MIRROR`].
     mirror: u32,
+    /// The walk and frame [`start`](Self::start) is for
+    /// ([`ParamDelivery::frame_start`]).
+    start_key: Option<(u64, usize)>,
+    /// Where the parameter stood before that frame's first event.
+    start: Option<f32>,
 }
 
 impl Slot {
@@ -275,6 +280,8 @@ impl Slot {
             queue: NO_QUEUE,
             owed: false,
             mirror: NO_MIRROR,
+            start_key: None,
+            start: None,
         }
     }
 }
@@ -445,6 +452,8 @@ pub(crate) struct ParamDelivery {
     changes: ParameterChanges,
     /// How many slots are `owed`.
     owed: usize,
+    /// Which event walk is running ([`begin_walk`](Self::begin_walk)).
+    walk: u64,
     /// The slots there is room for: the listed ones and the spares.
     room: usize,
     /// Points added to the chunk being filled.
@@ -514,6 +523,7 @@ impl ParamDelivery {
             staged: Vec::with_capacity(room),
             changes: ParameterChanges::reserved_bridged(room, UNPREPARED_POINTS),
             owed: 0,
+            walk: 0,
             room,
             chunk_points: 0,
             points: UNPREPARED_POINTS,
@@ -635,6 +645,37 @@ impl ParamDelivery {
             slot.sent
         };
         value.map(|v| v as f32)
+    }
+
+    /// A walk over one call's events begins (`param_input::take`): what
+    /// [`frame_start`](Self::frame_start) remembers is for its frames only.
+    pub(crate) fn begin_walk(&mut self) {
+        self.walk = self.walk.wrapping_add(1);
+    }
+
+    /// Where `address` stood before any event on frame `frame` of this
+    /// walk: `stood` at the first call for the address and frame, that same
+    /// value at every later one, so an event earlier on the frame (a step,
+    /// a segment) does not move a ramp's start. An address with no slot
+    /// gets `stood` (its points are refused anyway). Allocation-free.
+    pub(crate) fn frame_start(
+        &mut self,
+        address: ParamAddress,
+        frame: usize,
+        stood: impl FnOnce(&Self) -> Option<f32>,
+    ) -> Option<f32> {
+        let Ok(i) = self.slots.binary_search_by(|s| s.address.cmp(&address)) else {
+            return stood(self);
+        };
+        let key = Some((self.walk, frame));
+        if self.slots[i].start_key == key {
+            return self.slots[i].start;
+        }
+        let value = stood(self);
+        let slot = &mut self.slots[i];
+        slot.start_key = key;
+        slot.start = value;
+        value
     }
 
     /// A point for `address` at chunk frame `offset`, unless the value is
@@ -976,6 +1017,30 @@ mod tests {
         d.begin();
         d.point(op(2), 0, 0.375);
         assert!(chunk(&d).is_empty(), "delivered once, not again");
+    }
+
+    /// **`current` is the host's latest value in every state**: none before
+    /// a point, the chunk's latest while it is filled, that value while a
+    /// chunk that did not go owes it (between the hand-off and the next
+    /// `begin`, which no event walk sees, but a reader there must not get
+    /// the older delivered value), and it once handed over.
+    ///
+    /// Mutation (run): `current` without the `owed` case → `None` after the
+    /// refused hand-off → fails. Mutation (run): `current` reading only
+    /// `sent` → `None` while the chunk is filled → fails.
+    #[test]
+    fn current_is_the_latest_host_value_while_owed() {
+        let (mut d, _) = delivery(4);
+        d.begin();
+        assert_eq!(d.current(op(2)), None);
+        d.point(op(2), 5, 0.125);
+        d.point(op(2), 9, 0.375);
+        assert_eq!(d.current(op(2)), Some(0.375));
+        hand_off(&mut d, false);
+        assert_eq!(d.current(op(2)), Some(0.375), "owed");
+        d.begin();
+        hand_off(&mut d, true);
+        assert_eq!(d.current(op(2)), Some(0.375), "handed over");
     }
 
     /// **The record is what the host last delivered to the instance**: a

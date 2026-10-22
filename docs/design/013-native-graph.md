@@ -5559,11 +5559,15 @@ the source stands ("Shaped ramps" below).
   VST2 one) a ramp with a duration becomes the `ParamSegment::foreign`
   from where the parameter stands on the frame before it (the segment in
   flight there, else the value the node last gave it,
-  `ParamDelivery::current`) and is sent as that segment's points; a step,
+  `ParamDelivery::current`; read at the parameter's first event on the
+  frame, `ParamDelivery::frame_start`, so a step or segment earlier on the
+  ramp's frame does not move it, as in a param port) and is sent as that
+  segment's points; a step,
   or a ramp on a parameter the node has given no value yet, is its target
   on its frame. The start is the host's value, not the plugin's: an edit
   in the plugin's editor is not in it. Pinned by
-  `a_ramp_reaches_a_plugin_along_its_shape` (unit) and
+  `a_ramp_reaches_a_plugin_along_its_shape` and
+  `a_ramp_starts_from_the_value_before_its_frame` (unit) and
   `a_shaped_ramp_drives_a_plugin_parameter_along_its_shape` (CLAP).
 - **Ranges and modulation.** A segment is a source's raw value like a
   ramp's: through the source's shaping, summed with the base and the other
@@ -5600,9 +5604,9 @@ the source stands ("Shaped ramps" below).
 - **A hosted plugin** takes parameter points (CLAP and VST3 parameter
   changes are point values), so its node follows a segment that reaches
   its event input itself (`SegmentPoints`, `host/node/segment_points.rs`):
-  the segment's value on its event frame, then points along it in every
-  chunk (at `stride_for(chunk)` and on the chunk's last frame, as
-  `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
+  the segment's value on its event frame, then points along it on every
+  frame whose play-clock count is a multiple of 32 (doc 014 §5.3) and on
+  each chunk's last frame, and its end value on
   the frame it arrives (`ParamSegment::arrives_after`), after which the
   plugin holds it. A later ramp or segment on the parameter stops it on
   its frame. **Bounds:** one slot per parameter address, as many as the
@@ -5675,8 +5679,8 @@ the source stands ("Shaped ramps" below).
   the live state and seeds the fork's delivery with it, as
   `PluginForkSource::capture` does. Counters are on the node's controls,
   now `InProcessVst2Controls` (its meter cell, as before, and
-  `param_delivery()`), and `Plugin::automation` builds a VST2 node's
-  `PluginAutomation` (index addresses). `Vst2Instance::{get_parameter,
+  `param_delivery()`); a foreign control lane reaches its parameters by
+  index (`ParamAddr::Id` read as `ParamAddress::Index`). `Vst2Instance::{get_parameter,
   set_parameter}` bound-checked through `get_info()`, which clones the
   plugin's `Info` strings: they read the count from the load-time
   snapshot now, so the audio thread can call them (this also reached the

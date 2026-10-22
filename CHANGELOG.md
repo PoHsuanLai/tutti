@@ -22,7 +22,8 @@ A hosted plugin is now told everything its transport snapshot can know:
   change. A tempo change sharing a chunk with a stop or a start is counted
   at one of the two tempos: off by up to `chunk · |1 − ratio|` frames
   (about 4 of 1 024 at 120 → 121 BPM) until the next re-seat. VST2
-  `samplePos`, VST3 `projectTimeSamples` and AU's sample time read it. CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
+  `samplePos`, VST3 `projectTimeSamples` and AU's sample time read it.
+  CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
   same time over the rate; it was the beat's time at the current tempo,
   which jumped at every tempo change.
 - **Host clock.** New `TransportInfo::system_time_ns`: nanoseconds on the
@@ -79,6 +80,36 @@ still or started there) or jumped; `Playhead`'s rule).
 Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
 `ContentScale::IDENTITY` where the window's scale is not known, to
 `open_editor`.
+
+### Added — a DSP-load meter on the engine
+
+`Engine::process` and `process_segment` now time each call against its
+block's real-time budget (`frames / sample_rate`, each graph block at the
+rate it ran at) and record it into a `tutti_core::LoadMeter`: the last
+block's load, a mean smoothed over `LOAD_MEAN_TIME_CONSTANT` (0.3 s) of
+audio, the peak since the last `take()` (take-and-reset, so a UI polling at
+frame rate sees every spike once; `peek()` reads without taking, and the
+reset is shared by every holder of the `Arc`), the count of blocks over
+budget (load above 1.0), and the count of blocks rendered silent because
+the graph was held on the control side (`silenced`, not timed), both since
+the start or `reset()`. A load is render time over
+budget: above 1.0 the block missed its deadline. Always on; the audio side
+is two monotonic clock reads and a few relaxed atomics per call, with no
+allocation or lock.
+
+Read it from `Engine::load_meter`, `tutti_session::Session::load_meter`
+(offline and device sessions; `None` on a detached one),
+`bevy_tutti::graph::AudioGraphRes::load_meter`, or `tutti::core`. No
+migration: nothing existing changed.
+
+`tutti-session`'s `render_load` bench (`--features
+synth,sampler,convolution,midi`) renders a heavy scene of the engine's own
+nodes block by block and reports mean, p99 and max load, blocks over budget
+and max/mean, serial and on the worker pool, for four variants: sampler
+voices transposed by varispeed (the main scene), the same voices
+pitch-shifted through the phase vocoder, each with and without the
+convolution reverb, with each configuration's mean load by block position
+in the 512-frame cycle.
 
 ### Changed — a streaming voice's loop is forwarded from the control thread
 

@@ -314,3 +314,25 @@ fn a_voice_plays_in_time_at_256_frame_blocks() {
 fn a_voice_plays_in_time_at_512_frame_blocks() {
     a_voice_plays_in_time(512);
 }
+
+/// An offline session's [`Session::render`] feeds its load meter, one block
+/// per call; a detached session has no engine and no meter.
+///
+/// Mutation (run): `SessionBuilder::session` leaving `load` at `None` for
+/// an offline engine → fails.
+#[test]
+fn an_offline_render_feeds_the_load_meter() {
+    let s = offline();
+    let meter = Arc::clone(s.load_meter().expect("an offline engine"));
+    let mut block = vec![0.0f32; 128 * 2];
+    for _ in 0..4 {
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    }
+    let r = meter.take();
+    assert_eq!(r.blocks, 4);
+    assert!(r.mean > 0.0, "a render takes some time");
+    let detached = Session::builder()
+        .build_detached(SampleRate(RATE))
+        .expect("builds");
+    assert!(detached.load_meter().is_none());
+}

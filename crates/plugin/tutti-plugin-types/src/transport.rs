@@ -143,19 +143,16 @@ pub struct TransportPosition {
     ///
     /// The engine's plugin node keeps it as state, as CLAP's
     /// [`seconds`](Self::seconds) (the same time, in frames, rounded): it
-    /// rolls by the frames rendered while the transport plays, through tempo
-    /// changes, holds while it is stopped (a stop, and a start where it
-    /// stopped, continue it), and is re-seated from the playhead's beat at
-    /// the tempo in force (`beats * 60 / tempo * sample_rate`) only at a jump:
-    /// the first block, a seek (stopped or playing), a start somewhere other
-    /// than where it stood, a loop wrap, a loop edit that moves the
-    /// playhead, or a sample-rate change (a loop edit that leaves the
-    /// playhead where it was, and a stop and a start inside one chunk,
-    /// continue it). The engine has no tempo map, so after a tempo change
-    /// the two no longer agree; the rolled count is the time actually
-    /// played. A tempo change in the same chunk as a stop or a start is
-    /// counted at one of the two tempos, off by up to
-    /// `chunk · |1 − ratio|` frames until the next re-seat.
+    /// rolls by the frames the transport played, through tempo changes,
+    /// holds while it is stopped (a stop, a start where it stopped and a
+    /// loop edit continue it, inside one chunk too), and is re-seated from
+    /// the playhead's beat at the tempo in force
+    /// (`beats * 60 / tempo * sample_rate`) only at a jump: the first block,
+    /// a seek (stopped or playing), a loop wrap, or a sample-rate change.
+    /// The frames played between two reads come from the engine's frame
+    /// count on its timeline segment, exact for one tempo change between
+    /// them. The engine has no tempo map, so after a tempo change the two
+    /// no longer agree; the rolled count is the time actually played.
     ///
     /// `None` means the producer has no project-time position to report (no
     /// usable tempo, or a hand-built snapshot). It is an `Option` rather than

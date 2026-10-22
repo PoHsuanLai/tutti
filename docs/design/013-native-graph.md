@@ -6461,32 +6461,42 @@ fills the three fields the ABIs ask for that it used to leave empty:
   `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
   the same time over the rate) is node state, `ProjectTime`, in `Bound` and
   in the VST2 `TransportFeed`. Each chunk's read rolls it by the frames
-  since the last read while the transport plays, holds it while stopped,
-  and re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
-  only at a jump: the first read, a seek (stopped or playing), a start
-  somewhere other than where the transport stood, a loop wrap, a loop
-  edit that moves the playhead, a rate change. Continuity is judged
-  against the earlier read's loop, so a loop edit that leaves the
-  playhead where playback put it keeps project time, and a wrap the new
-  loop caused, not fitting the old one, re-seats. A tempo change is not a jump: `tutti_graph::Transport::continuity`
-  is `Playhead`'s rule between two point reads (the same loop, and a beat
-  reached by rolling the gap at a tempo between the two, ± a frame), so a
-  step or a ramp rolls on; a stopped transport is `Continuity::Held` at its
-  beat, stopped still or started there. A stop or a start (or both)
-  lands between two chunk reads, so the frames played across it
-  (`played_across`) are the beats moved forward, at the playing side's
-  tempo (either read's when both play or both are stopped), no more than
-  the gap and not out past the loop's end. A forward seek shorter than the
-  gap inside one chunk is indistinguishable from a stop and a start, and
-  is counted as one. The count is exact at one tempo; a tempo change in
-  the same chunk counts the other tempo's `n_other` frames at this one, off
-  by about `n_other · |ratio − 1|`, bounded by `chunk · |1 − ratio|` (about
-  4 frames of a 1 024-frame chunk at 120 → 121 BPM, up to half a chunk at
-  120 → 60), and the offset stays until the next re-seat. The check that
-  the counted frames rolled to the later beat (`Continuity::Rolled` from
-  the earlier beat at the counted tempo) was dropped: a rounded count is
-  within half a frame of the move, inside the rule's one-frame slack, so
-  it could not fail; the loop-end test is what it stood for. A start where the
+  the transport played since the last read, holds it while stopped, and
+  re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
+  only at a jump: the first read, a seek (stopped or playing), a loop
+  wrap, a rate change. A tempo change, a stop, a start where the
+  transport stood and a loop edit are not jumps. Several of these can
+  land between two chunk reads; the engine's transport tells them apart
+  by its segment (`Transport::origin`, `SegmentOrigin`): the host's
+  `FrameClock` starts a new segment at a seek, a tempo or rate change
+  and a loop wrap, never at a stop or a start (a stopped clock only stops
+  counting) or a loop edit. `played_between` reads it: the same origin
+  beat and tempo means the transport only played, and the frame counts'
+  difference is the frames played, exactly; a new segment at another
+  tempo is a tempo change, counted as the frames from the earlier read up
+  to the new segment's first beat at the earlier tempo plus the new
+  segment's own; a new segment at the same tempo is a seek or a wrap, a
+  re-seat. Either count must fit the frames between the reads. This is
+  exact for one tempo change between two reads; with more (a ramp's steps
+  inside one chunk) the frames at the tempos between are counted at the
+  earlier one, and a tempo that changes and comes back inside one chunk
+  re-seats. A seek and a tempo change inside one chunk cannot be told
+  from a tempo change alone, so a seek forward by less than the chunk
+  plays is then counted as played. A wrap or a seek that lands back on a
+  segment's first beat starts a segment with the same origin; counting
+  it reads what a re-seat would, since project time has been the beat's
+  time from that segment's own wrap or seek on, except for a segment
+  begun at a tempo change and sought back to within one chunk.
+  A transport built by hand (`Transport::new`, which no engine block
+  carries) has no segment, and is read by the playhead's rule instead
+  (`continued_without_origin`): `tutti_graph::Transport::continuity`
+  judged against the earlier read's loop, a stop or a start between the
+  reads counted by `played_across` as the beats moved forward at a tempo
+  the transport played at, no more than the gap, and a move out past an
+  unchanged loop's end without wrapping re-seated, whichever way the
+  rule reads it. Counting frames played at one tempo at another there is
+  off by `n · |1 − r|`, `r` the ratio of the two, up to the whole gap at
+  a 2 : 1 change. A start where the
   transport stopped continues the time the plugin was told there, as a
   tempo map would; re-seating at a stop made `samplePos` jump at the stop
   after any tempo change. Re-deriving every chunk instead made project
@@ -6537,10 +6547,11 @@ scale keeps the editor at the scale it opened at until it is reopened
 
 Pinned analytically: `transport_source`'s unit tests (project time
 rolling through a tempo change, held through a stop and a start where it
-stood, through a stop and a start inside one chunk and a loop edit that
-leaves the playhead, and re-seated at a seek (stopped or playing), a loop
-wrap, a move out past the loop's end, a rate change and a start
-elsewhere; the host clock at a chunk's frame, and on the OS clock),
+stood, through a stop and a start inside one chunk and a loop edit,
+counted exactly across a tempo change between two reads, and re-seated at
+a seek (stopped or playing, inside one chunk too), a loop wrap, a rate
+change and a start elsewhere, each on the engine's own `FrameClock`;
+a hand-built transport read by the playhead's rule; the host clock at a chunk's frame, and on the OS clock),
 `Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
 bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
 `the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,

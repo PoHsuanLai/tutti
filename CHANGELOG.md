@@ -27,6 +27,7 @@ queue at the start of every block, as before).
 |---|---|
 | `MotionFsm::drain(&self) -> bool` (tutti-core) | removed. `Engine::process` drains at each block's start; delete the call before rendering. A test of the machine without an engine renders a block through an `Engine` instead |
 | `MotionFsm::complete_declick(&self) -> bool` (tutti-core) | removed: the engine completes its own fades |
+| — | `GraphEngineError::MotionHeld`: the transport's motion machine is held by an engine over another transport that shares its `motion` handle (`t.motion = other.motion.clone()`). A `match` on `GraphEngineError` needs the arm |
 
 ### Fixed — a seek after a declicked seek no longer stops the transport
 

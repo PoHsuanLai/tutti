@@ -118,6 +118,11 @@ pub enum GraphEngineError {
     /// transport would both consume every seek and both write the playhead
     /// ([`Transport::clock_links`](crate::Transport::clock_links)).
     PlayheadClaimed(crate::transport::PlayheadClaimed),
+    /// `transport`'s motion machine is held by another engine, though its
+    /// playhead is not: the transport shares its `motion` handle with
+    /// another transport (`transport.motion = other.motion.clone()`) whose
+    /// engine is alive.
+    MotionHeld,
 }
 
 impl core::fmt::Display for GraphEngineError {
@@ -126,6 +131,10 @@ impl core::fmt::Display for GraphEngineError {
             Self::NotAPair => f.write_str("the executor is not the editor's"),
             Self::Limits(e) => write!(f, "the graph is past the engine's limits: {e}"),
             Self::PlayheadClaimed(e) => write!(f, "{e}"),
+            Self::MotionHeld => f.write_str(
+                "the transport's motion machine is held by another engine \
+                 (its `motion` handle is shared with another transport)",
+            ),
         }
     }
 }
@@ -181,9 +190,8 @@ pub struct Engine {
 /// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
-    /// The transport's motion machine. Declared before `clock` so it drops
-    /// first: it goes back to the transport before the clock's playhead
-    /// claim is released, so the next engine to win that claim finds it.
+    /// The transport's motion machine. Handed back to the transport by this
+    /// struct's `Drop`, before `clock` releases its playhead claim.
     motion: MotionAudio,
     exec: Executor,
     /// The engine's playhead. The graph reads the transport from `Env`, so
@@ -262,6 +270,8 @@ impl Engine {
     /// - [`GraphEngineError::NotAPair`]: `executor` is not `editor`'s.
     /// - [`GraphEngineError::PlayheadClaimed`]: another engine over
     ///   `transport` (or a clone of it) is alive.
+    /// - [`GraphEngineError::MotionHeld`]: an engine is alive over another
+    ///   transport that shares `transport`'s `motion` handle.
     /// - [`GraphEngineError::Limits`]: what the editor already sent has more
     ///   than [`MAX_ROOT_CHANNELS`] global outputs or a `MaxBlock` above the
     ///   capacity.
@@ -279,14 +289,10 @@ impl Engine {
         let links = transport
             .clock_links()
             .map_err(GraphEngineError::PlayheadClaimed)?;
-        // The playhead claim makes this engine the transport's only one, so
-        // the motion machine is home unless the last engine is mid-drop.
         let motion = transport
             .motion
             .audio()
-            .ok_or(GraphEngineError::PlayheadClaimed(
-                crate::transport::PlayheadClaimed,
-            ))?;
+            .ok_or(GraphEngineError::MotionHeld)?;
         // Mid re-prepare, the editor's `Prepare` is the one the executor will
         // adopt, and may be the larger.
         let stride = capacity
@@ -456,12 +462,14 @@ impl Engine {
             };
             let aim = self.fader.borrow().aim;
             let walk = self.walk(
-                &mut g.motion,
+                Track {
+                    motion: &mut g.motion,
+                    playhead: &mut g.playhead,
+                },
                 frame0,
                 len,
                 rate,
                 aim,
-                &mut g.playhead,
                 &mut pieces,
             );
             let changes = pieces.changes;
@@ -482,17 +490,16 @@ impl Engine {
     /// `aim` is the fader's aim going in: an aim is pushed only where it
     /// changes, so a block with no command in sight plans nothing and the
     /// fader skips it.
-    #[allow(clippy::too_many_arguments)]
     fn walk(
         &self,
-        motion: &mut MotionAudio,
+        track: Track<'_>,
         frame0: Frame,
         frames: usize,
         rate: SampleRate,
         mut aim: Option<Frame>,
-        playhead: &mut Playhead,
         pieces: &mut impl Pieces,
     ) -> Walk {
+        let Track { motion, playhead } = track;
         let schedule = &self.timed;
         let mut walk = Walk {
             start: pieces.begin(None),
@@ -647,6 +654,13 @@ fn is_declicking(motion: MotionState) -> bool {
         motion,
         MotionState::DeclickToStop | MotionState::DeclickToLocate
     )
+}
+
+/// The render state a block's walk moves: the motion machine its commands
+/// go through, and the playhead it observes.
+struct Track<'a> {
+    motion: &'a mut MotionAudio,
+    playhead: &'a mut Playhead,
 }
 
 /// What a block's walk leaves for after the render.
@@ -885,6 +899,20 @@ impl Pieces for GraphPieces<'_> {
     }
 }
 
+/// The motion machine goes back to the transport before any field drops,
+/// so before `clock` releases the playhead claim: the next engine to win
+/// that claim finds it, whatever order the fields are declared in.
+///
+/// Not covered by a test: the window between the two is inside one drop on
+/// one thread, and building an engine inside it takes a timed race. Moving
+/// `motion` after `clock` (run) passes every test, as it should; deleting
+/// this `hand_back` as well passes them too, for that reason.
+impl Drop for GraphRender {
+    fn drop(&mut self) {
+        self.motion.hand_back();
+    }
+}
+
 impl GraphRender {
     /// Bring the executor up to date before a graph block: install queued
     /// commits (a re-prepare's resume adopts its `Prepare` here, so the block
@@ -1038,12 +1066,14 @@ mod tests {
         };
         let mut playhead = Playhead::new();
         let walk = engine.walk(
-            &mut render.motion,
+            Track {
+                motion: &mut render.motion,
+                playhead: &mut playhead,
+            },
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
             None,
-            &mut playhead,
             &mut pieces,
         );
         assert!(!walk.start.playing);
@@ -1118,6 +1148,27 @@ mod tests {
         );
     }
 
+    /// A transport whose `motion` handle came from another transport shares
+    /// that one's motion machine but not its playhead claim: an engine over
+    /// it while the other's runs wins the claim and is refused the machine,
+    /// with an error that says so.
+    ///
+    /// Mutation (run): map the missing machine to `PlayheadClaimed` → the
+    /// error is not `MotionHeld` → fails.
+    #[test]
+    fn a_shared_motion_handle_is_refused_as_held() {
+        let first = Transport::new(48_000.0);
+        let mut second = Transport::new(48_000.0);
+        second.motion = first.motion.clone();
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let _running = Engine::new(&first, &mut ed, exec).expect("empty graph");
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        assert!(matches!(
+            Engine::new(&second, &mut ed, exec),
+            Err(GraphEngineError::MotionHeld)
+        ));
+    }
+
     /// A block with no declicked command in sight plans no gain event, and
     /// the fader leaves the output untouched: the fast path is reachable.
     /// A command in sight plans its aim once, not at every walk step.
@@ -1151,12 +1202,14 @@ mod tests {
         };
         let mut playhead = Playhead::new();
         let walk = engine.walk(
-            &mut render.motion,
+            Track {
+                motion: &mut render.motion,
+                playhead: &mut playhead,
+            },
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
             None,
-            &mut playhead,
             &mut pieces,
         );
         assert_eq!(walk.gain.len, 0, "nothing planned");
@@ -1171,12 +1224,14 @@ mod tests {
             .schedule(At::Frame(Frame(812)), crate::MotionEvent::stop())
             .expect("room");
         let walk = engine.walk(
-            &mut render.motion,
+            Track {
+                motion: &mut render.motion,
+                playhead: &mut playhead,
+            },
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
             None,
-            &mut playhead,
             &mut pieces,
         );
         assert_eq!(walk.gain.len, 1);

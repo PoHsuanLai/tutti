@@ -242,7 +242,7 @@ impl MotionFsm {
             seek: self.seek.clone(),
             declick: self.declick.clone(),
             settings: self.settings.clone(),
-            home: Arc::clone(&self.home),
+            home: Some(Arc::clone(&self.home)),
         })
     }
 
@@ -284,6 +284,10 @@ impl MotionFsm {
     /// The untimed [`try_send`](Self::try_send) and settings stores mean
     /// `At::NextBlock`; this method has no untimed form of its own, so
     /// "whenever" is spelled out as `At::NextBlock`.
+    ///
+    /// With no engine running over the transport, commands stay in flight,
+    /// up to [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) (64), and past
+    /// that this returns [`ScheduleFull`](super::ScheduleFull).
     ///
     /// # Errors
     ///
@@ -345,6 +349,9 @@ impl MotionFsm {
     /// available synchronously. Observe the outcome by reading
     /// [`MotionFsm::motion`] on a later frame.
     ///
+    /// With no engine running over the transport, events stay queued, up to
+    /// 64, and past that this returns [`QueueFull`].
+    ///
     /// RT-safe: lock-free, no allocation.
     ///
     /// # Errors
@@ -401,18 +408,29 @@ pub(crate) struct MotionAudio {
     seek: SeekSlot,
     declick: Declick,
     settings: TransportSettings,
-    home: Arc<ArrayQueue<TransportFsm>>,
+    /// Where the FSM goes back to; `None` once it has.
+    home: Option<Arc<ArrayQueue<TransportFsm>>>,
 }
 
 impl Drop for MotionAudio {
     fn drop(&mut self) {
-        // Lock-free, so a drop on the audio thread is safe. Never full: the
-        // FSM was popped from it, and only this value can put one back.
-        let _ = self.home.push(std::mem::take(&mut self.fsm));
+        self.hand_back();
     }
 }
 
 impl MotionAudio {
+    /// Hands the FSM back to its [`MotionFsm`] now, rather than at drop.
+    /// Only for a holder about to drop this, which must return the FSM
+    /// before something else it owns is released (the engine, before its
+    /// clock's playhead claim). Idempotent.
+    pub(crate) fn hand_back(&mut self) {
+        if let Some(home) = self.home.take() {
+            // Lock-free, so a drop on the audio thread is safe. Never full:
+            // the FSM was popped from it, and only this value puts one back.
+            let _ = home.push(std::mem::take(&mut self.fsm));
+        }
+    }
+
     /// The FSM's own motion, which the published mirror follows.
     pub(crate) fn motion(&self) -> MotionState {
         self.fsm.motion()

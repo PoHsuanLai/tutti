@@ -28,8 +28,8 @@ structural fix (#15).
 
 ## Why
 
-The node *contract* already left the fork (`tutti-node`). What has
-not is the **runtime** — `Net`, `NetBackend`, `Vertex`, the commit/migrate
+When this design was written, the node *contract* had already left the
+fork (`tutti-node`, since deleted). What had not was the **runtime** — `Net`, `NetBackend`, `Vertex`, the commit/migrate
 protocol, `Fade`, `PdcDelay` splicing. Every blocker the `Topology` series hit
 is a property of that runtime, not of the design:
 
@@ -120,7 +120,10 @@ Changes:
   `tail.rs:288` are three Kahn sorts (the latency one seeded from `HashMap`).
   The compiler owns one; the folds take its order.
 
-### 2. The node contract — a new, smaller trait in `tutti-node`
+### 2. The node contract — a new, smaller trait
+
+It shipped as `tutti_graph::Node` (`shape`, `prepare`, `process`, `reset`);
+the controls moved to `IntoNode`, so the sketch below is the proposal.
 
 ```rust
 pub trait Node: Send + 'static {
@@ -155,8 +158,7 @@ pub trait Node: Send + 'static {
 - Dropped outright: `tick`, `route`/`Signal`/`Routing` (latency is declared in
   `Shape`, not probed through signal-flow analysis), `footprint`, `ping`,
   `set_hash`, `get_mono`, `filter_*`, `response*`, `display`, `set(Setting)`,
-  and the `S: Sample` generic. The `AudioUnit<F64>` plugin impls are never
-  reached by a graph path (`Net` stores F32 only); f64 stays *inside* the
+  and the `S: Sample` generic. The graph is f32; f64 stays *inside* the
   plugin node.
 
 ### 3. The compiler — pure pass pipeline
@@ -289,13 +291,13 @@ the interpreter.
   latent path. `tutti_types::latency::plan` (the fundsp side) did not; it is
   now the same solve as the compiler's, and does
   ([the fork is deleted](#the-fork-is-deleted)).
-- **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
-  along with everything else. Once it comes from `Env`, `Cx` has to carry each
-  node's compiled **arrival latency** so the node reads the transport at its
-  own compensated time. The compiler already knows that number. `Cx`
-  carries it, and `Cx::transport_at` reads the transport that many frames
-  earlier, reaching before the block through the executor's
-  `TransportHistory`; see ["Arrival-aligned
+- **Env and PDC**: the beat comes from `Env`, not an audio signal PDC
+  would delay with everything else, so `Cx` carries each node's compiled
+  **arrival latency** and the node reads the transport at its own
+  compensated time. The compiler already knows that number, and
+  `Cx::transport_at` reads the transport that many frames earlier,
+  reaching before the block through the executor's `TransportHistory`;
+  see ["Arrival-aligned
   transport"](#arrival-aligned-transport).
 - **Executor, parallel**: per-task `AtomicU32` activation counters,
   128-byte padded, **self-reset after run** (supernova — no O(n) reset);
@@ -324,10 +326,10 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | Silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
-| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them; `AudioUnit::rebind_offline`, `MidiUnitIn::rebind_offline` and `MidiInPort::rebind_offline_into` take the same type. `ForkMode::Offline` now carries nothing: every node reads `Env`. `Timeline`/`OfflineClock`/`OfflineTransport` live in `tutti_core::transport`; an `OfflineTransport` is still built only from an `OfflineClock` (what an export hands its `PrepareEdit`; see [below](#nodes-read-time-from-env-the-offline-timeline-leaves-the-fork)) | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
+| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them. `ForkMode::Offline` now carries nothing: every node reads `Env`. `Timeline`/`OfflineClock`/`OfflineTransport` live in `tutti_core::transport`; an `OfflineTransport` is still built only from an `OfflineClock` (what an export hands its `PrepareEdit`; see [below](#nodes-read-time-from-env-the-offline-timeline-leaves-the-fork)) | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
 | **`Timeline::segment_generation() -> u64`**, required; `FrameClock::generation` moves on at every segment restart (seek, tempo or rate change, loop wrap) and at a play start, published by the engine's clock before the beat | A playhead read as a bare beat, with no way to tell a jump that lands on the same beat from no jump | The sampler's seat running on through a seek to the beat it stood on, or a one-block transport loop, instead of re-seating (`interp.rs` `Seat`, both tiers) |
 | **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
-| **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)`, `Legacy`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | A finding of #38's review (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
+| **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | A finding of #38's review (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
 
 **Smart types 2: #51 and #48.**
 
@@ -392,7 +394,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events (linear) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
-| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (point 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under "Flip the adapter"): 64-frame resolution, as through `Net`, until it is ported to `Env::transport_at` |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (point 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction (a declick moves the transport on its frame; the fade is audio only). The sampler reads `Env::transport_at` like every other clip reader; the `Legacy` adapter, whose clip readers polled a timeline once per 64-frame chunk, is deleted ([below](#legacy-deleted)) |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -495,18 +497,16 @@ place that loses precision to be written out explicitly:
      begins a new run from its frame;
    - the reference interpreter cuts its pieces independently and the
      differential suite runs with changes inside blocks.
-   The `Net` path renders the pieces one after another instead, applying
-   the commands between them; its `TransportClock` picks them up at the
-   next piece. Beats resolve by the graph's rule on both paths (the Net
-   path with the tempo its clock actually runs at, `tempo_in_force`, after
-   the clock's hysteresis). A command past the 8-cut bound, or already past
+   The `Net` path (deleted with fundsp) rendered the pieces one after
+   another instead, applying the commands between them. Beats resolved by
+   the graph's rule on both paths (the Net path with the tempo its clock
+   actually ran at, `tempo_in_force`, after the clock's hysteresis). A command past the 8-cut bound, or already past
    due, lands at the next block's first frame and is counted
    (`late_commands`); an `At::NextBlock` needs no cut and is never late.
    Commands due on one frame apply in send order. On the Graph path the
    untimed state (tempo, loop, play state) is read **once** per block; a
    control-thread store during the block lands at the next one, and only an
-   applied command changes it at a cut. (The Net path's clock reads the
-   atomics at every 64-frame chunk, as it always has.)
+   applied command changes it at a cut.
 
    **Decisions taken in review (#18):**
    - **The declick is audio only, and it is continuous.** A declick stop
@@ -566,8 +566,8 @@ place that loses precision to be written out explicitly:
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.
 5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}`.**
-   Nodes declare their resolution (new nodes `Sample`; `Legacy`, which
-   receives no events, `Block`; SoundFont will be `Frames(8)`). An event edge
+   Nodes declare their resolution (most nodes `Sample`; the SoundFont
+   unit `Frames(8)`). An event edge
    marked with `GraphSpec::require_resolution` into a node that cannot honour
    it is `CompileError::ResolutionTooCoarse`; unmarked edges never are, so
    the `ParamRamp` edge is the one to mark. The contract suite checks each
@@ -578,7 +578,7 @@ place that loses precision to be written out explicitly:
    within the block the event arrives in. A node finer than it declares
    passes.
 6. **The frame is the source of truth for the playhead.** Every
-   clock (`TransportClock` in a `Net` and driven by the graph engine,
+   clock (`TransportClock`, driven by the graph engine,
    `EnvClock`, `OfflineTimeline`) keeps an integer frame count on a
    **`TimelineSegment`** (`tutti-types`: origin frame, origin beat, tempo,
    rate) and derives the beat in closed form, `origin_beat + frames × tempo
@@ -647,8 +647,8 @@ place that loses precision to be written out explicitly:
      frame against a block at a time through wraps, and frame-exact entry at
      90 BPM on every path (a sampler clip at beat 3 first sounds on frame
      96 000; MIDI notes at beats 1 and 3 land on 32 000 and 96 000; live
-     through the `Net` and graph engines, offline `Net`-style and through
-     `render_graph`), each checking also that the reader read the exact
+     through the graph engine and offline through `render_graph`, and,
+     while it existed, through `Net`), each checking also that the reader read the exact
      beat; `EnvClock` and `transport_at` against the host clock in `f64`,
      far into a segment and through wraps of a loop shorter than the block;
      the MTC grid against its closed form. Mutation: reintroducing
@@ -699,14 +699,14 @@ that the running plan holds the edit.
   block (on the start's frame, a dozen frames on, a quarter beat on).
 - **Rows now**: native event→impulse nodes (`Pulse` at latency 0 and 37,
   at `Frames(8)` on its own chunk grid, and at `Block`) and a native
-  lookahead (`tutti-graph`); through
-  `Legacy` on the audio-impulse path, `LimiterNode` (mono, and the right
+  lookahead (`tutti-graph`); on the audio-impulse path, `LimiterNode` (mono, and the right
   channel of a linked stereo pair; 240 frames of lookahead),
   `ConvolverNode` at mix 0, ½ and 1 (the dry alignment: at mix 0 an
   undelayed dry half fails every path) and `DelayLineNode` (a 500 ms
   echo declares no latency and its dry half leaves on the excitation's
   frame) in `tutti-nodes`; `HrtfBinauralNode` on each ear
-  (`FRAME_LEN - 1` = 511) in `tutti-spatial`. No `Legacy` row failed: the
+  (`FRAME_LEN - 1` = 511) in `tutti-spatial`. None of those rows failed
+  (they first ran through the deleted `Legacy` adapter): the
   three misreported latencies were already fixed on main, and the rows now
   hold them.
 - **Engine level** (`tutti-core`, `tests/graph_contract.rs`): through
@@ -731,8 +731,9 @@ that the running plan holds the edit.
 
 - The graph's own work (copy, sum, gain, delay, fade, meter) is a small set of
   kernels on aligned planar slices — `wide` or `std::simd`, one module.
-- **Today no production node uses fundsp's SIMD** — all 43 use scalar
-  `at_f32`/`set_f32` (≈232 calls). The `F32x` buffer layout is pure cost.
+- **When this was written, no production node used fundsp's SIMD** — all
+  43 used scalar `at_f32`/`set_f32` (≈232 calls), so the `F32x` buffer
+  layout was pure cost.
   Planar `&[f32]` lets nodes auto-vectorize and lets hot nodes opt into
   explicit SIMD.
 - **Horizontal SIMD where it pays**: polysynth and sampler voice pools store
@@ -746,7 +747,10 @@ that the running plan holds the edit.
 
 ## Migration
 
-Each step ships green and is reversible until the nodes are ported natively.
+Each step shipped green and was reversible until the nodes were ported
+natively. The steps below record each as it stood when it was made: where
+one says `Net`, `NodeId`, `Legacy` or fundsp "still" does something, that
+was true then; all of it is deleted ([Delete fundsp](#delete-fundsp)).
 
 ### Shrink the surface (no behaviour change)
 
@@ -2801,11 +2805,12 @@ program's parameters; gap 7 above;
 [below](#in-process-vst2-forks-by-state-transfer)), and an export of a
 graph holding it renders it. Disk voices export too (#43).
 
-Left for later, as scoped: `PreparedGraph::graph` is still a
-`&mut RenderGraph` whose `Net` arm the adapter never builds (made
-graph-only below); `AudioNode` still wraps fundsp's `NodeId` (the key's source of
-uniqueness, and harmless). `tests/no_net.rs` keeps `dsp::Net` and
-`NetBackend` out of bevy-tutti's non-test code.
+What this step left is closed: `PreparedGraph::graph` (now
+`tutti-session`'s) is a `&mut RenderGraph`, a struct with no `Net` arm
+(below); `AudioNode` wraps a `NodeKey` minted by `NodeKey::fresh`
+([below](#nothing-uses-net)); and `tests/no_net.rs`, the scan that kept
+`Net` out of bevy-tutti, was deleted with fundsp, which left it nothing to
+find.
 
 The plugin typestate moves to the native ports: the shadow gives plugin
 bind a safe control path without it. `ParamKey<U, Rate>` (§6 point 2) can
@@ -3399,9 +3404,10 @@ Decisions:
 3. **`tutti-nodes` declares.** Filters, oscillators, LFOs, dynamics,
    delays and modulation effects are `Moderate`; sums, the downmix, the
    brickwall clip and the test stimuli are `Light`; the convolver (FFT
-   partitions) declares nothing. The bus strip was `Light` and is
-   `Moderate` since the measurements below (3.7 ns per frame and channel,
-   past the 2.8 boundary, as the click's 3.8).
+   partitions) declares nothing. The bus strip is `Light`: steady or
+   ramping its channel-major kernel is far under the boundary, and with
+   its volume fed per frame it is borderline (the table below and the
+   note after it).
 
    **The other crates declare too**, each class from a
    measured cost, not a guess. The method: each node driven alone through
@@ -3418,6 +3424,7 @@ Decisions:
 
    | node | ns / frame / channel | class |
    |---|---|---|
+   | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
    | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `ClickNode` | 3.8 | `Moderate` |
    | `MicMonitorNode` (a ring pop per frame) | 5.4 | `Moderate` |
@@ -3427,10 +3434,24 @@ Decisions:
    | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |
    | `PolySynth`, saw, every voice held | 18–21 at 8 lanes, 65 at 8 × 4 unison, 74 at 32 | `Moderate` to 16 lanes, `Heavy` past |
    | `HrtfBinauralNode` (a four-vertex sphere of 128-tap HRIRs; real ones are longer) | 32 on average, in bursts each 512 frames | `Heavy` (the exception below) |
-   | `BusStripNode` (tutti-nodes, reclassified) | 3.7 | `Moderate` |
    | `SoundFontUnit` | 76 at one note, 140 at eight | `Heavy` |
    | `VoicePool` | 13 per plain voice (82 at eight); a stretched voice alone 288 | `Heavy` |
    | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
+
+   The strip's row was measured later, by the same method, on another
+   4-core container, beside both references measured there: a gain
+   0.05–0.07 and `SvfFilterNode<f64>` 3.0–3.2. The two references do not
+   scale by one factor between the boxes, so its raw figures are not
+   compared with the 2.8 boundary. It is placed instead on a log scale
+   between the two references on its own box, where the boundary sits
+   about 0.73 of the way from the gain to the filter (2.8 between 0.22
+   and 7.2). Steady (about 0) and ramping (about 0.46) are far under on
+   any scaling. Fed per frame, the case that decides the class since a
+   modulated strip pays it every block, it sits at 0.66–0.71: borderline.
+   It is classed `Light` because the cost of a wrong `Light` is bounded
+   (a few nodes packed that could have spread; see point 2 above). The
+   frame-major kernel it replaced measured 2.5–4.7 the same way. Each
+   block also pays about 120 ns fixed, against a gain's 100.
 
    **One exception to the nearest-class rule: HRTF.** Its 32 ns average
    is under the 45 boundary, but the frame bridge does all of a 512-frame
@@ -4254,9 +4275,14 @@ request and a plugin that parallelises its own voices ran them serially.
 
 ## Per-node rewrite plan
 
+This section, like Migration, records each step as it stood when it was
+made: what it says `Net`, `Legacy`, `AudioUnit` or fundsp "still" does was
+true then, and all of it is deleted ([Delete fundsp](#delete-fundsp)).
+
 The question: if the graph had been native from the start, would the nodes
-look like this? **Mostly the DSP would, and the shells would not.** About
-60–70% of the non-DSP code in the nodes exists for three `Net` properties:
+look like this? **Mostly the DSP would, and the shells would not.** At the
+audit, before the port, about 60–70% of the non-DSP code in the nodes existed for three `Net`
+properties:
 
 1. **Clone-on-commit.** This is why the nodes have shared `Arc` cells, shared
    `Receiver`s, the `allocate` hook (4 real impls, and each one restores
@@ -5877,8 +5903,9 @@ for it:
 The tests whose subject was `Legacy` itself (its chunking, its settings
 ring, its fork hook, the chunk-major playhead) went with it; every other
 test that wired an `AudioUnit` was moved onto a test `Node` with its
-assertions kept. `stretch::Unit` stays an `AudioUnit`: a slot's internal
-filter, never inserted into a graph.
+assertions kept. `stretch::Unit`, a slot's internal filter never inserted
+into a graph, stayed an `AudioUnit` until that trait was deleted; it has
+plain methods now.
 
 #### Nothing uses `Net`
 
@@ -6279,8 +6306,8 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
 `tutti-io`.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
-2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`
-   through `Net` today. The industry has not moved to f64 *buffers*.
+2. **`f32` only in the graph?** Proposed yes; nothing reached `AudioUnit<F64>`
+   through `Net` when this was decided. The industry has not moved to f64 *buffers*.
    - **Where f64 is used:** plugin I/O is still f32 by default. CLAP negotiates
      64-bit per port, VST3 has an optional `kSample64`, and AU and AAX are f32.
      Where f64 shows up, it is a host's internal "64-bit mix engine" or a

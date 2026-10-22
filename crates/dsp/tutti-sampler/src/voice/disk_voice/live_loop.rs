@@ -1138,3 +1138,169 @@ fn a_stream_serves_one_live_voice() {
         "a second live voice was handed out"
     );
 }
+
+/// A pool on `streamer`'s butler, prepared, holding `voice` (a streaming
+/// voice on channel 0) at `id`; and its handle.
+fn pool_with(
+    streamer: &DiskStreamer,
+    id: crate::SlotId,
+    voice: DiskVoice,
+) -> (crate::VoicePool, crate::VoicePoolHandle) {
+    let (mut pool, handle) = crate::VoicePool::with_butler(streamer.commands()).with_handle();
+    pool.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+    handle
+        .send(crate::VoiceCommand::AddVoice {
+            id,
+            voice: Box::new(crate::Voice {
+                source: crate::VoiceSource::Disk(voice),
+                play: crate::Playback::default(),
+                channel_index: Some(0),
+            }),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
+    (pool, handle)
+}
+
+/// Streams `path` on channel 0 of a fresh hand-stepped butler from frame 0,
+/// primed.
+fn streaming(path: &Path) -> DiskStreamer {
+    let mut streamer =
+        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+    streamer
+        .commands()
+        .send(Command::Stream {
+            channel_index: 0,
+            file_path: path.to_path_buf(),
+            offset: SamplePosition(0.0),
+        })
+        .expect("the butler is alive");
+    assert!(
+        streamer.step_until_settled(1_000) < 1_000,
+        "the ring primes"
+    );
+    streamer
+}
+
+/// **A loop set through a pool's handle on a live streaming voice reaches
+/// the butler, and the voice loops.** The handle forwards it on the
+/// control thread; the pool only records it. On a ramp whose every frame
+/// is distinct, a hard loop `[1000, 3001)` played at unity: once the
+/// first wrap and its fades are behind it, every frame the pool puts out
+/// is a frame of the loop, and the loop's head comes round again.
+///
+/// Mutation (run): `send_loop` queueing the command without forwarding it
+/// → the pool records the loop but the stream never loops → frames past
+/// 3001 → fails.
+#[test]
+fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let mut streamer = streaming(&path);
+    let voice = streamer
+        .status()
+        .take_disk_voice(0, Beat(0.0), None)
+        .expect("the link is installed");
+    let id = crate::SlotId(1);
+    let (mut pool, handle) = pool_with(&streamer, id, voice);
+    handle
+        .send(crate::VoiceCommand::UpdateLoop {
+            id,
+            looping: true,
+            loop_start: SamplePosition(1_000.0),
+            loop_end: SamplePosition(3_001.0),
+            crossfade_frames: 0,
+        })
+        .expect("the command queue has room in a test");
+    assert!(streamer.step_until_settled(1_000) < 1_000, "the loop lands");
+
+    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let mut left = Vec::new();
+    for _ in 0..200 {
+        left.extend(block(&mut pool, &clock, SR, BLOCK).swap_remove(0));
+        clock.advance(BLOCK as i64, SR);
+        let _ = streamer.step_once();
+    }
+    // The frame of the file each output sample is (`value` inverted).
+    let frame = |s: f32| (s / 1e-5).round() as i64 - 1;
+    let settled = &left[8_000..];
+    assert!(
+        settled.iter().all(|&s| (1_000..3_001).contains(&frame(s))),
+        "a frame outside the loop once it settled: the stream did not loop"
+    );
+    assert!(
+        settled.iter().any(|&s| frame(s) == 1_000),
+        "the loop's head never came round"
+    );
+}
+
+/// **A loop set on a voice whose channel has since been restarted on
+/// another stream leaves the new stream alone.** The handle forwards the
+/// loop naming the voice's stream; the butler, finding the channel on
+/// another one, ignores it. A host's own `Command::Loop`, which names only
+/// the channel, still loops whatever the channel streams.
+///
+/// Mutation (run): `handle_set_stream_loop` without its stream check → the
+/// new stream loops → fails.
+#[test]
+fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let (first, second) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+    write_ramp(&first, SR as u32, 10_000);
+    write_ramp(&second, SR as u32, 12_000);
+    let mut streamer = streaming(&first);
+    let voice = streamer
+        .status()
+        .take_disk_voice(0, Beat(0.0), None)
+        .expect("the link is installed");
+    let id = crate::SlotId(1);
+    let (_pool, handle) = pool_with(&streamer, id, voice);
+
+    // The host restarts channel 0 on another file; the pool still holds
+    // the voice on the old stream.
+    let commands = streamer.commands();
+    commands
+        .send(Command::Stop { channel_index: 0 })
+        .expect("the butler is alive");
+    commands
+        .send(Command::Stream {
+            channel_index: 0,
+            file_path: second.clone(),
+            offset: SamplePosition(0.0),
+        })
+        .expect("the butler is alive");
+    assert!(
+        streamer.step_until_settled(1_000) < 1_000,
+        "the ring primes"
+    );
+
+    handle
+        .send(crate::VoiceCommand::UpdateLoop {
+            id,
+            looping: true,
+            loop_start: SamplePosition(1_000.0),
+            loop_end: SamplePosition(3_001.0),
+            crossfade_frames: 0,
+        })
+        .expect("the command queue has room in a test");
+    assert!(streamer.step_until_settled(1_000) < 1_000);
+    assert_eq!(
+        streamer.status().stream_loop(0),
+        Some(LoopSetting::Off),
+        "a loop meant for the stopped stream was applied to its successor"
+    );
+
+    // The host's own loop, by channel, still reaches the stream there.
+    commands
+        .send(Command::Loop {
+            channel_index: 0,
+            setting: loop_on(1_000.0, 3_001.0, 0),
+        })
+        .expect("the butler is alive");
+    assert!(streamer.step_until_settled(1_000) < 1_000);
+    assert_eq!(
+        streamer.status().stream_loop(0),
+        Some(loop_on(1_000.0, 3_001.0, 0))
+    );
+}

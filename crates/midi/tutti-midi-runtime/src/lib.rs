@@ -24,8 +24,7 @@ pub use negotiate::{
 };
 pub use outbound::{
     ClockMaster, ClockNode, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest,
-    Translated,
-    CLOCK_EVENT_CAPACITY, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
+    Translated, CLOCK_EVENT_CAPACITY, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
 };
 pub use schedule::{
     HarmonyControls, HarmonyNode, MidiClipControls, MidiClipNode, TimedHarmony, TimedMidiEvent,

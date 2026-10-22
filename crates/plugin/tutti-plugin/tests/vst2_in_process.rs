@@ -424,3 +424,52 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         );
     }
 }
+
+/// **MIDI past a block's inline capacity is counted, not lost silently.**
+/// 300 note-ons on the node's event input in one 512-frame block: the plugin
+/// is handed `MIDI_STACK_CAPACITY` (256) of them, and the controls count the
+/// other 44. A block within the cap adds nothing.
+///
+/// Mutation (run): the drop not counted (`fetch_add` removed from the event
+/// walk) → the count stays 0 → fails.
+#[test]
+fn midi_past_the_blocks_capacity_is_counted() {
+    use tutti_graph::contract::Direct;
+    use tutti_graph::{Event, Offset};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_plugin_types::MIDI_STACK_CAPACITY;
+    use tutti_types::{SampleRate, Samples};
+
+    let _lock = lock_probe();
+    clear_probe_env();
+    let (unit, _handle) =
+        tutti_plugin::in_process_vst2_client(probe_path::probe_path(), SAMPLE_RATE)
+            .expect("load the probe");
+    let controls = unit.controls();
+    let mut unit = Direct::new(unit, SampleRate(SAMPLE_RATE), 512);
+    let notes = |n: usize| -> Vec<Event> {
+        (0..n)
+            .map(|i| {
+                let on = MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    (i % 128) as u8,
+                    0xFFFF,
+                );
+                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on.data)
+            })
+            .collect()
+    };
+    unit.events(0, &notes(300));
+    unit.block();
+    assert_eq!(
+        controls.dropped_midi_in(),
+        (300 - MIDI_STACK_CAPACITY) as u64
+    );
+    unit.events(0, &notes(10));
+    unit.block();
+    assert_eq!(
+        controls.dropped_midi_in(),
+        (300 - MIDI_STACK_CAPACITY) as u64
+    );
+}

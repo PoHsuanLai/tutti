@@ -4829,8 +4829,8 @@ under both.
 - **The plugin's MIDI event input.** The plugin node declares one; the
   batcher hands the node each span of a block's frames as it goes into the
   current chunk (`Chunks::take`), and the events on those frames join the
-  chunk's MIDI at the chunk's frames (sorted at submission, dropped past the
-  inline capacity rather than allocate). Pinned by `clap_fork`'s
+  chunk's MIDI at the chunk's frames (sorted at submission, dropped and
+  counted past the inline capacity rather than allocate). Pinned by `clap_fork`'s
   `a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame`.
 - **bevy-tutti's event wiring.** `spawn_graph_node` inserts any node with its
   own `IntoNode` (controls kept on the entity as `NodeControls<C>`, a synth's
@@ -5014,14 +5014,37 @@ under both.
   not retried. The capacity is sized for any real clip at the largest block;
   a cursor that resumes after a refusal is the fix if one is not. (Note-offs
   it owes are retried: `HeldNotes::owed`.)
-- **Review follow-ups not taken here:** a loop shorter than a block plays
-  one wrap per segment, so its later passes in that block are missed; a
-  note started twice and ended once leaves a voice the clip no longer
-  tracks; the plugin drops event-input MIDI past its inline capacity with
-  no counter; the sequencer's `EventFeeds` for a target replaces edges a
-  host wired on its event input 0 by hand (unlike audio's partial
-  declarations); a synth spawned with `spawn_graph_node` does not capture
-  its modulation targets.
+- **A loop shorter than a block plays every pass it holds.** After its
+  first wrap in a segment the walk (`schedule/walk.rs`, `Passes`) places
+  pass `p`'s events by the one beat→frame rule, `(end - now) + (p - 1) ×
+  span + (beat - start)` beats from the segment's first frame, and makes the
+  jump a wrap is at each pass's first frame. A loop shorter than a frame
+  plays the pass in force at each frame. Pinned by `clip_node`'s
+  `a_loop_shorter_than_a_block_plays_every_pass`.
+- **A clip holds a key or not** (the MIDI convention its `HeldNotes` keeps):
+  a note-on of a key it holds ends that note first, on the same frame, so
+  what it feeds never has two of its voices on one key (whatever a receiver
+  does with a repeated note-on) and one note-off ends the key. Pinned by
+  `a_note_started_twice_and_ended_once_leaves_nothing_sounding`.
+- **A plugin node counts the MIDI its event input loses.** A chunk carries
+  at most `MIDI_STACK_CAPACITY` events to the plugin, inline so the audio
+  thread never allocates; the rest are dropped and counted
+  (`PluginControls::dropped_midi_in`, `InProcessVst2Controls::dropped_midi_in`).
+  Counted rather than carried to the next chunk (which would play them a
+  chunk late, against the audio they belong to) or a larger list (fan-in has
+  no bound a fixed list could honestly meet). Pinned by `clap_fork`'s and
+  `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`.
+- **The event feeds are partial, as audio's declarations are.** The
+  session's feeds (the sequencer, the route rules, a live input,
+  bevy-tutti's `EventSources`) own only the sources they put on a sink's
+  event input 0 (`Graph`'s `fed_edges`): an edge a host wired there itself
+  stays when they change, and a host's `set_event_sources` on that input
+  sets its own edges beside theirs. Pinned by `tutti-session`'s
+  `a_hand_wired_event_edge_survives_the_sequencers_feed`.
+- A synth spawned as a graph node is a modulation target: a review once
+  found it captured its MIDI port but not its modulation targets, which no
+  longer reproduces (its params are a `ParamSet`, which modulation
+  resolves). Pinned by `mod_lanes`'s `a_spawned_synth_is_a_modulation_target`.
 
 #### Compiler-owned param modulation
 

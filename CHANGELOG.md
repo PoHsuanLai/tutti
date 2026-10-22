@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
+
+- **A clip plays every pass of a loop shorter than a block** (it played the
+  first wrap of each segment only). `HarmonyNode` shares the walk.
+- **A clip ends a held key before it starts it again**: a note-on of a key
+  the clip holds is preceded by a note-off on the same frame, so one
+  note-off ends the key whatever the receiver does with a repeated note-on.
+  A clip with overlapping notes of one key now sends that extra note-off.
+- **The session's event feeds are partial.** `Graph::set_feed` (the
+  sequencer, route rules, live inputs, bevy-tutti's `EventSources`) no
+  longer replaces edges a host wired on the sink's event input 0 itself,
+  and `Graph::set_event_sources` / `AudioGraphRes::set_event_sources` on a
+  fed input 0 set the host's edges beside the feeds' instead of removing
+  them until the feeds next change. Migration: a host that relied on
+  `set_event_sources` to unwire a feed's source removes it through its
+  feeder (`set_feed` with the feeder's other sources, `stop_clip`,
+  `retarget`, `unroute`).
+
+| Was | Now |
+|---|---|
+| the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()` |
+
 ### Changed — `BusStripNode` declares `Cost::Light`
 
 Its channel-major kernel, re-measured, is far under the `Light`/`Moderate`

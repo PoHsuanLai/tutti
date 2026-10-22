@@ -369,3 +369,67 @@ fn a_note_lands_on_its_frame_at_ninety_bpm() {
         vec![(32_000, word(on(60))), (96_000, word(on(62)))]
     );
 }
+
+/// **A loop shorter than a block plays every pass the block holds.** The
+/// loop is 100 frames (beats [0, 100 / 24 000)); note 60 is on at loop frame
+/// 10 and off at 60. Two 512-frame blocks, the second from where the first
+/// left the playhead (loop frame 12): the note plays on every pass, eleven
+/// times, and is ended within each.
+///
+/// Mutation (run): walk only the first wrap of a segment (the pass loop
+/// broken after one iteration) → the first block plays passes 0 and 1 only →
+/// fails. Mutation (run): the continuity check's `next` wrapped once rather
+/// than modulo the loop → the second block reads as a jump and the note held
+/// across the block edge is ended at its first frame → fails.
+#[test]
+fn a_loop_shorter_than_a_block_plays_every_pass() {
+    let clip = MidiClipNode::new([at(10, on(60)), at(60, off(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let lp = Some(LoopRange {
+        start: Beat(0.0),
+        end: beat_of(100),
+    });
+    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    exec.process(512, &looping(0), &[], &mut []);
+    exec.process(512, &looping(12), &[], &mut []);
+    let mut want: Vec<(u64, u32)> = (0..11)
+        .map(|k| (10 + 100 * k, word(on(60))))
+        .chain((0..10).map(|k| (60 + 100 * k, word(off(60)))))
+        .collect();
+    want.sort_unstable();
+    assert_eq!(*seen.lock().unwrap(), want);
+}
+
+/// **A note started twice and ended once leaves nothing sounding.** A key is
+/// held or not: the second note-on of note 60 (frame 20, while it holds) is
+/// preceded by a note-off on its frame, so a receiver that stacks a voice per
+/// note-on still has one, and the one note-off (frame 30) ends it. A seek
+/// then owes nothing.
+///
+/// Mutation (run): drop `end_before_restart` from the clip's event visit →
+/// the stream is on, on, off: a stacking receiver keeps a voice the clip no
+/// longer holds, and the seek ends nothing → fails.
+#[test]
+fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
+    let clip = MidiClipNode::new([at(10, on(60)), at(20, on(60)), at(30, off(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    exec.process(64, &rolling(48_000), &[], &mut []);
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        *seen,
+        vec![
+            (10, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (30, word(off(60))),
+        ]
+    );
+    // A receiver that starts a voice per note-on and ends one per note-off.
+    let voices = seen.iter().fold(0i32, |v, &(_, w)| match (w >> 20) & 0xf {
+        0x9 => v + 1,
+        0x8 => (v - 1).max(0),
+        _ => v,
+    });
+    assert_eq!(voices, 0, "nothing left sounding");
+}

@@ -13,7 +13,10 @@
 //! What it does keep is the set of notes it has started and not ended
 //! ([`HeldNotes`]): when playback stops, jumps (a seek, a loop wrap), or the
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
-//! each with a note-off on the frame the jump happens.
+//! each with a note-off on the frame the jump happens. A key is held or not
+//! (the MIDI convention): a note-on of a key it already holds ends the held
+//! note first, on the same frame, so what it feeds never has two of its
+//! voices on one key, and a single note-off ends the key.
 //!
 //! The clip itself is published to the node with [`ArcLend`]
 //! ([`MidiClipControls::set_events`]); the node reads it once per block.
@@ -216,6 +219,11 @@ impl Visit<TimedMidiEvent> for Playing<'_, '_> {
     }
 
     fn event(&mut self, at: Offset, e: &TimedMidiEvent) {
+        // A note-on of a key the clip holds is a retrigger: the held note
+        // ends first, on the same frame, so the receiver sounds one voice
+        // per key (whatever it does with a repeated note-on) and the next
+        // note-off of that key ends what is sounding.
+        self.held.end_before_restart(self.out, at, &e.event);
         if self.out.push(Event::midi(at, e.event.data)).is_ok() {
             self.held.track(&e.event);
         }
@@ -358,6 +366,29 @@ impl HeldNotes {
                 self.count -= 1;
             }
             _ => {}
+        }
+    }
+
+    /// When `e` starts a note this holds, end it at `at` first (a note-off
+    /// the port refuses leaves it held: the port is full, and `e` will be
+    /// refused too).
+    fn end_before_restart(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent) {
+        let Some((g, c, n, true)) = note_of(e) else {
+            return;
+        };
+        let (slot, bit) = (&mut self.bits[g * 16 + c], 1u128 << n);
+        if *slot & bit == 0 {
+            return;
+        }
+        let off = MidiEvent::note_off(
+            MidiGroup::new(g as u8),
+            MidiChannel::new(c as u8),
+            n as u8,
+            0,
+        );
+        if out.push(Event::midi(at, off.data)).is_ok() {
+            *slot &= !bit;
+            self.count -= 1;
         }
     }
 

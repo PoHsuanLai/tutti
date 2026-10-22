@@ -259,6 +259,48 @@ mod tests {
         );
     }
 
+    /// **A bridge that never connects counts the MIDI queued before it
+    /// failed.** `run_thread` runs here on the test thread, so the chunk is
+    /// queued before the connect fails, deterministically.
+    ///
+    /// Mutation (run): the connect-failure site's `drain_with_errors` call
+    /// removed → the chunk stays queued, 0 counted → fails.
+    #[test]
+    fn a_failed_connect_counts_the_queued_midi() {
+        use crate::protocol::MidiEvent;
+        use tutti_midi_types::{MidiChannel, MidiGroup};
+
+        let channels = Channels::new(48_000.0);
+        let lifecycle = Lifecycle::new();
+        let mut payload = Box::new(ProcessPayload::empty());
+        for _ in 0..4 {
+            payload.midi_events.push(MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                1,
+            ));
+        }
+        assert!(channels.push_command(Command::Process(payload)));
+        let socket =
+            std::env::temp_dir().join(format!("tutti-no-such-bridge-{}.sock", std::process::id()));
+        run_thread(
+            channels.clone(),
+            PayloadPool::new(),
+            lifecycle.clone(),
+            Arc::new(parking_lot::Mutex::new(None)),
+            socket,
+        );
+        assert!(lifecycle.is_crashed());
+        assert!(channels.pop_command().is_none());
+        assert_eq!(
+            channels
+                .dropped_midi_cell()
+                .load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+    }
+
     /// **A drain hands every held event to the listener and publishes the
     /// drop count to the bridge's counter, cumulatively.** The inbox's own
     /// test pins what it keeps; this pins that `pump`'s drain reports it.

@@ -59,7 +59,7 @@ use crate::types::{
 use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
 use super::midi_learn::MidiLearnProducer;
-use super::midi_mapping::{midi_to_mapped_controller, CcRoute, MidiCcMapping};
+use super::midi_mapping::{midi_to_mapped_controller, stage_input_events, CcRoute, MidiCcMapping};
 use super::{speakers, IComponentExt, K_INPUT, K_OUTPUT};
 
 pub(super) const K_EVENT: i32 = sdk_enum_i32(kEvent);
@@ -395,12 +395,12 @@ impl<T: Vst3Sample> Vst3Active<T> {
             ptrs: BufferPtrs::new(in_scratch.ptr_count, out_scratch.ptr_count),
             input: InputStaging {
                 buses: in_scratch.buses,
-                events: EventList::new(),
+                events: EventList::input(),
                 param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
-                events: EventList::new(),
+                events: EventList::output(),
                 // The plugin fills this one through `addPoint`, which cannot
                 // borrow a block: every queue has `MIN_POINT_ROOM`, no pool.
                 param_changes: ParameterChangesImpl::with_queues(
@@ -641,29 +641,15 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // no mapping yet. A single relaxed atomic load when disarmed (the norm).
         self.capture_midi_learn(events.midi);
 
-        // Route IMidiMapping-mapped CCs into parameter changes. When the plugin
-        // exposes a non-empty CC→param table, `CcRoute::route` pulls mapped
-        // CC/aftertouch/pitch-bend events out of the MIDI stream and merges them
-        // into its scratch ParameterChanges alongside the host's automation,
-        // returning the filtered MIDI + merged params to forward; otherwise the
-        // caller's own inputs are forwarded untouched.
-        let (effective_midi, effective_params): (&[MidiEvent], Option<&ParameterChanges>) =
-            match self.audio.cc.route(events.midi, param_changes) {
-                Some((midi, params)) => (midi, Some(params)),
-                None => (events.midi, param_changes),
-            };
-
-        // Stage the (possibly CC-filtered) MIDI plus every other input event
-        // source into the input event list, or clear it when there's nothing.
-        let effective = Vst3InputEvents {
-            midi: effective_midi,
-            ..*events
-        };
-        if !effective.is_empty() {
-            self.audio.input.events.update_from_sources(&effective);
-        } else {
-            self.audio.input.events.clear();
-        }
+        // Route IMidiMapping-mapped CCs into parameter changes (when the
+        // plugin exposes a non-empty CC→param table) and stage the filtered
+        // MIDI plus every other input event source into the input list.
+        let effective_params = stage_input_events(
+            &mut self.audio.cc,
+            &self.audio.input.events,
+            events,
+            param_changes,
+        );
         self.audio.output.events.clear();
         let input_events_ptr = event_list_ptr(&self.audio.input.events);
         let output_events_ptr = event_list_ptr(&self.audio.output.events);
@@ -768,6 +754,21 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// [`param_points_dropped`](Self::param_points_dropped).
     pub fn events_dropped(&self) -> u64 {
         self.audio.input.events.dropped()
+    }
+
+    /// SysEx messages not handed to the plugin since this instance was
+    /// activated (an in-place re-activation does not zero it), each dropped
+    /// whole rather than truncated: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
+    /// left without their `END` by a later `START`, open when the plugin was
+    /// re-activated, or cut by more than a block's MIDI cap routed through the
+    /// plugin's CC mapping. The input list
+    /// reassembles a multi-packet SysEx (across blocks if it spans them) and
+    /// hands the plugin one complete `0xF0 … 0xF7` message at its `END`.
+    /// Read on this instance only, like
+    /// [`events_dropped`](Self::events_dropped).
+    pub fn sysex_dropped(&self) -> u64 {
+        self.audio.input.events.sysex_dropped()
     }
 
     /// Events the plugin emitted through `addEvent` that its output list
@@ -1149,6 +1150,9 @@ impl<T: Vst3Sample> Vst3Active<T> {
     }
 
     fn set_active(&mut self, active: bool) -> Result<()> {
+        // The plugin forgets its input across a (de)activation: a SysEx open
+        // in the input list must not complete on the far side of it.
+        self.audio.input.events.reset_sysex();
         let flag: vst3::Steinberg::TBool = if active { 1 } else { 0 };
         let result = unsafe { self.loaded.interfaces.component.setActive(flag) };
         // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin

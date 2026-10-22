@@ -31,10 +31,10 @@ use std::sync::Mutex;
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value,
-    clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
-    CLAP_TRANSPORT_IS_RECORDING,
+    clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
+    clap_event_param_value, clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX,
+    CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
+    CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
 };
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
@@ -465,6 +465,7 @@ unsafe extern "C" fn plugin_process(
     }
 
     *CAPTURE.lock().unwrap_or_else(|p| p.into_inner()) = cap;
+    record_sysex_input(p);
 
     // AUDIO-CORRECTNESS: write the closed-form output the routing oracle
     // asserts against. Runs after the capture so a panic-free structural
@@ -1223,6 +1224,84 @@ unsafe fn echo_notes(p: &clap_process) {
             try_push(out, hdr);
         }
     }
+}
+
+/// The most bytes of one input SysEx message the plugin records (see
+/// `tutti_test_plugin_take_sysex_input`).
+pub const SYSEX_CAPTURE_BYTES: usize = 4096;
+
+/// The input SysEx messages the plugin has received: how many, and the last
+/// one's time and bytes (its first [`SYSEX_CAPTURE_BYTES`], and its full
+/// length). A fixed array, so recording one allocates nothing.
+struct SysExCapture {
+    count: u32,
+    time: u32,
+    len: usize,
+    bytes: [u8; SYSEX_CAPTURE_BYTES],
+}
+
+static SYSEX_IN: Mutex<SysExCapture> = Mutex::new(SysExCapture {
+    count: 0,
+    time: 0,
+    len: 0,
+    bytes: [0; SYSEX_CAPTURE_BYTES],
+});
+
+/// Record every `MIDI_SYSEX` event in the block's input list into
+/// [`SYSEX_IN`], reading its bytes through the pointer the host handed.
+///
+/// # Safety
+/// `p` must be the live `clap_process` the host passed to `process`.
+unsafe fn record_sysex_input(p: &clap_process) {
+    let list = p.in_events;
+    if list.is_null() {
+        return;
+    }
+    let (Some(size_fn), Some(get_fn)) = ((*list).size, (*list).get) else {
+        return;
+    };
+    let mut capture = SYSEX_IN.lock().unwrap_or_else(|p| p.into_inner());
+    for i in 0..size_fn(list) {
+        let hdr = get_fn(list, i);
+        if hdr.is_null() || (*hdr).type_ != CLAP_EVENT_MIDI_SYSEX {
+            continue;
+        }
+        let e = &*(hdr as *const clap_event_midi_sysex);
+        let len = e.size as usize;
+        let kept = len.min(SYSEX_CAPTURE_BYTES);
+        if !e.buffer.is_null() {
+            let bytes = std::slice::from_raw_parts(e.buffer, kept);
+            capture.bytes[..kept].copy_from_slice(bytes);
+        }
+        capture.count += 1;
+        capture.time = (*hdr).time;
+        capture.len = len;
+    }
+}
+
+/// The input SysEx messages received since the last call: returns how many,
+/// and copies the last one's bytes (up to `cap`) to `out`, its time to
+/// `time` and its full length to `len`. Resets the record.
+///
+/// # Safety
+/// `out` must be valid for `cap` bytes, and `time` and `len` for one write
+/// each.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_take_sysex_input(
+    out: *mut u8,
+    cap: usize,
+    time: *mut u32,
+    len: *mut usize,
+) -> u32 {
+    let mut capture = SYSEX_IN.lock().unwrap_or_else(|p| p.into_inner());
+    let n = capture.len.min(cap).min(SYSEX_CAPTURE_BYTES);
+    std::ptr::copy_nonoverlapping(capture.bytes.as_ptr(), out, n);
+    *time = capture.time;
+    *len = capture.len;
+    let count = capture.count;
+    capture.count = 0;
+    capture.len = 0;
+    count
 }
 
 /// Clear the latency-mode delay lines — the probe's whole cross-block

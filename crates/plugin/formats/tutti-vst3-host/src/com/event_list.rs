@@ -18,6 +18,12 @@
 //! counted ([`EventList::dropped`]), never grown into. And it is put in
 //! frame order by [`StableOrder`], whose scratch is reserved with it: std's
 //! stable sort borrows a scratch from the heap past 73 events.
+//!
+//! The input list reassembles multi-packet SysEx into one complete message
+//! ([`SysExAssembler`], reserved with the list) and stages it as one
+//! [`Vst3Event::SysEx`] at its `END` packet's frame. A message may span
+//! blocks; one past [`SYSEX_MESSAGE_CAPACITY`] is dropped whole and counted
+//! ([`EventList::sysex_dropped`]).
 
 use vst3::Steinberg::{
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -25,22 +31,23 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, TextArena, Vst3Event, Vst3InputEvents,
-    K_NOTE_OFF_EVENT,
-};
-// Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
-// goes through `RtMidiEvents`.
-#[cfg(test)]
 use crate::types::MidiEvent;
-use tutti_plugin_types::{RtMidiEvents, StableOrder, HARMONY_CAPACITY, MIDI_STACK_CAPACITY};
+use crate::types::{
+    from_c_event, note_expression_to_vst3, to_c_event, EventHeader, SysExEvent, TextArena,
+    Vst3Event, Vst3InputEvents, K_DATA_EVENT, K_NOTE_OFF_EVENT,
+};
+#[cfg(doc)]
+use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
+use tutti_plugin_types::{
+    RtMidiEvents, StableOrder, SysExAssembler, SysExStep, HARMONY_CAPACITY, MIDI_STACK_CAPACITY,
+};
 use tutti_types::AudioThreadCell;
 
 /// The events one list holds in a block: what its sources can deliver.
 ///
 /// - **MIDI**: at most [`MIDI_STACK_CAPACITY`]. The host's chunk and the
 ///   wire decode both cap it there, and each message stages as one event
-///   at most.
+///   at most (a reassembled SysEx stages one event for its packets).
 /// - **Chords, scales, per-note texts and per-note integer expressions**:
 ///   at most [`HARMONY_CAPACITY`] of each kind, by their containers' type.
 /// - **Per-note expression values**: nothing upstream caps them (the plugin
@@ -84,28 +91,59 @@ struct Inner {
     text_arena: TextArena,
     /// The sort's scratch, reserved for [`EVENT_CAPACITY`] events.
     order: StableOrder,
+    /// Reassembles multi-packet SysEx and owns the bytes a
+    /// [`Vst3Event::SysEx`] points at. Reserved on the input list only; its
+    /// completed messages are forgotten in lockstep with `events`, and an
+    /// open message carries into the next block.
+    sysex: SysExAssembler,
     /// Events dropped for want of room since the list was made
     /// ([`EventList::dropped`]).
     dropped: u64,
 }
 
-impl Default for Inner {
-    fn default() -> Self {
+impl Inner {
+    fn new(sysex: SysExAssembler) -> Self {
         Self {
             events: Vec::with_capacity(EVENT_CAPACITY),
             text_arena: TextArena::new(),
             order: StableOrder::with_capacity(EVENT_CAPACITY),
+            sysex,
             dropped: 0,
         }
     }
-}
 
-impl Inner {
-    /// Clears all per-block storage in lockstep (events + the text arena),
-    /// keeping heap capacity for reuse.
+    /// Clears all per-block storage in lockstep (events, the text arena and
+    /// the completed SysEx messages), keeping heap capacity for reuse.
     fn clear(&mut self) {
         self.events.clear();
         self.text_arena.clear();
+        self.sysex.begin_block();
+    }
+
+    /// Stage one MIDI event: a SysEx7 packet through the reassembler (a
+    /// completed message stages as one event), anything else converted.
+    fn stage_midi(&mut self, event: &MidiEvent) {
+        match self.sysex.push(event) {
+            SysExStep::NotSysEx => {
+                if let Some(event) = Vst3Event::from_midi(event) {
+                    self.push(event);
+                }
+            }
+            SysExStep::Held => {}
+            SysExStep::Complete(bytes) => {
+                let sample_offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
+                self.push(Vst3Event::SysEx(SysExEvent {
+                    header: EventHeader {
+                        bus_index: 0,
+                        sample_offset,
+                        ppq_position: 0.0,
+                        flags: 0,
+                        event_type: K_DATA_EVENT,
+                    },
+                    bytes,
+                }));
+            }
+        }
     }
 
     /// Whether one more event fits without growing the list.
@@ -171,9 +209,22 @@ impl Class for EventList {
 }
 
 impl EventList {
-    pub fn new() -> ComWrapper<Self> {
+    /// A plugin's input list: reserves the SysEx reassembly buffer
+    /// ([`SysExAssembler::reserved`], about 66 KiB) with the event storage.
+    /// Off the audio thread.
+    pub fn input() -> ComWrapper<Self> {
+        Self::with_sysex(SysExAssembler::reserved())
+    }
+
+    /// A plugin's output list, which the plugin fills through `addEvent`: no
+    /// SysEx reassembly, so no buffer for it. Off the audio thread.
+    pub fn output() -> ComWrapper<Self> {
+        Self::with_sysex(SysExAssembler::default())
+    }
+
+    fn with_sysex(sysex: SysExAssembler) -> ComWrapper<Self> {
         ComWrapper::new(Self {
-            inner: AudioThreadCell::new(Inner::default()),
+            inner: AudioThreadCell::new(Inner::new(sysex)),
         })
     }
 
@@ -183,9 +234,9 @@ impl EventList {
     pub fn update_from_midi(&self, midi_events: &[MidiEvent]) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
-        inner
-            .events
-            .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
+        for event in midi_events {
+            inner.stage_midi(event);
+        }
     }
 
     /// Stage every input event source into the list: MIDI (transcoded),
@@ -203,8 +254,8 @@ impl EventList {
     pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
-        for event in src.midi.iter().filter_map(Vst3Event::from_midi) {
-            inner.push(event);
+        for event in src.midi {
+            inner.stage_midi(event);
         }
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced, and
@@ -260,6 +311,33 @@ impl EventList {
         self.inner.borrow().dropped
     }
 
+    /// SysEx messages dropped whole since the list was made: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
+    /// `START` or a `SINGLE` on their group, past the buffer's room in one
+    /// block, cut by a lost tail ([`lose_sysex_tail`](Self::lose_sysex_tail))
+    /// or open at a [`reset_sysex`](Self::reset_sysex). See
+    /// [`SysExAssembler`] for the policy.
+    ///
+    /// A message completed but refused because the block's list was full is
+    /// not counted here: it is one event in [`dropped`](Self::dropped).
+    pub fn sysex_dropped(&self) -> u64 {
+        self.inner.borrow().sysex.dropped()
+    }
+
+    /// The MIDI just staged lost its tail upstream (a list before this one
+    /// overflowed): drop the open SysEx, counted, so its later packets are
+    /// not spliced onto it. Call it after staging. Never allocates.
+    pub fn lose_sysex_tail(&self) {
+        self.inner.borrow_mut().sysex.lost_tail();
+    }
+
+    /// The plugin is being (re-)activated: drop the open SysEx, counted, so
+    /// the message is not completed across the plugin's reset. Never
+    /// allocates.
+    pub fn reset_sysex(&self) {
+        self.inner.borrow_mut().sysex.reset();
+    }
+
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.borrow().events.len()
@@ -310,7 +388,7 @@ impl IEventListTrait for EventList {
         let Some(event) = inner.events.get(index) else {
             return kInvalidArgument;
         };
-        *e = to_c_event(event, &inner.text_arena);
+        *e = to_c_event(event, &inner.text_arena, inner.sysex.bytes());
         kResultOk
     }
 
@@ -392,7 +470,7 @@ mod tests {
 
     #[test]
     fn test_update_from_midi_counts_correctly() {
-        let list = EventList::new();
+        let list = EventList::input();
         let midi_events = [
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
                 .with_frame_offset(0),
@@ -403,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_clear_after_update_from_midi() {
-        let list = EventList::new();
+        let list = EventList::input();
         let midi_events = [
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
                 .with_frame_offset(0),
@@ -424,7 +502,7 @@ mod tests {
     #[test]
     fn concurrent_reads_of_the_list_both_succeed() {
         use std::sync::Barrier;
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_midi(&[MidiEvent::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
@@ -459,7 +537,7 @@ mod tests {
     /// (SIGABRT): the plugin-server crash this guards against.
     #[test]
     fn a_read_during_a_write_fails_at_the_com_level() {
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_midi(&[MidiEvent::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
@@ -481,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_get_event_valid() {
-        let list = EventList::new();
+        let list = EventList::input();
         list.inner
             .borrow_mut()
             .events
@@ -527,7 +605,7 @@ mod tests {
             })
             .collect();
 
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_midi(&midi);
 
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
@@ -579,7 +657,7 @@ mod tests {
             })
             .collect();
 
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_sources(&Vst3InputEvents {
             chords: &chords,
             ..Default::default()
@@ -641,7 +719,7 @@ mod tests {
             ..Default::default()
         };
 
-        let list = EventList::new();
+        let list = EventList::input();
         assert_no_alloc::assert_no_alloc(|| {
             list.update_from_sources(&sources);
         });
@@ -677,7 +755,7 @@ mod tests {
     /// panic on the cast.
     #[test]
     fn get_event_rejects_bad_indices() {
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_midi(&[MidiEvent::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
@@ -695,7 +773,7 @@ mod tests {
     /// they must reuse the pre-reserved Vec capacity without heap grow.
     #[test]
     fn update_from_midi_is_allocation_free_after_warmup() {
-        let list = EventList::new();
+        let list = EventList::input();
         let events = [
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
                 .with_frame_offset(0),
@@ -723,7 +801,7 @@ mod tests {
     /// allocation-free once the events Vec and the text arena have warmed up.
     #[test]
     fn update_from_sources_is_allocation_free_after_warmup() {
-        let list = EventList::new();
+        let list = EventList::input();
         let midi = [
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
                 .with_frame_offset(0),
@@ -895,7 +973,7 @@ mod tests {
             expr_ints: &expr_ints,
         };
 
-        let list = EventList::new();
+        let list = EventList::input();
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..4 {
                 list.update_from_sources(&src);
@@ -952,7 +1030,7 @@ mod tests {
             .collect();
         let chords: Vec<ChordValue> = (0..4).map(|j| chord(5, j)).collect();
 
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_sources(&Vst3InputEvents {
             midi: &midi,
             note_expressions: &note_expressions,
@@ -1016,7 +1094,7 @@ mod tests {
             ..Default::default()
         };
 
-        let list = EventList::new();
+        let list = EventList::input();
         let capacity = list.inner.borrow().events.capacity();
         assert_no_alloc::assert_no_alloc(|| list.update_from_sources(&src));
         assert_eq!(
@@ -1059,12 +1137,12 @@ mod tests {
     /// gate.
     #[test]
     fn add_event_refuses_past_the_room() {
-        let list = EventList::new();
+        let list = EventList::input();
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
-        let mut on = to_c_event(&Vst3Event::NoteOn(make_note_on()), &[]);
+        let mut on = to_c_event(&Vst3Event::NoteOn(make_note_on()), &[], &[]);
         let mut chord_arena = TextArena::new();
         let chord_event = chord(0, 1).to_vst3_event(&mut chord_arena);
-        let mut chord_c = to_c_event(&chord_event, &chord_arena);
+        let mut chord_c = to_c_event(&chord_event, &chord_arena, &[]);
         let mut results = [0; 4];
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..EVENT_CAPACITY - 1 {
@@ -1125,7 +1203,7 @@ mod tests {
             })
             .collect();
 
-        let list = EventList::new();
+        let list = EventList::input();
         assert_no_alloc::assert_no_alloc(|| {
             list.update_from_sources(&Vst3InputEvents {
                 midi: &midi,
@@ -1164,7 +1242,7 @@ mod tests {
                 .with_frame_offset(0),
         ];
         let note_expressions = [expr(3, 1), expr(-1, 2)];
-        let list = EventList::new();
+        let list = EventList::input();
         list.update_from_sources(&Vst3InputEvents {
             midi: &midi,
             note_expressions: &note_expressions,
@@ -1174,5 +1252,138 @@ mod tests {
             staged(&list),
             vec![(-1, ("expr", 2)), (0, ("on", 60)), (3, ("expr", 1))]
         );
+    }
+
+    /// Every SysEx `kDataEvent` the plugin reads through `getEvent`, as
+    /// `(sampleOffset, bytes)`, its bytes read through the pointer it is
+    /// handed.
+    fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
+        use crate::types::K_DATA_TYPE_MIDI_SYSEX;
+        let mut out = Vec::new();
+        unsafe {
+            for i in 0..list.getEventCount() {
+                let mut e: Event = std::mem::zeroed();
+                assert_eq!(list.getEvent(i, &mut e), kResultOk);
+                if e.r#type != K_DATA_EVENT {
+                    continue;
+                }
+                let d = e.__field0.data;
+                if d.r#type != K_DATA_TYPE_MIDI_SYSEX {
+                    continue;
+                }
+                let bytes = std::slice::from_raw_parts(d.bytes, d.size as usize).to_vec();
+                out.push((e.sampleOffset, bytes));
+            }
+        }
+        out
+    }
+
+    fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.into_iter()
+            .map(|e| e.with_frame_offset(frame))
+            .collect()
+    }
+
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![0xF0];
+        v.extend_from_slice(payload);
+        v.push(0xF7);
+        v
+    }
+
+    fn sysex_payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 % 0x7F) as u8).collect()
+    }
+
+    /// **A multi-packet SysEx reaches the plugin as one complete message**,
+    /// `0xF0 … 0xF7`, at its `END` packet's frame, beside the block's other
+    /// events, and the staging does not allocate.
+    ///
+    /// Mutation (run): `stage_midi` converting every event with
+    /// `Vst3Event::from_midi` (no reassembly) → no SysEx event → fails.
+    #[test]
+    fn a_multi_packet_sysex_reaches_the_plugin_whole() {
+        let body = sysex_payload(100);
+        let mut midi = sysex_packets(&body, 5);
+        let last = midi.len() - 1;
+        midi[last].frame_offset = 9;
+        midi.insert(
+            3,
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(7),
+        );
+        let list = EventList::input();
+        assert_no_alloc::assert_no_alloc(|| {
+            list.update_from_sources(&Vst3InputEvents {
+                midi: &midi,
+                ..Default::default()
+            })
+        });
+        assert_eq!(sysex_read_by_plugin(&list), vec![(9, framed(&body))]);
+        assert_eq!(list.len(), 2, "the note and the one SysEx");
+        assert_eq!(list.sysex_dropped(), 0);
+    }
+
+    /// **A SysEx that spans blocks completes in the block of its `END`**;
+    /// the block holding only its start hands the plugin nothing of it.
+    ///
+    /// Mutation (run): `Inner::clear` clearing the assembler's open run
+    /// (a `begin_block` that always clears) → the `END` finds no run → the
+    /// message never arrives → fails.
+    #[test]
+    fn a_sysex_spanning_blocks_completes_in_the_block_of_its_end() {
+        let body = sysex_payload(MIDI_STACK_CAPACITY * 6 + 100);
+        let midi = sysex_packets(&body, 0);
+        assert!(midi.len() > MIDI_STACK_CAPACITY);
+        let list = EventList::input();
+        let (first, second) = midi.split_at(MIDI_STACK_CAPACITY);
+        list.update_from_midi(first);
+        assert!(sysex_read_by_plugin(&list).is_empty());
+        // An empty block between them clears the list, keeping the run.
+        list.clear();
+        list.update_from_midi(second);
+        assert_eq!(sysex_read_by_plugin(&list), vec![(0, framed(&body))]);
+        assert_eq!(list.sysex_dropped(), 0);
+    }
+
+    /// **A SysEx past `SYSEX_MESSAGE_CAPACITY` is dropped whole and counted**
+    /// (never truncated), and the next one arrives intact.
+    ///
+    /// Mutation (run): the assembler's capacity check removed → the
+    /// over-long message is delivered → fails.
+    #[test]
+    fn a_sysex_past_capacity_is_dropped_whole_and_counted() {
+        use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
+        let long = sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
+        let list = EventList::input();
+        for block in sysex_packets(&long, 0).chunks(MIDI_STACK_CAPACITY) {
+            list.update_from_midi(block);
+            assert!(sysex_read_by_plugin(&list).is_empty());
+        }
+        assert_eq!(list.sysex_dropped(), 1);
+        let next = sysex_payload(20);
+        list.update_from_midi(&sysex_packets(&next, 2));
+        assert_eq!(sysex_read_by_plugin(&list), vec![(2, framed(&next))]);
+        assert_eq!(list.sysex_dropped(), 1);
+    }
+
+    /// **A `START` with no `END` before the next `START` is dropped and
+    /// counted**; the later message arrives whole.
+    ///
+    /// Mutation (run): the assembler's `START` not abandoning the open run →
+    /// the two messages are spliced together and delivered → fails.
+    #[test]
+    fn a_start_without_its_end_before_the_next_start_is_dropped() {
+        let a = sysex_payload(30);
+        let b = sysex_payload(20);
+        let mut midi = sysex_packets(&a, 0);
+        midi.truncate(2); // START and one CONTINUE
+        midi.extend(sysex_packets(&b, 4));
+        let list = EventList::input();
+        list.update_from_midi(&midi);
+        assert_eq!(sysex_read_by_plugin(&list), vec![(4, framed(&b))]);
+        assert_eq!(list.sysex_dropped(), 1);
     }
 }

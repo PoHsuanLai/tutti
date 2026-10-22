@@ -1325,3 +1325,39 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
         "reported once, not on every later poll"
     );
 }
+
+/// **A SysEx open across a re-activation is not completed past it.** The
+/// plugin forgets its input across `setActive(false)`/`setActive(true)`, so
+/// the input list drops its open message (counted) and the message's tail
+/// after the re-activation completes nothing: the cut message is dropped
+/// whole, and the next one arrives (it does not count as dropped).
+///
+/// Mutation (run): the `reset_sysex` call removed from `set_active` → the
+/// tail completes the message across the re-activation → nothing is
+/// counted → fails.
+#[test]
+fn a_sysex_open_across_a_reactivation_is_dropped() {
+    let _guard = plugin_guard();
+    let mut inst = load_probe(64).expect("probe");
+    let packets = |len: usize| {
+        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        out
+    };
+    let cut = packets(60);
+    let next = packets(12);
+
+    render(&mut inst, 64, &cut[..3], None, |_, _, _| 0.0);
+    assert_eq!(inst.sysex_dropped(), 0);
+    inst.set_sample_rate(96_000.0)
+        .expect("the probe accepts the new rate");
+    assert_eq!(
+        inst.sysex_dropped(),
+        1,
+        "the open message, at the re-activation"
+    );
+    let rest: Vec<MidiEvent> = cut[3..].iter().chain(&next).copied().collect();
+    render(&mut inst, 64, &rest, None, |_, _, _| 0.0);
+    assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
+}

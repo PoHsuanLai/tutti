@@ -23,7 +23,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::transport_source::{self, SteadyTime};
-use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
+use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 
 /// A VST2 plugin running inside the host process, as a graph node.
@@ -48,6 +48,9 @@ pub struct InProcessVst2Client {
     pub(super) metadata: PluginInfo,
     /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
+    /// Takes the event input's MIDI into `midi`, carrying across blocks
+    /// which SysEx lost a packet to its cap.
+    pub(super) intake: MidiIntake,
     /// The block's transport, read from the graph's [`Cx`] (live and in a
     /// fork alike), with the project meter installed through
     /// [`set_meter`](Self::set_meter).
@@ -80,9 +83,6 @@ pub struct InProcessVst2Client {
     /// Bumped on every audio-thread `try_lock` failure. Shared with the
     /// loader's handle side.
     pub(super) contention_count: Arc<AtomicU64>,
-    /// The event input's MIDI a block had no room for
-    /// ([`InProcessVst2Controls::dropped_midi_in`](super::InProcessVst2Controls::dropped_midi_in)).
-    pub(super) midi_in_dropped: Arc<AtomicU64>,
     /// The file the plugin was loaded from: what a fork loads again.
     pub(super) origin: Arc<Path>,
     /// Who tells the plugin the rate the node is prepared at.
@@ -282,6 +282,7 @@ impl InProcessVst2Client {
             inner,
             metadata,
             midi: MidiEventVec::new(),
+            intake: MidiIntake::default(),
             transport: TransportFeed::new(),
             features,
             scratch,
@@ -289,7 +290,6 @@ impl InProcessVst2Client {
             sample_rate,
             pending_sample_rate,
             contention_count,
-            midi_in_dropped: Arc::default(),
             origin,
             rate_delivery: RateDelivery::Parked,
             params,

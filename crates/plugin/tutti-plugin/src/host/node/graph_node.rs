@@ -9,8 +9,6 @@
 //! hands back its [`PluginControls`](super::PluginControls) and a fork source.
 //! Only [`Bound`] is either: an unbound client is not a node.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape, SortedEvents,
@@ -23,6 +21,7 @@ use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
 use super::transport_source::{self, SteadyTime};
+use super::MidiIntake;
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{
@@ -84,6 +83,12 @@ impl Node for PluginClient<Bound> {
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
         c.state.io.prepare(p);
+        // The MIDI taken towards the next chunk goes with the batcher's
+        // frames, counted, and the SysEx open in it is cut: a same-rate
+        // re-prepare is a no-op on the server, whose reassembler keeps its
+        // open message (as at a reset).
+        let lost = c.state.intake.lose(&mut c.state.pending.midi);
+        c.state.params.count_midi_dropped(lost);
         // Control thread: the one place the slots are allocated, one per
         // parameter slot the delivery has.
         c.state.segments.prepare(c.state.params.room());
@@ -136,7 +141,7 @@ impl Node for PluginClient<Bound> {
             steady,
             segments,
             params,
-            midi_in_dropped,
+            intake,
         } = &mut c.state;
         out_events.clear();
 
@@ -163,7 +168,7 @@ impl Node for PluginClient<Bound> {
             indexed,
             segments,
             params,
-            midi_in_dropped,
+            intake,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -209,6 +214,12 @@ impl Node for PluginClient<Bound> {
         // The chunk in flight is dropped; its values are owed to the next
         // (the plugin keeps its parameters across a reset).
         self.state.params.abandon();
+        // The MIDI taken towards the next chunk goes with the batcher's
+        // frames, counted, and so does the rest of every SysEx open in it or
+        // in the chunk in flight: the server keeps its reassembler's open
+        // message across a reset (its `Reset` is a no-op for it).
+        let lost = self.state.intake.lose(&mut self.state.pending.midi);
+        self.state.params.count_midi_dropped(lost);
         let _ = self.bridge.reset_rt();
     }
 }
@@ -239,8 +250,8 @@ struct PluginChunks<'a> {
     segments: &'a mut SegmentPoints,
     /// The chunk's parameter changes: a queue per parameter, changes only.
     params: &'a mut ParamDelivery,
-    /// Counts the MIDI a chunk had no room for.
-    midi_in_dropped: &'a AtomicU64,
+    /// Takes the MIDI into the chunk's capped list.
+    intake: &'a mut MidiIntake,
 }
 
 impl Chunks for PluginChunks<'_> {
@@ -278,8 +289,8 @@ impl Chunks for PluginChunks<'_> {
     /// passes on changes only (`param_delivery`); the walk is `param_input`'s,
     /// which the in-process VST2 node shares. Past the MIDI and harmony
     /// caps events are dropped: the lists are inline and cannot grow, so
-    /// nothing allocates on the audio thread. A dropped MIDI event is
-    /// counted ([`PluginControls::dropped_midi_in`](super::PluginControls::dropped_midi_in)).
+    /// nothing allocates on the audio thread. Dropped MIDI is counted, and a
+    /// SysEx that lost a packet loses the rest of it (`MidiIntake`).
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let Self {
             cx,
@@ -289,10 +300,11 @@ impl Chunks for PluginChunks<'_> {
             indexed,
             segments,
             params,
-            midi_in_dropped,
+            intake,
             ..
         } = self;
         let features = *features;
+        let mut midi_dropped = 0;
         param_input::take(
             events.as_slice(),
             from,
@@ -304,15 +316,8 @@ impl Chunks for PluginChunks<'_> {
             params,
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
-                    // Past the cap the event is dropped (`MidiEventVec` is
-                    // inline and cannot grow), and counted.
-                    if pending
-                        .midi
-                        .try_push(MidiEvent::from_ump(frame as u32, &ump.0))
-                        .is_err()
-                    {
-                        midi_in_dropped.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let event = MidiEvent::from_ump(frame as u32, &ump.0);
+                    midi_dropped += u64::from(!intake.push(&mut pending.midi, event));
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
@@ -322,6 +327,7 @@ impl Chunks for PluginChunks<'_> {
                 EventKind::Ramp(_) | EventKind::Segment(_) | EventKind::Resync => {}
             },
         );
+        params.count_midi_dropped(midi_dropped);
     }
 
     /// The chunk's MIDI, sorted by frame: the event input's, as its frames
@@ -338,6 +344,18 @@ impl Chunks for PluginChunks<'_> {
 
     fn handed_off(&mut self, delivered: bool) {
         self.params.handed_off(delivered);
+    }
+
+    /// The chunk's MIDI is lost, counted, and so is the rest of every SysEx
+    /// open in it (`MidiIntake::lost`).
+    fn unsent(&mut self) {
+        let lost = self.intake.lose(&mut self.pending.midi);
+        self.params.count_midi_dropped(lost);
+    }
+
+    fn refused(&mut self, midi: usize) {
+        self.params.count_midi_dropped(midi as u64);
+        self.intake.lost();
     }
 
     /// Nothing: each event goes out of the event output where it plays
@@ -438,5 +456,102 @@ mod harmony_tests {
             push_harmony(&mut h, takes, Harmony::chord(60, 60, 1), i);
         }
         assert_eq!(h.chords.changes.len(), HARMONY_CAPACITY, "kept to the cap");
+    }
+}
+
+#[cfg(test)]
+mod loss_tests {
+    use super::*;
+    use crate::host::node::param_delivery::DeliveryCounters;
+    use std::sync::Arc;
+    use tutti_graph::{Env, PlayClock, Transport, TransportChanges, TransportHistory};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate};
+
+    /// A 30-byte dump's five packets.
+    fn dump() -> Vec<MidiEvent> {
+        let payload: Vec<u8> = (0..30).collect();
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+        assert_eq!(out.len(), 5);
+        out
+    }
+
+    /// `f` on the chunks of a node whose intake took `taken` into its
+    /// pending chunk; what the node counted, and its intake after.
+    fn on_chunks(taken: &[MidiEvent], f: impl FnOnce(&mut PluginChunks<'_>)) -> (u64, MidiIntake) {
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut params = ParamDelivery::new([], Arc::clone(&counters));
+        let mut intake = MidiIntake::default();
+        let mut pending = BlockPayload::default();
+        for &e in taken {
+            assert!(intake.push(&mut pending.midi, e));
+        }
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(48_000.0),
+            block_len: Samples(64),
+            transport: Transport::new(false, Bpm(120.0), Beat(0.0), None),
+            changes: TransportChanges::NONE,
+            play: PlayClock::ZERO,
+        };
+        let meter = MeterMap::default();
+        let mut out_events = MidiEventVec::new();
+        let mut segments = SegmentPoints::default();
+        f(&mut PluginChunks {
+            cx: Cx {
+                env: &env,
+                arrival: Latency::ZERO,
+                history: TransportHistory::none(),
+            },
+            events: SortedEvents::EMPTY,
+            frames: 64,
+            meter: &meter,
+            features: Features::empty(),
+            steady: SteadyTime::default(),
+            pending: &mut pending,
+            out_events: &mut out_events,
+            indexed: false,
+            segments: &mut segments,
+            params: &mut params,
+            intake: &mut intake,
+        });
+        (counters.dropped_midi_in(), intake)
+    }
+
+    /// **A chunk not sent counts its MIDI, and cuts the SysEx open in it.**
+    /// The dump's first three packets and a note were taken; the chunk is
+    /// not staged, so all four are counted, and the dump's tail is refused.
+    ///
+    /// Mutation (run): `unsent` not counting → 0 counted → fails.
+    #[test]
+    fn an_unsent_chunk_is_counted_and_cuts_its_sysex() {
+        let dump = dump();
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+        let taken = [dump[0], dump[1], dump[2], note];
+        let (dropped, mut intake) = on_chunks(&taken, |c| c.unsent());
+        assert_eq!(dropped, 4);
+        assert!(!intake.admit(&dump[3]), "the tail is cut");
+        assert!(!intake.admit(&dump[4]));
+        assert!(intake.admit(&note));
+    }
+
+    /// **A refused chunk counts the MIDI it carried, and cuts the SysEx
+    /// open in it.** The chunk's payload was taken from `pending` before
+    /// the refusal, so what it carried is passed in.
+    ///
+    /// Mutation (run): `refused` not counting → 0 counted → fails.
+    /// Mutation (run): `refused` not calling `intake.lost()` → the tail is
+    /// admitted → fails.
+    #[test]
+    fn a_refused_chunk_is_counted_and_cuts_its_sysex() {
+        let dump = dump();
+        let (dropped, mut intake) = on_chunks(&dump[..2], |c| {
+            c.pending.midi.clear();
+            c.refused(2);
+        });
+        assert_eq!(dropped, 2);
+        assert!(!intake.admit(&dump[2]), "the tail is cut");
+        assert!(!intake.admit(&dump[4]));
     }
 }

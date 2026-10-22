@@ -430,8 +430,8 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 /// is handed `MIDI_STACK_CAPACITY` (256) of them, and the controls count the
 /// other 44. A block within the cap adds nothing.
 ///
-/// Mutation (run): the drop not counted (`fetch_add` removed from the event
-/// walk) → the count stays 0 → fails.
+/// Mutation (run): the drop not counted (`count_midi_dropped` of the event
+/// walk's refusals removed from `process`) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_blocks_capacity_is_counted() {
     use tutti_graph::contract::Direct;

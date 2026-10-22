@@ -208,6 +208,13 @@ impl AudioBridge {
         self.channels.dropped_param_events()
     }
 
+    /// The count of MIDI events the bridge thread did not send (a block it
+    /// skipped as stale, and the rest of every SysEx open in it), shared:
+    /// the plugin node's controls read it beside the node's own.
+    pub(crate) fn dropped_midi_cell(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.channels.dropped_midi_cell()
+    }
+
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         &self.audio_buffer
     }

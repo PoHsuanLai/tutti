@@ -166,7 +166,7 @@ impl ProjectTime {
             let gap = usize::try_from(steady.checked_sub(p.steady)?).ok()?;
             let rolls = p.transport.playing && t.playing && p.rate == rate;
             let continuity = p.transport.continuity(Samples(gap), rate, t);
-            (rolls && continuity == Continuity::Rolled).then(|| p.frames + gap as f64)
+            (rolls && continuity == Continuity::Rolled).then_some(p.frames + gap as f64)
         });
         let frames = rolled.unwrap_or_else(|| t.beat().get() * 60.0 / tempo * hz);
         if !frames.is_finite() {

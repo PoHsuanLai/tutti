@@ -161,6 +161,7 @@ mod tests {
         // so every VALID bit is genuinely earned.
         let transport = playing_transport()
             .with_tempo(120.0)
+            .with_sample_rate(48_000.0)
             .with_position_quarters(4.0)
             .with_bar(4.0, Default::default());
 
@@ -175,8 +176,9 @@ mod tests {
             | F::TRANSPORT_RECORDING
             | F::TRANSPORT_CYCLE_ACTIVE
             | F::CYCLE_POS_VALID
-            // A usable tempo, position and rate put the MIDI clock grid
-            // under the playhead.
+            // A usable tempo, position and rate (the snapshot's, as the
+            // plugin node always sends one) put the MIDI clock grid under the
+            // playhead.
             | F::VST_CLOCK_VALID)
             .bits();
 
@@ -194,17 +196,14 @@ mod tests {
     fn flags_stopped_no_cycle() {
         // Stopped, not recording, no cycle. `TransportInfo::default()` carries a
         // real 120 BPM tempo and 4/4, and 0.0 is a perfectly usable position, so
-        // the position/tempo VALID bits stand, and with the rate so does the
-        // MIDI clock's. No host clock: `nanoSeconds` is not claimed.
+        // the position/tempo VALID bits stand. Its sample rate is 0, and the
+        // MIDI clock is measured at the snapshot's rate (not the instance's),
+        // so it is not claimed; nor is `nanoSeconds`, with no host clock.
         let transport = TransportInfo::new();
         let info = build_vst2_time_info(&transport, 48_000.0, None);
 
-        let expected = (F::PPQ_POS_VALID
-            | F::TEMPO_VALID
-            | F::TIME_SIG_VALID
-            | F::BARS_VALID
-            | F::VST_CLOCK_VALID)
-            .bits();
+        let expected =
+            (F::PPQ_POS_VALID | F::TEMPO_VALID | F::TIME_SIG_VALID | F::BARS_VALID).bits();
 
         assert_eq!(info.flags, expected);
         assert_eq!(info.flags & F::TRANSPORT_PLAYING.bits(), 0);

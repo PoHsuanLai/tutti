@@ -515,7 +515,7 @@ pub fn plugin_editor_attach_system(
 /// plugin's snapped reply back to the window.
 ///
 /// Bevy reports the window's size in logical units; the plugin is asked in
-/// its own ([`requested_editor_size`]). One that converts to `last_applied`
+/// its own (`requested_editor_size`). One that converts to `last_applied`
 /// is an echo of this host's own write and is skipped, which is what stops
 /// the two sides trading resizes. A plugin that refuses outright has the
 /// window put back to the last size it accepted.

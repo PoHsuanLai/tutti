@@ -14,7 +14,7 @@
 //! [`Resampler`] drops those frames at the head and flushes with silence at the
 //! end to push the real tail out.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use tutti_types::{SampleRate, Samples};
 
 /// Input frames per FFT chunk, and how finely each chunk is subdivided.
@@ -219,6 +219,14 @@ mod streaming {
             want.saturating_sub(self.emitted)
         }
 
+        /// `(unconsumed carry frames, head, input frames the next chunk
+        /// needs)`, for the test that pins the carry's bound.
+        #[cfg(test)]
+        pub(crate) fn backlog(&self) -> (usize, usize, usize) {
+            let len = self.carry.first().map_or(0, |c| c.len());
+            (len - self.head, self.head, self.inner.input_frames_next())
+        }
+
         fn drain(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
             let result = self.drain_chunks(out, flushing);
             // Drop the consumed prefix once per call, not once per chunk.
@@ -230,6 +238,19 @@ mod streaming {
         }
 
         fn drain_chunks(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
+            // Every pass consumes one chunk, so the carry this call starts
+            // with runs out within `ceil(have / need)` passes (the last one
+            // padded when flushing). The `+ 1` is slack; past it the carry is
+            // not shrinking, and a bug that stops it shrinking fails here
+            // instead of spinning forever. Mutations (run): drop
+            // `self.head += need`, or pad to `self.head + need + 1` → both
+            // hung the flush before this bound; now every resample test
+            // fails at it.
+            let max_passes = {
+                let have = self.carry.first().map_or(0, |c| c.len()) - self.head;
+                have.div_ceil(self.inner.input_frames_next().max(1)) + 1
+            };
+            let mut passes = 0usize;
             loop {
                 let need = self.inner.input_frames_next();
                 let have = self.carry.first().map_or(0, |c| c.len()) - self.head;
@@ -244,6 +265,14 @@ mod streaming {
                     for c in self.carry.iter_mut() {
                         c.resize(self.head + need, 0.0);
                     }
+                }
+
+                passes += 1;
+                if passes > max_passes {
+                    debug_assert!(false, "the resample carry stopped shrinking");
+                    return Err(Error::Resample(format!(
+                        "the resample carry stopped shrinking after {max_passes} chunks"
+                    )));
                 }
 
                 let chunk = self.head..self.head + need;
@@ -481,6 +510,37 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The carry holds less than one chunk between pushes, so a streaming
+    /// encode keeps O(chunk) of input, not the whole render: every `push`
+    /// leaves the consumed prefix dropped (`head == 0`) and fewer frames
+    /// than the next chunk needs.
+    ///
+    /// Mutation (run, M4): never drop the consumed prefix and never reset
+    /// `head` in `drain` → `head` is non-zero after the first chunk and the
+    /// assertion fails (the bit-identity test still passes, since the head
+    /// offset alone reads the right frames).
+    #[test]
+    fn the_carry_stays_under_one_chunk_between_pushes() {
+        for chunk in ChunkSize::PRESETS {
+            let mut r = Resampler::new(2, 44_100.into(), 48_000.into(), chunk).unwrap();
+            let mut out = vec![Vec::new(); 2];
+            let block = vec![vec![0.25f32; 37]; 2];
+            for i in 0..2_000 {
+                r.push(&block, &mut out).unwrap();
+                let (backlog, head, need) = r.backlog();
+                assert_eq!(
+                    head, 0,
+                    "{chunk:?}: push {i} left the consumed prefix in place"
+                );
+                assert!(
+                    backlog < need,
+                    "{chunk:?}: push {i} left {backlog} frames, a whole chunk is {need}"
+                );
+            }
+            r.finish(&mut out).unwrap();
         }
     }
 

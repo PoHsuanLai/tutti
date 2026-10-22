@@ -151,7 +151,8 @@ pub(super) struct TransportFeed {
     default_meter: MeterMap,
     /// The free-running sample counter: frames this node rendered.
     steady: SteadyTime,
-    /// Project time: rolls with playback, re-seated at a jump.
+    /// Project time: rolls with playback, holds while stopped, re-seated at
+    /// a jump.
     project: ProjectTime,
     /// The host's monotonic clock, read once per block; `None` on an
     /// offline fork (no clock relates to the render's speed).

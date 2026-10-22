@@ -21,7 +21,8 @@
 //!
 //! Three clocks ride beside the transport, each the node's own: the
 //! free-running sample counter ([`SteadyTime`]), project time
-//! ([`ProjectTime`], which rolls with playback and re-seats only at a jump)
+//! ([`ProjectTime`], which rolls with playback, holds while stopped and
+//! re-seats only at a jump)
 //! and the host's monotonic clock ([`HostClock`], read once per block; none
 //! for an offline render).
 
@@ -127,14 +128,21 @@ impl SteadyTime {
 /// `projectTimeSamples`, CLAP `song_pos_seconds`, AU's sample time): frames
 /// of playback since the song's start, the node's own state.
 ///
-/// It rolls by the frames rendered while the transport plays on, and is
-/// re-seated from the beat at the tempo (`beat · 60 / tempo · rate`) only at
-/// a jump: the first read, a seek, a loop wrap or edit, a start, while
-/// stopped, or a rate change. A tempo change is not a jump
-/// ([`Transport::continuity`], the playhead's own rule), so project time
-/// keeps counting through it instead of jumping to the beat's time at the
-/// new tempo: the engine has no tempo map, so the beat's time at the tempo
-/// in force is only right from a re-seat until the next tempo change.
+/// It rolls by the frames rendered while the transport plays, holds while
+/// it is stopped, and is re-seated from the beat at the tempo
+/// (`beat · 60 / tempo · rate`) only at a jump: the first read, a seek
+/// (stopped or playing), a start somewhere other than where it stood, a
+/// loop wrap, a loop edit, or a rate change. A tempo change is not a jump
+/// ([`Transport::continuity`], the playhead's own rule), and neither is a
+/// stop or a start where the transport stood: project time keeps counting
+/// through them instead of jumping to the beat's time at the tempo in force.
+/// The engine has no tempo map, so that time is only right from a re-seat
+/// until the next tempo change; a start where playback stopped continues the
+/// time the plugin was told there, as a DAW's tempo map would.
+///
+/// Reads come a chunk apart, so a stop or a start lands between two of
+/// them: the frames played across it are the beats moved at the playing
+/// side's tempo ([`played_across`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ProjectTime {
     last: Option<ProjectRead>,
@@ -162,13 +170,21 @@ impl ProjectTime {
             self.last = None;
             return None;
         }
-        let rolled = self.last.and_then(|p| {
+        let continued = self.last.and_then(|p| {
             let gap = usize::try_from(steady.checked_sub(p.steady)?).ok()?;
-            let rolls = p.transport.playing && t.playing && p.rate == rate;
-            let continuity = p.transport.continuity(Samples(gap), rate, t);
-            (rolls && continuity == Continuity::Rolled).then_some(p.frames + gap as f64)
+            if p.rate != rate {
+                return None;
+            }
+            match p.transport.continuity(Samples(gap), rate, t) {
+                Continuity::Rolled => Some(p.frames + gap as f64),
+                Continuity::Held => Some(p.frames),
+                Continuity::Wrapped => None,
+                Continuity::Jumped => {
+                    played_across(&p.transport, gap, rate, t).map(|played| p.frames + played as f64)
+                }
+            }
         });
-        let frames = rolled.unwrap_or_else(|| t.beat().get() * 60.0 / tempo * hz);
+        let frames = continued.unwrap_or_else(|| t.beat().get() * 60.0 / tempo * hz);
         if !frames.is_finite() {
             self.last = None;
             return None;
@@ -181,6 +197,27 @@ impl ProjectTime {
         });
         Some(frames)
     }
+}
+
+/// The frames played between a read of `from` and one of `to` `gap` frames
+/// later, when the transport stopped or started between them and moved only
+/// by playing: the beats moved, at the playing side's tempo, rolled from
+/// `from`'s beat to `to`'s within the gap. `None` for anything else (both
+/// stopped or both playing, a seek, a wrap, a loop edit).
+fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport) -> Option<usize> {
+    let tempo = match (from.playing, to.playing) {
+        (true, false) => from.tempo,
+        (false, true) => to.tempo,
+        _ => return None,
+    };
+    let moved = to.beat().get() - from.beat().get();
+    let played = (moved * 60.0 / tempo.get() * rate.get()).round();
+    if !(0.0..=gap as f64).contains(&played) {
+        return None;
+    }
+    let played = played as usize;
+    let rolling = Transport::new(true, tempo, from.beat(), from.looping);
+    (rolling.continuity(Samples(played), rate, to) == Continuity::Rolled).then_some(played)
 }
 
 impl Snapshot {
@@ -569,10 +606,11 @@ mod tests {
     /// the next block on. Read at every frame in order, as a node does, it
     /// rises by exactly the frames rendered, and CLAP's seconds are the
     /// same time. Re-derived from the beat at the new tempo, frame 32 would
-    /// jump back to 2 380 198.
+    /// jump back to 2 380 197.
     ///
-    /// Mutation: always re-seat (`rolled` ignored in `ProjectTime::at`) →
-    /// frame 32 reads 2 380 198 → fails. Mutation: seconds from
+    /// Mutation: always re-seat (`continued` ignored in `ProjectTime::at`)
+    /// → the reads leave the frames rendered (frame 32 reads 2 380 197) →
+    /// fails. Mutation: seconds from
     /// `beats · 60 / tempo` again → frame 32's seconds are 49.587 → fails.
     #[test]
     fn project_time_rolls_through_a_tempo_change() {
@@ -614,12 +652,13 @@ mod tests {
     /// is 24 000 frames; at 90 BPM, 32 000. Without a usable tempo there is
     /// none.
     ///
-    /// Mutation: roll on a wrap too (`continuity != Jumped` in
+    /// Mutation: roll on a wrap too (`Wrapped` mapped like `Rolled` in
     /// `ProjectTime::at`) → the wrap reads 96 032 → fails. Mutation: roll
-    /// through a jump (`continuity` ignored) → the seek reads 96 040 too. Mutation: roll
-    /// from a stopped read (drop `p.transport.playing`) → the start reads
-    /// the stopped value plus 64 → fails. Mutation: drop
-    /// `.with_position_samples` in `transport_info` → `None` → fails.
+    /// through a jump (`Jumped` mapped like `Rolled`) → the seek reads
+    /// 96 008 → fails. Mutation: hold through a jump (`Jumped` mapped like
+    /// `Held`) → the seek reads 96 007 → fails.
+    /// Mutation: drop `.with_position_samples` in `transport_info` → `None`
+    /// → fails.
     #[test]
     fn a_seek_a_loop_wrap_and_a_start_re_seat_project_time() {
         let meter = MeterMap::default();
@@ -663,8 +702,9 @@ mod tests {
         assert_eq!(samples[40], Some(512_000));
         assert_eq!(samples[63], Some(512_023));
 
-        // Stopped a block later at beat 3 (a stop re-seats, and holds), then
-        // started there at 60 BPM: 3 * 48 000.
+        // Stopped a block later at beat 3 (a jump from beat 16, so it
+        // re-seats, and holds), then started at beat 5 at 60 BPM (somewhere
+        // other than where it stood, so it re-seats): 5 * 48 000.
         let stopped = env(
             64,
             64,
@@ -676,16 +716,123 @@ mod tests {
         let started = env(
             128,
             64,
-            Transport::new(true, Bpm(60.0), Beat(3.0), None),
+            Transport::new(true, Bpm(60.0), Beat(5.0), None),
             TransportChanges::NONE,
         );
         let run = from_cx(&cx(&started), at(0, 64), 128, &mut project, None, &meter);
-        assert_eq!(run.position.samples, Some(144_000));
+        assert_eq!(run.position.samples, Some(240_000));
 
         let stalled = Transport::new(true, Bpm(0.0), Beat(2.0), None);
         let e = env(192, 64, stalled, TransportChanges::NONE);
         let none = from_cx(&cx(&e), at(0, 64), 192, &mut project, None, &meter);
         assert_eq!(none.position.samples, None);
+    }
+
+    /// **Stopping holds project time, and a start where it stood continues
+    /// it**; a seek while stopped re-seats. 120 BPM changing to 121 at frame
+    /// 32 puts project time 2 400 000 + n at frame n, where the beat's time
+    /// at 121 BPM is 2 380 197 + n: a re-seat there is the jump this pins
+    /// against. Reads come every 16 frames, a chunk's, so the stop (frame
+    /// 72) and the second start (frame 264) land between two reads.
+    ///
+    /// Mutation: re-seat at a stop or a start again (`Held` and
+    /// `played_across` dropped: both map to `None` in `ProjectTime::at`) →
+    /// frame 80 reads 2 380 237 → fails. Mutation: roll while held (`Held`
+    /// mapped like `Rolled`) → frame 96 reads 2 400 088 → fails. Mutation:
+    /// count the stopped frames too (`played_across` returns `gap`) → frame
+    /// 80 reads 2 400 080 → fails. Mutation: hold through a seek while
+    /// stopped (`Jumped` mapped like `Held`) → the stop and the seek hold
+    /// 2 400 064 → fails.
+    #[test]
+    fn a_stop_holds_project_time_and_a_seek_while_stopped_re_seats_it() {
+        let meter = MeterMap::default();
+        let per_frame = |bpm: f64| bpm / 60.0 / 48_000.0;
+        let after = Beat(100.0 + 32.0 * per_frame(120.0));
+        let mut tempo_change = TransportChanges::NONE;
+        tempo_change
+            .push(at(32, 64), Transport::new(true, Bpm(121.0), after, None))
+            .expect("a change inside the block");
+        let b64 = Beat(after.get() + 32.0 * per_frame(121.0));
+        let b72 = Beat(b64.get() + 8.0 * per_frame(121.0));
+        let mut stop = TransportChanges::NONE;
+        stop.push(at(8, 64), Transport::new(false, Bpm(121.0), b72, None))
+            .expect("a change inside the block");
+        let mut start = TransportChanges::NONE;
+        start
+            .push(
+                at(8, 64),
+                Transport::new(true, Bpm(121.0), Beat(50.0), None),
+            )
+            .expect("a change inside the block");
+        let blocks = [
+            env(
+                0,
+                64,
+                Transport::new(true, Bpm(120.0), Beat(100.0), None),
+                tempo_change,
+            ),
+            env(64, 64, Transport::new(true, Bpm(121.0), b64, None), stop),
+            env(
+                128,
+                64,
+                Transport::new(false, Bpm(121.0), b72, None),
+                TransportChanges::NONE,
+            ),
+            // A seek while stopped.
+            env(
+                192,
+                64,
+                Transport::new(false, Bpm(121.0), Beat(50.0), None),
+                TransportChanges::NONE,
+            ),
+            // Started where it stood, 8 frames in.
+            env(
+                256,
+                64,
+                Transport::new(false, Bpm(121.0), Beat(50.0), None),
+                start,
+            ),
+        ];
+        let mut project = ProjectTime::default();
+        let mut got = Vec::new();
+        for e in &blocks {
+            for i in [0, 16, 32, 48] {
+                let frame = e.frame.get() as i64 + i as i64;
+                let info = from_cx(&cx(e), at(i, 64), frame, &mut project, None, &meter);
+                got.push((frame, info.position.samples));
+            }
+        }
+        let seat = 50.0 * 60.0 / 121.0 * 48_000.0; // 1 190 082.64
+        let want: Vec<(i64, Option<i64>)> = [
+            // Playing through the tempo change: rolls.
+            (0, 2_400_000.0),
+            (16, 2_400_016.0),
+            (32, 2_400_032.0),
+            (48, 2_400_048.0),
+            (64, 2_400_064.0),
+            // Stopped at frame 72: 72 frames played, then held.
+            (80, 2_400_072.0),
+            (96, 2_400_072.0),
+            (112, 2_400_072.0),
+            (128, 2_400_072.0),
+            (144, 2_400_072.0),
+            (160, 2_400_072.0),
+            (176, 2_400_072.0),
+            // The seek to beat 50 while stopped re-seats there, and holds.
+            (192, seat),
+            (208, seat),
+            (224, seat),
+            (240, seat),
+            (256, seat),
+            // Started at frame 264 where it stood: 8 frames played by 272.
+            (272, seat + 8.0),
+            (288, seat + 24.0),
+            (304, seat + 40.0),
+        ]
+        .into_iter()
+        .map(|(f, s): (i64, f64)| (f, Some(s.round() as i64)))
+        .collect();
+        assert_eq!(got, want);
     }
 
     /// **The host clock is the block's reading advanced by the chunk's

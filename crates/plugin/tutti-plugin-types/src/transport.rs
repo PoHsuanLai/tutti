@@ -143,12 +143,14 @@ pub struct TransportPosition {
     ///
     /// The engine's plugin node keeps it as state, as CLAP's
     /// [`seconds`](Self::seconds) (the same time, in frames, rounded): it
-    /// rolls by the frames rendered while the transport plays on, through
-    /// tempo changes, and is re-seated from the playhead's beat at the tempo
-    /// in force (`beats * 60 / tempo * sample_rate`) only at a seek, a loop
-    /// wrap, a start or while stopped. The engine has no tempo map, so after
-    /// a tempo change the two no longer agree; the rolled count is the time
-    /// actually played.
+    /// rolls by the frames rendered while the transport plays, through tempo
+    /// changes, holds while it is stopped (a stop, and a start where it
+    /// stopped, continue it), and is re-seated from the playhead's beat at
+    /// the tempo in force (`beats * 60 / tempo * sample_rate`) only at a jump:
+    /// the first block, a seek (stopped or playing), a start somewhere other
+    /// than where it stood, a loop wrap, a loop edit, or a sample-rate
+    /// change. The engine has no tempo map, so after a tempo change the two
+    /// no longer agree; the rolled count is the time actually played.
     ///
     /// `None` means the producer has no project-time position to report (no
     /// usable tempo, or a hand-built snapshot). It is an `Option` rather than

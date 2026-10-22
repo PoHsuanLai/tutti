@@ -167,7 +167,7 @@ pub struct Bound {
     /// frames this node has rendered, monotonic across a re-prepare.
     steady: transport_source::SteadyTime,
     /// Project time the plugin's transport carries: rolls with playback,
-    /// re-seated at a jump.
+    /// holds while stopped, re-seated at a jump.
     project: transport_source::ProjectTime,
     /// The host's monotonic clock the plugin's transport carries
     /// (`systemTime`), read once per block. `None` on an offline fork: no

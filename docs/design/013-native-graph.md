@@ -6417,13 +6417,20 @@ fills the three fields the ABIs ask for that it used to leave empty:
   `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
   the same time over the rate) is node state, `ProjectTime`, in `Bound` and
   in the VST2 `TransportFeed`. Each chunk's read rolls it by the frames
-  since the last read while the transport plays on, and re-seats it from
-  the beat at the tempo (`beats · 60 / tempo · rate`) only at a jump: the
-  first read, a seek, a loop wrap or edit, a start, while stopped, a rate
-  change. A tempo change is not a jump: `tutti_graph::Transport::continuity`
+  since the last read while the transport plays, holds it while stopped,
+  and re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
+  only at a jump: the first read, a seek (stopped or playing), a start
+  somewhere other than where the transport stood, a loop wrap or edit, a
+  rate change. A tempo change is not a jump: `tutti_graph::Transport::continuity`
   is `Playhead`'s rule between two point reads (the same loop, and a beat
   reached by rolling the gap at a tempo between the two, ± a frame), so a
-  step or a ramp rolls on. Re-deriving every chunk instead made project
+  step or a ramp rolls on; a stopped transport is `Continuity::Held` at its
+  beat, stopped still or started there. A stop or a start lands between
+  two chunk reads, so the frames played across it are the beats moved at
+  the playing side's tempo, checked by the same rule. A start where the
+  transport stopped continues the time the plugin was told there, as a
+  tempo map would; re-seating at a stop made `samplePos` jump at the stop
+  after any tempo change. Re-deriving every chunk instead made project
   time jump back at each tempo change (beat 100, 120 → 121 BPM: 2 400 031
   then 2 380 197), since without a tempo map the beat's time at the new
   tempo is not the time played. The free-running counter stays
@@ -6454,19 +6461,28 @@ at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
 and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
 window system (Win32, X11); a macOS view is in points, so neither is sent
 there. bevy-tutti passes the editor window's `scale_factor` and sizes that
-window in logical units. Its sizes stay in the plugin's units
+window to the editor. Its sizes stay in the plugin's units
 (`PluginEditorOpen::last_applied`); a `WindowResized` (logical) is
-converted to them before it is compared against the host's own echo or
-sent, and every size written back to the window is converted to logical.
+converted to them before it is compared, exactly, against the host's own
+echo or sent. Every size written back to the window is written in the
+plugin's units: as the physical size off macOS, in points on macOS. Bevy's
+logical setter truncates `w · scale` to whole pixels, so at a fractional
+scale (1.75: 227, 234, 241, … in 200..3000) a logical write landed a
+pixel short, the echo no longer matched `last_applied`, and the window
+and the plugin could trade resizes every frame. The physical write makes
+the echo exact, so the comparison needs no ±1 px allowance, which would
+only swallow a real one-pixel drag.
 The scale is sent once, at open: a window moved to a display of another
 scale keeps the editor at the scale it opened at until it is reopened
 (nothing carries a scale to an open editor).
 
 Pinned analytically: `transport_source`'s unit tests (project time
-rolling through a tempo change, and re-seated at a seek, a loop wrap and
-a start; the host clock at a chunk's frame, and on the OS clock),
+rolling through a tempo change, held through a stop and a start where it
+stood, and re-seated at a seek (stopped or playing), a loop wrap and a
+start elsewhere; the host clock at a chunk's frame, and on the OS clock),
 `Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
-bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`), both formats' flag tests,
+bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
+`the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,
 the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a
 fork, which is told project time and the clock but no host time
 (`vst2_in_process_fork.rs`), and `clap_gui_lifecycle.rs`'s scale.

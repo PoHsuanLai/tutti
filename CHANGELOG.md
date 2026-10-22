@@ -13,9 +13,11 @@ A hosted plugin is now told everything its transport snapshot can know:
 
 - **Project-time sample position.** `TransportPosition::samples` is filled
   from the plugin node's own project time: it rolls by the frames rendered
-  while the transport plays on, through tempo changes, and is re-seated
-  from the beat at the tempo only at a seek, a loop wrap, a start or while
-  stopped. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's sample time
+  while the transport plays, through tempo changes, holds while it is
+  stopped (a stop, and a start where it stopped, continue it), and is
+  re-seated from the beat at the tempo only at a jump: the first block, a
+  seek (stopped or playing), a start somewhere other than where it stood, a
+  loop wrap, a loop edit, or a sample-rate change. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's sample time
   read it. CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
   same time over the rate; it was the beat's time at the current tempo,
   which jumped at every tempo change.
@@ -36,9 +38,11 @@ editor-open call. CLAP's `gui.set_scale` and VST3's
 `IPlugViewContentScaleSupport::setContentScaleFactor` receive it on
 physical-pixel window systems (Win32, X11); macOS views are in points, so
 neither is sent there, as before. VST2 and AU ignore it. `bevy-tutti`
-passes the editor window's `scale_factor` and sizes that window in logical
-units, dividing the plugin's size by the scale off macOS; a window resize
-is multiplied back before it reaches the plugin. The scale is sent at open
+passes the editor window's `scale_factor` and sizes that window to the
+plugin's size: as its physical size off macOS (exactly, so a fractional
+scale such as 1.75 cannot truncate it a pixel short and set the window and
+the plugin trading resizes), in points on macOS; a window resize is
+multiplied back by the scale before it reaches the plugin. The scale is sent at open
 only: an editor whose window moves to a display of another scale keeps its
 scale until it is reopened.
 
@@ -58,14 +62,15 @@ before.
 | VST2 `samplePos` / VST3 `projectTimeSamples` were 0 | the node's project time: rolls with playback, re-seated at a jump |
 | CLAP `song_pos_seconds` was `beats · 60 / tempo` | the same project time, in seconds |
 | VST2 `kVstClockValid` / VST3 `kClockValid` and `kSystemTimeValid` never set | set when the value is known |
-| `bevy-tutti`'s editor window sized at the plugin's pixel size | sized in logical units (pixel size over the scale, off macOS) |
+| `bevy-tutti`'s editor window sized at the plugin's pixel size as logical units | sized at it as physical pixels off macOS (logical size: pixel size over the scale), points on macOS |
 | `PluginEditorOpen::{width, height, last_applied}` documented as logical pixels | the plugin's units (`EditorSize`: physical pixels off macOS, points on macOS), as they always held |
 
 New: `tutti_plugin_types::{ContentScale, InvalidContentScale}` (re-exported
 by `tutti-clap-host`, `tutti-vst3-host` and `tutti_plugin::handles`),
 `TransportInfo::with_system_time_ns`, and `tutti_graph::Continuity` with
 `Transport::continuity` (how a transport read some frames after another got
-there: rolled, wrapped or jumped; `Playhead`'s rule).
+there: rolled, wrapped, held (a stopped transport at its beat, stopped
+still or started there) or jumped; `Playhead`'s rule).
 
 Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
 `ContentScale::IDENTITY` where the window's scale is not known, to

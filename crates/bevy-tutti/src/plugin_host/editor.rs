@@ -398,7 +398,7 @@ pub fn plugin_editor_attach_system(
         match emitter.handle.open_editor(&thread_locked, content_scale) {
             Ok(size) => {
                 let (w, h) = (size.width, size.height);
-                // The window is sized in logical units.
+                // The window's size limits are logical units.
                 let (lw, lh) = logical_editor_size(w, h, scale);
                 // `open_editor` just returned `Ok`, so the editor capability is
                 // present — but it is an `Option` on the handle, and defaulting
@@ -416,7 +416,7 @@ pub fn plugin_editor_attach_system(
                 );
 
                 if let Ok(mut win) = windows.get_mut(pend.window_entity) {
-                    win.resolution.set(lw, lh);
+                    set_editor_resolution(&mut win.resolution, w, h);
                     if capabilities.resize.resizable {
                         win.resize_constraints = bevy_window::WindowResizeConstraints {
                             min_width: 64.0,
@@ -553,8 +553,11 @@ pub fn plugin_editor_window_resize_system(
                     editor.height = snapped.height;
                     if (snapped.width, snapped.height) != event_size {
                         if let Ok(mut win) = windows.get_mut(ev.window) {
-                            let (w, h) = logical_editor_size(snapped.width, snapped.height, scale);
-                            win.resolution.set(w, h);
+                            set_editor_resolution(
+                                &mut win.resolution,
+                                snapped.width,
+                                snapped.height,
+                            );
                         }
                     }
                 }
@@ -567,12 +570,11 @@ pub fn plugin_editor_window_resize_system(
                         e
                     );
                     if let Ok(mut win) = windows.get_mut(ev.window) {
-                        let (w, h) = logical_editor_size(
+                        set_editor_resolution(
+                            &mut win.resolution,
                             editor.last_applied.0,
                             editor.last_applied.1,
-                            scale,
                         );
-                        win.resolution.set(w, h);
                     }
                 }
             }
@@ -595,6 +597,23 @@ fn logical_editor_size(width: u32, height: u32, scale: f32) -> (f32, f32) {
         (w, h)
     } else {
         (w / scale, h / scale)
+    }
+}
+
+/// Sizes a window to an editor size in the plugin's units (`EditorSize`).
+///
+/// Physical-pixel units are written as the physical size, exactly: Bevy's
+/// logical setter stores `(w · scale) as u32`, which truncates, so at a
+/// fractional scale (1.75) a logical write of `227 / 1.75` lands on 226
+/// pixels. The window's `WindowResized` would then convert back to a size
+/// that is not `last_applied`, and the window and the plugin could trade
+/// resizes every frame. Logical units (macOS points) go through the logical
+/// setter, as the window's own unit.
+fn set_editor_resolution(resolution: &mut bevy_window::WindowResolution, width: u32, height: u32) {
+    if plugin_units_are_logical(resolution.scale_factor()) {
+        resolution.set(width as f32, height as f32);
+    } else {
+        resolution.set_physical_resolution(width, height);
     }
 }
 
@@ -621,6 +640,11 @@ fn plugin_units_are_logical(scale: f32) -> bool {
 /// What a `WindowResized` of `logical` size, on a window of backing scale
 /// `scale`, asks the plugin for, in its units; `None` when that is
 /// `last_applied`, the echo of this host's own write.
+///
+/// The match is exact. The host writes physical units exactly
+/// (`set_editor_resolution`), so its echo converts back to `last_applied`
+/// at any scale; a ±1 px allowance would only swallow a real one-pixel drag
+/// and leave the window and the plugin a pixel apart.
 fn requested_editor_size(
     logical: (f32, f32),
     scale: f32,
@@ -656,8 +680,8 @@ pub fn plugin_editor_resize_request_system(
         editor.height = req.height;
 
         if let Ok(mut win) = windows.get_mut(editor.editor_window) {
+            set_editor_resolution(&mut win.resolution, req.width, req.height);
             let (w, h) = logical_editor_size(req.width, req.height, win.scale_factor());
-            win.resolution.set(w, h);
             if !editor.capabilities.resize.resizable {
                 win.resize_constraints = bevy_window::WindowResizeConstraints {
                     min_width: w,
@@ -676,9 +700,7 @@ pub fn plugin_editor_resize_request_system(
                 editor.width = snapped.width;
                 editor.height = snapped.height;
                 if let Ok(mut win) = windows.get_mut(editor.editor_window) {
-                    let (w, h) =
-                        logical_editor_size(snapped.width, snapped.height, win.scale_factor());
-                    win.resolution.set(w, h);
+                    set_editor_resolution(&mut win.resolution, snapped.width, snapped.height);
                 }
             }
         }
@@ -789,6 +811,33 @@ mod tests {
             requested_editor_size((640.0, 480.0), 1.0, (800, 600)),
             Some((640, 480))
         );
+    }
+
+    /// **The host's own write echoes back as no resize at a fractional
+    /// scale.** Every size in 200..3000 is written through the real
+    /// `WindowResolution` setter at scale 1.75 (common on Windows) and read
+    /// back as `WindowResized` reports it (`Window::width`, the physical
+    /// size over the scale); none asks the plugin for anything. On macOS the
+    /// sizes are points and go through the logical setter.
+    ///
+    /// Mutation: write with `WindowResolution::set` of the logical size off
+    /// macOS (as before) → 227, 234, 241, … truncate a pixel short → the
+    /// echo asks for 226 → fails.
+    #[test]
+    fn the_hosts_write_echoes_as_no_resize_at_a_fractional_scale() {
+        let mut res = bevy_window::WindowResolution::new(800, 600).with_scale_factor_override(1.75);
+        let mismatched: Vec<u32> = (200..3000)
+            .filter(|&n| {
+                set_editor_resolution(&mut res, n, n);
+                let echo = (res.width(), res.height());
+                requested_editor_size(echo, res.scale_factor(), (n, n)).is_some()
+            })
+            .collect();
+        assert_eq!(mismatched, Vec::<u32>::new());
+        if !cfg!(target_os = "macos") {
+            set_editor_resolution(&mut res, 227, 227);
+            assert_eq!((res.physical_width(), res.physical_height()), (227, 227));
+        }
     }
 
     /// What `record_open` saw: one `(entity, is_open)` pair per entity.

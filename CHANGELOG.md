@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a VST3 plugin is told a per-note pitch bend's real tuning
+
+`tutti-vst3-host` turned a MIDI 2 per-note pitch bend into a tuning note
+expression by mapping the bend's full scale onto VST3's whole ±120-semitone
+tuning range, so the same MIDI bent a VST3 plugin 2.5 times as far as a
+CLAP plugin or the engine's own synth (both ±48, the MPE default). The
+bend is now read over its channel's per-note bend range: ±48 until the
+stream sends "Sensitivity of Per-Note Pitch Bend" (RPN #00/07), which a
+plugin's event list now follows per channel, across blocks. The
+sensitivity message is consumed there (VST3 has no event for it).
+`Vst3Event::from_midi`, which converts one event with no stream state,
+reads at ±48. No API change.
+
 ### Added — `clap.thread-pool` served from a worker pool
 
 `tutti-clap-host` runs a plugin's `clap.thread-pool` requests on a

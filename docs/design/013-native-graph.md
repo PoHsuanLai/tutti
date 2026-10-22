@@ -4891,8 +4891,10 @@ under both.
   nothing (no lane storage exists), so it, its slot, its setters and
   `NoteExpressionView` are removed; the payload's note expression is empty
   as before. Note expression belongs in the MIDI stream as MIDI 2 per-note
-  messages; turning those into VST3 note-expression events on the plugin
-  side is a follow-up. With these three inputs gone, the plugin node's
+  messages, and each format host turns those into its own note expression
+  (VST3: `tutti-vst3-host`'s event list, from the MIDI it stages; see
+  ["VST3 note expression from MIDI 2"](#vst3-note-expression-from-midi-2)).
+  With these three inputs gone, the plugin node's
   `InputSlot`s are gone; the in-process VST2 node's polled transport was the
   last user of the slot type (both deleted: ["In-process VST2 live
   transport from `Cx`"](#in-process-vst2-live-transport-from-cx)).
@@ -6269,6 +6271,32 @@ counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
 meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
+
+#### VST3 note expression from MIDI 2
+
+A plugin's note expression comes from its MIDI input: the plugin node
+forwards MIDI 2 per-note messages on its event input untouched, and the
+VST3 event list (`EventList::update_from_sources`) turns them into
+note-expression value events bound to the note-on's `noteId`
+(`note_id_for(channel, note)`):
+
+- **Per-note pitch bend** becomes `kTuningTypeID`: the bend over its
+  channel's per-note bend range, in semitones, on VST3's ±120-semitone
+  scale (`0.5 + semitones / 240`). The range starts at the MPE default, ±48
+  (what the engine's own synth and the CLAP host assume), and follows the
+  stream's "Sensitivity of Per-Note Pitch Bend" (RPN #00/07) per channel
+  (`PerNoteBendRanges`, kept by the list across blocks; the message itself
+  is consumed). Before this, a full-scale bend was mapped to ±120
+  semitones, so a VST3 plugin was bent 2.5 times as far as a CLAP plugin or
+  the engine's synth by the same MIDI.
+- **Per-note controllers** (registered and assignable, indices 7, 10 and
+  74) become volume, pan and brightness; others have no VST3 dimension and
+  are dropped.
+
+Pinned by `a_per_note_bend_is_tuned_over_its_channels_range`,
+`a_per_note_bend_range_outlives_its_block` and, through the SDK-built
+probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`. The CLAP host
+reads a per-note bend at the fixed ±48 and does not yet follow RPN #00/07.
 
 ## Decisions for the owner
 

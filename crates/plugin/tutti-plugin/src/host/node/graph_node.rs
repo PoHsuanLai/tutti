@@ -249,8 +249,9 @@ impl Chunks for PluginChunks<'_> {
             _ => TransportInfo::default(),
         };
         // MIDI, parameters, chords and scales are filled from the event input
-        // as the chunk's frames come in (`take`); note expression has no
-        // source.
+        // as the chunk's frames come in (`take`). Note expression rides the
+        // MIDI as MIDI 2 per-note messages, which each format host turns into
+        // its own note-expression events; this rail stays empty.
         *self.pending = BlockPayload {
             midi: Default::default(),
             harmony: Default::default(),

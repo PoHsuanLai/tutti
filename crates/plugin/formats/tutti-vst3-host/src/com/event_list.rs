@@ -26,8 +26,8 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, TextArena, Vst3Event, Vst3InputEvents,
-    K_NOTE_OFF_EVENT,
+    from_c_event, note_expression_to_vst3, to_c_event, PerNoteBendRanges, TextArena, Vst3Event,
+    Vst3InputEvents, K_NOTE_OFF_EVENT,
 };
 // Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
 // goes through `RtMidiEvents`.
@@ -87,6 +87,9 @@ struct Inner {
     /// Events dropped for want of room since the list was made
     /// ([`EventList::dropped`]).
     dropped: u64,
+    /// Each channel's per-note pitch-bend range, as the MIDI staged so far
+    /// set it. Kept across blocks, never cleared: it is the stream's state.
+    bend_ranges: PerNoteBendRanges,
 }
 
 impl Default for Inner {
@@ -96,6 +99,7 @@ impl Default for Inner {
             text_arena: TextArena::new(),
             order: StableOrder::with_capacity(EVENT_CAPACITY),
             dropped: 0,
+            bend_ranges: PerNoteBendRanges::default(),
         }
     }
 }
@@ -188,7 +192,9 @@ impl EventList {
             .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
     }
 
-    /// Stage every input event source into the list: MIDI (transcoded),
+    /// Stage every input event source into the list: MIDI (transcoded; a
+    /// MIDI 2 per-note message becomes a note-expression event, a per-note
+    /// pitch bend at its channel's range: see `PerNoteBendRanges`),
     /// per-note expression (value + int), chord, scale, and per-note text. Text
     /// for chord/scale/text events is interned into the arena so the borrowed
     /// `text` pointers stay valid for the block. Events are sorted by frame
@@ -203,8 +209,12 @@ impl EventList {
     pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
-        for event in src.midi.iter().filter_map(Vst3Event::from_midi) {
-            inner.push(event);
+        // In frame order, so a per-note bend sensitivity applies to the
+        // per-note bends after it.
+        for midi in src.midi {
+            if let Some(event) = inner.bend_ranges.encode(midi) {
+                inner.push(event);
+            }
         }
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced, and
@@ -387,6 +397,50 @@ mod tests {
             velocity: 0.8,
             length: 0,
             note_id: -1,
+        }
+    }
+
+    /// A per-note bend sensitivity staged in one block sets the range a
+    /// later block's per-note bends are read at: the list keeps it.
+    ///
+    /// Mutation (run): `Inner::clear` resets `bend_ranges` → the second
+    /// block's quarter bend reads 12 semitones (0.55), not 6 → fails.
+    #[test]
+    fn a_per_note_bend_range_outlives_its_block() {
+        use tutti_midi_types::convert::signed_f32_to_bend_u32;
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        use tutti_midi_types::PitchBendSensitivity;
+
+        let list = EventList::new();
+        let sensitivity = [MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        )];
+        list.update_from_sources(&Vst3InputEvents {
+            midi: &sensitivity,
+            ..Default::default()
+        });
+        assert_eq!(list.len(), 0, "the sensitivity stages nothing");
+
+        let bend = [MidiEvent::per_note_pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            signed_f32_to_bend_u32(0.25),
+        )];
+        list.update_from_sources(&Vst3InputEvents {
+            midi: &bend,
+            ..Default::default()
+        });
+        let inner = list.inner.borrow();
+        match inner.events.as_slice() {
+            [Vst3Event::NoteExpression(e)] => {
+                assert!((e.value - (0.5 + 6.0 / 240.0)).abs() < 1e-6, "{}", e.value);
+            }
+            other => panic!("expected one tuning expression, got {other:?}"),
         }
     }
 

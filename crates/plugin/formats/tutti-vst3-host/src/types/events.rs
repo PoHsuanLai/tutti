@@ -390,6 +390,10 @@ impl Vst3Event {
     /// poly-pressure keep MIDI-2 full-width resolution; per-note messages become
     /// note-expression events; everything else becomes a MIDI-1 [`Vst3Event::Data`]
     /// frame. `None` only for messages with no MIDI-1 form and no per-note mapping.
+    ///
+    /// A per-note pitch bend is read at the default ±48-semitone range: this
+    /// converts one event and keeps no stream state. A plugin's event list
+    /// follows the stream's per-note bend sensitivity per channel.
     #[inline]
     pub fn from_midi(event: &MidiEvent) -> Option<Self> {
         vst3_event_from_midi(event)
@@ -710,6 +714,65 @@ pub(crate) unsafe fn from_c_event(
     }
 }
 
+/// The per-note pitch-bend range of each MIDI channel, in semitones: what a
+/// per-note pitch bend's full scale means, and so the tuning a plugin is told.
+///
+/// Each channel starts at the MPE default, ±48 (RP-053), which the engine's
+/// own synth and the CLAP host assume too, and follows the stream's
+/// "Sensitivity of Per-Note Pitch Bend" (RPN #00/07, M2-104 §7.4.13), which a
+/// sender sets per channel. The event list keeps one across blocks: the
+/// sensitivity is the stream's state, not a block's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PerNoteBendRanges([f32; 16]);
+
+impl Default for PerNoteBendRanges {
+    fn default() -> Self {
+        Self([tutti_midi_types::PitchBendSensitivity::MPE_DEFAULT.as_semitones_f32(); 16])
+    }
+}
+
+impl PerNoteBendRanges {
+    /// The range on `channel`, in semitones.
+    fn get(&self, channel: u8) -> f32 {
+        self.0[usize::from(channel & 0x0F)]
+    }
+
+    /// Encodes `event` as [`vst3_event_from_midi`] does, at this stream's
+    /// ranges. A per-note bend sensitivity message sets its channel's range
+    /// and is consumed: VST3 has no event for it, and it has no MIDI-1 form.
+    pub(crate) fn encode(&mut self, event: &MidiEvent) -> Option<Vst3Event> {
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        use tutti_midi_types::PitchBendSensitivity;
+        if let Ok(UmpMessage::ChannelVoice2(Cv2::RegisteredController(m))) =
+            UmpMessage::try_from(event.data_words())
+        {
+            if u8::from(m.bank()) == RPN_BANK_MPE
+                && u8::from(m.index()) == RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY
+            {
+                let range = PitchBendSensitivity::from_rpn_bits(m.controller_data());
+                self.0[usize::from(u8::from(m.channel()))] = range.as_semitones_f32();
+                return None;
+            }
+        }
+        vst3_event_in(event, self)
+    }
+}
+
+/// VST3's tuning expression for a per-note bend of `bend` (signed, `[-1, 1]`)
+/// over a range of `range` semitones: `0.5 + semitones / 240`, the
+/// `kTuningTypeID` convention (`[0, 1]` spans -120 to +120 semitones).
+fn tuning_expression(bend: f32, range: f32) -> f64 {
+    0.5 + f64::from(bend) * f64::from(range) / 240.0
+}
+
+/// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`], reading a per-note
+/// pitch bend at the default range ([`PerNoteBendRanges`]).
+pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+    vst3_event_in(event, &PerNoteBendRanges::default())
+}
+
 /// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
 ///
 /// Notes and poly-pressure are matched on `midi2`'s Channel Voice 2 vocabulary
@@ -735,7 +798,7 @@ pub(crate) unsafe fn from_c_event(
     clippy::cast_possible_truncation,
     reason = "text sizes bounded by MAX_EVENT_TEXT_LEN"
 )]
-pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+fn vst3_event_in(event: &MidiEvent, ranges: &PerNoteBendRanges) -> Option<Vst3Event> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -808,18 +871,18 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
                     note_id: note_id_for(channel, note),
                 }));
             }
-            // MIDI-2 per-note pitch bend → VST3 tuning expression. Signed [-1, 1]
-            // (center 0) maps to the unit [0, 1] (center 0.5 = no detune) VST3's
-            // note-expression value convention uses.
+            // MIDI-2 per-note pitch bend → VST3 tuning expression: the bend
+            // (signed, [-1, 1]) over the channel's per-note bend range, in
+            // semitones, on VST3's ±120-semitone tuning scale.
             Cv2::PerNotePitchBend(m) => {
                 let note = u8::from(m.note_number());
-                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+                let bend = bend_u32_to_signed_f32(m.pitch_bend_data());
                 // Tuning is VST3-encodable, so `note_expression_to_vst3` is `Some`.
                 return note_expression_to_vst3(&NoteExpressionValue {
                     sample_offset,
                     note_id: note_id_for(channel, note),
                     expression_type: NoteExpressionType::Tuning,
-                    value: (f64::from(value) + 1.0) / 2.0,
+                    value: tuning_expression(bend, ranges.get(channel)),
                 });
             }
             // MIDI-2 per-note controllers map onto VST3 note-expression
@@ -1252,9 +1315,10 @@ pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
 ///   legal answer, and dropping it would silently freeze the dimension at
 ///   whatever the plugin last saw.
 ///
-/// This is a no-op for every producer inside this crate: the MIDI paths reach
-/// here through `u32_to_unit_f32` and the `(v + 1.0) / 2.0` tuning map, both
-/// in-range by construction. The exposure is
+/// The MIDI paths in this crate reach here through `u32_to_unit_f32`, in range
+/// by construction, and through the tuning map, in range unless a sender sets
+/// a per-note bend range past 120 semitones (a bend past VST3's ±120 is then
+/// clamped to it). The main exposure is
 /// [`Vst3InputEvents::note_expressions`], an arbitrary caller-supplied slice.
 pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event> {
     let type_id = note_expression_type_to_id(value.expression_type)?;
@@ -2099,6 +2163,70 @@ mod tests {
         assert!((expr.value - 0.5).abs() < 0.01, "center bend → 0.5");
         // It is NOT a MIDI channel-voice event.
         assert!(vst3_to_midi_event(&vst3).is_none());
+    }
+
+    /// A per-note pitch bend is told to the plugin as the semitones it
+    /// means: the bend over its channel's per-note range (±48 until the
+    /// stream sets one with RPN #00/07), on VST3's ±120-semitone tuning
+    /// scale. A quarter bend at 48 is 12 semitones, 0.5 + 12/240; after a
+    /// sensitivity of 24 on channel 3, 6 semitones there and 12 elsewhere.
+    ///
+    /// Mutations (run): the old `(bend + 1) / 2` map (full bend = ±120) →
+    /// 0.625, fails; the sensitivity read but not stored → channel 3 reads
+    /// 0.55, fails; the range set on every channel → channel 4 reads 0.525,
+    /// fails.
+    #[test]
+    fn a_per_note_bend_is_tuned_over_its_channels_range() {
+        use tutti_midi_types::convert::signed_f32_to_bend_u32;
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        use tutti_midi_types::PitchBendSensitivity;
+
+        let bend = |channel: u8, amount: f32| {
+            MidiEvent::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                60,
+                signed_f32_to_bend_u32(amount),
+            )
+        };
+        let tuning = |ranges: &mut PerNoteBendRanges, e: &MidiEvent| match ranges.encode(e) {
+            Some(Vst3Event::NoteExpression(x)) => {
+                assert_eq!(x.type_id, 2, "kTuningTypeID");
+                x.value
+            }
+            other => panic!("expected a tuning expression, got {other:?}"),
+        };
+        let close = |got: f64, want: f64| (got - want).abs() < 1e-6;
+
+        let mut ranges = PerNoteBendRanges::default();
+        assert!(close(
+            tuning(&mut ranges, &bend(3, 0.25)),
+            0.5 + 12.0 / 240.0
+        ));
+        assert!(close(
+            tuning(&mut ranges, &bend(3, -1.0)),
+            0.5 - 48.0 / 240.0
+        ));
+
+        let sensitivity = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        );
+        assert!(
+            ranges.encode(&sensitivity).is_none(),
+            "the sensitivity is consumed"
+        );
+        assert!(close(
+            tuning(&mut ranges, &bend(3, 0.25)),
+            0.5 + 6.0 / 240.0
+        ));
+        assert!(close(
+            tuning(&mut ranges, &bend(4, 0.25)),
+            0.5 + 12.0 / 240.0
+        ));
     }
 
     #[test]

@@ -82,11 +82,9 @@ pub(crate) fn build_vst2_time_info(
     if transport.system_time_ns.is_some() {
         flags |= F::NANOSECONDS_VALID;
     }
-    // At the rate the plugin is told (`sample_rate` below), not whatever the
-    // snapshot carries.
-    let to_clock = transport
-        .with_sample_rate(sample_rate)
-        .samples_to_nearest_clock();
+    // At the snapshot's own rate, the one its position was taken at, as the
+    // VST3 path reads it.
+    let to_clock = transport.samples_to_nearest_clock();
     if to_clock.is_some() {
         flags |= F::VST_CLOCK_VALID;
     }
@@ -342,10 +340,15 @@ mod tests {
     /// the snapshot has them.** 120 BPM at 48 kHz: a 24-ppq clock is 1 000
     /// frames, and a playhead a quarter clock past one is 250 frames after it.
     ///
+    /// The distance is at the snapshot's rate, as VST3's is: an instance
+    /// prepared at another rate does not rescale it.
+    ///
     /// Mutation: set `NANOSECONDS_VALID` unconditionally → the clockless
     /// snapshot claims a host time → fails. Mutation: `samples_to_next_clock:
     /// 0` → fails. Mutation: drop the `VST_CLOCK_VALID` gate (always set) →
-    /// the zero-tempo snapshot claims a clock → fails.
+    /// the zero-tempo snapshot claims a clock → fails. Mutation: take the
+    /// clock at the instance's rate (`with_sample_rate(sample_rate)`) → the
+    /// 96 kHz instance reads -500 → fails.
     #[test]
     fn host_time_and_midi_clock_are_filled_and_flagged_when_known() {
         let transport = TransportInfo::new()
@@ -360,6 +363,8 @@ mod tests {
         assert_ne!(info.flags & F::NANOSECONDS_VALID.bits(), 0);
         assert_eq!(info.samples_to_next_clock, -250);
         assert_ne!(info.flags & F::VST_CLOCK_VALID.bits(), 0);
+        let other_rate = build_vst2_time_info(&transport, 96_000.0, None);
+        assert_eq!(other_rate.samples_to_next_clock, -250);
 
         // No host clock, no usable tempo: neither field is claimed.
         let bare = TransportInfo::new()

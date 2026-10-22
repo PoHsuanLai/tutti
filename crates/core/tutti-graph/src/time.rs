@@ -29,7 +29,9 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{first_frame_at_or_after, At, Frame, Latency, Samples, FRAME_TOLERANCE};
+use tutti_types::{
+    first_frame_at_or_after, At, Frame, Latency, SampleRate, Samples, FRAME_TOLERANCE,
+};
 
 use crate::node::{Env, Transport, TransportChanges};
 
@@ -211,6 +213,49 @@ impl Playhead {
         match env.transport.looping {
             Some(l) if self.wrapped => beat >= anchor.min(l.start.get()) && beat < now,
             _ => beat >= anchor && beat < now,
+        }
+    }
+}
+
+/// How a transport read some frames after another got there; see
+/// [`Transport::continuity`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Continuity {
+    /// By continuous playback, without wrapping the loop.
+    Rolled,
+    /// By continuous playback, wrapping the loop at least once.
+    Wrapped,
+    /// Some other way: a seek, a loop edit.
+    Jumped,
+}
+
+impl Transport {
+    /// How `next`, read `frames` after this transport at `rate`, got there.
+    /// It continues this one when the loop is the same and its beat is one
+    /// this one reaches by rolling `frames` at a tempo between its own and
+    /// `next`'s, ± one frame, wrapped by the loop (unmoved when stopped):
+    /// the rule [`Playhead`] tells a run from a jump by, so a tempo change
+    /// (a step or a ramp) rolls on, and a seek or a loop edit jumps.
+    ///
+    /// A start at the held beat rolls too (a stopped transport arrives where
+    /// it is); a reader that treats a start as a new run checks
+    /// [`playing`](Self::playing) itself.
+    pub fn continuity(&self, frames: Samples, rate: SampleRate, next: &Transport) -> Continuity {
+        if self.looping != next.looping {
+            return Continuity::Jumped;
+        }
+        let span = Env {
+            frame: Frame(0),
+            sample_rate: rate,
+            block_len: frames,
+            transport: *self,
+            changes: TransportChanges::NONE,
+            play: crate::play::PlayClock::ZERO,
+        };
+        match span.arrives_at(next.beat().get(), next.tempo.get()) {
+            Some(false) => Continuity::Rolled,
+            Some(true) => Continuity::Wrapped,
+            None => Continuity::Jumped,
         }
     }
 }
@@ -889,6 +934,60 @@ mod tests {
         // A real seek still is one.
         ph.observe(&e(after + 0.5, 240.0));
         assert!(!ph.crossed(1.01) && !ph.crossed(after + 0.2));
+    }
+
+    /// `Transport::continuity` is the playhead's rule between two point
+    /// reads: a tempo step between them rolls, a loop wrap wraps, a seek, a
+    /// loop edit and a jump inside the loop jump. 256 frames at 48 kHz:
+    /// 0.010 666 beat at 120 BPM, 0.013 333 at 150.
+    ///
+    /// Mutation: drop the loop comparison in `continuity` → the loop edit
+    /// (a beat the old loop wraps to, a new loop) reads as wrapped → fails.
+    /// Mutation: map `Some(true)` to `Rolled` → the wrap reads as rolled →
+    /// fails.
+    #[test]
+    fn continuity_tells_a_tempo_change_and_a_wrap_from_a_seek() {
+        let rate = SampleRate(48_000.0);
+        let n = Samples(256);
+        let from = Transport::new(true, Bpm(120.0), Beat(100.0), None);
+        // Stepped to 150 BPM at frame 128: 128 frames at each tempo.
+        let stepped = Transport::new(
+            true,
+            Bpm(150.0),
+            Beat(100.0 + 128.0 / 24_000.0 + 128.0 / 19_200.0),
+            None,
+        );
+        assert_eq!(from.continuity(n, rate, &stepped), Continuity::Rolled);
+        assert_eq!(
+            from.continuity(n, rate, &stepped.at_beat(Beat(64.0))),
+            Continuity::Jumped
+        );
+
+        let l = Some(LoopRange {
+            start: Beat(4.0),
+            end: Beat(4.5),
+        });
+        let near_end = Transport::new(true, Bpm(120.0), Beat(4.495), l);
+        // 0.010 666 beat on from 4.495, wrapped: 4.0 + 0.005 666.
+        let wrapped = near_end.at_beat(Beat(4.0 + 256.0 / 24_000.0 - 0.005));
+        assert_eq!(near_end.continuity(n, rate, &wrapped), Continuity::Wrapped);
+        assert_eq!(
+            near_end.continuity(n, rate, &wrapped.at_beat(Beat(4.25))),
+            Continuity::Jumped
+        );
+        let other_loop = Transport::new(
+            true,
+            Bpm(120.0),
+            wrapped.beat(),
+            Some(LoopRange {
+                start: Beat(4.0),
+                end: Beat(8.0),
+            }),
+        );
+        assert_eq!(
+            near_end.continuity(n, rate, &other_loop),
+            Continuity::Jumped
+        );
     }
 
     /// A seek out of a loop is a seek, even when the distances line up with

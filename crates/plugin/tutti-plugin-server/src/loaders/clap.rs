@@ -762,8 +762,9 @@ fn convert_transport(
         44100.0
     };
     // CLAP's `song_pos_seconds`. Prefer the wire's own seconds field (the
-    // producer derives it from beats + tempo); fall back to the project-time
-    // sample position for a producer that reports only that.
+    // plugin node's project time, `transport_source::ProjectTime`); fall back
+    // to the project-time sample position for a producer that reports only
+    // that.
     let seconds = if transport.position.seconds != 0.0 {
         transport.position.seconds
     } else {

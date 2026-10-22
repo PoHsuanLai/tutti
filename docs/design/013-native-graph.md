@@ -4406,7 +4406,8 @@ vocoder retirement channel for voices the pool removes.
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
   an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
   `recording` flag (additive; tutti-core's engine sets it) because the ABIs
-  carry it. The continuous-sample counter is `Env`'s frame. Project-time
+  carry it. The continuous-sample counter is the node's own `SteadyTime`
+  (frames rendered; `Env`'s frame restarts at a re-prepare). Project-time
   samples, the host clock and the MIDI clock: [below](#plugin-transport-project-time-host-clock-midi-clock-editor-scale).
 - **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
   `f64` conversion stays in the batcher. The chunk (and so the declared
@@ -6276,21 +6277,36 @@ metronome's meter is 7/8.
 The snapshot a plugin chunk is handed (`transport_source::from_cx`) now
 fills the three fields the ABIs ask for that it used to leave empty:
 
-- **Project-time samples** (`TransportPosition::samples`: VST2 `samplePos`,
-  VST3 `projectTimeSamples`, AU's sample time) are the chunk's beat position
-  at the tempo, rounded: `round(beats · 60 / tempo · rate)`. The engine has
-  one tempo at a time and no tempo map, so this is exact and is the same
-  derivation as CLAP's seconds. It follows the beat, so it jumps on a seek
-  and wraps with a loop; the free-running counter stays `SteadyTime`.
+- **Project time** (`TransportPosition::samples`: VST2 `samplePos`, VST3
+  `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
+  the same time over the rate) is node state, `ProjectTime`, in `Bound` and
+  in the VST2 `TransportFeed`. Each chunk's read rolls it by the frames
+  since the last read while the transport plays on, and re-seats it from
+  the beat at the tempo (`beats · 60 / tempo · rate`) only at a jump: the
+  first read, a seek, a loop wrap or edit, a start, while stopped, a rate
+  change. A tempo change is not a jump: `tutti_graph::Transport::continuity`
+  is `Playhead`'s rule between two point reads (the same loop, and a beat
+  reached by rolling the gap at a tempo between the two, ± a frame), so a
+  step or a ramp rolls on. Re-deriving every chunk instead made project
+  time jump back at each tempo change (beat 100, 120 → 121 BPM: 2 400 031
+  then 2 380 197), since without a tempo map the beat's time at the new
+  tempo is not the time played. The free-running counter stays
+  `SteadyTime`.
 - **Host clock** (`TransportInfo::system_time_ns`: VST2 `nanoSeconds`, VST3
-  `systemTime`) is a `HostClock` reading: nanoseconds since a process-wide
-  monotonic origin, read once per block in `process` and placed at each
-  chunk's frame (`block_ns + frames · 1e9 / rate`). An offline fork has no
-  host clock (`Bound::host_clock` and the VST2 `TransportFeed`'s are `None`
-  in it), so an export is not told a wall time it does not run in.
+  `systemTime`) is a `HostClock` reading of the OS's monotonic clock, the
+  one plugins compare it against: `CLOCK_MONOTONIC`; on macOS
+  `CLOCK_UPTIME_RAW`, which is `mach_absolute_time` in nanoseconds, Core
+  Audio's host time; on Windows QPC scaled to nanoseconds. It is read once
+  per block in `process` and placed at each chunk's frame
+  (`block_ns + frames · 1e9 / rate`). The OS's epoch needs no origin handed
+  around, so plugins in the host and in every plugin server agree. An
+  offline fork has no host clock (`Bound::host_clock` and the VST2
+  `TransportFeed`'s are `None` in it), so an export is not told a wall time
+  it does not run in.
 - **MIDI clock** (VST2 `samplesToNextClock`, VST3 `samplesToNextClock`) is
   `TransportInfo::samples_to_nearest_clock`: the signed distance to the
-  nearest 24-ppq clock, as both SDKs define it ("can be negative").
+  nearest 24-ppq clock, as both SDKs define it ("can be negative"), at the
+  snapshot's own rate in both formats.
 
 Each format sets a field's validity flag (`kVstNanosValid`,
 `kVstClockValid`; `kSystemTimeValid`, `kClockValid`) only when the value is
@@ -6302,11 +6318,19 @@ at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
 and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
 window system (Win32, X11); a macOS view is in points, so neither is sent
 there. bevy-tutti passes the editor window's `scale_factor` and sizes that
-window in logical units.
+window in logical units. Its sizes stay in the plugin's units
+(`PluginEditorOpen::last_applied`); a `WindowResized` (logical) is
+converted to them before it is compared against the host's own echo or
+sent, and every size written back to the window is converted to logical.
+The scale is sent once, at open: a window moved to a display of another
+scale keeps the editor at the scale it opened at until it is reopened
+(nothing carries a scale to an open editor).
 
-Pinned analytically: `transport_source`'s unit tests (project samples
-across a loop wrap, a seek and a zero tempo; the host clock at a chunk's
-frame), `TransportInfo`'s nearest-clock test, both formats' flag tests,
+Pinned analytically: `transport_source`'s unit tests (project time
+rolling through a tempo change, and re-seated at a seek, a loop wrap and
+a start; the host clock at a chunk's frame, and on the OS clock),
+`Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
+bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`), both formats' flag tests,
 the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a
 fork, which is told project time and the clock but no host time
 (`vst2_in_process_fork.rs`), and `clap_gui_lifecycle.rs`'s scale.

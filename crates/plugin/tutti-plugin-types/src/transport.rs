@@ -54,9 +54,9 @@ pub struct TransportInfo {
     /// carry the ABI's value verbatim anyway.
     pub sample_rate: f64,
     /// The host's monotonic clock at the snapshot's first frame, in
-    /// nanoseconds from an origin the host process fixes once, so every
-    /// plugin it runs (in process or in any plugin server) reads one
-    /// timebase (vst3 `systemTime`; vst2 `nanoSeconds`).
+    /// nanoseconds on the OS's monotonic clock (`CLOCK_MONOTONIC`; macOS
+    /// `CLOCK_UPTIME_RAW`, Core Audio's host time; Windows QPC), the clock
+    /// plugins compare it against (vst3 `systemTime`; vst2 `nanoSeconds`).
     ///
     /// `None` when the producer has no clock that relates to the audio: an
     /// offline render runs faster or slower than real time, and a hand-built
@@ -141,12 +141,14 @@ pub struct TransportPosition {
     /// `projectTimeSamples`; AU `outCurrentSampleInTimeLine`). Jumps when the
     /// transport loops or relocates.
     ///
-    /// The engine's plugin node fills it from the playhead's beat at the
-    /// tempo in force (`beats * 60 / tempo * sample_rate`, rounded): the
-    /// engine has one tempo at a time and no tempo map, so that is the
-    /// project time of the beat, the same derivation as CLAP's
-    /// [`seconds`](Self::seconds). A tempo edit therefore moves it, as it
-    /// moves every beat's time.
+    /// The engine's plugin node keeps it as state, as CLAP's
+    /// [`seconds`](Self::seconds) (the same time, in frames, rounded): it
+    /// rolls by the frames rendered while the transport plays on, through
+    /// tempo changes, and is re-seated from the playhead's beat at the tempo
+    /// in force (`beats * 60 / tempo * sample_rate`) only at a seek, a loop
+    /// wrap, a start or while stopped. The engine has no tempo map, so after
+    /// a tempo change the two no longer agree; the rolled count is the time
+    /// actually played.
     ///
     /// `None` means the producer has no project-time position to report (no
     /// usable tempo, or a hand-built snapshot). It is an `Option` rather than
@@ -167,7 +169,9 @@ pub struct TransportPosition {
     /// matches `quarters`; in other time signatures the host is
     /// responsible for the conversion.
     pub beats: f64,
-    /// Seconds from song start (clap `song_pos_seconds`). A raw `f64` rather
+    /// Seconds from song start (clap `song_pos_seconds`): the engine's
+    /// plugin node fills it as [`samples`](Self::samples) over the rate,
+    /// unrounded. A raw `f64` rather
     /// than `Seconds` because it is handed straight to a C ABI, which is where
     /// the unit types stop — and `Seconds` is `f32`-backed, so it cannot carry
     /// an hour-long song position at full precision.

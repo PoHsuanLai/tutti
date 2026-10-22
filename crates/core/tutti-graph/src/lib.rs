@@ -271,7 +271,7 @@ pub use play::PlayClock;
 // carries one without naming the graph); the clock that keeps it is here.
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
-pub use time::{Due, Offset, Playhead};
+pub use time::{Continuity, Due, Offset, Playhead};
 pub use tutti_types::PlayReading;
 
 /// Checks `plan` against its op DAG: no slot shared by ops that may run

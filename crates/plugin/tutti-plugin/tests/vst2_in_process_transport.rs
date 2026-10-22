@@ -376,8 +376,11 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
 }
 
 /// **The plugin is told the project time in samples, the nearest MIDI
-/// clock and the host's clock**, each block, analytically: `samplePos` is
-/// the beat's time at the tempo (`beat × 60 / tempo × 48 000`), and
+/// clock and the host's clock**, each block, analytically: every scene
+/// starts a beat on from the last, a jump, so `samplePos` is re-seated to
+/// the beat's time at the tempo (`beat × 60 / tempo × 48 000`; that it rolls
+/// through a tempo change between jumps is `transport_source`'s unit test),
+/// and
 /// `samplesToNextClock` the signed distance to the nearest 24-ppq clock at
 /// that tempo, both under their scenes' seeks, tempo change, loop and stop;
 /// `nanoSeconds` is flagged and never runs backwards.

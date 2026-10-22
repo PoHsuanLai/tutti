@@ -20,7 +20,7 @@ use super::batcher::Chunks;
 use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
-use super::transport_source::{self, HostClock, SteadyTime};
+use super::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{
@@ -132,6 +132,7 @@ impl Node for PluginClient<Bound> {
             pending,
             out_events,
             steady,
+            project,
             host_clock,
             segments,
             params,
@@ -161,6 +162,7 @@ impl Node for PluginClient<Bound> {
             meter,
             features: c.loaded.features,
             steady: *steady,
+            project,
             block_ns,
             pending,
             out_events,
@@ -232,6 +234,8 @@ struct PluginChunks<'a> {
     features: Features,
     /// The steady-time counter at this block's first frame.
     steady: SteadyTime,
+    /// The node's project time, advanced at each chunk's read.
+    project: &'a mut ProjectTime,
     /// The host clock at this block's first frame; `None` offline.
     block_ns: Option<i64>,
     pending: &'a mut BlockPayload,
@@ -257,6 +261,7 @@ impl Chunks for PluginChunks<'_> {
                     &self.cx,
                     offset,
                     self.steady.at(at),
+                    self.project,
                     self.block_ns,
                     self.meter,
                 )

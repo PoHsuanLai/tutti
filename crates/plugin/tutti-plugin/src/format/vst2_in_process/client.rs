@@ -22,7 +22,7 @@ use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
-use crate::host::node::transport_source::{self, HostClock, SteadyTime};
+use crate::host::node::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
 use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 
@@ -148,6 +148,8 @@ pub(super) struct TransportFeed {
     default_meter: MeterMap,
     /// The free-running sample counter: frames this node rendered.
     steady: SteadyTime,
+    /// Project time: rolls with playback, re-seated at a jump.
+    project: ProjectTime,
     /// The host's monotonic clock, read once per block; `None` on an
     /// offline fork (no clock relates to the render's speed).
     host_clock: Option<HostClock>,
@@ -163,7 +165,7 @@ impl TransportFeed {
     }
 
     /// A feed reading `meter`'s cell through a reader registered here,
-    /// nothing rendered, on the process's host clock. Control thread:
+    /// nothing rendered, on the host clock. Control thread:
     /// registering may allocate.
     fn over(meter: PluginMeter) -> Self {
         Self {
@@ -171,7 +173,8 @@ impl TransportFeed {
             meter,
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
-            host_clock: Some(HostClock::process()),
+            project: ProjectTime::default(),
+            host_clock: Some(HostClock),
             last: TransportInfo::default(),
         }
     }
@@ -211,6 +214,7 @@ impl TransportFeed {
             cx,
             at,
             self.steady.at(0),
+            &mut self.project,
             self.host_clock.map(HostClock::now_ns),
             installed.as_deref().unwrap_or(&self.default_meter),
         );

@@ -74,6 +74,13 @@ pub struct AspectRatio {
 /// its own view, so it is not sent (both specs say so). VST2 and AU have no
 /// such call.
 ///
+/// Sent once, when the editor opens. A window moved to a display of another
+/// scale while its editor is open keeps the scale it opened at: nothing
+/// carries a scale to an open editor (there is no message for it on the
+/// plugin server's wire), so the editor lays out at the new scale only once
+/// it is closed and reopened. On macOS this does not arise, since a plugin
+/// reads its own view's scale there.
+///
 /// Finite and positive by construction: a plugin multiplies its geometry by
 /// it.
 ///

@@ -33,15 +33,17 @@ pub struct PluginEmitter {
 pub struct PluginEditorOpen {
     /// The Bevy `Window` entity this host spawned to hold the plugin's editor.
     pub editor_window: Entity,
-    /// Editor width in logical pixels as reported by the plugin.
+    /// Editor width as the plugin reports it, in its platform's units
+    /// (`EditorSize`: physical pixels on Windows and X11, points on macOS).
     pub width: u32,
-    /// Editor height in logical pixels as reported by the plugin.
+    /// Editor height, in the same units as [`width`](Self::width).
     pub height: u32,
     /// What the plugin says its editor supports — chiefly whether it is
     /// resizable, which decides whether the window gets resize constraints.
     pub capabilities: tutti_plugin::handles::EditorCapabilities,
-    /// Last size written to either side, in logical pixels. A `WindowResized`
-    /// matching this is an echo of this host's own write and is ignored.
+    /// Last size written to either side, in the plugin's units (as
+    /// [`width`](Self::width)). A `WindowResized` that converts to this is
+    /// an echo of this host's own write and is ignored.
     pub last_applied: (u32, u32),
     // The macOS AppKit live-resize observer is deliberately NOT a field here.
     // It owns a `Retained<NSView>` whose `Drop` calls `removeObserver`, and a
@@ -512,10 +514,11 @@ pub fn plugin_editor_attach_system(
 /// Forwards OS-driven editor-window resizes to the plugin, and writes the
 /// plugin's snapped reply back to the window.
 ///
-/// A `WindowResized` matching `last_applied` is an echo of this host's own
-/// write and is skipped, which is what stops the two sides trading resizes. A
-/// plugin that refuses outright has the window put back to the last size it
-/// accepted.
+/// Bevy reports the window's size in logical units; the plugin is asked in
+/// its own ([`requested_editor_size`]). One that converts to `last_applied`
+/// is an echo of this host's own write and is skipped, which is what stops
+/// the two sides trading resizes. A plugin that refuses outright has the
+/// window put back to the last size it accepted.
 pub fn plugin_editor_window_resize_system(
     _main_thread: NonSend<PluginEditorMainThread>,
     mut events: bevy_ecs::message::MessageReader<bevy_window::WindowResized>,
@@ -523,7 +526,9 @@ pub fn plugin_editor_window_resize_system(
     mut windows: Query<&mut bevy_window::Window>,
 ) {
     for ev in events.read() {
-        let event_size = (ev.width.round() as u32, ev.height.round() as u32);
+        let scale = windows
+            .get(ev.window)
+            .map_or(1.0, bevy_window::Window::scale_factor);
         for (emitter, mut editor) in editors.iter_mut() {
             if editor.editor_window != ev.window {
                 continue;
@@ -531,9 +536,11 @@ pub fn plugin_editor_window_resize_system(
             if !editor.capabilities.resize.resizable {
                 continue;
             }
-            if event_size == editor.last_applied {
+            let Some(event_size) =
+                requested_editor_size((ev.width, ev.height), scale, editor.last_applied)
+            else {
                 continue;
-            }
+            };
 
             let requested = tutti_plugin::handles::EditorSize {
                 width: event_size.0,
@@ -546,8 +553,8 @@ pub fn plugin_editor_window_resize_system(
                     editor.height = snapped.height;
                     if (snapped.width, snapped.height) != event_size {
                         if let Ok(mut win) = windows.get_mut(ev.window) {
-                            win.resolution
-                                .set(snapped.width as f32, snapped.height as f32);
+                            let (w, h) = logical_editor_size(snapped.width, snapped.height, scale);
+                            win.resolution.set(w, h);
                         }
                     }
                 }
@@ -560,8 +567,12 @@ pub fn plugin_editor_window_resize_system(
                         e
                     );
                     if let Ok(mut win) = windows.get_mut(ev.window) {
-                        win.resolution
-                            .set(editor.last_applied.0 as f32, editor.last_applied.1 as f32);
+                        let (w, h) = logical_editor_size(
+                            editor.last_applied.0,
+                            editor.last_applied.1,
+                            scale,
+                        );
+                        win.resolution.set(w, h);
                     }
                 }
             }
@@ -580,11 +591,43 @@ pub fn plugin_editor_window_resize_system(
 /// twice its size.
 fn logical_editor_size(width: u32, height: u32, scale: f32) -> (f32, f32) {
     let (w, h) = (width as f32, height as f32);
-    if cfg!(target_os = "macos") || !(scale.is_finite() && scale > 0.0) {
+    if plugin_units_are_logical(scale) {
         (w, h)
     } else {
         (w / scale, h / scale)
     }
+}
+
+/// The inverse of [`logical_editor_size`]: a window's logical size (what
+/// Bevy's `WindowResized` reports) in the plugin's units, rounded to whole
+/// pixels.
+fn plugin_editor_size(logical: (f32, f32), scale: f32) -> (u32, u32) {
+    let (w, h) = if plugin_units_are_logical(scale) {
+        logical
+    } else {
+        (logical.0 * scale, logical.1 * scale)
+    };
+    // An `as` cast saturates (a negative or NaN size is 0).
+    (w.round() as u32, h.round() as u32)
+}
+
+/// Whether a plugin's editor size needs no conversion to the window's
+/// logical units: on macOS (points), or at a scale the window does not
+/// report yet.
+fn plugin_units_are_logical(scale: f32) -> bool {
+    cfg!(target_os = "macos") || !(scale.is_finite() && scale > 0.0)
+}
+
+/// What a `WindowResized` of `logical` size, on a window of backing scale
+/// `scale`, asks the plugin for, in its units; `None` when that is
+/// `last_applied`, the echo of this host's own write.
+fn requested_editor_size(
+    logical: (f32, f32),
+    scale: f32,
+    last_applied: (u32, u32),
+) -> Option<(u32, u32)> {
+    let size = plugin_editor_size(logical, scale);
+    (size != last_applied).then_some(size)
 }
 
 /// Polls each open editor for plugin-initiated resize requests, resizes
@@ -633,8 +676,9 @@ pub fn plugin_editor_resize_request_system(
                 editor.width = snapped.width;
                 editor.height = snapped.height;
                 if let Ok(mut win) = windows.get_mut(editor.editor_window) {
-                    win.resolution
-                        .set(snapped.width as f32, snapped.height as f32);
+                    let (w, h) =
+                        logical_editor_size(snapped.width, snapped.height, win.scale_factor());
+                    win.resolution.set(w, h);
                 }
             }
         }
@@ -707,6 +751,44 @@ mod tests {
         assert_eq!(logical_editor_size(800, 600, 1.0), (800.0, 600.0));
         // A scale the window does not report yet is not a divisor.
         assert_eq!(logical_editor_size(800, 600, 0.0), (800.0, 600.0));
+    }
+
+    /// **A window resize is converted to the plugin's units before it is
+    /// compared or sent.** At scale 2 an editor applied at 1600×1200 has an
+    /// 800×600 logical window: that resize is the host's own echo and sends
+    /// nothing, and a user drag to 900×700 asks the plugin for 1800×1400
+    /// (off macOS; there both are points, so the drag sends 900×700).
+    ///
+    /// Mutation: compare the logical size against `last_applied` (no
+    /// conversion in `plugin_editor_size`) → the echo sends 800×600, which
+    /// halves the editor → fails. Mutation: divide instead of multiply →
+    /// the drag sends 450×350 → fails.
+    #[test]
+    fn a_window_resize_is_sent_in_the_plugins_units() {
+        let applied = if cfg!(target_os = "macos") {
+            (800, 600)
+        } else {
+            (1600, 1200)
+        };
+        assert_eq!(
+            logical_editor_size(applied.0, applied.1, 2.0),
+            (800.0, 600.0)
+        );
+        assert_eq!(requested_editor_size((800.0, 600.0), 2.0, applied), None);
+        let drag = requested_editor_size((900.0, 700.0), 2.0, applied);
+        if cfg!(target_os = "macos") {
+            assert_eq!(drag, Some((900, 700)));
+        } else {
+            assert_eq!(drag, Some((1800, 1400)));
+        }
+        // A fractional scale round-trips the host's own write too.
+        let (w, h) = logical_editor_size(1001, 751, 1.5);
+        assert_eq!(requested_editor_size((w, h), 1.5, (1001, 751)), None);
+        // At scale 1 the units agree.
+        assert_eq!(
+            requested_editor_size((640.0, 480.0), 1.0, (800, 600)),
+            Some((640, 480))
+        );
     }
 
     /// What `record_open` saw: one `(entity, is_open)` pair per entity.

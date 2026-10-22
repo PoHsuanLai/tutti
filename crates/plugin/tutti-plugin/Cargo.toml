@@ -92,6 +92,9 @@ tutti-vst2-host = { path = "../formats/tutti-vst2-host", optional = true }
 
 # Platform-specific (shared memory)
 [target.'cfg(unix)'.dependencies]
+# `clock_gettime`: the OS monotonic clock a hosted plugin's `systemTime` /
+# `nanoSeconds` is on (`transport_source::HostClock`).
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52", features = [
@@ -102,6 +105,8 @@ windows = { version = "0.52", features = [
     # `interprocess` refuses `set_recv_timeout` on a named pipe, so without this
     # every read blocks until the peer speaks. See `util::transport::control`.
     "Win32_System_Pipes",
+    # `QueryPerformanceCounter`: the host clock (`transport_source::HostClock`).
+    "Win32_System_Performance",
 ] }
 
 [dependencies.serde_json]

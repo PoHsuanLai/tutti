@@ -272,7 +272,7 @@ pub use play::PlayClock;
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Continuity, Due, Offset, Playhead};
-pub use tutti_types::PlayReading;
+pub use tutti_types::{BlockWaits, PlayReading};
 
 /// Checks `plan` against its op DAG: no slot shared by ops that may run
 /// concurrently, every read of the value it was meant to read, feedback read

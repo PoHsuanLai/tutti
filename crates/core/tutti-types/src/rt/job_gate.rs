@@ -37,14 +37,15 @@
 //! The caller never waits on a helper that has not started: a helper still
 //! asleep when the gate closes never enters. It waits only for helpers
 //! inside the job, which leave as soon as the job's own termination says so.
-//! That wait spins, and on Linux yields the caller's core once per 250 µs
-//! in which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so
-//! a helper queued behind a `SCHED_FIFO` caller on its own core can run and
+//! That wait spins, and on Linux yields the caller's core once per
+//! [`BlockWaits::caller_yield_after`] (the gate's own, 250 µs by default) in
+//! which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so a
+//! helper queued behind a `SCHED_FIFO` caller on its own core can run and
 //! leave.
 
 use sync::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering, UnsafeCell};
 
-use super::spin::SpinThenYield;
+use super::spin::{BlockWaits, SpinThenYield};
 
 mod sync {
     #[cfg(loom)]
@@ -88,6 +89,8 @@ pub struct JobGate {
     participants: u32,
     busy: AtomicBool,
     job: UnsafeCell<Option<Job>>,
+    /// The close's wait budget, and the one its pool hands the task graph.
+    waits: BlockWaits,
 }
 
 // SAFETY: the job cell is written only by the caller holding `busy`, while
@@ -107,6 +110,18 @@ impl JobGate {
     ///
     /// If `participants` is zero.
     pub fn new(participants: usize) -> Self {
+        Self::with_waits(participants, BlockWaits::DEFAULT)
+    }
+
+    /// [`new`](Self::new), with the close waiting by `waits` (its
+    /// [`caller_yield_after`](BlockWaits::caller_yield_after)) instead of
+    /// the defaults. The gate keeps both budgets, so a pool built on it has
+    /// one place to read them from ([`waits`](Self::waits)).
+    ///
+    /// # Panics
+    ///
+    /// If `participants` is zero.
+    pub fn with_waits(participants: usize, waits: BlockWaits) -> Self {
         assert!(participants > 0, "a job needs its caller");
         Self {
             state: AtomicU64::new(0),
@@ -115,7 +130,13 @@ impl JobGate {
             participants: u32::try_from(participants).expect("participant count"),
             busy: AtomicBool::new(false),
             job: UnsafeCell::new(None),
+            waits,
         }
+    }
+
+    /// The wait budgets the gate was built with.
+    pub fn waits(&self) -> BlockWaits {
+        self.waits
     }
 
     /// The most participants a job can have.
@@ -239,7 +260,7 @@ impl Drop for Close<'_> {
         fence(Ordering::SeqCst);
         // `Acquire`: every helper's use of the job happens-before its exit's
         // `Release`, and so before this returns.
-        let mut wait = SpinThenYield::new(u32::MAX);
+        let mut wait = SpinThenYield::new(u32::MAX, g.waits.caller_yield_after);
         loop {
             let inside = g.entered.load(Ordering::Acquire);
             if inside == 0 {
@@ -348,7 +369,7 @@ mod tests {
                 }
             });
             crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(crate::rt::spin::CALLER_YIELD_AFTER / 4);
+            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
             let joined = gate.run(
                 &|i| {
                     let deadline = Instant::now() + Duration::from_secs(10);
@@ -376,6 +397,61 @@ mod tests {
             saw.load(Ordering::Relaxed),
             "the close never yielded while the helper was inside"
         );
+    }
+
+    /// The close yields after the gate's own budget, not the default: with
+    /// a budget of an hour and its clock stepping the default budget per
+    /// read, it waits 50 ms on a helper inside without yielding. Linux only,
+    /// as the yield is.
+    ///
+    /// Mutation (run): build the close's `SpinThenYield` from
+    /// `BlockWaits::DEFAULT` instead of the gate's `waits` → it yields on its
+    /// second clock read → fails.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn the_close_yields_after_the_gates_budget() {
+        use std::time::Duration;
+        static YIELDED: AtomicU32 = AtomicU32::new(0);
+        let waits = BlockWaits {
+            caller_yield_after: Duration::from_secs(3600),
+            ..BlockWaits::DEFAULT
+        };
+        let gate = JobGate::with_waits(2, waits);
+        assert_eq!(gate.waits(), waits);
+        let inside = AtomicBool::new(false);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut served = 0;
+                while !stop.load(Ordering::Acquire) && !gate.help(&mut served) {
+                    std::hint::spin_loop();
+                }
+            });
+            crate::rt::spin::tests::count_yields_into(&YIELDED);
+            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
+            let joined = gate.run(
+                &|i| {
+                    if i == 0 {
+                        // Hold participant 0 until the helper is inside, so
+                        // the close has a helper to wait for.
+                        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                        while !inside.load(Ordering::Acquire)
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::yield_now();
+                        }
+                    } else {
+                        inside.store(true, Ordering::Release);
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                },
+                || {},
+            );
+            assert!(joined);
+            stop.store(true, Ordering::Release);
+        });
+        assert!(inside.load(Ordering::Relaxed), "the helper joined");
+        assert_eq!(YIELDED.load(Ordering::Acquire), 0);
     }
 
     /// A call from inside a job runs alone rather than waiting on itself.

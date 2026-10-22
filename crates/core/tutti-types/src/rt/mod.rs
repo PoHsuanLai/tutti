@@ -46,6 +46,9 @@
 //!   threads: self-resetting activation counters and a ready list.
 //! - [`JobGate`] — lends a borrowed job to a pool's helper threads for one
 //!   call and returns only when every helper has let go of it.
+//! - [`BlockWaits`] — how long the audio thread and a helper each wait
+//!   inside a parallel block before giving way (yielding its core, leaving
+//!   the block): a pool's setting.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
@@ -70,6 +73,7 @@ pub use pos_ring::{
 };
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{Contended, SeqReader, SeqWriter};
+pub use spin::BlockWaits;
 pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};
 pub use task_graph::{Participant, TaskGraph};
 pub use vec::RtVec;

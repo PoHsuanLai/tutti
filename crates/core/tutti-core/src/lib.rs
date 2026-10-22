@@ -23,7 +23,7 @@ mod engine;
 // `Executor::set_pool` before the executor goes to the audio thread.
 mod pool;
 pub use pool::{OnStart, WorkerPool, WorkerPoolBuilder};
-pub use tutti_graph::Pool;
+pub use tutti_graph::{BlockWaits, Pool};
 
 // The shape of a node swap: the graph's (`Editor::replace` follows
 // it), at the engine root. The law is pinned in tutti-graph's `fade.rs`.

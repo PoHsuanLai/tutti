@@ -61,6 +61,81 @@ pub struct AspectRatio {
     pub ratio: Option<(u32, u32)>,
 }
 
+/// The backing-store scale factor of the window an editor embeds into:
+/// physical pixels per logical pixel (1.0 at standard density, 2.0 on a
+/// Retina display or at 200 % on Windows).
+///
+/// The host knows it from its window (`winit::Window::scale_factor`, Bevy's
+/// `Window::scale_factor`) and passes it when it opens an editor; each format
+/// forwards it where its ABI takes it: CLAP `clap_plugin_gui::set_scale` and
+/// VST3 `IPlugViewContentScaleSupport::setContentScaleFactor`, on the
+/// physical-pixel windowing systems only (Win32, X11). On macOS the window
+/// system already reports logical pixels and a plugin reads the factor from
+/// its own view, so it is not sent (both specs say so). VST2 and AU have no
+/// such call.
+///
+/// Finite and positive by construction: a plugin multiplies its geometry by
+/// it.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_plugin_types::ContentScale;
+///
+/// assert_eq!(ContentScale::new(2.0).map(ContentScale::get), Some(2.0));
+/// assert_eq!(ContentScale::new(0.0), None);
+/// assert_eq!(ContentScale::default(), ContentScale::IDENTITY);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "f64", into = "f64")
+)]
+pub struct ContentScale(f64);
+
+impl ContentScale {
+    /// 1.0: a standard-density display.
+    pub const IDENTITY: Self = Self(1.0);
+
+    /// The scale `factor`, or `None` unless it is finite and positive.
+    pub fn new(factor: f64) -> Option<Self> {
+        (factor.is_finite() && factor > 0.0).then_some(Self(factor))
+    }
+
+    /// The factor. A raw `f64`: it is handed straight to a C ABI (CLAP takes
+    /// `double`, VST3 `float`).
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl Default for ContentScale {
+    /// [`ContentScale::IDENTITY`].
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl TryFrom<f64> for ContentScale {
+    type Error = InvalidContentScale;
+
+    fn try_from(factor: f64) -> Result<Self, Self::Error> {
+        Self::new(factor).ok_or(InvalidContentScale(factor))
+    }
+}
+
+impl From<ContentScale> for f64 {
+    fn from(scale: ContentScale) -> f64 {
+        scale.0
+    }
+}
+
+/// A scale factor that is not finite and positive (see [`ContentScale::new`]).
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
+#[error("a content scale must be finite and positive, got {0}")]
+pub struct InvalidContentScale(pub f64);
+
 /// A native platform window handle that a plugin editor embeds into.
 ///
 /// Platform mapping:
@@ -179,4 +254,28 @@ pub enum EditorError {
     /// Another `open_editor` holds the GUI lock. Retryable once it completes.
     #[error("could not acquire GUI lock (another open_editor in progress?)")]
     Busy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A content scale is finite and positive**: anything else is refused,
+    /// on construction and on the wire, since a plugin multiplies its
+    /// geometry by it.
+    ///
+    /// Mutation: drop `factor > 0.0` from `ContentScale::new` → 0.0 and
+    /// -2.0 are accepted → fails. Mutation: drop `is_finite` → infinity is
+    /// accepted → fails.
+    #[test]
+    fn a_content_scale_is_finite_and_positive() {
+        for good in [0.5, 1.0, 1.25, 2.0, 3.0] {
+            assert_eq!(ContentScale::new(good).map(ContentScale::get), Some(good));
+            assert_eq!(ContentScale::try_from(good).map(f64::from), Ok(good));
+        }
+        for bad in [0.0, -0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(ContentScale::new(bad), None, "{bad}");
+            assert!(ContentScale::try_from(bad).is_err(), "{bad}");
+        }
+    }
 }

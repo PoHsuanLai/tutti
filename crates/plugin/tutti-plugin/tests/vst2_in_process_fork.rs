@@ -465,7 +465,8 @@ fn a_plugin_handed_back_by_into_client_forks() {
 /// Mutation (run): hand the fork a default snapshot (`TransportInfo::default()`
 /// in `TransportFeed::block`) → the probe reads 120 BPM at 0 → fails.
 /// Mutation (run): give the fork an empty meter cell in
-/// `TransportFeed::forked` → the probe reads 4/4 → fails.
+/// `TransportFeed::forked` → the probe reads 4/4 → fails. Mutation (run):
+/// `forked` ignoring `offline` → `kVstNanosValid` set → fails.
 #[test]
 fn a_fork_reads_its_transport_from_the_render() {
     let _lock = lock_probe();
@@ -503,6 +504,20 @@ fn a_fork_reads_its_transport_from_the_render() {
         "the live node's meter"
     );
     assert!((cap.time_bar_start_pos - 3.5).abs() < 1e-9);
+    // Project time is the render's beat at its tempo: 5 × 60 / 93 s.
+    assert_eq!(
+        cap.time_sample_pos,
+        (5.0 * 60.0 / 93.0 * SAMPLE_RATE).round()
+    );
+    // Quarter 5 is on a MIDI clock.
+    assert_ne!(cap.time_flags & (1 << 15), 0, "kVstClockValid");
+    assert_eq!(cap.time_samples_to_next_clock, 0);
+    // No host clock relates to an offline render.
+    assert_eq!(
+        cap.time_flags & (1 << 8),
+        0,
+        "kVstNanosValid is clear offline"
+    );
     drop(handle);
 }
 

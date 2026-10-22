@@ -120,6 +120,10 @@ pub struct ProcessCapture {
     /// field but leaves its `…Valid` flag clear has told the plugin to
     /// ignore the value it just supplied.
     pub time_flags: i32,
+    /// `VstTimeInfo::nanoSeconds`: the host's clock.
+    pub time_nanoseconds: f64,
+    /// `VstTimeInfo::samplesToNextClock`: the nearest 24-ppq MIDI clock.
+    pub time_samples_to_next_clock: i32,
 
     /// True count of events in the most recent `effProcessEvents`, even
     /// past [`MAX_CAPTURED_EVENTS`].
@@ -159,6 +163,8 @@ impl ProcessCapture {
             time_sig_numerator: 0,
             time_sig_denominator: 0,
             time_flags: 0,
+            time_nanoseconds: 0.0,
+            time_samples_to_next_clock: 0,
             event_count: 0,
             total_event_count: 0,
             events: [CapturedEvent {

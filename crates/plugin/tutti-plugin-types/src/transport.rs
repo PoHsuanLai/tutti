@@ -32,7 +32,7 @@ use tutti_types::meter::{BarNumber, TimeSignature};
 ///     .with_position_quarters(16.0)
 ///     .with_bar(16.0, BarNumber::default());
 /// assert!(info.state.playing);
-/// assert_eq!(info.position.samples, None); // no project-time sample clock
+/// assert_eq!(info.position.samples, None); // the producer reports it separately
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -53,6 +53,16 @@ pub struct TransportInfo {
     /// where the unit types stop — and `Hz` is `f32`-backed, so it could not
     /// carry the ABI's value verbatim anyway.
     pub sample_rate: f64,
+    /// The host's monotonic clock at the snapshot's first frame, in
+    /// nanoseconds from an origin the host process fixes once, so every
+    /// plugin it runs (in process or in any plugin server) reads one
+    /// timebase (vst3 `systemTime`; vst2 `nanoSeconds`).
+    ///
+    /// `None` when the producer has no clock that relates to the audio: an
+    /// offline render runs faster or slower than real time, and a hand-built
+    /// snapshot has none. A raw `i64` because that is the ABI's type, and a
+    /// nanosecond count is precision `Seconds` (`f32`) cannot carry.
+    pub system_time_ns: Option<i64>,
 }
 
 /// Returns whether a transport `f64` may be advertised to a plugin as valid.
@@ -128,17 +138,21 @@ impl Default for MusicalTiming {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportPosition {
     /// Sample-accurate project timeline position (vst2 `samplePos`; vst3
-    /// `projectTimeSamples`). Jumps when the transport loops/relocates.
+    /// `projectTimeSamples`; AU `outCurrentSampleInTimeLine`). Jumps when the
+    /// transport loops or relocates.
     ///
-    /// `None` means the host has no project-time sample clock to report. It is
-    /// an `Option` rather than a plain `i64` because no producer in this engine
-    /// fills it: the transport's authority is musical (beats), and deriving
-    /// project-time samples from beats and tempo is wrong the moment tempo
-    /// moves. Neither the VST2 nor the
-    /// VST3 ABI has a validity bit for their sample-position field, so a plain
-    /// `0` travels as fact and every plugin doing sample-accurate math sees the
-    /// project frozen at sample 0 forever. The `Option` forces each format host
-    /// to decide what to send instead of silently forwarding a placeholder.
+    /// The engine's plugin node fills it from the playhead's beat at the
+    /// tempo in force (`beats * 60 / tempo * sample_rate`, rounded): the
+    /// engine has one tempo at a time and no tempo map, so that is the
+    /// project time of the beat, the same derivation as CLAP's
+    /// [`seconds`](Self::seconds). A tempo edit therefore moves it, as it
+    /// moves every beat's time.
+    ///
+    /// `None` means the producer has no project-time position to report (no
+    /// usable tempo, or a hand-built snapshot). It is an `Option` rather than
+    /// a plain `i64` because neither the VST2 nor the VST3 ABI has a validity
+    /// bit for its sample-position field, so a placeholder `0` would travel
+    /// as fact; the `Option` makes each format host decide what to send.
     pub samples: Option<i64>,
     /// Monotonic sample counter that does **not** reset on loop/cycle (vst3
     /// `continousTimeSamples`; clap `steady_time`). Free-running plugins (LFOs,
@@ -198,6 +212,7 @@ impl Default for TransportInfo {
             loop_region: LoopRegion::default(),
             bar: BarInfo::default(),
             sample_rate: 0.0,
+            system_time_ns: None,
         }
     }
 }
@@ -247,11 +262,9 @@ impl TransportInfo {
 
     /// Sets the VST-style musical position in quarter notes (builder).
     ///
-    /// Deliberately does **not** take a sample position: the two are not
-    /// derivable from one another once tempo moves. A host that genuinely has a
-    /// project-time sample clock reports it separately via
-    /// [`with_position_samples`](Self::with_position_samples); one that doesn't
-    /// leaves [`TransportPosition::samples`] `None`.
+    /// Does **not** set a sample position: the producer reports that
+    /// separately via [`with_position_samples`](Self::with_position_samples),
+    /// and one that has none leaves [`TransportPosition::samples`] `None`.
     pub fn with_position_quarters(mut self, quarters: f64) -> Self {
         self.position.quarters = quarters;
         self
@@ -260,8 +273,7 @@ impl TransportInfo {
     /// Sets the project-time sample position (vst2 `samplePos`; vst3
     /// `projectTimeSamples`), the one that jumps on loop/relocate (builder).
     ///
-    /// Only call this if the host actually tracks project time in samples. No
-    /// producer in this engine does; see [`TransportPosition::samples`].
+    /// See [`TransportPosition::samples`] for how the engine derives it.
     pub fn with_position_samples(mut self, samples: i64) -> Self {
         self.position.samples = Some(samples);
         self
@@ -275,6 +287,52 @@ impl TransportInfo {
     pub fn with_continuous_samples(mut self, continuous_samples: i64) -> Self {
         self.position.continuous_samples = continuous_samples;
         self
+    }
+
+    /// Sets the host's monotonic clock reading, in nanoseconds (builder). See
+    /// [`TransportInfo::system_time_ns`].
+    pub fn with_system_time_ns(mut self, nanoseconds: i64) -> Self {
+        self.system_time_ns = Some(nanoseconds);
+        self
+    }
+
+    /// Frames from the snapshot's first frame to the nearest MIDI clock, at
+    /// 24 clocks per quarter note (vst2 `samplesToNextClock`, vst3
+    /// `samplesToNextClock`): negative when the nearest clock is behind,
+    /// as both SDKs define it ("can be negative (nearest)").
+    ///
+    /// Derived from the musical position, the tempo and the rate, so it is
+    /// the grid the [`quarters`](TransportPosition::quarters) the plugin is
+    /// told already implies. `None` unless all three are usable: a finite
+    /// position, a finite positive tempo and rate (see [`is_usable`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_plugin_types::TransportInfo;
+    ///
+    /// // 120 BPM at 48 kHz: a quarter note is 24 000 frames, a clock 1 000.
+    /// let t = TransportInfo::new()
+    ///     .with_sample_rate(48_000.0)
+    ///     .with_tempo(120.0)
+    ///     .with_position_quarters(2.0 + 0.25 / 24.0);
+    /// assert_eq!(t.samples_to_nearest_clock(), Some(-250));
+    /// ```
+    pub fn samples_to_nearest_clock(&self) -> Option<i32> {
+        const CLOCKS_PER_QUARTER: f64 = 24.0;
+        let (quarters, tempo, rate) = (self.position.quarters, self.timing.tempo, self.sample_rate);
+        if !(is_usable(quarters) && is_usable(tempo) && is_usable(rate))
+            || tempo <= 0.0
+            || rate <= 0.0
+        {
+            return None;
+        }
+        let clocks = quarters * CLOCKS_PER_QUARTER;
+        let to_nearest = (clocks.round() - clocks) / CLOCKS_PER_QUARTER;
+        let frames = (to_nearest * 60.0 / tempo * rate).round();
+        // Half a clock at the slowest tempo a plugin is told is far inside
+        // `i32`; a pathological tempo saturates rather than wraps.
+        Some(frames.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)
     }
 
     /// Sets every bar field (builder).
@@ -323,8 +381,9 @@ mod tests {
         assert_eq!(t.loop_region.end_quarters, 16.0);
     }
 
-    /// The project-time sample clock has no producer, so it must arrive as
-    /// `None` — not as a `0` that VST2/VST3 forward as fact.
+    /// A snapshot nobody reported a project-time position on carries `None`,
+    /// not a `0` that VST2/VST3 would forward as fact; the builder that
+    /// reports one sets it, and only that builder.
     #[test]
     fn position_samples_is_absent_until_a_host_reports_one() {
         assert_eq!(TransportInfo::new().position.samples, None);
@@ -342,5 +401,38 @@ mod tests {
                 .samples,
             Some(1_234)
         );
+    }
+
+    /// **The MIDI clock offset is the distance to the nearest 24-ppq clock,
+    /// in frames, signed.** At 120 BPM and 48 kHz a clock is 1 000 frames;
+    /// at 90 BPM and 44.1 kHz it is 1 225. A quarter of a clock past a clock
+    /// is behind it (negative), three quarters is ahead of the next.
+    ///
+    /// Mutation: `clocks.ceil()` for `clocks.round()` (the *next* clock) →
+    /// the -250 case reads 750 → fails. Mutation: drop the `tempo <= 0.0`
+    /// gate → a zero tempo saturates to `Some(i32::MAX)` → fails. Mutation:
+    /// `/ CLOCKS_PER_QUARTER` dropped from `to_nearest` → 24 times too far →
+    /// fails.
+    #[test]
+    fn samples_to_nearest_clock_is_the_signed_distance_on_the_24_ppq_grid() {
+        let at = |tempo: f64, rate: f64, quarters: f64| {
+            TransportInfo::new()
+                .with_tempo(tempo)
+                .with_sample_rate(rate)
+                .with_position_quarters(quarters)
+                .samples_to_nearest_clock()
+        };
+        assert_eq!(at(120.0, 48_000.0, 2.0), Some(0));
+        assert_eq!(at(120.0, 48_000.0, 2.0 + 0.25 / 24.0), Some(-250));
+        assert_eq!(at(120.0, 48_000.0, 2.0 + 0.75 / 24.0), Some(250));
+        assert_eq!(at(90.0, 44_100.0, 1.0 + 0.4 / 24.0), Some(-490));
+        assert_eq!(at(90.0, 44_100.0, 1.0 + 0.6 / 24.0), Some(490));
+
+        // Nothing to derive it from.
+        assert_eq!(at(0.0, 48_000.0, 2.0), None);
+        assert_eq!(at(-120.0, 48_000.0, 2.0), None);
+        assert_eq!(at(120.0, 0.0, 2.0), None);
+        assert_eq!(at(120.0, 48_000.0, f64::NAN), None);
+        assert_eq!(at(f64::INFINITY, 48_000.0, 2.0), None);
     }
 }

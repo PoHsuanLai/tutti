@@ -146,13 +146,13 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 
 ```rust,no_run
 # use std::path::Path;
-# use tutti_vst3_host::{Vst3Loaded, WindowHandle};
+# use tutti_vst3_host::{ContentScale, Vst3Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst3_host::Result<()> {
 # let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"))?;
 if plugin.has_editor() {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
-    let size = plugin.open_editor(handle)?;
+    let size = plugin.open_editor(handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
 }
 plugin.close_editor();

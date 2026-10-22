@@ -138,8 +138,10 @@ mod tests {
     /// `golden_block()` encoded by origin/main at `f07984d6`, the code before
     /// `smallvec` was removed (MIDI, parameter points, note expression and
     /// the harmony containers were `SmallVec`s then). Recorded by running
-    /// the same fixture there.
-    const GOLDEN_BLOCK: [u8; 427] = [
+    /// the same fixture there, then one byte longer: the transport's last
+    /// field, `system_time_ns`, is a later addition to the wire, and its
+    /// `None` encodes as the trailing `0x00`.
+    const GOLDEN_BLOCK: [u8; 428] = [
         0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x3c,
         0x90, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f,
@@ -168,7 +170,7 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x70, 0xe7, 0x40,
+        0x00, 0x00, 0x00, 0x00, 0x70, 0xe7, 0x40, 0x00,
     ];
 
     /// **A fully populated block encodes to the bytes the code before this
@@ -200,5 +202,25 @@ mod tests {
         assert_eq!(back.scales.changes[0].text, "D major");
         assert_eq!(back.expr_texts.changes[0].text, "ah");
         assert_eq!(back.expr_ints.changes[0].value, -1234);
+    }
+
+    /// **The transport's project-time position and host clock cross the
+    /// wire**: the plugin server fills VST3 `projectTimeSamples` /
+    /// `systemTime` and VST2 `samplePos` / `nanoSeconds` from what arrives.
+    ///
+    /// Mutation (run): `#[serde(skip)]` on `TransportInfo::system_time_ns`
+    /// → it arrives `None` → fails.
+    #[test]
+    fn the_transport_clocks_cross_the_wire() {
+        let block = ProcessAudioData {
+            transport: TransportInfo::new()
+                .with_position_samples(96_007)
+                .with_system_time_ns(5_001_000_000),
+            ..Default::default()
+        };
+        let back: ProcessAudioData =
+            bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+        assert_eq!(back.transport.position.samples, Some(96_007));
+        assert_eq!(back.transport.system_time_ns, Some(5_001_000_000));
     }
 }

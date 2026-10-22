@@ -11,8 +11,9 @@ use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    midi_from_wire, AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec,
-    MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle, MAX_STATE_BYTES,
+    midi_from_wire, AudioSlab, BridgeMessage, ContentScale, HostMessage, IpcMidiEvent,
+    IpcMidiEventVec, MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle,
+    MAX_STATE_BYTES,
 };
 use tutti_plugin::Result;
 
@@ -257,7 +258,10 @@ impl Session {
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
 
-            M::OpenEditor { parent_handle } => Ok(self.handle_open_editor(parent_handle).into()),
+            M::OpenEditor {
+                parent_handle,
+                scale,
+            } => Ok(self.handle_open_editor(parent_handle, scale).into()),
             M::CloseEditor => {
                 if let Some(plugin) = self.plugin.as_mut() {
                     plugin.instance_mut().close_editor();
@@ -450,7 +454,7 @@ impl Session {
         .into())
     }
 
-    fn handle_open_editor(&mut self, parent_handle: u64) -> BridgeMessage {
+    fn handle_open_editor(&mut self, parent_handle: u64, scale: ContentScale) -> BridgeMessage {
         let Some(plugin) = self.plugin.as_mut() else {
             return BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
@@ -459,7 +463,7 @@ impl Session {
         // SAFETY: parent_handle is a raw platform window pointer carried
         // as u64 over IPC; the single unsafe boundary for editor embedding.
         let handle = unsafe { WindowHandle::from_u64(parent_handle) };
-        match plugin.instance_mut().open_editor(handle) {
+        match plugin.instance_mut().open_editor(handle, scale) {
             Ok(size) => {
                 self.editor = EditorState::Open;
                 BridgeMessage::EditorOpened {
@@ -662,7 +666,10 @@ mod tests {
             ),
             (
                 "OpenEditor",
-                HostMessage::OpenEditor { parent_handle: 0 },
+                HostMessage::OpenEditor {
+                    parent_handle: 0,
+                    scale: ContentScale::IDENTITY,
+                },
                 Refusal("No plugin loaded"),
             ),
             (

@@ -22,7 +22,7 @@ use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
-use crate::host::node::transport_source::{self, SteadyTime};
+use crate::host::node::transport_source::{self, HostClock, SteadyTime};
 use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
 use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 
@@ -148,6 +148,9 @@ pub(super) struct TransportFeed {
     default_meter: MeterMap,
     /// The free-running sample counter: frames this node rendered.
     steady: SteadyTime,
+    /// The host's monotonic clock, read once per block; `None` on an
+    /// offline fork (no clock relates to the render's speed).
+    host_clock: Option<HostClock>,
     /// The last snapshot handed out: what an empty block (no frame to read
     /// the transport at) repeats.
     last: TransportInfo,
@@ -160,22 +163,29 @@ impl TransportFeed {
     }
 
     /// A feed reading `meter`'s cell through a reader registered here,
-    /// nothing rendered. Control thread: registering may allocate.
+    /// nothing rendered, on the process's host clock. Control thread:
+    /// registering may allocate.
     fn over(meter: PluginMeter) -> Self {
         Self {
             reader: meter.reader(),
             meter,
             default_meter: MeterMap::default(),
             steady: SteadyTime::default(),
+            host_clock: Some(HostClock::process()),
             last: TransportInfo::default(),
         }
     }
 
     /// A fork's feed: the meter installed now, in a slot of its own (a meter
     /// installed on the live node afterwards does not reach the fork, as for
-    /// the out-of-process node's fork), and a counter from zero.
-    pub(super) fn forked(&self) -> Self {
-        Self::over(PluginMeter::holding(self.meter.installed()))
+    /// the out-of-process node's fork), a counter from zero, and, for an
+    /// `offline` render, no host clock.
+    pub(super) fn forked(&self, offline: bool) -> Self {
+        let mut feed = Self::over(PluginMeter::holding(self.meter.installed()));
+        if offline {
+            feed.host_clock = None;
+        }
+        feed
     }
 
     /// The snapshot for a block of `frames`, then count them. A plugin that
@@ -201,6 +211,7 @@ impl TransportFeed {
             cx,
             at,
             self.steady.at(0),
+            self.host_clock.map(HostClock::now_ns),
             installed.as_deref().unwrap_or(&self.default_meter),
         );
         self.steady.advance(frames);
@@ -591,7 +602,7 @@ mod transport_tests {
         let mut live = TransportFeed::new();
         live.meter.set_meter(seven_eight_meter());
         let _ = live.block(&cx(&e), 64, loader_features());
-        let mut fork = live.forked();
+        let mut fork = live.forked(false);
         live.meter.clear_meter();
         let got = fork.block(&cx(&e), 64, loader_features());
         assert_eq!(got.timing.signature, seven_eight());
@@ -626,5 +637,32 @@ mod transport_tests {
         assert_eq!(empty.timing.tempo, 132.0);
         assert!(empty.state.playing);
         assert_eq!(empty.position.continuous_samples, 0);
+    }
+
+    /// **A live feed tells the plugin the host clock; an offline fork's
+    /// does not.** No clock relates to a render that runs at its own speed,
+    /// so `nanoSeconds` must not be claimed there. A live fork keeps it.
+    ///
+    /// Mutation (run): `forked` ignoring `offline` → the offline fork reports
+    /// a host time → fails. Mutation (run): `over` with `host_clock: None` →
+    /// the live feed reports none → fails.
+    #[test]
+    fn only_a_live_feed_carries_the_host_clock() {
+        let e = env();
+        let mut live = TransportFeed::new();
+        assert!(live
+            .block(&cx(&e), 64, loader_features())
+            .system_time_ns
+            .is_some());
+        let mut live_fork = live.forked(false);
+        assert!(live_fork
+            .block(&cx(&e), 64, loader_features())
+            .system_time_ns
+            .is_some());
+        let mut offline = live.forked(true);
+        assert_eq!(
+            offline.block(&cx(&e), 64, loader_features()).system_time_ns,
+            None
+        );
     }
 }

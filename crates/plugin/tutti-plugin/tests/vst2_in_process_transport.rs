@@ -43,6 +43,10 @@ const PLAYING: i32 = 1 << 1;
 const CYCLE_ACTIVE: i32 = 1 << 2;
 /// `kVstTransportRecording`.
 const RECORDING: i32 = 1 << 3;
+/// `kVstNanosValid`.
+const NANOS_VALID: i32 = 1 << 8;
+/// `kVstClockValid`.
+const CLOCK_VALID: i32 = 1 << 15;
 
 /// Serializes against the probe's process-global capture.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
@@ -368,5 +372,63 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     let (mut r, _) = rig(plugin, 0);
     let seen = render_scenes(&mut r, 1);
     assert_eq!(seen[0].1.numerator, 7);
+    drop(handle);
+}
+
+/// **The plugin is told the project time in samples, the nearest MIDI
+/// clock and the host's clock**, each block, analytically: `samplePos` is
+/// the beat's time at the tempo (`beat × 60 / tempo × 48 000`), and
+/// `samplesToNextClock` the signed distance to the nearest 24-ppq clock at
+/// that tempo, both under their scenes' seeks, tempo change, loop and stop;
+/// `nanoSeconds` is flagged and never runs backwards.
+///
+/// Mutation (run): drop `.with_position_samples` in `transport_info` →
+/// `samplePos` is 0 → fails. Mutation (run): `TransportFeed::over` with
+/// `host_clock: None` → `kVstNanosValid` clear → fails.
+#[test]
+fn a_live_node_is_told_project_time_the_midi_clock_and_the_host_clock() {
+    let _lock = lock_probe();
+    reset_probe();
+    let (client, handle) = load();
+    let (mut r, _) = rig(client, 0);
+
+    let mut out = vec![vec![0.0f32; BLOCK]; 2];
+    let mut last_ns = f64::NEG_INFINITY;
+    for b in 0..12 {
+        let (transport, changes) = scene(b);
+        let mut outs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        r.executor_mut()
+            .process_with_changes(BLOCK, &transport, &changes, &[], &mut outs);
+        let cap = read_capture();
+        let (beat, tempo) = (transport.beat().get(), transport.tempo.get());
+
+        let frames_per_quarter = 60.0 / tempo * SAMPLE_RATE;
+        let want_pos = (beat * frames_per_quarter).round();
+        assert!(
+            (cap.time_sample_pos - want_pos).abs() <= 1.0,
+            "block {b}: samplePos {} for beat {beat} at {tempo} BPM, want {want_pos}",
+            cap.time_sample_pos
+        );
+
+        let clocks = beat * 24.0;
+        let want_clock = ((clocks.round() - clocks) / 24.0 * frames_per_quarter).round();
+        assert_ne!(cap.time_flags & CLOCK_VALID, 0, "block {b}: clock flagged");
+        assert!(
+            (f64::from(cap.time_samples_to_next_clock) - want_clock).abs() <= 1.0,
+            "block {b}: samplesToNextClock {}, want {want_clock}",
+            cap.time_samples_to_next_clock
+        );
+
+        assert_ne!(
+            cap.time_flags & NANOS_VALID,
+            0,
+            "block {b}: host clock flagged"
+        );
+        assert!(
+            cap.time_nanoseconds >= last_ns,
+            "block {b}: the clock ran back"
+        );
+        last_ns = cap.time_nanoseconds;
+    }
     drop(handle);
 }

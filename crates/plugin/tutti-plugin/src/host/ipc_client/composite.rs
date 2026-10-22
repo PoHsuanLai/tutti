@@ -8,7 +8,7 @@ use crate::protocol::{
     Preset, PresetId, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
-use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -212,6 +212,7 @@ impl PluginBridge {
     pub fn open_editor(
         &self,
         parent_ptr: *mut c_void,
+        scale: ContentScale,
     ) -> std::result::Result<EditorSize, EditorError> {
         tutti_plugin_types::assert_main_thread();
         if self.audio.is_crashed() {
@@ -253,7 +254,7 @@ impl PluginBridge {
         // extracted by `extract_platform_ptr` from a caller-supplied
         // `RawWindowHandle`, which is alive for the open_editor call.
         let size = gui
-            .open_editor(unsafe { WindowHandle::from_ptr(parent_ptr) })
+            .open_editor(unsafe { WindowHandle::from_ptr(parent_ptr) }, scale)
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
         tracing::info!(
             "[bridge] open_editor: editor opened {}x{}",
@@ -539,8 +540,12 @@ impl crate::host::handles::capabilities::HostState for SubprocessBackend {
 }
 
 impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
-    fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
-        self.bridge.open_editor(parent_ptr)
+    fn open_editor(
+        &self,
+        parent_ptr: *mut c_void,
+        scale: ContentScale,
+    ) -> std::result::Result<EditorSize, EditorError> {
+        self.bridge.open_editor(parent_ptr, scale)
     }
 
     fn open_floating_editor(&self) -> std::result::Result<(), EditorError> {

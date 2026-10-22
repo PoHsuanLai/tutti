@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — plugin transport: project-time samples, host clock and MIDI clock; editors open at the window's scale
+
+A hosted plugin is now told everything its transport snapshot can know:
+
+- **Project-time sample position.** `TransportPosition::samples` is filled
+  from the chunk's beat position at the current tempo (the engine has one
+  tempo at a time, so this is the same derivation as CLAP's seconds). VST2
+  `samplePos`, VST3 `projectTimeSamples` and AU's sample time read it.
+- **Host clock.** New `TransportInfo::system_time_ns`: nanoseconds on a
+  monotonic process clock, read once per block and placed at the chunk's
+  frame. VST2 sets `kVstNanosValid` and VST3 `kSystemTimeValid` only when it
+  is present. An offline fork (export) leaves it `None`: its render does not
+  run in wall time.
+- **MIDI clock.** New `TransportInfo::samples_to_nearest_clock()`: the signed
+  distance in samples to the nearest 24-ppq clock, `None` without a finite
+  position, a positive tempo and a positive sample rate. VST2 sets
+  `kVstClockValid` and VST3 `kClockValid` from it.
+
+A plugin editor is opened at its window's backing scale. `ContentScale`
+(finite and positive; `ContentScale::IDENTITY` is 1.0) enters at the
+editor-open call. CLAP's `gui.set_scale` and VST3's
+`IPlugViewContentScaleSupport::setContentScaleFactor` receive it on
+physical-pixel window systems (Win32, X11); macOS views are in points, so
+neither is sent there, as before. VST2 and AU ignore it. `bevy-tutti`
+passes the editor window's `scale_factor` and sizes that window in logical
+units, dividing the plugin's size by the scale off macOS.
+
+The out-of-process wire format changes: `ProcessAudioData`'s transport
+carries `system_time_ns`, and `HostMessage::OpenEditor` carries the scale.
+The plugin server and the host must be built from the same revision, as
+before.
+
+| Was | Now |
+|---|---|
+| `PluginHandle::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostEditor::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `PluginEditorHost::open_editor(&mut self, parent)` | `open_editor(&mut self, parent, scale: ContentScale)` (an implementor that cannot scale takes `_scale`) |
+| `ClapLoaded::open_editor(parent)`, `Vst3Loaded::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostMessage::OpenEditor { parent_handle }` | `HostMessage::OpenEditor { parent_handle, scale }` |
+| `TransportInfo { .. }` literal | add `system_time_ns: None` (or build it with `TransportInfo::new` / `Default` and `with_system_time_ns`) |
+| VST2 `samplePos` / VST3 `projectTimeSamples` were 0 | filled from beat and tempo |
+| VST2 `kVstClockValid` / VST3 `kClockValid` and `kSystemTimeValid` never set | set when the value is known |
+| `bevy-tutti`'s editor window sized at the plugin's pixel size | sized in logical units (pixel size over the scale, off macOS) |
+
+New: `tutti_plugin_types::{ContentScale, InvalidContentScale}` (re-exported
+by `tutti-clap-host`, `tutti-vst3-host` and `tutti_plugin::handles`),
+`TransportInfo::with_system_time_ns`.
+
+Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
+`ContentScale::IDENTITY` where the window's scale is not known, to
+`open_editor`.
+
 ### Added — `clap.thread-pool` served from a worker pool
 
 `tutti-clap-host` runs a plugin's `clap.thread-pool` requests on a

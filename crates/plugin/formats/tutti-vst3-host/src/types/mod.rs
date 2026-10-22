@@ -33,9 +33,9 @@ pub use transport::{process_context_flags, to_process_context};
 // Re-exports of the cross-format vocabulary, including the note-expression
 // enum + value (the ABI conversion to VST3's `typeId` lives in `events`).
 pub use tutti_plugin_types::{
-    AudioBuffer, BufferPtrs, EditorCapabilities, EditorSize, MidiEvent, NoteExpressionType,
-    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, Sample, TransportInfo,
-    WindowHandle,
+    AudioBuffer, BufferPtrs, ContentScale, EditorCapabilities, EditorSize, MidiEvent,
+    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue,
+    Sample, TransportInfo, WindowHandle,
 };
 
 /// Events and parameter changes emitted by the plugin during one call to

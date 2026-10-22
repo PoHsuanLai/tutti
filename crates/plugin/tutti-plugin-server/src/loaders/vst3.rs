@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
+    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, ContentScale,
+    EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
     PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
@@ -421,10 +421,10 @@ impl Vst3Instance {
         vst_dispatch!(self, inner => inner.get_parameter_list())
     }
 
-    pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
-        vst_dispatch_mut!(self, inner => inner.open_editor(handle))
+        vst_dispatch_mut!(self, inner => inner.open_editor(handle, scale))
             .map(|size| EditorSize {
                 width: size.width,
                 height: size.height,
@@ -786,8 +786,12 @@ impl PluginParams for Vst3Instance {
 }
 
 impl PluginEditorHost for Vst3Instance {
-    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
-        Vst3Instance::open_editor(self, parent).map_err(Into::into)
+    fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
+        Vst3Instance::open_editor(self, parent, scale).map_err(Into::into)
     }
 
     fn close_editor(&mut self) {

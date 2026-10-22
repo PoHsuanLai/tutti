@@ -18,6 +18,13 @@
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`]. The
 //! in-process VST2 node, live and forked, reads [`from_cx`] too, so every
 //! hosted plugin is told its transport by this one path.
+//!
+//! Two clocks ride beside the transport, each the node's own: the
+//! free-running sample counter ([`SteadyTime`]) and the host's monotonic
+//! clock ([`HostClock`], read once per block; none for an offline render).
+
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
@@ -42,7 +49,55 @@ pub(crate) struct Snapshot {
     /// it keeps counting while the transport is stopped and never jumps on a
     /// seek or a wrap. An `i64` because that is what every ABI carries.
     pub(crate) continuous: i64,
+    /// The host's monotonic clock at the frame, in nanoseconds
+    /// ([`HostClock`]); `None` for an offline render.
+    pub(crate) system_time_ns: Option<i64>,
     pub(crate) sample_rate: SampleRate,
+}
+
+/// The host's monotonic clock, as the plugin ABIs carry it (VST3
+/// `systemTime`, VST2 `nanoSeconds`): nanoseconds since an origin fixed once
+/// per host process.
+///
+/// One origin for the process, not per node, so every plugin the host runs
+/// reads one timebase; and the host reads it, not the plugin server, so
+/// plugins in different servers agree too (each server's own clock would
+/// start at its own launch). A node reads it once per block
+/// ([`now_ns`](Self::now_ns)) and places each chunk on it by its frame
+/// ([`at`](Self::at)), so the time a plugin is told and the frames it is
+/// handed advance together.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HostClock {
+    origin: Instant,
+}
+
+impl HostClock {
+    /// The process's clock. The first call fixes the origin; call it on the
+    /// control thread (where a node is bound).
+    pub(crate) fn process() -> Self {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        Self {
+            origin: *ORIGIN.get_or_init(Instant::now),
+        }
+    }
+
+    /// Nanoseconds since the origin, now. Audio-thread safe: a clock read, no
+    /// lock and no allocation. 2^63 ns is 292 years of uptime, so the
+    /// saturation is unreachable.
+    pub(crate) fn now_ns(self) -> i64 {
+        i64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(i64::MAX)
+    }
+
+    /// The clock `frames` past a reading of `block_ns`, at `rate`: where a
+    /// chunk starting that far into the block sits on it.
+    pub(crate) fn at(block_ns: i64, frames: usize, rate: SampleRate) -> i64 {
+        let rate = rate.get();
+        if !(rate.is_finite() && rate > 0.0) {
+            return block_ns;
+        }
+        let ns = (frames as f64 * 1e9 / rate).round() as i64;
+        block_ns.saturating_add(ns)
+    }
 }
 
 /// The free-running sample counter a node hands its plugin: frames it has
@@ -74,8 +129,9 @@ impl Snapshot {
     /// The transport the node's input at frame `offset` was rendered at
     /// ([`Cx::transport_at`]: the node's arrival latency earlier, through
     /// changes, loop wraps and earlier blocks), with `continuous` as the
-    /// free-running counter ([`SteadyTime`]).
-    pub(crate) fn at(cx: &Cx<'_>, offset: Offset, continuous: i64) -> Self {
+    /// free-running counter ([`SteadyTime`]) and `block_ns` the
+    /// [`HostClock`] read at the block's first frame (`None` offline).
+    pub(crate) fn at(cx: &Cx<'_>, offset: Offset, continuous: i64, block_ns: Option<i64>) -> Self {
         let t = cx.transport_at(offset);
         Self {
             playing: t.playing,
@@ -84,6 +140,8 @@ impl Snapshot {
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),
             continuous,
+            system_time_ns: block_ns
+                .map(|ns| HostClock::at(ns, offset.index(), cx.env.sample_rate)),
             sample_rate: cx.env.sample_rate,
         }
     }
@@ -95,9 +153,10 @@ pub(crate) fn from_cx(
     cx: &Cx<'_>,
     offset: Offset,
     continuous: i64,
+    block_ns: Option<i64>,
     meter: &MeterMap,
 ) -> TransportInfo {
-    transport_info(&Snapshot::at(cx, offset, continuous), meter)
+    transport_info(&Snapshot::at(cx, offset, continuous, block_ns), meter)
 }
 
 /// Map `s` onto the snapshot the plugin ABIs read, with `meter`'s signature
@@ -128,18 +187,36 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
     // The beat is already quarter notes, which is exactly what VST2's
     // `ppqPos` and VST3's `projectTimeMusic` want.
     //
-    // `continuous` is the free-running counter; project-time samples jump on a
-    // loop or seek, and deriving them from beats and tempo would be wrong the
-    // moment tempo moves, so they stay `None` — each format host decides what
-    // to do with the absence rather than forwarding a placeholder 0 as fact.
+    // `continuous` is the free-running counter. Project time in samples is
+    // the beat's time at the tempo (the engine has one tempo at a time and no
+    // tempo map), the same derivation as `seconds`: it jumps on a loop or a
+    // seek, as project time does. Without a usable tempo there is none.
     info = info
         .with_position_quarters(beats)
         .with_continuous_samples(s.continuous);
+    if let Some(samples) = project_samples(seconds, tempo, s.sample_rate) {
+        info = info.with_position_samples(samples);
+    }
+    if let Some(ns) = s.system_time_ns {
+        info = info.with_system_time_ns(ns);
+    }
 
     if let Some((start, end)) = s.looping {
         info = info.with_loop(true, start.get(), end.get());
     }
     info
+}
+
+/// `seconds` of project time as frames at `rate`, rounded; `None` without a
+/// finite positive tempo (the seconds were not derived) or rate.
+fn project_samples(seconds: f64, tempo: f64, rate: SampleRate) -> Option<i64> {
+    let rate = rate.get();
+    let usable = |v: f64| v.is_finite() && v > 0.0;
+    if !(usable(tempo) && usable(rate) && seconds.is_finite()) {
+        return None;
+    }
+    // An `as` cast saturates, and an `i64` of frames is three million years.
+    Some((seconds * rate).round() as i64)
 }
 
 #[cfg(test)]
@@ -193,7 +270,7 @@ mod tests {
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
-        let first = from_cx(&cx(&e), at(0, 64), 0, &meter);
+        let first = from_cx(&cx(&e), at(0, 64), 0, None, &meter);
         assert!(first.state.playing);
         assert!(first.state.recording);
         assert_eq!(first.timing.tempo, 120.0);
@@ -205,7 +282,7 @@ mod tests {
         // frame says (1 000 here: as after a re-prepare restarted the graph).
         let mut steady = SteadyTime::default();
         steady.advance(7_000);
-        let later = from_cx(&cx(&e), at(24, 64), steady.at(24), &meter);
+        let later = from_cx(&cx(&e), at(24, 64), steady.at(24), None, &meter);
         assert_eq!(
             later.position.beats,
             e.transport_at(at(24, 64)).beat().get()
@@ -247,16 +324,19 @@ mod tests {
         let meter = MeterMap::default();
 
         for i in 0..64 {
-            let got = from_cx(&cx(&e), at(i, 64), 0, &meter);
+            let got = from_cx(&cx(&e), at(i, 64), 0, None, &meter);
             let want = e.transport_at(at(i, 64));
             assert_eq!(got.position.beats, want.beat().get(), "frame {i}");
             assert_eq!(got.timing.tempo, want.tempo.get(), "frame {i}");
             assert_eq!(got.state.cycle_active, want.looping.is_some(), "frame {i}");
         }
         // The wrap: 32 frames into a 32-frame loop is back at its start.
-        assert_eq!(from_cx(&cx(&e), at(32, 64), 0, &meter).position.beats, 4.0);
+        assert_eq!(
+            from_cx(&cx(&e), at(32, 64), 0, None, &meter).position.beats,
+            4.0
+        );
         // The seek, and its tempo.
-        let seeked = from_cx(&cx(&e), at(40, 64), 0, &meter);
+        let seeked = from_cx(&cx(&e), at(40, 64), 0, None, &meter);
         assert_eq!(seeked.position.beats, 16.0);
         assert_eq!(seeked.timing.tempo, 90.0);
         assert!(!seeked.state.cycle_active);
@@ -293,7 +373,7 @@ mod tests {
             history: &history,
         };
         // Offset 50 of the second block hears frame 14 of the first.
-        let got = from_cx(&cx, at(50, 64), 0, &meter);
+        let got = from_cx(&cx, at(50, 64), 0, None, &meter);
         assert_eq!(
             got.position.beats,
             first.transport_at(at(14, 64)).beat().get()
@@ -316,7 +396,7 @@ mod tests {
             Transport::new(true, Bpm(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
-        let out = from_cx(&cx(&e), at(0, 64), 0, &meter);
+        let out = from_cx(&cx(&e), at(0, 64), 0, None, &meter);
 
         assert_eq!(out.timing.signature, seven_eight);
         assert_eq!(out.bar.number, BarNumber(2));
@@ -325,5 +405,108 @@ mod tests {
         assert!((out.bar.position_quarters - 3.5).abs() < 1e-9);
         // And the VST playhead.
         assert!((out.position.quarters - 3.5).abs() < 1e-9);
+    }
+
+    /// **The project-time sample position is the beat's time at the tempo,
+    /// in frames**, at every frame the snapshot is read at: through the
+    /// block, a seek (to a new tempo) and a loop wrap. At 120 BPM and 48 kHz
+    /// a beat is 24 000 frames; at 90 BPM, 32 000. Without a usable tempo
+    /// there is none.
+    ///
+    /// Mutation: drop `.with_position_samples` in `transport_info` → `None`
+    /// → fails. Mutation: derive it from `continuous` → 0 → fails. Mutation:
+    /// `seconds * rate` truncated rather than rounded → the frame after the
+    /// seek reads 512 000 (its product is just under 512 001) → fails.
+    #[test]
+    fn the_project_time_position_is_the_beats_time_at_the_tempo() {
+        let meter = MeterMap::default();
+        let looping = Some(LoopRange {
+            start: Beat(4.0),
+            end: Beat(4.0 + 32.0 / 24_000.0),
+        });
+        let t = Transport::counted(
+            true,
+            Bpm(120.0),
+            SegmentOrigin {
+                beat: Beat(4.0),
+                frame: Frame(0),
+                sample_rate: SR,
+            },
+            looping,
+        );
+        let mut changes = TransportChanges::NONE;
+        changes
+            .push(
+                at(40, 64),
+                Transport::new(true, Bpm(90.0), Beat(16.0), None),
+            )
+            .expect("a change inside the block");
+        let e = env(0, 64, t, changes);
+        let samples = |i| {
+            from_cx(&cx(&e), at(i, 64), 0, None, &meter)
+                .position
+                .samples
+        };
+
+        // Beat 4 at 120 BPM: 2 s.
+        assert_eq!(samples(0), Some(96_000));
+        // Seven frames on: the playhead and its project time move together.
+        assert_eq!(samples(7), Some(96_007));
+        // The wrap back to the loop's start.
+        assert_eq!(samples(32), Some(96_000));
+        // The seek to beat 16 at 90 BPM: 16 * 32 000.
+        assert_eq!(samples(40), Some(512_000));
+        assert_eq!(samples(41), Some(512_001));
+
+        let still = Transport::new(true, Bpm(120.0), Beat(2.0 + 1.0 / 24_000.0), None);
+        let e = env(0, 64, still, TransportChanges::NONE);
+        assert_eq!(
+            from_cx(&cx(&e), at(0, 64), 0, None, &meter)
+                .position
+                .samples,
+            Some(48_001)
+        );
+
+        let stalled = Transport::new(true, Bpm(0.0), Beat(2.0), None);
+        let e = env(0, 64, stalled, TransportChanges::NONE);
+        assert_eq!(
+            from_cx(&cx(&e), at(0, 64), 0, None, &meter)
+                .position
+                .samples,
+            None
+        );
+    }
+
+    /// **The host clock is the block's reading advanced by the chunk's
+    /// frames**, and an offline render (no reading) reports none. 48 frames at
+    /// 48 kHz are 1 ms.
+    ///
+    /// Mutation: `HostClock::at` ignores `frames` → the chunk 48 frames in
+    /// reads the block's time → fails. Mutation: `system_time_ns` not passed
+    /// on in `transport_info` → `None` → fails.
+    #[test]
+    fn the_host_clock_is_the_blocks_reading_at_the_chunks_frame() {
+        let meter = MeterMap::default();
+        let e = env(
+            0,
+            64,
+            Transport::new(true, Bpm(120.0), Beat(0.0), None),
+            TransportChanges::NONE,
+        );
+        let block_ns = Some(5_000_000_000);
+        let first = from_cx(&cx(&e), at(0, 64), 0, block_ns, &meter);
+        assert_eq!(first.system_time_ns, Some(5_000_000_000));
+        let later = from_cx(&cx(&e), at(48, 64), 0, block_ns, &meter);
+        assert_eq!(later.system_time_ns, Some(5_001_000_000));
+        let offline = from_cx(&cx(&e), at(48, 64), 0, None, &meter);
+        assert_eq!(offline.system_time_ns, None);
+
+        // The process clock is one origin for every node, and monotonic.
+        let (a, b) = (HostClock::process(), HostClock::process());
+        let (x, y) = (a.now_ns(), b.now_ns());
+        assert!(
+            y >= x,
+            "a later reading of the shared origin is not earlier"
+        );
     }
 }

@@ -4406,7 +4406,8 @@ vocoder retirement channel for voices the pool removes.
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
   an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
   `recording` flag (additive; tutti-core's engine sets it) because the ABIs
-  carry it. The continuous-sample counter is `Env`'s frame.
+  carry it. The continuous-sample counter is `Env`'s frame. Project-time
+  samples, the host clock and the MIDI clock: [below](#plugin-transport-project-time-host-clock-midi-clock-editor-scale).
 - **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
   `f64` conversion stays in the batcher. The chunk (and so the declared
   pipeline latency) is the device's callback (`Prepare::quantum`, which
@@ -6269,6 +6270,46 @@ counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
 meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
+
+#### Plugin transport: project time, host clock, MIDI clock; editor scale
+
+The snapshot a plugin chunk is handed (`transport_source::from_cx`) now
+fills the three fields the ABIs ask for that it used to leave empty:
+
+- **Project-time samples** (`TransportPosition::samples`: VST2 `samplePos`,
+  VST3 `projectTimeSamples`, AU's sample time) are the chunk's beat position
+  at the tempo, rounded: `round(beats · 60 / tempo · rate)`. The engine has
+  one tempo at a time and no tempo map, so this is exact and is the same
+  derivation as CLAP's seconds. It follows the beat, so it jumps on a seek
+  and wraps with a loop; the free-running counter stays `SteadyTime`.
+- **Host clock** (`TransportInfo::system_time_ns`: VST2 `nanoSeconds`, VST3
+  `systemTime`) is a `HostClock` reading: nanoseconds since a process-wide
+  monotonic origin, read once per block in `process` and placed at each
+  chunk's frame (`block_ns + frames · 1e9 / rate`). An offline fork has no
+  host clock (`Bound::host_clock` and the VST2 `TransportFeed`'s are `None`
+  in it), so an export is not told a wall time it does not run in.
+- **MIDI clock** (VST2 `samplesToNextClock`, VST3 `samplesToNextClock`) is
+  `TransportInfo::samples_to_nearest_clock`: the signed distance to the
+  nearest 24-ppq clock, as both SDKs define it ("can be negative").
+
+Each format sets a field's validity flag (`kVstNanosValid`,
+`kVstClockValid`; `kSystemTimeValid`, `kClockValid`) only when the value is
+present. The out-of-process snapshot crosses the wire with
+`system_time_ns`, so `ProcessAudioData`'s encoding grew by that field.
+
+**Editor scale.** `open_editor` takes a `ContentScale` (finite, positive)
+at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
+and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
+window system (Win32, X11); a macOS view is in points, so neither is sent
+there. bevy-tutti passes the editor window's `scale_factor` and sizes that
+window in logical units.
+
+Pinned analytically: `transport_source`'s unit tests (project samples
+across a loop wrap, a seek and a zero tempo; the host clock at a chunk's
+frame), `TransportInfo`'s nearest-clock test, both formats' flag tests,
+the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a
+fork, which is told project time and the clock but no host time
+(`vst2_in_process_fork.rs`), and `clap_gui_lifecycle.rs`'s scale.
 
 ## Decisions for the owner
 

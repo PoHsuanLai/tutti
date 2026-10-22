@@ -77,6 +77,20 @@ pub(crate) fn build_vst2_time_info(
         flags |= F::BARS_VALID;
     }
 
+    // `nanoSeconds` and `samplesToNextClock` are filled only when the
+    // producer has them, and flagged on the same condition.
+    if transport.system_time_ns.is_some() {
+        flags |= F::NANOSECONDS_VALID;
+    }
+    // At the rate the plugin is told (`sample_rate` below), not whatever the
+    // snapshot carries.
+    let to_clock = transport
+        .with_sample_rate(sample_rate)
+        .samples_to_nearest_clock();
+    if to_clock.is_some() {
+        flags |= F::VST_CLOCK_VALID;
+    }
+
     if transport.state.playing {
         flags |= F::TRANSPORT_PLAYING;
     }
@@ -109,11 +123,16 @@ pub(crate) fn build_vst2_time_info(
     vst::api::TimeInfo {
         sample_rate,
         // VST2.4 has no `*_VALID` bit for `sample_pos` — the plugin always reads
-        // it as fact — so an absent project-time clock can only degrade to 0.
-        // TODO (see `TransportPosition::samples`): source a real project-time
-        // sample clock; until then a plugin doing sample-accurate math off
-        // `samplePos` sees the project frozen at sample 0.
+        // it as fact — so a snapshot without a project-time position can only
+        // send 0. The engine's plugin node always reports one when the tempo
+        // is usable (`TransportPosition::samples`). A count-in before the
+        // project start clamps to 0: the field is documented non-negative.
         sample_pos: transport.position.samples.unwrap_or(0).max(0) as f64,
+        // The ABI's `f64` nanoseconds, from the host's `i64` count: exact
+        // below 2^53 ns (104 days of uptime), and a clock reading, not a
+        // position, past that.
+        nanoseconds: transport.system_time_ns.unwrap_or(0) as f64,
+        samples_to_next_clock: to_clock.unwrap_or(0),
         ppq_pos: transport.position.quarters,
         tempo: transport.timing.tempo,
         bar_start_pos: transport.bar.position_quarters,
@@ -157,7 +176,10 @@ mod tests {
             | F::TRANSPORT_PLAYING
             | F::TRANSPORT_RECORDING
             | F::TRANSPORT_CYCLE_ACTIVE
-            | F::CYCLE_POS_VALID)
+            | F::CYCLE_POS_VALID
+            // A usable tempo, position and rate put the MIDI clock grid
+            // under the playhead.
+            | F::VST_CLOCK_VALID)
             .bits();
 
         assert_eq!(info.flags, expected);
@@ -174,12 +196,17 @@ mod tests {
     fn flags_stopped_no_cycle() {
         // Stopped, not recording, no cycle. `TransportInfo::default()` carries a
         // real 120 BPM tempo and 4/4, and 0.0 is a perfectly usable position, so
-        // the position/tempo VALID bits stand.
+        // the position/tempo VALID bits stand, and with the rate so does the
+        // MIDI clock's. No host clock: `nanoSeconds` is not claimed.
         let transport = TransportInfo::new();
         let info = build_vst2_time_info(&transport, 48_000.0, None);
 
-        let expected =
-            (F::PPQ_POS_VALID | F::TEMPO_VALID | F::TIME_SIG_VALID | F::BARS_VALID).bits();
+        let expected = (F::PPQ_POS_VALID
+            | F::TEMPO_VALID
+            | F::TIME_SIG_VALID
+            | F::BARS_VALID
+            | F::VST_CLOCK_VALID)
+            .bits();
 
         assert_eq!(info.flags, expected);
         assert_eq!(info.flags & F::TRANSPORT_PLAYING.bits(), 0);
@@ -308,5 +335,40 @@ mod tests {
         let info = build_vst2_time_info(&bad, 48_000.0, None);
         assert_ne!(info.flags & F::TRANSPORT_CYCLE_ACTIVE.bits(), 0);
         assert_eq!(info.flags & F::CYCLE_POS_VALID.bits(), 0);
+    }
+
+    /// **The host clock and the MIDI clock reach `nanoSeconds` and
+    /// `samplesToNextClock`, each under its own validity bit, and only when
+    /// the snapshot has them.** 120 BPM at 48 kHz: a 24-ppq clock is 1 000
+    /// frames, and a playhead a quarter clock past one is 250 frames after it.
+    ///
+    /// Mutation: set `NANOSECONDS_VALID` unconditionally → the clockless
+    /// snapshot claims a host time → fails. Mutation: `samples_to_next_clock:
+    /// 0` → fails. Mutation: drop the `VST_CLOCK_VALID` gate (always set) →
+    /// the zero-tempo snapshot claims a clock → fails.
+    #[test]
+    fn host_time_and_midi_clock_are_filled_and_flagged_when_known() {
+        let transport = TransportInfo::new()
+            .with_tempo(120.0)
+            .with_sample_rate(48_000.0)
+            .with_position_quarters(2.0 + 0.25 / 24.0)
+            .with_position_samples(48_250)
+            .with_system_time_ns(5_000_000_000);
+        let info = build_vst2_time_info(&transport, 48_000.0, None);
+        assert_eq!(info.sample_pos, 48_250.0);
+        assert_eq!(info.nanoseconds, 5_000_000_000.0);
+        assert_ne!(info.flags & F::NANOSECONDS_VALID.bits(), 0);
+        assert_eq!(info.samples_to_next_clock, -250);
+        assert_ne!(info.flags & F::VST_CLOCK_VALID.bits(), 0);
+
+        // No host clock, no usable tempo: neither field is claimed.
+        let bare = TransportInfo::new()
+            .with_tempo(0.0)
+            .with_sample_rate(48_000.0);
+        let info = build_vst2_time_info(&bare, 48_000.0, None);
+        assert_eq!(info.flags & F::NANOSECONDS_VALID.bits(), 0);
+        assert_eq!(info.flags & F::VST_CLOCK_VALID.bits(), 0);
+        assert_eq!(info.nanoseconds, 0.0);
+        assert_eq!(info.samples_to_next_clock, 0);
     }
 }

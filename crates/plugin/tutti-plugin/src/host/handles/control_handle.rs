@@ -14,7 +14,7 @@ use crate::protocol::AutomationMode;
 use crate::protocol::{
     ChannelTopology, LayoutSupport, LoadedPlugin, PluginDescriptor, PresetSupport,
 };
-use crate::util::window::EditorSize;
+use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 
@@ -508,7 +508,10 @@ impl PluginHandle {
     /// asked for.
     ///
     /// Pass anything that implements [`HasWindowHandle`]: Bevy windows, winit
-    /// windows, wgpu surfaces. Call on the main thread.
+    /// windows, wgpu surfaces. `scale` is that window's backing-store scale
+    /// (`winit::Window::scale_factor`, Bevy's `Window::scale_factor`): a
+    /// window handle carries none, and a plugin on Windows or X11 cannot
+    /// read it itself. Call on the main thread.
     ///
     /// # Errors
     ///
@@ -516,7 +519,11 @@ impl PluginHandle {
     /// route (`editor()` is `None`), an [`EditorError`] if `parent`'s window
     /// handle is unavailable or of an unsupported platform, and otherwise any
     /// error of [`HostEditor::open_editor`].
-    pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
+    pub fn open_editor(
+        &self,
+        parent: impl HasWindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize, EditorError> {
         let Some(editor) = self.editor.as_deref() else {
             return Err(EditorError::GuiNotSupported {
                 format: self.descriptor.class.format_name().to_string(),
@@ -527,7 +534,7 @@ impl PluginHandle {
             .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
             .as_raw();
         let ptr = crate::util::window::extract_platform_ptr(raw)?;
-        editor.open_editor(ptr)
+        editor.open_editor(ptr, scale)
     }
 
     /// Opens the editor as a floating window the plugin owns.

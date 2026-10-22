@@ -6,6 +6,7 @@ use bevy_reflect::prelude::*;
 
 use crate::plugin_host::native_window::attach_child_window;
 use crate::plugin_host::PluginEditorMainThread;
+use tutti_plugin::handles::ContentScale;
 
 /// Marks an entity as a loaded plugin with a control handle.
 ///
@@ -385,11 +386,18 @@ pub fn plugin_editor_attach_system(
         // `PluginEditorMainThread` non-send marker; `get_handle` is safe to
         // call on the main thread.
         let thread_locked = unsafe { raw_handle.get_handle() };
+        // The window's backing scale: a plugin on Windows or X11 cannot read
+        // it from the handle, and lays its editor out at it.
+        let scale = windows
+            .get(pend.window_entity)
+            .map_or(1.0, bevy_window::Window::scale_factor);
+        let content_scale = ContentScale::new(f64::from(scale)).unwrap_or_default();
 
-        match emitter.handle.open_editor(&thread_locked) {
+        match emitter.handle.open_editor(&thread_locked, content_scale) {
             Ok(size) => {
-                let w = size.width;
-                let h = size.height;
+                let (w, h) = (size.width, size.height);
+                // The window is sized in logical units.
+                let (lw, lh) = logical_editor_size(w, h, scale);
                 // `open_editor` just returned `Ok`, so the editor capability is
                 // present — but it is an `Option` on the handle, and defaulting
                 // a missing one would report a non-resizable editor for a plugin
@@ -406,7 +414,7 @@ pub fn plugin_editor_attach_system(
                 );
 
                 if let Ok(mut win) = windows.get_mut(pend.window_entity) {
-                    win.resolution.set(w as f32, h as f32);
+                    win.resolution.set(lw, lh);
                     if capabilities.resize.resizable {
                         win.resize_constraints = bevy_window::WindowResizeConstraints {
                             min_width: 64.0,
@@ -416,10 +424,10 @@ pub fn plugin_editor_attach_system(
                         };
                     } else {
                         win.resize_constraints = bevy_window::WindowResizeConstraints {
-                            min_width: w as f32,
-                            min_height: h as f32,
-                            max_width: w as f32,
-                            max_height: h as f32,
+                            min_width: lw,
+                            min_height: lh,
+                            max_width: lw,
+                            max_height: lh,
                         };
                     }
                     win.visible = true;
@@ -561,6 +569,24 @@ pub fn plugin_editor_window_resize_system(
     }
 }
 
+/// An editor's size as the plugin reports it (`EditorSize`: the platform's
+/// own coordinates), in the logical units a Bevy window is sized in, for a
+/// window of backing scale `scale`.
+///
+/// On macOS a view's geometry is already logical (points), so it is the
+/// size; on Windows and X11 it is physical pixels, which a plugin told the
+/// window's scale lays out at, so it is divided by the scale. Sizing the
+/// window with the physical figure would open a 2×-scaled editor in a window
+/// twice its size.
+fn logical_editor_size(width: u32, height: u32, scale: f32) -> (f32, f32) {
+    let (w, h) = (width as f32, height as f32);
+    if cfg!(target_os = "macos") || !(scale.is_finite() && scale > 0.0) {
+        (w, h)
+    } else {
+        (w / scale, h / scale)
+    }
+}
+
 /// Polls each open editor for plugin-initiated resize requests, resizes
 /// the host window, then calls back into the plugin via
 /// `set_editor_size` so it lays out at the new bounds (per Steinberg's
@@ -587,13 +613,14 @@ pub fn plugin_editor_resize_request_system(
         editor.height = req.height;
 
         if let Ok(mut win) = windows.get_mut(editor.editor_window) {
-            win.resolution.set(req.width as f32, req.height as f32);
+            let (w, h) = logical_editor_size(req.width, req.height, win.scale_factor());
+            win.resolution.set(w, h);
             if !editor.capabilities.resize.resizable {
                 win.resize_constraints = bevy_window::WindowResizeConstraints {
-                    min_width: req.width as f32,
-                    min_height: req.height as f32,
-                    max_width: req.width as f32,
-                    max_height: req.height as f32,
+                    min_width: w,
+                    min_height: h,
+                    max_width: w,
+                    max_height: h,
                 };
             }
         }
@@ -661,6 +688,26 @@ mod tests {
 
     use super::*;
     use bevy_app::prelude::*;
+
+    /// **A plugin's physical-pixel size becomes the window's logical size**
+    /// on Windows and X11, and a macOS size (already logical) is kept. At
+    /// scale 2 a 1600×1200 editor is an 800×600 window there.
+    ///
+    /// Mutation: drop the division → the window is 1600×1200 at scale 2 →
+    /// fails (off macOS). Mutation: drop the `cfg!(target_os = "macos")` arm
+    /// → fails on macOS.
+    #[test]
+    fn an_editors_size_becomes_the_windows_logical_size() {
+        let got = logical_editor_size(1600, 1200, 2.0);
+        if cfg!(target_os = "macos") {
+            assert_eq!(got, (1600.0, 1200.0));
+        } else {
+            assert_eq!(got, (800.0, 600.0));
+        }
+        assert_eq!(logical_editor_size(800, 600, 1.0), (800.0, 600.0));
+        // A scale the window does not report yet is not a divisor.
+        assert_eq!(logical_editor_size(800, 600, 0.0), (800.0, 600.0));
+    }
 
     /// What `record_open` saw: one `(entity, is_open)` pair per entity.
     #[derive(Resource, Default)]

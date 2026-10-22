@@ -667,6 +667,7 @@ mod tests {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
+            _scale: tutti_plugin::server::ContentScale,
         ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
@@ -745,6 +746,7 @@ mod tests {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
+            _scale: tutti_plugin::server::ContentScale,
         ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }

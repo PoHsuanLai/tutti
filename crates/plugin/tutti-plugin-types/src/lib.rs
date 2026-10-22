@@ -52,7 +52,8 @@ pub use classification::{
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use editor::{
-    AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
+    AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
+    ResizeHints, WindowHandle,
 };
 pub use order::{insertion_sort_by_key, StableOrder};
 pub use points::{PointBuf, PointPool};

@@ -76,6 +76,31 @@ Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
 `ContentScale::IDENTITY` where the window's scale is not known, to
 `open_editor`.
 
+### Changed — a streaming voice's loop is forwarded from the control thread
+
+The audio thread sends no butler commands. A `VoicePool`'s drain used to
+forward a streaming voice's loop to the butler (`Command::Loop`) from
+inside `process`, refusing it on a full queue; `VoicePoolHandle::send`
+now forwards it on the calling thread, from a table of the streaming
+voices it added (and those the pool held when the handle was made), and
+queues the command for the drain only once the butler has taken it. The
+drain only records it. The forwarded loop names the voice's stream, and
+the butler ignores it once the channel carries another stream (the host
+restarted it on another file). The butler's command queue, with only
+control-thread senders, is a bounded `crossbeam_channel`; `tutti-sampler`
+no longer depends on `crossbeam-queue`.
+
+| Was | Now |
+|---|---|
+| `PoolDrops::loops_butler_full` | removed: a forward waits for room as every control-thread send does, so none is refused. **Migration:** drop the field from a match or a sum; a stalled butler now shows as a `send` that waits |
+| `VoicePoolHandle::send` never waited | an `UpdateLoop`, `ClearLoop` or `AddVoice` aimed at a streaming voice waits while the butler's queue is full, as `Commands::send` does (for good on a butler nobody drains: step or start a `DiskStreamer::manual` first), and so does another thread's streaming loop or add. Every other command (a `Remove`, anything in memory) never waits on the butler |
+| a streaming loop whose forward failed was dropped by the drain | it is dropped by `send`, counted the same way (`loops_butler_gone`, `loops_no_butler`), and `send` returns `Ok`: an update is not queued, an add is queued with its loop `Off` |
+| a loop set on a voice whose channel had been restarted on another file looped the new stream | the butler ignores it; `Command::Loop` from a host, which names only the channel, still loops whatever the channel streams |
+| a butler send on a full queue retried every 100 µs | it blocks on the channel until there is room or the butler is gone |
+| `VoicePool::with_handle` (and `into_parts`) left the pool its butler | the butler moves into the handle; the pool, and a second handle taken from it, has none. **Migration:** add streaming voices through the handle once it exists; an `insert_voice` after it cannot set a streaming loop (`loops_no_butler`), and a loop sent for such a voice is refused by the drain |
+| — | `PoolDrops::loops_not_forwarded`: loop commands the drain refused because the handle did not forward them to the slot's own stream |
+| `send` returning `Err` for a streaming loop could leave the loop running on the butler | `Err` leaves the butler on its previous loop: a full queue is refused before the forward, and a forward whose command is then crowded out is undone |
+
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 
 - **A clip plays every pass of a loop shorter than a block** (it played the

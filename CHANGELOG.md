@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `BusStripNode` declares `Cost::Light`
+
+Its channel-major kernel measures 0.06 ns per frame and channel steady and
+at most 1.0 with its volume fed per frame, under the `Light`/`Moderate`
+boundary (design doc 013, "The cost model and coarsening"), so strips now
+pack with other cheap siblings. Nothing to migrate: a class changes how a
+block is spread, never a sample.
+
 ### Added — `clap.thread-pool` served from a worker pool
 
 `tutti-clap-host` runs a plugin's `clap.thread-pool` requests on a
@@ -796,7 +804,7 @@ compiles to nothing (see the PR for the verification).
   | a pool spread every plan of two or more tasks, waking `Plan::task_width()` participants | a pool spreads what `Plan::schedule` says pays, from its `from` block length up, waking its `wake` participants; `Executor::is_parallel()` reports that verdict |
   | `Plan::tasks()` were fused chains | tasks are fused chains with cheap siblings (one predecessor set) packed together; a task's ops are ascending but need not be ordered by the DAG (the verifier checks every dependency) |
   | a graph whose nodes declare nothing spread whenever it had two tasks | its nodes are still each worth a task (`Heavy`), but its copy and event ops are priced cheap and may pack, the wake count is `max(work / critical, widest level)` (at least 2), and a plan whose only parallelism is in those ops may run serially |
-  | — | `tutti-nodes`' filters, oscillators, dynamics, delays and modulation declare `Cost::Moderate`; its sums, downmix, brickwall and test stimuli `Cost::Light`; the bus strip `Cost::Moderate` (it was `Light`: measured 3.7 ns per frame and channel); convolution declares nothing (`Heavy`) |
+  | — | `tutti-nodes`' filters, oscillators, dynamics, delays and modulation declare `Cost::Moderate`; its sums, downmix, brickwall and test stimuli `Cost::Light`; the bus strip `Cost::Light` (re-measured after its kernel was vectorised; see the entry above); convolution declares nothing (`Heavy`) |
   | — | the other crates' nodes declare from measured per-frame costs: the MIDI nodes (clip, harmony, clock, queue, input, out) `Cost::Light`; `MemorySource`, `DiskSource`, `DiskVoice`, a plain `VoiceNode`, `VbapPannerNode`, `ClickNode` and `MicMonitorNode` `Cost::Moderate`; `PolySynth` `Moderate` up to 16 oscillator lanes (`max_voices` × unison) and `Heavy` past them; a stretched `VoiceNode`, `VoicePool`, `SoundFontUnit` and `HrtfBinauralNode` `Heavy` (stated); plugin nodes and `PluginAutomation` still declare nothing (`Heavy`) |
   | packing ran once, so cheap siblings each wired to their own outputs could pack to more tasks than undeclared | passes 2 and 3 (pack siblings, fuse chains) repeat to a fixed point; the critical path is still never longer than chain fusion alone gives |
 

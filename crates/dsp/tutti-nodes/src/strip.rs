@@ -450,14 +450,12 @@ impl Node for BusStripNode {
     /// stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
-            // Classed from the frame-major kernel's 3.7 ns per frame and
-            // channel, against a gain's 0.22 and `SvfFilterNode`'s 7.2, past
-            // the `Light`/`Moderate` boundary (about 2.8; doc 013, "The cost
-            // model and coarsening"). The channel-major kernel measures about
-            // 0.15 steady and 0.6 ramping (`benches/bus_strip.rs`), which the
-            // nearest-class rule puts in `Light`; the class stays until that
-            // table is re-measured by its own method.
-            .with_cost(tutti_graph::Cost::Moderate)
+            // Measured (doc 013, "The cost model and coarsening"): 0.06 ns
+            // per frame and channel steady, 0.4 ramping, 0.6-1.0 with the
+            // volume fed per frame; under the `Light`/`Moderate` boundary
+            // (about 2.8), where the frame-major kernel it replaced measured
+            // 2.5-4.7 on the same box.
+            .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)
     }
@@ -528,14 +526,14 @@ mod tests {
     use crate::test_support::{tick, RATE};
     use tutti_graph::contract::{assert_param_fork, drive};
 
-    /// The strip measured as a `Moderate` node, at every width.
+    /// The strip measured as a `Light` node, at every width.
     ///
-    /// Mutation (run): back to `Cost::Light` → fails.
+    /// Mutation (run): back to `Cost::Moderate` → fails.
     #[test]
-    fn the_strip_is_moderate() {
+    fn the_strip_is_light() {
         for layout in [ChannelLayout::MONO, ChannelLayout::STEREO] {
             let strip = BusStripNode::with_channels(layout);
-            assert_eq!(strip.shape().cost, tutti_graph::Cost::Moderate);
+            assert_eq!(strip.shape().cost, tutti_graph::Cost::Light);
         }
     }
 

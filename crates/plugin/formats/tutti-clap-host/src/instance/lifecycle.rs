@@ -482,7 +482,8 @@ impl<T: super::ClapSample> ClapActive<T> {
 /// block carries, which the bridge prepends), with the parameter events
 /// bounded to that room. So a chunk the host's pool bounded reaches the
 /// plugin whole; past it (a set nothing bounded) the list's own overflow
-/// policy applies (`InputEventList::add_param_changes`). Off the audio
+/// policy applies (`InputEventList::add_param_changes`). Also reserves the
+/// SysEx reassembly buffer (`InputEventList::reserve_sysex`). Off the audio
 /// thread; grows only (a smaller block keeps the room).
 fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max_frames: usize) {
     let param_points = ParameterChanges::point_budget(
@@ -493,6 +494,7 @@ fn reserve_input_events<T: super::ClapSample>(scratch: &mut AudioScratch<T>, max
     let wanted = EVENT_SCRATCH_CAPACITY + param_points;
     events.reserve(wanted.saturating_sub(events.events.len()));
     events.set_param_point_room(param_points);
+    events.reserve_sysex();
 }
 
 /// Reserve the queues the plugin's output parameter events are grouped into

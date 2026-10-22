@@ -34,6 +34,7 @@ use clap_sys::events::{
 use std::ptr;
 use tutti_plugin_types::{
     note_id_for, note_id_to_channel_note, Normalized, ParamAddress, RtMidiEvents, StableOrder,
+    SysExAssembler, SysExStep, SYSEX_MESSAGE_CAPACITY,
 };
 
 use crate::types::RtNoteExpressions;
@@ -71,14 +72,20 @@ pub enum ClapEvent {
     ParamGestureBegin(clap_event_param_gesture),
     /// The continuous edit opened by `ParamGestureBegin` finished.
     ParamGestureEnd(clap_event_param_gesture),
-    /// Sysex event that owns its buffer. The inner C struct's `buffer`
-    /// pointer aliases `_data`, so this variant must not be moved out of
-    /// its containing [`InputEventList`]/[`OutputEventList`].
+    /// A complete SysEx message, `0xF0 … 0xF7`.
+    ///
+    /// On an [`OutputEventList`] it owns its buffer: the inner C struct's
+    /// `buffer` pointer aliases `_data`, so this variant must not be moved out
+    /// of its list. On an [`InputEventList`] `_data` is empty and `buffer`
+    /// points into the list's SysEx reassembly buffer, valid until the list
+    /// is next cleared.
     MidiSysex {
-        /// The C event whose `buffer` field points into `_data`.
+        /// The C event whose `buffer` field points into `_data`, or into the
+        /// input list's reassembly buffer.
         inner: clap_event_midi_sysex,
-        /// Backing storage for `inner.buffer`. Kept alive alongside it; moving
-        /// the variant would dangle that pointer.
+        /// Backing storage for `inner.buffer` on an output list (empty on an
+        /// input list). Kept alive alongside it; moving the variant would
+        /// dangle that pointer.
         _data: Vec<u8>,
     },
 }
@@ -422,7 +429,8 @@ impl ClapEvent {
     /// other channel-voice message (CC, pitch bend, pressure, program change,
     /// per-note) is forwarded as a generic MIDI-1 `Midi` event — the form CLAP
     /// plugins consume when the host has no parameter mapping for it. Returns
-    /// `None` for UMP variants with no MIDI-1 form (SysEx, utility).
+    /// `None` for UMP variants with no MIDI-1 form (utility) and for SysEx,
+    /// which [`InputEventList::add_midi`] reassembles into a `MidiSysex`.
     pub fn from_midi(event: &MidiEvent) -> Option<Self> {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
         use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
@@ -684,6 +692,10 @@ pub struct InputEventList {
     /// Parameter points not handed on whole since the list was built: see
     /// [`param_points_dropped`](Self::param_points_dropped).
     param_points_dropped: u64,
+    /// Reassembles SysEx7 packets and owns the bytes an input
+    /// [`ClapEvent::MidiSysex`] points at. No room until
+    /// [`reserve_sysex`](Self::reserve_sysex).
+    sysex: SysExAssembler,
 }
 
 impl InputEventList {
@@ -699,6 +711,7 @@ impl InputEventList {
             order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
+            sysex: SysExAssembler::default(),
         }
     }
 
@@ -716,6 +729,7 @@ impl InputEventList {
             events,
             param_room: usize::MAX,
             param_points_dropped: 0,
+            sysex: SysExAssembler::default(),
         }
     }
 
@@ -752,11 +766,67 @@ impl InputEventList {
         self.param_points_dropped
     }
 
+    /// Reserve the SysEx reassembly buffer
+    /// ([`SysExAssembler::reserved`], about 66 KiB). Off-RT; call once at
+    /// activation. Until then every SysEx message is dropped and counted
+    /// ([`sysex_dropped`](Self::sysex_dropped)). A list already reserved
+    /// keeps its buffer, and any message open in it.
+    pub fn reserve_sysex(&mut self) {
+        if self.sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
+            self.sysex = SysExAssembler::reserved();
+        }
+    }
+
+    /// SysEx messages dropped whole since the list was built: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
+    /// `START`, or any message before [`reserve_sysex`](Self::reserve_sysex).
+    /// See [`SysExAssembler`] for the policy.
+    pub fn sysex_dropped(&self) -> u64 {
+        self.sysex.dropped()
+    }
+
     /// Converts a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP
     /// variants without a MIDI-1 form are silently skipped.
+    ///
+    /// A SysEx7 packet goes through the list's reassembler: a multi-packet
+    /// message (which may span blocks) is appended as one
+    /// [`ClapEvent::MidiSysex`], `0xF0 … 0xF7`, at its `END` packet's time.
+    /// Allocation-free once [`reserve_sysex`](Self::reserve_sysex)ed.
     pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
-        if let Some(clap_event) = ClapEvent::from_midi(event) {
-            self.events.push(clap_event);
+        match self.sysex.push(event) {
+            SysExStep::NotSysEx => {
+                if let Some(clap_event) = ClapEvent::from_midi(event) {
+                    self.events.push(clap_event);
+                }
+            }
+            SysExStep::Held => {}
+            SysExStep::Complete(message) => {
+                let bytes = self.sysex.message(message);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a message is at most SYSEX_MESSAGE_CAPACITY bytes"
+                )]
+                let size = bytes.len() as u32;
+                let inner = clap_event_midi_sysex {
+                    header: clap_event_header {
+                        size: header_size::<clap_event_midi_sysex>(),
+                        time: event.frame_offset,
+                        space_id: CLAP_CORE_EVENT_SPACE_ID,
+                        type_: CLAP_EVENT_MIDI_SYSEX,
+                        flags: 0,
+                    },
+                    port_index: 0,
+                    // The reassembler's buffer never grows and nothing in it
+                    // moves until `clear` (`SysExAssembler::begin_block`),
+                    // which empties `events` in the same call.
+                    buffer: bytes.as_ptr(),
+                    size,
+                };
+                self.events.push(ClapEvent::MidiSysex {
+                    inner,
+                    _data: Vec::new(),
+                });
+            }
         }
         self
     }
@@ -764,9 +834,7 @@ impl InputEventList {
     /// Batch version of [`add_midi`](Self::add_midi).
     pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
         for event in events {
-            if let Some(clap_event) = ClapEvent::from_midi(event) {
-                self.events.push(clap_event);
-            }
+            self.add_midi(event);
         }
         self
     }
@@ -957,8 +1025,11 @@ impl EventList for InputEventList {
         self.events.len()
     }
 
+    /// Empties the list and forgets the block's completed SysEx messages
+    /// (their events go with it), keeping a message still open.
     fn clear(&mut self) {
         self.events.clear();
+        self.sysex.begin_block();
     }
 }
 
@@ -1537,7 +1608,7 @@ unsafe extern "C" fn output_events_try_push(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_plugin_types::RT_MIDI_CAPACITY;
+    use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
 
     /// A huge event time must saturate, not wrap negative.
     ///
@@ -2852,5 +2923,108 @@ mod tests {
             Some((3 * k as i32, pooled_value(PARAMS - 1, k))),
             "ends on its latest"
         );
+    }
+
+    /// Every SysEx event in `list`, as `(time, bytes)`, its bytes read
+    /// through the `buffer` pointer the plugin is handed.
+    fn sysex_read_by_plugin(list: &InputEventList) -> Vec<(u32, Vec<u8>)> {
+        list.events()
+            .iter()
+            .filter_map(|e| match e {
+                ClapEvent::MidiSysex { inner, .. } => {
+                    assert_eq!(inner.header.type_, CLAP_EVENT_MIDI_SYSEX);
+                    let bytes =
+                        unsafe { std::slice::from_raw_parts(inner.buffer, inner.size as usize) };
+                    Some((inner.header.time, bytes.to_vec()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sysex_packets(payload: &[u8], time: u32) -> Vec<MidiEvent> {
+        let mut out = Vec::new();
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, payload, &mut out);
+        out.into_iter().map(|e| e.with_frame_offset(time)).collect()
+    }
+
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut v = vec![0xF0];
+        v.extend_from_slice(payload);
+        v.push(0xF7);
+        v
+    }
+
+    fn sysex_payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 5 % 0x7F) as u8).collect()
+    }
+
+    /// **A multi-packet SysEx reaches the plugin as one `MIDI_SYSEX` event**,
+    /// `0xF0 … 0xF7`, and a SysEx spanning two blocks completes in the
+    /// second; staging allocates nothing once reserved.
+    ///
+    /// Mutation (run): `add_midi` converting through `ClapEvent::from_midi`
+    /// alone (no reassembly) → SysEx dropped → fails.
+    #[test]
+    fn a_multi_packet_sysex_reaches_the_plugin_whole() {
+        let body = sysex_payload(50);
+        let long = sysex_payload(MIDI_STACK_CAPACITY * 6 + 30);
+        let long_packets = sysex_packets(&long, 1);
+        let (first, second) = long_packets.split_at(MIDI_STACK_CAPACITY);
+        let short = sysex_packets(&body, 3);
+        let mut list = InputEventList::new();
+        list.reserve(MIDI_STACK_CAPACITY);
+        list.reserve_sysex();
+        assert_no_alloc::assert_no_alloc(|| {
+            list.clear();
+            list.add_midi_events(&short);
+        });
+        assert_eq!(sysex_read_by_plugin(&list), vec![(3, framed(&body))]);
+        assert_eq!(list.len(), 1);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            list.clear();
+            list.add_midi_events(first);
+        });
+        assert!(sysex_read_by_plugin(&list).is_empty());
+        assert_no_alloc::assert_no_alloc(|| {
+            list.clear();
+            list.add_midi_events(second);
+        });
+        assert_eq!(sysex_read_by_plugin(&list), vec![(1, framed(&long))]);
+        assert_eq!(list.sysex_dropped(), 0);
+    }
+
+    /// **Past capacity, or left open by a later `START`, a SysEx is dropped
+    /// whole and counted; before `reserve_sysex` every one is.**
+    ///
+    /// Mutation (run): `reserve_sysex` a no-op → the reserved list drops
+    /// the message that fits → fails.
+    #[test]
+    fn sysex_drops_are_whole_and_counted() {
+        let mut unreserved = InputEventList::new();
+        unreserved.add_midi_events(&sysex_packets(&[1, 2, 3], 0));
+        assert!(unreserved.events().is_empty());
+        assert_eq!(unreserved.sysex_dropped(), 1);
+
+        let mut list = InputEventList::new();
+        list.reserve_sysex();
+        let over = sysex_payload(SYSEX_MESSAGE_CAPACITY - 1); // framed: one past
+        for block in sysex_packets(&over, 0).chunks(MIDI_STACK_CAPACITY) {
+            list.clear();
+            list.add_midi_events(block);
+            assert!(sysex_read_by_plugin(&list).is_empty());
+        }
+        assert_eq!(list.sysex_dropped(), 1);
+
+        let a = sysex_payload(30);
+        let b = sysex_payload(12);
+        let mut midi = sysex_packets(&a, 0);
+        midi.truncate(2);
+        midi.extend(sysex_packets(&b, 2));
+        list.clear();
+        list.add_midi_events(&midi);
+        assert_eq!(sysex_read_by_plugin(&list), vec![(2, framed(&b))]);
+        assert_eq!(list.sysex_dropped(), 2);
     }
 }

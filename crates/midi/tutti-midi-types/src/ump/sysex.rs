@@ -26,6 +26,23 @@ pub const SYSEX7_STATUS_CONTINUE: u8 = 0x2;
 /// SysEx7 status nibble: last packet of a multi-packet message.
 pub const SYSEX7_STATUS_END: u8 = 0x3;
 
+/// The longest SysEx payload (the bytes between `0xF0` and `0xF7`) the engine
+/// carries: the hardware input abandons a longer dump, and the plugin hosts
+/// reserve room to reassemble one this long.
+///
+/// A cap exists because the hazard is not a large dump but a **lost
+/// terminator**: a device unplugged mid-dump, or a dropped buffer, leaves a
+/// reassembler mid-message with no end ever arriving, and an uncapped buffer
+/// then grows for the lifetime of the connection.
+///
+/// 64 KiB sits above real traffic and below anything alarming: the largest
+/// thing MIDI-CI negotiates is a Property Exchange chunk, and CI's own
+/// `max_sysex_size` is a 28-bit field that devices populate with values in the
+/// hundreds-to-low-thousands of bytes. Synth bulk dumps (a 32-voice DX7 bank
+/// is 4104 bytes) and sample-dump packets are far below it. A message past
+/// this is a fault, not a big message.
+pub const SYSEX7_MAX_PAYLOAD: usize = 64 * 1024;
+
 impl MidiEvent {
     /// Builds SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
     /// pushes them onto `out`. `data` is the payload *between* 0xF0 and 0xF7

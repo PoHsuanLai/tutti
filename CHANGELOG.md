@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a SysEx longer than one UMP packet reaches plugins whole
+
+A SysEx7 message spanning several UMP packets (any message over six bytes)
+was truncated on its way into a VST3 plugin (the opening bytes, unterminated)
+and dropped entirely by the CLAP and VST2 hosts, which delivered no SysEx at
+all. Each host's input event list now reassembles the packets (across blocks
+when a message spans them) and hands the plugin one complete `0xF0 … 0xF7`
+message at its `END` packet's frame, without allocating on the audio thread.
+A message longer than `SYSEX_MESSAGE_CAPACITY` (64 KiB of payload, the cap the
+hardware input already had), or one left open by a later `START`, is dropped
+whole and counted. Out of process the subprocess reassembles; the wire already
+carried every packet intact.
+
+| Was | Now |
+|---|---|
+| — | `tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY}`: the reassembler the hosts share |
+| — | `tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD`: the engine's SysEx payload cap, which the hardware input now reads instead of a private copy |
+| `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
+| `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
+| — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
+| `tutti_clap_host::InputEventList::add_midi` dropped SysEx | reassembles it into `ClapEvent::MidiSysex`, whose `buffer` points into the list until its next `clear`. Call the new `InputEventList::reserve_sysex` (off the audio thread) on a list you build yourself, or every SysEx is dropped and counted (`InputEventList::sysex_dropped`); an activated instance reserves its own |
+
 ### Changed — `BusStripNode` declares `Cost::Light`
 
 Its channel-major kernel, re-measured, is far under the `Light`/`Moderate`

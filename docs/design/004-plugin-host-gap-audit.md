@@ -269,6 +269,46 @@ changed both directions / never-compensated, including the `None` vs
 needs an integration test loading a real binary, and no such harness exists in
 `bevy-tutti` yet.
 
+### A SysEx spanning several UMP packets never reaches a plugin whole · DONE
+
+A UMP SysEx7 packet carries at most six bytes, so any longer message arrives
+as `START`, `CONTINUE`…, `END`. The VST3 host forwarded the `START`'s bytes as
+an unterminated `kMidiSysEx` event and dropped the rest; the CLAP and VST2
+hosts dropped every SysEx, one packet or many (neither has a 3-byte form, and
+`to_midi1_bytes` was the only path).
+
+**Fixed.** `tutti_plugin_types::SysExAssembler` reassembles the packets into
+one `0xF0 … 0xF7` message inside one buffer, reserved when the input event
+list is built (at activation) and never grown, so staging allocates nothing
+and a pointer handed to the plugin is never moved during its block. Each
+host's input list owns one and hands the plugin one complete message at its
+`END` packet's frame: a `kDataEvent`/`kMidiSysEx` (`Vst3Event::SysEx`, its
+bytes in the list's buffer so `Vst3Event` stays `Copy`), a
+`CLAP_EVENT_MIDI_SYSEX`, a `kVstSysExType` event.
+
+- **Capacity:** `SYSEX_MESSAGE_CAPACITY`, the engine's `SYSEX7_MAX_PAYLOAD`
+  (64 KiB, the cap the hardware input already enforced, now shared from
+  `tutti-midi-types`) and its two delimiters. Every dump an input accepts
+  can reach a plugin. The buffer adds a block of packets' worth on top
+  (about 66 KiB per instance) so the block's completed messages and an open
+  message always fit together.
+- **A message spans blocks.** A block carries at most `MIDI_STACK_CAPACITY`
+  packets (1536 bytes), so anything longer must.
+- **Dropped whole, never truncated, and counted** (`sysex_dropped` on the
+  VST3 and CLAP instances, `dropped_sysex` on the VST2 one): a message past
+  the capacity, or one left without its `END` by a later `START` (one
+  multi-packet message is open at a time).
+- Other messages between a message's packets do not end it: the event list
+  merges sources, and a note played during a dump should not cost the dump.
+
+Out of process, the wire carries each UMP packet whole (`IpcMidiEvent` is the
+128-bit packet and its frame), at most `MIDI_STACK_CAPACITY` a block, and the
+subprocess stages them through the same format host, so the reassembly runs
+there, per instance, across blocks.
+
+The AU host's reassembly (E-7) is separate: per call, not carried across
+blocks, and its buffer grows on the audio thread.
+
 ---
 
 ## B. VST3 residue (not in issue #54)

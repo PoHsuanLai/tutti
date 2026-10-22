@@ -395,12 +395,12 @@ impl<T: Vst3Sample> Vst3Active<T> {
             ptrs: BufferPtrs::new(in_scratch.ptr_count, out_scratch.ptr_count),
             input: InputStaging {
                 buses: in_scratch.buses,
-                events: EventList::new(),
+                events: EventList::input(),
                 param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {
                 buses: out_scratch.buses,
-                events: EventList::new(),
+                events: EventList::output(),
                 // The plugin fills this one through `addPoint`, which cannot
                 // borrow a block: every queue has `MIN_POINT_ROOM`, no pool.
                 param_changes: ParameterChangesImpl::with_queues(
@@ -768,6 +768,18 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// [`param_points_dropped`](Self::param_points_dropped).
     pub fn events_dropped(&self) -> u64 {
         self.audio.input.events.dropped()
+    }
+
+    /// SysEx messages not handed to the plugin since activation, each dropped
+    /// whole rather than truncated: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
+    /// or left without their `END` by a later `START`. The input list
+    /// reassembles a multi-packet SysEx (across blocks if it spans them) and
+    /// hands the plugin one complete `0xF0 … 0xF7` message at its `END`.
+    /// Read on this instance only, like
+    /// [`events_dropped`](Self::events_dropped).
+    pub fn sysex_dropped(&self) -> u64 {
+        self.audio.input.events.sysex_dropped()
     }
 
     /// Events the plugin emitted through `addEvent` that its output list

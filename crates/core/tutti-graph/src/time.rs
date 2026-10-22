@@ -445,15 +445,28 @@ impl Env {
                 let (start, end) = (l.start.get(), l.end.get());
                 let period = end - start;
                 // Wrapped k + 1 times: unwrapped, `next` sat at
-                // `end + (next - start) + k * period`.
-                let mut x = end + (next - start);
-                while x - from <= hi + slack {
-                    if fits(x) {
-                        return Some(true);
-                    }
-                    x += period;
+                // `end + (next - start) + k * period`, for some k >= 0.
+                let x0 = end + (next - start);
+                if x0 - from > hi + slack {
+                    return None;
                 }
-                None
+                // A period no wider than the window the distance may fall
+                // in cannot step over it: some k lands inside. Deciding
+                // that without stepping keeps a sub-frame loop (one ulp
+                // wide, or so small `x + period == x`) from costing a step
+                // per period.
+                if period <= (hi - lo) + 2.0 * slack {
+                    return Some(true);
+                }
+                // A wider period: at most one k lands inside, the first
+                // whose distance reaches the window's low edge (its
+                // neighbours too, for the rounding of the product).
+                let k = ((from + lo - slack - x0) / period).ceil().max(0.0);
+                let hit = [k - 1.0, k, k + 1.0]
+                    .into_iter()
+                    .filter(|&k| k >= 0.0)
+                    .any(|k| fits(x0 + k * period));
+                hit.then_some(true)
             }
             _ => None,
         }
@@ -913,6 +926,43 @@ mod tests {
         ph.observe(&at(3.05));
         assert!(ph.crossed(3.02), "a new run from 3.0");
         assert!(!ph.crossed(4.46), "not the old one");
+    }
+
+    /// A loop shorter than a frame is still a loop to the playhead, decided
+    /// at once: a block that runs from before the loop into it wraps it many
+    /// times a frame, and the next block, starting back on the loop's start,
+    /// continues the run. A one-ulp loop at beat 4 (`4.0.next_up()`, the
+    /// shortest a host can send there) and one of 1e-300 beat at 0 (so
+    /// short that `x + period == x`).
+    ///
+    /// Mutation (run): unwrap the next block's start by stepping one period
+    /// at a time (`x += period` until it fits) → the one-ulp loop takes
+    /// ~1e13 steps and misses the deadline → fails.
+    #[cfg_attr(miri, ignore = "a wall-clock deadline")]
+    #[test]
+    fn a_loop_shorter_than_a_frame_is_unwrapped_at_once() {
+        for (start, end) in [(4.0, 4.0f64.next_up()), (0.0, 1e-300)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let l = Some(LoopRange {
+                    start: Beat(start),
+                    end: Beat(end),
+                });
+                // 480 frames is 0.02 beat at 120 BPM: from 0.01 beat before
+                // the loop, the block reaches it halfway through.
+                let mut ph = Playhead::new();
+                ph.observe(&block(start - 0.01, 480, true, l));
+                ph.observe(&block(start, 480, true, l));
+                let _ = tx.send(ph.crossed(start - 0.005));
+            });
+            let crossed = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("[{start}, {end}) did not finish"));
+            assert!(
+                crossed,
+                "[{start}, {end}): the run continues across the wrap"
+            );
+        }
     }
 
     /// Resolution with history: a beat crossed by continuous playback before

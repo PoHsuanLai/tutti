@@ -529,3 +529,64 @@ fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
     s.update();
     assert_eq!(ports.retired_sets(), 0, "the update freed it");
 }
+
+/// **The feeds are partial, as audio's declarations are: an edge a host
+/// wired on a fed event input stays.** A host wires its own clip into the
+/// tap's event input 0 by hand; the session's sequencer then feeds the tap
+/// too, and both notes play. A host's later `set_event_sources` on that
+/// input sets its own edges beside the sequencer's; the sequencer's clip
+/// re-aimed elsewhere leaves the host's edges where they are.
+///
+/// Mutations (run), each fails:
+/// - `Graph::write_feeds` writing the feeds' union over the whole input
+///   (the host's edges not kept) → the hand clip is unwired by `play_clip`
+///   and its note never plays;
+/// - `Graph::set_event_sources` on a fed input not keeping the feeds'
+///   sources → the sequencer's clip is unwired by the host's call.
+#[test]
+fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
+    use tutti_midi_runtime::MidiClipNode;
+
+    let sorted = |mut v: Vec<EventSource>| {
+        v.sort_by_key(|e| (e.node.0 .0, e.port));
+        v
+    };
+    let mut s = offline();
+    let (synth, seen) = tap(&mut s);
+    let (other, _) = tap(&mut s);
+    let (hand, _) = s.graph().add(MidiClipNode::new(note(
+        62,
+        Beat(1.0 / 3.0),
+        BeatDuration(1.0),
+    )));
+    s.graph().set_event_sources(synth, 0, &[hand.into()]);
+    let clip = s
+        .midi()
+        .play_clip(synth, note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+        .unwrap();
+    s.update();
+    assert_eq!(
+        sorted(s.graph_ref().event_sources(synth, 0)),
+        sorted(vec![hand.into(), clip.into()]),
+        "the sequencer's clip joins the hand-wired one"
+    );
+    roll(&s, 9_000);
+    let mut ons = note_ons(&seen);
+    ons.sort_unstable();
+    assert_eq!(ons, vec![(8_000, 60), (8_000, 62)], "both play");
+
+    let (hand2, _) = s.graph().add(MidiClipNode::new([]));
+    s.graph().set_event_sources(synth, 0, &[hand2.into()]);
+    assert_eq!(
+        sorted(s.graph_ref().event_sources(synth, 0)),
+        sorted(vec![hand2.into(), clip.into()]),
+        "the host's call sets its own edges, beside the feed's"
+    );
+
+    s.midi().retarget(clip, other).unwrap();
+    assert_eq!(
+        s.graph_ref().event_sources(synth, 0),
+        vec![hand2.into()],
+        "the feed's edge goes, the host's stays"
+    );
+}

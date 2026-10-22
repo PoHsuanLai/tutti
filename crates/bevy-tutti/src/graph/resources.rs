@@ -252,10 +252,12 @@ impl AudioGraphRes {
     }
 
     /// Feeds `sink`'s event input `port` from exactly `sources` (each an
-    /// event output: from an `AudioNode` alone, its output 0). Event inputs
-    /// merge their sources by offset, so any number may feed one port. Takes
-    /// effect with the frame's commit.
-    /// [`EventSources`](crate::graph::EventSources) is the ECS form.
+    /// event output: from an `AudioNode` alone, its output 0), beside what
+    /// the feeds ([`set_feed`](Self::set_feed): the sequencer, the route
+    /// rules, [`EventSources`](crate::graph::EventSources)) feed it on input
+    /// 0, which stays; the feeds in turn leave these edges alone. Event
+    /// inputs merge their sources by offset, so any number may feed one port.
+    /// Takes effect with the frame's commit.
     pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
         self.write().graph().set_event_sources(sink, port, sources);
     }

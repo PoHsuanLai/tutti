@@ -7,9 +7,12 @@
 //! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
-use tutti_midi_runtime::{ClockNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode};
+use tutti_core::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
+use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Prepare, Transport};
+use tutti_midi_runtime::{
+    ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode,
+    TimedHarmony, TimedMidiEvent,
+};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
 
@@ -139,4 +142,77 @@ fn the_mpe_bend_range_fan_out_processes_without_allocating() {
         }
     });
     assert_eq!(reached, 50, "the last member's port carries one per block");
+}
+
+/// A loop of 64 frames walked in 512-frame blocks: each block is eight loop
+/// passes of a clip (a note on and off in each, the held note ended at each
+/// wrap) and of a harmony node (a chord change in each, the chord re-stated
+/// at each wrap), all without allocating, block after block.
+///
+/// Mutation (run): a `Vec` collected per pass in the walk's `pass` → the
+/// gate panics.
+#[test]
+fn a_block_of_many_loop_passes_walks_without_allocating() {
+    const RATE: f64 = 48_000.0;
+    let beat = |frame: f64| Beat(frame / 24_000.0);
+    let (start, end) = (beat(1_000.0), beat(1_064.0));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "clip",
+        MidiClipNode::new([
+            TimedMidiEvent::new(beat(1_010.0), note_on(0, 60)),
+            TimedMidiEvent::new(beat(1_040.0), note_on(0, 64)),
+        ]),
+    );
+    ed.insert(
+        NodeKey(2),
+        "harmony",
+        HarmonyNode::new([
+            TimedHarmony::new(Beat(0.0), Harmony::chord(60, 60, 0b1001_0001)),
+            TimedHarmony::new(beat(1_032.0), Harmony::chord(67, 67, 0b1001_0001)),
+        ]),
+    );
+    let out = ed.insert(NodeKey(3), "out", MidiOutNode::new());
+    for from in [1, 2] {
+        ed.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            EventEdge::Direct(EventOut {
+                node: NodeKey(from),
+                port: 0,
+            }),
+        );
+    }
+    ed.commit().unwrap();
+    let region = tutti_core::LoopRange::new(start, end).unwrap();
+    let looping = Some(LoopRange { start, end });
+    let mut clock = FrameClock::new(start, Bpm(120.0), SampleRate(RATE));
+    let mut drain = [MidiEvent::noop(); 256];
+    let mut block = |exec: &mut tutti_graph::Executor, clock: &mut FrameClock| {
+        exec.process(
+            512,
+            &Transport::new(true, Bpm(120.0), clock.beat(), looping),
+            &[],
+            &mut [],
+        );
+        clock.advance(Samples(512), Some(region));
+        out.poll_into(&mut drain)
+    };
+    // Warm up outside the gate; the clip sends its notes.
+    assert!(
+        block(&mut exec, &mut clock) >= 16,
+        "eight passes of two notes"
+    );
+
+    let mut sent = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..100 {
+            sent += block(&mut exec, &mut clock);
+        }
+    });
+    assert!(sent >= 100 * 16, "every block walked its passes: {sent}");
+    assert_eq!(out.dropped(), 0);
 }

@@ -12,7 +12,7 @@
 //! | `replace`, `crossfade` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
 //! | `node_latency`, `node_tail`, `node_inputs`, `node_outputs` | the editor's [`Shapes`](tutti_graph::Shapes) |
 //! | `latency_plan` | `tutti_types::latency::plan` over the whole spec: audio edges plus event and param-modulation sources |
-//! | `set_feed`, `move_feeds` | the union of every feeder's sources, written as a sink's event edges |
+//! | `set_feed`, `move_feeds` | the union of every feeder's sources, written as a sink's event edges beside the host's own |
 //! | `refresh_node_latency` | `Editor::set_latency` |
 //! | `insert_plugin`, `replace_plugin` | the bound `PluginClient` itself, a node with its own fork source |
 //!
@@ -286,6 +286,10 @@ pub struct Graph {
     /// Each sink's event input 0, by feeder: the sources each feeder feeds
     /// it. Written into the spec as their union.
     feeds: BTreeMap<NodeKey, BTreeMap<&'static str, Vec<EventSource>>>,
+    /// Each fed sink's event input 0: the sources on it that the feeds put
+    /// there and the host did not wire itself, which are all a change of the
+    /// feeds may take away. Every other edge on the input is the host's.
+    fed_edges: BTreeMap<NodeKey, Vec<EventSource>>,
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
     next_crossfade: u64,
@@ -369,6 +373,7 @@ impl Graph {
             commits: 0,
             render_workers: 1,
             feeds: BTreeMap::new(),
+            fed_edges: BTreeMap::new(),
             parked: VecDeque::new(),
             next_crossfade: 0,
             #[cfg(feature = "plugin")]
@@ -946,15 +951,29 @@ impl Graph {
     }
 
     /// Feeds `sink`'s event input `port` from exactly `sources` (fan-in
-    /// merges them by offset; the graph orders ties by source). Touches
-    /// nothing when that is what it already holds. Event edges from a node
-    /// the graph did not insert through [`insert`](Self::insert) (a
-    /// modulation lane on a plugin's event input) are not the caller's, and
-    /// stay.
-    ///
-    /// On input 0 of a fed sink, the feeds write over this on their next
-    /// change: [`set_feed`](Self::set_feed) is the declared form.
+    /// merges them by offset; the graph orders ties by source), beside what
+    /// the feeds ([`set_feed`](Self::set_feed)) feed it on input 0: the
+    /// feeds are partial, as audio's declarations are, and own only their
+    /// own sources. Touches nothing when that is what it already holds.
+    /// Event edges from a node the graph did not insert through
+    /// [`insert`](Self::insert) (a modulation lane on a plugin's event
+    /// input) are not the caller's, and stay.
     pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
+        if port != 0 {
+            self.write_event_sources(sink, port, sources);
+            return;
+        }
+        let fed = self.fed_in_graph(sink);
+        let theirs: Vec<EventSource> = fed.into_iter().filter(|s| !sources.contains(s)).collect();
+        let mut all = sources.to_vec();
+        all.extend_from_slice(&theirs);
+        self.set_fed_edges(sink, theirs);
+        self.write_event_sources(sink, 0, &all);
+    }
+
+    /// Feeds `sink`'s event input `port` from exactly `sources`, but for
+    /// edges from nodes the graph did not insert.
+    fn write_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
         let at = EventIn {
             node: key(sink),
             port,
@@ -1082,17 +1101,44 @@ impl Graph {
     }
 
     /// Write `sink`'s feeds into its event input 0: the union of every
-    /// feeder's sources still in the graph.
+    /// feeder's sources still in the graph, beside the edges the host wired
+    /// there itself (every edge the feeds did not put there), which stay.
     fn write_feeds(&mut self, sink: AudioNode) {
         if !self.nodes.contains_key(&key(sink)) || self.node_event_inputs(sink) == 0 {
             return;
         }
-        let union: Vec<EventSource> = self
-            .fed(sink)
+        let union = self.fed_in_graph(sink);
+        let ours = self.fed_edges.get(&key(sink)).cloned().unwrap_or_default();
+        let mut all: Vec<EventSource> = self
+            .event_sources(sink, 0)
+            .into_iter()
+            .filter(|s| self.nodes.contains_key(&key(s.node)) && !ours.contains(s))
+            .collect();
+        let hand = all.len();
+        let theirs: Vec<EventSource> = union
+            .into_iter()
+            .filter(|s| !all[..hand].contains(s))
+            .collect();
+        all.extend_from_slice(&theirs);
+        self.set_fed_edges(sink, theirs);
+        self.write_event_sources(sink, 0, &all);
+    }
+
+    /// Every source any feeder feeds `sink` that is in the graph.
+    fn fed_in_graph(&self, sink: AudioNode) -> Vec<EventSource> {
+        self.fed(sink)
             .into_iter()
             .filter(|s| self.contains(s.node))
-            .collect();
-        self.set_event_sources(sink, 0, &union);
+            .collect()
+    }
+
+    /// Records `sources` as the edges the feeds own on `sink`'s input 0.
+    fn set_fed_edges(&mut self, sink: AudioNode, sources: Vec<EventSource>) {
+        if sources.is_empty() {
+            self.fed_edges.remove(&key(sink));
+        } else {
+            self.fed_edges.insert(key(sink), sources);
+        }
     }
 
     /// Takes `node` out of the graph. Every edge to and from it reads silence
@@ -1115,6 +1161,11 @@ impl Graph {
             feeds.retain(|_, s| !s.is_empty());
         }
         self.feeds.retain(|_, f| !f.is_empty());
+        self.fed_edges.remove(&key(node));
+        for sources in self.fed_edges.values_mut() {
+            sources.retain(|s| s.node != node);
+        }
+        self.fed_edges.retain(|_, s| !s.is_empty());
         self.edited = true;
         true
     }

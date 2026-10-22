@@ -38,6 +38,46 @@ Migration: a caller of `ClapEvent::from_midi` passes
 caller of `MpeIngest::translate` iterates the result (`.next()` is the old
 `Option` for every event but a member channel's bend range).
 
+### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
+
+- **A clip plays every pass of a loop shorter than a block** (it played the
+  first wrap of each segment only), on the frames the transport's own
+  `FrameClock` wraps on, at any loop length: a loop shorter than a frame
+  plays a pass a frame. `HarmonyNode` shares the walk; a wrap inside a block
+  re-states only the chord or scale that differs from what it last sent.
+- **A loop shorter than a frame no longer stalls the executor**: the
+  `Playhead` that tells a wrap from a seek stepped through the loop one
+  period at a time (~1e13 steps for a one-ulp loop).
+- **Overlapping notes of one key**: a note-on of a key the clip holds is
+  preceded by a note-off on the same frame, and the new note owns the key:
+  only its own note-off ends it, and every other note's note-off for that
+  key is swallowed. A nested note ends at its own end, and overlaps of any
+  depth leave the newest sounding to its end with no stray note-off. A
+  note-off is paired, when the clip is set, with the earliest-listed
+  untaken note-on of its key at or before it. Migration: list each note's
+  on and off together to get nested notes exactly; a time-ordered list
+  pairs first on, first off, so a note nested in a longer one sounds to the
+  outer's end. `MidiClipControls::set_events` with the same events paired
+  differently is a new clip (it ends what is sounding).
+- **A harmony re-statement includes the change on its frame**: a jump or a
+  loop wrap states the chord and scale in force on its frame, a change on
+  that frame included and sent once, so a change on the loop's start no
+  longer has the chord it replaces sent before it on every pass.
+- **The session's event feeds are partial.** `Graph::set_feed` (the
+  sequencer, route rules, live inputs, bevy-tutti's `EventSources`) no
+  longer replaces edges a host wired on the sink's event input 0 itself,
+  and `Graph::set_event_sources` / `AudioGraphRes::set_event_sources` on a
+  fed input 0 set the host's edges beside the feeds' instead of removing
+  them until the feeds next change. Migration: a host that relied on
+  `set_event_sources` to unwire a feed's source removes it through its
+  feeder (`set_feed` with the feeder's other sources, `stop_clip`,
+  `retarget`, `unroute`).
+
+| Was | Now |
+|---|---|
+| the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()` |
+| `FrameClock::advance` only | new `FrameClock::advance_to_wrap(frames, looping) -> Option<Samples>`: rolls to the loop's next wrap within `frames` and returns the frames rolled, or rolls them all and returns `None` |
+
 ### Changed — the in-block waits are per-pool settings, both timed
 
 How long the audio thread waits on a helper before yielding its core once,

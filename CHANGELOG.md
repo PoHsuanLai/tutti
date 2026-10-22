@@ -18,11 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Playhead` that tells a wrap from a seek stepped through the loop one
   period at a time (~1e13 steps for a one-ulp loop).
 - **Overlapping notes of one key**: a note-on of a key the clip holds is
-  preceded by a note-off on the same frame, and the older note's note-off
-  is swallowed, so the newer note sounds its whole length and one note-off
-  ends the key, whatever the receiver does with a repeated note-on. A clip
-  with overlapping notes of one key now sends the note-off at the restart
-  and no longer sends one at the older note's end.
+  preceded by a note-off on the same frame, and the new note owns the key:
+  only its own note-off ends it, and every other note's note-off for that
+  key is swallowed. A nested note ends at its own end, and overlaps of any
+  depth leave the newest sounding to its end with no stray note-off. A
+  note-off is paired, when the clip is set, with the earliest-listed
+  untaken note-on of its key at or before it. Migration: list each note's
+  on and off together to get nested notes exactly; a time-ordered list
+  pairs first on, first off, so a note nested in a longer one sounds to the
+  outer's end. `MidiClipControls::set_events` with the same events paired
+  differently is a new clip (it ends what is sounding).
+- **A harmony re-statement includes the change on its frame**: a jump or a
+  loop wrap states the chord and scale in force on its frame, a change on
+  that frame included and sent once, so a change on the loop's start no
+  longer has the chord it replaces sent before it on every pass.
 - **The session's event feeds are partial.** `Graph::set_feed` (the
   sequencer, route rules, live inputs, bevy-tutti's `EventSources`) no
   longer replaces edges a host wired on the sink's event input 0 itself,

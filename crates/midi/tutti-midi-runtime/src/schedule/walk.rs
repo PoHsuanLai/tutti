@@ -26,13 +26,16 @@ pub(crate) trait Visit<T> {
     /// Playback is stopped from `at` (or has no usable tempo).
     fn stop(&mut self, at: Option<Offset>);
     /// Playback jumped to `beat` at `at`: a start, a seek, a loop wrap, or a
-    /// walk told to [`forget`](Walk::forget). `events` are the source's.
-    fn jump(&mut self, at: Option<Offset>, beat: f64, events: &[T]);
-    /// Playback wrapped its loop inside a segment, to `beat` at `at`: a jump
-    /// the source may treat as one ([`jump`](Self::jump), the default) or
-    /// as the next pass of the same run.
-    fn wrap(&mut self, at: Option<Offset>, beat: f64, events: &[T]) {
-        self.jump(at, beat, events);
+    /// walk told to [`forget`](Walk::forget). `events` are the source's, and
+    /// `frames_per_beat` the rate the walk places them at
+    /// ([`lands_on_first_frame`]).
+    fn jump(&mut self, at: Option<Offset>, beat: f64, frames_per_beat: f64, events: &[T]);
+    /// Playback wrapped its loop inside a segment: the pass starts at `at`,
+    /// on `beat` (the loop's start, or a hair past it). A jump the source may
+    /// treat as one ([`jump`](Self::jump), the default) or as the next pass
+    /// of the same run.
+    fn wrap(&mut self, at: Option<Offset>, beat: f64, frames_per_beat: f64, events: &[T]) {
+        self.jump(at, beat, frames_per_beat, events);
     }
     /// `event` is due at `at`.
     fn event(&mut self, at: Offset, event: &T);
@@ -78,7 +81,7 @@ impl Walk {
         // segment left off (a seek, a wrap at a block edge, a restart).
         let continuous = self.expected.is_some_and(|e| ((now - e) * fpb).abs() < 0.5);
         if !continuous {
-            v.jump(at(0), now, events);
+            v.jump(at(0), now, fpb, events);
         }
 
         // The host's own clock walks the segment (`Transport::clock`, the
@@ -118,7 +121,7 @@ impl Walk {
                 let from = clock.beat().get();
                 let wrapped = clock.advance_to_wrap(Samples(len - k), Some(l));
                 let next = wrapped.map_or(len, |r| k + r.get());
-                v.wrap(at(k), l.start().get(), events);
+                v.wrap(at(k), from, fpb, events);
                 pass(in_loop, from, k, next, fpb, v, &at);
                 wraps_at_end = wrapped.is_some() && next == len;
                 k = next;
@@ -128,6 +131,16 @@ impl Walk {
         // Where the next segment starts if nothing jumps.
         self.expected = (!wraps_at_end).then(|| clock.beat().get());
     }
+}
+
+/// Whether an event at `beat` that playback reaches lands on the frame it
+/// is at `from` (or past), where a jump or a pass starts: any beat before
+/// `from` is behind it, and one ahead lands there within
+/// [`FRAME_TOLERANCE`] (`first_frame_at_or_after`). Of the events behind,
+/// the walk visits on that frame only those less than a frame behind; the
+/// rest were before playback got there.
+pub(crate) fn lands_on_first_frame(beat: f64, from: f64, frames_per_beat: f64) -> bool {
+    (beat - from) * frames_per_beat <= FRAME_TOLERANCE
 }
 
 /// Visit the events of one loop pass that playback reaches on its frames

@@ -244,6 +244,39 @@ fn a_loop_pass_restates_only_what_changed() {
     );
 }
 
+/// **A change on the loop's start is the context of every pass: no chord it
+/// replaces goes out first.** Lanes: F/A at 0, C at 12 000, G at 12 200;
+/// loop [12 000, 12 375), one 2 048-frame block from its start. The start
+/// and each wrap state C alone (the chord in force on the pass's first
+/// frame, C on it included), and G follows 200 frames into each pass. F/A,
+/// in force only before the loop, never goes out, and C is not sent twice
+/// on one frame.
+///
+/// Mutation (run): the context taken strictly before the beat (`<` for
+/// `lands_on_first_frame` in `Sending::in_force`) → F/A at the start and
+/// every wrap, where C belongs → fails. Mutation (run): the walk's own visit of a
+/// change on the re-stated frame not skipped (`Sending::event` sending
+/// whatever the frame) → C twice at the start and at each wrap → fails.
+#[test]
+fn a_change_on_the_loops_start_is_each_passs_context() {
+    let lanes = vec![at(0, F_OVER_A), at(12_000, C), at(12_200, G)];
+    let (_ed, mut exec, _c, seen) = rig(HarmonyNode::new(lanes), 2_048);
+    let lp = Some(LoopRange {
+        start: beat_of(12_000),
+        end: beat_of(12_375),
+    });
+    block(
+        &mut exec,
+        2_048,
+        Transport::new(true, Bpm(120.0), beat_of(12_000), lp),
+    );
+    let want: Vec<(u64, Harmony)> = (0..6)
+        .flat_map(|k| [(375 * k, C), (375 * k + 200, G)])
+        .filter(|&(f, _)| f < 2_048)
+        .collect();
+    assert_eq!(*seen.lock().unwrap(), want);
+}
+
 /// **New lanes re-state from the next block; the same lanes cut nothing.**
 ///
 /// Mutation: `set` publishing whatever the lanes → the same lanes re-state

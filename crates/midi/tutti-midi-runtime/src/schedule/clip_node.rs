@@ -13,18 +13,32 @@
 //! What it does keep is the set of notes it has started and not ended
 //! ([`HeldNotes`]): when playback stops, jumps (a seek, a loop wrap), or the
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
-//! each with a note-off on the frame the jump happens. A key is held or not
-//! (the MIDI convention), and the newest note of a key keeps its full length
-//! (as a DAW plays overlapping notes of one key): a note-on of a key it
-//! already holds ends the held note first, on the same frame, and the
-//! ended note's own note-off, when it comes, is swallowed. So what it feeds
-//! never has two of its voices on one key, and nothing is left sounding.
-//! One level of overlap is tracked per key: a third note-on of a key whose
-//! restarted note has not ended yet is ended by the second note's note-off.
+//! each with a note-off on the frame the jump happens.
+//!
+//! A key is held or not (the MIDI convention), by one note at a time, as a
+//! DAW plays notes of one key that overlap: a note-on of a key it already
+//! holds ends the sounding note first, on the same frame, and the new note
+//! owns the key. From then on only the owning note's note-off ends the key;
+//! any other note's note-off for it is swallowed. So what it feeds never has
+//! two of its voices on one key, a note nested inside another ends at its
+//! own end, overlaps of any depth leave the newest note sounding to its
+//! end, and nothing is left sounding.
+//!
+//! Which note-off is a note's is decided when the clip is set: a note-off
+//! belongs to the earliest-listed note-on of its key that is at or before
+//! it in time and not already taken, in the order the events are given. A
+//! host that lists each note's on and off together gets its notes exactly.
+//! A list already in time order (a parsed file) pairs notes of one key
+//! first on, first off, which is right for notes that overlap and, for a
+//! note nested inside a longer one, keeps the inner note sounding to the
+//! outer's end: a time-ordered list cannot tell those two apart. A note-off
+//! that belongs to no note-on is written as it comes, and ends whatever note
+//! holds its key.
 //!
 //! The clip itself is published to the node with [`ArcLend`]
 //! ([`MidiClipControls::set_events`]); the node reads it once per block.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -49,8 +63,21 @@ pub const CLIP_EVENT_CAPACITY: u32 = 256;
 /// the node a new clip replaced the one it was playing.
 struct ClipEvents {
     generation: u64,
-    events: Box<[TimedMidiEvent]>,
+    events: Box<[ClipEvent]>,
 }
+
+/// One event of a clip, with the note it starts or ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ClipEvent {
+    timed: TimedMidiEvent,
+    /// For a note-on, its own id; for a note-off, the id of the note-on it
+    /// ends; [`NO_NOTE`] for a note-off that ends none, and for any other
+    /// message. An id is the note-on's index in the sorted clip.
+    note: u32,
+}
+
+/// The [`ClipEvent::note`] of an event that belongs to no note.
+const NO_NOTE: u32 = u32::MAX;
 
 /// What the node and its controls share.
 struct Shared {
@@ -64,7 +91,7 @@ struct Shared {
 }
 
 impl Shared {
-    fn new(events: Box<[TimedMidiEvent]>) -> Arc<Self> {
+    fn new(events: Box<[ClipEvent]>) -> Arc<Self> {
         let first = Arc::new(ClipEvents {
             generation: 0,
             events,
@@ -81,16 +108,77 @@ impl Shared {
     }
 }
 
-/// `events` sorted by beat, stably (events on one beat keep their order: a
-/// note-off before a note-on of the same note stays first). A beat that is not
-/// finite has no frame, and is dropped.
-fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[TimedMidiEvent]> {
-    let mut v: Vec<TimedMidiEvent> = events
+/// `events` with each note-off paired to its note-on (see the module docs),
+/// sorted by beat, stably (events on one beat keep their order: a note-off
+/// before a note-on of the same note stays first). A beat that is not finite
+/// has no frame, and is dropped. A note's id is its note-on's index in the
+/// sorted clip, so two clips with the same events and the same pairing are
+/// equal. Control thread.
+fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> {
+    let mut v: Vec<(u32, ClipEvent)> = events
         .into_iter()
         .filter(|e| e.beat.get().is_finite())
+        .enumerate()
+        .map(|(i, timed)| {
+            (
+                i as u32,
+                ClipEvent {
+                    timed,
+                    note: NO_NOTE,
+                },
+            )
+        })
         .collect();
-    v.sort_by(|a, b| a.beat.get().total_cmp(&b.beat.get()));
-    v.into_boxed_slice()
+    // Each key's note-ons in list order, and a cursor past the taken ones at
+    // its head (so notes that do not overlap pair in one step each).
+    let mut ons: HashMap<(usize, usize, u32), (Vec<u32>, usize)> = HashMap::new();
+    for (i, (_, e)) in v.iter().enumerate() {
+        if let Some((g, c, n, true)) = note_of(&e.timed.event) {
+            ons.entry((g, c, n)).or_default().0.push(i as u32);
+        }
+    }
+    let mut taken = vec![false; v.len()];
+    for i in 0..v.len() {
+        let Some((g, c, n, false)) = note_of(&v[i].1.timed.event) else {
+            continue;
+        };
+        let Some((list, first)) = ons.get_mut(&(g, c, n)) else {
+            continue;
+        };
+        while *first < list.len() && taken[list[*first] as usize] {
+            *first += 1;
+        }
+        let beat = v[i].1.timed.beat.get();
+        let found = list[*first..]
+            .iter()
+            .copied()
+            .find(|&o| !taken[o as usize] && v[o as usize].1.timed.beat.get() <= beat);
+        if let Some(o) = found {
+            taken[o as usize] = true;
+            v[o as usize].1.note = o;
+            v[i].1.note = o;
+        }
+    }
+    // A note-on no note-off ends is a note too.
+    for (i, (_, e)) in v.iter_mut().enumerate() {
+        if e.note == NO_NOTE && matches!(note_of(&e.timed.event), Some((.., true))) {
+            e.note = i as u32;
+        }
+    }
+    v.sort_by(|a, b| a.1.timed.beat.get().total_cmp(&b.1.timed.beat.get()));
+    // List index → sorted index, to renumber each note by its sorted note-on.
+    let mut to_sorted = vec![0u32; v.len()];
+    for (k, &(i, _)) in v.iter().enumerate() {
+        to_sorted[i as usize] = k as u32;
+    }
+    v.into_iter()
+        .map(|(_, mut e)| {
+            if e.note != NO_NOTE {
+                e.note = to_sorted[e.note as usize];
+            }
+            e
+        })
+        .collect()
 }
 
 /// The handle a host keeps on an inserted [`MidiClipNode`]: replace or clear
@@ -103,7 +191,8 @@ pub struct MidiClipControls {
 impl MidiClipControls {
     /// Play `events` from the next block on. The node ends every note the
     /// previous clip left sounding, on that block's first frame. Events equal
-    /// to the clip's (in beat order) change nothing: no note is cut.
+    /// to the clip's (in beat order, each note-off paired to the same
+    /// note-on) change nothing: no note is cut.
     pub fn set_events(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
         let events = sorted(events);
         let mut current = self
@@ -194,9 +283,9 @@ impl MidiClipNode {
     }
 }
 
-impl Beated for TimedMidiEvent {
+impl Beated for ClipEvent {
     fn beat(&self) -> f64 {
-        self.beat.get()
+        self.timed.beat.get()
     }
 }
 
@@ -207,7 +296,7 @@ struct Playing<'a, 'w> {
     out: &'a mut EventWriter<'w>,
 }
 
-impl Visit<TimedMidiEvent> for Playing<'_, '_> {
+impl Visit<ClipEvent> for Playing<'_, '_> {
     fn stop(&mut self, at: Option<Offset>) {
         // Stopped (or no usable tempo): nothing plays, and nothing may keep
         // sounding.
@@ -216,14 +305,14 @@ impl Visit<TimedMidiEvent> for Playing<'_, '_> {
         }
     }
 
-    fn jump(&mut self, at: Option<Offset>, _beat: f64, _events: &[TimedMidiEvent]) {
+    fn jump(&mut self, at: Option<Offset>, _beat: f64, _fpb: f64, _events: &[ClipEvent]) {
         if let Some(o) = at {
             self.held.release(self.out, o);
         }
     }
 
-    fn event(&mut self, at: Offset, e: &TimedMidiEvent) {
-        self.held.play(self.out, at, &e.event);
+    fn event(&mut self, at: Offset, e: &ClipEvent) {
+        self.held.play(self.out, at, &e.timed.event, e.note);
     }
 }
 
@@ -313,10 +402,10 @@ impl ForkSource for ClipFork {
 struct HeldNotes {
     /// `bits[group * 16 + channel]`, bit `note`.
     bits: Box<[u128; 256]>,
-    /// Keys a note-on restarted while held (laid out as `bits`): the next
-    /// note-off of each is the restarted note's, already sent, and is
-    /// swallowed so the newer note keeps its length.
-    restarted: Box<[u128; 256]>,
+    /// The note that owns each held key, `owner[(group * 16 + channel) *
+    /// 128 + note]`: only its note-off ends the key. Read only while the
+    /// key's bit is set; allocated once, with the node.
+    owner: Box<[u32]>,
     count: usize,
     /// A release the port refused part of: the rest goes out at the next
     /// block's first frame, and every block's after, until none is held.
@@ -347,7 +436,7 @@ impl HeldNotes {
     fn new() -> Self {
         Self {
             bits: Box::new([0; 256]),
-            restarted: Box::new([0; 256]),
+            owner: vec![NO_NOTE; 256 * 128].into_boxed_slice(),
             count: 0,
             owed: false,
         }
@@ -371,37 +460,53 @@ impl HeldNotes {
         }
     }
 
-    /// Write `e` at `at`, keeping one note per key (the newest, at its full
-    /// length): a note-on of a key this holds ends the held note first, on
-    /// the same frame, and the next note-off of that key (the ended note's)
-    /// is swallowed. A note-off the port refuses leaves the key held (the
-    /// port is full, and the note-on is refused and counted after it).
-    fn play(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent) {
+    /// Write `e`, of note `note` ([`ClipEvent::note`]), at `at`, keeping one
+    /// note per key, the one that last started it: a note-on of a key this
+    /// holds ends the sounding note first, on the same frame, and takes the
+    /// key; a note-off ends the key only when its note owns it, and is
+    /// swallowed otherwise (its note was ended when a newer one took the
+    /// key, or never started). A note-off of no note is written as it comes.
+    ///
+    /// A refused write leaves the state as the port has it: a refused
+    /// note-off leaves the key held by its owner (the port is full, and the
+    /// note-on after it is refused and counted too), a refused note-on
+    /// leaves the key unheld.
+    fn play(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent, note: u32) {
         if let Some((g, c, n, on)) = note_of(e) {
             let (i, bit) = (g * 16 + c, 1u128 << n);
+            let key = i * 128 + n as usize;
             let held = self.bits[i] & bit != 0;
-            if on && held {
-                let off = MidiEvent::note_off(
-                    MidiGroup::new(g as u8),
-                    MidiChannel::new(c as u8),
-                    n as u8,
-                    0,
-                );
-                if out.push(Event::midi(at, off.data)).is_err() {
-                    let _ = out.push(Event::midi(at, e.data));
-                    return;
-                }
-                if out.push(Event::midi(at, e.data)).is_ok() {
-                    self.restarted[i] |= bit;
-                } else {
-                    self.bits[i] &= !bit;
-                    self.restarted[i] &= !bit;
-                    self.count -= 1;
+            if on {
+                if held {
+                    let off = MidiEvent::note_off(
+                        MidiGroup::new(g as u8),
+                        MidiChannel::new(c as u8),
+                        n as u8,
+                        0,
+                    );
+                    if out.push(Event::midi(at, off.data)).is_err() {
+                        let _ = out.push(Event::midi(at, e.data));
+                        return;
+                    }
+                    if out.push(Event::midi(at, e.data)).is_ok() {
+                        self.owner[key] = note;
+                    } else {
+                        self.bits[i] &= !bit;
+                        self.count -= 1;
+                    }
+                } else if out.push(Event::midi(at, e.data)).is_ok() {
+                    self.bits[i] |= bit;
+                    self.count += 1;
+                    self.owner[key] = note;
                 }
                 return;
             }
-            if !on && self.restarted[i] & bit != 0 {
-                self.restarted[i] &= !bit;
+            if note != NO_NOTE {
+                if held && self.owner[key] == note && out.push(Event::midi(at, e.data)).is_ok() {
+                    self.bits[i] &= !bit;
+                    self.owner[key] = NO_NOTE;
+                    self.count -= 1;
+                }
                 return;
             }
         }
@@ -431,7 +536,7 @@ impl HeldNotes {
                     return;
                 }
                 *slot &= !(1u128 << n);
-                self.restarted[i] &= !(1u128 << n);
+                self.owner[i * 128 + n as usize] = NO_NOTE;
                 self.count -= 1;
             }
         }
@@ -440,7 +545,7 @@ impl HeldNotes {
 
     fn clear(&mut self) {
         self.bits.fill(0);
-        self.restarted.fill(0);
+        self.owner.fill(NO_NOTE);
         self.count = 0;
         self.owed = false;
     }

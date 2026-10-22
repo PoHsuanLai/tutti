@@ -5034,7 +5034,7 @@ under both.
   `a_pass_ending_on_a_block_edge_ends_what_it_held`,
   `a_tempo_change_inside_a_block_re_times_the_passes`,
   `every_pass_lands_where_the_hosts_clock_reaches_it` (97 BPM, a loop of
-  about 37.3 frames, against the clock walked a frame at a time) and
+  about 37.4 frames, against the clock walked a frame at a time) and
   `a_loop_shorter_than_a_frame_costs_one_pass_a_frame`, `time`'s
   `a_loop_shorter_than_a_frame_is_unwrapped_at_once`, and `rt_no_alloc`'s
   `a_block_of_many_loop_passes_walks_without_allocating`.
@@ -5047,22 +5047,34 @@ under both.
   that differs from what it last sent (a receiver holds the context), so a
   loop with no change in it costs nothing a pass, and one with a change
   costs that change and its re-statement, bounded the same way by
-  `HARMONY_EVENT_CAPACITY` (64). Pinned by `harmony_node`'s
-  `a_loop_pass_restates_only_what_changed`.
+  `HARMONY_EVENT_CAPACITY` (64). What a jump or a wrap re-states is the
+  context in force on its frame, a change on that frame included (sent
+  once, as the context), so a change on the loop's start is each pass's
+  context and the chord it replaces never goes out first. Pinned by
+  `harmony_node`'s `a_loop_pass_restates_only_what_changed` and
+  `a_change_on_the_loops_start_is_each_passs_context`.
   Not addressed: a beat after a wrap's last frame and before the loop's
   end (the fraction of a frame the clock skips as it wraps) is not played
   on that pass.
-- **A clip holds a key or not** (the MIDI convention its `HeldNotes` keeps):
-  a note-on of a key it holds ends the sounding note first, on the same
-  frame, so what it feeds never has two of its voices on one key (whatever a
-  receiver does with a repeated note-on). The newer note keeps its whole
-  length, as a DAW plays overlapping notes of one key: the older note's
-  note-off, when it comes, is swallowed (`HeldNotes::restarted`, a second
-  bitmap of the same shape), and the newer note's own note-off ends the key.
-  One overlap is tracked a key: a third note-on of a key restarted and not
-  yet released is ended by the second note's note-off. Pinned by
-  `overlapping_notes_of_one_key_keep_the_newer_whole` (A on 0, off 100; B on
-  50, off 150: one note-off at 50, one at 150, none at 100) and
+- **A clip holds a key or not** (the MIDI convention its `HeldNotes` keeps),
+  by one note at a time, as a DAW plays notes of one key that overlap: a
+  note-on of a key it holds ends the sounding note first, on the same
+  frame, so what it feeds never has two of its voices on one key (whatever
+  a receiver does with a repeated note-on), and the new note owns the key.
+  From then on only the owning note's note-off ends the key; any other
+  note's note-off for it is swallowed. The owner is a note id per key
+  (`HeldNotes::owner`, allocated with the node, cleared with the held bits
+  on a release, a reset, a seek and a wrap). Ids are given when the clip is
+  set: a note-off belongs to the earliest-listed untaken note-on of its key
+  at or before it in time, so a host that lists each note's on and off
+  together gets its notes exactly, and a list in time order pairs first on,
+  first off (right for notes that overlap; a note nested in a longer one
+  then sounds to the outer's end, which a time-ordered list cannot tell
+  apart). Pinned by `overlapping_notes_of_one_key_keep_the_newer_whole` (A
+  on 0, off 100; B on 50, off 150: one note-off at 50, one at 150, none at
+  100), `a_note_nested_in_another_of_its_key_ends_at_its_own_end`,
+  `three_overlapping_notes_of_one_key_leave_the_newest_whole`,
+  `a_keys_owner_starts_over_at_a_loop_wrap` and
   `a_note_started_twice_and_ended_once_leaves_nothing_sounding`.
 - **A plugin node counts the MIDI its event input loses.** A chunk carries
   at most `MIDI_STACK_CAPACITY` events to the plugin, inline so the audio

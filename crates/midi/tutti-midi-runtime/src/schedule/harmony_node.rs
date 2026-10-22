@@ -8,9 +8,11 @@
 //! included, with no play cursor. Chords and scales are **context**, not
 //! notes — each holds until the next — so where playback jumps (a start, a
 //! seek, a loop wrap) or the lanes are replaced, the node re-states the chord
-//! and the scale in force there, on the jump's frame. A consumer joining
-//! mid-lane therefore always has the context, which the timeline-polling
-//! source this replaces left out ("priming-on-join").
+//! and the scale in force there, on the jump's frame. A change on that frame
+//! is part of that context and sent once, so no chord it replaces goes out
+//! before it. A consumer joining mid-lane therefore always has the context,
+//! which the timeline-polling source this replaces left out
+//! ("priming-on-join").
 //!
 //! A loop wrap inside a block re-states only what differs from what the node
 //! last sent: a receiver holds the context until the next change, so a short
@@ -31,7 +33,7 @@ use tutti_graph::{
     IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 
-use super::walk::{Beated, Visit, Walk};
+use super::walk::{lands_on_first_frame, Beated, Visit, Walk};
 
 /// The most events a [`HarmonyNode`] writes in one block, its declared
 /// event capacity: past it the rest are refused and counted
@@ -225,6 +227,9 @@ impl Sent {
 struct Sending<'a, 'w> {
     out: &'a mut EventWriter<'w>,
     sent: &'a mut Sent,
+    /// The frame this block last re-stated the context on: the changes the
+    /// walk visits on it are already part of what was re-stated.
+    restated: Option<Offset>,
 }
 
 impl Sending<'_, '_> {
@@ -235,21 +240,23 @@ impl Sending<'_, '_> {
             *self.sent.slot(h.kind()) = Some(h);
         }
     }
-}
 
-impl Sending<'_, '_> {
-    /// Send the chord and the scale in force before `beat` at `at`; with
-    /// `changed_only`, only those that differ from what was last sent.
+    /// Send, at `at`, the chord and the scale in force on that frame, where
+    /// playback is at `beat`: changes on the frame included, so no chord
+    /// goes out that the frame's own change replaces. With `changed_only`,
+    /// only those that differ from what was last sent.
     fn restate(
         &mut self,
         at: Option<Offset>,
         beat: f64,
+        frames_per_beat: f64,
         changes: &[TimedHarmony],
         changed_only: bool,
     ) {
         let Some(at) = at else { return };
+        self.restated = Some(at);
         for kind in [HarmonyKind::Chord, HarmonyKind::Scale] {
-            if let Some(h) = Self::in_force(changes, beat, kind) {
+            if let Some(h) = Self::in_force(changes, beat, frames_per_beat, kind) {
                 if !changed_only || *self.sent.slot(kind) != Some(h) {
                     self.send(at, h);
                 }
@@ -257,10 +264,17 @@ impl Sending<'_, '_> {
         }
     }
 
-    /// The latest change of `kind` strictly before `beat`.
-    fn in_force(changes: &[TimedHarmony], beat: f64, kind: HarmonyKind) -> Option<Harmony> {
-        let before = changes.partition_point(|c| c.beat.get() < beat);
-        changes[..before]
+    /// The latest change of `kind` that lands on or before the frame
+    /// playback is on at `beat`.
+    fn in_force(
+        changes: &[TimedHarmony],
+        beat: f64,
+        frames_per_beat: f64,
+        kind: HarmonyKind,
+    ) -> Option<Harmony> {
+        let upto =
+            changes.partition_point(|c| lands_on_first_frame(c.beat.get(), beat, frames_per_beat));
+        changes[..upto]
             .iter()
             .rev()
             .find(|c| c.harmony.kind() == kind)
@@ -271,22 +285,22 @@ impl Sending<'_, '_> {
 impl Visit<TimedHarmony> for Sending<'_, '_> {
     fn stop(&mut self, _at: Option<Offset>) {}
 
-    /// Re-state the context in force a frame before the jump's beat (a
-    /// change within that frame is sent by the walk itself, on the same
-    /// frame, after this).
-    fn jump(&mut self, at: Option<Offset>, beat: f64, changes: &[TimedHarmony]) {
-        self.restate(at, beat, changes, false);
+    /// Re-state the context in force on the jump's frame.
+    fn jump(&mut self, at: Option<Offset>, beat: f64, fpb: f64, changes: &[TimedHarmony]) {
+        self.restate(at, beat, fpb, changes, false);
     }
 
     /// A loop pass re-states only what differs from what was last sent: a
     /// receiver holds the context, so a pass that starts in the context the
     /// last one ended in sends nothing here.
-    fn wrap(&mut self, at: Option<Offset>, beat: f64, changes: &[TimedHarmony]) {
-        self.restate(at, beat, changes, true);
+    fn wrap(&mut self, at: Option<Offset>, beat: f64, fpb: f64, changes: &[TimedHarmony]) {
+        self.restate(at, beat, fpb, changes, true);
     }
 
     fn event(&mut self, at: Offset, c: &TimedHarmony) {
-        self.send(at, c.harmony);
+        if self.restated != Some(at) {
+            self.send(at, c.harmony);
+        }
     }
 }
 
@@ -313,6 +327,7 @@ impl Node for HarmonyNode {
         let mut sending = Sending {
             out: io.event_out(0),
             sent: &mut self.sent,
+            restated: None,
         };
         for (start, seg) in cx.env.segments() {
             self.walk

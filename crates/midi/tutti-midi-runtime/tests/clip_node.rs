@@ -441,8 +441,9 @@ fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
 /// note-off, swallowed), so B is not cut there and no stray note-off
 /// follows it.
 ///
-/// Mutation (run): never swallow a restarted key's note-off (the
-/// `restarted` check dropped) → a note-off at 100 cuts B → fails.
+/// Mutation (run): a note-off pairs with the latest-listed note-on of its
+/// key (the pairing scan in `sorted` reversed) → the note-off at 100 is B's
+/// and cuts it → fails.
 /// Mutation (run): no note-off before the restart → B's note-on stacks on A
 /// → fails.
 #[test]
@@ -464,6 +465,117 @@ fn overlapping_notes_of_one_key_keep_the_newer_whole() {
             (150, word(off(60))),
         ]
     );
+}
+
+/// **A note nested inside a longer one of the same key ends at its own
+/// end.** A is on 0..100, B on 20..50, each listed with its note-off. B's
+/// note-on ends A on its frame; B's note-off at 50 ends the key; A's own
+/// note-off at 100 is swallowed, so nothing follows.
+///
+/// Mutation (run): the pairing dropped (every note-off of no note, written
+/// as it comes) → a stray note-off at 100 → fails. Mutation (run): the
+/// pairing scan in `sorted` reversed (latest-listed note-on first) → A's
+/// note-off is paired to B and B's to A: B's note-off at 50 is swallowed and
+/// B sounds to 100 → fails.
+#[test]
+fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
+    let clip = MidiClipNode::new([
+        at(0, on(60)),
+        at(100, off(60)),
+        at(20, on(60)),
+        at(50, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (0, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (50, word(off(60))),
+        ]
+    );
+}
+
+/// **Three overlapping notes of one key: the newest sounds to its end, and
+/// no stray note-off follows.** A on 0..30, B on 10..40, C on 20..50. Each
+/// note-on ends the one sounding; A's and B's note-offs (30, 40) are
+/// swallowed, C's ends the key at 50.
+///
+/// Mutation (run): a note-off ends its key whoever owns it (the
+/// `owner[key] == note` check dropped) → A's note-off cuts C at 30 → fails.
+/// Mutation (run): a restart not taking the key (`owner[key] = note` dropped
+/// from the held branch of `HeldNotes::play`) → A still owns the key, and
+/// its note-off cuts C at 30 → fails.
+#[test]
+fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {
+    let clip = MidiClipNode::new([
+        at(0, on(60)),
+        at(30, off(60)),
+        at(10, on(60)),
+        at(40, off(60)),
+        at(20, on(60)),
+        at(50, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    exec.process(256, &rolling(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (0, word(on(60))),
+            (10, word(off(60))),
+            (10, word(on(60))),
+            (20, word(off(60))),
+            (20, word(on(60))),
+            (50, word(off(60))),
+        ]
+    );
+}
+
+/// **A key's owner starts over at a loop wrap.** A 100-frame loop, six
+/// passes: A on
+/// 10..30, B on 50 and off past the loop's end, so B holds the key at every
+/// wrap and the wrap ends it. Each pass then plays A whole: A's note-on owns
+/// the key again, and its note-off at 30 ends it.
+///
+/// Mutation (run): a note-on of an unheld key not taking it → A's note-off
+/// is swallowed, and A sounds to 50 → fails. Mutation (run): that note-on
+/// taking the key only when it has no owner, with `release` leaving the
+/// owner set → the first pass is right, but after the wrap the owner is
+/// still B and A sounds on to B's note-on → fails.
+#[test]
+fn a_keys_owner_starts_over_at_a_loop_wrap() {
+    let clip = MidiClipNode::new([
+        at(10, on(60)),
+        at(30, off(60)),
+        at(50, on(60)),
+        at(150, off(60)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    // Three passes, then a block from the loop's start (the third wrap falls
+    // on the first block's edge, and is ended on the next block's first frame).
+    for _ in 0..2 {
+        exec.process(
+            300,
+            &looping_at(120.0, Beat(0.0), Beat(0.0), beat_of(100)),
+            &[],
+            &mut [],
+        );
+    }
+    let want: Vec<(u64, u32)> = (0..6)
+        .flat_map(|k| {
+            let p = 100 * k;
+            [
+                (p + 10, word(on(60))),
+                (p + 30, word(off(60))),
+                (p + 50, word(on(60))),
+                (p + 100, word(off(60))),
+            ]
+        })
+        .filter(|&(f, _)| f < 600)
+        .collect();
+    assert_eq!(*seen.lock().unwrap(), want);
 }
 
 /// A loop of `[start, end)` beats under `tempo`, rolling from `beat`.

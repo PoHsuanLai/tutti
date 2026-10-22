@@ -216,9 +216,10 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 /// inter-event delta ticks for you, so you never accumulate deltas by hand.
 /// Input need not be sorted — events are ordered by beat first; a zero or
 /// negative gap (simultaneous or slightly out-of-order events) becomes a
-/// zero-tick delta. A NaN beat has no tick: it sorts after every other
-/// event (before them, if its sign bit is set) and is written with a
-/// zero-tick delta there.
+/// zero-tick delta. A non-finite beat has no tick: it is written with a
+/// zero-tick delta wherever it sorts (`+inf` and a NaN after every other
+/// event, `-inf` and a NaN whose sign bit is set before them). A gap longer
+/// than `u32::MAX` ticks is clamped to it.
 ///
 /// ```
 /// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
@@ -245,8 +246,18 @@ pub fn write_clip_file_from_beats(
     let clip_events: Vec<ClipEvent> = timed
         .into_iter()
         .map(|(beat, event)| {
-            let tick = (beat.get() * tpq).round() as i64;
-            let delta = (tick - prev_tick).max(0) as u32;
+            let pos = (beat.get() * tpq).round();
+            // A non-finite beat has no tick: write it at the previous
+            // event's tick. `as i64` would saturate ±inf to `i64::MAX`/`MIN`
+            // and the subtraction below would overflow on the next event.
+            if !pos.is_finite() {
+                return ClipEvent::new(0, event);
+            }
+            // `as i64` saturates a huge finite position; the gap saturates
+            // too, and a gap past `u32::MAX` ticks is clamped rather than
+            // truncated (`push_delta` splits any `u32` into DCS restarts).
+            let tick = pos as i64;
+            let delta = tick.saturating_sub(prev_tick).clamp(0, i64::from(u32::MAX)) as u32;
             prev_tick = tick;
             ClipEvent::new(delta, event)
         })

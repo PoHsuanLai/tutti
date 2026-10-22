@@ -30,7 +30,7 @@
 //! de-zippered direction vector).
 
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
-use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
+use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
 
 use crate::AngleSmoother;
 
@@ -237,11 +237,10 @@ impl OverlapTails {
 /// Turns a target azimuth/elevation (degrees) into a de-zippered direction
 /// vector: one-pole smoothers on each angle, stepped once per rendered frame.
 ///
-/// The smoothers are tuned at the frame rate (`sample_rate / FRAME_LEN`),
-/// the rate they are stepped at, so the 50 ms time constant is 50 ms of
-/// audio. Tuned at the sample rate instead, each step would move the
-/// fraction meant for one sample, and the glide would take `FRAME_LEN`
-/// times as long.
+/// The smoothers are stepped once per frame, so they are built with a
+/// stride of `FRAME_LEN` samples and the 50 ms time constant is 50 ms of
+/// audio. With a stride of one, each step would move the fraction meant for
+/// one sample, and the glide would take `FRAME_LEN` times as long.
 struct PositionSmoother {
     smoother: AngleSmoother,
     target_azimuth: Azimuth,
@@ -251,7 +250,7 @@ struct PositionSmoother {
 impl PositionSmoother {
     fn new(sample_rate: SampleRate) -> Self {
         Self {
-            smoother: AngleSmoother::new(Self::step_rate(sample_rate)),
+            smoother: AngleSmoother::new(sample_rate, Samples(FRAME_LEN)),
             target_azimuth: Azimuth(0.0),
             target_elevation: Elevation(0.0),
         }
@@ -266,12 +265,7 @@ impl PositionSmoother {
     }
 
     fn retune(&mut self, sample_rate: SampleRate) {
-        self.smoother.set_sample_rate(Self::step_rate(sample_rate));
-    }
-
-    /// Steps per second: one per rendered frame of `FRAME_LEN` samples.
-    fn step_rate(sample_rate: SampleRate) -> SampleRate {
-        SampleRate::from(sample_rate.get() / FRAME_LEN as f64)
+        self.smoother.set_sample_rate(sample_rate);
     }
 
     /// Drop the in-flight ramp onto the current target, leaving the target —
@@ -470,10 +464,12 @@ mod tests {
     /// 2560 samples, exactly five 512-sample frames; at 102.4 kHz (after a
     /// retune) it is ten.
     ///
-    /// Mutation (run): tune the smoothers at the sample rate (the old
-    /// `AngleSmoother::new(sample_rate)`) → after five frames almost all of
-    /// the step is left (`e^-(5/2560)`, about 0.998) and the assertion fails;
-    /// the same in `retune` alone → the 102.4 kHz half fails.
+    /// Mutations (run):
+    /// - build with a stride of one (`AngleSmoother::new(sample_rate,
+    ///   Samples(1))`) → after five frames almost all of the step is left
+    ///   (`e^-(5/2560)`, about 0.998) and the assertion fails.
+    /// - drop `self.stride` from `ExponentialSmoother::set_sample_rate`
+    ///   (retune with a stride of one) → the 102.4 kHz half fails.
     #[test]
     fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
         assert_eq!(FRAME_LEN, 512, "the rates below assume 512-sample frames");

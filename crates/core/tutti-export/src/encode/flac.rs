@@ -155,13 +155,17 @@ impl Encoder for FlacEncoder {
     }
 }
 
-/// flacenc's coding options for a 0 (fastest) to 8 (smallest) level, after
-/// libFLAC's presets: levels 0 to 2 code with fixed predictors only, 3 and up
-/// add LPC (order 6, then 8 from level 4, 12 from level 7), and every level
-/// but 0 tries mid/side and left/right-side stereo. Above 8 reads as 8.
+/// flacenc's coding options for a level 0 to 8, modelled loosely on
+/// libFLAC's presets. Levels 0 to 2 code with fixed predictors only; 3 and
+/// up add LPC at an exact order (flacenc's `lpc_order` is the order used,
+/// not a searched maximum): 6, then 8 from level 4, 12 from level 7. Every
+/// level but 0 tries mid/side and left/right-side stereo.
 ///
-/// Every level is lossless; a higher one searches more predictors and costs
-/// more time for a smaller file.
+/// Where this departs from libFLAC: its level 3 has no stereo
+/// decorrelation, and its levels 0 to 2 use 1152-sample blocks, while the
+/// block size here is [`BLOCK_SIZE`] at every level. Only five configs are
+/// distinct: levels 1 and 2, 4 to 6, and 7 and 8 encode identically. Above
+/// 8 reads as 8. Every level is lossless.
 fn encoder_config(level: u8) -> EncoderConfig {
     let level = level.min(8);
     let mut config = EncoderConfig::default();

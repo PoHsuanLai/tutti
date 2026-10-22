@@ -18,26 +18,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window's allocation.
 - **The HRTF panner's position glide takes 50 ms, as documented**, not
   about 25.6 s: its smoothers were tuned per sample and stepped once per
-  512-sample convolution frame. They are now tuned at the frame rate. Renders
-  of a moving `HrtfBinauralNode` change: the source arrives where it was sent
-  512 times sooner. No test pinned the slow glide.
+  512-sample convolution frame. Each step now covers its frame's 512
+  samples of the time constant. Renders of a moving `HrtfBinauralNode`
+  change: the source arrives where it was sent 512 times sooner. No test
+  pinned the slow glide.
 - **The sampler's stretch `Unit::set_sample_rate` keeps a non-default
   `FftSize`.** It rebuilt every vocoder's grid at the default 2048 window,
   which disagreed with the buffers a 1024/4096/8192 unit had allocated.
-- **SMF and clip writers no longer panic or disorder on a NaN beat.**
-  `encode_midi_file` / `write_midi_file` return `Error::InvalidConfig` for an
-  event at a non-finite beat (the sort used `partial_cmp(..).unwrap()`);
-  `write_clip_file_from_beats` sorts with `total_cmp`, so a NaN beat goes
-  last at a zero delta instead of stopping the sort. Every beat sort in the
-  two crates uses `total_cmp`.
+- **SMF and clip writers no longer panic or disorder on a non-finite
+  beat.** `encode_midi_file` / `write_midi_file` return
+  `Error::InvalidConfig` for an event at a non-finite beat (the sort used
+  `partial_cmp(..).unwrap()`). `write_clip_file_from_beats` sorts with
+  `total_cmp` and writes a NaN or infinite beat at a zero delta where it
+  sorts (`-inf` first, `+inf` and NaN last), instead of stopping the sort,
+  overflowing the next delta (`-inf`) or landing ~8.9M beats out (`+inf`);
+  a gap past `u32::MAX` ticks is clamped. Every beat sort in the two crates
+  uses `total_cmp`.
 - **`step_loudness` carries a chunk's part frame into the next chunk**, as
   `step_peaks` does. It dropped it, which moved every later sample of the
   stream onto the wrong channel.
 - **`tutti_export::Flac::compression_level` is honoured.** It was accepted
-  and ignored; levels 0 to 8 now map onto flacenc's coding options after
-  libFLAC's presets (fixed predictors only to 2, LPC of order 6/8/12 from 3,
-  mid/side stereo from 1). Output stays lossless at every level; the default
-  (5) writes LPC order 8 instead of flacenc's own default of 10.
+  and ignored; levels 0 to 8 now map onto flacenc's coding options,
+  modelled loosely on libFLAC's presets: fixed predictors only to 2, LPC at
+  an exact order of 6/8/12 from 3, 4 and 7, and side/mid-side stereo from
+  1. It is not libFLAC parity: the block size is 4096 at every level
+  (libFLAC uses 1152 for 0 to 2), level 3 keeps stereo decorrelation, and
+  levels 1 = 2, 4 = 5 = 6 and 7 = 8 encode identically. Output stays
+  lossless at every level; the default (5) writes LPC order 8 instead of
+  flacenc's own default of 10.
 
 | Was | Now |
 |---|---|

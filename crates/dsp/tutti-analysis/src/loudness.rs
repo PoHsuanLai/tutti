@@ -306,12 +306,20 @@ mod tests {
     ///
     /// A 5.1 signal on the LFE channel alone, which R128 does not weight
     /// (`ebur128` maps channel 3 to `Unused`), reads as silence. Fed in
-    /// 777-sample chunks (not a multiple of six), a meter that dropped each
+    /// ragged chunks (not a multiple of six), a meter that dropped each
     /// ragged tail would start the next chunk on the wrong channel, move the
     /// LFE onto a weighted one, and read it loud.
     ///
-    /// Mutation (run): drop the carried tail (`partial_frame` never filled)
-    /// → the streamed reading is about -12 LUFS instead of the -70 floor.
+    /// Two chunk sizes: 777 leaves a 3-sample tail that the next chunk always
+    /// completes exactly (the spliced carry ends empty), and 775 leaves
+    /// tails cycling through 1..=5, so a carry that spans a chunk and keeps a
+    /// remainder of its own is exercised too.
+    ///
+    /// Mutations (run):
+    /// - drop the carried tail (`partial_frame` never filled) → the streamed
+    ///   reading is about -12 LUFS instead of the -70 floor.
+    /// - `carry.drain(..consumed)` → `carry.clear()` (drop the spliced
+    ///   carry's own remainder) → fails at 775; 777 alone let it survive.
     #[test]
     fn a_ragged_chunk_carries_its_part_frame() {
         let layout = ChannelLayout::from(6u16);
@@ -324,19 +332,22 @@ mod tests {
             })
             .collect();
 
-        let mut state = LoudnessState::new(&c).unwrap();
-        for chunk in buf.chunks(777) {
-            step_loudness(&c, &mut state, Interleaved::new(chunk, layout));
-        }
-        let streamed = finish(state);
         let one_shot = measure_loudness(&c, Interleaved::new(&buf, layout)).unwrap();
-
         assert_eq!(one_shot.lufs, Db(-70.0), "the LFE alone is unweighted");
-        assert_eq!(
-            streamed.lufs, one_shot.lufs,
-            "streamed {:?}: a dropped part frame moved the LFE onto a weighted channel",
-            streamed.lufs
-        );
+
+        for size in [777, 775] {
+            let mut state = LoudnessState::new(&c).unwrap();
+            for chunk in buf.chunks(size) {
+                step_loudness(&c, &mut state, Interleaved::new(chunk, layout));
+            }
+            let streamed = finish(state);
+            assert_eq!(
+                streamed.lufs, one_shot.lufs,
+                "{size}-sample chunks read {:?}: a dropped part frame moved the LFE \
+                 onto a weighted channel",
+                streamed.lufs
+            );
+        }
     }
 
     /// The one-shot form must fold the streaming form exactly — the property

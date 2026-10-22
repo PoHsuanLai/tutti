@@ -28,6 +28,12 @@ pub(crate) enum ButlerCommand {
     /// head so the change is heard at once (`handle_set_stream_loop`).
     SetStreamLoop {
         channel_index: usize,
+        /// The stream it is meant for, when the sender knows it (a voice
+        /// pool's handle, from the voice's ring): a channel streaming
+        /// anything else (its voice's stream stopped, the channel restarted
+        /// on another file) ignores it. `None` loops whatever the channel
+        /// streams, as every other command addresses it.
+        stream: Option<RegionId>,
         /// `(loop_start, loop_end)` in file samples.
         range: (u64, u64),
         crossfade_frames: usize,
@@ -35,7 +41,11 @@ pub(crate) enum ButlerCommand {
     /// Clear looping on a streaming channel — drop its `link.loop_config` so the
     /// stream plays through to the end without wrapping, repositioned at its
     /// head as a loop change is.
-    ClearStreamLoop { channel_index: usize },
+    ClearStreamLoop {
+        channel_index: usize,
+        /// As `SetStreamLoop`'s.
+        stream: Option<RegionId>,
+    },
 
     /// Reposition a live stream to an absolute file sample offset (timeline
     /// seek). `file_position` is the absolute file sample offset; the handler

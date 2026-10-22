@@ -62,6 +62,14 @@ no longer depends on `crossbeam-queue`.
 | — | `PoolDrops::loops_not_forwarded`: loop commands the drain refused because the handle did not forward them to the slot's own stream |
 | `send` returning `Err` for a streaming loop could leave the loop running on the butler | `Err` leaves the butler on its previous loop: a full queue is refused before the forward, and a forward whose command is then crowded out is undone |
 
+### Fixed — the two-pass export's sample-rate conversion is linear
+
+`render_normalized_to_file` with a `Resample` pushes the whole render into
+the converter at once, and the converter shifted the rest of its input down
+after every chunk, so the conversion cost grew with the square of the
+duration. Its input now keeps a read offset and drops the consumed prefix
+once per call. The output is bit-identical. Nothing to migrate.
+
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 
 - **A clip plays every pass of a loop shorter than a block** (it played the

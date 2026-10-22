@@ -70,6 +70,7 @@ mod controls;
 mod fork;
 mod graph_node;
 mod meter;
+mod midi_intake;
 mod param_delivery;
 // `pub(crate)` for the in-process VST2 node, which reads its event input's
 // parameter events through the same walk (see `param_delivery` below).
@@ -104,6 +105,7 @@ pub(crate) use capability_view::is_declined;
 pub use capability_view::TransportView;
 pub use controls::PluginControls;
 pub use meter::PluginMeter;
+pub(crate) use midi_intake::MidiIntake;
 pub use param_delivery::ParamDeliveryStats;
 // The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
 // parameters through the same slots, segments and event walk as this node:
@@ -182,6 +184,9 @@ pub struct Bound {
     /// The chunk's parameter changes: a slot per parameter of the plugin,
     /// sized at bind, sending changes only (`param_delivery`).
     params: param_delivery::ParamDelivery,
+    /// Takes the event input's MIDI into each chunk's capped list, carrying
+    /// across chunks which SysEx lost a packet there (`midi_intake`).
+    intake: MidiIntake,
 }
 
 impl std::fmt::Debug for Bound {
@@ -496,6 +501,7 @@ impl PluginClient<Unbound> {
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),
                 params,
+                intake: MidiIntake::default(),
             },
         }
     }

@@ -1019,3 +1019,50 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     );
     assert_eq!(inst.sysex_dropped(), 1);
 }
+
+/// **A SysEx open across a reset, or an in-place re-activation, never
+/// completes on the far side of it**: its remaining packets reach a plugin
+/// that has forgotten its start, so the message is dropped whole, counted,
+/// and the next one arrives whole.
+///
+/// Mutation (run): `InputEventList::reset_sysex` a no-op → the packets after
+/// the reset complete the message → fails at the reset; the
+/// `reset_sysex` call removed from `reconfigure` only → fails at the
+/// re-activation.
+#[test]
+fn a_sysex_open_across_a_reset_is_dropped() {
+    use tutti_midi_types::MidiGroup;
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+    let mut inst = session.activate();
+    let _ = take_sysex_input(&session.controls);
+
+    let payload: Vec<u8> = (0..60u8).collect();
+    let mut packets = Vec::new();
+    tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let (first, rest) = packets.split_at(3);
+    let mut framed = vec![0xF0];
+    framed.extend_from_slice(&payload);
+    framed.push(0xF7);
+
+    drive_midi_block(&mut inst, first);
+    inst.reset();
+    drive_midi_block(&mut inst, rest);
+    assert_eq!(take_sysex_input(&session.controls).0, 0, "after a reset");
+    assert_eq!(inst.sysex_dropped(), 1);
+
+    drive_midi_block(&mut inst, first);
+    inst.set_sample_rate(SAMPLE_RATE * 2.0)
+        .expect("the probe accepts the new rate");
+    drive_midi_block(&mut inst, rest);
+    assert_eq!(
+        take_sysex_input(&session.controls).0,
+        0,
+        "after a re-activation"
+    );
+    assert_eq!(inst.sysex_dropped(), 2);
+
+    // The next message is whole.
+    drive_midi_block(&mut inst, &packets);
+    assert_eq!(take_sysex_input(&session.controls), (1, 0, framed));
+    assert_eq!(inst.sysex_dropped(), 2);
+}

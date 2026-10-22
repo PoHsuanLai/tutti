@@ -311,10 +311,13 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.input_events.param_points_dropped()
     }
 
-    /// SysEx messages not handed to the plugin since activation, each dropped
-    /// whole rather than truncated: longer than
+    /// SysEx messages not handed to the plugin since this instance was
+    /// activated (neither [`reset`](Self::reset) nor an in-place
+    /// re-activation zeroes it), each dropped whole rather than truncated:
+    /// longer than
     /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
-    /// or left without their `END` by a later `START`. The input list
+    /// left without their `END` by a later `START`, or open at a reset or
+    /// re-activation. The input list
     /// reassembles a multi-packet SysEx (across blocks if it spans them) and
     /// hands the plugin one `CLAP_EVENT_MIDI_SYSEX`, `0xF0 … 0xF7`, at its
     /// `END`. Read on this instance only, like

@@ -20,7 +20,7 @@
 use crate::types::{MidiEvent, MidiEventVec};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep};
+use tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, MIDI_STACK_CAPACITY};
 
 /// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
@@ -136,11 +136,16 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
 /// array struct.
 ///
 /// One instance lives on each [`MidiIo`]; [`Self::stage`]
-/// rebuilds the contents in place for the next process call. Capacity
-/// grows on demand (rarely, only if a block carries more events than
-/// any prior block) — sized at construction to a generous default so
-/// steady-state operation is allocation-free.
+/// rebuilds the contents in place for the next process call. Every list is
+/// reserved at construction for a block's whole MIDI cap
+/// ([`MIDI_STACK_CAPACITY`]: no caller hands it more) and never grows: an
+/// event past it is refused and counted
+/// ([`events_dropped`](Self::events_dropped)), so staging never allocates.
 pub(crate) struct MidiSendBuffer {
+    /// The most events one block stages; every list below holds this many.
+    room: usize,
+    /// Events refused past `room` since the buffer was made.
+    events_dropped: u64,
     /// Plugin-side `api::MidiEvent` storage (the structs the pointer
     /// table points at).
     api_events: Vec<vst::api::MidiEvent>,
@@ -178,18 +183,19 @@ enum Staged {
 unsafe impl Send for MidiSendBuffer {}
 unsafe impl Sync for MidiSendBuffer {}
 
-/// Default per-block event capacity. Most blocks carry 0–8 events; the
-/// hot path does not touch the allocator at all unless a block exceeds this,
-/// in which case it grows once and the new capacity sticks.
-const DEFAULT_EVENT_CAPACITY: usize = 64;
-
 impl MidiSendBuffer {
+    /// A buffer for a block's whole MIDI cap: every event a plugin node
+    /// delivers (out of process, `midi_from_wire` keeps at most that many).
     pub(crate) fn new() -> Self {
-        Self::with_capacity(DEFAULT_EVENT_CAPACITY)
+        Self::with_capacity(MIDI_STACK_CAPACITY)
     }
 
+    /// A buffer staging at most `events` events a block. Control thread:
+    /// allocates.
     pub(crate) fn with_capacity(events: usize) -> Self {
         let mut buf = Self {
+            room: events,
+            events_dropped: 0,
             api_events: Vec::with_capacity(events),
             sysex_events: Vec::with_capacity(events),
             order: Vec::with_capacity(events),
@@ -204,7 +210,9 @@ impl MidiSendBuffer {
     }
 
     /// Stage `midi_events` into the reusable buffers and return a raw
-    /// pointer to the populated `api::Events` header.
+    /// pointer to the populated `api::Events` header. Never allocates: an
+    /// event past the buffer's room is refused and counted (every SysEx
+    /// packet still reaches the assembler, so a message is never spliced).
     ///
     /// Returns `None` if no events convert successfully (in which case
     /// the caller skips dispatch entirely).
@@ -230,14 +238,21 @@ impl MidiSendBuffer {
         self.order.clear();
         self.sysex.begin_block();
         for ev in midi_events {
-            match self.sysex.push(ev) {
+            let step = self.sysex.push(ev);
+            let full = self.order.len() == self.room;
+            match step {
                 SysExStep::NotSysEx => {
                     if let Some(api) = from_midi(ev) {
+                        if full {
+                            self.events_dropped += 1;
+                            continue;
+                        }
                         self.order.push(Staged::Midi(self.api_events.len()));
                         self.api_events.push(api);
                     }
                 }
                 SysExStep::Held => {}
+                SysExStep::Complete(_) if full => self.events_dropped += 1,
                 SysExStep::Complete(message) => {
                     let event = self.sysex_event(ev, message);
                     self.order.push(Staged::SysEx(self.sysex_events.len()));
@@ -265,13 +280,9 @@ impl MidiSendBuffer {
             self.event_ptrs.push(ptr);
         }
 
-        // Grow the header buffer if the event count exceeds the size it was
-        // last given. `resize` keeps prior capacity when shrinking is implied,
-        // so steady-state is allocation-free.
+        // The header was sized for `room` events at construction.
         let words = header_words(num_events);
-        if self.header.len() < words {
-            self.header.resize(words, 0);
-        }
+        debug_assert!(words <= self.header.len());
         // Zero only the bytes that will be touched — keeps Drop semantics clean.
         // (Header carries 2 i32s + a pointer table; the rest doesn't
         // matter because the plugin reads `num_events` first.)
@@ -301,6 +312,13 @@ impl MidiSendBuffer {
     /// or left without their `END` by a later `START`.
     pub(crate) fn sysex_dropped(&self) -> u64 {
         self.sysex.dropped()
+    }
+
+    /// Events refused since this buffer was made because a block staged more
+    /// than its room ([`MIDI_STACK_CAPACITY`]); a refused SysEx is a whole
+    /// message.
+    pub(crate) fn events_dropped(&self) -> u64 {
+        self.events_dropped
     }
 
     /// The `SysExEvent` for a reassembled message, at `end`'s frame.
@@ -685,6 +703,39 @@ mod tests {
         assert!(buf.stage(first).is_none(), "nothing before END");
         let staged = read_staged(buf.stage(second).expect("events staged"));
         assert_eq!(staged, vec![(0, framed(&long))]);
+        assert_eq!(buf.sysex_dropped(), 0);
+    }
+
+    /// **Staging a block's whole MIDI cap does not allocate, and an event
+    /// past it is refused and counted.** Notes and complete SysEx messages
+    /// fill every list (`api_events`, `sysex_events`, `order`, `header`) to
+    /// [`MIDI_STACK_CAPACITY`]; then one more of each.
+    ///
+    /// Mutation (run): `new()` reserving the old 64 events → the lists grow
+    /// inside the gate → aborts. Mutation (run): the `full` refusal removed
+    /// → the lists grow past their room → aborts.
+    #[test]
+    fn staging_the_whole_cap_does_not_allocate() {
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(0),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let single = sysex_packets(&[1, 2, 3], 0);
+        assert_eq!(single.len(), 1);
+        // Half notes, half one-packet SysEx, then one past the cap of each.
+        let midi: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY / 2 + 1)
+            .flat_map(|_| [note, single[0]])
+            .collect();
+        let mut buf = MidiSendBuffer::new();
+        let mut staged = 0;
+        assert_no_alloc::assert_no_alloc(|| {
+            let events = buf.stage(&midi).expect("events staged");
+            staged = unsafe { (*events).num_events } as usize;
+        });
+        assert_eq!(staged, MIDI_STACK_CAPACITY);
+        assert_eq!(buf.events_dropped(), 2);
         assert_eq!(buf.sysex_dropped(), 0);
     }
 

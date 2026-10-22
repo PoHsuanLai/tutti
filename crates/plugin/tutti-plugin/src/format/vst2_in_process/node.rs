@@ -82,7 +82,9 @@ impl Node for InProcessVst2Client {
         // No clamp and no size check: `prepare` sized the scratch to the
         // prepared `MaxBlock`, and a block is never longer.
         // The event input: its MIDI, in its (sorted) order, past the cap
-        // dropped (the list is inline and cannot grow); its parameter events
+        // dropped and counted (the list is inline and cannot grow; a SysEx
+        // that lost a packet loses the rest of it, `MidiIntake`); its
+        // parameter events
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
         self.midi.clear();
@@ -93,6 +95,8 @@ impl Node for InProcessVst2Client {
             SortedEvents::EMPTY
         };
         let midi = &mut self.midi;
+        let intake = &mut self.intake;
+        let mut midi_dropped = 0u64;
         param_input::take(
             events.as_slice(),
             0,
@@ -104,11 +108,11 @@ impl Node for InProcessVst2Client {
             &mut self.params,
             |e, _| match e.kind {
                 EventKind::Midi(Ump(data)) => {
-                    // Past the cap the event is dropped.
-                    let _ = midi.try_push(MidiEvent {
+                    let event = MidiEvent {
                         frame_offset: e.offset.get(),
                         data,
-                    });
+                    };
+                    midi_dropped += u64::from(!intake.push(midi, event));
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
                 // parameter events for itself; a plugin re-sends nothing.
@@ -118,6 +122,7 @@ impl Node for InProcessVst2Client {
                 | EventKind::Resync => {}
             },
         );
+        self.params.count_midi_dropped(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
         let transport = self.transport.block(cx, size, self.features);
@@ -193,6 +198,7 @@ impl Node for InProcessVst2Client {
         // parameters), and no block's changes are in flight between blocks.
         self.segments.clear();
         self.params.abandon();
+        self.intake.reset();
         // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
         // opcode that clears DSP state on its own: the only two that touch it
         // are `effMainsChanged`, where plugins allocate and free their
@@ -272,6 +278,17 @@ impl InProcessVst2Controls {
     /// relaxed loads.
     pub fn param_delivery(&self) -> ParamDeliveryStats {
         self.delivery.snapshot()
+    }
+
+    /// MIDI events on the node's event input not delivered to the plugin
+    /// since it was loaded: past the
+    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a block
+    /// carries, or the rest of a SysEx message that lost a packet there.
+    /// The same counter as an out-of-process node's
+    /// [`PluginControls::midi_events_dropped`](crate::handles::PluginControls::midi_events_dropped).
+    /// RT-safe: one relaxed load.
+    pub fn midi_events_dropped(&self) -> u64 {
+        self.delivery.midi_events_dropped()
     }
 }
 

@@ -312,10 +312,27 @@ impl EventList {
     }
 
     /// SysEx messages dropped whole since the list was made: longer than
-    /// [`SYSEX_MESSAGE_CAPACITY`], or left without their `END` by a later
-    /// `START`. See [`SysExAssembler`] for the policy.
+    /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
+    /// `START`, cut by a lost tail ([`lose_sysex_tail`](Self::lose_sysex_tail))
+    /// or open at a [`reset_sysex`](Self::reset_sysex), or staged as one
+    /// event past the list's room (counted in [`dropped`](Self::dropped)
+    /// instead). See [`SysExAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {
         self.inner.borrow().sysex.dropped()
+    }
+
+    /// The MIDI just staged lost its tail upstream (a list before this one
+    /// overflowed): drop the open SysEx, counted, so its later packets are
+    /// not spliced onto it. Call it after staging. Never allocates.
+    pub fn lose_sysex_tail(&self) {
+        self.inner.borrow_mut().sysex.lost_tail();
+    }
+
+    /// The plugin is being (re-)activated: drop the open SysEx, counted, so
+    /// the message is not completed across the plugin's reset. Never
+    /// allocates.
+    pub fn reset_sysex(&self) {
+        self.inner.borrow_mut().sysex.reset();
     }
 
     #[cfg(test)]

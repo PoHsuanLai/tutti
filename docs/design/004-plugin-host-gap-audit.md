@@ -269,7 +269,7 @@ changed both directions / never-compensated, including the `None` vs
 needs an integration test loading a real binary, and no such harness exists in
 `bevy-tutti` yet.
 
-### A SysEx spanning several UMP packets never reaches a plugin whole · DONE
+### A-4 · A SysEx spanning several UMP packets never reaches a plugin whole · DONE
 
 A UMP SysEx7 packet carries at most six bytes, so any longer message arrives
 as `START`, `CONTINUE`…, `END`. The VST3 host forwarded the `START`'s bytes as
@@ -288,18 +288,48 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
 
 - **Capacity:** `SYSEX_MESSAGE_CAPACITY`, the engine's `SYSEX7_MAX_PAYLOAD`
   (64 KiB, the cap the hardware input already enforced, now shared from
-  `tutti-midi-types`) and its two delimiters. Every dump an input accepts
-  can reach a plugin. The buffer adds a block of packets' worth on top
-  (about 66 KiB per instance) so the block's completed messages and an open
-  message always fit together.
+  `tutti-midi-types`) and its two delimiters. Nothing an input produces is
+  dropped by the reassembler for its length alone. The buffer adds a block
+  of packets' worth on top (about 66 KiB per instance) so the block's
+  completed messages and an open message always fit together; more packets
+  than that in one block drop the message that would overflow it, counted.
 - **A message spans blocks.** A block carries at most `MIDI_STACK_CAPACITY`
   packets (1536 bytes), so anything longer must.
 - **Dropped whole, never truncated, and counted** (`sysex_dropped` on the
   VST3 and CLAP instances, `dropped_sysex` on the VST2 one): a message past
-  the capacity, or one left without its `END` by a later `START` (one
-  multi-packet message is open at a time).
+  the capacity, one left without its `END` by a later `START`, one open when
+  the plugin is reset or re-activated (CLAP `reset` and re-activation, VST3
+  `setActive`), or one that lost packets to a list before the reassembler.
+- **One open message across all groups**, a deliberate deviation from
+  M2-104's independent stream per group: no plugin format has a SysEx group
+  to deliver on, so two interleaved dumps could only reach the plugin as two
+  messages anyway, and the hardware input puts all its traffic on group 1.
 - Other messages between a message's packets do not end it: the event list
   merges sources, and a note played during a dump should not cost the dump.
+- **No gap is ever spliced.** Every list between a node's event input and
+  the reassembler holds a block's whole MIDI cap or, when it overflows,
+  drops the open message: the plugin node (and the in-process VST2 node)
+  drops the events past `MIDI_STACK_CAPACITY` and the rest of a SysEx that
+  lost a packet there, counted (`PluginControls::midi_events_dropped`,
+  `InProcessVst2Controls::midi_events_dropped`); the VST3 host's
+  `IMidiMapping` route holds `MIDI_STACK_CAPACITY` events (it held 64, and
+  silently cut a mapped plugin's dump into a shorter message that looked
+  complete) and, past it, drops the open message; the VST2 host's staging
+  lists are reserved for `MIDI_STACK_CAPACITY` and refuse, counted
+  (`Vst2Instance::dropped_midi_in`), rather than grow on the audio thread;
+  the wire's `midi_from_wire` keeps `MIDI_STACK_CAPACITY`, as many as the
+  node sends.
+
+**Known limit: a dump delivered in one block is capped by the block.** The
+live hardware input emits a dump's packets together, into one block; its
+input node keeps 512 events a block and the plugin node 256. So on the live
+path a dump reaches a plugin only if its packets and the block's other MIDI
+fit in 256 events (1536 payload bytes with nothing else); a longer one is
+dropped whole and counted, as above. Holding the excess over to the next
+block would lift this, and is out of scope here: it delays every held event
+to a later block than its timestamp (wrong for the notes beside the dump),
+and needs a carry queue in every node between the input and the plugin,
+sized for a whole dump, rather than a change to the reassembly.
 
 Out of process, the wire carries each UMP packet whole (`IpcMidiEvent` is the
 128-bit packet and its frame), at most `MIDI_STACK_CAPACITY` a block, and the

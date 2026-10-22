@@ -23,7 +23,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::transport_source::{self, SteadyTime};
-use crate::host::node::{DeliveryCounters, ParamDelivery, PluginMeter, SegmentPoints};
+use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
 use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 
 /// A VST2 plugin running inside the host process, as a graph node.
@@ -48,6 +48,9 @@ pub struct InProcessVst2Client {
     pub(super) metadata: PluginInfo,
     /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
+    /// Takes the event input's MIDI into `midi`, carrying across blocks
+    /// which SysEx lost a packet to its cap.
+    pub(super) intake: MidiIntake,
     /// The block's transport, read from the graph's [`Cx`] (live and in a
     /// fork alike), with the project meter installed through
     /// [`set_meter`](Self::set_meter).
@@ -279,6 +282,7 @@ impl InProcessVst2Client {
             inner,
             metadata,
             midi: MidiEventVec::new(),
+            intake: MidiIntake::default(),
             transport: TransportFeed::new(),
             features,
             scratch,

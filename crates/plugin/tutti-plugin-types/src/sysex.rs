@@ -17,9 +17,17 @@ use tutti_midi_types::MidiGroup;
 use crate::{MidiEvent, MIDI_STACK_CAPACITY};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
-/// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. The hardware input abandons
-/// a longer dump, so a message any input accepted is never dropped here for
-/// its length.
+/// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer
+/// one (the hardware input abandons it), so nothing is dropped here for its
+/// length alone.
+///
+/// This is the reassembler's limit, not the delivery path's. A plugin node
+/// takes at most [`MIDI_STACK_CAPACITY`] MIDI events a block, so a message
+/// longer than that many packets (1536 payload bytes, less the block's
+/// other events) reaches a plugin only from a source that spreads its
+/// packets over blocks. The live hardware input does not: it emits a dump's
+/// packets together, into one block. See
+/// [`SysExAssembler`]'s policy.
 pub const SYSEX_MESSAGE_CAPACITY: usize = SYSEX7_MAX_PAYLOAD + 2;
 
 /// The most bytes one SysEx7 packet adds to the buffer: six payload bytes and
@@ -90,10 +98,28 @@ enum Run {
 ///   [`MIDI_STACK_CAPACITY`] packets (1536 payload bytes), so a dump longer
 ///   than that cannot arrive in one. A run left open at the end of a block
 ///   continues in the next.
-/// - **One multi-packet message at a time.** A `START` while another is still
-///   open drops the open one, whole, and counts it: it never got its `END`.
+/// - **A source that delivers a whole dump in one block is limited by the
+///   block's cap.** The live hardware input does (its input node keeps 512
+///   events a block, the plugin node 256): the plugin node drops, counted,
+///   the events past its cap and the rest of a SysEx that lost a packet
+///   there, so the message never gets its `END` here and is dropped whole,
+///   counted at the next `START`. On that path a dump reaches a plugin only
+///   if its packets and the block's other MIDI fit in
+///   [`MIDI_STACK_CAPACITY`] events.
+/// - **One multi-packet message at a time, across all groups.** A `START`
+///   while another is still open, on any group, drops the open one, whole,
+///   and counts it: it never got its `END`. This deviates on purpose from
+///   M2-104's independent streams per group: no plugin format has a SysEx
+///   group to deliver it on, so two interleaved dumps could only reach the
+///   plugin as two messages anyway, and the hardware input puts all its
+///   traffic on group 1. One open run keeps the buffer one message long.
 ///   A `SINGLE` on another group completes beside an open run; on the run's
 ///   own group it ends the run (dropped and counted), as M2-104 §7.7.1 has it.
+/// - **A gap upstream drops the open message, counted.** A list between the
+///   node and this assembler that overflows truncates its block's tail; its
+///   owner calls [`lost_tail`](Self::lost_tail) after staging the kept
+///   events, so the packets of the next block are never spliced onto a run
+///   that lost some in between.
 /// - **Other messages do not end a run.** The plugin's event list merges
 ///   every source, so a note played during a dump arrives between its
 ///   packets; ending the dump there would cost the dump for no gain.
@@ -103,6 +129,8 @@ enum Run {
 ///   dropped, or arrived before this instance existed) is skipped.
 ///
 /// Each dropped message is counted once in [`dropped`](Self::dropped).
+/// [`reset`](Self::reset) (the plugin's reset or re-activation) drops the
+/// open message too.
 ///
 /// # Memory
 ///
@@ -227,6 +255,22 @@ impl SysExAssembler {
         }
     }
 
+    /// An upstream list dropped events after the ones just pushed (it
+    /// overflowed): drop the open message, counted, so packets of a later
+    /// block are not spliced onto it. Call it after pushing a block's kept
+    /// events. Never allocates.
+    pub fn lost_tail(&mut self) {
+        self.abandon();
+    }
+
+    /// The plugin was reset or re-activated: drop the open message (counted,
+    /// like any message that never reaches the plugin) and the block's
+    /// completed ones. Never allocates.
+    pub fn reset(&mut self) {
+        self.abandon();
+        self.buf.clear();
+    }
+
     /// The buffer every [`SysExRef`] of this block indexes. Its address is
     /// stable until the next [`begin_block`](Self::begin_block).
     pub fn bytes(&self) -> &[u8] {
@@ -238,9 +282,11 @@ impl SysExAssembler {
         &self.buf[message.range()]
     }
 
-    /// Messages dropped whole since this assembler was made: longer than
-    /// [`max_message`](Self::max_message), or left without their `END` by a
-    /// later `START` (or a `SINGLE` on their group).
+    /// Messages dropped whole since this assembler was made (a
+    /// [`reset`](Self::reset) does not zero it): longer than
+    /// [`max_message`](Self::max_message), left without their `END` by a
+    /// later `START` (or a `SINGLE` on their group), cut by an upstream
+    /// overflow ([`lost_tail`](Self::lost_tail)), or open at a reset.
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
@@ -535,5 +581,70 @@ mod tests {
         assert_eq!(asm.dropped(), 0);
         assert_eq!(done, 1 + MIDI_STACK_CAPACITY / 2);
         assert_eq!(asm.bytes().as_ptr(), base, "the buffer never moved");
+    }
+
+    /// **More packets in one block than the buffer has room for drop the
+    /// message that would overflow it, counted, without allocating.** A
+    /// complete longest message fills the message part of the buffer; the
+    /// next message, short of the message cap but past the room, is dropped.
+    ///
+    /// Mutation (run): `|| self.buf.len() + added > self.room` removed from
+    /// `append` → the buffer grows past its reservation → allocates → fails.
+    #[test]
+    fn more_packets_than_room_drop_without_allocating() {
+        let longest = packets(MidiGroup::FIRST, &payload(SYSEX7_MAX_PAYLOAD));
+        // Twice a block of packets: more than the room left after `longest`.
+        let next = packets(MidiGroup::FIRST, &payload(2 * MIDI_STACK_CAPACITY * 6));
+        assert!(next.len() > MIDI_STACK_CAPACITY);
+        let mut asm = SysExAssembler::reserved();
+        let mut done = 0usize;
+        assert_no_alloc::assert_no_alloc(|| {
+            asm.begin_block();
+            for p in longest.iter().chain(&next) {
+                if let SysExStep::Complete(_) = asm.push(p) {
+                    done += 1;
+                }
+            }
+        });
+        assert_eq!(done, 1, "the longest message, not the one past the room");
+        assert_eq!(asm.dropped(), 1);
+    }
+
+    /// **A tail lost upstream drops the open message, counted, and the rest
+    /// of its packets in a later block are not spliced onto it.**
+    ///
+    /// Mutation (run): `lost_tail` a no-op → the later packets complete the
+    /// run as one message missing its middle → fails.
+    #[test]
+    fn a_lost_tail_drops_the_open_message() {
+        let body = payload(60);
+        let pkts = packets(MidiGroup::FIRST, &body);
+        let mut asm = SysExAssembler::reserved();
+        assert!(feed(&mut asm, &pkts[..3]).is_empty());
+        asm.lost_tail(); // pkts[3..5] never arrive
+        asm.begin_block();
+        assert!(feed(&mut asm, &pkts[5..]).is_empty());
+        assert_eq!(asm.dropped(), 1);
+        // The next message is whole.
+        assert_eq!(feed(&mut asm, &pkts), vec![framed(&body)]);
+        assert_eq!(asm.dropped(), 1);
+    }
+
+    /// **A reset drops the open message, counted**, so its remaining packets
+    /// after the reset are skipped rather than completing it.
+    ///
+    /// Mutation (run): `reset` only clearing the buffer (the run left
+    /// `Assembling`) → not counted → fails.
+    #[test]
+    fn a_reset_drops_the_open_message() {
+        let body = payload(30);
+        let pkts = packets(MidiGroup::FIRST, &body);
+        let mut asm = SysExAssembler::reserved();
+        assert!(feed(&mut asm, &pkts[..2]).is_empty());
+        asm.reset();
+        assert_eq!(asm.dropped(), 1);
+        assert!(asm.bytes().is_empty());
+        assert!(feed(&mut asm, &pkts[2..]).is_empty());
+        assert_eq!(asm.dropped(), 1);
     }
 }

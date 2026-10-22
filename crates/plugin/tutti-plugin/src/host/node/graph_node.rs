@@ -21,6 +21,7 @@ use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
 use super::transport_source::{self, SteadyTime};
+use super::MidiIntake;
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{
@@ -134,6 +135,7 @@ impl Node for PluginClient<Bound> {
             steady,
             segments,
             params,
+            intake,
         } = &mut c.state;
         out_events.clear();
 
@@ -160,6 +162,7 @@ impl Node for PluginClient<Bound> {
             indexed,
             segments,
             params,
+            intake,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -205,6 +208,7 @@ impl Node for PluginClient<Bound> {
         // The chunk in flight is dropped; its values are owed to the next
         // (the plugin keeps its parameters across a reset).
         self.state.params.abandon();
+        self.state.intake.reset();
         let _ = self.bridge.reset_rt();
     }
 }
@@ -235,6 +239,8 @@ struct PluginChunks<'a> {
     segments: &'a mut SegmentPoints,
     /// The chunk's parameter changes: a queue per parameter, changes only.
     params: &'a mut ParamDelivery,
+    /// Takes the MIDI into the chunk's capped list.
+    intake: &'a mut MidiIntake,
 }
 
 impl Chunks for PluginChunks<'_> {
@@ -271,7 +277,8 @@ impl Chunks for PluginChunks<'_> {
     /// passes on changes only (`param_delivery`); the walk is `param_input`'s,
     /// which the in-process VST2 node shares. Past the MIDI and harmony
     /// caps events are dropped: the lists are inline and cannot grow, so
-    /// nothing allocates on the audio thread.
+    /// nothing allocates on the audio thread. Dropped MIDI is counted, and a
+    /// SysEx that lost a packet loses the rest of it (`MidiIntake`).
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let Self {
             cx,
@@ -281,9 +288,11 @@ impl Chunks for PluginChunks<'_> {
             indexed,
             segments,
             params,
+            intake,
             ..
         } = self;
         let features = *features;
+        let mut midi_dropped = 0;
         param_input::take(
             events.as_slice(),
             from,
@@ -295,11 +304,8 @@ impl Chunks for PluginChunks<'_> {
             params,
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
-                    // Past the cap the event is dropped (`MidiEventVec` is
-                    // inline and cannot grow).
-                    let _ = pending
-                        .midi
-                        .try_push(MidiEvent::from_ump(frame as u32, &ump.0));
+                    let event = MidiEvent::from_ump(frame as u32, &ump.0);
+                    midi_dropped += u64::from(!intake.push(&mut pending.midi, event));
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
@@ -309,6 +315,7 @@ impl Chunks for PluginChunks<'_> {
                 EventKind::Ramp(_) | EventKind::Segment(_) | EventKind::Resync => {}
             },
         );
+        params.count_midi_dropped(midi_dropped);
     }
 
     /// The chunk's MIDI, sorted by frame: the event input's, as its frames

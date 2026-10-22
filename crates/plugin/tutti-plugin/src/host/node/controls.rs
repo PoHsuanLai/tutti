@@ -160,6 +160,16 @@ impl PluginControls {
         self.delivery.snapshot()
     }
 
+    /// MIDI events on the node's event input not delivered to the plugin
+    /// since it was bound: past the
+    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a chunk
+    /// carries, or the rest of a SysEx message that lost a packet there (a
+    /// message is never delivered with a gap; the plugin's host counts it
+    /// as a dropped SysEx). RT-safe: one relaxed load.
+    pub fn midi_events_dropped(&self) -> u64 {
+        self.delivery.midi_events_dropped()
+    }
+
     /// What the node has delivered so far, per listed parameter: what a fork
     /// is seeded with. Control thread: allocates.
     pub(super) fn delivered(&self) -> Vec<(crate::protocol::ParamAddress, f64)> {

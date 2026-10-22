@@ -779,10 +779,18 @@ impl InputEventList {
 
     /// SysEx messages dropped whole since the list was built: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
-    /// `START`, or any message before [`reserve_sysex`](Self::reserve_sysex).
-    /// See [`SysExAssembler`] for the policy.
+    /// `START`, open at a [`reset_sysex`](Self::reset_sysex), or any message
+    /// before [`reserve_sysex`](Self::reserve_sysex). Neither call zeroes
+    /// it. See [`SysExAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {
         self.sysex.dropped()
+    }
+
+    /// The plugin is being reset or re-activated: drop the open SysEx,
+    /// counted, so its remaining packets do not complete it on the far side
+    /// of the reset (the plugin has forgotten its start). Never allocates.
+    pub fn reset_sysex(&mut self) {
+        self.sysex.reset();
     }
 
     /// Converts a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP

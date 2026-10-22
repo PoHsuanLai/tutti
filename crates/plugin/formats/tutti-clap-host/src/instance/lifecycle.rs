@@ -280,6 +280,9 @@ impl<T: super::ClapSample> ClapActive<T> {
             unsafe { reset_fn(self.loaded.plugin.as_ptr()) };
         }
         self.scratch.steady_time = 0;
+        // The plugin forgot its input: a SysEx open across the reset must not
+        // complete on the far side of it.
+        self.scratch.input_events.reset_sysex();
     }
 
     /// Stops processing (if started) and deactivates, transitioning back to a
@@ -424,6 +427,8 @@ impl<T: super::ClapSample> ClapActive<T> {
 
         self.stop_processing();
         self.loaded.deactivate_plugin();
+        // A re-activation forgets the plugin's input, as a reset does.
+        self.scratch.input_events.reset_sysex();
 
         self.loaded.audio.sample_rate = sample_rate;
         self.loaded.audio.max_frames = max_frames;

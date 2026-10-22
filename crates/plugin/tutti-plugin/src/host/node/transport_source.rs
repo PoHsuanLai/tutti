@@ -132,17 +132,27 @@ impl SteadyTime {
 /// it is stopped, and is re-seated from the beat at the tempo
 /// (`beat · 60 / tempo · rate`) only at a jump: the first read, a seek
 /// (stopped or playing), a start somewhere other than where it stood, a
-/// loop wrap, a loop edit, or a rate change. A tempo change is not a jump
-/// ([`Transport::continuity`], the playhead's own rule), and neither is a
-/// stop or a start where the transport stood: project time keeps counting
-/// through them instead of jumping to the beat's time at the tempo in force.
-/// The engine has no tempo map, so that time is only right from a re-seat
-/// until the next tempo change; a start where playback stopped continues the
-/// time the plugin was told there, as a DAW's tempo map would.
+/// loop wrap, a loop edit that moves the playhead, or a rate change. A
+/// tempo change is not a jump ([`Transport::continuity`], the playhead's
+/// own rule), and neither is a stop, a start where the transport stood, or
+/// a loop edit that leaves the playhead where it was (continuity is judged
+/// against the earlier read's loop): project time keeps counting through
+/// them instead of jumping to the beat's time at the tempo in force. The
+/// engine has no tempo map, so that time is only right from a re-seat
+/// until the next tempo change; a start where playback stopped continues
+/// the time the plugin was told there, as a DAW's tempo map would.
 ///
-/// Reads come a chunk apart, so a stop or a start lands between two of
-/// them: the frames played across it are the beats moved at the playing
-/// side's tempo ([`played_across`]).
+/// Reads come a chunk apart, so a stop or a start (or both) lands between
+/// two of them: the frames played across it are the beats moved forward,
+/// at a tempo the transport played at, up to the gap ([`played_across`]).
+/// That count is exact at one tempo. When a tempo change shares the chunk
+/// with the stop or start, the frames played at the other tempo are counted
+/// at this one: off by about `n_other · |ratio − 1|` frames, bounded by
+/// `chunk · |1 − ratio|` (about 4 frames of a 1 024-frame chunk at
+/// 120 → 121 BPM, up to half a chunk at 120 → 60), and the offset stays
+/// until the next re-seat. A seek forward by less than the gap plays,
+/// inside one chunk, is indistinguishable from a stop and a start, and is
+/// counted as one.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ProjectTime {
     last: Option<ProjectRead>,
@@ -175,13 +185,18 @@ impl ProjectTime {
             if p.rate != rate {
                 return None;
             }
-            match p.transport.continuity(Samples(gap), rate, t) {
+            // Judged against the earlier read's loop: a loop edit moves
+            // nothing by itself, so one that leaves the playhead where
+            // playback put it keeps project time. A wrap the new loop
+            // caused does not fit the old loop, and re-seats.
+            let mut seen = *t;
+            seen.looping = p.transport.looping;
+            match p.transport.continuity(Samples(gap), rate, &seen) {
                 Continuity::Rolled => Some(p.frames + gap as f64),
                 Continuity::Held => Some(p.frames),
                 Continuity::Wrapped => None,
-                Continuity::Jumped => {
-                    played_across(&p.transport, gap, rate, t).map(|played| p.frames + played as f64)
-                }
+                Continuity::Jumped => played_across(&p.transport, gap, rate, &seen)
+                    .map(|played| p.frames + played as f64),
             }
         });
         let frames = continued.unwrap_or_else(|| t.beat().get() * 60.0 / tempo * hz);
@@ -200,24 +215,33 @@ impl ProjectTime {
 }
 
 /// The frames played between a read of `from` and one of `to` `gap` frames
-/// later, when the transport stopped or started between them and moved only
-/// by playing: the beats moved, at the playing side's tempo, rolled from
-/// `from`'s beat to `to`'s within the gap. `None` for anything else (both
-/// stopped or both playing, a seek, a wrap, a loop edit).
+/// later, when the transport stopped or started (or both) between them and
+/// moved only by playing: the beats moved forward, as frames at a tempo the
+/// transport played at, no more than the gap. The tempo is the playing
+/// side's when one read is stopped; with both playing (a stop and a start
+/// between them) or both stopped (a start and a stop), `from`'s, else
+/// `to`'s. A move out past the loop's end is not played (playback wraps
+/// there). `None` for anything else: a move back, or further than the gap
+/// plays.
 fn played_across(from: &Transport, gap: usize, rate: SampleRate, to: &Transport) -> Option<usize> {
-    let tempo = match (from.playing, to.playing) {
-        (true, false) => from.tempo,
-        (false, true) => to.tempo,
-        _ => return None,
+    let tempos = match (from.playing, to.playing) {
+        (true, false) => [from.tempo, from.tempo],
+        (false, true) => [to.tempo, to.tempo],
+        _ => [from.tempo, to.tempo],
     };
-    let moved = to.beat().get() - from.beat().get();
-    let played = (moved * 60.0 / tempo.get() * rate.get()).round();
-    if !(0.0..=gap as f64).contains(&played) {
-        return None;
+    let (start, end) = (from.beat().get(), to.beat().get());
+    if let Some(l) = from.looping {
+        if start < l.end.get() && end >= l.end.get() {
+            return None;
+        }
     }
-    let played = played as usize;
-    let rolling = Transport::new(true, tempo, from.beat(), from.looping);
-    (rolling.continuity(Samples(played), rate, to) == Continuity::Rolled).then_some(played)
+    let moved = end - start;
+    tempos.into_iter().find_map(|tempo| {
+        let played = (moved * 60.0 / tempo.get() * rate.get()).round();
+        (0.0..=gap as f64)
+            .contains(&played)
+            .then_some(played as usize)
+    })
 }
 
 impl Snapshot {
@@ -647,9 +671,10 @@ mod tests {
         }
     }
 
-    /// **A seek, a loop wrap and a start re-seat project time** at the beat's
-    /// time at the tempo; between them it rolls. At 120 BPM and 48 kHz a beat
-    /// is 24 000 frames; at 90 BPM, 32 000. Without a usable tempo there is
+    /// **A seek, a loop wrap and a start elsewhere re-seat project time** at
+    /// the beat's time at the tempo; between them it rolls, and a start where
+    /// the transport stood continues it. At 120 BPM and 48 kHz a beat is
+    /// 24 000 frames; at 90 BPM, 32 000. Without a usable tempo there is
     /// none.
     ///
     /// Mutation: roll on a wrap too (`Wrapped` mapped like `Rolled` in
@@ -658,9 +683,10 @@ mod tests {
     /// 96 008 → fails. Mutation: hold through a jump (`Jumped` mapped like
     /// `Held`) → the seek reads 96 007 → fails.
     /// Mutation: drop `.with_position_samples` in `transport_info` → `None`
-    /// → fails.
+    /// → fails. Mutation (run): re-seat a start where it stood (`Held`
+    /// mapped to `None`) → the start at beat 3 reads 144 000 → fails.
     #[test]
-    fn a_seek_a_loop_wrap_and_a_start_re_seat_project_time() {
+    fn a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time() {
         let meter = MeterMap::default();
         let looping = Some(LoopRange {
             start: Beat(4.0),
@@ -713,6 +739,17 @@ mod tests {
         );
         let held = from_cx(&cx(&stopped), at(0, 64), 64, &mut project, None, &meter);
         assert_eq!(held.position.samples, Some(96_000));
+        // Started where it stood (beat 3, now at 60 BPM): it continues the
+        // held 96 000, not the beat's 144 000 at the new tempo.
+        let mut there = project;
+        let resumed = env(
+            128,
+            64,
+            Transport::new(true, Bpm(60.0), Beat(3.0), None),
+            TransportChanges::NONE,
+        );
+        let run = from_cx(&cx(&resumed), at(0, 64), 128, &mut there, None, &meter);
+        assert_eq!(run.position.samples, Some(96_000));
         let started = env(
             128,
             64,
@@ -733,8 +770,15 @@ mod tests {
     /// 32 puts project time 2 400 000 + n at frame n, where the beat's time
     /// at 121 BPM is 2 380 197 + n: a re-seat there is the jump this pins
     /// against. Reads come every 16 frames, a chunk's, so the stop (frame
-    /// 72) and the second start (frame 264) land between two reads.
+    /// 72) and the start (frame 264) land between two reads. Before the
+    /// start the tempo changes to 90 BPM while stopped (frame 260), so the
+    /// start's frames count at 90 (the playing side's) and a re-seat would
+    /// read 50 · 32 000 = 1 600 000.
     ///
+    /// Mutation (run): the start side's tempo dropped from `played_across`
+    /// (`(false, true)` falling to the both-sides arm, `from`'s 121 BPM
+    /// first) → 8 frames at 90 count as 6 → frame 272 reads seat + 6 →
+    /// fails.
     /// Mutation: re-seat at a stop or a start again (`Held` and
     /// `played_across` dropped: both map to `None` in `ProjectTime::at`) →
     /// frame 80 reads 2 380 237 → fails. Mutation: roll while held (`Held`
@@ -760,9 +804,12 @@ mod tests {
         let mut start = TransportChanges::NONE;
         start
             .push(
-                at(8, 64),
-                Transport::new(true, Bpm(121.0), Beat(50.0), None),
+                at(4, 64),
+                Transport::new(false, Bpm(90.0), Beat(50.0), None),
             )
+            .expect("a change inside the block");
+        start
+            .push(at(8, 64), Transport::new(true, Bpm(90.0), Beat(50.0), None))
             .expect("a change inside the block");
         let blocks = [
             env(
@@ -785,7 +832,8 @@ mod tests {
                 Transport::new(false, Bpm(121.0), Beat(50.0), None),
                 TransportChanges::NONE,
             ),
-            // Started where it stood, 8 frames in.
+            // The tempo set to 90 while stopped 4 frames in, and started
+            // where it stood 8 frames in.
             env(
                 256,
                 64,
@@ -833,6 +881,217 @@ mod tests {
         .map(|(f, s): (i64, f64)| (f, Some(s.round() as i64)))
         .collect();
         assert_eq!(got, want);
+    }
+
+    /// 120 BPM changing to 121 at frame 32, from beat `start` with `looping`:
+    /// the first block of a history whose project time (`start`'s time at
+    /// 120 BPM, plus the frames rendered) is not the beat's time at 121, so
+    /// a re-seat after it shows. Returns the block and the beat at frame 64.
+    fn after_a_tempo_change(start: f64, looping: Option<LoopRange>) -> (Env, Beat) {
+        let per_frame = |bpm: f64| bpm / 60.0 / 48_000.0;
+        let after = Beat(start + 32.0 * per_frame(120.0));
+        let mut changes = TransportChanges::NONE;
+        changes
+            .push(at(32, 64), Transport::new(true, Bpm(121.0), after, looping))
+            .expect("a change inside the block");
+        let first = env(
+            0,
+            64,
+            Transport::new(true, Bpm(120.0), Beat(start), looping),
+            changes,
+        );
+        (first, Beat(after.get() + 32.0 * per_frame(121.0)))
+    }
+
+    /// Project time read at each block's first frame, the steady counter at
+    /// the block's frame.
+    fn read_firsts(blocks: &[Env]) -> Vec<Option<i64>> {
+        let meter = MeterMap::default();
+        let mut project = ProjectTime::default();
+        blocks
+            .iter()
+            .map(|e| {
+                let steady = e.frame.get() as i64;
+                from_cx(
+                    &cx(e),
+                    at(0, e.block_len.get()),
+                    steady,
+                    &mut project,
+                    None,
+                    &meter,
+                )
+                .position
+                .samples
+            })
+            .collect()
+    }
+
+    /// **A stop and a start inside one chunk keep project time**, either
+    /// way round. After 120 → 121 BPM project time is 2 400 000 + n at
+    /// frame n (the beat's time at 121 is 2 380 197 + n). Read once a block:
+    /// a stop at frame 72 and a restart there at frame 104 (both reads
+    /// playing) count the 8 + 24 frames played, 2 400 096 at frame 128; a
+    /// start at frame 200 and a stop at frame 232 (both reads stopped) count
+    /// the 32 played between them.
+    ///
+    /// Mutation (run): `played_across` back to one-sided only (both playing
+    /// or both stopped → `None`) → frame 128 re-seats to 2 380 261, and
+    /// every later read re-seats → fails.
+    #[test]
+    fn a_stop_and_a_start_inside_one_chunk_keep_project_time() {
+        let per = |n: f64| n * 121.0 / 60.0 / 48_000.0;
+        let (first, b64) = after_a_tempo_change(100.0, None);
+        let b72 = Beat(b64.get() + per(8.0));
+        let t = |playing, beat| Transport::new(playing, Bpm(121.0), beat, None);
+        let mut stop_start = TransportChanges::NONE;
+        stop_start.push(at(8, 64), t(false, b72)).unwrap();
+        stop_start.push(at(40, 64), t(true, b72)).unwrap();
+        let b128 = Beat(b72.get() + per(24.0));
+        let mut stop = TransportChanges::NONE;
+        stop.push(at(1, 64), t(false, Beat(b128.get() + per(1.0))))
+            .unwrap();
+        let b129 = Beat(b128.get() + per(1.0));
+        let mut start_stop = TransportChanges::NONE;
+        start_stop.push(at(8, 64), t(true, b129)).unwrap();
+        start_stop
+            .push(at(40, 64), t(false, Beat(b129.get() + per(32.0))))
+            .unwrap();
+        let blocks = [
+            first,
+            env(64, 64, t(true, b64), stop_start),
+            env(128, 64, t(true, b128), stop),
+            env(192, 64, t(false, b129), start_stop),
+            env(
+                256,
+                64,
+                t(false, Beat(b129.get() + per(32.0))),
+                TransportChanges::NONE,
+            ),
+        ];
+        assert_eq!(
+            read_firsts(&blocks),
+            [2_400_000, 2_400_064, 2_400_096, 2_400_097, 2_400_129].map(Some)
+        );
+    }
+
+    /// **A loop edit that leaves the playhead where it was keeps project
+    /// time**, playing or stopped. After 120 → 121 BPM project time is
+    /// 2 400 000 + n at frame n. Read once a block: cycle mode switched on
+    /// at frame 96 as the tempo halves to 60.5 counts the 64 frames played,
+    /// 2 400 128 at frame 128; a stop at frame 160 holds 2 400 160, and
+    /// cycle mode switched off and on again while stopped keeps it. At
+    /// 60.5 BPM the beat's time is about 4 760 000, so a re-seat shows.
+    ///
+    /// Mutation (run): judge continuity against the new read's own loop
+    /// (drop `seen.looping = p.transport.looping`) → the edit with the tempo
+    /// change is no longer `Rolled`, `played_across` counts its 64 frames
+    /// at 121 BPM as 48 → 2 400 112 at frame 128 → fails. The stopped edits
+    /// survive that mutation: they move nothing, which `played_across`
+    /// counts as nothing played either way.
+    #[test]
+    fn a_loop_edit_that_does_not_move_the_playhead_keeps_project_time() {
+        let (first, b64) = after_a_tempo_change(100.0, None);
+        let looping = Some(LoopRange {
+            start: Beat(96.0),
+            end: Beat(104.0),
+        });
+        let per = |n: f64, bpm: f64| n * bpm / 60.0 / 48_000.0;
+        let b96 = Beat(b64.get() + per(32.0, 121.0));
+        let b128 = Beat(b96.get() + per(32.0, 60.5));
+        let b160 = Beat(b128.get() + per(32.0, 60.5));
+        let t = |playing, beat, looping| Transport::new(playing, Bpm(60.5), beat, looping);
+        let mut cycle_on = TransportChanges::NONE;
+        cycle_on.push(at(32, 64), t(true, b96, looping)).unwrap();
+        let mut stop = TransportChanges::NONE;
+        stop.push(at(32, 64), t(false, b160, looping)).unwrap();
+        let blocks = [
+            first,
+            env(
+                64,
+                64,
+                Transport::new(true, Bpm(121.0), b64, None),
+                cycle_on,
+            ),
+            env(128, 64, t(true, b128, looping), stop),
+            env(192, 64, t(false, b160, None), TransportChanges::NONE),
+            env(256, 64, t(false, b160, looping), TransportChanges::NONE),
+        ];
+        assert_eq!(
+            read_firsts(&blocks),
+            [2_400_000, 2_400_064, 2_400_128, 2_400_160, 2_400_160].map(Some)
+        );
+    }
+
+    /// **A move out past the loop's end is not played**, however short:
+    /// with a loop ending 0.0003 beat after the playhead, a read 16 frames
+    /// later, stopped 0.0001 beat past the end (about 10 frames' move), is a
+    /// seek, and re-seats at the beat's time at 121 BPM.
+    ///
+    /// Mutation (run): drop the loop-end guard in `played_across` → the move
+    /// counts as about 10 frames played, 96 074 instead of the re-seat's
+    /// 95 280 → fails.
+    #[test]
+    fn a_move_past_the_loops_end_re_seats() {
+        let end = |b64: Beat| Beat(b64.get() + 0.0003);
+        let (_, b64) = after_a_tempo_change(4.0, None);
+        let looping = Some(LoopRange {
+            start: Beat(4.0),
+            end: end(b64),
+        });
+        let (first, b64) = after_a_tempo_change(4.0, looping);
+        let past = Beat(end(b64).get() + 0.0001);
+        let blocks = [
+            first,
+            env(
+                64,
+                16,
+                Transport::new(true, Bpm(121.0), b64, looping),
+                TransportChanges::NONE,
+            ),
+            env(
+                80,
+                16,
+                Transport::new(false, Bpm(121.0), past, looping),
+                TransportChanges::NONE,
+            ),
+        ];
+        let reseat = (past.get() * 60.0 / 121.0 * 48_000.0).round() as i64;
+        assert_eq!(read_firsts(&blocks), [96_000, 96_064, reseat].map(Some));
+    }
+
+    /// **A rate change re-seats project time** at the beat's time at the new
+    /// rate: playing on after 120 → 121 BPM, the rate goes from 48 to 96 kHz
+    /// and the next read (64 frames at 96 kHz on) is the beat's time at 121
+    /// BPM and 96 kHz, not 2 400 064 + 64.
+    ///
+    /// Mutation (run): drop the `p.rate != rate` check → 2 400 128 instead
+    /// of 4 760 522 → fails.
+    #[test]
+    fn a_rate_change_re_seats_project_time() {
+        let (first, b64) = after_a_tempo_change(100.0, None);
+        let fast = SampleRate(96_000.0);
+        let b128 = Beat(b64.get() + 64.0 * 121.0 / 60.0 / 96_000.0);
+        let mut blocks = [
+            first,
+            env(
+                64,
+                64,
+                Transport::new(true, Bpm(121.0), b64, None),
+                TransportChanges::NONE,
+            ),
+            env(
+                128,
+                64,
+                Transport::new(true, Bpm(121.0), b128, None),
+                TransportChanges::NONE,
+            ),
+        ];
+        blocks[2].sample_rate = fast;
+        let reseat = (b128.get() * 60.0 / 121.0 * 96_000.0).round() as i64;
+        assert_eq!(
+            read_firsts(&blocks),
+            [2_400_000, 2_400_064, reseat].map(Some)
+        );
     }
 
     /// **The host clock is the block's reading advanced by the chunk's

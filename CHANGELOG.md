@@ -14,11 +14,15 @@ A hosted plugin is now told everything its transport snapshot can know:
 - **Project-time sample position.** `TransportPosition::samples` is filled
   from the plugin node's own project time: it rolls by the frames rendered
   while the transport plays, through tempo changes, holds while it is
-  stopped (a stop, and a start where it stopped, continue it), and is
-  re-seated from the beat at the tempo only at a jump: the first block, a
-  seek (stopped or playing), a start somewhere other than where it stood, a
-  loop wrap, a loop edit, or a sample-rate change. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's sample time
-  read it. CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
+  stopped (a stop, and a start where it stopped, continue it, even both
+  inside one chunk), and is re-seated from the beat at the tempo only at a
+  jump: the first block, a seek (stopped or playing), a start somewhere
+  other than where it stood, a loop wrap, a loop edit that moves the
+  playhead (one that leaves it keeps project time), or a sample-rate
+  change. A tempo change sharing a chunk with a stop or a start is counted
+  at one of the two tempos: off by up to `chunk · |1 − ratio|` frames
+  (about 4 of 1 024 at 120 → 121 BPM) until the next re-seat. VST2
+  `samplePos`, VST3 `projectTimeSamples` and AU's sample time read it. CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
   same time over the rate; it was the beat's time at the current tempo,
   which jumped at every tempo change.
 - **Host clock.** New `TransportInfo::system_time_ns`: nanoseconds on the

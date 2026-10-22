@@ -6415,14 +6415,29 @@ fills the three fields the ABIs ask for that it used to leave empty:
   since the last read while the transport plays, holds it while stopped,
   and re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
   only at a jump: the first read, a seek (stopped or playing), a start
-  somewhere other than where the transport stood, a loop wrap or edit, a
-  rate change. A tempo change is not a jump: `tutti_graph::Transport::continuity`
+  somewhere other than where the transport stood, a loop wrap, a loop
+  edit that moves the playhead, a rate change. Continuity is judged
+  against the earlier read's loop, so a loop edit that leaves the
+  playhead where playback put it keeps project time, and a wrap the new
+  loop caused, not fitting the old one, re-seats. A tempo change is not a jump: `tutti_graph::Transport::continuity`
   is `Playhead`'s rule between two point reads (the same loop, and a beat
   reached by rolling the gap at a tempo between the two, ± a frame), so a
   step or a ramp rolls on; a stopped transport is `Continuity::Held` at its
-  beat, stopped still or started there. A stop or a start lands between
-  two chunk reads, so the frames played across it are the beats moved at
-  the playing side's tempo, checked by the same rule. A start where the
+  beat, stopped still or started there. A stop or a start (or both)
+  lands between two chunk reads, so the frames played across it
+  (`played_across`) are the beats moved forward, at the playing side's
+  tempo (either read's when both play or both are stopped), no more than
+  the gap and not out past the loop's end. A forward seek shorter than the
+  gap inside one chunk is indistinguishable from a stop and a start, and
+  is counted as one. The count is exact at one tempo; a tempo change in
+  the same chunk counts the other tempo's `n_other` frames at this one, off
+  by about `n_other · |ratio − 1|`, bounded by `chunk · |1 − ratio|` (about
+  4 frames of a 1 024-frame chunk at 120 → 121 BPM, up to half a chunk at
+  120 → 60), and the offset stays until the next re-seat. The check that
+  the counted frames rolled to the later beat (`Continuity::Rolled` from
+  the earlier beat at the counted tempo) was dropped: a rounded count is
+  within half a frame of the move, inside the rule's one-frame slack, so
+  it could not fail; the loop-end test is what it stood for. A start where the
   transport stopped continues the time the plugin was told there, as a
   tempo map would; re-seating at a stop made `samplePos` jump at the stop
   after any tempo change. Re-deriving every chunk instead made project
@@ -6473,8 +6488,10 @@ scale keeps the editor at the scale it opened at until it is reopened
 
 Pinned analytically: `transport_source`'s unit tests (project time
 rolling through a tempo change, held through a stop and a start where it
-stood, and re-seated at a seek (stopped or playing), a loop wrap and a
-start elsewhere; the host clock at a chunk's frame, and on the OS clock),
+stood, through a stop and a start inside one chunk and a loop edit that
+leaves the playhead, and re-seated at a seek (stopped or playing), a loop
+wrap, a move out past the loop's end, a rate change and a start
+elsewhere; the host clock at a chunk's frame, and on the OS clock),
 `Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
 bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
 `the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,

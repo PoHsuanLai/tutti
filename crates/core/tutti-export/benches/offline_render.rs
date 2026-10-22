@@ -18,7 +18,8 @@
 //! render/encode split is the useful diagnostic: when an export is slow,
 //! `encode` minus `render` at matching settings says which half to look at.
 //!
-//! Durations are kept short on purpose. Once the rendered planes get large
+//! Durations are kept short on purpose, except in `resample-normalized/`,
+//! whose point is how the cost grows with the duration. Once the rendered planes get large
 //! the working set leaves criterion's domain (wall-clock spread of 81× has
 //! been measured at that boundary), and the honest instrument becomes
 //! `--profile-time` plus samply.
@@ -26,10 +27,10 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::{Amplitude, ChannelLayout, FrozenClock, Hz, SampleRate};
+use tutti_core::{Amplitude, ChannelLayout, Db, FrozenClock, Hz, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig,
-    RenderConfig, RenderGraph,
+    render_normalized_to_file, render_to_buffers, render_to_file, AudioFormat, BitDepth, Dither,
+    EncodeConfig, ExportConfig, Normalize, RenderConfig, RenderGraph, Resample,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -166,5 +167,44 @@ fn bench_encode(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_render, bench_encode);
+/// The two-pass path's sample-rate conversion over a long render: a
+/// `render_normalized_to_file` that converts 44.1 kHz to 48 kHz before
+/// measuring the peak. That path pushes the whole render into the resampler
+/// at once, so its cost over the duration is what shows whether the
+/// conversion is linear. Long durations on purpose, unlike the rest of this
+/// file: the scaling is the measurement. Writes a WAV like `encode/`, so read
+/// it for the trend across durations, not as a gate.
+fn bench_resample(c: &mut Criterion) {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut group = c.benchmark_group("resample-normalized");
+    group.sample_size(10);
+    let from = 44_100.0f64;
+    for seconds in [30.0f64, 60.0, 180.0] {
+        let mut cfg = config(seconds, from, ChannelLayout::STEREO, AudioFormat::Wav);
+        cfg.resample = Some(Resample::to(SampleRate(SR)));
+        let path = dir.path().join("resampled.wav");
+        group.throughput(Throughput::Elements((seconds * from) as u64));
+        group.bench_with_input(
+            BenchmarkId::new("44k1-to-48k", format!("{seconds}s")),
+            &cfg,
+            |b, cfg| {
+                b.iter(|| {
+                    black_box(
+                        render_normalized_to_file(
+                            dc_graph(from),
+                            cfg,
+                            &FrozenClock,
+                            Normalize::Peak { target: Db(-1.0) },
+                            &path,
+                        )
+                        .expect("writes"),
+                    )
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_render, bench_encode, bench_resample);
 criterion_main!(benches);

@@ -79,12 +79,13 @@ pub enum Dither {
 /// FLAC settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flac {
-    /// Encoder effort, 0 (fastest) to 8 (smallest). Defaults to 5.
-    ///
-    /// Accepted and **not yet mapped** onto flacenc's coding options: the
-    /// encoder runs at that library's own balanced preset whatever this says.
-    /// Carried rather than reinterpreted, so the value a caller set is the value
-    /// a future mapping will read.
+    /// Encoder effort, 0 to 8, modelled loosely on libFLAC's levels but not
+    /// matching them: 0 to 2 code with fixed predictors only, 3 and up add
+    /// linear prediction at a fixed order (6, then 8 from 4, 12 from 7),
+    /// and every level but 0 tries the side and mid/side stereo modes. The
+    /// block size is 4096 at every level. Levels 1 and 2, 4 to 6, and 7 and
+    /// 8 encode identically. Values above 8 read as 8. Defaults to 5. Every
+    /// level is lossless.
     pub compression_level: u8,
 }
 

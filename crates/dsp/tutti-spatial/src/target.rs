@@ -2,7 +2,7 @@
 //! Algorithm-neutral: [`SpatialTarget`] is the control→RT storage,
 //! [`AngleSmoother`] the de-zipper both panners step per frame.
 
-use tutti_core::{Azimuth, Elevation, Param, SampleRate};
+use tutti_core::{Azimuth, Elevation, Param, SampleRate, Samples};
 
 use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
@@ -80,15 +80,23 @@ pub(crate) struct AngleSmoother {
 }
 
 impl AngleSmoother {
-    pub(crate) fn new(sample_rate: impl Into<SampleRate>) -> Self {
+    /// A smoother with a 50 ms time constant of audio at `sample_rate`, for
+    /// a caller that [`step`](Self::step)s once per `samples_per_step`
+    /// samples: one for a panner that steps every frame (VBAP), the
+    /// convolution frame length for one that steps once per frame (HRTF).
+    pub(crate) fn new(sample_rate: impl Into<SampleRate>, samples_per_step: Samples) -> Self {
         let sample_rate = sample_rate.into();
+        let smoother = || {
+            ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate, samples_per_step)
+        };
         Self {
-            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
-            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
+            azimuth: smoother(),
+            elevation: smoother(),
         }
     }
 
-    /// Retune so the 50 ms ramp holds at any sample rate.
+    /// Retune for a new sample rate, keeping the stride
+    /// [`new`](Self::new) was given, so the 50 ms ramp holds at any rate.
     pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
         let sample_rate = sample_rate.into();
         self.azimuth.set_sample_rate(sample_rate);
@@ -143,7 +151,7 @@ mod tests {
     /// direction of travel — the exact per-step position is the smoother's.
     #[test]
     fn bearing_crosses_the_seam_the_short_way() {
-        let mut s = AngleSmoother::new(SampleRate(48_000.0));
+        let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
         // Settle at 170 degrees.
         for _ in 0..48_000 {
             s.step(Azimuth(170.0), Elevation::LEVEL);
@@ -170,7 +178,7 @@ mod tests {
     /// The counterpart: elevation saturates rather than wrapping.
     #[test]
     fn height_saturates_and_does_not_wrap() {
-        let mut s = AngleSmoother::new(SampleRate(48_000.0));
+        let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
         for _ in 0..48_000 {
             s.step(Azimuth::FRONT, Elevation(90.0));
         }
@@ -185,7 +193,7 @@ mod tests {
     /// Otherwise every static source sits slightly off-axis forever.
     #[test]
     fn settles_on_a_stationary_target() {
-        let mut s = AngleSmoother::new(SampleRate(48_000.0));
+        let mut s = AngleSmoother::new(SampleRate(48_000.0), Samples(1));
         for _ in 0..48_000 {
             s.step(Azimuth(45.0), Elevation(30.0));
         }

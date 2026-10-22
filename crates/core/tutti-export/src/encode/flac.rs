@@ -138,13 +138,7 @@ impl Encoder for FlacEncoder {
             pos: 0,
         };
 
-        // `compression_level` is the app-facing knob; flacenc expresses effort
-        // through its own preset, which `Encoder::default()` sets to a balanced
-        // point. Mapping the 0-8 scale onto flacenc's coding options is a
-        // separate change: the level is accepted and unmapped rather than
-        // silently reinterpreted as something else.
-        let _ = self.compression_level;
-        let flac_config = EncoderConfig::default()
+        let flac_config = encoder_config(self.compression_level)
             .into_verified()
             .map_err(|e| Error::Encoding(format!("Invalid FLAC config: {e:?}")))?;
 
@@ -159,6 +153,33 @@ impl Encoder for FlacEncoder {
         file.write_all(&sink.into_inner())?;
         Ok(())
     }
+}
+
+/// flacenc's coding options for a level 0 to 8, modelled loosely on
+/// libFLAC's presets. Levels 0 to 2 code with fixed predictors only; 3 and
+/// up add LPC at an exact order (flacenc's `lpc_order` is the order used,
+/// not a searched maximum): 6, then 8 from level 4, 12 from level 7. Every
+/// level but 0 tries mid/side and left/right-side stereo.
+///
+/// Where this departs from libFLAC: its level 3 has no stereo
+/// decorrelation, and its levels 0 to 2 use 1152-sample blocks, while the
+/// block size here is [`BLOCK_SIZE`] at every level. Only five configs are
+/// distinct: levels 1 and 2, 4 to 6, and 7 and 8 encode identically. Above
+/// 8 reads as 8. Every level is lossless.
+fn encoder_config(level: u8) -> EncoderConfig {
+    let level = level.min(8);
+    let mut config = EncoderConfig::default();
+    let side = level >= 1;
+    config.stereo_coding.use_leftside = side;
+    config.stereo_coding.use_rightside = side;
+    config.stereo_coding.use_midside = side;
+    config.subframe_coding.use_lpc = level >= 3;
+    config.subframe_coding.qlpc.lpc_order = match level {
+        0..=3 => 6,
+        4..=6 => 8,
+        _ => 12,
+    };
+    config
 }
 
 fn bits_for(bit_depth: BitDepth) -> usize {

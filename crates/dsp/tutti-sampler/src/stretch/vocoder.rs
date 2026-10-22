@@ -12,7 +12,7 @@ use super::fft::{inverse_fft, real_fft, Complex32};
     unused_imports,
     reason = "`Unit` is referenced only by the intra-doc link on `clone_fresh` below; rustdoc needs the name in scope to resolve it"
 )]
-use super::Unit;
+use super::{FftSize, Unit};
 use tutti_analysis::StftGeometry;
 use tutti_core::Radians;
 
@@ -68,6 +68,13 @@ pub(super) struct Vocoder {
 }
 
 impl Vocoder {
+    /// The window this vocoder was built on, which its buffers are sized
+    /// to: what a rate change must rebuild the grid with.
+    pub(super) fn fft_size(&self) -> FftSize {
+        FftSize::new(self.geometry.window().get())
+            .expect("BUG: a vocoder's grid is built from an FftSize")
+    }
+
     /// Allocate every buffer this vocoder will ever need, on `geometry`'s grid.
     ///
     /// The only allocating entry point besides [`clone_fresh`](Self::clone_fresh)

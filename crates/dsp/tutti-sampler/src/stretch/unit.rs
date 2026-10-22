@@ -594,10 +594,11 @@ impl Unit {
     pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         // The grid's window and hop are sample counts and its phase table is
         // their ratio, so none of the vocoder state depends on the rate. Only
-        // the rate the geometry reports back does — rebuild it, and leave the
-        // running phase history alone.
+        // the rate the geometry reports back does — rebuild it on the
+        // vocoder's own window (whatever size it was built with, which its
+        // buffers are sized to), and leave the running phase history alone.
         for v in &mut self.ch.vocoders {
-            v.geometry = Self::geometry(sample_rate, FftSize::default());
+            v.geometry = Self::geometry(sample_rate, v.fft_size());
         }
     }
 

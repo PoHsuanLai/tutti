@@ -2,7 +2,7 @@ use super::error::Result;
 use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Spread, StereoWidth};
+use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Samples, Spread, StereoWidth};
 use vbap::VBAPanner;
 
 use crate::AngleSmoother;
@@ -61,7 +61,7 @@ impl VbapPanner {
             panner,
             azimuth_target: Arc::new(AtomicF32::new(0.0)),
             elevation_target: Arc::new(AtomicF32::new(0.0)),
-            smoother: AngleSmoother::new(sample_rate),
+            smoother: AngleSmoother::new(sample_rate, Samples(1)),
             spread: Spread::POINT,
             has_rear_speakers,
             gains_scratch: vec![0.0; speaker_count].into_boxed_slice(),

@@ -72,7 +72,8 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 
 use tutti_types::{
-    ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw, TaskGraph,
+    BlockWaits, ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw,
+    TaskGraph,
 };
 
 use crate::arena::{Arena, Line};
@@ -123,6 +124,15 @@ pub trait Pool: Send + Sync + 'static {
     fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
         self.run(wake, job);
         true
+    }
+
+    /// How long a participant of the executor's block waits before it gives
+    /// way: the caller by yielding its core, a helper by leaving the block
+    /// (`tutti_types::TaskGraph`'s "Waiting"). Read once per block, on the
+    /// audio thread, so it must not allocate or lock. The default is
+    /// [`BlockWaits::DEFAULT`].
+    fn waits(&self) -> BlockWaits {
+        BlockWaits::DEFAULT
     }
 }
 
@@ -297,6 +307,8 @@ struct Shared<'s, 'o> {
     outputs: SplitMut<'s, &'o mut [f32]>,
     workers: SplitMut<'s, Worker>,
     due: Deliveries<'s>,
+    /// The pool's wait budgets, for each participant's `work`.
+    waits: BlockWaits,
 }
 
 /// Run one block's ops on `pool`. Returns the events dropped and whether a
@@ -360,6 +372,9 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             outputs: SplitMut::new(b.outputs, outputs),
             workers: SplitMut::new(workers, worker_claims),
             due: b.due,
+            // No test pins that this is the pool's and not the defaults:
+            // a render cannot tell how long a participant waited.
+            waits: pool.waits(),
         };
         let wake = (*wake).clamp(1, pool.participants());
         pool.run(wake, &|w| shared.participate(w));
@@ -394,7 +409,7 @@ impl Shared<'_, '_> {
             Participant::Helper(w)
         };
         let r = catch_unwind(AssertUnwindSafe(|| {
-            self.graph.work(who, |t| {
+            self.graph.work(who, self.waits, |t| {
                 let span = self.plan.tasks[t as usize];
                 for &op in &self.plan.task_ops[span.range()] {
                     self.run_op(&self.plan.ops[op as usize], &mut ws);

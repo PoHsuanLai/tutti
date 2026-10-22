@@ -82,9 +82,9 @@
 //!
 //! A participant with nothing to take while tasks are still running spins.
 //! The audio thread ([`Participant::Caller`]) waits until the block is done:
-//! it spins, and on Linux, once no task has finished anywhere for 250 µs,
-//! it yields its core once and spins again (`SpinThenYield`,
-//! `src/rt/spin.rs`). A healthy block rarely waits that long without a task
+//! it spins, and on Linux, once no task has finished anywhere for
+//! [`BlockWaits::caller_yield_after`] (250 µs by default), it yields its
+//! core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A healthy block rarely waits that long without a task
 //! finishing, so its wait is the plain spin. `remaining` counts only sinks,
 //! so it is not that signal: each helper also counts the tasks it finishes
 //! on a counter of its own (`progress`, a cache line per helper, a plain
@@ -101,16 +101,20 @@
 //! to another task for a slice, which is why only a stuck wait yields.
 //! Elsewhere than Linux the caller only spins (`src/rt/spin.rs`, "Only on
 //! Linux").
-//! A [`Participant::Helper`] spins at most `HELPER_SPINS` times in a row and
-//! then **leaves** `work`, forfeiting the rest of the block, rather than
+//! A [`Participant::Helper`] with nothing to take spins for at most
+//! [`BlockWaits::helper_leave_after`] (15 µs by default; `SpinThenLeave`)
+//! and then **leaves** `work`, forfeiting the rest of the block, rather than
 //! yielding: the caller waits for every helper still inside the job before
 //! the block ends, so a helper that yielded the CPU while inside it would
 //! make the audio thread wait on the scheduler. Its idle backoff (yield,
 //! park) happens outside the job, in the pool.
+//!
+//! Both budgets are the pool's ([`BlockWaits`]): `work` takes them per call,
+//! so one graph can run on any pool.
 
 use sync::{AtomicBool, AtomicU32, Ordering};
 
-use super::spin::SpinThenYield;
+use super::spin::{BlockWaits, SpinThenLeave, SpinThenYield};
 
 mod sync {
     #[cfg(loom)]
@@ -118,18 +122,6 @@ mod sync {
     #[cfg(not(loom))]
     pub(super) use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 }
-
-/// How many waits in a row a [`Participant::Helper`] spins with nothing to
-/// take before it leaves [`TaskGraph::work`]. A wait is a ready-list `pop`
-/// attempt, a load of `remaining` and a `spin_loop` hint: from about 10 ns
-/// to about 100 ns depending on the core and on contention (a `pause` is
-/// about 14 ns on the VM measured in doc 013, 50 to 70 ns on Intel since
-/// Skylake). So this is roughly 10 to 100 µs: long enough to pick up the
-/// successors of a task another participant is finishing, short enough that
-/// a helper behind a long critical-path node goes back to its pool. A count,
-/// so it differs across cores; a time budget like the caller's
-/// (`src/rt/spin.rs`) is the alternative.
-const HELPER_SPINS: u32 = if cfg!(loom) { 2 } else { 1024 };
 
 /// An empty ready-list entry.
 const EMPTY: u32 = u32::MAX;
@@ -140,8 +132,8 @@ const PROGRESS_SLOTS: usize = 8;
 
 /// Waits between two reads of the helpers' completion counters by a waiting
 /// caller: each read takes the counters' lines from their helpers, so it is
-/// rare next to the caller's 250 µs budget (a wait is 10 to 100 ns, see
-/// `HELPER_SPINS`). Under loom, every wait.
+/// rare next to the caller's budget, 250 µs by default (a wait is 10 to
+/// 100 ns, see `src/rt/spin.rs`'s `CLOCK_EVERY`). Under loom, every wait.
 const PROGRESS_EVERY: u32 = if cfg!(loom) { 1 } else { 64 };
 
 /// An atomic on a cache line pair of its own (128 bytes: adjacent-line
@@ -154,13 +146,13 @@ struct Padded<T>(T);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Participant {
     /// The audio thread: spins while it waits, and on Linux yields its core
-    /// once per 250 µs in which no task finished (see the module docs,
-    /// "Waiting").
+    /// once per [`BlockWaits::caller_yield_after`] in which no task finished
+    /// (see the module docs, "Waiting").
     Caller,
     /// A worker thread, by its index among the participants (the pool's
-    /// `1..`; it picks the completion counter the caller watches): spins a
-    /// bounded number of times, then leaves the block to the others (see
-    /// `HELPER_SPINS`).
+    /// `1..`; it picks the completion counter the caller watches): spins for
+    /// at most [`BlockWaits::helper_leave_after`] with nothing to take, then
+    /// leaves the block to the others.
     Helper(usize),
 }
 
@@ -334,16 +326,17 @@ impl TaskGraph {
     /// Participate in the block: take ready tasks and hand each to `run`,
     /// which gets the task index. A [`Participant::Caller`] returns when
     /// every task has run or the block is aborted; a [`Participant::Helper`]
-    /// may also return earlier, after `HELPER_SPINS` waits with nothing to
-    /// take. Any number of participants, including one caller, runs every
-    /// task exactly once, each after all its predecessors.
-    pub fn work(&self, who: Participant, mut run: impl FnMut(u32)) {
-        // Helper: waits in a row with nothing to take.
-        let mut idle = 0u32;
+    /// may also return earlier, after [`BlockWaits::helper_leave_after`]
+    /// with nothing to take. `waits` are the pool's budgets (the module
+    /// docs, "Waiting"). Any number of participants, including one caller,
+    /// runs every task exactly once, each after all its predecessors.
+    pub fn work(&self, who: Participant, waits: BlockWaits, mut run: impl FnMut(u32)) {
+        // Helper: its wait with nothing to take.
+        let mut idle = SpinThenLeave::new(waits.helper_leave_after);
         // Caller: its wait, on every task finishing anywhere: the sinks'
         // `remaining`, its own tasks, and the helpers' counters, read once
         // per `PROGRESS_EVERY` waits.
-        let mut caller = SpinThenYield::new(u32::MAX);
+        let mut caller = SpinThenYield::new(u32::MAX, waits.caller_yield_after);
         let (mut mine, mut theirs, mut polls) = (0u32, 0u32, 0u32);
         // Helper: its completion counter.
         let progress = match who {
@@ -374,17 +367,15 @@ impl TaskGraph {
                             caller.wait(left.wrapping_add(mine).wrapping_add(theirs));
                         }
                         Participant::Helper(_) => {
-                            idle += 1;
-                            if idle > HELPER_SPINS {
+                            if !idle.wait() {
                                 return;
                             }
-                            helper_spin();
                         }
                     }
                     continue;
                 }
             };
-            idle = 0;
+            idle.reset();
             run(t);
             // Progress for a waiting caller. The one writer of its slot
             // (unless more than `PROGRESS_SLOTS` helpers share one, when a
@@ -419,17 +410,6 @@ impl std::fmt::Debug for TaskGraph {
             .field("roots", &self.roots.len())
             .finish()
     }
-}
-
-/// One step of a helper's wait for work another participant is finishing.
-/// A helper never yields inside the block (see the module docs, "Waiting"):
-/// it leaves instead, after `HELPER_SPINS` of these.
-fn helper_spin() {
-    // loom needs a yield to let another thread run.
-    #[cfg(loom)]
-    loom::thread::yield_now();
-    #[cfg(not(loom))]
-    std::hint::spin_loop();
 }
 
 #[cfg(all(test, not(loom)))]
@@ -467,7 +447,7 @@ mod tests {
                         g.abort();
                     }
                 });
-                g.work(Participant::Caller, |t| order.push(t));
+                g.work(Participant::Caller, BlockWaits::DEFAULT, |t| order.push(t));
                 let _ = done_tx.send(());
             });
             assert!(g.done(), "the block finished: {order:?}");
@@ -513,7 +493,7 @@ mod tests {
                         } else {
                             Participant::Helper(w)
                         };
-                        g.work(who, |t| {
+                        g.work(who, BlockWaits::DEFAULT, |t| {
                             if t == 33 {
                                 let done = (1..=32)
                                     .filter(|&m| {
@@ -542,8 +522,8 @@ mod tests {
     /// helper that has nothing to do (so never for one the OS descheduled
     /// while it yielded).
     ///
-    /// Mutation: make `wait` return `true` for a helper past its budget (the
-    /// old spin-then-yield) → the helper stays until the block is done, which
+    /// Mutation: make `SpinThenLeave::wait` return `true` past its budget
+    /// (the helper never leaves) → the helper stays until the block is done, which
     /// waits on the caller's task, which waits on the helper → the
     /// `recv_timeout` fails (run: fails after 10 s).
     #[test]
@@ -560,11 +540,11 @@ mod tests {
             let helper = s.spawn(move || {
                 go_rx.recv().unwrap();
                 let mut n = 0;
-                g.work(Participant::Helper(1), |_| n += 1);
+                g.work(Participant::Helper(1), BlockWaits::DEFAULT, |_| n += 1);
                 left_tx.send(g.done()).unwrap();
                 n
             });
-            g.work(Participant::Caller, |t| {
+            g.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
                 if t != 0 {
                     return;
                 }
@@ -611,7 +591,7 @@ mod tests {
         let saw_yield = std::thread::scope(|s| {
             let helper = s.spawn(move || {
                 let mut saw = false;
-                g.work(Participant::Helper(1), |t| {
+                g.work(Participant::Helper(1), BlockWaits::DEFAULT, |t| {
                     if t != 0 {
                         return;
                     }
@@ -629,8 +609,8 @@ mod tests {
             });
             held_rx.recv().unwrap();
             crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(crate::rt::spin::CALLER_YIELD_AFTER / 4);
-            g.work(Participant::Caller, |t| {
+            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
+            g.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });
             helper.join().unwrap()
@@ -640,6 +620,92 @@ mod tests {
             "the caller never yielded while the helper held task 0"
         );
         assert!(g.done());
+    }
+
+    /// A helper spins for the budget it is given, not the default: with a
+    /// budget of an hour and its clock stepping the default budget per read,
+    /// it stays in the block while the caller holds task 0 for 50 ms, and
+    /// leaves only once the block is done. (A helper descheduled for those
+    /// 50 ms would pass this either way; it cannot fail spuriously.)
+    ///
+    /// Mutation (run): build the helper's `SpinThenLeave` from
+    /// `BlockWaits::DEFAULT` instead of `waits` → it leaves on its third
+    /// clock read, with the block not done → fails.
+    #[test]
+    fn a_helper_spins_for_the_pools_budget() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let waits = BlockWaits {
+            helper_leave_after: Duration::from_secs(3600),
+            ..BlockWaits::DEFAULT
+        };
+        // 0 → 1: while the caller runs 0, nothing is ready.
+        let mut g = TaskGraph::new(&[0, 1], &[0, 1, 1], &[1]);
+        g.begin();
+        let g = &g;
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (left_tx, left_rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                go_rx.recv().unwrap();
+                crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.helper_leave_after);
+                g.work(Participant::Helper(1), waits, |_| {});
+                left_tx.send(g.done()).unwrap();
+            });
+            g.work(Participant::Caller, waits, |t| {
+                if t != 0 {
+                    return;
+                }
+                go_tx.send(()).unwrap();
+                if let Ok(done) = left_rx.recv_timeout(Duration::from_millis(50)) {
+                    assert!(done, "the helper left with the block not done");
+                }
+            });
+        });
+        assert!(g.done());
+    }
+
+    /// The caller yields after the budget it is given, not the default: with
+    /// a budget of an hour and its clock stepping the default budget per
+    /// read, it waits 50 ms on a helper holding task 0 without yielding.
+    /// Linux only, as the yield is.
+    ///
+    /// Mutation (run): build the caller's `SpinThenYield` from
+    /// `BlockWaits::DEFAULT` instead of `waits` → it yields on its second
+    /// clock read → fails.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn the_caller_yields_after_the_pools_budget() {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        static YIELDED: AtomicU32 = AtomicU32::new(0);
+        let waits = BlockWaits {
+            caller_yield_after: Duration::from_secs(3600),
+            ..BlockWaits::DEFAULT
+        };
+        let mut g = TaskGraph::new(&[0, 1], &[0, 1, 1], &[1]);
+        g.begin();
+        let g = &g;
+        let (held_tx, held_rx) = mpsc::channel();
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                g.work(Participant::Helper(1), waits, |t| {
+                    if t == 0 {
+                        held_tx.send(()).unwrap();
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                });
+            });
+            held_rx.recv().unwrap();
+            crate::rt::spin::tests::count_yields_into(&YIELDED);
+            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
+            g.work(Participant::Caller, waits, |t| {
+                panic!("the caller took task {t}, which the helper holds or runs inline")
+            });
+        });
+        assert!(g.done());
+        assert_eq!(YIELDED.load(std::sync::atomic::Ordering::Acquire), 0);
     }
 
     /// Every task a helper finishes, sink or not, moves its completion
@@ -654,11 +720,15 @@ mod tests {
         let slot = |g: &TaskGraph, i: usize| g.progress[i].0.load(Ordering::Relaxed);
         let mut g = diamond();
         g.begin();
-        g.work(Participant::Helper(PROGRESS_SLOTS + 1), |_| {});
+        g.work(
+            Participant::Helper(PROGRESS_SLOTS + 1),
+            BlockWaits::DEFAULT,
+            |_| {},
+        );
         assert!(g.done());
         assert_eq!(slot(&g, 1), 5, "five tasks, one of them a sink");
         g.begin();
-        g.work(Participant::Caller, |_| {});
+        g.work(Participant::Caller, BlockWaits::DEFAULT, |_| {});
         assert!((0..PROGRESS_SLOTS).all(|i| slot(&g, i) == if i == 1 { 5 } else { 0 }));
     }
 
@@ -671,7 +741,7 @@ mod tests {
         let mut g = diamond();
         g.begin();
         let mut ran = 0;
-        g.work(Participant::Caller, |_| {
+        g.work(Participant::Caller, BlockWaits::DEFAULT, |_| {
             ran += 1;
             g.abort();
         });
@@ -680,7 +750,7 @@ mod tests {
         g.begin();
         assert!(!g.aborted());
         let mut ran = 0;
-        g.work(Participant::Caller, |_| ran += 1);
+        g.work(Participant::Caller, BlockWaits::DEFAULT, |_| ran += 1);
         assert_eq!(ran, 5);
     }
 

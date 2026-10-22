@@ -26,16 +26,23 @@
 //! The caller **never waits for a helper to wake**: it starts on the job at
 //! once, and a helper that is still waking when the job's tasks run out
 //! never enters it. It waits only for helpers already inside the job, and a
-//! helper inside a job never yields or parks there: it takes tasks, spins a
-//! bounded number of times when none is ready, and then leaves the job
-//! (`tutti_types::TaskGraph`'s "Waiting"). Yielding and parking happen only
-//! between jobs, outside the gate.
+//! helper inside a job never yields or parks there: it takes tasks, spins
+//! for [`WorkerPoolBuilder::helper_leave_after`] (15 µs by default) when
+//! none is ready, and then leaves the job (`tutti_types::TaskGraph`'s
+//! "Waiting"). Yielding and parking happen only between jobs, outside the
+//! gate.
 //!
 //! The caller's own wait, for a helper still running a task or still inside
-//! the gate, spins, and on Linux yields its core once per 250 µs in which
+//! the gate, spins, and on Linux yields its core once per
+//! [`WorkerPoolBuilder::caller_yield_after`] (250 µs by default) in which
 //! the helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is
 //! for a helper queued behind the caller on the caller's core, and it only
 //! helps one at the caller's priority (below).
+//!
+//! The pool's four waits are its builder's: [`spin`](WorkerPoolBuilder::spin)
+//! and [`idle`](WorkerPoolBuilder::idle) between jobs, and the two inside a
+//! job above, which the executor reads through `Pool::waits` and the gate
+//! keeps for its close (`tutti_types::BlockWaits`).
 //!
 //! # Priority
 //!
@@ -65,7 +72,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
-use tutti_graph::Pool;
+use tutti_graph::{BlockWaits, Pool};
 use tutti_types::JobGate;
 
 /// A hook run once on each helper thread as it starts, with its index
@@ -166,6 +173,7 @@ pub struct WorkerPoolBuilder {
     participants: usize,
     spin: Duration,
     idle: Duration,
+    waits: BlockWaits,
     on_start: Option<OnStart>,
     name: String,
 }
@@ -181,6 +189,27 @@ impl WorkerPoolBuilder {
     /// How long it then yields its core before parking. Default 500 µs.
     pub fn idle(mut self, d: Duration) -> Self {
         self.idle = d;
+        self
+    }
+
+    /// Inside a job, how long the caller (the audio thread) waits on a
+    /// helper with no task finishing before it yields its core once, on
+    /// Linux and Android; elsewhere it only spins. Default 250 µs: longer
+    /// than a healthy block goes without a task finishing, and short enough
+    /// that a helper starved behind a `SCHED_FIFO` caller on its core gets
+    /// it back with most of a 64-frame block left
+    /// ([`BlockWaits::caller_yield_after`]).
+    pub fn caller_yield_after(mut self, d: Duration) -> Self {
+        self.waits.caller_yield_after = d;
+        self
+    }
+
+    /// Inside a job, how long a helper with no task to take spins before it
+    /// leaves the job to the others. Default 15 µs: enough to pick up the
+    /// successors of a task another participant is finishing
+    /// ([`BlockWaits::helper_leave_after`]).
+    pub fn helper_leave_after(mut self, d: Duration) -> Self {
+        self.waits.helper_leave_after = d;
         self
     }
 
@@ -209,7 +238,7 @@ impl WorkerPoolBuilder {
     pub fn build(self) -> WorkerPool {
         let helpers = self.participants - 1;
         let shared = Arc::new(Shared {
-            gate: JobGate::new(self.participants),
+            gate: JobGate::with_waits(self.participants, self.waits),
             stop: AtomicBool::new(false),
             sleepers: (0..helpers)
                 .map(|_| Sleeper {
@@ -280,6 +309,7 @@ impl WorkerPool {
             participants,
             spin: Duration::from_micros(50),
             idle: Duration::from_micros(500),
+            waits: BlockWaits::DEFAULT,
             on_start: None,
             name: "tutti-worker".into(),
         }
@@ -303,6 +333,13 @@ impl Pool for WorkerPool {
         shared
             .gate
             .try_run(job, || shared.wake(wake.saturating_sub(1)))
+    }
+
+    /// The builder's [`caller_yield_after`](WorkerPoolBuilder::caller_yield_after)
+    /// and [`helper_leave_after`](WorkerPoolBuilder::helper_leave_after),
+    /// as the gate holds them.
+    fn waits(&self) -> BlockWaits {
+        self.shared.gate.waits()
     }
 }
 
@@ -436,6 +473,27 @@ mod tests {
         }));
         assert_eq!(nested.load(Ordering::Relaxed), 1, "the nested call refused");
         assert_eq!(inner.load(Ordering::Relaxed), 0);
+    }
+
+    /// The builder's in-job waits are what the pool reports to the executor
+    /// and what its gate's close waits by; a pool built without them reports
+    /// the defaults.
+    ///
+    /// Mutations (run): drop `caller_yield_after`'s store → fails; build the
+    /// gate with `JobGate::new` (the defaults) → fails.
+    #[test]
+    fn the_in_job_waits_are_the_builders() {
+        let waits = BlockWaits {
+            caller_yield_after: Duration::from_micros(400),
+            helper_leave_after: Duration::from_micros(3),
+        };
+        let pool = WorkerPool::builder(2)
+            .caller_yield_after(waits.caller_yield_after)
+            .helper_leave_after(waits.helper_leave_after)
+            .build();
+        assert_eq!(pool.waits(), waits);
+        assert_eq!(pool.shared.gate.waits(), waits);
+        assert_eq!(WorkerPool::new(2).waits(), BlockWaits::DEFAULT);
     }
 
     /// A one-participant pool runs every job on the caller.

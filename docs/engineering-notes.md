@@ -310,51 +310,6 @@ exhaustively, and `registering_and_dropping_readers` at a preemption bound of
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 
-### The butler queue's close handshake (an exception to the loom rule)
-
-`tutti-sampler`'s butler command queue (`butler/queue.rs`, crate-private) is
-lock-free runtime state the audio thread touches, and it lives in
-`tutti-sampler`, with no loom model. It is the one exception, and this is why.
-
-It is a `crossbeam_queue::ArrayQueue`, std's park token for the wake, and a
-`closed` flag. The queue and the token bring their own ordering. The one
-argument the queue owns is the close handshake, which keeps a command from
-being reported sent and never popped:
-
-- The closer (the butler thread on its way out, or `stop` on a controller
-  that never started) stores `closed`, issues a `SeqCst` fence, then drains.
-- A sender pushes, issues a `SeqCst` fence, then loads `closed`, and reports
-  the butler gone if it is set. It also checks `closed` before the push, but
-  only as a fast path, so a send after the close pushes nothing.
-
-This is store-buffering with a fence on each side, as in `rt/job_gate.rs`.
-In C++20 terms the two fences are ordered in the single total order `S`.
-If the closer's fence comes first, the sender's load after its fence sees
-`closed`. If the sender's fence comes first, the drain's loads after the
-closer's fence see the push's stamp store, so the drain pops the command.
-Either way the command is not stranded. The cost of the overlap: a command
-can be both popped (run by a last cycle, or dropped by the drain) and
-reported gone. The module docs state that meaning.
-
-Why no loom model:
-
-- crossbeam has no `cfg(loom)` build, so a model cannot run the shipped
-  queue. It could run the handshake only over a stand-in queue, and the
-  rule asks for the shipped code.
-- Moving the queue into `tutti-types` to host such a model would add a
-  type there that wraps one crate's queue for one consumer.
-
-What covers it instead:
-
-- `a_push_after_the_final_drain_reports_closed` pins the recheck
-  deterministically, by running the sender's half after the close.
-- `closing_drains_what_is_queued` pins the drain.
-
-Nothing pins the fences. On x86 crossbeam's tail CAS is already a full
-barrier, so removing either fence passes every test there, as it does for
-`ArcLend` outside loom and miri. If this handshake ever grows past one
-flag and one drain, move it to `tutti-types` and model it.
-
 ### `ScopedNoDenormals`, and why not `no_denormals`
 
 Setting FTZ/DAZ (x86 MXCSR) or FZ (aarch64 FPCR) and running Rust under it

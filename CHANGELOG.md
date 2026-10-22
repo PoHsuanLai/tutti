@@ -34,6 +34,16 @@ Migration: a direct caller of `TaskGraph::work` passes its pool's
 non-default waits); one with no settings of its own returns
 `BlockWaits::DEFAULT`.
 
+### Changed — `BusStripNode` declares `Cost::Light`
+
+Its channel-major kernel, re-measured, is far under the `Light`/`Moderate`
+boundary steady or ramping. With its volume fed per frame it is borderline
+(about 0.7 of the way from a gain to `SvfFilterNode` on a log scale, the
+boundary about 0.73), and is classed `Light` because a wrong `Light` costs
+little (design doc 013, "The cost model and coarsening"). Strips now pack
+with other cheap siblings. Nothing to migrate: a class changes how a
+block is spread, never a sample.
+
 ### Added — `clap.thread-pool` served from a worker pool
 
 `tutti-clap-host` runs a plugin's `clap.thread-pool` requests on a
@@ -823,7 +833,7 @@ compiles to nothing (see the PR for the verification).
   | a pool spread every plan of two or more tasks, waking `Plan::task_width()` participants | a pool spreads what `Plan::schedule` says pays, from its `from` block length up, waking its `wake` participants; `Executor::is_parallel()` reports that verdict |
   | `Plan::tasks()` were fused chains | tasks are fused chains with cheap siblings (one predecessor set) packed together; a task's ops are ascending but need not be ordered by the DAG (the verifier checks every dependency) |
   | a graph whose nodes declare nothing spread whenever it had two tasks | its nodes are still each worth a task (`Heavy`), but its copy and event ops are priced cheap and may pack, the wake count is `max(work / critical, widest level)` (at least 2), and a plan whose only parallelism is in those ops may run serially |
-  | — | `tutti-nodes`' filters, oscillators, dynamics, delays and modulation declare `Cost::Moderate`; its sums, downmix, brickwall and test stimuli `Cost::Light`; the bus strip `Cost::Moderate` (it was `Light`: measured 3.7 ns per frame and channel); convolution declares nothing (`Heavy`) |
+  | — | `tutti-nodes`' filters, oscillators, dynamics, delays and modulation declare `Cost::Moderate`; its sums, downmix, brickwall and test stimuli `Cost::Light`; the bus strip `Cost::Light` (re-measured after its kernel was vectorised; see "Changed — `BusStripNode` declares `Cost::Light`"); convolution declares nothing (`Heavy`) |
   | — | the other crates' nodes declare from measured per-frame costs: the MIDI nodes (clip, harmony, clock, queue, input, out) `Cost::Light`; `MemorySource`, `DiskSource`, `DiskVoice`, a plain `VoiceNode`, `VbapPannerNode`, `ClickNode` and `MicMonitorNode` `Cost::Moderate`; `PolySynth` `Moderate` up to 16 oscillator lanes (`max_voices` × unison) and `Heavy` past them; a stretched `VoiceNode`, `VoicePool`, `SoundFontUnit` and `HrtfBinauralNode` `Heavy` (stated); plugin nodes and `PluginAutomation` still declare nothing (`Heavy`) |
   | packing ran once, so cheap siblings each wired to their own outputs could pack to more tasks than undeclared | passes 2 and 3 (pack siblings, fuse chains) repeat to a fixed point; the critical path is still never longer than chain fusion alone gives |
 

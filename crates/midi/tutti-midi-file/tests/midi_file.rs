@@ -411,3 +411,75 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
     assert!(off.is_note_off() && !off.is_note_on(), "{off:?}");
     assert_eq!(op(&off), (0x4, 0x8), "an explicit MIDI 2.0 note-off");
 }
+
+/// **A NaN beat is refused by the SMF writer, not a panic.** The sort used
+/// `partial_cmp(..).unwrap()`, which panics the moment a NaN is compared;
+/// a NaN has no tick, so `encode_midi_file` rejects it at the boundary.
+///
+/// Mutation (run): drop the non-finite check in `encode_midi_file` and
+/// restore the `partial_cmp(..).unwrap()` sort → the call panics instead
+/// of returning `InvalidConfig`.
+#[test]
+fn a_nan_beat_is_an_smf_encode_error() {
+    let note = |beat: f64, key: u8| SmfTimedEvent {
+        time_beats: Beat(beat),
+        channel: 0,
+        msg: SmfMessage::NoteOn {
+            key: key.into(),
+            vel: 100.into(),
+        },
+    };
+    let tracks = [vec![note(1.0, 60), note(f64::NAN, 61), note(0.0, 62)]];
+    let got = encode_midi_file(&tracks, &MidiWriteConfig::default());
+    assert!(
+        matches!(got, Err(Error::InvalidConfig(_))),
+        "a NaN beat must be refused, got {got:?}"
+    );
+}
+
+/// **A non-finite beat in a clip writer's input does not disorder the
+/// rest.** The clip writer is infallible, and a NaN or an infinity has no
+/// tick: each sorts by `total_cmp` (`-inf` first, `+inf` and a NaN after
+/// every finite beat) and lands with a zero delta at the previous event's
+/// tick, while the finite events keep their beat order and ticks.
+///
+/// Mutations (run):
+/// - restore `partial_cmp(..).unwrap_or(Equal)` → the NaN is "equal" to
+///   everything, the insertion sort stops at it, and beat 0.0 stays after
+///   beat 1.0 (written at tick 480 instead of 0).
+/// - drop the non-finite early return and restore `(tick - prev_tick)`:
+///   the `-inf` beat sets `prev_tick` to `i64::MIN` and the next event's
+///   subtraction overflows (a panic under the test profile).
+/// - drop only the early return (keep `saturating_sub` and the clamp): the
+///   `+inf` beat saturates to `i64::MAX` and lands `u32::MAX` ticks after
+///   beat 1.0 instead of on it.
+#[test]
+fn a_non_finite_beat_sorts_without_moving_a_clip() {
+    let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
+    let bytes = write_clip_file_from_beats(
+        TPQ,
+        [
+            (Beat(1.0), MidiEvent::note_on(g, c, 60, 0x8000)),
+            (Beat(f64::NAN), MidiEvent::note_on(g, c, 61, 0x8000)),
+            (Beat(0.0), MidiEvent::note_on(g, c, 62, 0x8000)),
+            (
+                Beat(f64::NEG_INFINITY),
+                MidiEvent::note_on(g, c, 63, 0x8000),
+            ),
+            (Beat(f64::INFINITY), MidiEvent::note_on(g, c, 64, 0x8000)),
+        ],
+    );
+    let clip = MidiFile::from_bytes(&bytes).expect("the clip decodes");
+    let got: Vec<(Beat, Option<u8>)> = clip.timed().map(|(b, e)| (b, e.note())).collect();
+    assert_eq!(
+        got,
+        vec![
+            (Beat(0.0), Some(63)),
+            (Beat(0.0), Some(62)),
+            (Beat(1.0), Some(60)),
+            (Beat(1.0), Some(64)),
+            (Beat(1.0), Some(61)),
+        ],
+        "finite beats in order, each non-finite one at a zero delta"
+    );
+}

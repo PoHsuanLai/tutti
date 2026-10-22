@@ -178,6 +178,12 @@ impl PluginBridge {
         self.audio.audio_buffer()
     }
 
+    /// The bridge thread's count of MIDI events it did not send. See
+    /// [`AudioBridge::dropped_midi_cell`](super::audio::AudioBridge::dropped_midi_cell).
+    pub(crate) fn dropped_midi_cell(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.audio.dropped_midi_cell()
+    }
+
     pub fn is_crashed(&self) -> bool {
         self.audio.is_crashed()
     }

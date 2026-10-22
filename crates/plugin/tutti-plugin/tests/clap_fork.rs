@@ -1169,7 +1169,7 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 /// 512-frame chunk send 256 and count the other 44 on its controls. A chunk
 /// within the cap adds nothing.
 ///
-/// Mutation (run): the drop not counted (`fetch_add` removed from
+/// Mutation (run): the drop not counted (`count_midi_dropped` removed from
 /// `PluginChunks::take`) → the count stays 0 → fails.
 #[test]
 fn midi_past_the_chunks_capacity_is_counted() {

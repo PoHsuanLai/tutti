@@ -23,6 +23,7 @@ mod points;
 mod presets;
 mod process;
 mod render_mode;
+mod sysex;
 mod transport;
 
 // Test-only global allocator for the no-alloc gates: panics on any heap
@@ -85,6 +86,7 @@ pub use parameters::{
 pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
+pub use sysex::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY};
 pub use transport::{
     is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
 };

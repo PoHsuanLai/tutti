@@ -1725,3 +1725,38 @@ fn a_block_past_the_scratch_is_rendered_in_runs() {
         }
     }
 }
+
+/// **A rate change keeps the configured window.** The grid is rebuilt at the
+/// new rate from the vocoder's own window and hop, not the default size: a
+/// 1024 or 4096 window that came back as 2048 would disagree with the
+/// buffers the vocoder allocated for its real size.
+///
+/// Pinned two ways: the reported latency is still the configured window,
+/// and the unit still transposes an octave correctly at the new rate (the
+/// same frequency invariant as `pitch_shift_transposes_by_the_requested_interval`).
+///
+/// Mutation (run): rebuild with `FftSize::default()` in `set_sample_rate`
+/// (the old code) → the latency reads 2048 for every non-default size, and
+/// the render at the new rate is no longer an octave up.
+#[test]
+fn a_rate_change_keeps_a_non_default_fft_size() {
+    let sr = 96_000.0f32;
+    for size in [FftSize::N1024, FftSize::N4096, FftSize::N8192] {
+        let mut u = Unit::with_fft_size_and_channels(48_000.0, size, ChannelLayout::MONO);
+        u.set_pitch_cents(Cents::new(1200.0));
+        u.set_sample_rate(SampleRate(f64::from(sr)));
+        assert_eq!(
+            u.latency_samples(),
+            size.size().get(),
+            "{size}: the window after a rate change"
+        );
+
+        let out = render_440(&u, sr, 96_000);
+        let settled = &out[48_000..48_000 + 16_384];
+        let got = dominant_hz(settled, sr);
+        assert!(
+            (got - 880.0).abs() < 880.0 * 0.02,
+            "{size}: wanted 880 Hz an octave up at the new rate, got {got:.1} Hz"
+        );
+    }
+}

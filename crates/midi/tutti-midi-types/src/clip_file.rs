@@ -216,7 +216,10 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 /// inter-event delta ticks for you, so you never accumulate deltas by hand.
 /// Input need not be sorted — events are ordered by beat first; a zero or
 /// negative gap (simultaneous or slightly out-of-order events) becomes a
-/// zero-tick delta.
+/// zero-tick delta. A non-finite beat has no tick: it is written with a
+/// zero-tick delta wherever it sorts (`+inf` and a NaN after every other
+/// event, `-inf` and a NaN whose sign bit is set before them). A gap longer
+/// than `u32::MAX` ticks is clamped to it.
 ///
 /// ```
 /// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
@@ -234,14 +237,27 @@ pub fn write_clip_file_from_beats(
 ) -> Vec<u8> {
     let tpq = f64::from(ticks_per_quarter);
     let mut timed: Vec<(Beat, MidiEvent)> = events.into_iter().collect();
-    timed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+    // `total_cmp`: a total order even with a NaN beat, which a partial
+    // order made `Equal` to everything (an inconsistent order the sort may
+    // panic on).
+    timed.sort_by(|a, b| a.0.get().total_cmp(&b.0.get()));
 
     let mut prev_tick: i64 = 0;
     let clip_events: Vec<ClipEvent> = timed
         .into_iter()
         .map(|(beat, event)| {
-            let tick = (beat.get() * tpq).round() as i64;
-            let delta = (tick - prev_tick).max(0) as u32;
+            let pos = (beat.get() * tpq).round();
+            // A non-finite beat has no tick: write it at the previous
+            // event's tick. `as i64` would saturate ±inf to `i64::MAX`/`MIN`
+            // and the subtraction below would overflow on the next event.
+            if !pos.is_finite() {
+                return ClipEvent::new(0, event);
+            }
+            // `as i64` saturates a huge finite position; the gap saturates
+            // too, and a gap past `u32::MAX` ticks is clamped rather than
+            // truncated (`push_delta` splits any `u32` into DCS restarts).
+            let tick = pos as i64;
+            let delta = tick.saturating_sub(prev_tick).clamp(0, i64::from(u32::MAX)) as u32;
             prev_tick = tick;
             ClipEvent::new(delta, event)
         })
@@ -323,7 +339,7 @@ impl ParsedClipFile {
     }
 
     /// Pair the event stream into whole notes with durations — the shape an
-    /// importer wants, and the MIDI-2 analogue of `tutti_midi_hardware::smf::tracks`.
+    /// importer wants, and the MIDI-2 analogue of `tutti_midi_file::smf::tracks`.
     ///
     /// Velocity stays 16-bit ([`ClipNote::velocity`]): pairing here rather than
     /// in a caller is what keeps a clip file's full-resolution velocity from
@@ -369,8 +385,8 @@ impl ParsedClipFile {
         // rather than one that depends on when their Note Offs arrived.
         out.sort_by(|a, b| {
             a.start_beats
-                .partial_cmp(&b.start_beats)
-                .unwrap_or(core::cmp::Ordering::Equal)
+                .get()
+                .total_cmp(&b.start_beats.get())
                 .then_with(|| (a.group, a.channel, a.note).cmp(&(b.group, b.channel, b.note)))
         });
         out
@@ -378,7 +394,7 @@ impl ParsedClipFile {
 }
 
 /// One note from a clip file, paired from its Note On / Note Off, in beats from
-/// the clip start. The MIDI-2 counterpart of `tutti_midi_hardware::smf::SmfNote` —
+/// the clip start. The MIDI-2 counterpart of `tutti_midi_file::SmfNote` —
 /// same shape, but velocity keeps all 16 bits and the UMP group is carried.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipNote {

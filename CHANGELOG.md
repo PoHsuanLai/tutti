@@ -81,6 +81,53 @@ Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
 `ContentScale::IDENTITY` where the window's scale is not known, to
 `open_editor`.
 
+### Fixed — a SysEx longer than one UMP packet reaches plugins whole
+
+A SysEx7 message spanning several UMP packets (any message over six bytes)
+was truncated on its way into a VST3 plugin (the opening bytes, unterminated)
+and dropped entirely by the CLAP and VST2 hosts, which delivered no SysEx at
+all. Each host's input event list now reassembles the packets (across blocks
+when a message spans them) and hands the plugin one complete `0xF0 … 0xF7`
+message at its `END` packet's frame, without allocating on the audio thread.
+A message longer than `SYSEX_MESSAGE_CAPACITY` (64 KiB of payload, the cap the
+hardware input already had), one left open by a later `START`, one open when
+the plugin is reset or re-activated, or one that lost packets or a whole
+chunk on its way in is dropped whole and counted. One message is open at a
+time across all UMP groups (no plugin format has a SysEx group). Out of process the subprocess
+reassembles; the wire already carried every packet intact.
+
+A plugin node takes at most `MIDI_STACK_CAPACITY` (256) MIDI events a chunk
+(a device callback; a block for the in-process VST2 node). Past it, events
+were dropped silently; now they are counted, and the rest of a SysEx that lost
+a packet there is dropped too. Whole chunks of MIDI were also dropped silently
+(a chunk not staged, one refused because the queue was full or the server
+crashed, one the bridge skipped as stale, one still queued when the server
+crashed, the events taken towards a chunk at a reset or a re-prepare, an
+in-process VST2 block whose lock was contended); each is now
+counted, and a SysEx open in it is cut: its tail is dropped, counted, and
+never spliced onto a later message. The bridge filters what it sends with the
+same logic, so a stale skip cuts too. The cut holds across a reset or a
+re-prepare: the server keeps its reassembler across both, so a cut message's
+tail is dropped after them too. A VST3 plugin with an `IMidiMapping` table lost every event past
+64 a block (its CC route's scratch), and so got a long dump as a shorter message
+that looked complete; the route now holds the block's whole cap. The live
+hardware input emits a dump's packets into one block, so on that path a dump
+reaches a plugin only if it fits the chunk's 256 events (1536 payload bytes
+with nothing else in the chunk); see doc 004, A-4.
+
+| Was | Now |
+|---|---|
+| — | `tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY}`: the reassembler the hosts share |
+| — | `tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD`: the engine's SysEx payload cap, which the hardware input now reads instead of a private copy |
+| `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
+| `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
+| — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
+| `PluginControls::dropped_midi_in`, `InProcessVst2Controls::dropped_midi_in` counted past a chunk's cap only (the entry below) | MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent, skipped as stale or still queued at a crash, the events taken towards a chunk at a reset or re-prepare, and the rest of a SysEx cut by any of these |
+| VST2 staging grew its event lists on the audio thread past 64 events a block | reserved for `MIDI_STACK_CAPACITY`, never grown; past it an event is refused and counted by the new `Vst2Instance::dropped_midi_in` |
+| — | `SysExAssembler::reset` (the plugin's reset or re-activation: the open message is dropped, counted) and `SysExAssembler::lost_tail` (an upstream list overflowed: the open message is dropped, counted) |
+| — | `InputEventList::reset_sysex`, which `ClapActive::reset` and an in-place re-activation now call; a list you drive yourself calls it on the plugin's reset |
+| `tutti_clap_host::InputEventList::add_midi` dropped SysEx | reassembles it into `ClapEvent::MidiSysex`, whose `buffer` points into the list until its next `clear`. Call the new `InputEventList::reserve_sysex` (off the audio thread) on a list you build yourself, or every SysEx is dropped and counted (`InputEventList::sysex_dropped`); an activated instance reserves its own |
+
 ### Added — a DSP-load meter on the engine
 
 `Engine::process` and `process_segment` now time each call against its
@@ -136,6 +183,59 @@ no longer depends on `crossbeam-queue`.
 | — | `PoolDrops::loops_not_forwarded`: loop commands the drain refused because the handle did not forward them to the slot's own stream |
 | `send` returning `Err` for a streaming loop could leave the loop running on the butler | `Err` leaves the butler on its previous loop: a full queue is refused before the forward, and a forward whose command is then crowded out is undone |
 
+### Fixed — audio-thread allocation, de-zipper timing and four correctness bugs
+
+- **`LimiterNode` no longer allocates on the audio thread.** Its
+  window-minimum deque pushed before evicting the entry leaving the window,
+  so the first release (when every gain is larger than the last and the
+  deque keeps them all) took it one past its preallocated capacity; a clone
+  was sized to the entries it held. `tutti_nodes::buffer::MonotonicMinDeque`
+  now owns its window: `push` evicts by age first, and a clone keeps the
+  window's allocation.
+- **The HRTF panner's position glide takes 50 ms, as documented**, not
+  about 25.6 s: its smoothers were tuned per sample and stepped once per
+  512-sample convolution frame. Each step now covers its frame's 512
+  samples of the time constant. Renders of a moving `HrtfBinauralNode`
+  change: the source arrives where it was sent 512 times sooner. No test
+  pinned the slow glide.
+- **The sampler's stretch `Unit::set_sample_rate` keeps a non-default
+  `FftSize`.** It rebuilt every vocoder's grid at the default 2048 window,
+  which disagreed with the buffers a 1024/4096/8192 unit had allocated.
+- **SMF and clip writers no longer panic or disorder on a non-finite
+  beat.** `encode_midi_file` / `write_midi_file` return
+  `Error::InvalidConfig` for an event at a non-finite beat (the sort used
+  `partial_cmp(..).unwrap()`). `write_clip_file_from_beats` sorts with
+  `total_cmp` and writes a NaN or infinite beat at a zero delta where it
+  sorts (`-inf` first, `+inf` and NaN last), instead of stopping the sort,
+  overflowing the next delta (`-inf`) or landing ~8.9M beats out (`+inf`);
+  a gap past `u32::MAX` ticks is clamped. Every beat sort in the two crates
+  uses `total_cmp`.
+- **`step_loudness` carries a chunk's part frame into the next chunk**, as
+  `step_peaks` does. It dropped it, which moved every later sample of the
+  stream onto the wrong channel.
+- **`tutti_export::Flac::compression_level` is honoured.** It was accepted
+  and ignored; levels 0 to 8 now map onto flacenc's coding options,
+  modelled loosely on libFLAC's presets: fixed predictors only to 2, LPC at
+  an exact order of 6/8/12 from 3, 4 and 7, and side/mid-side stereo from
+  1. It is not libFLAC parity: the block size is 4096 at every level
+  (libFLAC uses 1152 for 0 to 2), level 3 keeps stereo decorrelation, and
+  levels 1 = 2, 4 = 5 = 6 and 7 = 8 encode identically. Output stays
+  lossless at every level; the default (5) writes LPC order 8 instead of
+  flacenc's own default of 10.
+
+| Was | Now |
+|---|---|
+| `MonotonicMinDeque::new(capacity_hint)` | `MonotonicMinDeque::new(window)`: the window length, which `push` enforces |
+| `MonotonicMinDeque::evict_older_than(min_index)` | removed: `push` evicts entries outside the window itself |
+| — | `MonotonicMinDeque::window()` |
+
+Migration: build the deque with the window length you passed as
+`capacity_hint`, and delete the `evict_older_than` call after each `push`;
+`push(index, value)` then answers `min()` over the last `window` indices. A
+caller that sets `Flac::compression_level` gets that level (set 5 for the
+default); one that writes SMF from computed beats handles the new
+`InvalidConfig` for a non-finite one.
+
 ### Fixed — the two-pass export's sample-rate conversion is linear
 
 `render_normalized_to_file` with a `Resample` pushes the whole render into
@@ -181,7 +281,7 @@ once per call. The output is bit-identical. Nothing to migrate.
 
 | Was | Now |
 |---|---|
-| the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()` |
+| the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()`, which also count a chunk lost whole and a SysEx cut (see the SysEx entry above) |
 | `FrameClock::advance` only | new `FrameClock::advance_to_wrap(frames, looping) -> Option<Samples>`: rolls to the loop's next wrap within `frames` and returns the frames rolled, or rolls them all and returns `None` |
 
 ### Changed — the in-block waits are per-pool settings, both timed

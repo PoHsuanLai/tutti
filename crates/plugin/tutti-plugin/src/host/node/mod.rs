@@ -70,6 +70,7 @@ mod controls;
 mod fork;
 mod graph_node;
 mod meter;
+mod midi_intake;
 mod param_delivery;
 // `pub(crate)` for the in-process VST2 node, which reads its event input's
 // parameter events through the same walk (see `param_delivery` below).
@@ -104,6 +105,7 @@ pub(crate) use capability_view::is_declined;
 pub use capability_view::TransportView;
 pub use controls::PluginControls;
 pub use meter::PluginMeter;
+pub(crate) use midi_intake::MidiIntake;
 pub use param_delivery::ParamDeliveryStats;
 // The in-process VST2 node (`crate::format::vst2_in_process`) delivers its
 // parameters through the same slots, segments and event walk as this node:
@@ -189,9 +191,9 @@ pub struct Bound {
     /// The chunk's parameter changes: a slot per parameter of the plugin,
     /// sized at bind, sending changes only (`param_delivery`).
     params: param_delivery::ParamDelivery,
-    /// Counts the event input's MIDI a chunk had no room for (the
-    /// controls' [`dropped_midi_in`](PluginControls::dropped_midi_in)).
-    midi_in_dropped: Arc<std::sync::atomic::AtomicU64>,
+    /// Takes the event input's MIDI into each chunk's capped list, carrying
+    /// across chunks which SysEx lost a packet there (`midi_intake`).
+    intake: MidiIntake,
 }
 
 impl std::fmt::Debug for Bound {
@@ -453,6 +455,9 @@ impl PluginClient<Unbound> {
     pub fn bind(self) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
         chunks.attach(self.bridge.audio_buffer());
+        self.controls
+            .delivery_counters()
+            .attach_bridge_midi(self.bridge.dropped_midi_cell());
         let io = Batcher::new(self.inputs, self.outputs, self.format, self.ceiling)
             .with_counters(chunks);
         // A slot per parameter: every parameter can move in one chunk. The
@@ -463,7 +468,6 @@ impl PluginClient<Unbound> {
             self.controls.delivery_counters(),
         );
         let meter = self.controls.meter.reader();
-        let midi_in_dropped = self.controls.midi_in_dropped_cell();
         let Self {
             bridge,
             descriptor,
@@ -509,7 +513,7 @@ impl PluginClient<Unbound> {
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),
                 params,
-                midi_in_dropped,
+                intake: MidiIntake::default(),
             },
         }
     }

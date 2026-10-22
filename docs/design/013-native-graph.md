@@ -291,13 +291,13 @@ the interpreter.
   latent path. `tutti_types::latency::plan` (the fundsp side) did not; it is
   now the same solve as the compiler's, and does
   ([the fork is deleted](#the-fork-is-deleted)).
-- **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
-  along with everything else. Once it comes from `Env`, `Cx` has to carry each
-  node's compiled **arrival latency** so the node reads the transport at its
-  own compensated time. The compiler already knows that number. `Cx`
-  carries it, and `Cx::transport_at` reads the transport that many frames
-  earlier, reaching before the block through the executor's
-  `TransportHistory`; see ["Arrival-aligned
+- **Env and PDC**: the beat comes from `Env`, not an audio signal PDC
+  would delay with everything else, so `Cx` carries each node's compiled
+  **arrival latency** and the node reads the transport at its own
+  compensated time. The compiler already knows that number, and
+  `Cx::transport_at` reads the transport that many frames earlier,
+  reaching before the block through the executor's `TransportHistory`;
+  see ["Arrival-aligned
   transport"](#arrival-aligned-transport).
 - **Executor, parallel**: per-task `AtomicU32` activation counters,
   128-byte padded, **self-reset after run** (supernova — no O(n) reset);
@@ -326,7 +326,7 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | Silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
-| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them; `AudioUnit::rebind_offline`, `MidiUnitIn::rebind_offline` and `MidiInPort::rebind_offline_into` take the same type. `ForkMode::Offline` now carries nothing: every node reads `Env`. `Timeline`/`OfflineClock`/`OfflineTransport` live in `tutti_core::transport`; an `OfflineTransport` is still built only from an `OfflineClock` (what an export hands its `PrepareEdit`; see [below](#nodes-read-time-from-env-the-offline-timeline-leaves-the-fork)) | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
+| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them. `ForkMode::Offline` now carries nothing: every node reads `Env`. `Timeline`/`OfflineClock`/`OfflineTransport` live in `tutti_core::transport`; an `OfflineTransport` is still built only from an `OfflineClock` (what an export hands its `PrepareEdit`; see [below](#nodes-read-time-from-env-the-offline-timeline-leaves-the-fork)) | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
 | **`Timeline::segment_generation() -> u64`**, required; `FrameClock::generation` moves on at every segment restart (seek, tempo or rate change, loop wrap) and at a play start, published by the engine's clock before the beat | A playhead read as a bare beat, with no way to tell a jump that lands on the same beat from no jump | The sampler's seat running on through a seek to the beat it stood on, or a one-block transport loop, instead of re-seating (`interp.rs` `Seat`, both tiers) |
 | **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
 | **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | A finding of #38's review (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
@@ -578,7 +578,7 @@ place that loses precision to be written out explicitly:
    within the block the event arrives in. A node finer than it declares
    passes.
 6. **The frame is the source of truth for the playhead.** Every
-   clock (`TransportClock` in a `Net` and driven by the graph engine,
+   clock (`TransportClock`, driven by the graph engine,
    `EnvClock`, `OfflineTimeline`) keeps an integer frame count on a
    **`TimelineSegment`** (`tutti-types`: origin frame, origin beat, tempo,
    rate) and derives the beat in closed form, `origin_beat + frames × tempo
@@ -3404,9 +3404,10 @@ Decisions:
 3. **`tutti-nodes` declares.** Filters, oscillators, LFOs, dynamics,
    delays and modulation effects are `Moderate`; sums, the downmix, the
    brickwall clip and the test stimuli are `Light`; the convolver (FFT
-   partitions) declares nothing. The bus strip is `Light`: its
-   channel-major kernel measures 0.06 ns per frame and channel steady and
-   at most 1.0 with its volume fed per frame (the table below).
+   partitions) declares nothing. The bus strip is `Light`: steady or
+   ramping its channel-major kernel is far under the boundary, and with
+   its volume fed per frame it is borderline (the table below and the
+   note after it).
 
    **The other crates declare too**, each class from a
    measured cost, not a guess. The method: each node driven alone through
@@ -3423,7 +3424,7 @@ Decisions:
 
    | node | ns / frame / channel | class |
    |---|---|---|
-   | `BusStripNode` (tutti-nodes), channel-major kernel | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame (the frame-major kernel it replaced: 2.5–4.7) | `Light` |
+   | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
    | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `ClickNode` | 3.8 | `Moderate` |
    | `MicMonitorNode` (a ring pop per frame) | 5.4 | `Moderate` |
@@ -3438,12 +3439,18 @@ Decisions:
    | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
 
    The strip's row was measured later, by the same method, on another
-   4-core container, alongside the frame-major kernel built from the
-   commit before the change and both references. There a gain measures
-   0.05–0.07 and `SvfFilterNode<f64>` 3.0–3.2, not 7.2, so its figures are
-   not on the same clock as the rows below it. Scaled by the filter's
-   ratio (×2.3), the strip's worst case, fed per frame, is still about
-   2.2, under the 2.8 boundary; steady or ramping it is far under. Each
+   4-core container, beside both references measured there: a gain
+   0.05–0.07 and `SvfFilterNode<f64>` 3.0–3.2. The two references do not
+   scale by one factor between the boxes, so its raw figures are not
+   compared with the 2.8 boundary. It is placed instead on a log scale
+   between the two references on its own box, where the boundary sits
+   about 0.73 of the way from the gain to the filter (2.8 between 0.22
+   and 7.2). Steady (about 0) and ramping (about 0.46) are far under on
+   any scaling. Fed per frame, the case that decides the class since a
+   modulated strip pays it every block, it sits at 0.66–0.71: borderline.
+   It is classed `Light` because the cost of a wrong `Light` is bounded
+   (a few nodes packed that could have spread; see point 2 above). The
+   frame-major kernel it replaced measured 2.5–4.7 the same way. Each
    block also pays about 120 ns fixed, against a gain's 100.
 
    **One exception to the nearest-class rule: HRTF.** Its 32 ns average
@@ -4267,6 +4274,10 @@ request and a plugin that parallelises its own voices ran them serially.
   and the audit of what runs under it) is its `# Soundness` docs.
 
 ## Per-node rewrite plan
+
+This section, like Migration, records each step as it stood when it was
+made: what it says `Net`, `Legacy`, `AudioUnit` or fundsp "still" does was
+true then, and all of it is deleted ([Delete fundsp](#delete-fundsp)).
 
 The question: if the graph had been native from the start, would the nodes
 look like this? **Mostly the DSP would, and the shells would not.** At the

@@ -450,11 +450,11 @@ impl Node for BusStripNode {
     /// stops with its input.
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
-            // Measured (doc 013, "The cost model and coarsening"): 0.06 ns
-            // per frame and channel steady, 0.4 ramping, 0.6-1.0 with the
-            // volume fed per frame; under the `Light`/`Moderate` boundary
-            // (about 2.8), where the frame-major kernel it replaced measured
-            // 2.5-4.7 on the same box.
+            // Measured (doc 013, "The cost model and coarsening"): steady
+            // and ramping are far under the `Light`/`Moderate` boundary.
+            // With the volume fed per frame it is borderline: about 0.7 of
+            // the way from a gain to `SvfFilterNode` on a log scale, the
+            // boundary about 0.73. `Light`, as a wrong `Light` costs little.
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
             .with_params(&STRIP_PARAMS)

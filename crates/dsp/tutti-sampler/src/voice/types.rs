@@ -250,7 +250,8 @@ pub struct Voice {
     /// Butler channel index for a [`VoiceSource::Disk`] source; `None` for
     /// [`Memory`](VoiceSource::Memory).
     ///
-    /// The pool forwards streaming loop ops to this channel over the typed
+    /// A pool's control side (its handle's `send`, and `insert_voice`)
+    /// forwards the voice's loop to this channel over the typed
     /// [`Commands`](crate::Commands) handle. Looping on the disk tier is
     /// butler-owned — it reads a fade-in head off disk and mutates the stream
     /// plan, neither of which the reader can reach — so forwarding is the honest

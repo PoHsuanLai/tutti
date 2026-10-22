@@ -12,7 +12,8 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::clock::{BlockClock, Clock};
 use super::command::{
-    loop_setting, SharedRate, VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES,
+    loop_setting, Queued, SharedRate, StreamEntry, VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY,
+    MAX_RESIDENT_VOICES,
 };
 use super::memory_source::LoopSetting;
 use super::slot::{stretch_wanted, PlaybackSlot};
@@ -140,10 +141,11 @@ pub(crate) enum Retired {
 /// should not have, since the pool was built: a reading a host polls
 /// ([`VoicePoolHandle::drops`]), never a log line from the callback.
 ///
-/// Each is a count of commands (or values) and only ever grows. The loop
-/// counts are taken where a streaming voice's loop is forwarded to the
-/// butler, on the control thread ([`VoicePoolHandle::send`],
-/// [`VoicePool::insert_voice`]); the rest by the drain.
+/// Each is a count of commands (or values) and only ever grows. The
+/// `loops_butler_gone` and `loops_no_butler` counts are taken where a
+/// streaming voice's loop is forwarded to the butler, on the control thread
+/// ([`VoicePoolHandle::send`], [`VoicePool::insert_voice`]); the rest by the
+/// drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct PoolDrops {
@@ -154,6 +156,12 @@ pub struct PoolDrops {
     /// butler to forward to: a pool built without one, or a voice with no
     /// butler channel. Clearing a loop there is a no-op, not a drop.
     pub loops_no_butler: u64,
+    /// Loop commands (set or cleared) the drain found aimed at a streaming
+    /// slot whose stream the handle had not forwarded them to: a voice
+    /// inserted with [`VoicePool::insert_voice`] after the handle was made,
+    /// which the handle does not know. Not recorded, since the butler was
+    /// not told.
+    pub loops_not_forwarded: u64,
     /// `ReplaceWave` commands aimed at a streaming voice, which changes
     /// source by a fresh `AddVoice` instead.
     pub wave_swaps_ignored: u64,
@@ -175,6 +183,7 @@ pub struct PoolDrops {
 pub(crate) struct DrainCounters {
     loops_butler_gone: AtomicU64,
     loops_no_butler: AtomicU64,
+    loops_not_forwarded: AtomicU64,
     wave_swaps_ignored: AtomicU64,
     voices_refused: AtomicU64,
     freed_in_callback: AtomicU64,
@@ -190,6 +199,7 @@ impl DrainCounters {
         PoolDrops {
             loops_butler_gone: load(&self.loops_butler_gone),
             loops_no_butler: load(&self.loops_no_butler),
+            loops_not_forwarded: load(&self.loops_not_forwarded),
             wave_swaps_ignored: load(&self.wave_swaps_ignored),
             voices_refused: load(&self.voices_refused),
             freed_in_callback: load(&self.freed_in_callback),
@@ -312,7 +322,7 @@ pub struct VoicePool {
     /// This pool's own: a dead one until [`into_parts`](IntoNode::into_parts)
     /// (or [`with_handle`](Self::with_handle)) hands out the sending end; a
     /// clone gets a dead one — see this type's `Clone`.
-    pub(crate) rx: Receiver<VoiceCommand>,
+    pub(crate) rx: Receiver<Queued>,
 
     /// Where removed slots go to be freed, off the audio thread.
     ///
@@ -337,13 +347,15 @@ pub struct VoicePool {
     /// The rate, shared with the handle, so a filter the handle builds for a
     /// command is built at the rate the pool runs at.
     pub(crate) rate: SharedRate,
-    /// Typed butler write handle. `Some` on the live path (threaded in from the
-    /// [`DiskStreamer`](crate::DiskStreamer)); `None` for tests / detached / offline
-    /// readers with no live butler. A streaming voice's loop is butler-owned
-    /// and not reachable from the reader, so it is forwarded there
-    /// (`Command::Loop`), always from the control thread: by
-    /// [`insert_voice`](Self::insert_voice), and by the handle this hands it
-    /// to ([`with_handle`](Self::with_handle)). The drain never sends on it.
+    /// Typed butler write handle, until a handle is taken. `Some` on the
+    /// live path (threaded in from the [`DiskStreamer`](crate::DiskStreamer));
+    /// `None` for tests / detached / offline readers with no live butler. A
+    /// streaming voice's loop is butler-owned and not reachable from the
+    /// reader, so it is forwarded there (`Command::Loop`), always from the
+    /// control thread: by [`insert_voice`](Self::insert_voice) while the pool
+    /// holds it, then by the handle it moves to
+    /// ([`with_handle`](Self::with_handle)). So the node in the graph holds no
+    /// butler sender at all.
     pub(crate) butler: Option<Commands>,
 
     /// Output width — the node's audio outputs, fixed at construction.
@@ -430,8 +442,9 @@ impl VoicePool {
     }
 
     /// A stereo pool whose streaming voices' loops are forwarded to `butler`
-    /// (by its handle and [`insert_voice`](Self::insert_voice), on the
-    /// control thread) — the typed write handle streaming voices need:
+    /// (by [`insert_voice`](Self::insert_voice) until the pool's handle is
+    /// taken, then by the handle, on the control thread) — the typed write
+    /// handle streaming voices need:
     /// without it a disk-backed voice still plays, but its loops are dropped
     /// and counted, because the loop-start fadein head lives on the butler
     /// side and the reader cannot reach it.
@@ -465,6 +478,14 @@ impl VoicePool {
     /// hands the graph and the caller. For a host (or a test) that calls
     /// the node by hand. A handle taken before goes dead
     /// ([`SendError::Disconnected`](super::command::SendError::Disconnected)).
+    ///
+    /// The pool's butler moves into the handle: from here on a streaming
+    /// voice's loop is forwarded by the handle, and the pool (and a second
+    /// handle taken from it) has no butler. A streaming voice
+    /// [`insert_voice`](Self::insert_voice) adds after this cannot have its
+    /// loop set: its `On` is counted ([`PoolDrops::loops_no_butler`]), and
+    /// a loop sent for it through the handle reaches the drain unforwarded
+    /// ([`PoolDrops::loops_not_forwarded`]). Add voices through the handle.
     pub fn with_handle(mut self) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
@@ -478,7 +499,13 @@ impl VoicePool {
             .voices
             .iter()
             .filter_map(|slot| match slot.voice.loop_route() {
-                LoopRoute::Stream(addr) => Some((slot.id, addr)),
+                LoopRoute::Stream(addr) => Some((
+                    slot.id,
+                    StreamEntry {
+                        addr,
+                        loop_: slot.voice.play.loop_,
+                    },
+                )),
                 LoopRoute::Memory => None,
             })
             .collect();
@@ -488,8 +515,9 @@ impl VoicePool {
             channels: self.channels,
             rate: self.rate.clone(),
             counters: Arc::clone(&self.counters),
-            butler: self.butler.clone(),
+            butler: self.butler.take(),
             streams: Arc::new(std::sync::Mutex::new(streams)),
+            forwarding: Arc::default(),
         };
         (self, handle)
     }
@@ -559,8 +587,10 @@ impl VoicePool {
     ///   neither reachable from the reader — and the control thread has
     ///   already forwarded it ([`VoicePoolHandle::send`],
     ///   [`insert_voice`](Self::insert_voice)), so here it is only recorded.
-    ///   Every caller hands this a streaming loop only once the butler took
-    ///   it, so the record never claims a loop the stream was not given.
+    ///   The one caller is `insert_voice_inner`, whose voice carries a loop
+    ///   only once the butler took it (its sender set it `Off` otherwise), so
+    ///   the record never claims a loop the stream was not given. A loop
+    ///   command goes through [`apply_queued_loop`](Self::apply_queued_loop).
     ///
     /// Allocation-free and send-free: the drain runs it.
     fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
@@ -571,6 +601,36 @@ impl VoicePool {
             sampler.set_loop_setting(setting);
         }
         slot.voice.play.loop_ = setting;
+    }
+
+    /// A queued loop command's setting, applied as
+    /// [`apply_loop`](Self::apply_loop) does, except that a streaming slot
+    /// records it only when `forwarded` names that slot's own stream: the
+    /// handle forwarded it there before queueing. Otherwise (the handle did
+    /// not know the slot's stream) it is counted
+    /// ([`PoolDrops::loops_not_forwarded`]) and the slot keeps its loop, so
+    /// the decision rests on the command, not on the handle's table. A loop
+    /// the butler then ignores, because the stream has since stopped or its
+    /// channel been reused, is still recorded: harmless, since the slot no
+    /// longer plays from that stream.
+    ///
+    /// Allocation-free and send-free: the drain runs it.
+    fn apply_queued_loop(
+        &mut self,
+        id: SlotId,
+        setting: LoopSetting,
+        forwarded: Option<StreamAddr>,
+    ) {
+        let Some(slot) = self.voices.iter().find(|s| s.id == id) else {
+            return;
+        };
+        if let LoopRoute::Stream(addr) = slot.voice.loop_route() {
+            if addr.is_none() || addr != forwarded {
+                DrainCounters::bump(&self.counters.loops_not_forwarded);
+                return;
+            }
+        }
+        self.apply_loop(id, setting);
     }
 
     /// As [`insert_voice`](Self::insert_voice), taking a stretch filter the
@@ -722,7 +782,7 @@ impl VoicePool {
     }
 
     fn drain_commands(&mut self) {
-        while let Ok(cmd) = self.rx.try_recv() {
+        while let Ok(Queued { cmd, forwarded }) = self.rx.try_recv() {
             match cmd {
                 VoiceCommand::AddVoice { id, voice, stretch } => {
                     // A new slot in a full vector would grow it here, in the
@@ -812,12 +872,13 @@ impl VoicePool {
                     crossfade_frames,
                 } => {
                     // A streaming slot's loop reached the butler before this
-                    // was queued (`VoicePoolHandle::send`).
+                    // was queued (`VoicePoolHandle::send`), if `forwarded`
+                    // names its stream.
                     let setting = loop_setting(looping, loop_start, loop_end, crossfade_frames);
-                    self.apply_loop(id, setting);
+                    self.apply_queued_loop(id, setting, forwarded);
                 }
                 VoiceCommand::ClearLoop(id) => {
-                    self.apply_loop(id, LoopSetting::Off);
+                    self.apply_queued_loop(id, LoopSetting::Off, forwarded);
                 }
                 VoiceCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {

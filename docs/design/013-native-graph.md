@@ -3889,12 +3889,23 @@ need to be), and what review of the fix turned up:
   of those the pool held when the handle was made), forwards the loop with
   a waiting send, and queues the `UpdateLoop`, `ClearLoop` or `AddVoice`
   for the drain only once the butler has taken it; a control-thread
-  `insert_voice` forwards the same way. The drain only records the loop
-  (and primes an in-memory one). The table is locked from the lookup to
-  the queueing, so it and the queue's order agree: the drain never meets
-  a streaming slot's loop the handle did not forward. What the audio
-  thread shares with the butler is state, not commands: the position a
-  voice publishes, read by the butler through the ring.
+  `insert_voice` forwards the same way until the handle is taken. The
+  pool's butler sender moves into the handle then, so the node in the
+  graph holds none. The drain only records the loop (and primes an
+  in-memory one), and decides that from the command alone: a queued loop
+  carries the stream the handle forwarded it to, and a streaming slot
+  records it only when that is its own stream. A loop for a slot the
+  table does not know (a voice `insert_voice` added after the handle was
+  taken, or one since replaced) is counted (`loops_not_forwarded`) and
+  not recorded.
+- **Commands that never reach the butler never wait on it.** The table's
+  lock is held for a lookup or a queueing, never across a forward; a
+  second lock, held across each forward, keeps forwards and the commands
+  queued behind them in one order. A loop whose slot was removed (or
+  replaced in memory) while its forward waited is ordered before that
+  command and not queued. What the audio thread shares with the butler is
+  state, not commands: the position a voice publishes, read by the butler
+  through the ring.
 - **A loop names its stream.** The forwarded loop carries the stream's
   identity (its ring's region), and the butler ignores it once the channel
   carries another stream, so a loop set on a voice whose channel the host
@@ -3911,13 +3922,17 @@ need to be), and what review of the fix turned up:
 - **A loop the butler did not take is not recorded.** An `AddVoice` or
   `insert_voice` of a streaming voice whose forward fails (no butler, no
   butler channel, a butler that exited) is queued with its loop `Off`, and
-  an `UpdateLoop` whose forward fails is not queued; a loop the butler took
-  whose command then finds the pool's queue full is running but
-  unrecorded, and sending it again re-sends both.
+  an `UpdateLoop` whose forward fails is not queued. A `send` that returns
+  `Err` leaves the butler on the loop it had: a full queue is refused
+  before the forward, and a forward whose command another thread then
+  crowds out of the queue is undone by forwarding the slot's previous
+  loop again, which the table keeps. A loop the butler ignores (its
+  stream gone from the channel) is still recorded, harmlessly: the slot
+  no longer plays from that stream.
 - **Drops are counted, not logged.** The pool's `tracing::warn!`s are
   gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops lost to a
   gone butler, `On` loops lost for want of one, both counted where the
-  forward is made; `ReplaceWave`s ignored on a streaming voice, voices
+  forward is made; loops the drain refused as unforwarded; `ReplaceWave`s ignored on a streaming voice, voices
   refused at the cap, values freed in the callback because the retirement
   channel was full).
 - **The voice vector never grows on the audio thread.** It was reserved to

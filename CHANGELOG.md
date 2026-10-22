@@ -31,10 +31,11 @@ migration: nothing existing changed.
 `tutti-session`'s `render_load` bench (`--features
 synth,sampler,convolution,midi`) renders a heavy scene of the engine's own
 nodes block by block and reports mean, p99 and max load, blocks over budget
-and max/mean, serial and on the worker pool, for three variants: sampler
+and max/mean, serial and on the worker pool, for four variants: sampler
 voices transposed by varispeed (the main scene), the same voices
-pitch-shifted through the phase vocoder, and the main scene without the
-convolution reverb.
+pitch-shifted through the phase vocoder, each with and without the
+convolution reverb, with each configuration's mean load by block position
+in the 512-frame cycle.
 
 ### Changed — the in-block waits are per-pool settings, both timed
 

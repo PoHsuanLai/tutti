@@ -19,15 +19,14 @@
 //!   notes held on each (128 voices), each into a `BusStripNode`;
 //! - 4 sampler tracks, each a `VoicePool` of 8 memory voices on a 20 s
 //!   tone, each voice transposed by its own interval (-347 to +428 cents),
-//!   each into a `BusStripNode`. The voices start 256 frames in (see the
-//!   phase profile below);
+//!   each into a `BusStripNode`;
 //! - one send per track (a second `BusStripNode` at -12 dB), summed into a
 //!   stereo `ConvolverNode` reverb (2 s noise-tail IRs, the node's default
 //!   512-frame partition) and its return strip;
 //! - the 12 track strips and the return summed (`ChannelSumNode`) into a
 //!   master strip and a `LimiterNode`.
 //!
-//! Three variants, each measured on its own:
+//! Four variants, each measured on its own:
 //!
 //! - **`varispeed`**, the main scene: the sampler voices transpose by
 //!   varispeed (`Playback::speed`), a resampled read.
@@ -36,6 +35,8 @@
 //!   FFT every 512 output frames): 32 pitch shifters.
 //! - **`no-reverb`**: the main scene without the convolver and its send
 //!   bus, the control for what the reverb costs.
+//! - **`vocoder-dry`**: `vocoder` without the convolver and its send bus,
+//!   the vocoder's cost on its own.
 //!
 //! Each configuration renders 1 s to warm up (notes attack, voices start),
 //! then 10 s measured, block by block, at 64 and 128 frames, serial
@@ -45,15 +46,16 @@
 //! # Where the spikes land
 //!
 //! The convolver and the vocoder both do their FFT work once per 512
-//! frames, so a spike that recurs every 512 frames could be either. The
-//! harness prints, per configuration, the mean load at each block position
-//! within the 512-frame cycle (`phase`: position 0 is the block starting at
-//! a multiple of 512). The convolver's partition completes on the block
-//! that *ends* at a multiple of 512, the last position; the sampler voices
-//! start 256 frames in, so whatever grid their vocoder keeps from their
-//! start lands half a cycle away from the convolver's. The profile is
-//! measured, not assumed: compare `varispeed` with `no-reverb` for the
-//! convolver's share, and `vocoder` with `varispeed` for the vocoder's.
+//! frames. The harness prints, per configuration, the mean load at each
+//! block position within the 512-frame cycle (`phase`: position 0 is the
+//! block starting at a multiple of 512). Measured here, the convolver's work
+//! lands on the block ending at a multiple of 512 (the last position) and,
+//! with the voices starting at frame 0, the vocoder's on the block ending
+//! 256 frames into the cycle, so the two show at different positions. The
+//! variants separate them too: `varispeed` against `no-reverb` is the
+//! convolver's share, `vocoder-dry` against `no-reverb` the vocoder's, and
+//! `vocoder` both at once.
+//!
 //! The last column is the 1-minute load average after the configuration
 //! (the bench's own threads included), so a figure taken beside other work
 //! says so.
@@ -84,6 +86,7 @@ enum Variant {
     Varispeed,
     Vocoder,
     NoReverb,
+    VocoderDry,
 }
 
 impl Variant {
@@ -92,13 +95,21 @@ impl Variant {
             Self::Varispeed => "varispeed",
             Self::Vocoder => "vocoder",
             Self::NoReverb => "no-reverb",
+            Self::VocoderDry => "vocoder-dry",
         }
     }
-}
 
-/// Where the sampler voices start: half the 512-frame cycle, away from the
-/// convolver's partition grid.
-const VOICE_START: Samples = Samples(256);
+    /// Whether the sampler voices pitch-shift through the phase vocoder
+    /// (otherwise they transpose by varispeed).
+    fn vocoder(self) -> bool {
+        matches!(self, Self::Vocoder | Self::VocoderDry)
+    }
+
+    /// Whether the scene has the convolution reverb and its sends.
+    fn reverb(self) -> bool {
+        matches!(self, Self::Varispeed | Self::Vocoder)
+    }
+}
 
 use tutti_core::{
     Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MotionEvent, PlaybackRate,
@@ -231,8 +242,6 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
         tone.push_frame(&[x]);
     }
     let tone = Arc::new(tone);
-    let per_beat = s.transport().samples_per_beat().get() as f64;
-    let start = Beat(VOICE_START.get() as f64 / per_beat);
     for t in 0..SAMPLER_TRACKS {
         let mut pool = VoicePool::new();
         for v in 0..SAMPLER_VOICES {
@@ -241,7 +250,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
                 Voice {
                     source: VoiceSource::Memory(MemorySource::placed(
                         Arc::clone(&tone),
-                        start,
+                        Beat(0.0),
                         None,
                     )),
                     play: {
@@ -251,15 +260,16 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
                             gain: Amplitude(0.1),
                             ..Default::default()
                         };
-                        match variant {
-                            Variant::Vocoder => Playback {
+                        if variant.vocoder() {
+                            Playback {
                                 pitch: interval,
                                 ..play
-                            },
-                            Variant::Varispeed | Variant::NoReverb => Playback {
+                            }
+                        } else {
+                            Playback {
                                 speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
                                 ..play
-                            },
+                            }
                         }
                     },
                     channel_index: None,
@@ -272,7 +282,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
 
     // Each source into its channel strip, and (with the reverb) a send off
     // the source.
-    let reverb = !matches!(variant, Variant::NoReverb);
+    let reverb = variant.reverb();
     let tracks: Vec<_> = strips
         .into_iter()
         .map(|src| {
@@ -414,10 +424,15 @@ fn main() {
          {SAMPLER_VOICES} voices, convolution send, 48 kHz; {cores} cores available"
     );
     println!(
-        "{:>5} {:>9} {:>7} {:>7} {:>7} {:>8} {:>11} {:>8} {:>8}  phase (mean load by position in 512 frames)",
+        "{:>5} {:>11} {:>7} {:>7} {:>7} {:>8} {:>11} {:>8} {:>8}  phase (mean load by position in 512 frames)",
         "block", "variant", "workers", "mean", "p99", "max", "over/blocks", "max/mean", "loadavg"
     );
-    for variant in [Variant::Varispeed, Variant::Vocoder, Variant::NoReverb] {
+    for variant in [
+        Variant::Varispeed,
+        Variant::NoReverb,
+        Variant::Vocoder,
+        Variant::VocoderDry,
+    ] {
         for block in [64usize, 128] {
             for (label, workers) in [("1", 1usize), ("cores", 0)] {
                 let f = measure(block, workers, variant);
@@ -425,7 +440,7 @@ fn main() {
                 assert!(f.peak_out > 0.0, "the scene sounds");
                 let phase: Vec<String> = f.phase.iter().map(|l| format!("{l:.3}")).collect();
                 println!(
-                    "{:>5} {:>9} {:>7} {:>7.3} {:>7.3} {:>8.3} {:>11} {:>8.2} {:>8}  {}",
+                    "{:>5} {:>11} {:>7} {:>7.3} {:>7.3} {:>8.3} {:>11} {:>8.2} {:>8}  {}",
                     block,
                     variant.label(),
                     label,

@@ -21,8 +21,10 @@
 //!   (`rt/task_graph.rs`, "Ordering");
 //! - **`begin` re-arms the counters**: a second block runs every task
 //!   again;
-//! - **a helper may leave early** (`HELPER_SPINS` is 2 under loom), and the
-//!   caller still runs every task and sees every write.
+//! - **a helper may leave early** (under loom its budget is a count: it
+//!   leaves on its third wait with nothing to take, whatever the
+//!   `BlockWaits`), and the caller still runs every task and sees every
+//!   write.
 //!
 //! # Mutation record
 //!
@@ -57,6 +59,10 @@
 //! The record was re-run in full when the termination count became the
 //! sinks' and the helpers gained completion counters; every mutation above
 //! still fails.
+//! When the in-block waits became per-pool budgets (`BlockWaits`, a count
+//! under loom as before, so no ordering changed), the `pop` `Acquire`, the
+//! `remaining` `Release`, the successor decrement's `AcqRel` and the
+//! `begin` re-arm mutations were re-run: each still fails as recorded.
 //!
 //! The caller's spin-then-yield is a scheduling change, not an ordering
 //! one: its progress signal (the `remaining` load the exit test makes, and
@@ -74,7 +80,7 @@ use std::sync::Arc;
 
 use loom::cell::UnsafeCell;
 use loom::thread;
-use tutti_types::{Participant, TaskGraph};
+use tutti_types::{BlockWaits, Participant, TaskGraph};
 
 struct Cells(Vec<UnsafeCell<u32>>);
 
@@ -107,10 +113,14 @@ fn diamond_two_participants() {
             let helper = {
                 let (g, cells) = (Arc::clone(&shared), Arc::clone(&cells));
                 thread::spawn(move || {
-                    g.work(Participant::Helper(1), |t| run_task(&cells, t, block))
+                    g.work(Participant::Helper(1), BlockWaits::DEFAULT, |t| {
+                        run_task(&cells, t, block)
+                    })
                 })
             };
-            shared.work(Participant::Caller, |t| run_task(&cells, t, block));
+            shared.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
+                run_task(&cells, t, block)
+            });
             assert!(shared.done());
             for c in &cells.0 {
                 // SAFETY (test): after `work` returned on this participant.
@@ -142,9 +152,15 @@ fn the_caller_sees_every_task_through_the_sinks() {
         };
         let helper = {
             let (g, cells) = (Arc::clone(&g), Arc::clone(&cells));
-            thread::spawn(move || g.work(Participant::Helper(1), |t| write(&cells, t)))
+            thread::spawn(move || {
+                g.work(Participant::Helper(1), BlockWaits::DEFAULT, |t| {
+                    write(&cells, t)
+                })
+            })
         };
-        g.work(Participant::Caller, |t| write(&cells, t));
+        g.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
+            write(&cells, t)
+        });
         assert!(g.done());
         for (t, c) in cells.0.iter().enumerate() {
             // SAFETY (test): after `work` returned on this participant.

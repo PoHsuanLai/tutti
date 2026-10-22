@@ -289,6 +289,9 @@ impl tutti_graph::Pool for Counting {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.run(wake, job);
     }
+    fn waits(&self) -> tutti_graph::BlockWaits {
+        self.inner.waits()
+    }
 }
 
 /// The executor honours the schedule's `from` per block: a block one frame

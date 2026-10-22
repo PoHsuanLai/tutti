@@ -3216,11 +3216,14 @@ Decisions:
 7. **The caller spins, then yields** while it waits on a helper (on the
    task graph, any task finishing: the sinks' `remaining`, the caller's own
    count and the helpers' completion counters; on the gate, `entered`). On
-   Linux, after 250 µs in which none of it has moved, it calls `sched_yield` once, then spins
+   Linux, after the pool's `caller_yield_after` (250 µs by default) in
+   which none of it has moved, it calls `sched_yield` once, then spins
    again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
-   never yields inside a job; it leaves. This replaced a caller that only spun, which starved a helper
-   queued behind it on its own core under `SCHED_FIFO` (see ["The caller
-   yields to a same-core helper"](#the-caller-yields-to-a-same-core-helper)).
+   never yields inside a job; after the pool's `helper_leave_after` (15 µs
+   by default) with nothing to take, it leaves. This replaced a caller that
+   only spun, which starved a helper queued behind it on its own core under
+   `SCHED_FIFO` (see ["The caller yields to a same-core
+   helper"](#the-caller-yields-to-a-same-core-helper)).
 
 Evidence:
 
@@ -4098,7 +4101,8 @@ all three into fresh `Vec`s to keep only the restart flags.
   The probe requires at least one exercised FIFO/FIFO run, and none
   aborted.
 - **The fix.** `SpinThenYield` (`rt/spin.rs`). On Linux and Android, once
-  the counter it waits on has not moved for `CALLER_YIELD_AFTER` (250 µs),
+  the counter it waits on has not moved for `BlockWaits::caller_yield_after`
+  (250 µs by default, a per-pool setting),
   the caller calls `yield_now` once and starts timing again. Progress (the
   counter moving) restarts the clock. The clock (`Instant::now`, about
   20 ns) is read once every 64 waits. 250 µs is long enough that a healthy
@@ -4183,13 +4187,44 @@ all three into fresh `Vec`s to keep only the restart flags.
   the caller's yield is counted (a test-only per-thread counter). The
   caller's clock is a test-only stepped one, a quarter of the budget per
   read, so they involve no timing. Without the yield each fails after its
-  10 s bound instead of hanging. `rt::spin`'s two tests pin the budget on
-  the stepped clock. All four are Linux-only, as the yield is. loom has no
-  clock, so under loom the budget is two waits; the models run the new
-  wait, and the ordering is the same, so their mutation records stand.
-- **Deferred.** `CALLER_YIELD_AFTER` could be a per-pool setting in the
-  planned crate extraction. `HELPER_SPINS` is still a count, so how long a
-  helper stays in a block still differs across cores.
+  10 s bound instead of hanging. `rt::spin`'s two caller tests pin the
+  budget on the stepped clock. All four are Linux-only, as the yield is.
+  loom has no clock, so under loom the budget is two waits; the models run
+  the new wait, and the ordering is the same, so their mutation records
+  stand.
+- **Both in-block budgets are per pool, and both are time.**
+  `tutti_types::BlockWaits` holds the caller's `caller_yield_after`
+  (250 µs) and the helper's `helper_leave_after` (15 µs);
+  `WorkerPoolBuilder::caller_yield_after` and `::helper_leave_after` set
+  them beside `spin` and `idle` (the waits between jobs). The pool's
+  `JobGate` holds them (`JobGate::with_waits`): its close waits by
+  `caller_yield_after`, and `Pool::waits` (a required method, so a pool
+  that wraps another forwards its inner pool's rather than silently
+  reporting the defaults) hands both to the executor, which passes them to
+  `TaskGraph::work` once per block. A helper's wait (`SpinThenLeave`) reads
+  the clock once every 64 waits like the caller's and leaves once it has
+  been idle for its budget, on every platform: it was a count of 1024
+  waits, so how long a helper stayed differed by core. The 15 µs default
+  is what 1024 waits took on this VM (13.5 to 15.2 µs, medians of 2000
+  runs in three release runs, about 15 ns a wait; a 4-vCPU KVM guest of a
+  2.1 GHz Xeon, Sapphire Rapids or later), so the default behaviour is
+  unchanged here. The clock starts at the first read, so a helper spins up
+  to 128 waits past its budget, and a budget of zero gives way after 128
+  waits. Tests: `rt::spin`'s
+  `a_helper_leaves_once_the_clock_passes_its_budget` and
+  `a_helper_inside_its_budget_never_leaves` (stepped clock, every
+  platform); `a_helper_spins_for_the_pools_budget`,
+  `the_caller_yields_after_the_pools_budget` and
+  `the_close_yields_after_the_gates_budget` give an hour's budget and step
+  the clock by the default per read, so a wait that used the default
+  instead of its pool's gives way early; `tutti-core`'s
+  `the_in_job_waits_are_the_builders`; and `tests/parallel.rs`'s
+  `the_executor_waits_by_its_pools_budget`, where a helper on a pool with
+  an hour's budget enters while the caller runs a 50 ms task and must stay
+  until it finishes, so an executor that handed the task graph the
+  defaults fails it. Under loom both stay counts (the caller yields every
+  second wait, a helper leaves on its third), the ordering is unchanged,
+  and the models' records were re-run where the orderings they name live.
 
 #### `clap.thread-pool`
 

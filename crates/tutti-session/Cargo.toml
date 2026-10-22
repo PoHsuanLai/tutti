@@ -118,5 +118,12 @@ required-features = ["midi"]
 name = "plugin"
 required-features = ["clap", "export"]
 
+# Each block's load against its deadline, on a heavy scene of the engine's
+# own nodes, serial and on the pool: a percentile harness, not criterion.
+[[bench]]
+name = "render_load"
+harness = false
+required-features = ["synth", "sampler", "convolution", "midi"]
+
 # The §5.1 and §5.2 examples are the umbrella's (`crates/tutti/examples`):
 # they import `tutti::prelude`, which this crate cannot name.

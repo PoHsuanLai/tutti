@@ -322,6 +322,8 @@ pub struct Session {
     /// The engine, for an offline session (the host pulls blocks); `None` on
     /// a device (the callback holds it) or detached.
     pub(crate) engine: Option<tutti_core::Engine>,
+    /// The engine's load meter, offline or on a device; `None` detached.
+    pub(crate) load: Option<Arc<tutti_core::LoadMeter>>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
     pub(crate) click: Option<AudioNode>,
@@ -656,6 +658,16 @@ impl Session {
     /// The master meter the device callback feeds.
     pub fn meter(&self) -> &MasterMeter {
         &self.meter
+    }
+
+    /// The engine's DSP-load meter: each block's render time against its
+    /// real-time budget, the smoothed mean, the peak since the last
+    /// [`take`](tutti_core::LoadMeter::take) and the blocks over budget.
+    /// Fed by every block the device callback (or, offline,
+    /// [`render`](Self::render)) renders; `None` on a detached session,
+    /// which has no engine.
+    pub fn load_meter(&self) -> Option<&Arc<tutti_core::LoadMeter>> {
+        self.load.as_ref()
     }
 
     /// The tap the device callback pushes to, closed until opened.

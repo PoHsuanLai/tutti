@@ -3100,6 +3100,37 @@ sibling batching (measured; it does not pay: see below); `clap.thread-pool`; the
 (optional) REAPER-style anticipative partition for nodes with no live-input
 dependency, with export as its degenerate case.
 
+**The load meter decides whether render-ahead is worth building.**
+`Engine::process` (and `process_segment`) times each call against its
+block's budget (`frames / sample_rate`) into a `tutti_core::LoadMeter`,
+read through `Engine::load_meter`, `Session::load_meter` and
+`AudioGraphRes::load_meter`: the last block's load, a mean smoothed over
+0.3 s, the peak since the last `take`, and the blocks over budget.
+Render-ahead helps only when blocks miss because of spikes (max/mean high,
+mean well under 1.0), not because the mean is too high; build it only if the
+meter shows that on real sessions on a device. Offline, on `tutti-session`'s
+`render_load` scene (8 polysynths × 16 held notes, 4 sampler tracks × 8
+pitched voices, strips, sends into a stereo 2 s convolution reverb at its
+default 512-frame partition, a master strip and limiter; 48 kHz; a
+four-core container shared with other work, two quiet runs, 1-minute load
+average 1.4–1.7 with the bench in it):
+
+| block | workers | mean | p99 | max | over budget | max/mean |
+|---|---|---|---|---|---|---|
+| 64 | 1 | 0.73–0.77 | 1.63–1.93 | 5.9–6.4 | 22–24% | 8.1–8.4 |
+| 64 | 4 | 0.40–0.42 | 1.01–1.20 | 3.8–6.8 | 1.1–1.8% | 9.6–16 |
+| 128 | 1 | 0.67–0.77 | 1.40–1.65 | 3.0–4.9 | 15–19% | 3.9–7.3 |
+| 128 | 4 | 0.32–0.38 | 0.71–0.94 | 3.1–4.2 | 0.4–0.8% | 9.5–11 |
+
+Part of the spread is the scene's own structure, not jitter: the reverb's
+FFT lands on the block that completes each 512 frames, and those blocks
+average 1.5–1.9× the others' load (serial, 64 frames: 1.21–1.30 against
+0.66–0.69). That spike is the node's to smooth (spreading a partition's
+work over its blocks), not a case for render-ahead. The maxima (3–7× the
+budget) were not separated from preemption by other work on this machine;
+a device's real-time thread, out-of-process plugins and third-party
+plugins are outside this measurement.
+
 `RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
 applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share
 one cache line, so many worker cores reading the same cell every block will

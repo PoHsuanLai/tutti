@@ -3882,64 +3882,44 @@ The audit's findings in `tutti-sampler`
 (collections and channels more complex, or less real-time, than they
 need to be), and what review of the fix turned up:
 
-- **The butler send from `process` no longer blocks.** A `VoicePool`'s
-  drain forwards a streaming voice's loop to the butler (`Command::Loop`)
-  from inside `process`, and `Commands::send` used `send_blocking` on the
-  butler's bounded (256) queue: a stalled butler held the callback. That
-  forward is the only butler send reachable from `process` (a `Seek` is
-  sent only by control code), and it is now `Commands::try_send`: a full
-  or closed queue refuses the command, the intent stays unrecorded, and
-  the refusal is counted. `Commands::send` stays blocking for the control
-  thread, waiting while the queue is full.
-- **The butler's queue takes no lock and allocates nothing** (lock-free,
-  not wait-free; below). It was a
-  `smol` channel, whose successful send woke the butler through a listener
-  list behind a `Mutex`, allocated on the channel's first notify. It is
-  now a crate-private `ButlerQueue`: a `crossbeam_queue::ArrayQueue`, the
-  butler's `Thread` (registered by the thread before its first cycle) and
-  a `closed` flag. A send is a push then an `unpark`; the
-  butler parks with a timeout between cycles (1 ms idle, 3 ms healthy) and
-  yields when a ring needs a refill, and a push between its drain and its
-  park leaves the token set, so no wake is lost. A control-thread send on
-  a full queue retries every 100 µs, waking the butler each time, and
-  stops when the queue closes. `smol` and `futures-lite` are no longer
-  dependencies.
-- **The audio thread's send is lock-free, not wait-free.** crossbeam's
-  `ArrayQueue::pop` moves `head` and only then frees the slot's stamp; a
-  push into a full queue whose tail lands on that slot sees `head` moved
-  and spins until the stamp is stored, rather than report `Full`. The
-  wait is the butler's two-instruction window, long only if the butler is
-  preempted inside it, and only on a full queue; senders also retry
-  against each other's tail claims. **Deferred:** the wait-free design is
-  a single-producer ring (`rtrb`) per sender, which the butler polls. The
-  parallel executor makes the send multi-producer (pools rendering on
-  several workers), so that is a ring per producer and a registry of
-  them.
-- **Closing cannot strand a command.** The thread closes the queue on
-  exit, however it exits (and `stop` closes it too, for a controller that
-  never started): it sets `closed`, then a `SeqCst` fence, then drains and
-  drops what is queued. A sender checks `closed`, pushes, then a `SeqCst`
-  fence, then checks `closed` again and reports `ButlerGone` if it is set.
-  That is the store-buffering pattern: either the drain sees the push or
-  the sender sees the flag, so an `Ok` command is always popped (run, or
-  dropped by the final drain) and every send that starts after the close
-  reports `ButlerGone`. A `ButlerGone` command may still have run, if the
-  butler's last cycle popped it while the sender was descheduled. This
-  handshake is an ordering argument the queue owns, which CLAUDE.md would
-  put in `tutti-types` under a loom model; crossbeam has no loom build, so
-  a model could check only a stand-in, and the exception and its argument
-  are in `docs/engineering-notes.md` ("The butler queue's close
-  handshake").
-- **A loop the butler refuses is not recorded on an add either.** An
-  `AddVoice` for a streaming voice whose `play.loop_` is `On` takes the
-  loop out of the voice (`Off` left behind) before the slot is built, and
-  records it only when the forward lands. A control-thread `insert_voice`
-  waits for room rather than refuse; the drain refuses.
+- **The audio thread sends no butler commands.** A streaming voice's loop
+  is butler-owned (`Command::Loop`), and it is forwarded from the control
+  thread: `VoicePoolHandle::send` resolves the slot to its butler channel
+  and stream from a table it keeps of every streaming voice it added (and
+  of those the pool held when the handle was made), forwards the loop with
+  a waiting send, and queues the `UpdateLoop`, `ClearLoop` or `AddVoice`
+  for the drain only once the butler has taken it; a control-thread
+  `insert_voice` forwards the same way. The drain only records the loop
+  (and primes an in-memory one). The table is locked from the lookup to
+  the queueing, so it and the queue's order agree: the drain never meets
+  a streaming slot's loop the handle did not forward. What the audio
+  thread shares with the butler is state, not commands: the position a
+  voice publishes, read by the butler through the ring.
+- **A loop names its stream.** The forwarded loop carries the stream's
+  identity (its ring's region), and the butler ignores it once the channel
+  carries another stream, so a loop set on a voice whose channel the host
+  has restarted on another file never loops the new one. A host's own
+  `Command::Loop` names only the channel, as every other command does.
+- **The butler's queue is a bounded `crossbeam_channel`.** Every sender is
+  a control thread, so a send waits while the queue is full and fails as
+  `ButlerGone` once every receiver is dropped: the butler thread's on its
+  exit (however it exits), the controller's on `stop` (which covers a
+  controller that never started). The butler waits on the queue with a
+  timeout between cycles (1 ms idle, 3 ms healthy) and yields when a ring
+  needs a refill; a command sent at any point after a cycle's drain is in
+  the queue, so the wait returns with it and no wake is lost.
+- **A loop the butler did not take is not recorded.** An `AddVoice` or
+  `insert_voice` of a streaming voice whose forward fails (no butler, no
+  butler channel, a butler that exited) is queued with its loop `Off`, and
+  an `UpdateLoop` whose forward fails is not queued; a loop the butler took
+  whose command then finds the pool's queue full is running but
+  unrecorded, and sending it again re-sends both.
 - **Drops are counted, not logged.** The pool's `tracing::warn!`s are
-  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops refused by a
-  full or a gone butler, `On` loops lost for want of one, `ReplaceWave`s ignored on a streaming
-  voice, voices refused at the cap, values freed in the callback because
-  the retirement channel was full).
+  gone; `VoicePoolHandle::drops` returns a `PoolDrops` (loops lost to a
+  gone butler, `On` loops lost for want of one, both counted where the
+  forward is made; `ReplaceWave`s ignored on a streaming voice, voices
+  refused at the cap, values freed in the callback because the retirement
+  channel was full).
 - **The voice vector never grows on the audio thread.** It was reserved to
   64 slots and pushed past them in the drain. An `AddVoice` for a new slot
   in a full pool is now refused and handed back whole (box and filter)

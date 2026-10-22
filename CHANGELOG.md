@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a streaming voice's loop is forwarded from the control thread
+
+The audio thread sends no butler commands. A `VoicePool`'s drain used to
+forward a streaming voice's loop to the butler (`Command::Loop`) from
+inside `process`, refusing it on a full queue; `VoicePoolHandle::send`
+now forwards it on the calling thread, from a table of the streaming
+voices it added (and those the pool held when the handle was made), and
+queues the command for the drain only once the butler has taken it. The
+drain only records it. The forwarded loop names the voice's stream, and
+the butler ignores it once the channel carries another stream (the host
+restarted it on another file). The butler's command queue, with only
+control-thread senders, is a bounded `crossbeam_channel`; `tutti-sampler`
+no longer depends on `crossbeam-queue`.
+
+| Was | Now |
+|---|---|
+| `PoolDrops::loops_butler_full` | removed: a forward waits for room as every control-thread send does, so none is refused. **Migration:** drop the field from a match or a sum; a stalled butler now shows as a `send` that waits |
+| `VoicePoolHandle::send` never waited | an `UpdateLoop`, `ClearLoop` or `AddVoice` aimed at a streaming voice waits while the butler's queue is full, as `Commands::send` does (for good on a butler nobody drains: step or start a `DiskStreamer::manual` first). Every other command never waits |
+| a streaming loop whose forward failed was dropped by the drain | it is dropped by `send`, counted the same way (`loops_butler_gone`, `loops_no_butler`), and `send` returns `Ok`: an update is not queued, an add is queued with its loop `Off` |
+| a loop set on a voice whose channel had been restarted on another file looped the new stream | the butler ignores it; `Command::Loop` from a host, which names only the channel, still loops whatever the channel streams |
+| a butler send on a full queue retried every 100 µs | it blocks on the channel until there is room or the butler is gone |
+
 ### Changed — the in-block waits are per-pool settings, both timed
 
 How long the audio thread waits on a helper before yielding its core once,

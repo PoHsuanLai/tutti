@@ -2,8 +2,8 @@
 //! error a command send reports.
 //!
 //! The command side is [`Commands`](crate::Commands): one mapping from the
-//! public [`Command`](crate::Command) to the butler's own, sent blocking from
-//! the control thread or without waiting from the audio thread. The read
+//! public [`Command`](crate::Command) to the butler's own, sent from control
+//! threads only, waiting while the queue is full. The read
 //! side, "take the streaming consumer", is here, and
 //! [`Status`](crate::Status) drives it.
 
@@ -64,6 +64,20 @@ pub(crate) fn take_streaming_unit(
     let rt_state = plan.rt_state();
     let unit = DiskSource::with_reader(consumer, Some(reader), Arc::clone(&rt_state));
     Ok((unit, rt_state, file_rate, origin))
+}
+
+/// The loop the stream on `channel_index` runs, as its record says; `None`
+/// when the channel streams nothing (tests).
+#[cfg(test)]
+pub(crate) fn stream_loop(
+    plans: &DashMap<usize, ChannelPlan>,
+    channel_index: usize,
+) -> Option<LoopSetting> {
+    let plan = plans.get(&channel_index)?;
+    let link = plan.link.as_ref()?;
+    StreamOrigin(Arc::clone(&link.record))
+        .describe()
+        .map(|file| file.loop_)
 }
 
 /// A butler stream's own record of what it plays: the file, the file's rate,

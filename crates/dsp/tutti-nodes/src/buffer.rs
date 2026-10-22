@@ -123,22 +123,35 @@ impl<T: Copy + Default> CircularBuffer<T> {
 /// Used by the lookahead limiter to track the smallest gain (greatest
 /// reduction) over the lookahead window. Stores `(age_index, value)` pairs
 /// so stale entries can be evicted by age.
-#[derive(Clone)]
+///
+/// The deque owns its window length, so it holds at most `window` entries
+/// and never grows past the allocation [`new`](Self::new) makes: each
+/// [`push`](Self::push) evicts the entry leaving the window *before* adding
+/// the new one. A clone keeps that allocation.
 pub struct MonotonicMinDeque {
     entries: VecDeque<(u64, f32)>,
+    window: usize,
 }
 
 impl MonotonicMinDeque {
-    /// Builds an empty deque, preallocating `capacity_hint` entries.
+    /// Builds an empty deque over a window of `window` entries (clamped to
+    /// at least 1), preallocating them.
     ///
-    /// Size the hint to the lookahead window in samples: the deque never holds
-    /// more than one entry per sample in flight, so a hint that covers the
-    /// window keeps [`push`](Self::push) from reallocating on the audio thread.
-    /// Allocates — call it during setup, never inside `process`.
-    pub fn new(capacity_hint: usize) -> Self {
+    /// Size it to the lookahead window in samples. Allocates: call it
+    /// during setup, never inside `process`.
+    pub fn new(window: usize) -> Self {
+        let window = window.max(1);
         Self {
-            entries: VecDeque::with_capacity(capacity_hint),
+            entries: VecDeque::with_capacity(window),
+            window,
         }
+    }
+
+    /// The window length in entries: [`min`](Self::min) answers over the
+    /// last `window` indices pushed.
+    #[inline]
+    pub fn window(&self) -> usize {
+        self.window
     }
 
     /// Drops every entry, leaving the window empty and
@@ -155,21 +168,30 @@ impl MonotonicMinDeque {
         self.entries.capacity()
     }
 
-    /// Pushes `value` stamped with `index`, evicting every trailing entry that
-    /// is no smaller.
+    /// Pushes `value` stamped with `index`: first drops every entry that
+    /// falls outside the window ending at `index` (stamped `index - window`
+    /// or earlier), then every trailing entry that is no smaller.
     ///
-    /// `index` **must increase monotonically** across calls — it is the age
-    /// stamp [`evict_older_than`](Self::evict_older_than) compares against, so a
-    /// repeated or decreasing index makes the window boundary meaningless and
-    /// the reported minimum wrong.
+    /// `index` **must increase monotonically** across calls: it is the age
+    /// stamp the window is measured in, so a repeated or decreasing index
+    /// makes the window boundary meaningless and the reported minimum wrong.
     ///
-    /// The eviction is what keeps the deque monotonically increasing from front
-    /// to back, so the front is always the window minimum. It is O(1)
+    /// The trailing eviction keeps the deque monotonically increasing from
+    /// front to back, so the front is always the window minimum. It is O(1)
     /// amortized: each entry is pushed once and popped at most once, however
-    /// many a single call discards. Never allocates beyond the capacity hint, so
-    /// it is safe on the audio thread.
+    /// many a single call discards. Evicting by age before pushing bounds
+    /// the deque at `window` entries, so it never allocates and is safe on
+    /// the audio thread.
     #[inline]
     pub fn push(&mut self, index: u64, value: f32) {
+        let oldest = index.saturating_sub(self.window as u64 - 1);
+        while let Some(&(idx, _)) = self.entries.front() {
+            if idx < oldest {
+                self.entries.pop_front();
+            } else {
+                break;
+            }
+        }
         while let Some(&(_, back_v)) = self.entries.back() {
             if back_v >= value {
                 self.entries.pop_back();
@@ -178,18 +200,6 @@ impl MonotonicMinDeque {
             }
         }
         self.entries.push_back((index, value));
-    }
-
-    /// Drops entries older than `min_index`.
-    #[inline]
-    pub fn evict_older_than(&mut self, min_index: u64) {
-        while let Some(&(idx, _)) = self.entries.front() {
-            if idx < min_index {
-                self.entries.pop_front();
-            } else {
-                break;
-            }
-        }
     }
 
     /// Current window minimum. Returns `None` when the deque is empty.
@@ -206,5 +216,78 @@ impl MonotonicMinDeque {
     /// flight yet".
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// A clone holds the same entries over the same window, in an allocation
+/// of the full window: a derived clone would size the copy to the entries
+/// it holds, and the next release would grow it on the audio thread.
+impl Clone for MonotonicMinDeque {
+    fn clone(&self) -> Self {
+        let mut entries = VecDeque::with_capacity(self.window);
+        entries.extend(self.entries.iter().copied());
+        Self {
+            entries,
+            window: self.window,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MonotonicMinDeque;
+
+    /// A rising run (a limiter's release) keeps every push: the deque fills
+    /// to the window and must not grow past the allocation `new` made.
+    ///
+    /// Mutation (run): push before evicting by age (the old order) → the
+    /// deque reaches `window + 1` entries and the capacity assertion fails.
+    #[test]
+    fn a_rising_run_never_grows_the_deque() {
+        let window = 240;
+        let mut d = MonotonicMinDeque::new(window);
+        let cap = d.capacity();
+        for i in 0..10 * window as u64 {
+            d.push(i, i as f32);
+            assert_eq!(d.capacity(), cap, "grew at push {i}");
+            // The window minimum of a rising run is its oldest live entry.
+            let oldest = i.saturating_sub(window as u64 - 1);
+            assert_eq!(d.min(), Some(oldest as f32));
+        }
+    }
+
+    /// A clone of a deque that holds fewer entries than its window keeps
+    /// the window's allocation, so a rising run on the clone does not grow.
+    ///
+    /// Mutation (run): derive `Clone` → the clone's capacity is sized to
+    /// its one entry and the assertion fails.
+    #[test]
+    fn a_clone_keeps_the_window_allocation() {
+        let window = 240;
+        let mut d = MonotonicMinDeque::new(window);
+        d.push(0, 1.0);
+        let mut c = d.clone();
+        assert!(c.capacity() >= window, "clone capacity {}", c.capacity());
+        let cap = c.capacity();
+        for i in 1..4 * window as u64 {
+            c.push(i, i as f32);
+        }
+        assert_eq!(c.capacity(), cap);
+        assert_eq!(c.window(), window);
+    }
+
+    /// The minimum is over exactly the last `window` pushes.
+    ///
+    /// Mutation (run): `oldest = index - window` (one too wide) → the
+    /// fourth push still answers 0.0.
+    #[test]
+    fn the_minimum_spans_exactly_the_window() {
+        let mut d = MonotonicMinDeque::new(3);
+        d.push(0, 0.0);
+        d.push(1, 5.0);
+        d.push(2, 6.0);
+        assert_eq!(d.min(), Some(0.0));
+        d.push(3, 7.0);
+        assert_eq!(d.min(), Some(5.0), "index 0 left the window of 3");
     }
 }

@@ -80,19 +80,24 @@ pub(crate) struct AngleSmoother {
 }
 
 impl AngleSmoother {
-    pub(crate) fn new(sample_rate: impl Into<SampleRate>) -> Self {
-        let sample_rate = sample_rate.into();
+    /// A smoother with the 50 ms time constant, tuned for `step_rate`
+    /// [`step`](Self::step)s per second: the sample rate for a panner that
+    /// steps every frame (VBAP), the HRTF frame rate for one that steps once
+    /// per convolution frame.
+    pub(crate) fn new(step_rate: impl Into<SampleRate>) -> Self {
+        let step_rate = step_rate.into();
         Self {
-            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
-            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
+            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, step_rate),
+            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, step_rate),
         }
     }
 
-    /// Retune so the 50 ms ramp holds at any sample rate.
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        let sample_rate = sample_rate.into();
-        self.azimuth.set_sample_rate(sample_rate);
-        self.elevation.set_sample_rate(sample_rate);
+    /// Retune for a new step rate (see [`new`](Self::new)), so the 50 ms
+    /// ramp holds at any sample rate.
+    pub(crate) fn set_sample_rate(&mut self, step_rate: impl Into<SampleRate>) {
+        let step_rate = step_rate.into();
+        self.azimuth.set_sample_rate(step_rate);
+        self.elevation.set_sample_rate(step_rate);
     }
 
     /// Discard the in-flight ramp, seating both coordinates *on* the commanded

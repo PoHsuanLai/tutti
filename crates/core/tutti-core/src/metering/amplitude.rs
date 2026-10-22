@@ -91,8 +91,10 @@ impl AtomicAmplitude {
         if frames == 0 {
             return;
         }
-        // Read the planes directly rather than through a per-sample accessor,
-        // so the folds autovectorize.
+        // Sequential folds over the two planes. They do not autovectorize:
+        // an `f32` sum must keep its left-to-right order (reassociating it
+        // changes the result), and `f32::max`'s NaN rule blocks a plain
+        // vector max, so each is a scalar loop.
         let (left, right) = (planes.left(), planes.right());
         let peak_l = left.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         let peak_r = right.iter().fold(0.0f32, |m, s| m.max(s.abs()));

@@ -102,11 +102,15 @@ impl Loudness {
 
 /// The meter's carry between chunks.
 ///
-/// Wraps `EbuR128`, which accumulates internally — there is no partial-frame
-/// carry to keep here because [`step_loudness`] only ever feeds it whole
-/// frames (it truncates a ragged tail rather than splitting one across calls).
+/// Wraps `EbuR128`, which accumulates internally, plus the samples of a frame
+/// a chunk ended in the middle of: [`step_loudness`] feeds the meter whole
+/// frames only, and splices that carried part frame in front of the next
+/// chunk, as [`step_peaks`](crate::step_peaks) does.
 pub struct LoudnessState {
     meter: EbuR128,
+    /// The leading samples of a frame the last chunk did not finish (fewer
+    /// than the layout's channel count).
+    partial_frame: Vec<f32>,
 }
 
 // `EbuR128` is not `Debug`; report what the meter was built for instead.
@@ -132,7 +136,10 @@ impl LoudnessState {
             Mode::I | Mode::LRA | Mode::TRUE_PEAK,
         )
         .ok()
-        .map(|meter| Self { meter })
+        .map(|meter| Self {
+            meter,
+            partial_frame: Vec::new(),
+        })
     }
 }
 
@@ -146,23 +153,38 @@ impl LoudnessState {
 /// makes that a value the caller can act on. Here a mismatch is simply ignored,
 /// because a metering miss must not fail a render.
 ///
-/// A ragged tail (a chunk that ends mid-frame) is ignored rather than split:
-/// `ebur128` takes whole frames, and silently metering a half frame would skew
-/// the reading. That truncation is now [`Interleaved::len`] rather than a
-/// hand-written `len - len % channels`. Chunks need not align to any block size.
+/// A ragged tail (a chunk that ends mid-frame) is carried, not dropped: its
+/// samples are spliced in front of the next chunk, so the meter only ever sees
+/// whole frames and every later sample stays on its own channel. Dropping it
+/// instead would shift each later sample onto the wrong channel. Chunks need
+/// not align to frames or to any block size.
 pub fn step_loudness(cfg: &LoudnessConfig, state: &mut LoudnessState, chunk: Interleaved<'_>) {
     if !cfg.chunk_matches(chunk) {
         return;
     }
-    // `len()` is frames; the meter takes samples, so the whole-frame prefix is
-    // `frames × stride`. `window` does that multiply, once, inside the type.
-    let whole = chunk.window(0..chunk.len());
-    if whole.is_empty() {
-        return;
+    // Errors from the meter mean a layout/meter mismatch the guard above
+    // already ruled out; a metering miss must not fail a render.
+    if state.partial_frame.is_empty() {
+        // The common case, a frame-aligned chunk, meters in place. `len()` is
+        // frames; `window` turns the whole-frame prefix into samples.
+        let whole = chunk.window(0..chunk.len());
+        if !whole.is_empty() {
+            let _ = state.meter.add_frames_f32(whole.samples());
+        }
+        state
+            .partial_frame
+            .extend_from_slice(&chunk.samples()[chunk.len() * chunk.stride()..]);
+    } else {
+        let mut carry = core::mem::take(&mut state.partial_frame);
+        carry.extend_from_slice(chunk.samples());
+        let spliced = Interleaved::new(&carry, chunk.layout());
+        let consumed = spliced.len() * spliced.stride();
+        if consumed > 0 {
+            let _ = state.meter.add_frames_f32(&carry[..consumed]);
+        }
+        carry.drain(..consumed);
+        state.partial_frame = carry;
     }
-    // Errors here mean a layout/meter mismatch the guard above already ruled
-    // out; a metering miss must not fail a render.
-    let _ = state.meter.add_frames_f32(whole.samples());
 }
 
 /// Reads the meter.
@@ -280,6 +302,43 @@ mod tests {
         LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO)
     }
 
+    /// A chunk that ends mid-frame carries its part frame into the next one.
+    ///
+    /// A 5.1 signal on the LFE channel alone, which R128 does not weight
+    /// (`ebur128` maps channel 3 to `Unused`), reads as silence. Fed in
+    /// 777-sample chunks (not a multiple of six), a meter that dropped each
+    /// ragged tail would start the next chunk on the wrong channel, move the
+    /// LFE onto a weighted one, and read it loud.
+    ///
+    /// Mutation (run): drop the carried tail (`partial_frame` never filled)
+    /// → the streamed reading is about -12 LUFS instead of the -70 floor.
+    #[test]
+    fn a_ragged_chunk_carries_its_part_frame() {
+        let layout = ChannelLayout::from(6u16);
+        let c = LoudnessConfig::new(SampleRate(48_000.0), layout);
+        let n = 48_000;
+        let buf: Vec<f32> = (0..n)
+            .flat_map(|i| {
+                let s = 0.5 * (TAU * 1_000.0 * i as f32 / 48_000.0).sin();
+                [0.0, 0.0, 0.0, s, 0.0, 0.0]
+            })
+            .collect();
+
+        let mut state = LoudnessState::new(&c).unwrap();
+        for chunk in buf.chunks(777) {
+            step_loudness(&c, &mut state, Interleaved::new(chunk, layout));
+        }
+        let streamed = finish(state);
+        let one_shot = measure_loudness(&c, Interleaved::new(&buf, layout)).unwrap();
+
+        assert_eq!(one_shot.lufs, Db(-70.0), "the LFE alone is unweighted");
+        assert_eq!(
+            streamed.lufs, one_shot.lufs,
+            "streamed {:?}: a dropped part frame moved the LFE onto a weighted channel",
+            streamed.lufs
+        );
+    }
+
     /// The one-shot form must fold the streaming form exactly — the property
     /// `peaks.rs` holds, and the reason a batch/stream drift cannot appear.
     #[test]
@@ -291,7 +350,7 @@ mod tests {
 
         let mut state = LoudnessState::new(&c).unwrap();
         // Deliberately ragged: 777 is not a multiple of the frame width, so
-        // this also exercises the partial-frame guard.
+        // this also exercises the part-frame carry.
         for chunk in buf.chunks(777) {
             step_loudness(
                 &c,

@@ -52,24 +52,20 @@ pub(crate) struct PlaybackSlot {
     /// the box on the audio thread. A slot leaves the pool through the
     /// retirement channel, box and all.
     pub(crate) voice: Box<Voice>,
-    /// The time-stretch processor is **always resident**: it is built once (one
-    /// phase-vocoder construction + two block-scratch buffers *per channel*) when
-    /// the slot is created, and thereafter the audio thread only flips the
-    /// lock-free `stretch_factor` / `pitch_cents` atomics inside it. It owns NO
-    /// copy of the audio source: it is a pure frame-in → frame-out filter. At
-    /// read time, the `needs_stretch()` gate (mirrored from those atomics into
-    /// `voice.play.stretch` / `voice.play.pitch`) chooses whether to read the
-    /// single source and route its frames through this filter, or read the
-    /// source directly.
+    /// The time-stretch filter, present only while the voice stretches or
+    /// transposes: `None` reads the source dry, the common case. It owns no
+    /// copy of the audio source: it is a pure frame-in → frame-out filter,
+    /// and the hot paths route through it only when
+    /// [`needs_stretch`](Self::needs_stretch) and a unit is present.
     ///
-    /// **"Built once" is not the same as "built off the audio thread".**
-    /// Per-buffer *updates* are genuinely allocation-free —
-    /// [`VoiceCommand::UpdateStretch`] only sets atomics. But the construction
-    /// itself happens in `insert_voice`, reached from
-    /// [`VoiceCommand::AddVoice`], which `drain_commands` pulls from the
-    /// node's `process`. So adding a voice mid-playback DOES build the vocoders in the
-    /// callback, and the cost scales with channel count: at width `n` that is
-    /// `n` FFT setups plus `2n` scratch allocations.
+    /// **Built on the control thread, never in the callback.** A unit
+    /// (a phase-vocoder bank plus block scratch per channel) is built by
+    /// `VoicePoolHandle::send` when a `VoiceCommand::AddVoice` or a
+    /// `VoiceCommand::UpdateStretch` asks for stretching (or by a standalone
+    /// `VoiceNode`'s constructor), and the pool's drain in `process` only
+    /// moves it in; a redundant one goes back through the retirement channel
+    /// rather than being dropped on the audio thread.
+    /// After that, stretch and pitch changes only set the unit's atomics.
     ///
     /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
     /// drift from the processor's atomics — every mutation goes through

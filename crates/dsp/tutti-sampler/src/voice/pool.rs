@@ -657,11 +657,10 @@ impl VoicePool {
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
-        // `PlaybackSlot::with_channels` primes the resident stretch unit from
-        // `voice.play` (stretch/pitch) — the one heavy step, done here off the
-        // hot path. It is built at THIS READER's width: a slot narrower than the
+        // The slot is built at THIS READER's width: a slot narrower than the
         // reader would truncate on the stretch path only, which no stereo test
-        // can observe.
+        // can observe. Its stretch unit, if any, was built by the sender on
+        // the control thread (`VoicePoolHandle::send`) and only moves in here.
         let mut slot = PlaybackSlot::with_channels(id, voice, self.sample_rate, self.channels);
         slot.stretch = stretch;
         // The source runs at the pool's rate (the memory tier's conversion,

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — audio-thread allocation, de-zipper timing and four correctness bugs
+
+- **`LimiterNode` no longer allocates on the audio thread.** Its
+  window-minimum deque pushed before evicting the entry leaving the window,
+  so the first release (when every gain is larger than the last and the
+  deque keeps them all) took it one past its preallocated capacity; a clone
+  was sized to the entries it held. `tutti_nodes::buffer::MonotonicMinDeque`
+  now owns its window: `push` evicts by age first, and a clone keeps the
+  window's allocation.
+- **The HRTF panner's position glide takes 50 ms, as documented**, not
+  about 25.6 s: its smoothers were tuned per sample and stepped once per
+  512-sample convolution frame. They are now tuned at the frame rate. Renders
+  of a moving `HrtfBinauralNode` change: the source arrives where it was sent
+  512 times sooner. No test pinned the slow glide.
+- **The sampler's stretch `Unit::set_sample_rate` keeps a non-default
+  `FftSize`.** It rebuilt every vocoder's grid at the default 2048 window,
+  which disagreed with the buffers a 1024/4096/8192 unit had allocated.
+- **SMF and clip writers no longer panic or disorder on a NaN beat.**
+  `encode_midi_file` / `write_midi_file` return `Error::InvalidConfig` for an
+  event at a non-finite beat (the sort used `partial_cmp(..).unwrap()`);
+  `write_clip_file_from_beats` sorts with `total_cmp`, so a NaN beat goes
+  last at a zero delta instead of stopping the sort. Every beat sort in the
+  two crates uses `total_cmp`.
+- **`step_loudness` carries a chunk's part frame into the next chunk**, as
+  `step_peaks` does. It dropped it, which moved every later sample of the
+  stream onto the wrong channel.
+- **`tutti_export::Flac::compression_level` is honoured.** It was accepted
+  and ignored; levels 0 to 8 now map onto flacenc's coding options after
+  libFLAC's presets (fixed predictors only to 2, LPC of order 6/8/12 from 3,
+  mid/side stereo from 1). Output stays lossless at every level; the default
+  (5) writes LPC order 8 instead of flacenc's own default of 10.
+
+| Was | Now |
+|---|---|
+| `MonotonicMinDeque::new(capacity_hint)` | `MonotonicMinDeque::new(window)`: the window length, which `push` enforces |
+| `MonotonicMinDeque::evict_older_than(min_index)` | removed: `push` evicts entries outside the window itself |
+| — | `MonotonicMinDeque::window()` |
+
+Migration: build the deque with the window length you passed as
+`capacity_hint`, and delete the `evict_older_than` call after each `push`;
+`push(index, value)` then answers `min()` over the last `window` indices. A
+caller that sets `Flac::compression_level` gets that level (set 5 for the
+default); one that writes SMF from computed beats handles the new
+`InvalidConfig` for a non-finite one.
+
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 
 - **A clip plays every pass of a loop shorter than a block** (it played the

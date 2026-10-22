@@ -138,13 +138,7 @@ impl Encoder for FlacEncoder {
             pos: 0,
         };
 
-        // `compression_level` is the app-facing knob; flacenc expresses effort
-        // through its own preset, which `Encoder::default()` sets to a balanced
-        // point. Mapping the 0-8 scale onto flacenc's coding options is a
-        // separate change: the level is accepted and unmapped rather than
-        // silently reinterpreted as something else.
-        let _ = self.compression_level;
-        let flac_config = EncoderConfig::default()
+        let flac_config = encoder_config(self.compression_level)
             .into_verified()
             .map_err(|e| Error::Encoding(format!("Invalid FLAC config: {e:?}")))?;
 
@@ -159,6 +153,29 @@ impl Encoder for FlacEncoder {
         file.write_all(&sink.into_inner())?;
         Ok(())
     }
+}
+
+/// flacenc's coding options for a 0 (fastest) to 8 (smallest) level, after
+/// libFLAC's presets: levels 0 to 2 code with fixed predictors only, 3 and up
+/// add LPC (order 6, then 8 from level 4, 12 from level 7), and every level
+/// but 0 tries mid/side and left/right-side stereo. Above 8 reads as 8.
+///
+/// Every level is lossless; a higher one searches more predictors and costs
+/// more time for a smaller file.
+fn encoder_config(level: u8) -> EncoderConfig {
+    let level = level.min(8);
+    let mut config = EncoderConfig::default();
+    let side = level >= 1;
+    config.stereo_coding.use_leftside = side;
+    config.stereo_coding.use_rightside = side;
+    config.stereo_coding.use_midside = side;
+    config.subframe_coding.use_lpc = level >= 3;
+    config.subframe_coding.qlpc.lpc_order = match level {
+        0..=3 => 6,
+        4..=6 => 8,
+        _ => 12,
+    };
+    config
 }
 
 fn bits_for(bit_depth: BitDepth) -> usize {

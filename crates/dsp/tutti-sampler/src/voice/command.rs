@@ -649,7 +649,9 @@ impl VoicePoolHandle {
     }
 
     /// Queues a command, doing any allocation it implies **here**, on the calling
-    /// (control) thread.
+    /// (control) thread. A streaming loop whose forward cannot be made, or
+    /// whose slot was removed while it was forwarded, returns `Ok` without
+    /// being queued (see below).
     ///
     /// This is the one chokepoint every command passes through, which makes it the
     /// right place to keep the audio thread clean: `drain_commands` runs from
@@ -697,8 +699,12 @@ impl VoicePoolHandle {
     /// queue is refused before the forward, and a forward whose command then
     /// cannot be queued (another thread filled the queue meanwhile) is
     /// undone by forwarding the stream's previous loop again (`Off` for a
-    /// stream the handle had not added). That is a failure a caller can act
-    /// on rather than log, which is why it is `#[must_use]` — see
+    /// stream the handle had not added). On that rare path the butler
+    /// applies the refused loop and then the rollback, which can be briefly
+    /// audible when a loop change re-arms the fade-in; and a rolled-back
+    /// add on a stream the handle had not added sends `Off`, clearing a loop
+    /// a host set on that channel with its own `Command::Loop`. That is a
+    /// failure a caller can act on rather than log, which is why it is `#[must_use]` — see
     /// [`SendError::is_disconnected`] for which of the two is worth retrying.
     #[must_use = "a dropped command is a note that never sounds or a voice that never stops"]
     pub fn send(&self, cmd: VoiceCommand) -> Result<(), SendError> {
@@ -820,8 +826,10 @@ impl VoicePoolHandle {
             return Ok(());
         }
         let mut streams = self.streams();
+        // Only a `Remove` or an in-memory add can have changed the entry
+        // meanwhile: a streaming add takes the forwarding lock this holds.
         match streams.get_mut(&id) {
-            Some(now) if now.addr == entry.addr => match self.queue(cmd, entry.addr) {
+            Some(now) => match self.queue(cmd, entry.addr) {
                 Ok(()) => {
                     now.loop_ = setting;
                     Ok(())

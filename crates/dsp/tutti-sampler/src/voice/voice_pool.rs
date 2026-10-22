@@ -1925,18 +1925,34 @@ mod tests {
         );
     }
 
+    /// Waits until another thread holds `handle`'s forwarding lock: its
+    /// streaming loop is past its lookup and at (or about to reach) the
+    /// butler send.
+    fn wait_for_forward(handle: &VoicePoolHandle) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while handle.forwarding.try_lock().is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the other thread never started its forward"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     /// **A forward whose command another thread's send then crowds out of
     /// the queue is undone**: the butler is put back on the loop the slot
     /// had, so `Err` leaves both the butler and the pool where they were.
     ///
     /// The race is staged: the butler's one-slot queue is full, so the
-    /// loop's forward waits there (past the full-queue check) while this
-    /// thread takes the command queue's last slot. If the forward has not
-    /// reached its wait by then, the check refuses it instead, and the
-    /// butler ends on the same loop either way.
+    /// loop's forward waits there (past the full-queue check) while another
+    /// thread takes the command queue's last slot, and this one drains the
+    /// butler only once that send has returned. If the forward has not
+    /// reached its full-queue check by then, the check refuses it instead,
+    /// and the butler ends on the same loop either way.
     ///
-    /// Mutation (run): `send_loop` returning the queueing error without
-    /// `roll_back` → the butler ends on the refused loop → fails.
+    /// Mutation (run, `--stress-count 20`): `send_loop` returning the
+    /// queueing error without `roll_back` → the butler ends on the refused
+    /// loop → fails 20/20.
     #[test]
     #[cfg_attr(miri, ignore = "threads and wall-clock waits")]
     fn a_loop_crowded_out_of_the_queue_rolls_the_butler_back() {
@@ -1958,15 +1974,20 @@ mod tests {
                 crossfade_frames: 0,
             })
         });
-        std::thread::sleep(Duration::from_millis(50));
+        wait_for_forward(&handle);
         // From another thread, so a remove that waited on the forward would
-        // fail this test rather than hang it.
+        // fail this test rather than hang it; and awaited before the butler
+        // is drained, so the forward cannot queue into the last slot first.
         let crowder = handle.clone();
+        let (done_tx, done) = bounded(1);
         std::thread::spawn(move || {
             crowder
                 .send(VoiceCommand::Remove(SlotId(999)))
                 .expect("the last slot");
+            done_tx.send(()).unwrap();
         });
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("the remove waited on the forward");
         let mut sent = Vec::new();
         while let Ok(c) = butler.recv_timeout(Duration::from_millis(300)) {
             sent.push(c);
@@ -2013,7 +2034,7 @@ mod tests {
         assert_eq!(butler.len(), 1, "the butler's queue is full");
         let looper = handle.clone();
         let looping = std::thread::spawn(move || looper.send(loop_on(id)));
-        std::thread::sleep(Duration::from_millis(50));
+        wait_for_forward(&handle);
         let (done_tx, done) = bounded(1);
         let other = handle.clone();
         std::thread::spawn(move || {

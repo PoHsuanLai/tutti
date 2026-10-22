@@ -587,10 +587,12 @@ impl VoicePool {
     ///   neither reachable from the reader — and the control thread has
     ///   already forwarded it ([`VoicePoolHandle::send`],
     ///   [`insert_voice`](Self::insert_voice)), so here it is only recorded.
-    ///   The one caller is `insert_voice_inner`, whose voice carries a loop
-    ///   only once the butler took it (its sender set it `Off` otherwise), so
-    ///   the record never claims a loop the stream was not given. A loop
-    ///   command goes through [`apply_queued_loop`](Self::apply_queued_loop).
+    ///   Its callers are `insert_voice_inner`, whose voice carries a loop
+    ///   only once the butler took it (its sender set it `Off` otherwise),
+    ///   and [`apply_queued_loop`](Self::apply_queued_loop), which calls it
+    ///   for a streaming slot only when the command was forwarded to that
+    ///   slot's stream; so the record never claims a loop the stream was not
+    ///   given.
     ///
     /// Allocation-free and send-free: the drain runs it.
     fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {

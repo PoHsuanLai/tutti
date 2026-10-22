@@ -25,7 +25,6 @@
 //! live node and its fork read the transport the same way: from the block's
 //! `Cx`, the transport its input was rendered at (`TransportFeed`).
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
@@ -83,7 +82,9 @@ impl Node for InProcessVst2Client {
         // No clamp and no size check: `prepare` sized the scratch to the
         // prepared `MaxBlock`, and a block is never longer.
         // The event input: its MIDI, in its (sorted) order, past the cap
-        // dropped and counted (the list is inline and cannot grow); its parameter events
+        // dropped and counted (the list is inline and cannot grow; a SysEx
+        // that lost a packet loses the rest of it, `MidiIntake`); its
+        // parameter events
         // into the block's changes (`param_input`, the out-of-process node's
         // walk, with the block as the chunk).
         self.midi.clear();
@@ -94,7 +95,8 @@ impl Node for InProcessVst2Client {
             SortedEvents::EMPTY
         };
         let midi = &mut self.midi;
-        let midi_in_dropped = &self.midi_in_dropped;
+        let intake = &mut self.intake;
+        let mut midi_dropped = 0u64;
         param_input::take(
             events.as_slice(),
             0,
@@ -106,16 +108,11 @@ impl Node for InProcessVst2Client {
             &mut self.params,
             |e, _| match e.kind {
                 EventKind::Midi(Ump(data)) => {
-                    // Past the cap the event is dropped, and counted.
-                    if midi
-                        .try_push(MidiEvent {
-                            frame_offset: e.offset.get(),
-                            data,
-                        })
-                        .is_err()
-                    {
-                        midi_in_dropped.fetch_add(1, Ordering::Relaxed);
-                    }
+                    let event = MidiEvent {
+                        frame_offset: e.offset.get(),
+                        data,
+                    };
+                    midi_dropped += u64::from(!intake.push(midi, event));
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
                 // parameter events for itself; a plugin re-sends nothing.
@@ -125,6 +122,7 @@ impl Node for InProcessVst2Client {
                 | EventKind::Resync => {}
             },
         );
+        self.params.count_midi_dropped(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
         let transport = self.transport.block(cx, size, self.features);
@@ -134,6 +132,7 @@ impl Node for InProcessVst2Client {
         // copies them into its render scratch and the plugin's output back
         // out, the one copy each way its pointer tables need. Scoped so the
         // tables release `io` before the event output is taken.
+        let block_midi = self.midi.len();
         let processed = {
             let (inputs, mut outputs) = io.split();
             // A plugin wider than the tables is handed their first
@@ -180,6 +179,12 @@ impl Node for InProcessVst2Client {
         };
         // Set on the plugin with the block, or owed to the next one.
         self.params.handed_off(processed);
+        if !processed {
+            // The block's MIDI was dropped with it (`drive_f32`): counted,
+            // and the rest of every SysEx open in it is skipped.
+            self.params.count_midi_dropped(block_midi as u64);
+            self.intake.lost();
+        }
         if sends {
             tutti_plugin_types::insertion_sort_by_key(&mut out_events, |e| e.frame_offset);
             let writer = io.event_out(0);
@@ -200,6 +205,10 @@ impl Node for InProcessVst2Client {
         // parameters), and no block's changes are in flight between blocks.
         self.segments.clear();
         self.params.abandon();
+        // A SysEx open across the reset is not completed past it: its rest
+        // is skipped (the instance's reassembler keeps its open message, so
+        // it is dropped there, counted, at the next `START`).
+        self.intake.lost();
         // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
         // opcode that clears DSP state on its own: the only two that touch it
         // are `effMainsChanged`, where plugins allocate and free their
@@ -244,7 +253,6 @@ impl IntoNode for InProcessVst2Client {
 pub struct InProcessVst2Controls {
     meter: PluginMeter,
     delivery: Arc<DeliveryCounters>,
-    midi_in_dropped: Arc<AtomicU64>,
 }
 
 impl InProcessVst2Controls {
@@ -269,16 +277,6 @@ impl InProcessVst2Controls {
         self.meter.clone()
     }
 
-    /// How many MIDI events on the node's event input were dropped since the
-    /// plugin was loaded: a block hands the plugin at most
-    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY)
-    /// events (its list is inline, so the audio thread never allocates), and
-    /// the rest of that block's are dropped. Zero unless the input fans in
-    /// more MIDI than that in one block. RT-safe: one relaxed load.
-    pub fn dropped_midi_in(&self) -> u64 {
-        self.midi_in_dropped.load(Ordering::Relaxed)
-    }
-
     /// What the node has done with the parameter events on its event input
     /// since the plugin was loaded: points sent (changes only), blocks whose
     /// changes went a block late (the instance was locked), points dropped
@@ -291,6 +289,20 @@ impl InProcessVst2Controls {
     pub fn param_delivery(&self) -> ParamDeliveryStats {
         self.delivery.snapshot()
     }
+
+    /// MIDI events on the node's event input that never reached the plugin
+    /// since it was loaded. Counted: an event past the
+    /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a block
+    /// carries; every event of a block the plugin did not run (the instance
+    /// was locked; see `contention_count`); and the rest of every SysEx
+    /// message that lost a packet either way or was open at a reset, so a
+    /// message never reaches the plugin with a gap. The in-process
+    /// counterpart of
+    /// [`PluginControls::dropped_midi_in`](crate::handles::PluginControls::dropped_midi_in).
+    /// RT-safe: two relaxed loads.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.delivery.dropped_midi_in()
+    }
 }
 
 impl InProcessVst2Client {
@@ -300,7 +312,6 @@ impl InProcessVst2Client {
         InProcessVst2Controls {
             meter: self.meter(),
             delivery: self.params.counters(),
-            midi_in_dropped: Arc::clone(&self.midi_in_dropped),
         }
     }
 
@@ -393,5 +404,89 @@ mod owed_tests {
         assert_eq!(stats.points_sent, 1);
         assert_eq!(stats.chunks_deferred, 1);
         assert_eq!(stats.points_dropped, 0);
+    }
+
+    /// A 60-byte SysEx's ten packets, then a 12-byte one's two, all on
+    /// group 1, as graph events at frame 0.
+    fn dumps() -> (Vec<Event>, Vec<Event>) {
+        use tutti_midi_types::ump::MidiEvent;
+        use tutti_midi_types::MidiGroup;
+        let packets = |len: usize| {
+            let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+            let mut out = Vec::new();
+            MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
+            let at = Offset::new(0, tutti_core::Samples(BLOCK)).expect("inside the block");
+            out.iter()
+                .map(|e| Event::midi(at, e.data))
+                .collect::<Vec<_>>()
+        };
+        (packets(60), packets(12))
+    }
+
+    /// **A block the instance is locked for loses its MIDI, counted, and
+    /// the SysEx open in it is not completed by its tail.** The dump's first
+    /// three packets reach the plugin; the next three go with a contended
+    /// block; the tail and a second dump follow. The plugin's host never
+    /// completes the cut dump: it drops it at the second dump's `START`.
+    ///
+    /// Mutation (run): the `intake.lost()` in `process`'s contended branch
+    /// removed → the tail completes the dump with three packets missing, so
+    /// nothing is open at the next `START` and `dropped_sysex` stays 0 →
+    /// fails. Mutation (run): the contended block's MIDI not counted → the
+    /// count is short by three → fails.
+    #[test]
+    fn a_contended_block_cuts_the_sysex_open_in_it() {
+        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let inner = std::sync::Arc::clone(&client.inner);
+        let controls = client.controls();
+        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        let (cut, next) = dumps();
+
+        unit.events(0, &cut[..3]);
+        unit.block();
+        {
+            let _held = inner.lock();
+            unit.events(0, &cut[3..6]);
+            unit.block();
+        }
+        let tail: Vec<Event> = cut[6..].iter().chain(&next).copied().collect();
+        unit.events(0, &tail);
+        unit.block();
+
+        assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
+        assert_eq!(
+            controls.dropped_midi_in(),
+            (3 + cut.len() - 6) as u64,
+            "the contended block's, and the cut dump's tail"
+        );
+    }
+
+    /// **A SysEx open across the node's reset is not completed past it**:
+    /// its tail is skipped, counted, and the plugin's host drops it at the
+    /// next `START`, as the CLAP and VST3 hosts do on a plugin reset.
+    ///
+    /// Mutation (run): the `intake.lost()` in `reset` removed → the tail
+    /// completes the dump across the reset → `dropped_sysex` stays 0 →
+    /// fails.
+    #[test]
+    fn a_sysex_open_across_a_reset_is_not_completed() {
+        use tutti_graph::Node as _;
+        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
+            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let inner = std::sync::Arc::clone(&client.inner);
+        let controls = client.controls();
+        let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
+        let (cut, next) = dumps();
+
+        unit.events(0, &cut[..3]);
+        unit.block();
+        unit.node.reset();
+        let tail: Vec<Event> = cut[3..].iter().chain(&next).copied().collect();
+        unit.events(0, &tail);
+        unit.block();
+
+        assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
+        assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
     }
 }

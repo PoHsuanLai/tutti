@@ -269,6 +269,105 @@ changed both directions / never-compensated, including the `None` vs
 needs an integration test loading a real binary, and no such harness exists in
 `bevy-tutti` yet.
 
+### A-4 · A SysEx spanning several UMP packets never reaches a plugin whole · DONE
+
+A UMP SysEx7 packet carries at most six bytes, so any longer message arrives
+as `START`, `CONTINUE`…, `END`. The VST3 host forwarded the `START`'s bytes as
+an unterminated `kMidiSysEx` event and dropped the rest; the CLAP and VST2
+hosts dropped every SysEx, one packet or many (neither has a 3-byte form, and
+`to_midi1_bytes` was the only path).
+
+**Fixed.** `tutti_plugin_types::SysExAssembler` reassembles the packets into
+one `0xF0 … 0xF7` message inside one buffer, reserved when the input event
+list is built (at activation) and never grown, so staging allocates nothing
+and a pointer handed to the plugin is never moved during its block. Each
+host's input list owns one and hands the plugin one complete message at its
+`END` packet's frame: a `kDataEvent`/`kMidiSysEx` (`Vst3Event::SysEx`, its
+bytes in the list's buffer so `Vst3Event` stays `Copy`), a
+`CLAP_EVENT_MIDI_SYSEX`, a `kVstSysExType` event.
+
+- **Capacity:** `SYSEX_MESSAGE_CAPACITY`, the engine's `SYSEX7_MAX_PAYLOAD`
+  (64 KiB, the cap the hardware input already enforced, now shared from
+  `tutti-midi-types`) and its two delimiters. Nothing an input produces is
+  dropped by the reassembler for its length alone. The buffer adds a block
+  of packets' worth on top (about 66 KiB per instance) so the block's
+  completed messages and an open message always fit together; more packets
+  than that in one block drop the message that would overflow it, counted.
+- **A message spans blocks.** A block carries at most `MIDI_STACK_CAPACITY`
+  packets (1536 bytes), so anything longer must.
+- **Dropped whole, never truncated, and counted** (`sysex_dropped` on the
+  VST3 and CLAP instances, `dropped_sysex` on the VST2 one): a message past
+  the capacity, one left without its `END` by a later `START`, one open when
+  the plugin is reset or re-activated (CLAP `reset` and re-activation, VST3
+  `setActive`), or one that lost packets to a list before the reassembler.
+- **One open message across all groups**, a deliberate deviation from
+  M2-104's independent stream per group: no plugin format has a SysEx group
+  to deliver on, so two interleaved dumps could only reach the plugin as two
+  messages anyway, and the hardware input puts all its traffic on group 1.
+- Other messages between a message's packets do not end it: the event list
+  merges sources, and a note played during a dump should not cost the dump.
+- **No gap is spliced on the paths listed here.** Each of these drops the
+  open message rather than splice what follows it onto it, and counts what
+  it drops:
+  - the events past `MIDI_STACK_CAPACITY` in a chunk (a device callback; a
+    block for the in-process VST2 node), and the rest of a SysEx that lost a
+    packet there;
+  - a whole chunk of MIDI lost on its way out of process: not staged,
+    refused (queue full, server crashed), or skipped by the bridge thread as
+    stale. The node's `MidiIntake` marks every group with a message open in
+    it as cut, and the bridge filters each chunk it sends through its own
+    intake, so a stale skip cuts too (filtering on the bridge needs no wire
+    or server change);
+  - a reset, and a re-prepare of the out-of-process node: the events taken
+    towards the next chunk are dropped, and a cut stays cut across it,
+    because the server's reassembler is not reset with the node (out of
+    process; a same-rate re-prepare, such as a device restart to another
+    callback size, keeps the reassembler) and the in-process VST2 node's
+    reset does not reach `Vst2Instance`;
+  - the chunks still queued when the server crashes (counted; nothing can
+    splice past a dead server);
+  - an in-process VST2 block skipped because its lock was contended;
+  - the VST3 host's `IMidiMapping` route, which holds `MIDI_STACK_CAPACITY`
+    events (it held 64, and silently cut a mapped plugin's dump into a
+    shorter message that looked complete) and, past it, drops the open
+    message; the VST2 host's staging lists, reserved for
+    `MIDI_STACK_CAPACITY`, which refuse, counted
+    (`Vst2Instance::dropped_midi_in`), rather than grow on the audio thread;
+    the wire's `midi_from_wire`, which keeps `MIDI_STACK_CAPACITY`, as many
+    as the node sends;
+  - a CLAP reset or re-activation and a VST3 `setActive`.
+
+  The node counts are `PluginControls::dropped_midi_in` and
+  `InProcessVst2Controls::dropped_midi_in`. Upstream of the plugin node
+  the intake sees nothing: a graph event port refuses events past 512 a
+  block and a push out of order (`EventRejected::OutOfOrder`), so a packet lost there
+  reaches the plugin as a gap the hosts cannot detect; this matters only for
+  a graph block spanning two or more chunks (a callback over `MAX_CHUNK`) or
+  an upstream node pushing a packet out of order. On the server, a block
+  whose MIDI is never staged (no slab yet, or CLAP's `BlockTooLarge`) would
+  splice too; tutti's host reaches neither (it sets the slab up before any
+  block, and its chunk never exceeds the block size the plugin was loaded
+  with), which `Session::handle_process` records.
+
+**Known limit: a dump delivered in one block is capped by the block.** The
+live hardware input emits a dump's packets together, into one block; its
+input node keeps 512 events a block and the plugin node 256 a chunk. So on
+the live path a dump reaches a plugin only if its packets and the chunk's
+other MIDI fit in 256 events (1536 payload bytes with nothing else); a longer one is
+dropped whole and counted, as above. Holding the excess over to the next
+block would lift this, and is out of scope here: it delays every held event
+to a later block than its timestamp (wrong for the notes beside the dump),
+and needs a carry queue in every node between the input and the plugin,
+sized for a whole dump, rather than a change to the reassembly.
+
+Out of process, the wire carries each UMP packet whole (`IpcMidiEvent` is the
+128-bit packet and its frame), at most `MIDI_STACK_CAPACITY` a block, and the
+subprocess stages them through the same format host, so the reassembly runs
+there, per instance, across blocks.
+
+The AU host's reassembly (E-7) is separate: per call, not carried across
+blocks, and its buffer grows on the audio thread.
+
 ---
 
 ## B. VST3 residue (not in issue #54)

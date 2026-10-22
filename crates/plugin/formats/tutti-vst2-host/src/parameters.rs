@@ -317,4 +317,26 @@ impl Vst2Instance {
     pub fn dropped_midi_out(&self) -> u64 {
         self.host_link.state.dropped_midi_out()
     }
+
+    /// Returns how many SysEx messages were **dropped** whole since load
+    /// rather than handed to the plugin truncated: longer than
+    /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
+    /// left without their `END` by a later `START` or by a `SINGLE` on their
+    /// own group, or one whose packet found the reassembly buffer's room
+    /// full (more packets in one block than it reserves for). Monotonic.
+    ///
+    /// The host reassembles a SysEx that spans several UMP packets (and
+    /// blocks) and hands the plugin one complete `0xF0 … 0xF7` message, as a
+    /// `kVstSysExType` event, at its `END` packet's frame.
+    pub fn dropped_sysex(&self) -> u64 {
+        self.midi.send.sysex_dropped()
+    }
+
+    /// Returns how many incoming MIDI events were **dropped** since load
+    /// because one `process` call carried more than
+    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) (the
+    /// plugin node never hands it more). Monotonic.
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.midi.send.events_dropped()
+    }
 }

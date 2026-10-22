@@ -173,8 +173,8 @@ impl PluginControls {
     /// host counts it as one dropped SysEx). A chunk sent and then not
     /// answered in time is not counted here: the server still runs it.
     /// RT-safe: two relaxed loads.
-    pub fn midi_events_dropped(&self) -> u64 {
-        self.delivery.midi_events_dropped()
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.delivery.dropped_midi_in()
     }
 
     /// What the node has delivered so far, per listed parameter: what a fork

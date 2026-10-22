@@ -462,7 +462,7 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 
     node.reset();
 
-    assert_eq!(node.controls.midi_events_dropped(), 4);
+    assert_eq!(node.controls.dropped_midi_in(), 4);
     let state = &mut node.state;
     assert!(state.pending.midi.is_empty());
     assert!(

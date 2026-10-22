@@ -129,7 +129,7 @@ impl DeliveryCounters {
     }
 
     /// Add the bridge thread's count to
-    /// [`midi_events_dropped`](Self::midi_events_dropped). Once, at bind;
+    /// [`dropped_midi_in`](Self::dropped_midi_in). Once, at bind;
     /// a second call is ignored.
     pub(crate) fn attach_bridge_midi(&self, cell: std::sync::Arc<std::sync::atomic::AtomicU64>) {
         let _ = self.bridge_midi_dropped.set(cell);
@@ -137,9 +137,9 @@ impl DeliveryCounters {
 
     /// MIDI events on the node's event input that never reached the
     /// plugin's host, since the plugin was bound: see
-    /// [`PluginControls::midi_events_dropped`](super::PluginControls::midi_events_dropped).
+    /// [`PluginControls::dropped_midi_in`](super::PluginControls::dropped_midi_in).
     /// RT-safe: two relaxed loads.
-    pub(crate) fn midi_events_dropped(&self) -> u64 {
+    pub(crate) fn dropped_midi_in(&self) -> u64 {
         let bridge = self
             .bridge_midi_dropped
             .get()

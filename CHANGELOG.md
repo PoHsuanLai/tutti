@@ -18,8 +18,8 @@ message at its `END` packet's frame, without allocating on the audio thread.
 A message longer than `SYSEX_MESSAGE_CAPACITY` (64 KiB of payload, the cap the
 hardware input already had), one left open by a later `START`, one open when
 the plugin is reset or re-activated, or one that lost packets or a whole
-chunk on its way in is dropped whole and counted. One message is open at a time across all
-UMP groups (no plugin format has a SysEx group). Out of process the subprocess
+chunk on its way in is dropped whole and counted. One message is open at a
+time across all UMP groups (no plugin format has a SysEx group). Out of process the subprocess
 reassembles; the wire already carried every packet intact.
 
 A plugin node takes at most `MIDI_STACK_CAPACITY` (256) MIDI events a chunk
@@ -31,10 +31,10 @@ crashed, one the bridge skipped as stale, the events taken towards a chunk at
 a reset, an in-process VST2 block whose lock was contended); each is now
 counted, and a SysEx open in it is cut: its tail is dropped, counted, and
 never spliced onto a later message. The bridge filters what it sends with the
-same logic, so a stale skip cuts too. A reset no longer clears that cut: the
-server keeps its reassembler across a reset, so a cut message's tail is still
-dropped after one. VST3 plugin with an `IMidiMapping` table lost every event past 64
-a block (its CC route's scratch), and so got a long dump as a shorter message
+same logic, so a stale skip cuts too. The cut holds across a reset: the
+server keeps its reassembler across one, so a cut message's tail is dropped
+after it too. A VST3 plugin with an `IMidiMapping` table lost every event past
+64 a block (its CC route's scratch), and so got a long dump as a shorter message
 that looked complete; the route now holds the block's whole cap. The live
 hardware input emits a dump's packets into one block, so on that path a dump
 reaches a plugin only if it fits the chunk's 256 events (1536 payload bytes
@@ -47,11 +47,51 @@ with nothing else in the chunk); see doc 004, A-4.
 | `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
 | `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
 | — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
-| — | `PluginControls::midi_events_dropped`, `InProcessVst2Controls::midi_events_dropped`: MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent or skipped as stale, the events taken towards a chunk at a reset, and the rest of a SysEx cut by any of these |
+| `PluginControls::dropped_midi_in`, `InProcessVst2Controls::dropped_midi_in` counted past a chunk's cap only (the entry below) | MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent or skipped as stale, the events taken towards a chunk at a reset, and the rest of a SysEx cut by any of these |
 | VST2 staging grew its event lists on the audio thread past 64 events a block | reserved for `MIDI_STACK_CAPACITY`, never grown; past it an event is refused and counted by the new `Vst2Instance::dropped_midi_in` |
 | — | `SysExAssembler::reset` (the plugin's reset or re-activation: the open message is dropped, counted) and `SysExAssembler::lost_tail` (an upstream list overflowed: the open message is dropped, counted) |
 | — | `InputEventList::reset_sysex`, which `ClapActive::reset` and an in-place re-activation now call; a list you drive yourself calls it on the plugin's reset |
 | `tutti_clap_host::InputEventList::add_midi` dropped SysEx | reassembles it into `ClapEvent::MidiSysex`, whose `buffer` points into the list until its next `clear`. Call the new `InputEventList::reserve_sysex` (off the audio thread) on a list you build yourself, or every SysEx is dropped and counted (`InputEventList::sysex_dropped`); an activated instance reserves its own |
+
+### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
+
+- **A clip plays every pass of a loop shorter than a block** (it played the
+  first wrap of each segment only), on the frames the transport's own
+  `FrameClock` wraps on, at any loop length: a loop shorter than a frame
+  plays a pass a frame. `HarmonyNode` shares the walk; a wrap inside a block
+  re-states only the chord or scale that differs from what it last sent.
+- **A loop shorter than a frame no longer stalls the executor**: the
+  `Playhead` that tells a wrap from a seek stepped through the loop one
+  period at a time (~1e13 steps for a one-ulp loop).
+- **Overlapping notes of one key**: a note-on of a key the clip holds is
+  preceded by a note-off on the same frame, and the new note owns the key:
+  only its own note-off ends it, and every other note's note-off for that
+  key is swallowed. A nested note ends at its own end, and overlaps of any
+  depth leave the newest sounding to its end with no stray note-off. A
+  note-off is paired, when the clip is set, with the earliest-listed
+  untaken note-on of its key at or before it. Migration: list each note's
+  on and off together to get nested notes exactly; a time-ordered list
+  pairs first on, first off, so a note nested in a longer one sounds to the
+  outer's end. `MidiClipControls::set_events` with the same events paired
+  differently is a new clip (it ends what is sounding).
+- **A harmony re-statement includes the change on its frame**: a jump or a
+  loop wrap states the chord and scale in force on its frame, a change on
+  that frame included and sent once, so a change on the loop's start no
+  longer has the chord it replaces sent before it on every pass.
+- **The session's event feeds are partial.** `Graph::set_feed` (the
+  sequencer, route rules, live inputs, bevy-tutti's `EventSources`) no
+  longer replaces edges a host wired on the sink's event input 0 itself,
+  and `Graph::set_event_sources` / `AudioGraphRes::set_event_sources` on a
+  fed input 0 set the host's edges beside the feeds' instead of removing
+  them until the feeds next change. Migration: a host that relied on
+  `set_event_sources` to unwire a feed's source removes it through its
+  feeder (`set_feed` with the feeder's other sources, `stop_clip`,
+  `retarget`, `unroute`).
+
+| Was | Now |
+|---|---|
+| the plugin node dropped event-input MIDI past a chunk's `MIDI_STACK_CAPACITY` silently | counted: new `PluginControls::dropped_midi_in()` and `InProcessVst2Controls::dropped_midi_in()`, which also count a chunk lost whole and a SysEx cut (see the SysEx entry above) |
+| `FrameClock::advance` only | new `FrameClock::advance_to_wrap(frames, looping) -> Option<Samples>`: rolls to the loop's next wrap within `frames` and returns the frames rolled, or rolls them all and returns `None` |
 
 ### Changed — the in-block waits are per-pool settings, both timed
 

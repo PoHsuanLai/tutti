@@ -298,10 +298,10 @@ impl InProcessVst2Controls {
     /// message that lost a packet either way or was open at a reset, so a
     /// message never reaches the plugin with a gap. The in-process
     /// counterpart of
-    /// [`PluginControls::midi_events_dropped`](crate::handles::PluginControls::midi_events_dropped).
+    /// [`PluginControls::dropped_midi_in`](crate::handles::PluginControls::dropped_midi_in).
     /// RT-safe: two relaxed loads.
-    pub fn midi_events_dropped(&self) -> u64 {
-        self.delivery.midi_events_dropped()
+    pub fn dropped_midi_in(&self) -> u64 {
+        self.delivery.dropped_midi_in()
     }
 }
 
@@ -456,7 +456,7 @@ mod owed_tests {
 
         assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(
-            controls.midi_events_dropped(),
+            controls.dropped_midi_in(),
             (3 + cut.len() - 6) as u64,
             "the contended block's, and the cut dump's tail"
         );
@@ -487,6 +487,6 @@ mod owed_tests {
         unit.block();
 
         assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
-        assert_eq!(controls.midi_events_dropped(), (cut.len() - 3) as u64);
+        assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
     }
 }

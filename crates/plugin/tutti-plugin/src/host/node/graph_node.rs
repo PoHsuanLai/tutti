@@ -509,7 +509,7 @@ mod loss_tests {
             params: &mut params,
             intake: &mut intake,
         });
-        (counters.midi_events_dropped(), intake)
+        (counters.dropped_midi_in(), intake)
     }
 
     /// **A chunk not sent counts its MIDI, and cuts the SysEx open in it.**

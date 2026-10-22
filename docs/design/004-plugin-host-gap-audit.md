@@ -333,8 +333,8 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
     as the node sends;
   - a CLAP reset or re-activation and a VST3 `setActive`.
 
-  The node counts are `PluginControls::midi_events_dropped` and
-  `InProcessVst2Controls::midi_events_dropped`. Upstream of the plugin node
+  The node counts are `PluginControls::dropped_midi_in` and
+  `InProcessVst2Controls::dropped_midi_in`. Upstream of the plugin node
   the intake sees nothing: a graph event port refuses events past 512 a
   block and a push out of order (`EventRejected::OutOfOrder`), so a packet lost there
   reaches the plugin as a gap the hosts cannot detect; this matters only for

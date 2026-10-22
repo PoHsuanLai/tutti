@@ -1224,3 +1224,41 @@ fn a_chorus_rate_and_a_phaser_mix_take_lanes() {
         assert!(state.lane(at).is_some(), "{at:?} has its lane");
     }
 }
+
+/// **A synth spawned as a graph node is a modulation target.** A
+/// `PolySynth` goes in through `spawn_audio_node` like any node; a route
+/// into its volume resolves (nothing refused, nothing unresolved), and the
+/// volume's lane has the synth's own volume cell as its knob.
+///
+/// Mutation (run): the synth registered with no params (the session's
+/// `impl SessionNode for PolySynth {}` in place of `param_session_node!`)
+/// → the lane has no knob (the synth's volume cell is not reached) → fails.
+/// Mutation (run): the synth's `ParamSet` handing `Volume` a fresh cell
+/// rather than the synth's own → the knob does not follow a store into the
+/// synth's volume → fails.
+#[cfg(feature = "synth")]
+#[test]
+fn a_spawned_synth_is_a_modulation_target() {
+    use std::sync::atomic::Ordering;
+    use tutti_polysynth::{PolySynth, SynthConfig};
+
+    let (mut app, _side) = app(2);
+    let node = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+    let cell = node.volume_atomic();
+    let synth = spawn(&mut app, node);
+    master(&mut app, &[synth, synth]);
+    let volume = ParamRef::unit(synth, UnitParam::Volume);
+    let world = app.world_mut();
+    world.spawn(ModRange::new(volume, 0.0, 1.0));
+    let offset = world.spawn(ModSource::new(Macro(1.0))).id();
+    world.spawn(ModRoute::new(offset, volume).with_depth(Depth(0.25)));
+    settle(&mut app);
+    let state = app.world().resource::<AudioGraphRes>().modulation();
+    let (_, lane) = state.lane(volume).expect("the volume has a lane");
+    // The knob is read from its cell: a store into the synth's own volume
+    // cell is what the lane reads, value for value.
+    for v in [0.37, 0.81] {
+        cell.store(v, Ordering::Release);
+        assert_eq!(lane.knob(), Some(v), "its knob is the synth's volume cell");
+    }
+}

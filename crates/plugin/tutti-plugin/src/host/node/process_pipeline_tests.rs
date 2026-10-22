@@ -1654,10 +1654,86 @@ fn a_refused_chunk_reports_its_midi_lost() {
 /// MIDI not counted → the count is short by six → fails.
 #[test]
 fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
+    let cut = sysex_fragments(60); // 10 packets
+    let next = sysex_fragments(12); // 2 packets
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let (three, four, dropped) = two_stale_blocks([
+        cut[..3].to_vec(),
+        cut[3..6].to_vec(),
+        cut[6..]
+            .iter()
+            .chain(&next)
+            .copied()
+            .chain([note])
+            .collect(),
+        vec![note],
+    ]);
+    let mut expected_three = next.clone();
+    expected_three.push(note);
+    assert_eq!(three, expected_three, "the cut message's tail is not sent");
+    assert_eq!(four, vec![note]);
+    assert_eq!(
+        dropped,
+        (3 + 3 + 4) as u64,
+        "blocks 1 and 2, and the cut message's tail"
+    );
+}
+
+/// **A stale block holding only a message's `START` cuts that message.**
+/// The bridge must record the `START` as open before it marks the block's
+/// open messages cut, or the message's `END` in the next block sent passes.
+///
+/// Mutation (run): the stale branch calling `owed.intake.lost()` before
+/// admitting the payload's events → the `END` is sent → fails.
+#[test]
+fn a_stale_block_holding_only_a_start_cuts_its_message() {
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    let _lock = exclusive();
+    let lost = sysex_fragments(12); // a START and an END
+    let other = sysex_fragments(20);
+    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    // The `START` in the last stale block: an earlier one's `lost` would
+    // cut it anyway.
+    let (three, four, dropped) = two_stale_blocks([
+        vec![note],
+        vec![lost[0]],
+        [lost[1]].into_iter().chain(other.iter().copied()).collect(),
+        vec![note],
+    ]);
+    assert_eq!(three, other, "the lost START's END is not sent");
+    assert_eq!(four, vec![note]);
+    assert_eq!(dropped, 3, "blocks 1 and 2, and the END");
+}
+
+/// `len` payload bytes as SysEx7 packets on group 1.
+fn sysex_fragments(len: usize) -> Vec<crate::protocol::MidiEvent> {
+    let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+    let mut out = Vec::new();
+    crate::protocol::MidiEvent::sysex7_fragments(
+        tutti_midi_types::MidiGroup::FIRST,
+        &payload,
+        &mut out,
+    );
+    out
+}
+
+/// Submits four blocks of MIDI before the mock server says `Ready`, so the
+/// bridge thread finds blocks 1 and 2 stale (`RING_SLOTS` = 2) and skips
+/// them. Returns the MIDI the server got in blocks 3 and 4, and the
+/// bridge's count of the MIDI it did not send.
+fn two_stale_blocks(
+    blocks: [Vec<crate::protocol::MidiEvent>; 4],
+) -> (
+    Vec<crate::protocol::MidiEvent>,
+    Vec<crate::protocol::MidiEvent>,
+    u64,
+) {
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+
     assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
     let path = unique_socket_path("stale-midi");
     let _ = std::fs::remove_file(&path);
@@ -1703,26 +1779,6 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
         let _ = std::fs::remove_file(&path);
     });
 
-    let fragments = |len: usize| {
-        let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-        let mut out = Vec::new();
-        crate::protocol::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
-        out
-    };
-    let cut = fragments(60); // 10 packets
-    let next = fragments(12); // 2 packets
-    let note = crate::protocol::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
-    let blocks: [Vec<crate::protocol::MidiEvent>; 4] = [
-        cut[..3].to_vec(),
-        cut[3..6].to_vec(),
-        cut[6..]
-            .iter()
-            .chain(&next)
-            .copied()
-            .chain([note])
-            .collect(),
-        vec![note],
-    ];
     for (i, midi) in blocks.iter().enumerate() {
         let submitted = bridge.submit(
             i as u64 + 1,
@@ -1737,24 +1793,15 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
     }
     release.send(()).unwrap();
     let wait = std::time::Duration::from_secs(5);
-    let three = got.recv_timeout(wait).expect("block 3 sent");
-    let four = got.recv_timeout(wait).expect("block 4 sent");
-    let mut expected_three = next.clone();
-    expected_three.push(note);
-    assert_eq!(
-        three,
-        (3, expected_three),
-        "the cut message's tail is not sent"
-    );
-    assert_eq!(four, (4, vec![note]));
-    assert_eq!(
-        bridge
-            .dropped_midi_cell()
-            .load(std::sync::atomic::Ordering::Relaxed),
-        (3 + 3 + 4) as u64,
-        "blocks 1 and 2, and the cut message's tail"
-    );
+    let (seq, three) = got.recv_timeout(wait).expect("block 3 sent");
+    assert_eq!(seq, 3);
+    let (seq, four) = got.recv_timeout(wait).expect("block 4 sent");
+    assert_eq!(seq, 4);
+    let dropped = bridge
+        .dropped_midi_cell()
+        .load(std::sync::atomic::Ordering::Relaxed);
     drop(thread);
     drop(bridge);
     server.join().unwrap();
+    (three, four, dropped)
 }

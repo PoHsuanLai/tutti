@@ -286,7 +286,9 @@ impl SysExAssembler {
     /// [`reset`](Self::reset) does not zero it): longer than
     /// [`max_message`](Self::max_message), left without their `END` by a
     /// later `START` (or a `SINGLE` on their group), cut by an upstream
-    /// overflow ([`lost_tail`](Self::lost_tail)), or open at a reset.
+    /// overflow ([`lost_tail`](Self::lost_tail)), open at a reset, or one
+    /// whose packet found the buffer's room full (more packets in one block
+    /// than it reserves for).
     pub fn dropped(&self) -> u64 {
         self.dropped
     }

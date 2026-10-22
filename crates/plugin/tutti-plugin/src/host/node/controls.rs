@@ -165,13 +165,14 @@ impl PluginControls {
     /// [`MIDI_STACK_CAPACITY`](crate::protocol::MIDI_STACK_CAPACITY) a chunk
     /// carries; every event of a chunk that was not sent (its audio could
     /// not be staged, the bridge refused it because its queue was full or
-    /// the server had crashed, or the bridge thread skipped it as stale);
-    /// the events taken towards the next chunk when the node is reset; and
-    /// the rest of every SysEx message that lost a packet in any of those
-    /// ways or was open at a reset, so a message never reaches the plugin
-    /// with a gap or across a reset (the plugin's
-    /// host counts it as one dropped SysEx). A chunk sent and then not
-    /// answered in time is not counted here: the server still runs it.
+    /// the server had crashed, the bridge thread skipped it as stale, or it
+    /// was still queued when the server crashed); the events taken towards
+    /// the next chunk when the node is reset or re-prepared; and the rest of
+    /// every SysEx message that lost a packet in any of those ways or was
+    /// open at a reset or re-prepare, so a message never reaches the plugin
+    /// with a gap (the plugin's host counts it as one dropped SysEx). A
+    /// chunk sent and then not answered in time is not counted here: the
+    /// server still runs it.
     /// RT-safe: two relaxed loads.
     pub fn dropped_midi_in(&self) -> u64 {
         self.delivery.dropped_midi_in()

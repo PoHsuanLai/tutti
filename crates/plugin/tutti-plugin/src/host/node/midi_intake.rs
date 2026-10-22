@@ -6,12 +6,13 @@
 //! never came from one that was lost on the way. Packets are lost on the way
 //! in two ways: one event past a chunk's [`MIDI_STACK_CAPACITY`] (the list is
 //! inline and cannot grow), or a whole chunk's MIDI (a chunk that never
-//! reached the bridge, a reset, a block the in-process node could not run, a
-//! chunk the bridge thread skipped as stale). Either way the message's later
-//! packets would complete it with bytes missing. So the intake drops the
-//! rest of every message that lost a packet (up to its `END`, or its group's
-//! next `START` or `SINGLE`): the reassembler never sees that `END`, and
-//! drops the open message whole, counted, at the next `START`.
+//! reached the bridge, a reset or re-prepare, a block the in-process node
+//! could not run, a chunk the bridge thread skipped as stale). Either way the
+//! message's later packets would complete it with bytes missing. So the
+//! intake drops the rest of every message that lost a packet (up to its
+//! `END`, or its group's next `START` or `SINGLE`): the reassembler never
+//! sees that `END`, and drops the open message whole, counted, at the next
+//! `START`.
 //!
 //! [`MIDI_STACK_CAPACITY`]: crate::protocol::MIDI_STACK_CAPACITY
 
@@ -349,5 +350,33 @@ mod tests {
         }
         assert_eq!(deliver(&mut asm, &chunk), vec![20 + 2], "only the next one");
         assert_eq!(asm.dropped(), 1, "the unended one, at the next START");
+    }
+
+    /// **A cut is per group.** A message on another group does not end the
+    /// skip of one cut on group 1: group 1's tail stays skipped after a
+    /// `SINGLE` on group 2 passes.
+    ///
+    /// Mutation (run): one bit for every group (`let bit = 1u16;`) → the
+    /// group-2 `SINGLE` clears group 1's skip and its tail is taken → fails.
+    #[test]
+    fn a_cut_on_one_group_survives_a_message_on_another() {
+        let cut = packets(MidiGroup::FIRST, 30);
+        let single = packets(MidiGroup::new(1), 4);
+        assert_eq!(single.len(), 1, "a SINGLE");
+        assert_ne!(single[0].group(), cut[0].group());
+        let mut intake = MidiIntake::default();
+
+        let mut lost = MidiEventVec::new();
+        for &p in &cut[..2] {
+            assert!(intake.push(&mut lost, p));
+        }
+        assert_eq!(intake.lose(&mut lost), 2);
+
+        let mut chunk = MidiEventVec::new();
+        assert!(intake.push(&mut chunk, single[0]), "group 2 passes");
+        for &p in &cut[2..] {
+            assert!(!intake.push(&mut chunk, p), "group 1's tail stays cut");
+        }
+        assert_eq!(chunk.as_slice(), single.as_slice());
     }
 }

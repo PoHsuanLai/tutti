@@ -306,7 +306,7 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
   messages anyway, and the hardware input puts all its traffic on group 1.
 - Other messages between a message's packets do not end it: the event list
   merges sources, and a note played during a dump should not cost the dump.
-- **No gap is spliced on any path the hosts see.** Each of these drops the
+- **No gap is spliced on the paths listed here.** Each of these drops the
   open message rather than splice what follows it onto it, and counts what
   it drops:
   - the events past `MIDI_STACK_CAPACITY` in a chunk (a device callback; a
@@ -318,10 +318,14 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
     it as cut, and the bridge filters each chunk it sends through its own
     intake, so a stale skip cuts too (filtering on the bridge needs no wire
     or server change);
-  - a reset: the events taken towards the next chunk are dropped, and a cut
-    stays cut across it, because the server's reassembler is not reset with
-    the node (out of process) and the in-process VST2 node's reset does not
-    reach `Vst2Instance`;
+  - a reset, and a re-prepare of the out-of-process node: the events taken
+    towards the next chunk are dropped, and a cut stays cut across it,
+    because the server's reassembler is not reset with the node (out of
+    process; a same-rate re-prepare, such as a device restart to another
+    callback size, is a no-op there) and the in-process VST2 node's reset
+    does not reach `Vst2Instance`;
+  - the chunks still queued when the server crashes (counted; nothing can
+    splice past a dead server);
   - an in-process VST2 block skipped because its lock was contended;
   - the VST3 host's `IMidiMapping` route, which holds `MIDI_STACK_CAPACITY`
     events (it held 64, and silently cut a mapped plugin's dump into a
@@ -339,7 +343,11 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
   block and a push out of order (`EventRejected::OutOfOrder`), so a packet lost there
   reaches the plugin as a gap the hosts cannot detect; this matters only for
   a graph block spanning two or more chunks (a callback over `MAX_CHUNK`) or
-  an upstream node pushing a packet out of order.
+  an upstream node pushing a packet out of order. On the server, a block
+  whose MIDI is never staged (no slab yet, or CLAP's `BlockTooLarge`) would
+  splice too; tutti's host reaches neither (it sets the slab up before any
+  block, and its chunk never exceeds the block size the plugin was loaded
+  with), which `Session::handle_process` records.
 
 **Known limit: a dump delivered in one block is capped by the block.** The
 live hardware input emits a dump's packets together, into one block; its

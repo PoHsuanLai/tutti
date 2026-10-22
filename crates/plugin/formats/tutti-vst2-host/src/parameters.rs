@@ -321,7 +321,9 @@ impl Vst2Instance {
     /// Returns how many SysEx messages were **dropped** whole since load
     /// rather than handed to the plugin truncated: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
-    /// or left without their `END` by a later `START`. Monotonic.
+    /// left without their `END` by a later `START` or by a `SINGLE` on their
+    /// own group, or one whose packet found the reassembly buffer's room
+    /// full (more packets in one block than it reserves for). Monotonic.
     ///
     /// The host reassembles a SysEx that spans several UMP packets (and
     /// blocks) and hands the plugin one complete `0xF0 … 0xF7` message, as a

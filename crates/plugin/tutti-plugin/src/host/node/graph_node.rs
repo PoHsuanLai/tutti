@@ -83,6 +83,12 @@ impl Node for PluginClient<Bound> {
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut *self;
         c.state.io.prepare(p);
+        // The MIDI taken towards the next chunk goes with the batcher's
+        // frames, counted, and the SysEx open in it is cut: a same-rate
+        // re-prepare is a no-op on the server, whose reassembler keeps its
+        // open message (as at a reset).
+        let lost = c.state.intake.lose(&mut c.state.pending.midi);
+        c.state.params.count_midi_dropped(lost);
         // Control thread: the one place the slots are allocated, one per
         // parameter slot the delivery has.
         c.state.segments.prepare(c.state.params.room());

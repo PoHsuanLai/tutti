@@ -204,8 +204,14 @@ fn drain_unsolicited(inbox: &mut Unsolicited, channels: &Channels, listener: &Li
     }
 }
 
+/// Answer every queued command with an error. A queued chunk is never sent,
+/// so its MIDI is counted dropped; nothing can splice past it, as the server
+/// is gone.
 fn drain_with_errors(channels: &Channels) {
-    while channels.pop_command().is_some() {
+    while let Some(cmd) = channels.pop_command() {
+        if let Command::Process(payload) = &cmd {
+            channels.note_dropped_midi(payload.midi_events.len() as u64);
+        }
         channels.push_audio_response(AudioResponse::Error { seq: None });
     }
 }
@@ -213,7 +219,9 @@ fn drain_with_errors(channels: &Channels) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::ipc_client::audio::messages::{ResyncKind, UNSOLICITED_PARAMS};
+    use crate::host::ipc_client::audio::messages::{
+        ProcessPayload, ResyncKind, UNSOLICITED_PARAMS,
+    };
     use std::sync::Arc;
 
     /// **A drain hands every held event to the listener and publishes the
@@ -223,6 +231,38 @@ mod tests {
     /// Mutations (run): the `note_dropped_param_events` call deleted → the
     /// counter stays 0 → fails. `note_dropped_param_events` storing instead of
     /// adding → the second drain's count replaces the first → fails.
+    /// **A crash's drain counts the queued chunks' MIDI.**
+    ///
+    /// Mutation (run): the `note_dropped_midi` call removed from
+    /// `drain_with_errors` → 0 counted → fails.
+    #[test]
+    fn a_crash_drain_counts_the_queued_midi() {
+        use crate::protocol::MidiEvent;
+        use tutti_midi_types::{MidiChannel, MidiGroup};
+
+        let channels = Channels::new(48_000.0);
+        for n in [3, 0, 2] {
+            let mut payload = Box::new(ProcessPayload::empty());
+            for _ in 0..n {
+                payload.midi_events.push(MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    60,
+                    1,
+                ));
+            }
+            assert!(channels.push_command(Command::Process(payload)));
+        }
+        drain_with_errors(&channels);
+        assert!(channels.pop_command().is_none());
+        assert_eq!(
+            channels
+                .dropped_midi_cell()
+                .load(std::sync::atomic::Ordering::Relaxed),
+            5
+        );
+    }
+
     #[test]
     fn a_drain_reports_the_drops() {
         let channels = Channels::new(48_000.0);

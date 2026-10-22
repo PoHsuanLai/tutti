@@ -779,7 +779,8 @@ impl InputEventList {
 
     /// SysEx messages dropped whole since the list was built: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
-    /// `START`, open at a [`reset_sysex`](Self::reset_sysex), or any message
+    /// `START` or a `SINGLE` on their group, past the buffer's room in one
+    /// block, open at a [`reset_sysex`](Self::reset_sysex), or any message
     /// before [`reserve_sysex`](Self::reserve_sysex). Neither call zeroes
     /// it. See [`SysExAssembler`] for the policy.
     pub fn sysex_dropped(&self) -> u64 {

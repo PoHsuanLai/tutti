@@ -313,7 +313,8 @@ impl EventList {
 
     /// SysEx messages dropped whole since the list was made: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`], left without their `END` by a later
-    /// `START`, cut by a lost tail ([`lose_sysex_tail`](Self::lose_sysex_tail))
+    /// `START` or a `SINGLE` on their group, past the buffer's room in one
+    /// block, cut by a lost tail ([`lose_sysex_tail`](Self::lose_sysex_tail))
     /// or open at a [`reset_sysex`](Self::reset_sysex). See
     /// [`SysExAssembler`] for the policy.
     ///

@@ -6452,6 +6452,403 @@ meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
 
+## A 64-bit audio path
+
+Not built. This is the design for it, written so it can be implemented
+from, and a measurement of what it costs. The owner's rule: if tutti does
+64-bit audio, it does it all the way, not only 64-bit summing. So the
+graph gets a sample format, and every built-in node either runs in it or
+says why it does not (decision 2 below records the current f32 state).
+
+### Summary
+
+- **One graph-wide format, chosen by the host** (`SampleFormat::F32`,
+  the default, or `F64`). A node declares which formats it can run in.
+  The compiler runs each node in the graph's format when the node
+  accepts it, and in f32 otherwise, and inserts a conversion op on every
+  edge whose two ends differ, so no node ever sees the other format.
+- **Two arenas**, one of f32 lines and one of f64 lines, each coloured on
+  its own. A node borrows from one arena, a conversion op reads one and
+  writes the other, so the existing `split_at_mut` borrow and the
+  parallel executor's claims cover both with no new `unsafe`.
+- **The cost is small where it matters.** On the kernels measured below,
+  f64 costs from nothing (filters, sums: latency- or load-bound) to about
+  2× on vector kernels and 3× on convolution and the strip's ramp (which
+  divides), and a widen or narrow costs 0.1–0.24 ns per frame and
+  channel. The
+  `render_load` scene runs at under a tenth of its budget in f32
+  ("Go fast", the load meter), so f64 fits in its headroom.
+
+### The format on the port
+
+- `tutti_graph::SampleFormat { F32, F64 }`, and a sealed
+  `Sample: bytemuck::Pod` implemented for `f32` and `f64`
+  (`const FORMAT: SampleFormat`).
+- `Shape::with_formats(Formats)`: `Formats::F32` (the default, so every
+  node today keeps compiling and keeps its behaviour), `Formats::F64`, or
+  `Formats::Both`. The format is per node, not per port: every audio
+  port of one node runs in one format. No node in the tree needs two
+  formats at once, and one format per node is what lets a node borrow
+  from one arena.
+- `PortKind::Audio` stays one variant. The format belongs to the
+  compiled node, not to the topology's edge: a `Topology` names no format,
+  so the same `Topology` compiles in either. `Plan` records each node's
+  chosen format, and the compile is a pure function of `(Valid, Shapes,
+  graph format)`.
+- **The rule the compiler applies:** a node runs in the graph's format if
+  its `Formats` allows it, else in the one it allows. An edge from a node
+  in format A to a node in format B gets `Op::Convert { src, dst, to }`.
+  A global input is f32 from the host and is converted at `GlobalIn`; a
+  global output is written by `Output`, which narrows into the f32 device
+  buffer (or not, for an f64 export, below).
+- **This is not like channel-count coercion.** Doc 013 promised the
+  conversion would work "like channel-count coercion", but there is none:
+  an audio port carries one channel, so a width mismatch is an unwired
+  port, not a coerced one. The conversion op is new, and it is the
+  graph's first arithmetic op besides the PDC ring.
+- **The round trip f32 → f64 → f32 is exact.** Every f32 value is an
+  f64 value, so widening then narrowing changes no bit. An f64 graph made
+  only of f32 nodes therefore renders the f32 graph's output exactly,
+  which is the test below.
+
+### The arena and the borrow, without `unsafe`
+
+- `Arena` becomes `Arena<L>` over its line type: `Line32([f32; 16])` and
+  `Line64([f64; 8])`, both `#[repr(C, align(64))]` and `Pod`, so each slot
+  is still 64-byte aligned and SIMD padded, and the line-to-sample cast is
+  still `bytemuck`'s checked cast. `borrow_sorted` is already generic over
+  the item type.
+- The colouring pass runs once per format, over the values written in
+  that format. A slot index is a pair `(format, u32)` in the ops (or two
+  `Span`s into two lists); the verifier checks each format's slots on
+  its own.
+- `AudioSlots` gains the sample type as a parameter
+  (`AudioSlots<T: Sample>`), implemented by `Arena<Line32>` and
+  `Arena<Line64>` serially and by the claimed views in parallel. The
+  executor holds one of each; `Op::Node` borrows from the arena of the
+  node's format; `Op::Convert` borrows `src` from one arena and `dst` from
+  the other. Those are two different `Vec`s, so the borrow checker proves
+  them disjoint with no split at all. In parallel, `tutti_types::SplitRw`
+  is already generic over its item, so the f64 arena gets its own
+  `SplitRw<Line64>` and claim table, and a conversion claims one slot in
+  each. Nothing new goes in `tutti-types`' `unsafe` code, and
+  `tutti-graph` stays `#![forbid(unsafe_code)]`.
+- The silence and constant flags are per slot, so there is one flag array
+  per arena. A conversion copies its source's flags (a silent f32 slot
+  widens to a silent f64 slot, and the same for a constant).
+- The fast forms (`Form::Source`, `Split`, `InPlace`, `Direct`) are
+  instantiated once per format. That doubles the executor's op-dispatch
+  code, not its per-call work.
+- PDC rings (`AudioRing`) and audio feedback rings hold the format of
+  the slot they delay. The compiler puts a delay on the source side of a
+  conversion, so a ring holds what its producer wrote.
+
+### What a node sees
+
+`Io` keeps reaching audio through methods, so this is an addition:
+
+- `Io::format()` says which format this call is in.
+- `Io::split()` stays the f32 call it is today. A node that declares
+  `Formats::F32` only ever gets f32, so no existing node changes.
+- `Io::split_as::<T: Sample>()` returns `(Inputs<'_, T>, Outputs<'_, '_, T>)`
+  and panics if `T` is not the call's format (a compiler bug, like a
+  slot borrowed twice, never a node's). `Channel<T>` and
+  `Inputs::get`/`Outputs::get` take the same parameter, with `f32` as the
+  default.
+- A node that accepts both writes its kernel once, generic over `T`, and
+  picks it per call:
+
+  ```rust
+  fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
+      match io.format() {
+          SampleFormat::F32 => self.run::<f32>(cx, io),
+          SampleFormat::F64 => self.run::<f64>(cx, io),
+      }
+  }
+  ```
+
+  The node's state does not depend on the call's format (a filter keeps
+  its `F` state either way), so a format change needs no reset.
+- Params stay f32. A param port carries a control value, not a signal,
+  and the units it carries (`Amplitude`, `Hz`, `Pan`) are f32 by design;
+  a generic kernel widens a param per frame where it meets a sample.
+
+### Built-in nodes, one by one
+
+"Both" means the node declares `Formats::Both` and its kernel becomes
+generic over the sample type. "f32" means it stays f32 and the compiler
+converts at its edges in an f64 graph.
+
+| node | crate | format | reason |
+|---|---|---|---|
+| `BusStripNode` | tutti-nodes | Both | a gain multiply; trivial to make generic. f64 costs 1.5–2.5× on its kernel, measured below, which on a `Light` node is still `Light` |
+| `ChannelSumNode` | tutti-nodes | Both, and accumulate in f64 in both formats | the bus sum is where f32 error compounds. It accumulates in f32 today, which decision 2 below claimed it did not; f64 accumulation costs nothing measurable (the sum is load-bound) |
+| `SvfFilterNode<F>`, `EqBandNode<F>`, `LadderFilterNode<F>` | tutti-nodes | Both; `F` stays the state precision | already generic over their state type (`Real`). With f64 buffers the per-sample conversion inside the node disappears; measured no slower than the shipped f64-state, f32-I/O filter |
+| `DelayLineNode`, `ModDelayNode` | tutti-nodes | Both | the ring holds the format; its memory doubles (8 bytes per frame and channel), allocated in `prepare` as today |
+| `CompressorNode`, `GateNode`, `LimiterNode`, `BrickwallLimiterNode` | tutti-nodes | Both | the gain computer is control maths and may stay f32; the gain multiply and the lookahead ring are on the signal and take the format |
+| `DistortionNode` | tutti-nodes | Both | a waveshaper; the f64 path calls `libm`'s f64 functions, which cost more than the f32 ones, so measure before declaring its cost class |
+| `PhaserNode`, `DownmixNode` | tutti-nodes | Both | an allpass chain and a mixing matrix |
+| `ModulatorNode<M>` (LFO), `AutomationLaneNode` | tutti-nodes | Both | they write a control signal on an audio port; writing it in the graph's format saves a conversion on every edge it feeds |
+| `ConvolverNode` | tutti-nodes | Both for I/O; convolution precision a type parameter, f32 by default | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |
+| `VbapPannerNode` | tutti-spatial | Both | a gain matrix |
+| `HrtfBinauralNode` | tutti-spatial | Both for I/O, f32 convolution | as the convolver |
+| `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (realfft f32) and its output widens |
+| `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
+| `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
+| `ClickNode` | tutti-core | Both | a generated click; cheap to make generic |
+| `MicMonitorNode` | tutti-io | f32 | it reads the device ring, which is f32; the widen at its edge is exact |
+| `PluginClient<Bound>`, `InProcessVst` | tutti-plugin | what the plugin negotiated (below) | |
+| MIDI nodes, `ControlLaneNode`, `NoteEnvelopeNode`, `EnvelopeFollowerNode`'s output | midi, tutti-nodes | no audio output: format does not apply | event-only. `EnvelopeFollowerNode` reads audio, so it is Both on its input |
+
+A node outside the tree (a host's own) keeps the default `Formats::F32`
+and works unchanged in an f64 graph, converted at its edges.
+
+### Plugins
+
+The wire already carries f64: `SampleFormat` is negotiated at load
+(`Float64` only if the host asked and the plugin advertised
+`Features::F64_AUDIO`), the shared-memory slab is laid out in the
+negotiated format, and the server keeps f32 or f64 scratch accordingly.
+The graph's f32 is converted in the node's batcher today. The changes:
+
+- **The plugin node declares the negotiated format.** A plugin loaded
+  `Float64` declares `Formats::Both`, and its batcher copies f64 straight
+  to the wire in an f64 graph (and widens in an f32 one, as now). A
+  plugin loaded `Float32` declares `Formats::F32` and the compiler
+  converts at its edges. The host's preferred format comes from the
+  graph's format.
+- **VST3:** `setupProcessing` with `kSample64` when the processor answers
+  `canProcessSampleSize(kSample64)`; already wired
+  (`activate_with_mode::<f64>`).
+- **CLAP:** 64-bit is per port (`CLAP_AUDIO_PORT_SUPPORTS_64BITS`,
+  `PREFERS_64BITS`, `REQUIRES_COMMON_SAMPLE_SIZE`). Two defects to fix
+  first, found reading the code for this design:
+  - `check_f64_support` answers true if **any output** port supports
+    64-bit. It must ask every port the host passes, inputs included,
+    and run f64 only if all of them do (or, if they are mixed, give each
+    port its own width when the plugin does not require a common size).
+  - The server activates a CLAP plugin in f64 whenever that check says
+    so (`loaders/clap.rs`), whatever the host asked for, while the
+    negotiated wire format is `Float32` unless the host asked for
+    `Float64`. A plugin that supports 64-bit loaded with the default
+    preference would get an f32 buffer and an f64 instance, which
+    `process` refuses on every block. The activation must follow the
+    negotiated format.
+- **VST2:** `processDoubleReplacing` when `effFlagsCanDoubleReplacing`
+  (`supports_f64`), out of process (already wired) and in process
+  (`InProcessVst` drives the host's `process_f32` only today; its
+  `process_f64` already calls `processDoubleReplacing`).
+- **AU:** f32 in tutti; converted at its edges.
+- **A plugin that does not support 64-bit** runs in f32, and its edges
+  narrow and widen. That is a 24-bit mantissa through that plugin, which
+  is what every host does with one.
+- A format change means re-activating plugins (VST3's sample size is set
+  between `setActive(false)` and `setActive(true)`, CLAP's at activation),
+  so it goes through the same reload path as a sample-rate change.
+
+### Mix, meters, taps, edges, export, device
+
+- **Mix and buses** are nodes (`ChannelSumNode`, `BusStripNode`), covered
+  above. If the compiler ever owns a summing op (kernels.rs says it
+  would), it accumulates in f64 in both formats.
+- **Meters** are readings: computed from the slot in its format, stored
+  as f32 (`Amplitude`, `Db`). No change to what they publish.
+- **The analysis tap** (`AudioTap`, `TapIn`) stays an f32 ring: analysis
+  does not need f64, and the master is narrowed at `Output` anyway. A
+  recording that must keep f64 takes an f64 `TapIn` (its ring generic over
+  the sample, as `AudioIn<S>` already is).
+- **`AudioIn` / `AudioOut` edges** are already generic over `S`, so
+  `Recorder`, the pump and `SliceSource`/`CountingSink` need nothing.
+  `FileIn` and the mic produce f32 and widen exactly where they meet an
+  f64 graph.
+- **Export:** `BitDepth` gains `Float64` (WAV `WAVE_FORMAT_IEEE_FLOAT` at
+  64 bits, AIFF-C `fl64`). FLAC is integer and Ogg is f32 inside, so they
+  refuse it. Dither is unchanged (it runs only for integer depths). The
+  render driver's planes, `normalize` and the resampler take the sample
+  type, so an f64 export never narrows before the file.
+- **Device:** `Engine::process` writes f32 interleaved for the device, and
+  the narrowing happens in `Output`, once per output channel. cpal can
+  open an F64 device, but none in practice is wider than 32-bit, so there
+  is nothing to gain past the converter.
+
+### How a host chooses, and what else it touches
+
+- **Graph-wide:** `Editor::with_format(SampleFormat)` and
+  `SessionBuilder::sample_format`, default `F32`. Changing it is a
+  `reprepare`: a full recompile with the new format, rings converted on
+  the control thread with their history, plugins re-activated.
+- **Per node:** not proposed for now (an open decision below). The
+  per-node choice already exists where it matters, inside a node (a
+  filter's `F`, the convolver's precision).
+- **PDC and latency:** conversion is zero-latency, so the latency solve
+  is unchanged. Delay rings double their memory in f64.
+- **Parallel executor:** a conversion op is `Light` and single-in,
+  single-out, so the coarsener fuses it into its sink's task; it never
+  becomes a dispatch of its own. The cost classes were measured in f32;
+  the ratios below keep every measured node in its class, so classes stay
+  per node, not per format, until a measurement says otherwise.
+- **Export forks:** `Editor::fork` could take a format, so a live f32
+  session exports in f64. That makes the export differ from what was
+  heard by f32 rounding; an open decision below.
+
+### Testing
+
+- **The differential suite gains a format axis:** `modes` crosses the
+  worker counts with `{F32, F64, mixed}` (mixed: each generated node's
+  `Formats` drawn at random), and the reference interpreter converts on
+  every edge on its own, copying every edge as it does now. The executor
+  stays bit-identical to the reference, and the parallel render to the
+  serial one, in every format.
+- **The round-trip invariant:** an f64 graph of `Formats::F32` nodes
+  renders the f32 graph's output bit for bit (the widening is exact and
+  the narrowing undoes it). This needs no golden.
+- **Analytic pins for f64 nodes**, never a render compared with another
+  render: a sum of `1.0` and `1e-9` survives in f64 and not in f32; a
+  20 Hz lowpass at 192 kHz holds a DC gain of 1 to f64 precision; a
+  generic kernel at `T = f32` renders the shipped f32 kernel's bits (the
+  generic rewrite changed nothing).
+- **The no-alloc gate** covers conversion ops and the f64 arena like the
+  rest (`rt_no_alloc.rs`, `TestPool::no_alloc`).
+- Plugins: the CLAP test plugin gains a 64-bit port flag, so both CLAP
+  defects above get a failing test before their fix.
+
+### Order of work
+
+1. **Plugin defects** (small, about 200 lines with tests): the CLAP port
+   check and activation follow the negotiated format. Independent of the
+   rest.
+2. **Graph core** (the large one, about 2 000–3 000 lines with tests):
+   `SampleFormat`, `Sample`, `Formats` on `Shape`, the generic arena,
+   per-format colouring and verify, `Op::Convert`, `Io::split_as`,
+   per-format rings and flags, `GlobalIn`/`Output` conversion, the
+   reference interpreter and the differential format axis. All nodes
+   still `F32`, so nothing renders differently.
+3. **Engine, session and export** (about 800 lines): `with_format`,
+   `reprepare` across a format change, the f64 export path, `BitDepth::Float64`.
+4. **tutti-nodes** (about 1 500 lines): the "Both" rows, kernel by kernel,
+   each with its `T = f32` bit-identity pin; `ChannelSumNode`'s f64
+   accumulator (this one changes f32 renders by rounding, so its goldens
+   move, said in the CHANGELOG).
+5. **Plugin nodes** (about 600 lines): format from the graph, batcher
+   pass-through, `InProcessVst`'s `processDoubleReplacing`, reload on a
+   format change.
+6. **Sampler, spatial, click** (about 800 lines).
+7. **bevy-tutti** (small): the builder setting, and the docs.
+
+### Risks
+
+- **Code size and compile time:** every "Both" kernel and every fast
+  form is instantiated twice.
+- **Memory:** f64 doubles the arena, the PDC rings, delay lines and the
+  plugin wire, all bounded and allocated in `prepare`. The sample data
+  and the convolver's spectra stay f32 by default, which is where most of
+  the memory is.
+- **Hidden narrowing:** a single f32-only node (a synth, a SoundFont, a
+  plugin without 64-bit) puts a 24-bit mantissa on its path. That is by
+  design, but a host should be able to see it: `Plan` should report the
+  conversion edges.
+- **A format change mid-session** re-activates every plugin; some
+  plugins take seconds to re-activate.
+- **The measured benefit is small:** a 24-bit mantissa is already past
+  any converter (decision 2). What f64 buys is headroom against
+  accumulated rounding in long chains, deep feedback and big sums, and
+  parity with hosts that advertise a 64-bit engine. Nothing in tutti's
+  own tests shows an audible f32 defect today.
+
+### Open decisions
+
+1. **Build it now, or keep it designed?** The measurement shows it fits;
+   nothing shows an audible need. Proposed: build the plugin defects'
+   fix now (they are bugs in f32 too), and the rest when a user asks for
+   a 64-bit engine.
+2. **Graph-wide format only, or a per-node pin too?** Proposed:
+   graph-wide only. A pin (`NodeSpec` naming a format) is an addition
+   later.
+3. **Can an export fork run in f64 while the live graph runs in f32?**
+   Proposed: yes, as an export option, said to differ from playback by
+   f32 rounding.
+4. **The convolver's default precision in an f64 graph:** f32
+   (proposed: 3× cheaper, half the memory) or f64 (all the way, by the
+   letter).
+5. **`ChannelSumNode`'s accumulator:** f64 in both formats (proposed;
+   moves f32 renders by rounding) or only in an f64 graph (keeps f32
+   renders bit-identical).
+6. **Format change while running:** a `reprepare` that re-activates
+   plugins (proposed), or fixed when the session is built.
+
+### What it costs, measured
+
+A throwaway bench (not in the tree) ports each kernel once, generic over
+the sample type, with the production loop: the strip's channel-major
+`render`, `ChannelSumNode`'s frame-major sum, the SVF's `held_group::<2>`
+with `svf_step`, the partitioned convolver's `Partitioned::process`, and
+the memory voice's tap gather and `hermite_lanes`. `T = f32` is the
+shipped arithmetic. Each case runs about 20 ms per timing; the figure is
+the median of 21 timings, the cases interleaved, pinned to one core.
+The machine: a 4-core container (Intel Xeon @ 2.10 GHz, AVX-512
+capable), shared with other agents' builds. **The load average was
+20–35 for both runs** (a wait for it to fall under 4 timed out after 25
+minutes), so absolute figures are noisy; the ratios held their shape
+across three runs, and both the median and the minimum are given. The
+"baseline" build is the shipped one (default x86-64 target, so SSE2:
+4 f32 or 2 f64 lanes); "native" adds `-C target-cpu=native` (AVX-512).
+Ratios are f64 over f32 for the same kernel, ns per frame and channel
+(f32 → f64).
+
+| kernel | frames | baseline f32 → f64 (ns) | baseline ratio, median / min | native ratio, median / min |
+|---|---|---|---|---|
+| strip, steady | 64 | 0.140 → 0.214 | 1.54 / 2.07 | 2.35 / 2.59 |
+| strip, steady | 128 | 0.095 → 0.178 | 1.89 / 1.78 | 1.80 / 1.89 |
+| strip, ramping every block | 64 | 0.417 → 0.755 | 1.81 / 2.19 | 2.71 / 2.80 |
+| strip, ramping every block | 128 | 0.358 → 0.807 | 2.26 / 2.12 | 3.01 / 2.81 |
+| strip, volume and pan fed per frame | 64 | 0.518 → 1.149 | 2.22 / 2.08 | 2.23 / 1.90 |
+| strip, volume and pan fed per frame | 128 | 0.476 → 1.097 | 2.30 / 2.32 | 2.72 / 2.53 |
+| `ChannelSumNode`, 16 stereo sources (per input channel) | 64 | 0.646 → 0.655 | 1.01 / 1.03 | 1.06 / 1.06 |
+| `ChannelSumNode`, 16 stereo sources | 128 | 0.775 → 0.768 | 0.99 / 0.99 | 1.02 / 1.02 |
+| SVF lowpass, stereo: f32 state → f64 state and f64 I/O | 64 | 3.78 → 3.20 | 0.85 / 0.81 | 1.08 / 1.08 |
+| the same, f32 → f64 state and f64 I/O | 128 | 4.27 → 3.47 | 0.81 / 0.81 | 1.06 / 1.12 |
+| SVF: shipped f64 state with f32 I/O → f64 I/O | 64 / 128 | 3.25 → 3.20 / 3.69 → 3.47 | 0.98 / 0.94 | 0.95 / 0.95 |
+| memory voice, stereo, varispeed 1.37: f32 → f64 maths, f32 wave | 64 | 5.45 → 6.26 | 1.15 / 1.15 | 0.78 / 0.91 |
+| the same | 128 | 5.23 → 5.93 | 1.13 / 1.14 | 0.92 / 1.07 |
+| memory voice, f64 wave and maths | 64 / 128 | 5.45 → 6.23 / 5.23 → 6.50 | 1.14–1.24 | 0.91–1.06 |
+| partitioned convolution, 2 s IR, 512-frame partition (one 512-frame call) | 512 | 128 → 369 | 2.89 / 2.93 | 3.06 / 3.15 |
+| widen f32 → f64, one channel (the conversion op) | 64 / 128 | 0.177 / 0.145 | | 0.095 / 0.092 |
+| narrow f64 → f32, one channel | 64 / 128 | 0.235 / 0.239 | | 0.101 / 0.108 |
+| a plain f32 copy, for reference | 64 / 128 | 0.060 / 0.047 | | 0.051 / 0.046 |
+
+What it says:
+
+- **Arithmetic-bound vector kernels pay about 2×**, as the lane count
+  says, and up to 3× where the loop divides (the strip's ramp
+  `(i + 1) / n`: f64 division is slower per lane, not only half as
+  wide). The strip's worst f64 figure, 1.15 ns, is near its fed f32
+  figure on the box that classed it (0.6–1.0, "The cost model and
+  coarsening"), so it probably stays `Light`; the class is re-measured
+  by that section's method, not assumed.
+- **Recurrences and frame-major loops pay nothing.** The SVF runs a
+  recurrence along time, two channels wide; the sum is a scalar
+  frame-major loop. Their cost is latency and loads, not lanes. The
+  shipped filter already runs f64 state, and handing it f64 buffers
+  removes its per-sample conversion, so it gets no slower (0.94–0.98).
+- **The sampler pays 0–24%**, inside the noise on this machine: its cost
+  is the tap gather, not the cubic.
+- **Convolution pays about 3×**, and doubles its spectra. That is why
+  its precision is a separate choice that defaults to f32.
+- **A conversion op costs 0.1–0.24 ns per frame and channel**, about two
+  to four plain copies; at the 0.22 ns of a `Light` gain, an edge
+  conversion is one more `Light` op, fused into its sink's task.
+
+**Against the load meter's headroom.** The `render_load` scene ran at a
+mean of 0.06–0.09 of its budget (64 and 128 frames, serial), with the
+convolver's completing block at about 0.18. Most of its work is the
+polysynths (f32 in this design), the sampler voices (+0–24%) and the
+convolver (f32 by default). Even if every node in it cost 3× more, the
+mean would be about 0.25 and the convolver's block about 0.55, inside
+the budget. The 32-vocoder scenes (0.55–0.76 mean) are dominated by the
+phase vocoder, which stays f32, so f64 moves them by the interpolation's
+share at most. Neither is a reason not to build the path; neither shows
+it is needed.
+
 ## Decisions for the owner
 
 The owner delegated these. The migration uses the proposed
@@ -6473,12 +6870,13 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      - time and position (`Env.frame: Frame`, a `u64`; beat as f64);
      - node-internal state and coefficients (low-cutoff IIR filters at high
        rates);
-     - summing accumulators;
      - the plugin-boundary conversion (inside the plugin node).
+
+     Summing does not yet: `ChannelSumNode` accumulates in f32.
    - **Kept open for later:** `Io` exposes audio through methods, not public
-     slices, and the audio port kind can later carry a sample format, with the
-     compiler inserting conversion ops at mismatched edges like channel-count
-     coercion. An f64 buffer path is then additive.
+     slices, so an f64 buffer path is additive. The owner's rule for it: if
+     tutti does 64-bit audio, it does it all the way. The design and its
+     measured cost are in ["A 64-bit audio path"](#a-64-bit-audio-path).
 3. **Keep a typed static-combinator layer?** Proposed no (one production
    user). If wanted later, it compiles *into* one `Node`, never into the graph.
 4. **Events as graph ports** (proposed) vs a side channel. Ports make PDC of

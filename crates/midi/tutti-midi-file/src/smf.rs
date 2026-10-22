@@ -237,8 +237,10 @@ fn metrical_division(smf: &Smf) -> Result<u16> {
     Ok(ticks_per_beat)
 }
 
+/// Parsed times come from integer ticks, so they are always finite;
+/// `total_cmp` is the total order regardless.
 fn sort_by_time(events: &mut [SmfTimedEvent]) {
-    events.sort_by(|a, b| a.time_beats.partial_cmp(&b.time_beats).unwrap());
+    events.sort_by(|a, b| a.time_beats.get().total_cmp(&b.time_beats.get()));
 }
 
 // --- Per-track paired notes ---
@@ -378,8 +380,8 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     // order rather than one that depends on NoteOff arrival.
     out.sort_by(|a, b| {
         a.start_beats
-            .partial_cmp(&b.start_beats)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .get()
+            .total_cmp(&b.start_beats.get())
             .then_with(|| (a.channel, a.key).cmp(&(b.channel, b.key)))
     });
     out
@@ -453,13 +455,23 @@ pub fn write_midi_file(
 /// # Errors
 ///
 /// [`Error::InvalidConfig`] if `tracks` is empty — an SMF must carry at least one
-/// track chunk. [`Error::MidiFileParse`] if `midly` refuses to serialise.
+/// track chunk — or if an event's time is not finite: a NaN or infinite beat
+/// has no tick to land on. [`Error::MidiFileParse`] if `midly` refuses to
+/// serialise.
 pub fn encode_midi_file(
     tracks: &[Vec<SmfTimedEvent>],
     config: &MidiWriteConfig,
 ) -> Result<Vec<u8>> {
     if tracks.is_empty() {
         return Err(Error::InvalidConfig("No tracks provided".into()));
+    }
+    for (i, track) in tracks.iter().enumerate() {
+        if let Some(e) = track.iter().find(|e| !e.time_beats.get().is_finite()) {
+            return Err(Error::InvalidConfig(format!(
+                "track {i}: an event at a non-finite beat ({})",
+                e.time_beats.get()
+            )));
+        }
     }
 
     let format = if tracks.len() == 1 {
@@ -560,8 +572,10 @@ fn meta_event(msg: MetaMessage<'static>) -> TrackEvent<'static> {
     }
 }
 
+/// `encode_midi_file` has rejected every non-finite time before this runs;
+/// `total_cmp` keeps the sort a total order (no panic) regardless.
 fn sort_by_time_ref(events: &mut [&SmfTimedEvent]) {
-    events.sort_by(|a, b| a.time_beats.partial_cmp(&b.time_beats).unwrap());
+    events.sort_by(|a, b| a.time_beats.get().total_cmp(&b.time_beats.get()));
 }
 
 #[cfg(test)]

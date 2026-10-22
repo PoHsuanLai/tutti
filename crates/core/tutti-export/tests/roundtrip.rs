@@ -250,13 +250,13 @@ fn wav_and_flac_quantize_a_sample_identically() {
     )
     .unwrap();
 
-    // Decoding FLAC would need a decoder dependency this crate does not have,
-    // so the cross-format claim is split in two. Here: the WAV that *can* be
-    // read back must match the engine's canonical quantizer. The matching claim
-    // for FLAC is `quantization_matches_the_engines_canonical_converter` in
-    // `encode/flac.rs`, which compares its converter against the same helper at
-    // levels where rounding and truncation disagree. The Python judge closes
-    // the loop by decoding both files with soundfile and comparing them.
+    // Here: the WAV, read back with `hound`, must match the engine's canonical
+    // quantizer. The matching claim for FLAC is
+    // `quantization_matches_the_engines_canonical_converter` in
+    // `encode/flac.rs`, which compares its converter against the same helper
+    // at levels where rounding and truncation disagree, and
+    // `tests/oracle_decode.rs` decodes both files with symphonia and compares
+    // them sample for sample.
     //
     // This pair caught a real divergence: FLAC carried a private converter that
     // truncated (`as i32`) where `tutti_core::pcm` rounds, so 0.7 encoded as

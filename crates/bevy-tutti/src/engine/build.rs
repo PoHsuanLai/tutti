@@ -203,4 +203,38 @@ mod tests {
         }
         assert_eq!(frames, 64, "the callback's block reached the published tap");
     }
+
+    /// **The resource reads the load its callback's engine measures**: two
+    /// device blocks are two blocks on `AudioGraphRes::load_meter`.
+    ///
+    /// Mutation (run): `AudioGraphRes::load_meter` returning `None` →
+    /// fails.
+    #[test]
+    fn the_resource_reads_the_load_its_callback_measures() {
+        use crate::graph::AudioGraphRes;
+        use tutti_core::SampleRate;
+        use tutti_cpal::{ManualStreamDriver, OutputSpec};
+
+        let mut app = bevy_app::App::new();
+        let (driver, stream) = ManualStreamDriver::new();
+        super::build_on(&crate::TuttiPlugin::default(), &mut app, |builder| {
+            builder.build_device_on(
+                OutputSpec::new(
+                    SampleRate(48_000.0),
+                    ChannelLayout::STEREO,
+                    tutti_cpal::cpal::SampleFormat::F32,
+                ),
+                driver,
+            )
+        })
+        .expect("builds with no device");
+        let meter = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .load_meter()
+            .expect("a device's engine");
+        stream.render_block(64).expect("the stream is open");
+        stream.render_block(64).expect("the stream is open");
+        assert_eq!(meter.take().blocks, 2);
+    }
 }

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a DSP-load meter on the engine
+
+`Engine::process` and `process_segment` now time each call against its
+block's real-time budget (`frames / sample_rate`, each graph block at the
+rate it ran at) and record it into a `tutti_core::LoadMeter`: the last
+block's load, a mean smoothed over `LOAD_MEAN_TIME_CONSTANT` (0.3 s) of
+audio, the peak since the last `take()` (take-and-reset, so a UI polling at
+frame rate sees every spike once; `peek()` reads without taking, and the
+reset is shared by every holder of the `Arc`), the count of blocks over
+budget (load above 1.0), and the count of blocks rendered silent because
+the graph was held on the control side (`silenced`, not timed), both since
+the start or `reset()`. A load is render time over
+budget: above 1.0 the block missed its deadline. Always on; the audio side
+is two monotonic clock reads and a few relaxed atomics per call, with no
+allocation or lock.
+
+Read it from `Engine::load_meter`, `tutti_session::Session::load_meter`
+(offline and device sessions; `None` on a detached one),
+`bevy_tutti::graph::AudioGraphRes::load_meter`, or `tutti::core`. No
+migration: nothing existing changed.
+
+`tutti-session`'s `render_load` bench (`--features
+synth,sampler,convolution,midi`) renders a heavy scene of the engine's own
+nodes block by block and reports mean, p99 and max load, blocks over budget
+and max/mean, serial and on the worker pool, for four variants: sampler
+voices transposed by varispeed (the main scene), the same voices
+pitch-shifted through the phase vocoder, each with and without the
+convolution reverb, with each configuration's mean load by block position
+in the 512-frame cycle.
+
 ### Changed — a streaming voice's loop is forwarded from the control thread
 
 The audio thread sends no butler commands. A `VoicePool`'s drain used to
@@ -84,6 +114,14 @@ Migration: build the deque with the window length you passed as
 caller that sets `Flac::compression_level` gets that level (set 5 for the
 default); one that writes SMF from computed beats handles the new
 `InvalidConfig` for a non-finite one.
+
+### Fixed — the two-pass export's sample-rate conversion is linear
+
+`render_normalized_to_file` with a `Resample` pushes the whole render into
+the converter at once, and the converter shifted the rest of its input down
+after every chunk, so the conversion cost grew with the square of the
+duration. Its input now keeps a read offset and drops the consumed prefix
+once per call. The output is bit-identical. Nothing to migrate.
 
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 

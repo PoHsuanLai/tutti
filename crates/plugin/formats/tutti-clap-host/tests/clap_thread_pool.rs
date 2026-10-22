@@ -330,6 +330,9 @@ impl Pool for GatedPool {
         self.0
             .try_run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)))
     }
+    fn waits(&self) -> tutti_core::BlockWaits {
+        self.0.waits()
+    }
 }
 
 fn gated(participants: usize) -> Arc<GatedPool> {

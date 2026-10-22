@@ -269,6 +269,9 @@ impl tutti_core::Pool for GatedPool {
         self.0
             .run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)));
     }
+    fn waits(&self) -> tutti_core::BlockWaits {
+        self.0.waits()
+    }
 }
 
 /// The engine on the parallel executor, on the engine's own pool: a block's

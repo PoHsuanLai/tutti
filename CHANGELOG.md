@@ -29,6 +29,33 @@ carried every packet intact.
 | — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
 | `tutti_clap_host::InputEventList::add_midi` dropped SysEx | reassembles it into `ClapEvent::MidiSysex`, whose `buffer` points into the list until its next `clear`. Call the new `InputEventList::reserve_sysex` (off the audio thread) on a list you build yourself, or every SysEx is dropped and counted (`InputEventList::sysex_dropped`); an activated instance reserves its own |
 
+### Changed — the in-block waits are per-pool settings, both timed
+
+How long the audio thread waits on a helper before yielding its core once,
+and how long a helper with nothing to take spins before leaving the block,
+were constants in `tutti-types` (`CALLER_YIELD_AFTER`, 250 µs, and
+`HELPER_SPINS`, a count of 1024 waits whose duration differed by CPU). Both
+are now `tutti_types::BlockWaits` (re-exported as `tutti_graph::BlockWaits`
+and `tutti_core::BlockWaits`), set per pool, and both are durations. The
+defaults keep the old behaviour: 250 µs, and 15 µs, which is what 1024
+helper waits took where it was measured (`BlockWaits::helper_leave_after`'s
+docs).
+
+| Was | Now |
+|---|---|
+| — | `tutti_core::WorkerPoolBuilder::caller_yield_after(Duration)` and `::helper_leave_after(Duration)`, beside `spin` and `idle` |
+| — | `tutti_types::BlockWaits { caller_yield_after, helper_leave_after }`, `BlockWaits::DEFAULT` (also `Default`) |
+| `tutti_graph::Pool` | new required method `waits(&self) -> BlockWaits`, read once per block by the executor. Required rather than defaulted so a pool that wraps another cannot silently drop its inner pool's waits |
+| — | `tutti_types::JobGate::with_waits(participants, waits)` and `JobGate::waits()`; `JobGate::new` uses the defaults |
+| `TaskGraph::work(who, run)` | `TaskGraph::work(who, waits, run)` |
+
+Migration: a direct caller of `TaskGraph::work` passes its pool's
+`BlockWaits` (or `BlockWaits::DEFAULT`). Every `Pool` implementation adds
+`waits`: a pool that wraps another returns `inner.waits()`; one built on a
+`JobGate` returns `gate.waits()` (building the gate with `with_waits` for
+non-default waits); one with no settings of its own returns
+`BlockWaits::DEFAULT`.
+
 ### Changed — `BusStripNode` declares `Cost::Light`
 
 Its channel-major kernel, re-measured, is far under the `Light`/`Moderate`

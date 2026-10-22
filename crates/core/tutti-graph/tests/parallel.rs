@@ -609,3 +609,138 @@ fn a_panic_on_a_worker_reaches_the_caller() {
         exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
     }
 }
+
+/// The executor hands its pool's waits to the task graph, not the defaults:
+/// on a pool whose helpers may stay idle for an hour, a helper that enters
+/// the block while the caller runs a 50 ms task stays until the block is
+/// done, so its share of the job returns only after that task finished. The
+/// pool holds its helper back until the slow task has started (on the
+/// caller, as nothing else can take it), so the helper finds nothing to take.
+/// (A helper descheduled for those 50 ms would pass either way; the test
+/// cannot fail spuriously.)
+///
+/// Mutation (run): build the block's `waits` from `BlockWaits::DEFAULT` in
+/// `par.rs` instead of `pool.waits()` → the helper leaves after 15 µs, with
+/// the slow task still running → fails.
+#[test]
+fn the_executor_waits_by_its_pools_budget() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tutti_graph::{BlockWaits, Pool};
+
+    #[derive(Default)]
+    struct Times {
+        started: AtomicBool,
+        slow_done: Mutex<Option<Instant>>,
+        helper_left: Mutex<Option<Instant>>,
+    }
+
+    /// Sleeps 50 ms per block, marking when it started and finished.
+    struct Slow(Arc<Times>);
+    impl Node for Slow {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+            self.0.started.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(50));
+            *self.0.slow_done.lock().expect("times") = Some(Instant::now());
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// Lets a helper into the job only once the slow task has started, and
+    /// records when its share returned. Its waits are its inner pool's.
+    struct HoldHelpers {
+        inner: Arc<common::TestPool>,
+        times: Arc<Times>,
+    }
+    impl Pool for HoldHelpers {
+        fn participants(&self) -> usize {
+            self.inner.participants()
+        }
+        fn run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) {
+            self.inner.run(wake, &|w| {
+                if w == 0 {
+                    return job(0);
+                }
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !self.times.started.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::hint::spin_loop();
+                }
+                job(w);
+                *self.times.helper_left.lock().expect("times") = Some(Instant::now());
+            });
+        }
+        fn waits(&self) -> BlockWaits {
+            self.inner.waits()
+        }
+    }
+
+    let times = Arc::new(Times::default());
+    let waits = BlockWaits {
+        helper_leave_after: Duration::from_secs(3600),
+        ..BlockWaits::DEFAULT
+    };
+    let (mut ed, mut exec) = Editor::new(prepare(MAX_BLOCK));
+    exec.set_pool(Some(Arc::new(HoldHelpers {
+        inner: common::TestPool::with_waits(2, waits),
+        times: Arc::clone(&times),
+    })));
+    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    // The slow node, and a gain beside it, so the plan has two tasks to
+    // spread; then a gain after the slow node, which keeps the block alive
+    // until the slow task finishes.
+    ed.insert(
+        NodeKey(1),
+        "slow",
+        tutti_graph::Unforkable(Slow(Arc::clone(&times))),
+    );
+    for k in 2..=3 {
+        ed.insert(
+            NodeKey(k),
+            "gain",
+            tutti_graph::Unforkable(TestNode::new(Kind::Gain {
+                gain: 0.5,
+                width: 1,
+            })),
+        );
+    }
+    let edges = &mut ed.spec_mut().topology.edges;
+    edges.insert(at(1, 0), Edge::Direct(Source::Global(0)));
+    edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
+    edges.insert(at(3, 0), Edge::Direct(Source::Node(out(1, 0))));
+    ed.spec_mut().topology.outputs = vec![Source::Node(out(2, 0)), Source::Node(out(3, 0))];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    assert!(exec.is_parallel());
+    assert!(
+        matches!(
+            exec.plan().expect("a plan").schedule(2),
+            Schedule::Parallel { .. }
+        ),
+        "the block spreads"
+    );
+
+    let input = vec![0.5f32; MAX_BLOCK];
+    let mut chans = vec![vec![0.0f32; MAX_BLOCK]; 2];
+    let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
+    exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+
+    let slow_done = times
+        .slow_done
+        .lock()
+        .expect("times")
+        .expect("the slow node ran");
+    let helper_left = *times.helper_left.lock().expect("times");
+    if let Some(left) = helper_left {
+        assert!(
+            left >= slow_done,
+            "the helper left {:?} before the slow task finished",
+            slow_done - left
+        );
+    }
+}

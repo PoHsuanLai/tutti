@@ -192,6 +192,12 @@ impl AudioGraphRes {
         self.read().graph_ref().prepared()
     }
 
+    /// The engine's DSP-load meter ([`Session::load_meter`]); `None` on a
+    /// [`headless`](Self::headless) graph, which has no engine.
+    pub fn load_meter(&self) -> Option<std::sync::Arc<tutti_core::LoadMeter>> {
+        self.read().load_meter().cloned()
+    }
+
     /// The audio thread's half, for a test that renders what a device would
     /// hear: every commit lands on it, and ticking it plays the graph.
     ///

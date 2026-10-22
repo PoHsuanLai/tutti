@@ -63,8 +63,8 @@ pub use tutti_types::{
 
 mod metering;
 pub use metering::{
-    meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeterReading, MeteringContext, TapBusy,
-    TapCons,
+    meter_output, AtomicAmplitude, AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading,
+    MeteringContext, TapBusy, TapCons, LOAD_MEAN_TIME_CONSTANT,
 };
 
 // Delay compensation: the graph-agnostic planner, homed in `tutti-types` and
@@ -149,7 +149,7 @@ pub mod prelude {
     pub use tutti_types::prelude::*;
 
     pub use crate::AudioNode;
-    pub use crate::{AudioTap, MasterMeter, MeterReading, TapBusy};
+    pub use crate::{AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy};
     pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
     pub use crate::{MotionEvent, Timeline, Transport, TransportState};
 }

@@ -80,9 +80,11 @@ use tutti_graph::{
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
 use crate::transport::Control;
 use crate::transport::{
-    FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
+    FadeOut, MotionAudio, MotionEvent, MotionState, TransportClock, TransportCommand,
 };
 use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
+#[cfg(doc)]
+use crate::MotionFsm;
 use crate::{AudioThreadCell, InterleavedMut, LoadMeter, SampleRate, Samples, Seconds};
 use std::sync::Arc;
 use std::time::Instant;
@@ -139,7 +141,8 @@ type GraphTransport = tutti_graph::Transport;
 /// # What it owns, and what it deliberately does not
 ///
 /// `Engine` is the *audio-thread half* of the runtime and holds only what a
-/// render needs: the transport's [`MotionFsm`], the graph's [`Executor`]
+/// render needs: the audio half of the transport's [`MotionFsm`] (its state
+/// machine, as a plain field), the graph's [`Executor`]
 /// with the clock that feeds its `Env`, and the declick gain it puts on the
 /// output. It owns no graph topology, no parameter storage and no device
 /// configuration — the control thread keeps the graph's editing half (the
@@ -161,7 +164,10 @@ type GraphTransport = tutti_graph::Transport;
 /// is the pure render — useful to drive directly in a test or an offline pass,
 /// where transport motion and declicking are not in play.
 pub struct Engine {
-    motion: MotionFsm,
+    /// The transport's values, which the walk reads and a command writes.
+    settings: crate::TransportSettings,
+    /// The transport's timestamped commands.
+    timed: Schedule,
     graph: AudioThreadCell<GraphRender>,
     /// Cached from the transport so the fade path avoids a double deref.
     fader: AudioThreadCell<Fader>,
@@ -175,6 +181,10 @@ pub struct Engine {
 /// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
+    /// The transport's motion machine. Declared before `clock` so it drops
+    /// first: it goes back to the transport before the clock's playhead
+    /// claim is released, so the next engine to win that claim finds it.
+    motion: MotionAudio,
     exec: Executor,
     /// The engine's playhead. The graph reads the transport from `Env`, so
     /// the engine drives the clock itself ([`TransportClock::begin`] /
@@ -233,7 +243,9 @@ impl Engine {
     /// while this engine is alive, another built over the same transport, or
     /// a clone of it, is refused with [`GraphEngineError::PlayheadClaimed`] —
     /// two would both consume every seek and both write the playhead. The
-    /// claim is given back when this engine is dropped.
+    /// engine also takes the transport's motion machine, which applies
+    /// [`MotionFsm`]'s commands. Both are given back when this engine is
+    /// dropped, so a later engine resumes the same motion state.
     ///
     /// Nor can the graph hold a second writer: a `TransportClock` can only
     /// write a playhead through links from that one call. A node that
@@ -267,6 +279,14 @@ impl Engine {
         let links = transport
             .clock_links()
             .map_err(GraphEngineError::PlayheadClaimed)?;
+        // The playhead claim makes this engine the transport's only one, so
+        // the motion machine is home unless the last engine is mid-drop.
+        let motion = transport
+            .motion
+            .audio()
+            .ok_or(GraphEngineError::PlayheadClaimed(
+                crate::transport::PlayheadClaimed,
+            ))?;
         // Mid re-prepare, the editor's `Prepare` is the one the executor will
         // adopt, and may be the larger.
         let stride = capacity
@@ -280,10 +300,11 @@ impl Engine {
             })
             .map_err(GraphEngineError::Limits)?;
         let rate = executor.prepare().sample_rate();
-        let motion = transport.motion.clone();
         Ok(Self {
-            motion,
+            settings: transport.settings.clone(),
+            timed: transport.motion.timed().clone(),
             graph: AudioThreadCell::new(GraphRender {
+                motion,
                 exec: executor,
                 clock: TransportClock::new(links, rate),
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
@@ -365,10 +386,10 @@ impl Engine {
         let mut done = 0;
         let mut budget = Seconds(0.0);
         while done < frames {
-            let (bound, rate) = g.settle(self.motion.timed());
+            let (bound, rate) = g.settle(&self.timed);
             let len = (frames - done).min(bound);
             budget += Samples(len).to_seconds(rate);
-            let control = Control::read(self.motion.settings());
+            let control = Control::read(&self.settings);
             let t = g.clock.begin(&control, true);
             // Kept current, so a later `process` tells a late beat from one
             // jumped over across this block too.
@@ -408,10 +429,9 @@ impl Engine {
         let output = output.samples_mut();
         // The audio thread never panics on a borrow. The graph is refused
         // only while the control side holds it (`settle_graph` racing a
-        // callback): this block is silent, and the motion queue is left for
-        // the next one. A refused FSM borrow (a stray `MotionFsm::drain` or
-        // `complete_declick` on another thread) leaves its work queued the
-        // same way. The fader and the schedule's pending list need no `try_`:
+        // callback): this block is silent, and the motion queue, which the
+        // render state's motion machine drains, is left for the next one.
+        // The fader and the schedule's pending list need no `try_`:
         // the fader is private to this method, and the pending list is
         // reached only under the graph borrow (here, or `settle_graph`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
@@ -419,24 +439,31 @@ impl Engine {
             self.load.record_silenced();
             return;
         };
-        // A refusal leaves the events queued for the next block.
-        let _ = self.motion.drain();
         let g = &mut *graph;
+        g.motion.drain();
         let mut done = 0;
         let mut budget = Seconds(0.0);
         while done < frames {
-            let (bound, rate) = g.settle(self.motion.timed());
+            let (bound, rate) = g.settle(&self.timed);
             let len = (frames - done).min(bound);
             budget += Samples(len).to_seconds(rate);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {
                 clock: &mut g.clock,
-                settings: self.motion.settings(),
-                control: Control::read(self.motion.settings()),
+                settings: &self.settings,
+                control: Control::read(&self.settings),
                 changes: TransportChanges::NONE,
             };
             let aim = self.fader.borrow().aim;
-            let walk = self.walk(frame0, len, rate, aim, &mut g.playhead, &mut pieces);
+            let walk = self.walk(
+                &mut g.motion,
+                frame0,
+                len,
+                rate,
+                aim,
+                &mut g.playhead,
+                &mut pieces,
+            );
             let changes = pieces.changes;
             g.render(output, out_ch, done, len, &walk.start, &changes);
             self.fader
@@ -455,8 +482,10 @@ impl Engine {
     /// `aim` is the fader's aim going in: an aim is pushed only where it
     /// changes, so a block with no command in sight plans nothing and the
     /// fader skips it.
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         &self,
+        motion: &mut MotionAudio,
         frame0: Frame,
         frames: usize,
         rate: SampleRate,
@@ -464,14 +493,14 @@ impl Engine {
         playhead: &mut Playhead,
         pieces: &mut impl Pieces,
     ) -> Walk {
-        let schedule = self.motion.timed();
+        let schedule = &self.timed;
         let mut walk = Walk {
             start: pieces.begin(None),
             gain: GainPlan::new(),
         };
         // An untimed declicked command drained at the block's start has no
         // lead time: it lands at the first frame.
-        if self.settle_declick(&mut walk.gain, 0) {
+        if settle_declick(motion, &mut walk.gain, 0) {
             aim = None;
         }
         let mut t = walk.start;
@@ -529,17 +558,13 @@ impl Engine {
                 pieces.run(cursor, at, &t);
                 cursor = at;
             }
-            if !self.motion.apply(pending[i].command) {
-                // The FSM is borrowed elsewhere (see `process`): the command
-                // stays pending, and lands late on a later block.
-                break;
-            }
             let cmd = pending.swap_remove(i);
+            motion.apply(cmd.command);
             schedule.release(1);
             if late {
                 schedule.count_late();
             }
-            if self.settle_declick(&mut walk.gain, cursor) {
+            if settle_declick(motion, &mut walk.gain, cursor) {
                 // A jump clears the fader's aim.
                 aim = None;
             }
@@ -560,23 +585,6 @@ impl Engine {
         *playhead = base;
         pieces.run(cursor, frames, &t);
         walk
-    }
-
-    /// The motion machine chose a declick for the command just applied at
-    /// `at`: the transport has already moved (`MotionFsm` applies a fade's
-    /// outcome at once), so the fade is the engine's, as gain. Mark the jump
-    /// (the fade-out, if it had lead time, ends here; the fade-in starts
-    /// here) and settle the machine, whose own ramp the engine does not use.
-    /// Returns whether it marked one.
-    fn settle_declick(&self, gain: &mut GainPlan, at: usize) -> bool {
-        // A refused completion (the FSM borrowed elsewhere, see `process`)
-        // leaves the fade pending, and the next block's first frame settles
-        // it.
-        if is_declicking(self.motion.motion()) && self.motion.complete_declick() {
-            gain.push(at, Gain::Jump);
-            return true;
-        }
-        false
     }
 
     /// Installs every commit the engine's editor has sent, outside the audio
@@ -612,9 +620,24 @@ impl Engine {
     /// [`process_segment`]: Self::process_segment
     pub fn settle_graph(&self) -> bool {
         let graph = &mut *self.graph.borrow_mut();
-        graph.settle(self.motion.timed());
+        graph.settle(&self.timed);
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
     }
+}
+
+/// The motion machine chose a declick for the command just applied at
+/// `at`: the transport has already moved (the machine applies a fade's
+/// outcome at once), so the fade is the engine's, as gain. Mark the jump
+/// (the fade-out, if it had lead time, ends here; the fade-in starts
+/// here) and settle the machine, whose own ramp the engine does not use.
+/// Returns whether it marked one.
+fn settle_declick(motion: &mut MotionAudio, gain: &mut GainPlan, at: usize) -> bool {
+    if is_declicking(motion.motion()) {
+        motion.complete_declick();
+        gain.push(at, Gain::Jump);
+        return true;
+    }
+    false
 }
 
 /// Whether `motion` is a fade in progress.
@@ -1002,7 +1025,8 @@ mod tests {
             ),
             48_000.0,
         );
-        let settings = engine.motion.settings();
+        let settings = &engine.settings;
+        let mut render = engine.graph.borrow_mut();
         let mut pieces = Racing {
             inner: GraphPieces {
                 clock: &mut clock,
@@ -1014,6 +1038,7 @@ mod tests {
         };
         let mut playhead = Playhead::new();
         let walk = engine.walk(
+            &mut render.motion,
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
@@ -1061,35 +1086,36 @@ mod tests {
         assert!(transport.motion.is_playing(), "the next block applies it");
     }
 
-    /// A block whose scheduled command meets the FSM borrowed elsewhere (a
-    /// stray `MotionFsm::drain` on a clone) does not panic: the command
-    /// stays pending and lands, late, on a later block.
+    /// The motion machine outlives the engine that ran it: an engine built
+    /// after the first is dropped resumes the same state, so a transport
+    /// left rolling can still be stopped.
     ///
-    /// Mutations (run): `MotionFsm::apply` on a panicking `borrow_mut` →
-    /// panics → fails; the walk removing the command before applying it →
-    /// the refused command is lost (`scheduled_outstanding` 0, never plays)
-    /// → fails.
+    /// Mutations (run): `MotionAudio::drop` not handing the FSM back → the
+    /// second engine is refused → fails; handing a fresh FSM back → it is
+    /// `Stopped`, so the stop is a no-op → fails; `motion` declared after `clock` in
+    /// `GraphRender` does not fail here (the drop is single-threaded, so
+    /// nothing builds an engine between the two drops): the order is held
+    /// by its comment.
     #[test]
-    fn a_scheduled_command_refused_the_fsm_lands_late() {
+    fn a_later_engine_resumes_the_motion_machine() {
         use tutti_types::ChannelLayout;
         let transport = Transport::new(48_000.0);
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
-        transport
-            .motion
-            .schedule(At::Frame(Frame(10)), MotionEvent::Play)
-            .expect("room");
         let mut buf = vec![0.0f32; 64 * 2];
         {
-            let _control = transport.motion.hold_fsm();
+            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+            let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+            let _ = transport.motion.try_send(MotionEvent::Play);
             engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            assert!(transport.motion.is_playing());
         }
-        assert!(transport.motion.is_stopped());
-        assert_eq!(transport.motion.scheduled_outstanding(), 1, "still pending");
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
+        let _ = transport.motion.try_send(MotionEvent::stop_now());
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-        assert!(transport.motion.is_playing(), "applied on the next block");
-        assert_eq!(transport.motion.scheduled_outstanding(), 0);
-        assert_eq!(transport.motion.late_commands(), 1, "it landed late");
+        assert!(
+            transport.motion.is_stopped(),
+            "the machine knew it was rolling"
+        );
     }
 
     /// A block with no declicked command in sight plans no gain event, and
@@ -1105,7 +1131,6 @@ mod tests {
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
         // The engine holds the transport's one playhead writer; the walk
         // under test needs a clock over the same inputs, not a second writer.
         let mut clock = TransportClock::new(
@@ -1115,7 +1140,9 @@ mod tests {
             ),
             48_000.0,
         );
-        let settings = engine.motion.settings();
+        let settings = &engine.settings;
+        let mut render = engine.graph.borrow_mut();
+        render.motion.drain();
         let mut pieces = GraphPieces {
             clock: &mut clock,
             settings,
@@ -1124,6 +1151,7 @@ mod tests {
         };
         let mut playhead = Playhead::new();
         let walk = engine.walk(
+            &mut render.motion,
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
@@ -1143,6 +1171,7 @@ mod tests {
             .schedule(At::Frame(Frame(812)), crate::MotionEvent::stop())
             .expect("room");
         let walk = engine.walk(
+            &mut render.motion,
             Frame::ZERO,
             512,
             SampleRate(48_000.0),

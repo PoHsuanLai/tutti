@@ -1,7 +1,8 @@
 //! The motion state machine and its published outputs.
 //!
 //! This is the *decision* half of the transport. The UI enqueues a
-//! [`MotionEvent`]; the audio thread drains the queue into the FSM, which
+//! [`MotionEvent`] through the control handle, [`MotionFsm`]; the engine
+//! owns the audio half, `MotionAudio`, and drains the queue into its FSM, which
 //! decides what actually happens (a `Play` while already rolling is a no-op,
 //! a `Stop` while rolling becomes a declick fade) and publishes the result to
 //! whoever needs it.
@@ -10,7 +11,7 @@
 //!
 //! | output | consumer | why it can't be read from the FSM directly |
 //! |---|---|---|
-//! | [`MotionFsm::motion`] | the UI | the FSM is audio-thread-only |
+//! | [`MotionFsm::motion`] | the UI | the FSM is the engine's |
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
 //! | `declick` ([`Declick`]) | `Engine` | read every buffer to shape gain |
 //!
@@ -27,8 +28,8 @@ use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
 use super::timed::{Schedule, ScheduleFull, TransportCommand};
+use crate::AtomicU8;
 use crate::Beat;
-use crate::{AtomicU8, AudioThreadCell};
 use tutti_types::At;
 
 pub use super::fsm::MotionState;
@@ -170,22 +171,19 @@ impl core::fmt::Display for QueueFull {
 
 impl std::error::Error for QueueFull {}
 
-/// The motion state machine plus the outputs it publishes.
+/// The control handle of the transport's motion machine: send and schedule
+/// commands, read what the machine published.
 ///
-/// Clone shares every field — this is a handle, not a value.
+/// Clone shares every field — this is a handle, not a value. The state
+/// machine itself is the [`Engine`](crate::Engine)'s while one runs over
+/// this transport, and comes back here when that engine is dropped.
 #[derive(Clone)]
 pub struct MotionFsm {
     /// MPMC lock-free bounded queue. A full queue drops the command;
     /// [`MotionFsm::try_send`] reports that rather than hiding it.
     queue: Arc<ArrayQueue<MotionEvent>>,
-    /// Mutated only from the audio thread, via [`MotionFsm::drain`]. The
-    /// cell checks its borrows in every build, and every borrow of it here
-    /// is a `try_`, so a stray call from another thread while the callback
-    /// holds it is refused (and retried by the next call) rather than racing
-    /// or panicking.
-    fsm: Arc<AudioThreadCell<TransportFsm>>,
     /// Published mirror of the FSM's motion, so the UI can read it without
-    /// touching the audio thread's cell.
+    /// reaching the engine.
     motion: Arc<AtomicU8>,
     /// Pending absolute jump. Consumed by `TransportClock` once per buffer.
     pub seek: SeekSlot,
@@ -197,10 +195,13 @@ pub struct MotionFsm {
     /// Timestamped commands, applied by the engine on their frame. See
     /// [`schedule`](Self::schedule).
     timed: Schedule,
+    /// The one FSM, while no [`MotionAudio`] holds it. A capacity-one
+    /// queue: [`audio`](Self::audio) pops it, the audio half's drop pushes
+    /// it back, so its state outlives the engine that ran it.
+    home: Arc<ArrayQueue<TransportFsm>>,
 }
 
-/// Reports the *published* state only. The FSM behind `AudioThreadCell` is
-/// audio-thread-only, so formatting must not reach into it.
+/// Reports the *published* state only. The FSM is the engine's.
 impl core::fmt::Debug for MotionFsm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MotionFsm")
@@ -215,15 +216,34 @@ impl core::fmt::Debug for MotionFsm {
 impl MotionFsm {
     /// Creates a stopped machine publishing into `settings`, with an empty queue.
     pub fn new(settings: TransportSettings) -> Self {
+        let home = Arc::new(ArrayQueue::new(1));
+        // A fresh capacity-one queue has room.
+        let _ = home.push(TransportFsm::new());
         Self {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
-            fsm: Arc::new(AudioThreadCell::new(TransportFsm::new())),
             motion: Arc::new(AtomicU8::new(MotionState::Stopped.into())),
             seek: SeekSlot::new(),
             declick: Declick::new(),
             settings,
             timed: Schedule::new(),
+            home,
         }
+    }
+
+    /// The audio half: the FSM, taken out of this handle until the
+    /// returned value is dropped. `None` while another holds it (on this
+    /// handle or a clone), so there is one FSM per transport.
+    pub(crate) fn audio(&self) -> Option<MotionAudio> {
+        let fsm = self.home.pop()?;
+        Some(MotionAudio {
+            fsm,
+            queue: Arc::clone(&self.queue),
+            motion: Arc::clone(&self.motion),
+            seek: self.seek.clone(),
+            declick: self.declick.clone(),
+            settings: self.settings.clone(),
+            home: Arc::clone(&self.home),
+        })
     }
 
     /// Requests a transport change **at a time**: a play, stop or seek
@@ -318,45 +338,6 @@ impl MotionFsm {
         &self.timed
     }
 
-    /// The settings this machine publishes into, for the engine.
-    pub(crate) fn settings(&self) -> &TransportSettings {
-        &self.settings
-    }
-
-    /// Apply one scheduled command now. **Audio thread only**, as
-    /// [`drain`](Self::drain): a motion change goes through the state
-    /// machine exactly as a drained event does.
-    ///
-    /// Returns `false`, applying nothing, if a motion command found the FSM
-    /// borrowed elsewhere (see [`drain`](Self::drain)): the caller keeps the
-    /// command for a later block.
-    #[must_use = "a refused command must be kept for a later block"]
-    pub(crate) fn apply(&self, command: TransportCommand) -> bool {
-        match command {
-            TransportCommand::Motion(event) => {
-                let Some(mut fsm) = self.fsm.try_borrow_mut() else {
-                    return false;
-                };
-                let step = fsm
-                    .transition(event)
-                    .map(|result| (result, fsm.declick_outcome()));
-                drop(fsm);
-                if let Some((result, outcome)) = step {
-                    self.publish(result, outcome);
-                }
-            }
-            TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
-            TransportCommand::Loop(Some(range)) => {
-                self.settings
-                    .loop_span
-                    .set_range(range.start(), range.end());
-                self.settings.loop_span.set_enabled(true);
-            }
-            TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
-        }
-        true
-    }
-
     /// Requests a transition. Lock-free, callable from any thread.
     ///
     /// `Ok` means only that the event was *queued* — the FSM decides on the
@@ -388,7 +369,7 @@ impl MotionFsm {
         events.into_iter().try_for_each(|e| self.try_send(e))
     }
 
-    /// The current motion, as published by the last drain.
+    /// The current motion, as published by the engine's last drain.
     pub fn motion(&self) -> MotionState {
         MotionState::from(self.motion.load(Ordering::Acquire))
     }
@@ -404,55 +385,70 @@ impl MotionFsm {
     pub fn is_stopped(&self) -> bool {
         self.motion() == MotionState::Stopped
     }
+}
 
-    /// Drains the queue into the FSM and publishes the results. Returns
-    /// `false` if it was refused (see below), `true` once the queue is empty.
-    ///
-    /// **Audio thread only.** RT-safe: no allocation, no locks, bounded by the
-    /// queue's 64-command capacity. Any thread may be the audio thread, and
-    /// it may change between calls (a device restart, CoreAudio migrating its
-    /// callback): nothing is pinned to the first caller.
-    ///
-    /// # Refusal, not a panic
-    ///
-    /// A clone of this handle reaches the same FSM, so another thread may be
-    /// borrowing it at the same moment (this, or
-    /// [`complete_declick`](Self::complete_declick), called where it should
-    /// not be). The audio thread must never be the side that panics, so the
-    /// borrow is a [`try_borrow_mut`](AudioThreadCell::try_borrow_mut): when
-    /// it is refused, the events still queued stay queued and the next call
-    /// applies them. Never two threads writing the FSM at once, and never a
-    /// panic on the callback.
-    // The intended follow-up is to split this handle in two: a `Clone`
-    // control half (`try_send`, `schedule`, `motion`) and an engine-owned
-    // audio half (`drain`, `apply`, `complete_declick`) holding the FSM as a
-    // plain field, so the overlap above cannot be written at all.
-    pub fn drain(&self) -> bool {
-        loop {
-            // Borrowed before the pop, so a refusal leaves the event queued.
-            let Some(mut fsm) = self.fsm.try_borrow_mut() else {
-                return false;
-            };
-            let Some(event) = self.queue.pop() else {
-                return true;
-            };
-            // The outcome is read under the same borrow: `publish` must not
-            // borrow again, where a refusal would lose it.
-            let step = fsm
-                .transition(event)
-                .map(|result| (result, fsm.declick_outcome()));
-            drop(fsm);
-            if let Some((result, outcome)) = step {
-                self.publish(result, outcome);
+/// The audio half of the motion machine: the FSM as a plain field, and the
+/// outputs it publishes into. The engine owns it, in its render state, and
+/// every method takes `&mut self`, so nothing else can be inside the FSM at
+/// the same time.
+///
+/// Dropping it hands the FSM back to its [`MotionFsm`], so an engine built
+/// later over the same transport resumes the same machine.
+pub(crate) struct MotionAudio {
+    fsm: TransportFsm,
+    queue: Arc<ArrayQueue<MotionEvent>>,
+    motion: Arc<AtomicU8>,
+    seek: SeekSlot,
+    declick: Declick,
+    settings: TransportSettings,
+    home: Arc<ArrayQueue<TransportFsm>>,
+}
+
+impl Drop for MotionAudio {
+    fn drop(&mut self) {
+        // Lock-free, so a drop on the audio thread is safe. Never full: the
+        // FSM was popped from it, and only this value can put one back.
+        let _ = self.home.push(std::mem::take(&mut self.fsm));
+    }
+}
+
+impl MotionAudio {
+    /// The FSM's own motion, which the published mirror follows.
+    pub(crate) fn motion(&self) -> MotionState {
+        self.fsm.motion()
+    }
+
+    /// Apply one scheduled command now: a motion change goes through the
+    /// state machine exactly as a drained event does.
+    pub(crate) fn apply(&mut self, command: TransportCommand) {
+        match command {
+            TransportCommand::Motion(event) => self.step(event),
+            TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
+            TransportCommand::Loop(Some(range)) => {
+                self.settings
+                    .loop_span
+                    .set_range(range.start(), range.end());
+                self.settings.loop_span.set_enabled(true);
             }
+            TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
         }
     }
 
-    /// The FSM's borrow, held by a test as "the control side": what a stray
-    /// `drain` on another thread holds while the callback runs.
-    #[cfg(test)]
-    pub(crate) fn hold_fsm(&self) -> tutti_types::BorrowGuard<'_, TransportFsm> {
-        self.fsm.borrow_mut()
+    /// Drains the queue into the FSM and publishes the results.
+    ///
+    /// RT-safe: no allocation, no locks, bounded by the queue's 64-command
+    /// capacity.
+    pub(crate) fn drain(&mut self) {
+        while let Some(event) = self.queue.pop() {
+            self.step(event);
+        }
+    }
+
+    fn step(&mut self, event: MotionEvent) {
+        if let Some(result) = self.fsm.transition(event) {
+            let outcome = self.fsm.declick_outcome();
+            self.publish(result, outcome);
+        }
     }
 
     fn set_motion(&self, motion: MotionState) {
@@ -468,7 +464,7 @@ impl MotionFsm {
     }
 
     /// `outcome` is the FSM's parked fade outcome right after the transition
-    /// that produced `result`, read under that transition's borrow.
+    /// that produced `result`.
     fn publish(&self, result: TransitionResult, outcome: Option<DeclickOutcome>) {
         match result {
             TransitionResult::MotionChanged(motion) if is_declicking(motion) => {
@@ -527,7 +523,7 @@ impl MotionFsm {
         self.motion.store(motion.into(), Ordering::Release);
     }
 
-    /// Called by the processor when a declick fade reaches zero: settle the
+    /// Called by the engine when a declick fade reaches zero: settle the
     /// motion the fade was heading for.
     ///
     /// The transport itself already stopped or jumped when the fade began
@@ -535,29 +531,14 @@ impl MotionFsm {
     /// Driven by the outcome the FSM parked, not by reading the published
     /// mirror back: the mirror is a projection, so dispatching on it lets an
     /// FSM/mirror disagreement pass unnoticed.
-    ///
-    /// **Audio thread only**, for the same reason as
-    /// [`drain`](Self::drain) — it borrows the FSM's cell — and refused as it
-    /// is: if another call is borrowing the FSM at the same moment it returns
-    /// `false` and changes nothing, so the fade stays pending and a later
-    /// call completes it. `true` once completed.
-    pub fn complete_declick(&self) -> bool {
-        let Some(mut fsm) = self.fsm.try_borrow_mut() else {
-            return false;
-        };
-        let outcome = fsm.take_declick_outcome();
-        drop(fsm);
+    pub(crate) fn complete_declick(&mut self) {
+        let outcome = self.fsm.complete_declick();
         self.declick.clear();
-
-        let Some(outcome) = outcome else {
-            return true;
-        };
-
         match outcome {
-            DeclickOutcome::Stop => self.set_motion(MotionState::Stopped),
-            DeclickOutcome::Locate { motion, .. } => self.set_motion(motion),
+            None => {}
+            Some(DeclickOutcome::Stop) => self.set_motion(MotionState::Stopped),
+            Some(DeclickOutcome::Locate { motion, .. }) => self.set_motion(motion),
         }
-        true
     }
 }
 
@@ -576,69 +557,78 @@ mod tests {
     use super::*;
     use crate::Beat;
 
-    fn fsm() -> MotionFsm {
-        MotionFsm::new(TransportSettings::new())
+    /// The control handle and the audio half the engine would own.
+    fn fsm() -> (MotionFsm, MotionAudio) {
+        let m = MotionFsm::new(TransportSettings::new());
+        let a = m.audio().expect("a new machine is home");
+        (m, a)
     }
 
     #[test]
     fn send_then_drain_applies_the_transition() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         assert!(m.is_stopped());
 
         assert!(m.try_send(MotionEvent::Play).is_ok());
         // Nothing happens until the audio thread drains.
         assert!(m.is_stopped(), "send must not apply the transition itself");
 
-        m.drain();
+        a.drain();
         assert!(m.is_playing());
     }
 
-    /// A drain that finds the FSM borrowed elsewhere (a stray `drain` on a
-    /// clone of the handle) neither panics nor loses the event: it stays
-    /// queued, and the next drain applies it.
+    /// One FSM per machine: the audio half is out while held, by this
+    /// handle or a clone, and dropping it hands the same FSM back, state and
+    /// all.
     ///
-    /// Mutations (run): `drain` on a panicking `borrow_mut` → panics → fails;
-    /// the event popped before the borrow is tried → the refused drain drops
-    /// it, and the later one finds the queue empty → fails.
+    /// Mutations (run): `audio` building a fresh `TransportFsm` instead of
+    /// popping `home` → a second half is handed out while one is held →
+    /// fails; `MotionAudio::drop` not pushing the FSM back → no half after
+    /// the drop → fails; pushing a fresh FSM back instead → the returned
+    /// machine is `Stopped`, so `Stop` is a no-op and the mirror stays
+    /// `Rolling` → fails.
     #[test]
-    fn a_refused_drain_leaves_the_event_queued() {
-        let m = fsm();
+    fn the_audio_half_is_one_and_comes_back_with_its_state() {
+        let (m, mut a) = fsm();
+        let clone = m.clone();
+        assert!(m.audio().is_none(), "held: no second half");
+        assert!(clone.audio().is_none(), "nor through a clone");
+
         let _ = m.try_send(MotionEvent::Play);
-        {
-            let _control = m.hold_fsm();
-            assert!(!m.drain(), "the drain must report the refusal");
-        }
-        assert!(m.is_stopped(), "nothing applied while refused");
-        assert!(m.drain());
-        assert!(m.is_playing(), "the queued event applies on the next drain");
+        a.drain();
+        drop(a);
+
+        let mut again = clone.audio().expect("handed back on drop");
+        let _ = m.try_send(MotionEvent::stop_now());
+        again.drain();
+        assert!(m.is_stopped(), "the returned FSM knew it was rolling");
     }
 
-    /// Completing a fade while the FSM is borrowed elsewhere changes nothing,
-    /// and a later call completes it.
+    /// A completed fade settles the machine itself, not only the mirror: a
+    /// declicked seek while rolling ends rolling, so the next scrub-bar seek
+    /// (`Then::Keep`) keeps rolling too.
     ///
-    /// Mutations (run): `complete_declick` on a panicking `borrow_mut` →
-    /// panics → fails; `declick.clear()` before the borrow is tried → the
-    /// fade is cleared while refused → fails.
+    /// Mutation (run): `TransportFsm::complete_declick` taking the outcome
+    /// without settling `motion` → the machine stays in `DeclickToLocate`,
+    /// the second seek resolves `Keep` to stopped → fails.
     #[test]
-    fn a_refused_declick_completion_stays_pending() {
-        let m = fsm();
+    fn a_seek_after_a_completed_declicked_seek_keeps_rolling() {
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
-        let _ = m.try_send(MotionEvent::stop());
-        m.drain();
-        {
-            let _control = m.hold_fsm();
-            assert!(!m.complete_declick());
+        a.drain();
+        for beat in [4.0, 8.0] {
+            let _ = m.try_send(MotionEvent::locate(Beat(beat)));
+            a.drain();
+            assert_eq!(m.motion(), MotionState::DeclickToLocate);
+            a.complete_declick();
+            assert!(m.is_playing(), "rolling after the seek to {beat}");
+            assert!(!m.settings.is_paused());
         }
-        assert_eq!(m.motion(), MotionState::DeclickToStop);
-        assert!(m.declick.is_active(), "the fade stays pending");
-        assert!(m.complete_declick());
-        assert!(m.is_stopped());
     }
 
     #[test]
     fn send_reports_a_full_queue() {
-        let m = fsm();
+        let (m, _a) = fsm();
         for _ in 0..COMMAND_QUEUE_CAPACITY {
             assert!(m.try_send(MotionEvent::Play).is_ok());
         }
@@ -653,32 +643,32 @@ mod tests {
 
     #[test]
     fn stop_fades_and_stop_now_does_not() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
 
         let _ = m.try_send(MotionEvent::stop());
-        m.drain();
+        a.drain();
         assert_eq!(m.motion(), MotionState::DeclickToStop);
         assert!(m.declick.is_active(), "Stop must fade out");
 
         // The fade completing is what actually stops it.
-        m.complete_declick();
+        a.complete_declick();
         assert!(m.is_stopped());
 
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
         let _ = m.try_send(MotionEvent::stop_now());
-        m.drain();
+        a.drain();
         assert!(m.is_stopped(), "StopNow stops immediately");
         assert!(!m.declick.is_active(), "StopNow must not fade");
     }
 
     #[test]
     fn locate_requests_a_seek_and_moves_the_beat() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::locate(Beat(8.0)));
-        m.drain();
+        a.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(8.0)), "the clock must see a seek");
         assert_eq!(m.settings.beat.load(Ordering::Acquire), 8.0);
@@ -686,9 +676,9 @@ mod tests {
 
     #[test]
     fn locate_and_play_rolls_after_the_jump() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::locate_and_play(Beat(4.0)));
-        m.drain();
+        a.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(4.0)));
         assert!(m.is_playing());
@@ -699,7 +689,7 @@ mod tests {
         // transport cannot be stopped at all. Proving it *stops* is what pins
         // the real property.
         let _ = m.try_send(MotionEvent::stop_now());
-        m.drain();
+        a.drain();
         assert!(
             m.is_stopped(),
             "a transport that started rolling must be stoppable"
@@ -718,13 +708,13 @@ mod tests {
     /// `complete_declick` → a second seek is requested → fails.
     #[test]
     fn stop_and_return_moves_the_playhead_at_once_and_fades_the_audio() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
         m.settings.set_beat(12.0);
 
         let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
-        m.drain();
+        a.drain();
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
         assert!(m.declick.is_active(), "the fade must be armed");
@@ -732,7 +722,7 @@ mod tests {
         assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
         assert!(m.settings.is_paused(), "and the playhead holds there");
 
-        m.complete_declick();
+        a.complete_declick();
         assert_eq!(m.seek.take(), None, "no second jump");
         assert!(m.is_stopped());
     }
@@ -745,14 +735,14 @@ mod tests {
     /// playhead keeps rolling → fails.
     #[test]
     fn a_declick_stop_pauses_the_playhead_at_once() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
         let _ = m.try_send(MotionEvent::stop());
-        m.drain();
+        a.drain();
         assert_eq!(m.motion(), MotionState::DeclickToStop);
         assert!(m.settings.is_paused());
-        m.complete_declick();
+        a.complete_declick();
         assert!(m.is_stopped() && m.settings.is_paused());
     }
 
@@ -760,11 +750,11 @@ mod tests {
     /// to zero immediately — the standard DAW second-press-rewinds idiom.
     #[test]
     fn stop_and_return_from_a_stop_jumps_immediately() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         m.settings.set_beat(9.0);
 
         let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
-        m.drain();
+        a.drain();
 
         assert!(m.is_stopped());
         assert_eq!(m.seek.take(), Some(Beat(0.0)));
@@ -773,11 +763,11 @@ mod tests {
 
     #[test]
     fn paused_tracks_motion() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         assert!(m.settings.paused.load(Ordering::Acquire));
 
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
         assert!(
             !m.settings.paused.load(Ordering::Acquire),
             "paused is derived from motion, not set separately"
@@ -786,11 +776,11 @@ mod tests {
 
     #[test]
     fn send_all_preserves_order() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         assert!(m
             .try_send_all([MotionEvent::locate(Beat(16.0)), MotionEvent::Play])
             .is_ok());
-        m.drain();
+        a.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(16.0)));
         assert!(m.is_playing());
@@ -798,16 +788,16 @@ mod tests {
 
     #[test]
     fn scrub_returns_to_the_previous_motion() {
-        let m = fsm();
+        let (m, mut a) = fsm();
         let _ = m.try_send(MotionEvent::Play);
-        m.drain();
+        a.drain();
 
         let _ = m.try_send(MotionEvent::FastForward);
-        m.drain();
+        a.drain();
         assert_eq!(m.motion(), MotionState::FastForward);
 
         let _ = m.try_send(MotionEvent::EndScrub);
-        m.drain();
+        a.drain();
         assert!(m.is_playing(), "EndScrub restores what was playing before");
     }
 }

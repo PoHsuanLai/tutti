@@ -22,21 +22,32 @@ group; a fork (an export) starts at ±48.
 The MIDI input node's MPE ingest turns a pitch-bend sensitivity (RPN
 #00/00) on a member channel, which in MPE sets every member's range, into
 RPN #00/07 on each of the zone's member channels. On the master channel it
-passes through as before.
+passes through as before. An MPE Configuration Message, which it absorbs,
+now resets the zone it configures to MPE's default ranges (RP-053 /
+M1-100-UM: master ±2, members ±48): RPN #00/00 = 2 on the master and RPN
+#00/07 = 48 on each member go out in its place. A mode set with
+`MidiInputControls::set_mpe_mode` sends the same for each of the new mode's
+zones (new `MpeIngest::zone_defaults`) in the block that adopts it.
+
+The input node stages each event's translation whole: past its 512 slots
+in a block, a translation is dropped in full rather than cut partway, and
+counted by the new `MidiInputControls::dropped_events()`.
 
 | Was | Now |
 |---|---|
 | `Vst3Event::from_midi(&MidiEvent)` | removed: it converted one event with no stream state. The plugin's event list (`EventList::update_from_sources`) encodes MIDI at the stream's bend ranges |
 | `ClapEvent::from_midi(&MidiEvent)` | `ClapEvent::from_midi(&MidiEvent, &PerNoteBendRanges)`; `InputEventList::add_midi` keeps the ranges and passes them |
 | — | `tutti_midi_types::PerNoteBendRanges` (`Default` ±48 per channel, `observe`, `get`, `semitones`) |
-| `MpeIngest::translate(&MidiEvent) -> Option<MidiEvent>` | `-> tutti_midi_runtime::Translated`, an allocation-free `ExactSizeIterator` of zero, one or (a member channel's bend range) one event per member channel |
+| `MpeIngest::translate(&MidiEvent) -> Option<MidiEvent>` | `-> tutti_midi_runtime::Translated`, an allocation-free `ExactSizeIterator` of zero, one or (a member channel's bend range, an MPE Configuration Message's reset) one event per channel of the zone |
+| an MPE Configuration Message yielded nothing | it yields the configured zone's reset ranges (RPN #00/00 = 2 on the master, RPN #00/07 = 48 on each member) |
 
 Migration: a caller of `ClapEvent::from_midi` passes
 `&PerNoteBendRanges::default()` for one event on a fresh stream, or keeps a
 `PerNoteBendRanges` and calls `observe` on each event first. A caller of
 `Vst3Event::from_midi` stages its MIDI through the plugin's `EventList`. A
 caller of `MpeIngest::translate` iterates the result (`.next()` is the old
-`Option` for every event but a member channel's bend range).
+`Option` for every event but a member channel's bend range and an MPE
+Configuration Message).
 
 ### Changed — event-path fixes: loop passes, repeated note-ons, partial feeds, plugin MIDI drops
 

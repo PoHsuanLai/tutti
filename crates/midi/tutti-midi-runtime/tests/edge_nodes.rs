@@ -13,7 +13,8 @@ use tutti_graph::{
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Ump,
 };
 use tutti_midi_runtime::{
-    ClockNode, MidiInputNode, MidiOutNode, MidiQueueNode, CHANNELLESS_PORT, MIDI_INPUT_PORTS,
+    ClockNode, MidiInputNode, MidiOutNode, MidiQueueNode, CHANNELLESS_PORT,
+    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
 };
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::{cc, CCNumber, MidiChannel, MidiEvent, MidiGroup, MidiIn};
@@ -177,11 +178,14 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
 /// **A requested MPE mode is adopted once and holds.** With the lower zone
 /// requested, a note on member channel 1 binds it; a channel bend there in
 /// each of the next two blocks folds into a per-note bend on the note. The
-/// request latches, so it is read every block.
+/// request latches, so it is read every block. Adopting it sends the zone's
+/// default bend ranges once, in the first block (master and six members:
+/// seven registered controllers).
 ///
 /// Mutation: adopt without comparing against the mode in force (`set_mode`
 /// every block) → the voice map resets → the bends resolve to nothing and
-/// are absorbed → fails.
+/// are absorbed, and the ranges go out every block → fails. Mutation
+/// (run): adopt without sending the ranges → none go out → fails.
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
     let member = MidiChannel::new(1);
@@ -200,7 +204,12 @@ fn a_requested_mpe_mode_is_adopted_once() {
         block(&mut exec, 512);
     }
     let seen = seen.lock().unwrap();
-    let folded: Vec<Option<u8>> = seen[1..].iter().map(|s| s.2.note()).collect();
+    // MIDI 2.0 channel voice (type 4), Registered Controller (status 0x2).
+    let is_rpn = |ev: &MidiEvent| (ev.data[0] >> 28, (ev.data[0] >> 20) & 0xF) == (4, 2);
+    let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
+    assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
+    let music: Vec<_> = seen.iter().filter(|s| !is_rpn(&s.2)).collect();
+    let folded: Vec<Option<u8>> = music[1..].iter().map(|s| s.2.note()).collect();
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
 
@@ -244,6 +253,42 @@ fn a_member_bend_range_fans_out_over_the_zones_ports() {
         .map(|s| (s.0, s.1))
         .collect();
     assert_eq!(notes, vec![(1, 5)]);
+}
+
+/// **A translation with no room is dropped whole, and counted.** With a
+/// lower zone of seven members, a block polls 508 notes on the master, a
+/// MIDI 1.0 RPN 0 run (12 semitones) on member 2, and a note on member 1:
+/// 512 polled events. The run fans out to seven, which do not fit after the
+/// 508 notes (512 slots), so all seven are dropped and counted, and the
+/// note after them still goes out: 509 events, no per-note range.
+///
+/// Mutation (run): stage each translated event while a slot is free (the
+/// fan-out cut partway, as before) → four ranges go out and the note is
+/// dropped → fails. Mutation (run): leave the counter out → 0 → fails.
+#[test]
+fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
+    use tutti_midi_types::PerNoteBendRanges;
+    let mut batch: Vec<MidiEvent> = (0..508).map(|i| note(0, 60, i)).collect();
+    batch.extend([
+        cc_ev(2, cc::RPN_MSB, 0),
+        cc_ev(2, cc::RPN_LSB, 0),
+        cc_ev(2, cc::DATA_ENTRY, 12),
+        note(1, 61, 509),
+    ]);
+    assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
+    let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
+        .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+    let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    let mut ranges = PerNoteBendRanges::default();
+    assert!(
+        !seen.iter().any(|s| ranges.observe(&s.2)),
+        "no range went out"
+    );
+    assert_eq!(seen.len(), 509);
+    assert!(seen.iter().any(|s| s.0 == 1 && s.2.note() == Some(61)));
+    assert_eq!(controls.dropped_events(), 7);
 }
 
 /// **An input node's fork reads no wire.**

@@ -33,8 +33,15 @@
 //! zone's member channels, the message a per-note receiver
 //! ([`PerNoteBendRanges`](tutti_midi_types::PerNoteBendRanges)) follows.
 //!
-//! An input event therefore yields none, one, or (that bend range) one per
-//! member channel: [`translate`](MpeIngest::translate) returns a
+//! An MPE Configuration Message resets the zone it configures to MPE's
+//! default ranges (RP-053 / M1-100-UM, "Pitch Bend Sensitivity": a receiver
+//! of an MCM sets the master channel to ±2 semitones and every member
+//! channel to ±48). The message is absorbed, so the reset goes on in its
+//! place: RPN #00/00 = 2 on the master and RPN #00/07 = 48 on each member
+//! ([`MpeIngest::zone_defaults`], which a host-set mode change sends too).
+//!
+//! An input event therefore yields none, one, or (a bend range, an MCM) one
+//! per channel of a zone: [`translate`](MpeIngest::translate) returns a
 //! [`Translated`], an iterator that holds no allocation.
 //!
 //! # Real-time safety
@@ -53,24 +60,47 @@ use tutti_midi_types::ump::{
     MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PitchBendSensitivity};
 
 /// What [`MpeIngest::translate`] makes of one event, in order: nothing, the
-/// event or its per-note form, or a per-note bend range for each member
-/// channel of a zone. A fixed-size value: iterating allocates nothing.
+/// event or its per-note form, a per-note bend range for each member channel
+/// of a zone, or the bend ranges a zone's configuration resets. A fixed-size
+/// value: iterating allocates nothing.
 #[derive(Clone, Debug)]
 pub struct Translated(Out);
 
 #[derive(Clone, Debug)]
 enum Out {
     One(Option<MidiEvent>),
-    /// RPN #00/07 carrying `data` on each channel of `channels`.
-    PerNoteBendRange {
+    /// Registered controllers in [`RPN_BANK_MPE`], each run in turn.
+    Rpns {
         group: MidiGroup,
-        channels: core::ops::RangeInclusive<u8>,
-        data: u32,
         frame_offset: u32,
+        runs: [Option<RpnRun>; MAX_RPN_RUNS],
     },
+}
+
+/// The most RPN runs one translation yields: a dual-zone reset, a master
+/// and a member run per zone.
+const MAX_RPN_RUNS: usize = 4;
+
+/// RPN #00/`index` carrying `data` on each channel of `channels`.
+#[derive(Clone, Debug)]
+struct RpnRun {
+    channels: core::ops::RangeInclusive<u8>,
+    index: u8,
+    data: u32,
+}
+
+impl Translated {
+    /// RPN runs at `event`'s group and offset.
+    fn rpns(group: MidiGroup, frame_offset: u32, runs: [Option<RpnRun>; MAX_RPN_RUNS]) -> Self {
+        Self(Out::Rpns {
+            group,
+            frame_offset,
+            runs,
+        })
+    }
 }
 
 impl From<Option<MidiEvent>> for Translated {
@@ -85,31 +115,34 @@ impl Iterator for Translated {
     fn next(&mut self) -> Option<MidiEvent> {
         match &mut self.0 {
             Out::One(event) => event.take(),
-            Out::PerNoteBendRange {
+            Out::Rpns {
                 group,
-                channels,
-                data,
                 frame_offset,
-            } => {
-                let channel = channels.next()?;
+                runs,
+            } => runs.iter_mut().flatten().find_map(|run| {
+                let channel = run.channels.next()?;
                 Some(
                     MidiEvent::registered_controller(
                         *group,
                         MidiChannel::new(channel),
                         RPN_BANK_MPE,
-                        RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-                        *data,
+                        run.index,
+                        run.data,
                     )
                     .with_frame_offset(*frame_offset),
                 )
-            }
+            }),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let n = match &self.0 {
             Out::One(event) => usize::from(event.is_some()),
-            Out::PerNoteBendRange { channels, .. } => channels.clone().count(),
+            Out::Rpns { runs, .. } => runs
+                .iter()
+                .flatten()
+                .map(|run| run.channels.clone().count())
+                .sum(),
         };
         (n, Some(n))
     }
@@ -117,6 +150,28 @@ impl Iterator for Translated {
 
 impl ExactSizeIterator for Translated {}
 impl core::iter::FusedIterator for Translated {}
+
+/// The pitch-bend ranges a configured zone starts at (MPE, RP-053 /
+/// M1-100-UM, "Pitch Bend Sensitivity"): a receiver of an MPE Configuration
+/// Message sets the master channel to ±2 semitones and every member channel
+/// to ±48. As this transform's output carries them: RPN #00/00 = 2 on the
+/// master, which passes through as a channel bend range, and RPN #00/07 =
+/// 48 on each member, whose bends it makes per-note.
+fn zone_default_runs(config: &MpeZoneConfig) -> [RpnRun; 2] {
+    let master = config.master_channel;
+    [
+        RpnRun {
+            channels: master..=master,
+            index: RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            data: PitchBendSensitivity::from_semitones(2).to_rpn_bits(),
+        },
+        RpnRun {
+            channels: config.member_channel_range(),
+            index: RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            data: PitchBendSensitivity::MPE_DEFAULT.to_rpn_bits(),
+        },
+    ]
+}
 
 /// Rewrites classic-MPE channel-spread into native MIDI-2 per-note messages.
 ///
@@ -182,12 +237,39 @@ impl MpeIngest {
         *self = Self::new(mode);
     }
 
+    /// The bend ranges the configured zones start at, as RPNs on `group` at
+    /// `frame_offset`: for each zone, RPN #00/00 = ±2 on its master channel
+    /// and RPN #00/07 = ±48 on each member channel, what an MPE
+    /// Configuration Message resets a receiver to. A host that sets the mode
+    /// itself ([`set_mode`](Self::set_mode)) sends these downstream, so a
+    /// receiver that followed the old zones' ranges starts the new ones at
+    /// their defaults, as an MCM from the wire would have it. Nothing for
+    /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`].
+    pub fn zone_defaults(&self, group: MidiGroup, frame_offset: u32) -> Translated {
+        let mut runs = [None, None, None, None];
+        let zones = match &self.mode {
+            MpeMode::LowerZone(c) | MpeMode::UpperZone(c) => [Some(c), None],
+            MpeMode::DualZone { lower, upper } => [Some(lower), Some(upper)],
+            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => [None, None],
+        };
+        for (slot, zone) in runs.chunks_mut(2).zip(zones) {
+            if let Some(config) = zone {
+                let [a, b] = zone_default_runs(config);
+                slot[0] = Some(a);
+                slot[1] = Some(b);
+            }
+        }
+        Translated::rpns(group, frame_offset, runs)
+    }
+
     /// Rewrite one already-normalized (MIDI-2) event.
     ///
     /// Yields the events to forward downstream, in order:
     /// - a member-channel bend/pressure/CC74 becomes its native per-note form;
     /// - a member-channel bend sensitivity (RPN #00/00) becomes a per-note
     ///   bend sensitivity (RPN #00/07) on each of the zone's member channels;
+    /// - an MPE Configuration Message is absorbed, and the zone it configures
+    ///   is reset to its default ranges ([`zone_defaults`](Self::zone_defaults));
     /// - note-on/off and master-channel messages pass through (with the channel
     ///   map updated for note-on/off so later channel messages resolve);
     /// - already-native per-note messages pass through unchanged.
@@ -202,15 +284,27 @@ impl MpeIngest {
     fn translate_one(&mut self, event: &MidiEvent) -> Option<Translated> {
         // An MPE Configuration Message (RPN 0x00/0x06, M2-104 §7.4.7) reconfigures
         // the zone from the wire — handled in *any* mode, including Disabled (a
-        // controller declaring its zone should enable MPE). Absorbed (returns
-        // `None`): it's configuration, not a musical event.
+        // controller declaring its zone should enable MPE). The message itself
+        // is absorbed (configuration, not a musical event); what it resets
+        // goes on: the configured zone's default bend ranges.
         //
         // `from_mcm` requires the master channel be Ch1 or Ch16 per RP-053, so
         // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
         // passes through rather than being swallowed as configuration.
         if let Some((master, members)) = MpeZoneConfig::from_mcm(event) {
             self.reconfigure_from_mcm(master, members);
-            return None;
+            let configured = match (&self.mode, master) {
+                (MpeMode::LowerZone(c) | MpeMode::DualZone { lower: c, .. }, 0)
+                | (MpeMode::UpperZone(c) | MpeMode::DualZone { upper: c, .. }, 15) => c,
+                // A zone disabled: no ranges to reset.
+                _ => return None,
+            };
+            let [a, b] = zone_default_runs(configured);
+            return Some(Translated::rpns(
+                event.group(),
+                event.frame_offset,
+                [Some(a), Some(b), None, None],
+            ));
         }
 
         if matches!(self.mode, MpeMode::Disabled) {
@@ -256,12 +350,16 @@ impl MpeIngest {
             | (MpeMode::UpperZone(c) | MpeMode::DualZone { upper: c, .. }, false) => c,
             _ => return None,
         };
-        Some(Translated(Out::PerNoteBendRange {
-            group: event.group(),
+        let run = RpnRun {
             channels: config.member_channel_range(),
+            index: RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
             data: m.controller_data(),
-            frame_offset: event.frame_offset,
-        }))
+        };
+        Some(Translated::rpns(
+            event.group(),
+            event.frame_offset,
+            [Some(run), None, None, None],
+        ))
     }
 
     /// Apply an MPE Configuration Message: a master channel of 0 selects the lower
@@ -659,8 +757,12 @@ mod tests {
         let mut ingest = MpeIngest::new(MpeMode::Disabled);
         let mcm = MpeZoneConfig::lower(7).to_mcm();
 
-        // The MCM is absorbed (configuration, not a musical event).
-        assert!(ingest.translate(&mcm).next().is_none());
+        // The MCM itself is absorbed (configuration, not a musical event);
+        // what goes on is the zone's reset ranges, all registered controllers
+        // (`an_mcm_resets_its_zones_bend_ranges`).
+        let reset: Vec<MidiEvent> = ingest.translate(&mcm).collect();
+        assert_eq!(reset.len(), 8, "master and seven members");
+        assert!(!reset.contains(&mcm));
         assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
 
         // Now a member-channel bend folds to per-note, proving the zone is live.
@@ -687,6 +789,110 @@ mod tests {
         );
         assert!(ingest.translate(&disable).next().is_none());
         assert!(matches!(ingest.mode(), MpeMode::Disabled));
+    }
+
+    /// What a receiver following RPN #00/00 (channel bend range) and
+    /// #00/07 (per-note bend range) per channel ends with after `events`:
+    /// `(channel, index) → semitones`, in order of arrival.
+    fn ranges_after(events: impl IntoIterator<Item = MidiEvent>) -> Vec<(u8, u8, f32)> {
+        events
+            .into_iter()
+            .map(|ev| {
+                let Ok(UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m))) =
+                    UmpMessage::try_from(ev.data_words())
+                else {
+                    panic!("{ev:?} is not a registered controller");
+                };
+                assert_eq!(u8::from(m.bank()), RPN_BANK_MPE);
+                let range = PitchBendSensitivity::from_rpn_bits(m.controller_data());
+                (
+                    u8::from(m.channel()),
+                    u8::from(m.index()),
+                    range.as_semitones_f32(),
+                )
+            })
+            .collect()
+    }
+
+    /// **An MPE Configuration Message resets its zone's bend ranges** (MPE,
+    /// RP-053 / M1-100-UM, "Pitch Bend Sensitivity": the master channel to
+    /// ±2, every member to ±48): an upper-zone MCM of three members yields
+    /// RPN #00/00 = 2 on channel 15 and RPN #00/07 = 48 on 12, 13 and 14, at
+    /// the message's offset, and a per-note receiver that had been told ±12
+    /// on those members is back at ±48. The other zone of a dual setup keeps
+    /// its ranges (nothing is sent for it), and a disabling MCM sends nothing.
+    /// A host-set mode sends the same through `zone_defaults`, for each zone.
+    ///
+    /// Mutation (run): the MCM arm returns `None` again (absorbed, nothing
+    /// sent) → the receiver keeps ±12 → fails.
+    /// Mutation (run): `zone_default_runs` emits #00/00 on the members → the
+    /// receiver keeps ±12 → fails.
+    /// Mutation (run): the MCM resets every zone of the new mode
+    /// (`zone_defaults` in place of the configured side's runs) → the lower
+    /// zone's ranges are sent too → fails.
+    #[test]
+    fn an_mcm_resets_its_zones_bend_ranges() {
+        use tutti_midi_types::PerNoteBendRanges;
+        let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
+        let mut receiver = PerNoteBendRanges::default();
+        for ev in ingest.translate(&bend_sensitivity(1, 12)) {
+            receiver.observe(&ev);
+        }
+        let mcm = MpeZoneConfig::upper(3).to_mcm().with_frame_offset(9);
+        let reset: Vec<MidiEvent> = ingest.translate(&mcm).collect();
+        assert!(matches!(ingest.mode(), MpeMode::DualZone { .. }));
+        assert!(reset.iter().all(|ev| ev.frame_offset == 9));
+        assert_eq!(
+            ranges_after(reset.iter().copied()),
+            vec![(15, 0, 2.0), (12, 7, 48.0), (13, 7, 48.0), (14, 7, 48.0)]
+        );
+        // An upper member set to ±12, then the upper MCM again: the upper
+        // members are back at ±48, the lower zone's ±12 stands.
+        let mcm = MpeZoneConfig::upper(3).to_mcm();
+        for ev in ingest.translate(&bend_sensitivity(13, 12)) {
+            receiver.observe(&ev);
+        }
+        assert_eq!(receiver.semitones(13), 12.0);
+        for ev in ingest.translate(&mcm) {
+            receiver.observe(&ev);
+        }
+        for channel in 12..=14 {
+            assert_eq!(receiver.semitones(channel), 48.0, "channel {channel}");
+        }
+        assert_eq!(
+            receiver.semitones(1),
+            12.0,
+            "the lower zone keeps its range"
+        );
+
+        let disable = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(15),
+            RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_MCM,
+            0,
+        );
+        assert_eq!(ingest.translate(&disable).len(), 0);
+
+        // A host-set dual-zone mode: each zone's ranges, lower first.
+        ingest.set_mode(MpeMode::DualZone {
+            lower: MpeZoneConfig::lower(2),
+            upper: MpeZoneConfig::upper(1),
+        });
+        let defaults = ingest.zone_defaults(MidiGroup::FIRST, 0);
+        assert_eq!(defaults.len(), 5);
+        assert_eq!(
+            ranges_after(defaults),
+            vec![
+                (0, 0, 2.0),
+                (1, 7, 48.0),
+                (2, 7, 48.0),
+                (15, 0, 2.0),
+                (14, 7, 48.0)
+            ]
+        );
+        ingest.set_mode(MpeMode::Disabled);
+        assert_eq!(ingest.zone_defaults(MidiGroup::FIRST, 0).len(), 0);
     }
 
     fn bend_sensitivity(channel: u8, semitones: u8) -> MidiEvent {

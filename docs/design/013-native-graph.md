@@ -6446,7 +6446,26 @@ channels (its `translate` yields an allocation-free iterator, since one
 event can become up to fifteen); RPN #00/00 on the master channel sets the
 master's own channel bend range and passes through.
 
-Pinned by `a_per_note_bend_is_tuned_over_its_channels_range`,
+An MPE Configuration Message resets the zone it configures (MPE, RP-053 /
+M1-100-UM, "Pitch Bend Sensitivity": a receiver of an MCM sets the master
+channel to ±2 semitones and every member to ±48). `MpeIngest` absorbs the
+MCM, so it sends the reset in its place: RPN #00/00 = 2 on the master and
+RPN #00/07 = 48 on each member, at the MCM's offset, for the configured
+zone only (the other zone of a dual setup keeps its ranges; a disabling
+MCM sends nothing). A mode the host sets (`MidiInputControls::set_mpe_mode`)
+sends the same for every zone of the new mode, at frame 0 of the block that
+adopts it (`MpeIngest::zone_defaults`), so a receiver that followed the old
+ranges starts the new zones at MPE's defaults either way.
+
+The input node stages each event's translation whole: one that does not fit
+in the block's 512 slots is dropped, all of it, and counted
+(`MidiInputControls::dropped_events`), so a zone's fan-out is never cut
+partway, leaving some members at another range.
+
+Pinned by `an_mcm_resets_its_zones_bend_ranges`,
+`a_requested_mpe_mode_is_adopted_once` (the reset goes out once),
+`a_fan_out_with_no_room_is_dropped_whole_and_counted`,
+`the_input_list_follows_the_per_note_bend_range` (CLAP), `a_per_note_bend_is_tuned_over_its_channels_range`,
 `a_per_note_bend_range_outlives_its_block`,
 `vst3_and_clap_bend_one_stream_by_the_same_semitones` (one stream into
 both formats' lists, across two blocks),

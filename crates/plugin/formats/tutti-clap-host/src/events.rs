@@ -2061,6 +2061,57 @@ mod tests {
         }
     }
 
+    /// **The input list follows the stream's per-note bend range** (RPN
+    /// #00/07) per channel, across blocks, and consumes it (CLAP has no event
+    /// for it): ±12 on channel 3 makes a half-scale bend there 6 semitones,
+    /// in this block and after a `clear`, while channel 4 stays at ±48 (24).
+    ///
+    /// Mutation (run): skip `observe` in `add_midi` (convert every event at
+    /// the list's ranges as they stand) → the bend on channel 3 reads 24 →
+    /// fails.
+    #[test]
+    fn the_input_list_follows_the_per_note_bend_range() {
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        let half = signed_f32_to_bend_u32(0.5);
+        let bend = |channel: u8| {
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(channel), 60, half)
+        };
+        let tunings = |list: &InputEventList| -> Vec<(i16, f64)> {
+            list.events
+                .iter()
+                .map(|e| match e {
+                    ClapEvent::NoteExpression(e) => {
+                        assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_TUNING);
+                        (e.channel, e.value)
+                    }
+                    _ => panic!("expected a tuning note expression"),
+                })
+                .collect()
+        };
+        let near = |got: &[(i16, f64)], want: &[(i16, f64)]| {
+            assert_eq!(got.len(), want.len(), "{got:?}");
+            for ((gc, gv), (wc, wv)) in got.iter().zip(want) {
+                assert_eq!(gc, wc);
+                assert!((gv - wv).abs() < 0.01, "{got:?} vs {want:?}");
+            }
+        };
+
+        let mut list = InputEventList::new();
+        list.add_midi(&MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+        ));
+        list.add_midi(&bend(3)).add_midi(&bend(4));
+        near(&tunings(&list), &[(3, 6.0), (4, 24.0)]);
+
+        list.clear();
+        list.add_midi(&bend(3));
+        near(&tunings(&list), &[(3, 6.0)]);
+    }
+
     #[test]
     fn tuning_note_expression_round_trips_to_per_note_pitch_bend() {
         use tutti_midi_types::convert::bend_u32_to_signed_f32;

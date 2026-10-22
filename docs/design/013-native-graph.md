@@ -3118,32 +3118,41 @@ high; build it only if the meter shows that on real sessions on a device.
 
 Offline, on `tutti-session`'s `render_load` scene (8 polysynths × 16 held
 notes, 4 sampler tracks × 8 voices transposed by varispeed, strips, sends
-into a stereo 2 s convolution reverb at its default 512-frame partition, a
-master strip and limiter; 48 kHz; a four-core container shared with other
-work, 1-minute load average 2.3–4.8 with the bench in it; one run, two
-later runs at load average 6.5–20 discarded):
+into a stereo 2 s convolution reverb at a 512-frame partition, a master
+strip and limiter; 48 kHz; a four-core container shared with other work).
+Two runs at a 1-minute load average of 2.3–4.8 with the bench in it, given
+as run A / run B (run A started the sampler voices 256 frames in, which
+changes nothing for varispeed voices; `vocoder-dry` was added for run B);
+two later runs at load average 6.5–20 are left out as contaminated:
 
 | scene | block | workers | mean | p99 | max | over budget |
 |---|---|---|---|---|---|---|
-| main (varispeed) | 64 | 1 | 0.081 | 0.235 | 2.30 | 1 / 7500 |
-| main (varispeed) | 64 | 4 | 0.069 | 0.243 | 2.98 | 10 / 7500 |
-| main (varispeed) | 128 | 1 | 0.080 | 0.150 | 1.10 | 1 / 3750 |
-| main (varispeed) | 128 | 4 | 0.056 | 0.149 | 1.19 | 1 / 3750 |
-| no reverb | 64 | 1 | 0.066 | 0.122 | 1.22 | 1 / 7500 |
-| 32 vocoder voices, no reverb | 64 | 1 | 0.764 | 2.78 | 55.2 | 1321 / 7500 |
-| 32 vocoder voices, no reverb | 64 | 4 | 0.549 | 3.53 | 18.4 | 349 / 7500 |
+| main (varispeed) | 64 | 1 | 0.087 / 0.081 | 0.270 / 0.235 | 1.68 / 2.30 | 5 / 1 of 7500 |
+| main (varispeed) | 64 | 4 | 0.087 / 0.069 | 0.294 / 0.243 | 8.99 / 2.98 | 18 / 10 of 7500 |
+| main (varispeed) | 128 | 1 | 0.084 / 0.080 | 0.157 / 0.150 | 0.46 / 1.10 | 0 / 1 of 3750 |
+| main (varispeed) | 128 | 4 | 0.088 / 0.056 | 0.209 / 0.149 | 12.1 / 1.19 | 23 / 1 of 3750 |
+| no reverb | 64 | 1 | 0.062 / 0.066 | 0.103 / 0.122 | 1.07 / 1.22 | 1 / 1 of 7500 |
+| 32 vocoder voices, no reverb | 64 | 1 | 0.764 (B) | 2.78 | 55.2 † | 1321 of 7500 |
+| 32 vocoder voices, no reverb | 64 | 4 | 0.549 (B) | 3.53 | 18.4 | 349 of 7500 |
+
+† Probably preemption: a re-run at load average 22–29 put this
+configuration's maximum at 139 and 418 (and the no-reverb scene's at 99),
+the top blocks at scattered indices and cycle positions.
 
 The main scene runs at under a tenth of its budget. Its one structural
 spike is the convolver's: the block that completes each 512 frames
 averages 0.18 against 0.06 for the others at 64 frames, about 0.12 of the
-budget, and absent without the reverb. Its few over-budget blocks (maxima
-1.1–3.0) were not separated from preemption by other work on this
-machine. The phase vocoder is a different matter: 32 pitch-shifted sampler
-voices cost about 0.7 of the budget serially on their own, a high mean with
-a mild recurring peak (its hop block about 1.4× the others), so the blocks
-that miss there miss on the mean, which is the vocoder's cost to cut, not a
-case for render-ahead. A device's real-time thread, out-of-process plugins
-and third-party plugins are outside this measurement.
+budget, and absent without the reverb. Its over-budget blocks (0–23 per
+configuration, maxima 0.46–12, the worst on the pool in run A) were not
+separated from preemption by other work on this machine. With 32
+pitch-shifted sampler voices the mean is near the budget (0.76 serial at
+64 frames on their own), and the tail is wide (p99 3.6× the mean, 17.6% of
+blocks over budget, while only the vocoder's hop position, one block in
+eight, averages above 1.0), so most of its misses are block-to-block
+variance rather than the mean. That tail could not be separated from
+preemption here either, so it neither makes nor rules out a case for
+render-ahead. A device's real-time thread, out-of-process plugins and
+third-party plugins are outside this measurement.
 
 `RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
 applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share

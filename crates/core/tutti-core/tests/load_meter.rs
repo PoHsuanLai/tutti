@@ -89,10 +89,11 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
 /// call's load is at least 1.5, and `process_segment` measures the same way.
 ///
 /// The ceiling (2.9) is the one wall-time bound. The blocks are long so
-/// that it is loose in time: it leaves the rest of the call 1.4 × 4 096
-/// frames (about 120 ms) for a graph of one node, which holds on a heavily
-/// loaded machine (a 512-frame version, with 15 ms of slack, failed 2 in
-/// 200 under load), and it still catches a budget of one piece (load ≥ 3).
+/// that it is loose in time: the load is over the 8 192-frame call, so it
+/// leaves the rest of the call 1.4 × 8 192 frames (about 239 ms) for a
+/// graph of one node, which holds on a heavily loaded machine (a
+/// 1 024-frame version, with about 30 ms of slack, failed 2 in 200 under
+/// load), and it still catches a budget of one piece (load ≥ 3).
 ///
 /// Mutations (run): `budget = ` instead of `budget +=` in `process` → the
 /// budget is one piece, load ≥ 3.0 → fails; the same in `process_segment`

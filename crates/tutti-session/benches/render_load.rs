@@ -21,8 +21,8 @@
 //!   tone, each voice transposed by its own interval (-347 to +428 cents),
 //!   each into a `BusStripNode`;
 //! - one send per track (a second `BusStripNode` at -12 dB), summed into a
-//!   stereo `ConvolverNode` reverb (2 s noise-tail IRs, the node's default
-//!   512-frame partition) and its return strip;
+//!   stereo `ConvolverNode` reverb (2 s noise-tail IRs, a 512-frame
+//!   partition) and its return strip;
 //! - the 12 track strips and the return summed (`ChannelSumNode`) into a
 //!   master strip and a `LimiterNode`.
 //!
@@ -96,6 +96,16 @@ impl Variant {
             Self::Vocoder => "vocoder",
             Self::NoReverb => "no-reverb",
             Self::VocoderDry => "vocoder-dry",
+        }
+    }
+
+    /// The variant's scene, for the printed legend.
+    fn scene(self) -> &'static str {
+        match self {
+            Self::Varispeed => "sampler voices by varispeed, convolution send",
+            Self::Vocoder => "sampler voices through the phase vocoder, convolution send",
+            Self::NoReverb => "sampler voices by varispeed, no reverb",
+            Self::VocoderDry => "sampler voices through the phase vocoder, no reverb",
         }
     }
 
@@ -417,22 +427,28 @@ fn loadavg() -> String {
         .unwrap_or_else(|| "n/a".to_owned())
 }
 
+/// Every variant, in the order measured.
+const VARIANTS: [Variant; 4] = [
+    Variant::Varispeed,
+    Variant::NoReverb,
+    Variant::Vocoder,
+    Variant::VocoderDry,
+];
+
 fn main() {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     println!(
         "render_load: {SYNTHS} synths x {NOTES} notes, {SAMPLER_TRACKS} sampler tracks x \
-         {SAMPLER_VOICES} voices, convolution send, 48 kHz; {cores} cores available"
+         {SAMPLER_VOICES} voices, 48 kHz; {cores} cores available"
     );
+    for variant in VARIANTS {
+        println!("  {:>11}: {}", variant.label(), variant.scene());
+    }
     println!(
         "{:>5} {:>11} {:>7} {:>7} {:>7} {:>8} {:>11} {:>8} {:>8}  phase (mean load by position in 512 frames)",
         "block", "variant", "workers", "mean", "p99", "max", "over/blocks", "max/mean", "loadavg"
     );
-    for variant in [
-        Variant::Varispeed,
-        Variant::NoReverb,
-        Variant::Vocoder,
-        Variant::VocoderDry,
-    ] {
+    for variant in VARIANTS {
         for block in [64usize, 128] {
             for (label, workers) in [("1", 1usize), ("cores", 0)] {
                 let f = measure(block, workers, variant);

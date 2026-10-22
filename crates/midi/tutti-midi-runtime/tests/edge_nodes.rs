@@ -213,6 +213,49 @@ fn a_requested_mpe_mode_is_adopted_once() {
     assert_eq!(folded, vec![Some(60), Some(60)], "{seen:?}");
 }
 
+/// **A host-set mode's reset goes ahead of the block's own events.** The
+/// lower zone of six members is requested, and the adopting block polls a
+/// bend range (RPN #00/00, 12 semitones) on member 2 at frame 0. Both the
+/// reset (±48 per member) and the wire's range (±12 per member) land on
+/// frame 0; a receiver reading each member's port in order must end at the
+/// wire's ±12, which came after the mode it was sent in.
+///
+/// Mutation (run): stage the reset after the poll loop → every member ends
+/// at the reset's ±48 → fails.
+#[test]
+fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
+    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
+    use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
+    let range = MidiEvent::registered_controller(
+        MidiGroup::FIRST,
+        MidiChannel::new(2),
+        RPN_BANK_MPE,
+        RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+        PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+    );
+    let wire = Wire::new(vec![vec![range]]);
+    let (_ed, mut exec, controls, seen) =
+        rig(MidiInputNode::new(Some(wire)), MIDI_INPUT_PORTS as u16, 512);
+    controls.set_mpe_mode(MpeMode::LowerZone(MpeZoneConfig::lower(6)));
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    let mut ranges = PerNoteBendRanges::default();
+    let mut per_member = 0;
+    for (_, frame, ev) in seen.iter() {
+        if ranges.observe(ev) {
+            assert_eq!(*frame, 0);
+            per_member += 1;
+        }
+    }
+    assert_eq!(
+        per_member, 12,
+        "the reset's six and the wire's six: {seen:?}"
+    );
+    for channel in 1..=6 {
+        assert_eq!(ranges.semitones(channel), 12.0, "channel {channel}");
+    }
+}
+
 /// **A member channel's bend range reaches every member's port as a per-note
 /// range, without losing the events polled after it.** With a lower zone of
 /// seven members, a MIDI 1.0 RPN 0 run (12 semitones) on member 2 and then a

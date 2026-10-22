@@ -322,8 +322,8 @@ bytes in the list's buffer so `Vst3Event` stays `Copy`), a
     towards the next chunk are dropped, and a cut stays cut across it,
     because the server's reassembler is not reset with the node (out of
     process; a same-rate re-prepare, such as a device restart to another
-    callback size, is a no-op there) and the in-process VST2 node's reset
-    does not reach `Vst2Instance`;
+    callback size, keeps the reassembler) and the in-process VST2 node's
+    reset does not reach `Vst2Instance`;
   - the chunks still queued when the server crashes (counted; nothing can
     splice past a dead server);
   - an in-process VST2 block skipped because its lock was contended;

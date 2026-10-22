@@ -423,9 +423,10 @@ impl Session {
             }
             .into());
         };
-        // Neither this return nor a block the plugin's host refuses before
-        // staging its MIDI (CLAP's `BlockTooLarge`) can drop MIDI past a
-        // SysEx open in the reassembler, leaving a gap, from tutti's own host:
+        // Neither the no-slab return just below nor a block the plugin's host
+        // refuses before staging its MIDI (CLAP's `BlockTooLarge`) can drop
+        // MIDI past a SysEx open in the reassembler, leaving a gap, from
+        // tutti's own host:
         // it sets the slab up before its bridge sends any block, and its
         // chunk never exceeds `max_buffer_size`, the `block_size` the plugin
         // was loaded with, which nothing here changes. A peer that broke

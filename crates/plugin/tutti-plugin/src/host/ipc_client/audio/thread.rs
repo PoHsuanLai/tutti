@@ -96,6 +96,8 @@ fn run_thread(
                 &listener,
                 format!("could not connect to plugin-server: {e}"),
             );
+            // A block queued before the crash was marked is never sent.
+            drain_with_errors(&channels);
             return;
         }
     };
@@ -121,6 +123,7 @@ fn run_thread(
                 Err(e) => format!("plugin-server handshake failed: {e}"),
             };
             crash(&lifecycle, &listener, why);
+            drain_with_errors(&channels);
             return;
         }
     }
@@ -224,13 +227,6 @@ mod tests {
     };
     use std::sync::Arc;
 
-    /// **A drain hands every held event to the listener and publishes the
-    /// drop count to the bridge's counter, cumulatively.** The inbox's own
-    /// test pins what it keeps; this pins that `pump`'s drain reports it.
-    ///
-    /// Mutations (run): the `note_dropped_param_events` call deleted → the
-    /// counter stays 0 → fails. `note_dropped_param_events` storing instead of
-    /// adding → the second drain's count replaces the first → fails.
     /// **A crash's drain counts the queued chunks' MIDI.**
     ///
     /// Mutation (run): the `note_dropped_midi` call removed from
@@ -263,6 +259,13 @@ mod tests {
         );
     }
 
+    /// **A drain hands every held event to the listener and publishes the
+    /// drop count to the bridge's counter, cumulatively.** The inbox's own
+    /// test pins what it keeps; this pins that `pump`'s drain reports it.
+    ///
+    /// Mutations (run): the `note_dropped_param_events` call deleted → the
+    /// counter stays 0 → fails. `note_dropped_param_events` storing instead of
+    /// adding → the second drain's count replaces the first → fails.
     #[test]
     fn a_drain_reports_the_drops() {
         let channels = Channels::new(48_000.0);

@@ -172,7 +172,10 @@ impl PluginControls {
     /// open at a reset or re-prepare, so a message never reaches the plugin
     /// with a gap (the plugin's host counts it as one dropped SysEx). A
     /// chunk sent and then not answered in time is not counted here: the
-    /// server still runs it.
+    /// server still runs it. Nor is a chunk queued in the instant after the
+    /// bridge thread drained its queue at a crash and exited: it was accepted,
+    /// and nothing reads it again (and no message can splice past a dead
+    /// server).
     /// RT-safe: two relaxed loads.
     pub fn dropped_midi_in(&self) -> u64 {
         self.delivery.dropped_midi_in()

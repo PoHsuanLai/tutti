@@ -23,14 +23,16 @@ docs).
 |---|---|
 | — | `tutti_core::WorkerPoolBuilder::caller_yield_after(Duration)` and `::helper_leave_after(Duration)`, beside `spin` and `idle` |
 | — | `tutti_types::BlockWaits { caller_yield_after, helper_leave_after }`, `BlockWaits::DEFAULT` (also `Default`) |
-| `tutti_graph::Pool` | new provided method `waits(&self) -> BlockWaits`, read once per block by the executor; defaults to `BlockWaits::DEFAULT`, so a pool that implements `Pool` itself needs no change |
+| `tutti_graph::Pool` | new required method `waits(&self) -> BlockWaits`, read once per block by the executor. Required rather than defaulted so a pool that wraps another cannot silently drop its inner pool's waits |
 | — | `tutti_types::JobGate::with_waits(participants, waits)` and `JobGate::waits()`; `JobGate::new` uses the defaults |
 | `TaskGraph::work(who, run)` | `TaskGraph::work(who, waits, run)` |
 
 Migration: a direct caller of `TaskGraph::work` passes its pool's
-`BlockWaits` (or `BlockWaits::DEFAULT`). A `Pool` built on a `JobGate` with
-non-default waits builds it with `with_waits` and returns `gate.waits()`
-from `waits`.
+`BlockWaits` (or `BlockWaits::DEFAULT`). Every `Pool` implementation adds
+`waits`: a pool that wraps another returns `inner.waits()`; one built on a
+`JobGate` returns `gate.waits()` (building the gate with `with_waits` for
+non-default waits); one with no settings of its own returns
+`BlockWaits::DEFAULT`.
 
 ### Added — `clap.thread-pool` served from a worker pool
 

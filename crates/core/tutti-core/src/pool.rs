@@ -179,14 +179,15 @@ pub struct WorkerPoolBuilder {
 }
 
 impl WorkerPoolBuilder {
-    /// How long a helper spins after its last job before yielding. Default
-    /// 50 µs.
+    /// Between jobs, how long a helper spins after its last job before it
+    /// starts yielding. Default 50 µs.
     pub fn spin(mut self, d: Duration) -> Self {
         self.spin = d;
         self
     }
 
-    /// How long it then yields its core before parking. Default 500 µs.
+    /// Between jobs, how long a helper then yields its core before it
+    /// parks. Default 500 µs.
     pub fn idle(mut self, d: Duration) -> Self {
         self.idle = d;
         self
@@ -198,7 +199,8 @@ impl WorkerPoolBuilder {
     /// than a healthy block goes without a task finishing, and short enough
     /// that a helper starved behind a `SCHED_FIFO` caller on its core gets
     /// it back with most of a 64-frame block left
-    /// ([`BlockWaits::caller_yield_after`]).
+    /// ([`BlockWaits::caller_yield_after`]). Zero yields after about 128
+    /// waits without progress, the granularity of the clock it is timed by.
     pub fn caller_yield_after(mut self, d: Duration) -> Self {
         self.waits.caller_yield_after = d;
         self
@@ -207,7 +209,8 @@ impl WorkerPoolBuilder {
     /// Inside a job, how long a helper with no task to take spins before it
     /// leaves the job to the others. Default 15 µs: enough to pick up the
     /// successors of a task another participant is finishing
-    /// ([`BlockWaits::helper_leave_after`]).
+    /// ([`BlockWaits::helper_leave_after`]). Zero leaves after about 128
+    /// idle waits, the granularity of the clock it is timed by.
     pub fn helper_leave_after(mut self, d: Duration) -> Self {
         self.waits.helper_leave_after = d;
         self

@@ -129,11 +129,11 @@ pub trait Pool: Send + Sync + 'static {
     /// How long a participant of the executor's block waits before it gives
     /// way: the caller by yielding its core, a helper by leaving the block
     /// (`tutti_types::TaskGraph`'s "Waiting"). Read once per block, on the
-    /// audio thread, so it must not allocate or lock. The default is
+    /// audio thread, so it must not allocate or lock. Required, so a pool
+    /// that wraps another forwards its inner pool's rather than the
+    /// defaults; one with no settings of its own returns
     /// [`BlockWaits::DEFAULT`].
-    fn waits(&self) -> BlockWaits {
-        BlockWaits::DEFAULT
-    }
+    fn waits(&self) -> BlockWaits;
 }
 
 impl std::fmt::Debug for dyn Pool {
@@ -372,8 +372,8 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             outputs: SplitMut::new(b.outputs, outputs),
             workers: SplitMut::new(workers, worker_claims),
             due: b.due,
-            // No test pins that this is the pool's and not the defaults:
-            // a render cannot tell how long a participant waited.
+            // The pool's, not the defaults
+            // (`tests/parallel.rs`'s `the_executor_waits_by_its_pools_budget`).
             waits: pool.waits(),
         };
         let wake = (*wake).clamp(1, pool.participants());

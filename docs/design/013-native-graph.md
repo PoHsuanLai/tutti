@@ -3211,12 +3211,14 @@ Decisions:
 7. **The caller spins, then yields** while it waits on a helper (on the
    task graph, any task finishing: the sinks' `remaining`, the caller's own
    count and the helpers' completion counters; on the gate, `entered`). On
-   Linux, after the pool's `caller_yield_after` (250 µs by default) in which none of it has
-   moved, it calls `sched_yield` once, then spins again (`tutti_types`' `rt/spin.rs`);
-   elsewhere it only spins. A helper never yields inside a job; after the pool's
-   `helper_leave_after` (15 µs by default) with nothing to take, it leaves. This replaced a caller that only spun, which starved a helper
-   queued behind it on its own core under `SCHED_FIFO` (see ["The caller
-   yields to a same-core helper"](#the-caller-yields-to-a-same-core-helper)).
+   Linux, after the pool's `caller_yield_after` (250 µs by default) in
+   which none of it has moved, it calls `sched_yield` once, then spins
+   again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
+   never yields inside a job; after the pool's `helper_leave_after` (15 µs
+   by default) with nothing to take, it leaves. This replaced a caller that
+   only spun, which starved a helper queued behind it on its own core under
+   `SCHED_FIFO` (see ["The caller yields to a same-core
+   helper"](#the-caller-yields-to-a-same-core-helper)).
 
 Evidence:
 
@@ -4175,17 +4177,19 @@ all three into fresh `Vec`s to keep only the restart flags.
   `WorkerPoolBuilder::caller_yield_after` and `::helper_leave_after` set
   them beside `spin` and `idle` (the waits between jobs). The pool's
   `JobGate` holds them (`JobGate::with_waits`): its close waits by
-  `caller_yield_after`, and `Pool::waits` (a provided method, the defaults
-  for a pool that does not override it) hands both to the executor, which
-  passes them to `TaskGraph::work` once per block. A helper's wait
-  (`SpinThenLeave`) reads the clock once every 64 waits like the caller's
-  and leaves once it has been idle for its budget, on every platform: it
-  was a count of 1024 waits, so how long a helper stayed differed by core.
-  The 15 µs default is what 1024 waits took on this VM (13.5 to 15.2 µs,
-  medians of 2000 runs in three release runs, about 15 ns a wait; a 4-vCPU
-  KVM guest of a 2.1 GHz Xeon, Sapphire Rapids or later), so the default
-  behaviour is unchanged here. The clock starts at the first read, so a
-  helper spins up to 128 waits past its budget. Tests: `rt::spin`'s
+  `caller_yield_after`, and `Pool::waits` (a required method, so a pool
+  that wraps another forwards its inner pool's rather than silently
+  reporting the defaults) hands both to the executor, which passes them to
+  `TaskGraph::work` once per block. A helper's wait (`SpinThenLeave`) reads
+  the clock once every 64 waits like the caller's and leaves once it has
+  been idle for its budget, on every platform: it was a count of 1024
+  waits, so how long a helper stayed differed by core. The 15 µs default
+  is what 1024 waits took on this VM (13.5 to 15.2 µs, medians of 2000
+  runs in three release runs, about 15 ns a wait; a 4-vCPU KVM guest of a
+  2.1 GHz Xeon, Sapphire Rapids or later), so the default behaviour is
+  unchanged here. The clock starts at the first read, so a helper spins up
+  to 128 waits past its budget, and a budget of zero gives way after 128
+  waits. Tests: `rt::spin`'s
   `a_helper_leaves_once_the_clock_passes_its_budget` and
   `a_helper_inside_its_budget_never_leaves` (stepped clock, every
   platform); `a_helper_spins_for_the_pools_budget`,
@@ -4193,12 +4197,13 @@ all three into fresh `Vec`s to keep only the restart flags.
   `the_close_yields_after_the_gates_budget` give an hour's budget and step
   the clock by the default per read, so a wait that used the default
   instead of its pool's gives way early; `tutti-core`'s
-  `the_in_job_waits_are_the_builders`. Under loom both stay counts (the
-  caller yields every second wait, a helper leaves on its third), the
-  ordering is unchanged, and the models' records were re-run where the
-  orderings they name live. Not covered by a test: that the executor reads
-  its pool's `waits` rather than the defaults, since a render cannot tell
-  how long a participant waited.
+  `the_in_job_waits_are_the_builders`; and `tests/parallel.rs`'s
+  `the_executor_waits_by_its_pools_budget`, where a helper on a pool with
+  an hour's budget enters while the caller runs a 50 ms task and must stay
+  until it finishes, so an executor that handed the task graph the
+  defaults fails it. Under loom both stay counts (the caller yields every
+  second wait, a helper leaves on its third), the ordering is unchanged,
+  and the models' records were re-run where the orderings they name live.
 
 #### `clap.thread-pool`
 

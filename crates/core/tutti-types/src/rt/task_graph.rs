@@ -84,23 +84,22 @@
 //! The audio thread ([`Participant::Caller`]) waits until the block is done:
 //! it spins, and on Linux, once no task has finished anywhere for
 //! [`BlockWaits::caller_yield_after`] (250 µs by default), it yields its
-//! core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A healthy block rarely waits that long without a task
-//! finishing, so its wait is the plain spin. `remaining` counts only sinks,
-//! so it is not that signal: each helper also counts the tasks it finishes
-//! on a counter of its own (`progress`, a cache line per helper, a plain
-//! `Relaxed` load and store by its one writer), the caller counts its own,
-//! and the waiting caller reads the helpers' counters once per
-//! `PROGRESS_EVERY` waits. That costs a helper no RMW on a shared line, and
-//! a line transfer only when a waiting caller has just read it. The yield
-//! is for a helper queued
-//! behind the caller on the caller's own core: under `SCHED_FIFO`, which
-//! does not time-slice, a caller that only spun would keep it off that core
-//! until the kernel migrated it, or for good. Under `SCHED_FIFO` or
-//! `SCHED_RR` the yield returns at once when no thread of the caller's
-//! priority is ready on its core; under `SCHED_OTHER` it may give the core
-//! to another task for a slice, which is why only a stuck wait yields.
-//! Elsewhere than Linux the caller only spins (`src/rt/spin.rs`, "Only on
-//! Linux").
+//! core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A healthy
+//! block rarely waits that long without a task finishing, so its wait is
+//! the plain spin. `remaining` counts only sinks, so it is not that signal:
+//! each helper also counts the tasks it finishes on a counter of its own
+//! (`progress`, a cache line per helper, a plain `Relaxed` load and store
+//! by its one writer), the caller counts its own, and the waiting caller
+//! reads the helpers' counters once per `PROGRESS_EVERY` waits. That costs
+//! a helper no RMW on a shared line, and a line transfer only when a
+//! waiting caller has just read it. The yield is for a helper queued behind
+//! the caller on the caller's own core: under `SCHED_FIFO`, which does not
+//! time-slice, a caller that only spun would keep it off that core until
+//! the kernel migrated it, or for good. Under `SCHED_FIFO` or `SCHED_RR`
+//! the yield returns at once when no thread of the caller's priority is
+//! ready on its core; under `SCHED_OTHER` it may give the core to another
+//! task for a slice, which is why only a stuck wait yields. Elsewhere than
+//! Linux the caller only spins (`src/rt/spin.rs`, "Only on Linux").
 //! A [`Participant::Helper`] with nothing to take spins for at most
 //! [`BlockWaits::helper_leave_after`] (15 µs by default; `SpinThenLeave`)
 //! and then **leaves** `work`, forfeiting the rest of the block, rather than
@@ -629,7 +628,7 @@ mod tests {
     /// 50 ms would pass this either way; it cannot fail spuriously.)
     ///
     /// Mutation (run): build the helper's `SpinThenLeave` from
-    /// `BlockWaits::DEFAULT` instead of `waits` → it leaves on its third
+    /// `BlockWaits::DEFAULT` instead of `waits` → it leaves on its second
     /// clock read, with the block not done → fails.
     #[test]
     fn a_helper_spins_for_the_pools_budget() {

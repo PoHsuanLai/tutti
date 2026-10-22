@@ -87,7 +87,9 @@ pub struct BlockWaits {
     /// helper, or one task that long; short enough to break a same-core
     /// starvation with the block still alive: at 128 frames and 48 kHz
     /// (2.67 ms) the helper gets the core back with about 2.4 ms to spare,
-    /// and at 64 frames (1.33 ms), with about 1 ms.
+    /// and at 64 frames (1.33 ms), with about 1 ms. Zero yields after
+    /// `2 * CLOCK_EVERY` (128) waits without progress: the clock is read
+    /// every `CLOCK_EVERY` waits, and its first read only starts it.
     pub caller_yield_after: Duration,
     /// How long a helper with nothing to take spins before it leaves the
     /// block. Long enough to pick up the successors of a task another
@@ -101,7 +103,8 @@ pub struct BlockWaits {
     /// Rapids or later). A core whose `pause` is slower spins fewer waits in
     /// the same time. The clock starts at its first read, `CLOCK_EVERY`
     /// waits in, and is read that rarely, so a helper spins up to
-    /// `2 * CLOCK_EVERY` waits (about 2 µs here) beyond the budget.
+    /// `2 * CLOCK_EVERY` waits (about 2 µs here) beyond the budget, and a
+    /// budget of zero leaves after 128 idle waits.
     pub helper_leave_after: Duration,
 }
 

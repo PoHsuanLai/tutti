@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — a `ParamRamp` can follow a curve shape
+
+A `ParamRamp` is the relative move, from wherever the param stands; it
+was linear only. `ParamRamp::with_shape(SegmentShape)` makes it follow any
+of the segment shapes (`Hold`, `PowerIn`/`Out`/`InOut`, `Exp`), evaluated
+per frame by the same `SegmentShape::eval` a `ParamSegment` uses. The
+default is `Linear`, which renders the same bits as before.
+
+| Was | Now |
+|---|---|
+| `ParamRamp` was linear only | `ParamRamp::with_shape(shape)` and `ParamRamp::shape()`; `new` and `foreign` build a `Linear` ramp, as before. `Event` stays 32 bytes |
+| `SegmentShape` had no `Default` | `SegmentShape::default()` is `Linear` |
+| a hosted plugin took a `ParamRamp` as one point, its target on its frame, whatever its duration | a ramp with a duration moves from the parameter's current host value (the segment in flight there, else the value the node last gave it) to its target along its shape, sent as a segment's points, in every plugin node (CLAP, VST3, VST2, in-process VST2). A step, or a ramp on a parameter the node has given no value yet, is still its target on its frame. **Migration:** a producer that relied on a plugin jumping straight to a ramp's target sends `Samples(0)` |
+
 ### Added — a DSP-load meter on the engine
 
 `Engine::process` and `process_segment` now time each call against its

@@ -1,6 +1,6 @@
 //! A plugin node's event input, read for its parameters: the parameter
 //! events on it (a [`ParamRamp`](tutti_graph::ParamRamp) or a
-//! [`ParamSegment`](tutti_graph::ParamSegment), in the plugin's address model)
+//! [`ParamSegment`], in the plugin's address model)
 //! become points in the node's [`ParamDelivery`], through its
 //! [`SegmentPoints`], and every other event is handed back on its frame.
 //!
@@ -9,8 +9,8 @@
 //! VST2 node for each block (`format::vst2_in_process`), so the two read a
 //! ramp, a segment and an address the same way.
 
-use tutti_graph::{Cx, Event, EventKind, Offset};
-use tutti_types::ParamAddr;
+use tutti_graph::{Cx, Event, EventKind, Offset, ParamSegment};
+use tutti_types::{ParamAddr, Samples};
 
 use crate::protocol::{ParamAddress, ParamId, ParameterQueue};
 
@@ -20,8 +20,13 @@ use super::segment_points::SegmentPoints;
 /// The events of `events` (sorted by frame) on block frames
 /// `from..from + n`, placed on chunk frames from `at` on.
 ///
-/// - A ramp is one point, its target on its frame, and stops a segment in
-///   flight on its parameter.
+/// - A ramp moves from where its parameter stands on the frame before its
+///   own (the segment in flight there, else the value the node last gave
+///   it) to its target, along its shape over its duration: it is sent as
+///   the [`ParamSegment`] that makes, so its points are a segment's, its
+///   first a corner. A ramp with no duration, or on a parameter the node
+///   has given no value yet, is one point, its target on its frame. Either
+///   way it stops a segment in flight on its parameter.
 /// - A segment is its value on its frame, then its value on the play-grid
 ///   frames, the chunk edges and its arrival ([`SegmentPoints`]), which
 ///   this walk emits on the frames between events and up to the end of the
@@ -33,8 +38,8 @@ use super::segment_points::SegmentPoints;
 /// The classification is by frame alone: a lane's corner (a breakpoint, a
 /// wrap) that lands on a grid frame is a grid point, and is dropped first
 /// like one. That loses nothing a grid point would not: the lane's grid
-/// piece starting on that frame carries the same value. A ramp is always a
-/// corner.
+/// piece starting on that frame carries the same value. A ramp's first
+/// point is always a corner.
 ///
 /// `cx` is the node's call: its `Env::frame` is the absolute frame of block
 /// frame 0 (where a segment in flight is along itself), and its play clock
@@ -95,10 +100,26 @@ pub(crate) fn take(
                 else {
                     continue;
                 };
-                // A ramp stops a segment in flight on its parameter.
-                segments.interrupt(address);
-                let offset = i32::try_from(frame).unwrap_or(i32::MAX);
-                params.point(address, offset, value);
+                // Where the parameter stands on the frame before the ramp's:
+                // a param port's ramp starts from there too.
+                let stands = abs(o)
+                    .checked_sub(1)
+                    .and_then(|f| segments.value_at(address, f))
+                    .or_else(|| params.current(address));
+                match stands {
+                    Some(stands) if ramp.duration() > Samples(0) => {
+                        let seg =
+                            ParamSegment::foreign(id, stands, value, ramp.duration(), ramp.shape());
+                        segments.start(params, address, seg, abs(o), frame, false);
+                    }
+                    _ => {
+                        // A step: it stops a segment in flight on its
+                        // parameter.
+                        segments.interrupt(address);
+                        let offset = i32::try_from(frame).unwrap_or(i32::MAX);
+                        params.point(address, offset, value);
+                    }
+                }
             }
             EventKind::Segment(seg) => {
                 // A plugin parameter takes point values: the segment's value
@@ -138,10 +159,105 @@ mod tests {
     use crate::protocol::{ParamAddress, ParamId};
     use std::sync::Arc;
     use tutti_graph::{
-        Env, ParamSegment, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
+        Env, ParamRamp, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
         TransportHistory,
     };
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate, Samples};
+
+    /// The block's `Env` at absolute frame 0, its play clock starting at
+    /// `play`.
+    fn env(len: usize, play: u64) -> Env {
+        Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(48_000.0),
+            block_len: Samples(len),
+            transport: Transport::new(false, Bpm(120.0), Beat(0.0), None),
+            changes: TransportChanges::NONE,
+            play: PlayClock {
+                start: PlayReading {
+                    epoch: 0,
+                    play: Frame(play),
+                },
+                next_epoch: 0,
+            },
+        }
+    }
+
+    /// **A ramp reaches a plugin along its shape.** In one 64-frame block
+    /// whose play clock starts at 1 (frame 31 is the one grid frame): a
+    /// ramp over 8 frames to 0 on a parameter the node has given nothing is
+    /// a step, its target on its frame; a `PowerIn(2)` ramp to 1 over 40
+    /// frames at frame 11 moves from that 0, its points on its frame
+    /// (`(1/40)²`) and on the grid frame (`(21/40)²`); a linear ramp at
+    /// frame 40 interrupts it from where it stood on frame 39 (`(29/40)²`),
+    /// a quarter of the way to 0 on its frame, 0 on its last. The shaped
+    /// ramp's own arrival (frame 50) is never sent.
+    ///
+    /// Mutations (run), each fails: the ramp sent `Linear` (`ramp.shape()`
+    /// ignored) → frame 11 reads 1/40. The start read from the delivery only
+    /// (`segments.value_at` skipped) → frame 40 starts from the grid point,
+    /// `(21/40)²`. A ramp's duration ignored (every ramp a step) → frame 11
+    /// reads 1. `ParamDelivery::current` reading only what was handed over
+    /// → the shaped ramp finds no start and is a step.
+    #[test]
+    fn a_ramp_reaches_a_plugin_along_its_shape() {
+        const TOL: f64 = 1e-6;
+        let address = ParamAddress::Opaque(ParamId::new(7));
+        let counters = Arc::new(DeliveryCounters::default());
+        let mut params = ParamDelivery::new([address], Arc::clone(&counters));
+        params.prepare(64);
+        let mut segments = SegmentPoints::default();
+        segments.prepare(params.room());
+        params.begin();
+        segments.begin(64);
+        let len = 64;
+        let env = env(len, 1);
+        let cx = Cx {
+            env: &env,
+            arrival: Latency::ZERO,
+            history: TransportHistory::none(),
+        };
+        let at = |i: usize, ramp: ParamRamp| {
+            Event::ramp(Offset::new(i, Samples(len)).expect("inside"), ramp)
+        };
+        let events = [
+            at(0, ParamRamp::foreign(7, 0.0, Samples(8))),
+            at(
+                11,
+                ParamRamp::foreign(7, 1.0, Samples(40)).with_shape(SegmentShape::PowerIn(2.0)),
+            ),
+            at(40, ParamRamp::foreign(7, 0.0, Samples(4))),
+        ];
+        take(
+            &events,
+            0,
+            len,
+            0,
+            &cx,
+            false,
+            &mut segments,
+            &mut params,
+            |_, _| {},
+        );
+        let points: Vec<(i32, f64)> = params.changes().queues[0]
+            .points
+            .iter()
+            .map(|p| (p.sample_offset, p.value.get()))
+            .collect();
+        let stood = (29.0f64 / 40.0).powi(2);
+        let want = [
+            (0, 0.0),
+            (11, (1.0f64 / 40.0).powi(2)),
+            (31, (21.0f64 / 40.0).powi(2)),
+            (40, stood * 0.75),
+            (43, 0.0),
+        ];
+        assert_eq!(points.len(), want.len(), "{points:?}");
+        for ((o, v), (wo, wv)) in points.iter().zip(want) {
+            assert_eq!(*o, wo, "{points:?}");
+            assert!((v - wv).abs() <= TOL, "frame {o}: {v} vs {wv}");
+        }
+    }
 
     /// **The play clock decides which points are grid points.** A block
     /// whose play clock starts at 10 takes a segment on each of frames
@@ -171,20 +287,7 @@ mod tests {
         params.begin();
         segments.begin(64);
         let len = 512;
-        let env = Env {
-            frame: Frame(0),
-            sample_rate: SampleRate(48_000.0),
-            block_len: Samples(len),
-            transport: Transport::new(false, Bpm(120.0), Beat(0.0), None),
-            changes: TransportChanges::NONE,
-            play: PlayClock {
-                start: PlayReading {
-                    epoch: 0,
-                    play: Frame(10),
-                },
-                next_epoch: 0,
-            },
-        };
+        let env = env(len, 10);
         let cx = Cx {
             env: &env,
             arrival: Latency::ZERO,

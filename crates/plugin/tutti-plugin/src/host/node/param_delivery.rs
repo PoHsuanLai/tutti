@@ -618,6 +618,25 @@ impl ParamDelivery {
         known
     }
 
+    /// The value this node last gave `address`: the latest point placed in
+    /// the chunk being filled (or owed to the next), else the last one
+    /// handed over. `None` until the node has given it one. The host's
+    /// value, not the plugin's: an edit in the plugin's editor is not in it
+    /// (see the module docs). Allocation-free; learns no slot.
+    pub(crate) fn current(&self, address: ParamAddress) -> Option<f32> {
+        let i = self
+            .slots
+            .binary_search_by(|s| s.address.cmp(&address))
+            .ok()?;
+        let slot = &self.slots[i];
+        let value = if slot.queue != NO_QUEUE || slot.owed {
+            Some(slot.staged)
+        } else {
+            slot.sent
+        };
+        value.map(|v| v as f32)
+    }
+
     /// A point for `address` at chunk frame `offset`, unless the value is
     /// the one the plugin already has from this node (see the module docs).
     /// A corner: when the queue is full (its room, or its floor with the

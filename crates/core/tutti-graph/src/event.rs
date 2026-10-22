@@ -5,9 +5,10 @@
 //! port may have several sources, merged deterministically by `(offset,
 //! source order)`, where source order is the source port's `(NodeKey, port)`
 //! — layering a keyboard and a clip is the normal case, not an edge case.
-//! Automation is carried as **linear ramp** events ([`ParamRamp`]) and as
-//! **curve segments** ([`ParamSegment`]: a closed set of shapes a param port
-//! evaluates per frame).
+//! Automation is carried as **ramp** events ([`ParamRamp`]: relative, from
+//! wherever the param stands) and as **curve segments** ([`ParamSegment`]:
+//! absolute, between their own endpoints), both moving along a closed set of
+//! shapes ([`SegmentShape`]) a param port evaluates per frame.
 //!
 //! # Why a raw UMP payload and not `tutti-midi-types`
 //!
@@ -31,7 +32,21 @@ use crate::time::Offset;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Ump(pub [u32; 4]);
 
-/// A linear ramp of one parameter to a target, starting at the event's offset.
+/// A ramp of one parameter from the value it has at the event's frame to a
+/// target, starting there: linear, or along a [`SegmentShape`]
+/// ([`with_shape`](Self::with_shape)).
+///
+/// **Relative, unlike a [`ParamSegment`].** Its start value is whatever the
+/// receiving port's source holds on the event's frame, so the shape is
+/// evaluated exactly as a segment's is, with that value as `from`: frame `j`
+/// after the event (`j = 0` its own) reads
+/// `from + (target - from) · shape.eval((j + 1) / duration)`, and `target`
+/// from frame `duration - 1` on. Re-sending one restarts it from where the
+/// source stands.
+///
+/// A shape that needs `from` to be chosen ([`SegmentShape::Exp`]'s
+/// geometric `k = ln(to / from)`) wants a [`ParamSegment`], which names its
+/// start value: a shape is a function of progress alone.
 ///
 /// Addressed by [`ParamAddr`], so it reaches both tutti's own parameters and a
 /// foreign unit's (a hosted plugin's numeric id) without a later breaking
@@ -48,12 +63,15 @@ pub struct Ump(pub [u32; 4]);
 ///   boundary the units rule stops at: tutti does not know the unit.
 ///
 /// ```
-/// use tutti_graph::ParamRamp;
+/// use tutti_graph::{ParamRamp, SegmentShape};
 /// use tutti_types::{Db, Hz, ParamKey, Samples};
 /// let r = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(800.0), Samples(64));
 /// assert_eq!(r.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(r.target(ParamKey::<Db>::THRESHOLD), None); // another param
 /// assert_eq!(r.foreign_target(7), None); // not a foreign param at all
+/// assert_eq!(r.shape(), SegmentShape::Linear);
+/// let eased = r.with_shape(SegmentShape::PowerIn(2.0));
+/// assert_eq!(eased.shape(), SegmentShape::PowerIn(2.0));
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamRamp {
@@ -63,28 +81,50 @@ pub struct ParamRamp {
     // a `usize` would align the whole event to 8 and push it past 32
     // bytes.
     duration: u32,
+    // The shape, packed as a segment packs it (a tag byte and an `f32`),
+    // so an `Event` stays 32 bytes.
+    shape_param: f32,
+    shape: ShapeTag,
 }
 
 impl ParamRamp {
-    /// Ramp built-in parameter `key` to `target` over `duration` (zero is a
-    /// step).
+    /// Ramp built-in parameter `key` linearly to `target` over `duration`
+    /// (zero is a step).
     pub fn new<U: Unit<Raw = f32>>(key: ParamKey<U>, target: U, duration: Samples) -> Self {
+        Self::packed(ParamAddr::Unit(key.id()), target.to_raw(), duration)
+    }
+
+    /// Ramp a foreign unit's parameter `id` linearly to the raw `target`
+    /// over `duration`. The value is in the foreign unit's own terms (see the
+    /// type docs).
+    pub fn foreign(id: u32, target: f32, duration: Samples) -> Self {
+        Self::packed(ParamAddr::Id(id), target, duration)
+    }
+
+    fn packed(addr: ParamAddr, target: f32, duration: Samples) -> Self {
+        let (shape, shape_param) = SegmentShape::Linear.pack();
         Self {
-            addr: ParamAddr::Unit(key.id()),
-            target: target.to_raw(),
+            addr,
+            target,
             duration: saturate(duration),
+            shape_param,
+            shape,
         }
     }
 
-    /// Ramp a foreign unit's parameter `id` to the raw `target` over
-    /// `duration`. The value is in the foreign unit's own terms (see the type
-    /// docs).
-    pub fn foreign(id: u32, target: f32, duration: Samples) -> Self {
-        Self {
-            addr: ParamAddr::Id(id),
-            target,
-            duration: saturate(duration),
-        }
+    /// This ramp along `shape` instead of a straight line: a glide that
+    /// eases in or out from wherever the parameter stands. A zero duration
+    /// is still a step.
+    #[must_use]
+    pub fn with_shape(mut self, shape: SegmentShape) -> Self {
+        (self.shape, self.shape_param) = shape.pack();
+        self
+    }
+
+    /// The shape it moves along ([`SegmentShape::Linear`] unless
+    /// [`with_shape`](Self::with_shape) set one).
+    pub fn shape(&self) -> SegmentShape {
+        SegmentShape::unpack(self.shape, self.shape_param)
     }
 
     /// Which parameter this ramps — for routing on the address.
@@ -121,7 +161,8 @@ fn saturate(n: Samples) -> u32 {
     u32::try_from(n.get()).unwrap_or(u32::MAX)
 }
 
-/// How a [`ParamSegment`] moves from its start value to its end value: a
+/// How a [`ParamSegment`] or a [`ParamRamp`] moves from its start value to
+/// its end value: a
 /// function `g` of its progress `t` in `[0, 1]`, with `g(0) = 0` and
 /// `g(1) = 1`; the value is `from + (to - from) · g(t)`.
 ///
@@ -148,9 +189,10 @@ fn saturate(n: Samples) -> u32 {
 /// assert_eq!(SegmentShape::Hold.eval(0.99), 0.0);
 /// assert_eq!(SegmentShape::PowerIn(f32::NAN).eval(0.5), 0.5); // as linear
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum SegmentShape {
-    /// `t`.
+    /// `t`. The default: a [`ParamRamp`]'s shape unless it names one.
+    #[default]
     Linear,
     /// `0` until the end, then `1`: the start value held, and a step onto
     /// the end value on the segment's last frame.
@@ -212,7 +254,7 @@ impl SegmentShape {
         }
     }
 
-    /// The shape as its tag and parameter: how a segment and the fork tap
+    /// The shape as its tag and parameter: how a segment and a ramp
     /// store it.
     pub(crate) fn pack(self) -> (ShapeTag, f32) {
         match self {
@@ -269,8 +311,8 @@ fn pow(x: f32, p: f32) -> f32 {
     }
 }
 
-/// [`SegmentShape`]'s variant, as a byte: a segment stores its shape as this
-/// and an `f32`, so an [`Event`] stays 32 bytes.
+/// [`SegmentShape`]'s variant, as a byte: a segment or a ramp stores its
+/// shape as this and an `f32`, so an [`Event`] stays 32 bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum ShapeTag {

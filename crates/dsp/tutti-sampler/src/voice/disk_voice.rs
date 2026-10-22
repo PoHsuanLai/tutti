@@ -37,7 +37,7 @@ use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::butler::control::StreamOrigin;
-use crate::butler::{RtState, SharedReader};
+use crate::butler::{RegionId, RtState, SharedReader};
 use crate::lanes::{Lanes, UNPREPARED_FRAMES};
 
 /// Frames a free-running block's positions are computed for at a time:
@@ -517,6 +517,13 @@ impl DiskVoice {
             clock: Clock::new(),
             positions: Vec::new(),
         }
+    }
+
+    /// The butler stream this voice reads: its ring's region, which a loop
+    /// forwarded for the voice names so the butler ignores it once the
+    /// channel carries another stream.
+    pub(crate) fn stream(&self) -> RegionId {
+        self.inner.read.ring().region_id()
     }
 
     /// Record which butler stream this voice consumes, so a fork of it can

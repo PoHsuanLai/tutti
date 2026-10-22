@@ -4627,7 +4627,6 @@ dependencies = [
  "bevy_ecs",
  "criterion",
  "crossbeam-channel",
- "crossbeam-queue",
  "dashmap",
  "hound",
  "insta",

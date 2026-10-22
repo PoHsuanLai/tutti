@@ -84,22 +84,24 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
 }
 
 /// The budget is the whole call's frames, summed over the graph blocks a
-/// device block splits into: 1 024 frames over a 512-frame `MaxBlock` is two
-/// graph blocks, each spinning 1.5 budgets of 512 frames, so the call's load
-/// is at least 1.5, and `process_segment` measures the same way.
+/// device block splits into: 8 192 frames over a 4 096-frame `MaxBlock` is
+/// two graph blocks, each spinning 1.5 budgets of 4 096 frames, so the
+/// call's load is at least 1.5, and `process_segment` measures the same way.
 ///
-/// The ceiling (2.9) is the one wall-time bound: it leaves the rest of the
-/// call 1.4 × 512 frames (about 15 ms) for a graph of one node, generous on
-/// a loaded machine, and still catches a budget of one piece (load ≥ 3).
+/// The ceiling (2.9) is the one wall-time bound. The blocks are long so
+/// that it is loose in time: it leaves the rest of the call 1.4 × 4 096
+/// frames (about 120 ms) for a graph of one node, which holds on a heavily
+/// loaded machine (a 512-frame version, with 15 ms of slack, failed 2 in
+/// 200 under load), and it still catches a budget of one piece (load ≥ 3).
 ///
 /// Mutations (run): `budget = ` instead of `budget +=` in `process` → the
 /// budget is one piece, load ≥ 3.0 → fails; the same in `process_segment`
 /// → fails.
 #[test]
 fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
-    let (engine, _t, _ed) = engine(budget(512).mul_f64(1.5), 512);
+    let (engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
     let meter = std::sync::Arc::clone(engine.load_meter());
-    let mut out = vec![0.0f32; 1024];
+    let mut out = vec![0.0f32; 8192];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     let r = meter.take();
     assert!((1.5..2.9).contains(&r.last), "process: {}", r.last);

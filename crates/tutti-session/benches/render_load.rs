@@ -18,24 +18,45 @@
 //! - 8 `PolySynth` instruments, saw through a Moog ladder at 1.2 kHz, 16
 //!   notes held on each (128 voices), each into a `BusStripNode`;
 //! - 4 sampler tracks, each a `VoicePool` of 8 memory voices on a 20 s
-//!   tone, each voice pitched (so resampled), each into a `BusStripNode`;
+//!   tone, each voice transposed by its own interval (-347 to +428 cents),
+//!   each into a `BusStripNode`. The voices start 256 frames in (see the
+//!   phase profile below);
 //! - one send per track (a second `BusStripNode` at -12 dB), summed into a
 //!   stereo `ConvolverNode` reverb (2 s noise-tail IRs, the node's default
-//!   512-frame partition, so its FFT work lands once per 512 frames) and its
-//!   return strip;
+//!   512-frame partition) and its return strip;
 //! - the 12 track strips and the return summed (`ChannelSumNode`) into a
 //!   master strip and a `LimiterNode`.
 //!
-//! Each configuration renders 1 s to warm up (notes attack, voices start,
-//! the reverb fills), then 10 s measured, block by block, at 64 and 128
-//! frames, serial (`render_workers(1)`) and on a pool of one thread per core
+//! Three variants, each measured on its own:
+//!
+//! - **`varispeed`**, the main scene: the sampler voices transpose by
+//!   varispeed (`Playback::speed`), a resampled read.
+//! - **`vocoder`**: the same intervals as a pitch shift (`Playback::pitch`),
+//!   which runs each voice through the sampler's phase vocoder (a 2048-point
+//!   FFT every 512 output frames): 32 pitch shifters.
+//! - **`no-reverb`**: the main scene without the convolver and its send
+//!   bus, the control for what the reverb costs.
+//!
+//! Each configuration renders 1 s to warm up (notes attack, voices start),
+//! then 10 s measured, block by block, at 64 and 128 frames, serial
+//! (`render_workers(1)`) and on a pool of one thread per core
 //! (`render_workers(0)`).
 //!
-//! Two more columns say where the load sits: the mean load of the blocks
-//! that complete a reverb partition (where its FFT work lands) against the
-//! rest, and how many over-budget blocks were partition blocks. The last
-//! column is the 1-minute load average after the configuration, so a figure
-//! taken beside other work says so.
+//! # Where the spikes land
+//!
+//! The convolver and the vocoder both do their FFT work once per 512
+//! frames, so a spike that recurs every 512 frames could be either. The
+//! harness prints, per configuration, the mean load at each block position
+//! within the 512-frame cycle (`phase`: position 0 is the block starting at
+//! a multiple of 512). The convolver's partition completes on the block
+//! that *ends* at a multiple of 512, the last position; the sampler voices
+//! start 256 frames in, so whatever grid their vocoder keeps from their
+//! start lands half a cycle away from the convolver's. The profile is
+//! measured, not assumed: compare `varispeed` with `no-reverb` for the
+//! convolver's share, and `vocoder` with `varispeed` for the vocoder's.
+//! The last column is the 1-minute load average after the configuration
+//! (the bench's own threads included), so a figure taken beside other work
+//! says so.
 //!
 //! # What it does not measure
 //!
@@ -56,9 +77,32 @@
 
 use std::sync::Arc;
 
+/// How the sampler voices transpose, and whether the reverb is in the
+/// scene.
+#[derive(Clone, Copy)]
+enum Variant {
+    Varispeed,
+    Vocoder,
+    NoReverb,
+}
+
+impl Variant {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Varispeed => "varispeed",
+            Self::Vocoder => "vocoder",
+            Self::NoReverb => "no-reverb",
+        }
+    }
+}
+
+/// Where the sampler voices start: half the 512-frame cycle, away from the
+/// convolver's partition grid.
+const VOICE_START: Samples = Samples(256);
+
 use tutti_core::{
-    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MotionEvent, Resonance,
-    SampleRate, Samples, Seconds,
+    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MotionEvent, PlaybackRate,
+    Resonance, SampleRate, Samples, Seconds,
 };
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
@@ -141,7 +185,7 @@ fn connect_stereo(
 
 /// The scene the module docs describe, on `workers` render threads, its
 /// transport rolling.
-fn scene(block: usize, workers: usize) -> Session {
+fn scene(block: usize, workers: usize, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
         .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(block))
@@ -187,6 +231,8 @@ fn scene(block: usize, workers: usize) -> Session {
         tone.push_frame(&[x]);
     }
     let tone = Arc::new(tone);
+    let per_beat = s.transport().samples_per_beat().get() as f64;
+    let start = Beat(VOICE_START.get() as f64 / per_beat);
     for t in 0..SAMPLER_TRACKS {
         let mut pool = VoicePool::new();
         for v in 0..SAMPLER_VOICES {
@@ -195,13 +241,26 @@ fn scene(block: usize, workers: usize) -> Session {
                 Voice {
                     source: VoiceSource::Memory(MemorySource::placed(
                         Arc::clone(&tone),
-                        Beat(0.0),
+                        start,
                         None,
                     )),
-                    play: Playback {
-                        pitch: Cents::new(-700.0 + 100.0 * (t * SAMPLER_VOICES + v) as f32 + 3.0),
-                        gain: Amplitude(0.1),
-                        ..Default::default()
+                    play: {
+                        let k = (t * SAMPLER_VOICES + v) as f32;
+                        let interval = Cents::new(-350.0 + 25.0 * k + 3.0);
+                        let play = Playback {
+                            gain: Amplitude(0.1),
+                            ..Default::default()
+                        };
+                        match variant {
+                            Variant::Vocoder => Playback {
+                                pitch: interval,
+                                ..play
+                            },
+                            Variant::Varispeed | Variant::NoReverb => Playback {
+                                speed: PlaybackRate::new_clamped(interval.to_pitch_ratio()),
+                                ..play
+                            },
+                        }
                     },
                     channel_index: None,
                 },
@@ -211,40 +270,48 @@ fn scene(block: usize, workers: usize) -> Session {
         strips.push(pool);
     }
 
-    // Each source into its channel strip, and a send off the source.
+    // Each source into its channel strip, and (with the reverb) a send off
+    // the source.
+    let reverb = !matches!(variant, Variant::NoReverb);
     let tracks: Vec<_> = strips
         .into_iter()
         .map(|src| {
             let (strip, _) = s.graph().add(BusStripNode::new());
             connect_stereo(&mut s, strip, 0, src);
-            let send = BusStripNode::new();
-            send.volume().store(
-                Db(-12.0).to_amplitude().get(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            let (send, _) = s.graph().add(send);
-            connect_stereo(&mut s, send, 0, src);
-            sends.push(send);
+            if reverb {
+                let send = BusStripNode::new();
+                send.volume().store(
+                    Db(-12.0).to_amplitude().get(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                let (send, _) = s.graph().add(send);
+                connect_stereo(&mut s, send, 0, src);
+                sends.push(send);
+            }
             strip
         })
         .collect();
 
-    let (send_bus, _) = s
-        .graph()
-        .add(ChannelSumNode::new(sends.len(), ChannelLayout::STEREO));
-    for (k, send) in sends.iter().enumerate() {
-        connect_stereo(&mut s, send_bus, 2 * k, *send);
+    let mut sums = tracks;
+    if reverb {
+        let (send_bus, _) = s
+            .graph()
+            .add(ChannelSumNode::new(sends.len(), ChannelLayout::STEREO));
+        for (k, send) in sends.iter().enumerate() {
+            connect_stereo(&mut s, send_bus, 2 * k, *send);
+        }
+        let (l, r) = (ir(1), ir(2));
+        let (conv, _) = s.graph().add(ConvolverNode::stereo(&l, &r, PARTITION));
+        connect_stereo(&mut s, conv, 0, send_bus);
+        let (ret, _) = s.graph().add(BusStripNode::new());
+        connect_stereo(&mut s, ret, 0, conv);
+        sums.push(ret);
     }
-    let (l, r) = (ir(1), ir(2));
-    let (reverb, _) = s.graph().add(ConvolverNode::stereo(&l, &r, 512));
-    connect_stereo(&mut s, reverb, 0, send_bus);
-    let (ret, _) = s.graph().add(BusStripNode::new());
-    connect_stereo(&mut s, ret, 0, reverb);
 
     let (master_bus, _) = s
         .graph()
-        .add(ChannelSumNode::new(tracks.len() + 1, ChannelLayout::STEREO));
-    for (k, strip) in tracks.iter().chain([&ret]).enumerate() {
+        .add(ChannelSumNode::new(sums.len(), ChannelLayout::STEREO));
+    for (k, strip) in sums.iter().enumerate() {
         connect_stereo(&mut s, master_bus, 2 * k, *strip);
     }
     let (master, _) = s.graph().add(BusStripNode::new());
@@ -267,8 +334,8 @@ fn scene(block: usize, workers: usize) -> Session {
     s
 }
 
-/// The reverb's partition: its FFT work lands on the block that completes
-/// each 512 frames.
+/// The 512-frame cycle: the convolver's partition, and the vocoder's
+/// output hop.
 const PARTITION: usize = 512;
 
 struct Figures {
@@ -277,17 +344,14 @@ struct Figures {
     max: f32,
     over: usize,
     blocks: usize,
-    /// Mean load of the blocks that complete a reverb partition, and of the
-    /// rest (equal at 512 frames and above, where every block does).
-    mean_partition: f32,
-    mean_other: f32,
-    /// Blocks over budget that complete a reverb partition.
-    over_partition: usize,
+    /// Mean load at each block position within the 512-frame cycle
+    /// (position 0 starts at a multiple of 512).
+    phase: Vec<f32>,
     peak_out: f32,
 }
 
-fn measure(block: usize, workers: usize) -> Figures {
-    let s = scene(block, workers);
+fn measure(block: usize, workers: usize, variant: Variant) -> Figures {
+    let s = scene(block, workers, variant);
     let meter = Arc::clone(s.load_meter().expect("an offline engine"));
     let mut out = vec![0.0f32; block * 2];
     let blocks = |span: Seconds| span.to_samples(SampleRate(RATE)).get().div_ceil(block);
@@ -301,28 +365,22 @@ fn measure(block: usize, workers: usize) -> Figures {
     meter.reset();
     for _ in 0..n {
         s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
-        loads.push(meter.take().last);
+        loads.push(meter.peek().last);
         peak_out = out.iter().fold(peak_out, |m, x| m.max(x.abs()));
     }
     let over = loads.iter().filter(|&&l| l > 1.0).count();
     assert_eq!(
         over as u64,
-        meter.take().over_budget,
+        meter.peek().over_budget,
         "the meter's own count"
     );
-    // Whether measured block `k` completes a reverb partition.
-    let completes = |k: usize| (warm + k + 1) * block % PARTITION < block;
-    let (mut on, mut off) = ((0.0f32, 0usize), (0.0f32, 0usize));
-    let mut over_partition = 0;
+    let positions = (PARTITION / block).max(1);
+    let mut phase = vec![(0.0f32, 0usize); positions];
     for (k, &l) in loads.iter().enumerate() {
-        let side = if completes(k) { &mut on } else { &mut off };
-        side.0 += l;
-        side.1 += 1;
-        if completes(k) && l > 1.0 {
-            over_partition += 1;
-        }
+        let p = &mut phase[(warm + k) % positions];
+        p.0 += l;
+        p.1 += 1;
     }
-    let avg = |(sum, n): (f32, usize)| if n == 0 { f32::NAN } else { sum / n as f32 };
     let mean = loads.iter().sum::<f32>() / n as f32;
     let max = loads.iter().copied().fold(0.0, f32::max);
     let mut sorted = loads;
@@ -334,9 +392,7 @@ fn measure(block: usize, workers: usize) -> Figures {
         max,
         over,
         blocks: n,
-        mean_partition: avg(on),
-        mean_other: avg(off),
-        over_partition,
+        phase: phase.iter().map(|&(sum, n)| sum / n as f32).collect(),
         peak_out,
     }
 }
@@ -358,36 +414,30 @@ fn main() {
          {SAMPLER_VOICES} voices, convolution send, 48 kHz; {cores} cores available"
     );
     println!(
-        "{:>5} {:>7} {:>7} {:>7} {:>8} {:>11} {:>8} {:>13} {:>11} {:>8}",
-        "block",
-        "workers",
-        "mean",
-        "p99",
-        "max",
-        "over/blocks",
-        "max/mean",
-        "mean part/rest",
-        "over on part",
-        "loadavg"
+        "{:>5} {:>9} {:>7} {:>7} {:>7} {:>8} {:>11} {:>8} {:>8}  phase (mean load by position in 512 frames)",
+        "block", "variant", "workers", "mean", "p99", "max", "over/blocks", "max/mean", "loadavg"
     );
-    for block in [64usize, 128] {
-        for (label, workers) in [("1", 1usize), ("cores", 0)] {
-            let f = measure(block, workers);
-            // A silent render would measure nothing worth reading.
-            assert!(f.peak_out > 0.0, "the scene sounds");
-            println!(
-                "{:>5} {:>7} {:>7.3} {:>7.3} {:>8.3} {:>11} {:>8.2} {:>13} {:>11} {:>8}",
-                block,
-                label,
-                f.mean,
-                f.p99,
-                f.max,
-                format!("{}/{}", f.over, f.blocks),
-                f.max / f.mean,
-                format!("{:.3}/{:.3}", f.mean_partition, f.mean_other),
-                f.over_partition,
-                loadavg(),
-            );
+    for variant in [Variant::Varispeed, Variant::Vocoder, Variant::NoReverb] {
+        for block in [64usize, 128] {
+            for (label, workers) in [("1", 1usize), ("cores", 0)] {
+                let f = measure(block, workers, variant);
+                // A silent render would measure nothing worth reading.
+                assert!(f.peak_out > 0.0, "the scene sounds");
+                let phase: Vec<String> = f.phase.iter().map(|l| format!("{l:.3}")).collect();
+                println!(
+                    "{:>5} {:>9} {:>7} {:>7.3} {:>7.3} {:>8.3} {:>11} {:>8.2} {:>8}  {}",
+                    block,
+                    variant.label(),
+                    label,
+                    f.mean,
+                    f.p99,
+                    f.max,
+                    format!("{}/{}", f.over, f.blocks),
+                    f.max / f.mean,
+                    loadavg(),
+                    phase.join(" "),
+                );
+            }
         }
     }
 }

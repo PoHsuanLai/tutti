@@ -313,7 +313,8 @@ impl Engine {
     /// budget is each graph block's frames at the rate that block ran at,
     /// summed, so a call that straddles a re-prepare's rate change is held
     /// to the rate in effect for each piece. A block refused the graph
-    /// (rendered silent) is not recorded.
+    /// (rendered silent, an audible dropout) is not timed; it is counted in
+    /// [`LoadReading::silenced`](crate::LoadReading::silenced).
     pub fn load_meter(&self) -> &Arc<LoadMeter> {
         &self.load
     }
@@ -345,8 +346,10 @@ impl Engine {
     /// rather than merely unlikely.
     #[inline]
     pub fn process_segment(&self, output: &mut InterleavedMut<'_>) {
-        // A monotonic clock read: a vDSO call on Linux and macOS, QPC on
-        // Windows; no syscall, no lock, no allocation. Two per call.
+        // A monotonic clock read, two per call, no lock and no allocation:
+        // normally a vDSO read on Linux (a real syscall if the clocksource
+        // is not vDSO-capable, e.g. some VMs), the commpage on macOS, QPC
+        // on Windows.
         let start = Instant::now();
         let out_ch = output.stride();
         let frames = output.len();
@@ -355,6 +358,7 @@ impl Engine {
         // (`settle_graph` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.load.record_silenced();
             return;
         };
         let g = &mut *graph;
@@ -412,6 +416,7 @@ impl Engine {
         // reached only under the graph borrow (here, or `settle_graph`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.load.record_silenced();
             return;
         };
         // A refusal leaves the events queued for the next block.
@@ -1147,5 +1152,33 @@ mod tests {
         );
         assert_eq!(walk.gain.len, 1);
         assert_eq!(walk.gain.items[0], (0, Gain::Aim(Some(Frame(812)))));
+    }
+
+    /// A block refused the graph is a dropout the meter counts, not times:
+    /// `silenced` counts both entry points, `blocks` neither, and a reset
+    /// zeroes it.
+    ///
+    /// Mutations (run): `process` not counting the refusal → `silenced` is
+    /// 1 → fails; the same in `process_segment` → fails; `reset` leaving
+    /// `silenced` → fails.
+    #[test]
+    fn a_block_refused_the_graph_counts_as_silenced() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let mut buf = vec![0.0f32; 64 * 2];
+        {
+            let _control = engine.graph.borrow_mut();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process_segment(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        }
+        let r = engine.load_meter().peek();
+        assert_eq!((r.silenced, r.blocks), (2, 0));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        let r = engine.load_meter().peek();
+        assert_eq!((r.silenced, r.blocks), (2, 1));
+        engine.load_meter().reset();
+        assert_eq!(engine.load_meter().peek().silenced, 0);
     }
 }

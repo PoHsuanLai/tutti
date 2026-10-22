@@ -29,6 +29,10 @@ pub struct LoadReading {
     pub over_budget: u64,
     /// Blocks measured since the start or the last reset.
     pub blocks: u64,
+    /// Blocks rendered silent because the graph was held on the control
+    /// side when the callback came (an audible dropout, not timed), since
+    /// the start or the last reset.
+    pub silenced: u64,
 }
 
 impl LoadReading {
@@ -63,6 +67,7 @@ pub struct LoadMeter {
     peak: AtomicU32,
     over_budget: AtomicU64,
     blocks: AtomicU64,
+    silenced: AtomicU64,
 }
 
 impl LoadMeter {
@@ -74,23 +79,45 @@ impl LoadMeter {
     /// The current reading, taking the peak: the next take reports the
     /// largest load since this one. A UI polling at frame rate sees every
     /// spike once.
+    ///
+    /// The reset is the meter's, not the caller's: every holder of the
+    /// `Arc` shares one peak, so two consumers that both `take` split the
+    /// spikes between them. One owner takes; any other reads with
+    /// [`peek`](Self::peek).
     pub fn take(&self) -> LoadReading {
+        self.reading(f32::from_bits(self.peak.swap(0, Ordering::Relaxed)))
+    }
+
+    /// The current reading, leaving the peak in place for the next
+    /// [`take`](Self::take).
+    pub fn peek(&self) -> LoadReading {
+        self.reading(f32::from_bits(self.peak.load(Ordering::Relaxed)))
+    }
+
+    fn reading(&self, peak: f32) -> LoadReading {
         LoadReading {
             last: self.last.load(Ordering::Relaxed),
             mean: self.mean.load(Ordering::Relaxed),
-            peak: f32::from_bits(self.peak.swap(0, Ordering::Relaxed)),
+            peak,
             over_budget: self.over_budget.load(Ordering::Relaxed),
             blocks: self.blocks.load(Ordering::Relaxed),
+            silenced: self.silenced.load(Ordering::Relaxed),
         }
     }
 
-    /// Zero the over-budget and block counts and the peak; the mean is
-    /// seeded afresh by the next block. A block measured during the reset
-    /// may count on either side of it.
+    /// Zero the over-budget, block and silenced counts and the peak; the
+    /// mean is seeded afresh by the next block. A block measured during the
+    /// reset may count on either side of it.
     pub fn reset(&self) {
         self.over_budget.store(0, Ordering::Relaxed);
         self.blocks.store(0, Ordering::Relaxed);
+        self.silenced.store(0, Ordering::Relaxed);
         self.peak.store(0, Ordering::Relaxed);
+    }
+
+    /// Count one block rendered silent, refused the graph. Audio thread.
+    pub(crate) fn record_silenced(&self) {
+        self.silenced.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one block that took `elapsed` against a budget of `budget`.
@@ -100,9 +127,15 @@ impl LoadMeter {
         if budget.0 <= 0.0 {
             return;
         }
-        // `max` also maps a NaN to 0, so the bits below are a non-negative
-        // float's and `fetch_max` on them is a float max.
-        let load = (elapsed / budget).max(0.0);
+        // Non-negative and not NaN, so the bits below are a non-negative
+        // float's and `fetch_max` on them is a float max; finite, so an
+        // infinite load (a budget that underflowed) cannot make the mean NaN.
+        let ratio = elapsed / budget;
+        let load = if ratio.is_nan() {
+            0.0
+        } else {
+            ratio.clamp(0.0, f32::MAX)
+        };
         let n = self.blocks.fetch_add(1, Ordering::Relaxed);
         let mean = if n == 0 {
             load
@@ -222,5 +255,37 @@ mod tests {
         let r = m.take();
         assert!((r.mean - 0.9).abs() < 1e-4, "{}", r.mean);
         assert_eq!(r.blocks, 1);
+    }
+
+    /// A peek reads the peak and leaves it for the next take, so a second
+    /// reader steals no spike.
+    ///
+    /// Mutation (run): `peek` swapping the peak to 0 → the take after it
+    /// reports 0 → fails.
+    #[test]
+    fn a_peek_leaves_the_peak_for_the_take() {
+        let m = LoadMeter::new();
+        m.record(at(2.0), BLOCK);
+        assert!((m.peek().peak - 2.0).abs() < 1e-4);
+        assert!((m.take().peak - 2.0).abs() < 1e-4, "still there");
+        assert_eq!(m.peek().peak, 0.0);
+    }
+
+    /// An infinite load (a budget so small the division overflows) is held
+    /// at `f32::MAX`: it counts over budget, and the mean stays finite after
+    /// it, and after the next block.
+    ///
+    /// Mutation (run): clamping to `f32::INFINITY` instead of `f32::MAX` →
+    /// the mean goes `inf`, then NaN → fails.
+    #[test]
+    fn an_infinite_load_leaves_the_mean_finite() {
+        let m = LoadMeter::new();
+        m.record(at(0.5), BLOCK);
+        m.record(Seconds(1.0), Seconds(1e-45));
+        m.record(at(0.5), BLOCK);
+        let r = m.take();
+        assert!(r.mean.is_finite(), "{}", r.mean);
+        assert_eq!(r.over_budget, 1);
+        assert_eq!(r.peak, f32::MAX);
     }
 }

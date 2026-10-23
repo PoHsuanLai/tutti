@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a plugin is told a per-note pitch bend's real tuning
+
+`tutti-vst3-host` turned a MIDI 2 per-note pitch bend into a tuning note
+expression by mapping the bend's full scale onto VST3's whole ±120-semitone
+tuning range, so the same MIDI bent a VST3 plugin 2.5 times as far as a
+CLAP plugin or the engine's own synth (both ±48, the MPE default). Both
+hosts now read the bend over its channel's per-note bend range: ±48 until
+the stream sends "Sensitivity of Per-Note Pitch Bend" (RPN #00/07), which
+each plugin's event list follows per channel, across blocks, and consumes
+(neither format has an event for it). The range is keyed by channel, not
+group; a fork (an export) starts at ±48.
+
+The MIDI input node's MPE ingest turns a pitch-bend sensitivity (RPN
+#00/00) on a member channel, which in MPE sets every member's range, into
+RPN #00/07 on each of the zone's member channels. On the master channel it
+passes through as before. An MPE Configuration Message, which it absorbs,
+now resets the zone it configures to MPE's default ranges (RP-053 /
+M1-100-UM: master ±2, members ±48): RPN #00/00 = 2 on the master and RPN
+#00/07 = 48 on each member go out in its place. A mode set with
+`MidiInputControls::set_mpe_mode` sends the same for each of the new mode's
+zones (new `MpeIngest::zone_defaults`) in the block that adopts it.
+
+The input node stages each event's translation whole: past its 512 slots
+in a block, a translation is dropped in full rather than cut partway, and
+counted by the new `MidiInputControls::dropped_events()`.
+
+`MpeZoneConfig`'s default bend ranges were the wrong way round: a zone now
+starts with its master channel at ±2 semitones and its members at ±48, as
+MPE specifies (they were ±48 and ±2). `MpeZoneConfig::single_channel` keeps
+±2 for both. Migration: a caller that relied on the old defaults sets them
+with `with_master_pitch_bend_range` / `with_member_pitch_bend_range`.
+
+| Was | Now |
+|---|---|
+| `Vst3Event::from_midi(&MidiEvent)` | removed: it converted one event with no stream state. The plugin's event list (`EventList::update_from_sources`) encodes MIDI at the stream's bend ranges |
+| `ClapEvent::from_midi(&MidiEvent)` | `ClapEvent::from_midi(&MidiEvent, &PerNoteBendRanges)`; `InputEventList::add_midi` keeps the ranges and passes them |
+| — | `tutti_midi_types::PerNoteBendRanges` (`Default` ±48 per channel, `observe`, `get`, `semitones`) |
+| `MpeIngest::translate(&MidiEvent) -> Option<MidiEvent>` | `-> tutti_midi_runtime::Translated`, an allocation-free `ExactSizeIterator` of zero, one or (a member channel's bend range, an MPE Configuration Message's reset) one event per channel of the zone |
+| an MPE Configuration Message yielded nothing | it yields the configured zone's reset ranges (RPN #00/00 = 2 on the master, RPN #00/07 = 48 on each member) |
+
+Migration: a caller of `ClapEvent::from_midi` passes
+`&PerNoteBendRanges::default()` for one event on a fresh stream, or keeps a
+`PerNoteBendRanges` and calls `observe` on each event first. A caller of
+`Vst3Event::from_midi` stages its MIDI through the plugin's `EventList`. A
+caller of `MpeIngest::translate` iterates the result (`.next()` is the old
+`Option` for every event but a member channel's bend range and an MPE
+Configuration Message).
+
 ### Fixed — a SysEx longer than one UMP packet reaches plugins whole
 
 A SysEx7 message spanning several UMP packets (any message over six bytes)
@@ -46,7 +94,7 @@ with nothing else in the chunk); see doc 004, A-4.
 | — | `tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY}`: the reassembler the hosts share |
 | — | `tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD`: the engine's SysEx payload cap, which the hardware input now reads instead of a private copy |
 | `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
-| `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
+| a `START` packet staged into a VST3 plugin's event list | staged as nothing until its message completes (it was staged alone as the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it. (`Vst3Event::from_midi` is removed; see the per-note pitch bend entry above) |
 | — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
 | `PluginControls::dropped_midi_in`, `InProcessVst2Controls::dropped_midi_in` counted past a chunk's cap only (the entry below) | MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent, skipped as stale or still queued at a crash, the events taken towards a chunk at a reset or re-prepare, and the rest of a SysEx cut by any of these |
 | VST2 staging grew its event lists on the audio thread past 64 events a block | reserved for `MIDI_STACK_CAPACITY`, never grown; past it an event is refused and counted by the new `Vst2Instance::dropped_midi_in` |

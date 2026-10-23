@@ -1170,6 +1170,96 @@ fn note_expression_reaches_the_plugin_with_its_value() {
     );
 }
 
+/// A MIDI 2 per-note pitch bend reaches the plugin as a tuning note
+/// expression of the semitones it means, with no note-expression rail: the
+/// event list transcodes it from the MIDI. A quarter bend is 12 semitones at
+/// the default ±48 range (VST3 tuning 0.5 + 12/240), and 6 once the stream
+/// sets the channel's per-note bend sensitivity to 24 (RPN #00/07).
+///
+/// Mutations (run): the old `(bend + 1) / 2` tuning map → 0.625 at sample
+/// 64, fails; the sensitivity not stored → 0.55 at sample 192, fails.
+#[test]
+fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
+    use tutti_midi_types::convert::signed_f32_to_bend_u32;
+    use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+    use tutti_midi_types::PitchBendSensitivity;
+
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(5));
+
+    const FRAMES: usize = 512;
+    const NOTE_EXPR_BASE: f32 = 5000.0;
+    const TUNING_TYPE_ID: f32 = 2.0;
+
+    let quarter_bend = |at: u32| {
+        MidiEvent::per_note_pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            signed_f32_to_bend_u32(0.25),
+        )
+        .with_frame_offset(at)
+    };
+    let midi = [
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        quarter_bend(64),
+        MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        )
+        .with_frame_offset(100),
+        quarter_bend(192),
+    ];
+
+    let info = inst.info().clone();
+    let in_channels: usize = if info.input_bus_channels.is_empty() {
+        info.num_inputs.max(1)
+    } else {
+        info.input_bus_channels.iter().sum()
+    };
+    let out_channels: usize = if info.output_bus_channels.is_empty() {
+        info.num_outputs.max(1)
+    } else {
+        info.output_bus_channels.iter().sum()
+    };
+    let ins: Vec<Vec<f32>> = (0..in_channels).map(|_| vec![0.0f32; FRAMES]).collect();
+    let mut outs: Vec<Vec<f32>> = (0..out_channels).map(|_| vec![0.0f32; FRAMES]).collect();
+    let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+    let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut buffer = AudioBuffer {
+        inputs: &in_refs,
+        outputs: &mut out_refs,
+        num_samples: FRAMES,
+        sample_rate: 48_000.0,
+    };
+    let events = Vst3InputEvents {
+        midi: &midi,
+        ..Default::default()
+    };
+    inst.process(&mut buffer, &events, None, &TransportInfo::default());
+    let ch0 = &outs[0];
+
+    // An f32 near 5000 resolves to about 5e-4; the two readings and the old
+    // map's 0.625 are 0.025 or more apart.
+    for (offset, semitones) in [(64usize, 12.0f32), (192, 6.0)] {
+        let expected = NOTE_EXPR_BASE + TUNING_TYPE_ID + 0.5 + semitones / 240.0;
+        assert!(
+            (ch0[offset] - expected).abs() < 2e-3,
+            "sample {offset}: expected tuning of {semitones} semitones ({expected}), got {}",
+            ch0[offset]
+        );
+    }
+}
+
 /// MIDI the plugin *emits* must reach the host.
 ///
 /// The reverse direction of every other MIDI test here. `legacy-midicc-out`

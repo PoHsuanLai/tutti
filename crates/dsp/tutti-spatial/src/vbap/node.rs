@@ -93,6 +93,13 @@ use crate::SpatialTarget;
 /// feed), so it reads zero and is outside the law above.
 ///
 /// [`VbapError::UnsupportedSpeakerLayout`]: crate::vbap::VbapError::UnsupportedSpeakerLayout
+///
+/// # Clone
+///
+/// A clone shares the node's control cells (so a clone taken as a fork's
+/// template reads the placement as it is when the fork is taken) and copies
+/// its de-zipper state. A fork detaches the cells and resets the copy.
+#[derive(Clone)]
 pub struct VbapPannerNode {
     panner: VbapPanner,
     layout: ChannelLayout,
@@ -212,49 +219,6 @@ fn hold_finite(slot: &mut f32, value: f32) -> f32 {
         *slot = value;
     }
     *slot
-}
-
-impl Clone for VbapPannerNode {
-    fn clone(&self) -> Self {
-        // The arms below must stay in lockstep with `for_layout`, which is what
-        // keeps the `_` arm unreachable: every public constructor routes through
-        // one of the five presets, and any other width is refused there as
-        // `UnsupportedSpeakerLayout`. That gating is the only thing standing
-        // between the fallback and a silent bug — a sixth layout added to
-        // `for_layout` and not here would clone a 16-channel node into a stereo
-        // one, changing its output width with no error anywhere.
-        let mut new_panner = match self.layout.count() {
-            2 => VbapPanner::stereo().expect("stereo preset"),
-            4 => VbapPanner::quad().expect("quad preset"),
-            6 => VbapPanner::surround_5_1().expect("5.1 preset"),
-            8 => VbapPanner::surround_7_1().expect("7.1 preset"),
-            12 => VbapPanner::atmos_7_1_4().expect("Atmos preset"),
-            _ => VbapPanner::stereo().expect("stereo fallback"),
-        };
-
-        let (azimuth, elevation) = self.controls.target.load();
-        let spread = self.controls.spread.load();
-        new_panner.set_position(azimuth, elevation);
-        new_panner.set_spread(spread);
-        // The fresh panner's smoother is built at 48 kHz; without this a clone
-        // of a 96 kHz node would run its 50 ms de-zipper in 25 ms until it was
-        // prepared again.
-        new_panner.set_sample_rate(self.sample_rate);
-
-        Self {
-            panner: new_panner,
-            layout: self.layout,
-            // Shared, not snapshotted: a clone is the fork's template, which
-            // must read the cells as they are when the fork is taken.
-            controls: self.controls.clone(),
-            sample_rate: self.sample_rate,
-            speaker_of_channel: self.speaker_of_channel.clone(),
-            // The clone's smoother is fresh, so its ramp must start from it
-            // rather than from the original's last gains.
-            ramp_from: None,
-            good: self.good,
-        }
-    }
 }
 
 impl VbapPannerNode {
@@ -394,17 +358,20 @@ impl VbapPannerNode {
         self.layout.count() as usize
     }
 
+    /// The position and spread cells, read once: non-finite values held at
+    /// the last finite one, the bearing wrapped and the height and spread
+    /// clamped.
     #[inline]
-    fn sync_position(&mut self) {
+    fn placement(&mut self) -> (Azimuth, Elevation, Spread) {
         let (azimuth, elevation) = self.controls.target.load();
-        let azimuth = Azimuth(hold_finite(&mut self.good[0], azimuth.get()));
-        let elevation = Elevation(hold_finite(&mut self.good[1], elevation.get()));
-        let spread = Spread(hold_finite(
-            &mut self.good[2],
-            self.controls.spread.load().get(),
-        ));
-        self.panner.set_position(azimuth, elevation);
-        self.panner.set_spread(spread);
+        let azimuth = hold_finite(&mut self.good[0], azimuth.get());
+        let elevation = hold_finite(&mut self.good[1], elevation.get());
+        let spread = hold_finite(&mut self.good[2], self.controls.spread.load().get());
+        (
+            Azimuth(azimuth).wrap(),
+            Elevation::new_clamped(elevation),
+            Spread::new_clamped(spread),
+        )
     }
 
     /// The ramp for a block of `frames`: from where the previous block ended
@@ -415,16 +382,18 @@ impl VbapPannerNode {
     /// which is what keeps consecutive blocks continuous: a block boundary is
     /// a point on the ramp, never a step.
     fn block_gains(&mut self, frames: usize) -> (BlockGains, BlockGains) {
-        self.sync_position();
+        let (azimuth, elevation, spread) = self.placement();
         let width = StereoWidth(hold_finite(
             &mut self.good[3],
             self.controls.width.load().get(),
         ));
         let from = match self.ramp_from {
             Some(gains) => gains,
-            None => self.panner.gains_now(width),
+            None => self.panner.gains_now(width, spread),
         };
-        let to = self.panner.solve_block(width, frames);
+        let to = self
+            .panner
+            .solve_block((azimuth, elevation), width, spread, frames);
         self.ramp_from = Some(to);
         (from, to)
     }
@@ -476,9 +445,19 @@ fn render_channel(
     let n = out.len();
     let inv_n = 1.0 / n as f32;
     let remaining = |i: usize| (n - 1 - i) as f32 * inv_n;
+    // A delta of exactly `+0.0` makes every ramp gain `g_to - (+0.0 * t)`,
+    // which is `g_to` bit for bit (`t` is finite and non-negative; `-0.0`
+    // is excluded because `-0.0 - -0.0` is `+0.0`), so a held gain skips the
+    // ramp arithmetic with the same bits.
     if from.mono && to.mono {
         let (g_from, g_to) = (from.a[s], to.a[s]);
         let delta = g_to - g_from;
+        if delta.to_bits() == 0 {
+            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
+                *o = fold_frame_to_mono(&[l, r]) * g_to;
+            }
+            return;
+        }
         for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
             let gain = g_to - delta * remaining(i);
             *o = fold_frame_to_mono(&[l, r]) * gain;
@@ -487,6 +466,12 @@ fn render_channel(
         let (a_from, b_from) = from.pair(s);
         let (a_to, b_to) = to.pair(s);
         let (da, db) = (a_to - a_from, b_to - b_from);
+        if da.to_bits() == 0 && db.to_bits() == 0 {
+            for ((o, &l), &r) in out.iter_mut().zip(left).zip(right) {
+                *o = l * a_to + r * b_to;
+            }
+            return;
+        }
         for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
             let t = remaining(i);
             *o = l * (a_to - da * t) + r * (b_to - db * t);
@@ -519,8 +504,9 @@ impl Node for VbapPannerNode {
             .with_tail(Tail::Unknown)
             // A ramped gain pair per output channel and frame, and the
             // smoother stepped per frame: measured 10.9 ns per frame and
-            // channel at stereo, 4.3 at 5.1, against a gain's 0.2 and
-            // `SvfFilterNode`'s 7.2 (doc 013, "The cost model and coarsening").
+            // channel at stereo, 4.3 at 5.1 while the source moves, against
+            // a gain's 0.2 and `SvfFilterNode`'s 7.2 (doc 013, "The cost
+            // model and coarsening"). A held source costs about 1.5 and 0.6.
             .with_cost(tutti_graph::Cost::Moderate)
     }
 
@@ -558,22 +544,19 @@ impl Node for VbapPannerNode {
     }
 
     fn reset(&mut self) {
-        // `sync_position` first: the commanded position lives both in
-        // `controls.target` (what `set_position` writes) and in the inner
-        // panner's own cells (what the smoother is seeded from). Without the
-        // join, `set_position` → `reset` would seed the ramp at the panner's
-        // stale bearing and glide from there. Dropping `ramp_from` discards
-        // the previous block's gains along with the ramp.
-        self.sync_position();
-        self.panner.reset_state();
+        // Seats the smoother on the position the cells hold now, so a
+        // `set_position` → `reset` with no block between resumes there.
+        // Dropping `ramp_from` discards the previous block's gains along with
+        // the ramp.
+        let (azimuth, elevation, _) = self.placement();
+        self.panner.reset_state(azimuth, elevation);
         self.ramp_from = None;
     }
 }
 
 impl FreshFork for VbapPannerNode {
     /// A clone with its position, spread and width cells detached (at their
-    /// values now) and its ramp reset. The inner panner's own target cells
-    /// are already private to each clone (`Clone` builds a fresh panner).
+    /// values now) and its ramp reset.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
         fork.controls.detach();
@@ -615,6 +598,49 @@ mod tests {
         let rendered = drive(node, rate, &[&input[..1], &input[1..]], &[]);
         for (o, c) in out.iter_mut().zip(rendered) {
             *o = c[0];
+        }
+    }
+
+    /// The held-gain shortcut is taken only where it has the ramp's bits.
+    /// A gain moving from `+0.0` to `-0.0` has a delta of `-0.0`, which
+    /// compares equal to zero, but the ramp computes `-0.0 - (-0.0 * t)`,
+    /// which is `+0.0` on every frame; the shortcut would write `-0.0`.
+    ///
+    /// Mutation (run): test `delta == 0.0` instead of `delta.to_bits() == 0`
+    /// → the output reads `-0.0`, fails.
+    #[test]
+    fn a_signed_zero_gain_change_takes_the_ramp() {
+        let mut from = BlockGains {
+            mono: true,
+            a: [0.0; crate::vbap::panner::MAX_SPEAKERS],
+            b: [0.0; crate::vbap::panner::MAX_SPEAKERS],
+        };
+        let mut to = from;
+        from.a[0] = 0.0;
+        to.a[0] = -0.0;
+        let ones = [1.0f32; 8];
+        let mut out = [1.0f32; 8];
+        render_channel(&from, &to, Some(0), &ones, &ones, &mut out);
+        assert!(
+            out.iter().all(|o| o.to_bits() == 0.0f32.to_bits()),
+            "{out:?}"
+        );
+
+        // And a held gain is exactly `fold(l, r) * g` / `l * a + r * b`.
+        let mut held = from;
+        held.a[0] = 0.3;
+        let (l, r) = ([0.5f32, -0.25], [0.125f32, 1.0]);
+        let mut out = [0.0f32; 2];
+        render_channel(&held, &held, Some(0), &l, &r, &mut out);
+        for i in 0..2 {
+            assert_eq!(out[i], fold_frame_to_mono(&[l[i], r[i]]) * 0.3);
+        }
+        let mut pair = held;
+        pair.mono = false;
+        pair.b[0] = 0.7;
+        render_channel(&pair, &pair, Some(0), &l, &r, &mut out);
+        for i in 0..2 {
+            assert_eq!(out[i], l[i] * 0.3 + r[i] * 0.7);
         }
     }
 
@@ -683,12 +709,10 @@ mod tests {
     ///
     /// # The setup deliberately does not tick before the reset
     ///
-    /// The commanded position lives in the node's [`SpatialTarget`], which
-    /// `set_position` writes, and in the inner panner's own atomics, which the
-    /// smoother is seeded from. `sync_position` is the only join. A
-    /// `set_position` → `tick` → `reset` sequence would pass even if `reset`
-    /// skipped the join, because the leading `tick` already pushed the bearing
-    /// into the panner.
+    /// A `set_position` → `tick` → `reset` sequence would pass even if `reset`
+    /// left the smoother where it was, because the leading tick's 50 ms
+    /// ramp would carry it most of the way. The reset must read the
+    /// [`SpatialTarget`] itself.
     ///
     /// This test therefore resets with **no intervening tick**, which is the
     /// sequence a caller writes. The `-90°` half is
@@ -696,9 +720,9 @@ mod tests {
     /// the left channel leading, so a one-sided assertion could pass for the
     /// wrong reason.
     ///
-    /// Mutation: drop `sync_position()` from `VbapPannerNode::reset` → both
-    /// halves fail, reading `[0.707, 0.707]` (front-centre) instead of a hard
-    /// pan.
+    /// Mutation: seat `VbapPannerNode::reset` on `Azimuth::FRONT` instead of
+    /// the cells' bearing → both halves fail, reading `[0.707, 0.707]`
+    /// (front-centre) instead of a hard pan.
     #[test]
     fn reset_seats_the_smoother_on_the_commanded_position() {
         let input = [1.0f32, 1.0f32];
@@ -787,12 +811,12 @@ mod tests {
     /// **Every** separately shared cell survives a clone as a shared handle,
     /// not as a snapshot.
     ///
-    /// `Clone` rebuilds the panner geometry but hands on `target`, `spread` and
-    /// `width` by handle (`.clone()` / `.handle()`), so all three are asserted
-    /// -- one per shared field. Covering only `target` leaves a hole the
-    /// compiler cannot see: swapping `spread: self.spread.handle()` for
-    /// `Param::new(spread)` is a snapshotting clone that still passes a
-    /// position-only test, and `width` had no cover at all.
+    /// `Clone` hands on `target`, `spread` and `width` by handle (a `Param`
+    /// clone shares its cell), so all three are asserted -- one per shared
+    /// field. Covering only `target` leaves a hole the compiler cannot see: a
+    /// hand-written `VbapPannerControls::clone` building `spread` with
+    /// `Param::new(spread.load())` is a snapshotting clone that still passes a
+    /// position-only test.
     ///
     /// Why sharing is the required behaviour rather than an implementation
     /// detail: a clone is the fork source's template (`crate::fork`), taken at

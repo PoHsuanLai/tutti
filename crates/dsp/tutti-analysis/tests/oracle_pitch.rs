@@ -44,7 +44,7 @@
 use pitch_detection::detector::yin::YINDetector;
 use pitch_detection::detector::PitchDetector;
 use tutti_analysis::{yin, PitchEstimate, YinConfig};
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 const SR: f64 = 48_000.0;
 const WINDOW: usize = 4096;

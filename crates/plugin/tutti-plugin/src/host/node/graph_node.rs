@@ -286,8 +286,9 @@ impl Chunks for PluginChunks<'_> {
             _ => TransportInfo::default(),
         };
         // MIDI, parameters, chords and scales are filled from the event input
-        // as the chunk's frames come in (`take`); note expression has no
-        // source.
+        // as the chunk's frames come in (`take`). Note expression rides the
+        // MIDI as MIDI 2 per-note messages, which each format host turns into
+        // its own note-expression events; this rail stays empty.
         *self.pending = BlockPayload {
             midi: Default::default(),
             harmony: Default::default(),
@@ -299,9 +300,10 @@ impl Chunks for PluginChunks<'_> {
     /// The event input's events on these frames join the chunk at the
     /// chunk's frames: MIDI to its MIDI, a parameter ramp or segment (from
     /// a foreign control lane, `ControlLaneNode::for_foreign`) to its parameter
-    /// points, in this plugin's address model (a ramp as its target, a curve
-    /// segment as points along it until it lands: a plugin takes point
-    /// values; see `segment_points`), and a chord or scale to its
+    /// points, in this plugin's address model (a step as its target, a
+    /// ramp with a duration and a curve segment as points along it until it
+    /// lands: a plugin takes point values; see `param_input` and
+    /// `segment_points`), and a chord or scale to its
     /// harmony, for a plugin that takes sequencer context (no display text:
     /// the degrees are what a plugin acts on). Parameter points go through
     /// the node's delivery, which has a queue for every parameter and

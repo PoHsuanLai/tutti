@@ -270,7 +270,7 @@ fn resample_into(
                 let r = first + r;
                 let value = &mut spectra[(r / 2) * fft_len + n];
                 let tap = (sum * step) as f32;
-                if r % 2 == 0 {
+                if r.is_multiple_of(2) {
                     value.re = tap;
                 } else {
                     value.im = tap;

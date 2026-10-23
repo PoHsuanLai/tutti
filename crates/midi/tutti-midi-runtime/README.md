@@ -108,11 +108,15 @@ let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 let member = MidiChannel::new(1);
 ingest
     .translate(&MidiEvent::note_on_7bit(MidiGroup::FIRST, member, 60, 100))
+    .next()
     .expect("a note-on passes through");
 
 // A channel-wide bend on that member becomes a per-note bend on note 60.
 let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
-let folded = ingest.translate(&bend).expect("the channel holds a note");
+let folded = ingest
+    .translate(&bend)
+    .next()
+    .expect("the channel holds a note");
 assert_eq!(folded.note(), Some(60));
 ```
 
@@ -127,7 +131,7 @@ sounding voices separately — reconfiguring is not a panic.
 
 This crate has no `Error` type. Everything here runs on or feeds the audio
 thread, where refusal is shaped as a value: a full mailbox drops and reports a
-count, and [`MpeIngest::translate`] returns `Option`. The MIDI parse errors are
+count, and [`MpeIngest::translate`] yields nothing for an event it drops. The MIDI parse errors are
 in `tutti-midi-types` (`ClipFileError`, `MidiParseError`).
 
 ## Where it sits

@@ -2,10 +2,11 @@
 //! the parameter points a plugin takes.
 //!
 //! CLAP and VST3 parameter changes (and VST2's, through the same queue) are
-//! point values: the plugin holds each until the next. A ramp reaches the
-//! plugin as one point, its target on its frame. A segment is a move over
-//! many frames, possibly many chunks, so the node keeps the segments in
-//! flight here and sends points along each until it arrives:
+//! point values: the plugin holds each until the next. A segment is a move
+//! over many frames, possibly many chunks, so the node keeps the segments in
+//! flight here and sends points along each until it arrives (a ramp with a
+//! duration is followed as the segment it makes from the parameter's
+//! current value, `param_input`):
 //!
 //! - its value on its event frame (a grid point when the play clock's count
 //!   there is a multiple of 32, a corner otherwise);
@@ -105,6 +106,17 @@ impl SegmentPoints {
     /// any, stops here.
     pub(super) fn interrupt(&mut self, address: ParamAddress) {
         self.tracks.retain(|t| t.address != address);
+    }
+
+    /// The value the segment in flight on `address` gives absolute frame
+    /// `frame`, if one is on it there.
+    pub(super) fn value_at(&self, address: ParamAddress, frame: u64) -> Option<f32> {
+        let t = self.tracks.iter().find(|t| t.address == address)?;
+        let j = frame.checked_sub(t.start)?;
+        Some(
+            t.segment
+                .raw_value_after(Samples(usize::try_from(j).unwrap_or(usize::MAX))),
+        )
     }
 
     /// `segment` for `address` starts at absolute frame `frame`, chunk frame

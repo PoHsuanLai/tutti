@@ -3,7 +3,7 @@
 // NOTE: this crate has no fallible operation and therefore no `Error` type.
 // Everything here runs on or feeds the audio thread, where refusal is shaped as
 // a value, not an error: a full mailbox drops and reports a count, and
-// `MpeIngest::translate` returns `Option`. The MIDI parse errors live one crate
+// `MpeIngest::translate` yields nothing for an event it drops. The MIDI parse errors live one crate
 // down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
 mod live;
@@ -24,7 +24,7 @@ pub use negotiate::{
 };
 pub use outbound::{
     ClockMaster, ClockNode, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest,
-    CLOCK_EVENT_CAPACITY, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
+    Translated, CLOCK_EVENT_CAPACITY, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
 };
 pub use schedule::{
     HarmonyControls, HarmonyNode, MidiClipControls, MidiClipNode, TimedHarmony, TimedMidiEvent,

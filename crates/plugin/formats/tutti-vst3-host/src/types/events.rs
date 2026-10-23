@@ -4,8 +4,9 @@
 //! VST3's native event list is richer than raw MIDI-1 wire data (typed
 //! note-on/off/poly-pressure structs with `f32` velocity plus generic
 //! `Data` events for CC / ProgramChange / ChannelPressure / PitchBend). The
-//! [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] helpers bridge it to the
-//! workspace's canonical [`MidiEvent`] UMP type — one `MidiEvent` maps to one
+//! plugin's event list encodes the workspace's canonical [`MidiEvent`] UMP
+//! type into it (at the stream's per-note bend ranges), and
+//! [`Vst3Event::to_midi`] decodes it back — one `MidiEvent` maps to one
 //! [`Vst3Event`] and round-trips losslessly for the MIDI-representable
 //! variants.
 
@@ -33,7 +34,7 @@ use tutti_plugin_types::{
     is_usable, note_id_for, NoteExpressionType, NoteExpressionValue, SysExRef,
 };
 
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
 /// Borrowed bundle of every input event stream staged into a VST3 plugin's
@@ -351,8 +352,7 @@ pub struct LegacyMidiCcOutEvent {
 }
 
 /// Safe tagged-enum form of the VST3 `Event` union. See
-/// [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] for round-trip MIDI
-/// conversion. Text-bearing variants reference the owning event list's arena
+/// [`Vst3Event::to_midi`] for MIDI conversion. Text-bearing variants reference the owning event list's arena
 /// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
 pub enum Vst3Event {
@@ -404,18 +404,10 @@ impl Vst3Event {
         }
     }
 
-    /// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`]. Notes and
-    /// poly-pressure keep MIDI-2 full-width resolution; per-note messages become
-    /// note-expression events; everything else becomes a MIDI-1 [`Vst3Event::Data`]
-    /// frame. `None` only for messages with no MIDI-1 form and no per-note mapping.
-    #[inline]
-    pub fn from_midi(event: &MidiEvent) -> Option<Self> {
-        vst3_event_from_midi(event)
-    }
-
     /// Decodes this [`Vst3Event`] into a Tutti UMP [`MidiEvent`], promoting any
-    /// MIDI-1 payload to Channel Voice 2. `None` for non-MIDI events. The inverse
-    /// of [`Vst3Event::from_midi`].
+    /// MIDI-1 payload to Channel Voice 2. `None` for non-MIDI events. The
+    /// encoding direction is the plugin's event list's: it keeps the MIDI
+    /// stream's per-note bend ranges, which one event alone cannot carry.
     #[inline]
     pub fn to_midi(&self) -> Option<MidiEvent> {
         vst3_to_midi_event(self)
@@ -743,7 +735,18 @@ pub(crate) unsafe fn from_c_event(
     }
 }
 
-/// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
+/// VST3's tuning expression for a per-note bend of `bend` (signed, `[-1, 1]`)
+/// over a range of `range` semitones: `0.5 + semitones / 240`, the
+/// `kTuningTypeID` convention (`[0, 1]` spans -120 to +120 semitones).
+fn tuning_expression(bend: f32, range: f32) -> f64 {
+    0.5 + f64::from(bend) * f64::from(range) / 240.0
+}
+
+/// Encodes a Tutti UMP [`MidiEvent`] as a [`Vst3Event`], at the stream state
+/// `ranges` holds: a per-note pitch bend is read over its channel's per-note
+/// bend range ([`PerNoteBendRanges`], which a plugin's event list keeps across
+/// blocks), and a per-note bend sensitivity (RPN #00/07) sets that range and
+/// is consumed (`None`): VST3 has no event for it.
 ///
 /// Notes and poly-pressure are matched on `midi2`'s Channel Voice 2 vocabulary
 /// via [`tutti_midi_types::normalize`], so velocity / pressure arrive at the
@@ -752,10 +755,11 @@ pub(crate) unsafe fn from_c_event(
 /// its 16-bit velocity. MIDI-2 per-note pitch bend and per-note controllers
 /// become [`Vst3Event::NoteExpression`] events bound to the matching voice via
 /// [`note_id_for`]. Everything else (CC, channel-wide pitch bend, program change,
-/// channel pressure, SysEx) becomes a [`Vst3Event::Data`] event, which is a
-/// 3-byte MIDI-1 frame by definition, so that branch stays on the byte form.
-/// Returns `None` only for messages with no MIDI-1 byte representation and no
-/// per-note mapping.
+/// channel pressure, a single-packet SysEx) becomes a [`Vst3Event::Data`]
+/// event, which is a MIDI-1 frame by definition, so that branch stays on the
+/// byte form. Returns `None` for messages with no MIDI-1 byte representation
+/// and no per-note mapping, and for a packet of a multi-packet SysEx, which
+/// the event list reassembles into a [`Vst3Event::SysEx`].
 /// Text sizes are bounded as in `to_c_event`.
 ///
 /// **`cast_possible_wrap` is deliberately NOT allowed here.** Listing it to
@@ -768,10 +772,17 @@ pub(crate) unsafe fn from_c_event(
     clippy::cast_possible_truncation,
     reason = "text sizes bounded by MAX_EVENT_TEXT_LEN"
 )]
-pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+pub(crate) fn vst3_event_from_midi(
+    event: &MidiEvent,
+    ranges: &mut PerNoteBendRanges,
+) -> Option<Vst3Event> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+    if ranges.observe(event) {
+        return None;
+    }
 
     // `frame_offset` is `u32`; VST3's `sampleOffset` is `i32`. A value past
     // `i32::MAX` wraps negative, and the plugin indexes its buffers with it —
@@ -841,18 +852,18 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
                     note_id: note_id_for(channel, note),
                 }));
             }
-            // MIDI-2 per-note pitch bend → VST3 tuning expression. Signed [-1, 1]
-            // (center 0) maps to the unit [0, 1] (center 0.5 = no detune) VST3's
-            // note-expression value convention uses.
+            // MIDI-2 per-note pitch bend → VST3 tuning expression: the bend
+            // (signed, [-1, 1]) over the channel's per-note bend range, in
+            // semitones, on VST3's ±120-semitone tuning scale.
             Cv2::PerNotePitchBend(m) => {
                 let note = u8::from(m.note_number());
-                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+                let bend = bend_u32_to_signed_f32(m.pitch_bend_data());
                 // Tuning is VST3-encodable, so `note_expression_to_vst3` is `Some`.
                 return note_expression_to_vst3(&NoteExpressionValue {
                     sample_offset,
                     note_id: note_id_for(channel, note),
                     expression_type: NoteExpressionType::Tuning,
-                    value: (f64::from(value) + 1.0) / 2.0,
+                    value: tuning_expression(bend, ranges.semitones(channel)),
                 });
             }
             // MIDI-2 per-note controllers map onto VST3 note-expression
@@ -1255,9 +1266,10 @@ pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
 ///   legal answer, and dropping it would silently freeze the dimension at
 ///   whatever the plugin last saw.
 ///
-/// This is a no-op for every producer inside this crate: the MIDI paths reach
-/// here through `u32_to_unit_f32` and the `(v + 1.0) / 2.0` tuning map, both
-/// in-range by construction. The exposure is
+/// The MIDI paths in this crate reach here through `u32_to_unit_f32`, in range
+/// by construction, and through the tuning map, in range unless a sender sets
+/// a per-note bend range past 120 semitones (a bend past VST3's ±120 is then
+/// clamped to it). The main exposure is
 /// [`Vst3InputEvents::note_expressions`], an arbitrary caller-supplied slice.
 pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event> {
     let type_id = note_expression_type_to_id(value.expression_type)?;
@@ -1568,7 +1580,7 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
         .unwrap_or_default()
 }
 
-/// MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.
+/// MIDI round-trip tests through `vst3_event_from_midi` + `Vst3Event::to_midi`.
 ///
 /// Tests build SDK structs by hand, so they repeat the same bounded narrowings
 /// the production code justifies above (SDK ordinals, text sizes clamped to
@@ -1584,6 +1596,12 @@ mod tests {
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
+    /// Encodes one event on a fresh stream (every per-note bend range at the
+    /// MPE default).
+    fn encode(event: &MidiEvent) -> Option<Vst3Event> {
+        vst3_event_from_midi(event, &mut PerNoteBendRanges::default())
+    }
+
     #[test]
     fn inbound_generic_data_cc_promotes_to_cv2() {
         // A CC has no typed VST3 slot, so it rounds through a generic `Data`
@@ -1598,7 +1616,7 @@ mod tests {
             CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
-        let vst3 = vst3_event_from_midi(&event).expect("CC -> Data");
+        let vst3 = encode(&event).expect("CC -> Data");
         assert!(
             matches!(vst3, Vst3Event::Data(_)),
             "CC should be a Data event"
@@ -1618,7 +1636,7 @@ mod tests {
         // A System real-time message (Timing Clock 0xF8) has no CV form and must
         // pass through `normalize` unchanged, not be dropped or promoted.
         let event = MidiEvent::timing_clock(MidiGroup::FIRST);
-        let vst3 = vst3_event_from_midi(&event).expect("clock -> Data");
+        let vst3 = encode(&event).expect("clock -> Data");
         let back = vst3_to_midi_event(&vst3).expect("clock decodes");
         assert!(
             matches!(
@@ -1633,7 +1651,7 @@ mod tests {
     fn note_on_lands_in_note_on_variant() {
         let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000)
             .with_frame_offset(5);
-        let vst3 = vst3_event_from_midi(&event).expect("NoteOn should convert");
+        let vst3 = encode(&event).expect("NoteOn should convert");
         match &vst3 {
             Vst3Event::NoteOn(e) => {
                 assert_eq!(e.channel, 3);
@@ -1655,7 +1673,7 @@ mod tests {
         const RELEASE: u16 = 0x4000;
         let event = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 72, RELEASE)
             .with_frame_offset(10);
-        let vst3 = vst3_event_from_midi(&event).expect("NoteOff should convert");
+        let vst3 = encode(&event).expect("NoteOff should convert");
         match &vst3 {
             Vst3Event::NoteOff(e) => {
                 assert_eq!(e.pitch, 72);
@@ -1692,7 +1710,7 @@ mod tests {
     fn a_huge_frame_offset_saturates_rather_than_going_negative() {
         let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
             .with_frame_offset(u32::MAX);
-        let vst3 = vst3_event_from_midi(&event).expect("NoteOn should convert");
+        let vst3 = encode(&event).expect("NoteOn should convert");
         let offset = vst3.sample_offset();
         assert!(
             offset >= 0,
@@ -1712,7 +1730,7 @@ mod tests {
             midi1_cc_to_midi2(100),
         )
         .with_frame_offset(0);
-        let vst3 = vst3_event_from_midi(&event).expect("PolyPressure should convert");
+        let vst3 = encode(&event).expect("PolyPressure should convert");
         assert!(matches!(vst3, Vst3Event::PolyPressure(_)));
         let back = vst3_to_midi_event(&vst3).expect("round-trip");
         assert_eq!(back.note(), Some(60));
@@ -1727,7 +1745,7 @@ mod tests {
             CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
-        let vst3 = vst3_event_from_midi(&event).expect("CC should convert");
+        let vst3 = encode(&event).expect("CC should convert");
         match &vst3 {
             Vst3Event::Data(e) => {
                 assert_eq!(e.size, 3);
@@ -1747,7 +1765,7 @@ mod tests {
             MidiChannel::FIRST,
             midi1_pitch_bend_to_midi2(8192),
         );
-        let vst3 = vst3_event_from_midi(&event).expect("PitchBend should convert");
+        let vst3 = encode(&event).expect("PitchBend should convert");
         match &vst3 {
             Vst3Event::Data(e) => {
                 assert_eq!(e.size, 3);
@@ -1762,7 +1780,7 @@ mod tests {
     #[test]
     fn program_change_falls_through_to_data_event() {
         let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(9), 42, None);
-        let vst3 = vst3_event_from_midi(&event).expect("ProgramChange should convert");
+        let vst3 = encode(&event).expect("ProgramChange should convert");
         match &vst3 {
             Vst3Event::Data(e) => {
                 assert_eq!(e.size, 3);
@@ -2055,14 +2073,14 @@ mod tests {
     fn note_on_and_off_share_a_derived_note_id() {
         // A note-on and its note-off for the same (channel, note) must carry the
         // same VST3 noteId so per-note events bind to the same voice.
-        let on = vst3_event_from_midi(&MidiEvent::note_on(
+        let on = encode(&MidiEvent::note_on(
             MidiGroup::FIRST,
             MidiChannel::new(5),
             67,
             0x8000,
         ))
         .unwrap();
-        let off = vst3_event_from_midi(&MidiEvent::note_off(
+        let off = encode(&MidiEvent::note_off(
             MidiGroup::FIRST,
             MidiChannel::new(5),
             67,
@@ -2094,7 +2112,7 @@ mod tests {
             midi1_pitch_bend_to_midi2(8192),
         )
         .with_frame_offset(12);
-        let vst3 = vst3_event_from_midi(&event).expect("per-note bend should map");
+        let vst3 = encode(&event).expect("per-note bend should map");
         let expr = vst3_to_note_expression(&vst3).expect("is a note expression");
         assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
         assert_eq!(expr.note_id, note_id_for(5, 67));
@@ -2102,6 +2120,71 @@ mod tests {
         assert!((expr.value - 0.5).abs() < 0.01, "center bend → 0.5");
         // It is NOT a MIDI channel-voice event.
         assert!(vst3_to_midi_event(&vst3).is_none());
+    }
+
+    /// A per-note pitch bend is told to the plugin as the semitones it
+    /// means: the bend over its channel's per-note range (±48 until the
+    /// stream sets one with RPN #00/07), on VST3's ±120-semitone tuning
+    /// scale. A quarter bend at 48 is 12 semitones, 0.5 + 12/240; after a
+    /// sensitivity of 24 on channel 3, 6 semitones there and 12 elsewhere.
+    ///
+    /// Mutations (run): the old `(bend + 1) / 2` map (full bend = ±120) →
+    /// 0.625, fails; the sensitivity read but not stored → channel 3 reads
+    /// 0.55, fails; the range set on every channel → channel 4 reads 0.525,
+    /// fails.
+    #[test]
+    fn a_per_note_bend_is_tuned_over_its_channels_range() {
+        use tutti_midi_types::convert::signed_f32_to_bend_u32;
+        use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
+        use tutti_midi_types::PitchBendSensitivity;
+
+        let bend = |channel: u8, amount: f32| {
+            MidiEvent::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                60,
+                signed_f32_to_bend_u32(amount),
+            )
+        };
+        let tuning =
+            |ranges: &mut PerNoteBendRanges, e: &MidiEvent| match vst3_event_from_midi(e, ranges) {
+                Some(Vst3Event::NoteExpression(x)) => {
+                    assert_eq!(x.type_id, 2, "kTuningTypeID");
+                    x.value
+                }
+                other => panic!("expected a tuning expression, got {other:?}"),
+            };
+        let close = |got: f64, want: f64| (got - want).abs() < 1e-6;
+
+        let mut ranges = PerNoteBendRanges::default();
+        assert!(close(
+            tuning(&mut ranges, &bend(3, 0.25)),
+            0.5 + 12.0 / 240.0
+        ));
+        assert!(close(
+            tuning(&mut ranges, &bend(3, -1.0)),
+            0.5 - 48.0 / 240.0
+        ));
+
+        let sensitivity = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            RPN_BANK_MPE,
+            RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        );
+        assert!(
+            vst3_event_from_midi(&sensitivity, &mut ranges).is_none(),
+            "the sensitivity is consumed"
+        );
+        assert!(close(
+            tuning(&mut ranges, &bend(3, 0.25)),
+            0.5 + 6.0 / 240.0
+        ));
+        assert!(close(
+            tuning(&mut ranges, &bend(4, 0.25)),
+            0.5 + 12.0 / 240.0
+        ));
     }
 
     #[test]
@@ -2116,7 +2199,7 @@ mod tests {
             midi1_cc_to_midi2(100),
             false,
         );
-        match vst3_event_from_midi(&known) {
+        match encode(&known) {
             Some(Vst3Event::NoteExpression(e)) => {
                 // Asserted against the SPEC's absolute id (kBrightnessTypeID = 5),
                 // not against `note_expression_type_to_id` — comparing the table
@@ -2135,7 +2218,7 @@ mod tests {
             midi1_cc_to_midi2(100),
             false,
         );
-        assert!(vst3_event_from_midi(&unknown).is_none());
+        assert!(encode(&unknown).is_none());
     }
 
     #[test]
@@ -2146,7 +2229,7 @@ mod tests {
         let event = MidiEvent::sysex7_single(MidiGroup::FIRST, &payload)
             .unwrap()
             .with_frame_offset(7);
-        let vst3 = vst3_event_from_midi(&event).expect("SysEx should map to Data");
+        let vst3 = encode(&event).expect("SysEx should map to Data");
         match &vst3 {
             Vst3Event::Data(e) => {
                 assert_eq!(e.event_type, K_DATA_TYPE_MIDI_SYSEX);
@@ -2178,10 +2261,7 @@ mod tests {
         MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
         assert!(frags.len() > 1);
         for frag in &frags {
-            assert!(
-                vst3_event_from_midi(frag).is_none(),
-                "fragment {frag:?} converted alone"
-            );
+            assert!(encode(frag).is_none(), "fragment {frag:?} converted alone");
         }
     }
 
@@ -2192,7 +2272,7 @@ mod tests {
         // rather than collapsing to a 7-bit grid point.
         let velocity_u16 = 0x9123; // not a multiple of the 7-bit step
         let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity_u16);
-        let vst3 = vst3_event_from_midi(&event).expect("converts");
+        let vst3 = encode(&event).expect("converts");
         let back = vst3_to_midi_event(&vst3).expect("round-trips");
         match UmpMessage::try_from(back.data_words()).expect("decodes") {
             UmpMessage::ChannelVoice2(Cv2::NoteOn(m)) => {

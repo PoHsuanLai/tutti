@@ -52,7 +52,7 @@ use symphonia::core::probe::Hint;
 use tutti_core::Amplitude;
 use tutti_core::Hz;
 use tutti_export::{
-    render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
+    render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, Flac,
     FrozenClock, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
@@ -346,5 +346,64 @@ fn ogg_preserves_the_tone() {
     assert!(
         db.abs() < 1.0,
         "Ogg level moved by {db} dB relative to the WAV (rms {ol} vs {wl})"
+    );
+}
+
+/// `Flac::compression_level` reaches the encoder: every level decodes to
+/// the WAV's samples bit for bit, and level 8 writes a smaller file than
+/// level 0 for the same render.
+///
+/// The render is a sine with both channels equal, so the side channel is
+/// silence: level 0 codes left and right independently, and every higher
+/// level tries mid/side and codes the silent side in a few bits.
+///
+/// Mutation (run): ignore the level (`encoder_config` returning
+/// `EncoderConfig::default()` for every level) → the two files are the same
+/// size and the size assertion fails.
+#[test]
+fn the_flac_compression_level_changes_the_size_not_the_samples() {
+    let d = tempfile::tempdir().unwrap();
+    let wav = d.path().join("s.wav");
+    render_to_file(
+        sine_graph(1_000.0),
+        &config(AudioFormat::Wav, BitDepth::Int16),
+        &FrozenClock,
+        &wav,
+    )
+    .unwrap();
+    let (_, _, ws) = decode(&wav, "wav");
+    let q = |s: f32| (s * 32_767.0).round() as i64;
+
+    let mut sizes = Vec::new();
+    for level in [0u8, 3, 5, 8] {
+        let flac = d.path().join(format!("s{level}.flac"));
+        render_to_file(
+            sine_graph(1_000.0),
+            &config(
+                AudioFormat::Flac(Flac {
+                    compression_level: level,
+                }),
+                BitDepth::Int16,
+            ),
+            &FrozenClock,
+            &flac,
+        )
+        .unwrap();
+        // symphonia decodes the last fixed-size FLAC block whole, so the
+        // FLAC reads at least as long as the WAV (as in
+        // `flac_and_wav_agree_sample_for_sample`); compare the WAV's length.
+        let (_, _, fs) = decode(&flac, "flac");
+        assert!(fs.len() >= ws.len(), "level {level}: too little audio");
+        assert!(
+            ws.iter().zip(&fs).all(|(&a, &b)| q(a) == q(b)),
+            "level {level}: the FLAC does not hold the WAV's samples"
+        );
+        sizes.push(std::fs::metadata(&flac).unwrap().len());
+    }
+    assert!(
+        sizes[3] < sizes[0],
+        "level 8 ({} bytes) should be smaller than level 0 ({} bytes)",
+        sizes[3],
+        sizes[0]
     );
 }

@@ -33,8 +33,11 @@ pub enum DetectionFunction {
     /// Broadband level change. Cheapest, and the least sensitive — it misses
     /// short decaying spikes that the spectral functions catch.
     Energy,
-    /// Magnitude change measured in the complex plane. Best on tonal onsets,
-    /// where magnitude alone barely moves.
+    /// Euclidean distance between successive magnitude spectra
+    /// ([`complex_domain_deviation`]): decreases count as well as increases,
+    /// so it catches energy moving between bins. Despite the name it reads
+    /// magnitudes only; the phase prediction of the textbook complex-domain
+    /// function is not computed.
     ComplexDomain,
 }
 
@@ -63,7 +66,12 @@ pub fn high_frequency_content(current: &[Complex]) -> f32 {
         .sqrt()
 }
 
-/// Broadband RMS level of a time-domain frame.
+/// Broadband level of a time-domain frame: its L2 norm, the square root of
+/// the summed squares.
+///
+/// Not an RMS: the sum is not divided by the frame's length, so the value
+/// grows with the window (by `sqrt(len)` for a steady signal). Onset
+/// detection compares frames of one length, where the scale cancels.
 pub fn spectral_energy(frame: &[f32]) -> f32 {
     frame.iter().map(|s| s * s).sum::<f32>().sqrt()
 }
@@ -72,7 +80,8 @@ pub fn spectral_energy(frame: &[f32]) -> f32 {
 ///
 /// Unlike [`spectral_flux`] this counts decreases too, which is what makes it
 /// sensitive to tonal onsets where energy moves between bins rather than
-/// simply arriving.
+/// simply arriving. It compares magnitudes only (`previous` holds the last
+/// frame's magnitudes); no phase enters it.
 pub fn complex_domain_deviation(previous: &[f32], current: &[Complex]) -> f32 {
     current
         .iter()

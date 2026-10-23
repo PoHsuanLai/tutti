@@ -375,7 +375,6 @@ mod tests {
 
         transport.settings.set_tempo(120.0);
         let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
 
         let frames = 256;
         let mut output = vec![0.0f32; frames * 2];
@@ -401,7 +400,6 @@ mod tests {
         transport.settings.loop_span.set_range(0.0, 4.0);
         transport.settings.loop_span.set_enabled(true);
         let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
         transport.motion.seek.request(3.99);
 
         let frames = 1024;

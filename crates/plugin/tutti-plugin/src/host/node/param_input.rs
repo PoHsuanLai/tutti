@@ -104,7 +104,9 @@ pub(crate) fn take(
                 };
                 // Where the parameter stood at the end of the frame before
                 // the ramp's, whatever came earlier on its own frame: a
-                // param port's ramp starts from there too.
+                // param port's ramp starts from there too once its source
+                // has started (its first starts from the base at its own
+                // frame).
                 let stands = stood(segments, params, address, o, abs(o));
                 match stands {
                     Some(stands) if ramp.duration() > Samples(0) => {

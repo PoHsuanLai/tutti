@@ -453,8 +453,8 @@ impl Host {
     }
 }
 
-/// The one-pole coefficient the follower uses: `exp(−1 / (τ · rate))` in
-/// `f64` (as `libm::exp` computes it, to the last bit or so).
+/// The retention of the follower's one-pole per frame, `1 − c` for
+/// `c = Seconds::one_pole_coeff`: `exp(−1 / (τ · rate))`, in `f64`.
 fn pole(tau: f32) -> f64 {
     (-1.0 / (f64::from(tau) * RATE)).exp()
 }
@@ -1159,11 +1159,11 @@ fn a_refused_segment_is_resent_resumed() {
 /// **A long time constant decays at its own rate.** Full scale for 4800
 /// frames (attack 0: followed exactly), then silence into a release of
 /// 1000 s: 48 000 frames later the envelope is `exp(−48 000 / 48e6) =
-/// exp(−0.001)`, within 1e-6. In `f32` the coefficient `exp(−1/48e6)`
-/// rounds to 1, and the envelope would never decay.
+/// exp(−0.001)`, within 1e-6. In `f32` the retention `1 − c =
+/// exp(−1/48e6)` rounds to 1, and the envelope would never decay.
 ///
-/// Mutation (run): the coefficient rounded through `f32` (`as f32 as
-/// f64`) → still 1.0 there → fails.
+/// Mutation (run): the retention `1 − c` computed in `f32` → still 1.0
+/// there → fails.
 #[test]
 fn a_long_release_decays_at_its_own_rate() {
     let (mut ed, mut exec) = editor(128);
@@ -1189,4 +1189,85 @@ fn a_long_release_decays_at_its_own_rate() {
     let want = (-0.001f64).exp();
     let got = f64::from(all[3][g]);
     assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+}
+
+/// **A zero attack and release follow the level exactly.** 0.6 for 500
+/// frames, 0.25 to frame 1000, then silence: every grid piece ends on the
+/// level of the frame before it, with no lag either way.
+///
+/// Mutations (run): `follow` with the retention form
+/// `c · env + (1 − c) · level` (under which `c = 1` holds) → the envelope
+/// never leaves 0 → fails; `Seconds::one_pole_coeff` returning 0 for a
+/// non-positive time (a freeze) → fails.
+#[test]
+fn a_zero_attack_and_release_follow_exactly() {
+    let (mut ed, mut exec) = editor(128);
+    ed.insert(
+        NodeKey(1),
+        "pulse",
+        ForkByClone(Pulse {
+            width: ChannelLayout::MONO,
+            on: vec![(0, 500, 0.6), (500, 1_000, 0.25)],
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "follower",
+        ForkByClone(follower(1, 0.0, 0.0, ChannelLayout::MONO)),
+    );
+    wire_audio(&mut ed, 1, 2, 1);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    let all = render_stopped(&mut ed, &mut exec, &[128], 1_200);
+    let level = |f: usize| match f {
+        0..500 => 0.6f32,
+        500..1_000 => 0.25,
+        _ => 0.0,
+    };
+    for g in (STEP..1_200).step_by(STEP) {
+        if all[1][g] != 0.0 {
+            assert_eq!(all[3][g], level(g - 1), "frame {g}");
+        }
+    }
+    assert_eq!(all[3][512], 0.25, "fell to 0.25 without lag");
+    assert_eq!(all[3][1_024], 0.0, "fell to silence without lag");
+}
+
+/// **An infinite release holds the peak.** 0.6 for 500 frames (attack 0:
+/// followed exactly), then silence into a release of `∞`: every grid piece
+/// after the burst ends at 0.6, and so does the value a lane reads at the
+/// end.
+///
+/// Mutation (run): `Seconds::one_pole` treating an infinite decay length
+/// as instant (its guard `n > 0.0 && n.is_finite()`) → the envelope drops
+/// to 0 with the burst → fails.
+#[test]
+fn an_infinite_release_holds_the_peak() {
+    let (mut ed, mut exec) = editor(128);
+    ed.insert(
+        NodeKey(1),
+        "pulse",
+        ForkByClone(Pulse {
+            width: ChannelLayout::MONO,
+            on: vec![(0, 500, 0.6)],
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "follower",
+        ForkByClone(follower(1, 0.0, f32::INFINITY, ChannelLayout::MONO)),
+    );
+    wire_audio(&mut ed, 1, 2, 1);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    let all = render_stopped(&mut ed, &mut exec, &[128], 1_200);
+    let mut pieces = 0;
+    for g in (512..1_200).step_by(STEP) {
+        if all[1][g] != 0.0 {
+            pieces += 1;
+            assert_eq!(all[3][g], 0.6, "frame {g}");
+        }
+    }
+    assert!(pieces > 0, "it keeps sending the held level");
+    assert_eq!(all[0][1_199], 0.6, "a lane reads the peak at the end");
 }

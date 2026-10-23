@@ -5,7 +5,7 @@
 //! `GateEnvelopeFollower` adds the hold stage a gate needs between opening and
 //! releasing.
 
-use super::utils::{smooth_envelope, time_to_coeff};
+use super::utils::smooth_envelope;
 use tutti_core::{SampleRate, Seconds};
 
 const EPSILON: f32 = 0.00001;
@@ -35,8 +35,8 @@ impl EnvelopeFollower {
         let sample_rate = sample_rate.into();
         Self {
             value: 0.0,
-            attack_coeff: time_to_coeff(attack, sample_rate),
-            release_coeff: time_to_coeff(release, sample_rate),
+            attack_coeff: Seconds(attack).one_pole_coeff(sample_rate),
+            release_coeff: Seconds(release).one_pole_coeff(sample_rate),
             last_attack: attack,
             last_release: release,
             sample_rate,
@@ -49,11 +49,11 @@ impl EnvelopeFollower {
         let attack = attack.into().get();
         let release = release.into().get();
         if (attack - self.last_attack).abs() > EPSILON {
-            self.attack_coeff = time_to_coeff(attack, self.sample_rate);
+            self.attack_coeff = Seconds(attack).one_pole_coeff(self.sample_rate);
             self.last_attack = attack;
         }
         if (release - self.last_release).abs() > EPSILON {
-            self.release_coeff = time_to_coeff(release, self.sample_rate);
+            self.release_coeff = Seconds(release).one_pole_coeff(self.sample_rate);
             self.last_release = release;
         }
     }
@@ -111,8 +111,8 @@ impl EnvelopeFollower {
         let attack = attack.into().get();
         let release = release.into().get();
         self.sample_rate = sample_rate;
-        self.attack_coeff = time_to_coeff(attack, sample_rate);
-        self.release_coeff = time_to_coeff(release, sample_rate);
+        self.attack_coeff = Seconds(attack).one_pole_coeff(sample_rate);
+        self.release_coeff = Seconds(release).one_pole_coeff(sample_rate);
         self.last_attack = attack;
         self.last_release = release;
     }
@@ -258,6 +258,26 @@ mod tests {
         // Different values: recalculate
         env.update_coefficients(0.01, 0.1);
         assert_ne!(env.attack_coeff(), orig_attack);
+    }
+
+    /// **A zero attack or release is instant**: the follower lands on its
+    /// target in one sample, rising and falling, and a gate opens and
+    /// closes in one. (It used to freeze: the coefficient was the
+    /// retention, 1 at zero time, so a zero-attack compressor never
+    /// reduced.)
+    ///
+    /// Mutation (run): `smooth_envelope` with the retention form
+    /// `coeff * current + (1 - coeff) * target` (the old convention, under
+    /// which a coefficient of 1 holds) → fails.
+    #[test]
+    fn a_zero_attack_or_release_is_instant() {
+        let mut env = EnvelopeFollower::new(0.0, 0.0, 48_000.0);
+        assert_eq!(env.smooth(0.7), 0.7);
+        assert!((env.smooth(0.2) - 0.2).abs() < 1e-7, "{}", env.value());
+
+        let mut gate = GateEnvelopeFollower::new(0.0, 0.0, 0.0, 48_000.0);
+        assert_eq!(gate.step(true), 1.0);
+        assert_eq!(gate.step(false), 0.0);
     }
 
     #[test]

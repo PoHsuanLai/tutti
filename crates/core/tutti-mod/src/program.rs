@@ -145,16 +145,23 @@ impl Amount {
         f64::from(shape(raw, self.depth, self.polarity, self.curve)) * span
     }
 
-    /// Whether the offset's slope breaks where the raw value crosses zero:
-    /// a bipolar amount whose curve `curve_apply` bends (`shape` curves
-    /// `|x|`), so each zero crossing is a corner (doc 014 §5.3).
+    /// Whether the offset bends where the raw value crosses zero: a
+    /// bipolar amount with any curve but `Linear` (`shape` curves `|x|`),
+    /// so each zero crossing is a corner (doc 014 §5.3). Every curve has
+    /// `f(0) = 0` (`Elastic` by a special case: its formula's limit is
+    /// about −5e-4), so the offset `sign(x)·f(|x|)` is continuous there
+    /// with the same slope `f'(0)` either side; where `f''(0) ≠ 0` its
+    /// curvature flips sign, so the offset is not smooth across it and a
+    /// piece ends there. A curve that is smooth through zero (`CubicIn` is
+    /// `x³`) only gains a harmless extra corner.
+    ///
+    /// Not reported: `Stepped`'s jump at `|x| = 1` (at `raw = 1` when
+    /// unipolar), a single point no piece can carry, and `Bounce`'s three
+    /// slope breaks inside the range. Doc 014 §5.3 lists both among the
+    /// curves with no error bound.
     #[inline]
     pub fn kinks_at_zero(&self) -> bool {
-        self.polarity == Polarity::Bipolar
-            && matches!(
-                self.curve,
-                CurveType::Exponential | CurveType::Logarithmic | CurveType::SCurve
-            )
+        self.polarity == Polarity::Bipolar && self.curve != CurveType::Linear
     }
 }
 
@@ -182,6 +189,10 @@ pub struct Layer {
 /// `[-1, 1]` onto `[0, 1]`, computed as `(raw + 1) / 2` in `f64`; any other
 /// amount goes through [`shape`]. A curved bipolar amount kinks at the
 /// wave's zero crossings, which are corners as a layer's are (doc 014 §5.3).
+/// Under `Back` or `Elastic` the scale dips below 0 (to about −0.10 and
+/// −0.373 of depth) for small inputs, so there it inverts the offset
+/// rather than shrinking it; so may a `Bezier` with control values
+/// outside `[0, 1]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DepthBy {
     /// The clock the scaling wave runs on.

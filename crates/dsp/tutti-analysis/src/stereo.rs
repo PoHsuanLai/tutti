@@ -182,20 +182,18 @@ impl Ballistics {
     ///
     /// Public because ballistics are not stereo-specific: a level meter smooths
     /// [`MeterReading`](tutti_core::MeterReading)'s four amplitudes
-    /// with the same attack and release, and the alternative is a second copy
-    /// of `1 - exp(-dt/t)` that can drift from this one. [`step_ballistics`]
-    /// stays the convenience for the stereo case.
+    /// with the same attack and release. [`step_ballistics`] stays the
+    /// convenience for the stereo case.
     ///
-    /// A zero or negative time means "no smoothing" and returns 1.0, so a
-    /// caller that has not configured a rise or fall gets the instantaneous
-    /// value rather than a division by zero.
+    /// The one-pole coefficient of the attack or release over a step of
+    /// `dt`, `1 - exp(-dt/t)` ([`Seconds::one_pole_coeff_over`]). A zero or
+    /// negative time means "no smoothing" and returns 1.0, so a caller that
+    /// has not configured a rise or fall gets the instantaneous value rather
+    /// than a division by zero.
     #[inline]
     pub fn coefficient(&self, rising: bool, dt: Seconds) -> f32 {
         let time = if rising { self.attack } else { self.release };
-        if time.get() <= 0.0 {
-            return 1.0;
-        }
-        1.0 - (-dt.get() / time.get()).exp()
+        time.one_pole_coeff_over(dt)
     }
 
     /// Moves `old` toward `new` by one step of `dt`.
@@ -411,6 +409,20 @@ mod tests {
             (before.get() - after.get()).abs() < 0.05,
             "a 1 s release should barely move in 10 ms"
         );
+    }
+
+    /// **A zero attack or release is instant**: one step of any length
+    /// reaches the new value, rising and falling.
+    ///
+    /// Mutation (run): `coefficient` returning 0 for a non-positive time
+    /// (the freeze) → fails.
+    #[test]
+    fn a_zero_time_is_instant() {
+        let cfg = Ballistics::new(Seconds(0.0), Seconds(0.0));
+        assert_eq!(cfg.coefficient(true, Seconds(0.001)), 1.0);
+        assert_eq!(cfg.coefficient(false, Seconds(0.001)), 1.0);
+        assert_eq!(cfg.step(0.0, 0.8, Seconds(0.001)), 0.8);
+        assert_eq!(cfg.step(0.8, 0.25, Seconds(0.001)), 0.25);
     }
 
     #[test]

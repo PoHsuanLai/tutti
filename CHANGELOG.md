@@ -41,6 +41,100 @@ comes out that many frames after it went in, but the node declared one
 frame less. The executor parks a node whose inputs have been quiet for
 its tail, so a limiter parked at that moment could drop the ring's last
 frame. It now declares the full length. Its audio is unchanged.
+### Changed — one one-pole coefficient: `Seconds::one_pole_coeff`
+
+The one-pole smoothing coefficient was computed six ways, with two
+conventions and two zero-time behaviours. It is now one converter in
+`tutti-types`:
+
+- `Seconds::one_pole_coeff(rate) -> f32`: `c = 1 − exp(−1 / (τ · rate))`,
+  the fraction of the remaining gap one sample closes (`y += c · (x − y)`;
+  1 is instant, 0 holds). After `τ` a unit step reads `1 − e⁻¹`.
+- `Seconds::one_pole_coeff_over(step: Seconds) -> f32`: the same per step
+  of audio time, `1 − exp(−step / τ)`, for a smoother stepped per block or
+  frame.
+- A time constant that is zero, negative or NaN is **instant** (1); an
+  infinite one holds (0). The step form's empty or NaN step moves nothing.
+- The formula is the gap-fraction form four of the six copies used, in
+  `f64` with `libm`'s `exp` (so the coefficient does not depend on the
+  platform's C math library), rounded once to `f32`.
+
+Where the bits moved:
+
+- **`tutti-polysynth`'s output-gain glide:** the same expression, so the
+  same bits at every rate from 2 kHz up. Below 2 kHz the old one-frame
+  floor on `τ · rate` is gone.
+- **`tutti-spatial`'s `ExponentialSmoother`** (the VBAP/HRTF de-zipper):
+  the subtraction now happens in `f64` before the rounding, where it was
+  `1.0f32 − exp as f32` (which lost about 1e-4 of the coefficient at
+  50 ms). Pan gains move by at most 4e-6; `vbap_block_gains`' block-edge
+  goldens and `tutti-export`'s quad VBAP digest are re-pinned. A negative smoothing time is instant (it was
+  clamped to a hold), and a NaN one instant (it was a NaN coefficient).
+- **`tutti-analysis`'s `Ballistics::coefficient`** and **`tutti-core`'s
+  `LoadMeter` mean:** computed in `f64` instead of `f32` (last-bit
+  changes). A negative or NaN `dt` with a positive time gives 0, where it
+  gave a negative or NaN coefficient.
+- **`tutti-nodes`' dynamics** (`CompressorNode`, `GateNode`, `LimiterNode`
+  and the other users of the shared envelope follower): the coefficient
+  was the retention `exp(−1 / (τ · sr))` in `f32`, and **a zero time froze
+  the envelope** (retention 1). The attack and release setters floor at 0,
+  so a zero-attack compressor never reduced and a zero-release gate never
+  closed. Zero is now instant. The smoothing step is
+  `env + c · (target − env)`, so every time constant's bits change in the
+  last places (`bevy-tutti`'s compensated-scene digest, a limiter render,
+  is re-pinned). The limiter keeps its 1 ms release floor.
+- **`EnvelopeFollowerNode`:** the coefficient is the converter's `f32`
+  instead of an `f64` retention (both through `libm`), and the step is
+  `(1 − c) · env + c · level` in `f64` (still exact at a zero time). Sent
+  pieces move in the last bits. An infinite time constant now holds (it
+  was instant).
+
+Migration: no public signature changed. Replace a hand-written
+`exp(−1 / (τ · sr))` retention with `1.0 − tau.one_pole_coeff(sr)`, or
+better, step with `y += c · (x − y)`.
+### Changed — modulation curves evaluate as the editor draws them; renders change
+
+A modulation route's response curve (`Amount::curve`, `ModRoute::curve` in
+`bevy-tutti`) was evaluated by its own copy, `tutti_mod::curve_apply`, which
+disagreed with `audio-automation`'s `CurveType::interpolate`, the evaluation
+the editor draws and an automation envelope renders with:
+
+- `SCurve` was the smoothstep `3x² − 2x³`; it is now the quadratic in-out
+  (`2x²` to the half, mirrored after), as everywhere else. At a quarter the
+  shaped magnitude is 0.125, not 0.15625.
+- `Stepped`, `Bezier`, `Circular`, `Back`, `Elastic`, `Bounce` and every
+  `Quad`/`Cubic`/`Quart`/`Quint` variant were silently linear. They now shape
+  the offset by their own curve (`QuadIn` at a half is 0.25, not 0.5;
+  `Bezier(c1, c2)` at a half is `(3·c1 + 3·c2 + 1)/8`).
+- Every curve runs from 0 at no input to 1 at full input. `Back` and
+  `Elastic` dip below 0 on the way (minima about −0.10 and −0.373; neither
+  exceeds 1), so a small input pushes the other way: a bipolar offset
+  opposite its sign, a unipolar one below base, and a `DepthBy` scale
+  inverts the offset instead of shrinking it. A `Bezier` with control
+  values outside `[0, 1]` can leave `[0, 1]` either way. `Bounce` stays in
+  `[0, 1]` but is not monotone. These curves are accepted, not refused.
+
+**Renders change** for any route whose curve is not `Linear`,
+`Exponential` or `Logarithmic` (those three were already equal). That is
+intended: a curve now sounds as it is drawn. A bipolar route with any curve
+but `Linear` now takes corners at its wave's zero crossings
+(`Amount::kinks_at_zero`), as doc 014 §5.3 states, so the lane's
+piecewise-linear pieces stay on the curve there. `Stepped`'s jump at full
+magnitude and `Bounce`'s slope breaks are not corners: they join doc 014
+§5.3's curves with no error bound, and a bipolar triangle through `Stepped`
+spikes at its peak by up to the whole depth, depending on where the grid
+falls.
+
+The automation lane's segment mapping (`tutti_nodes::automation::segment_shape`)
+was already equal to `interpolate` on every curve it maps; a test now pins
+that over every `CurveType`.
+
+**Migration:** `tutti_mod::curve_apply` is removed. Call
+`curve.interpolate(0.0, 1.0, x)` (or `tutti_mod::shape`, which applies it).
+**Consumers must bump their `audio-automation` pin to `5c9c3a7`** (the
+workspace's `[workspace.dependencies]` rev), where `CurveType::Bezier` runs
+from its start value: two revs are two disjoint `CurveType`s, and a
+mismatch surfaces as `expected CurveType, found CurveType`.
 
 ### Changed — one random LFO: `LfoNode` runs `tutti-mod`'s `Wave`, and its random sequence changes
 

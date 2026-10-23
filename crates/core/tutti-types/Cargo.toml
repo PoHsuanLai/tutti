@@ -41,6 +41,10 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # The byte views behind `SeqWriter<T>` and `PackedAtomic<T>`: a `NoUninit +
 # AnyBitPattern` value to and from its bytes with no `unsafe`.
 bytemuck = "1.16"
+# `Seconds::one_pole_coeff`'s exponential is `libm`'s pure-Rust `exp`, so the
+# coefficient does not depend on the platform's C math library (the rule
+# `tutti-nodes`' filters follow).
+libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
 # defines vocabulary, not ECS surface.

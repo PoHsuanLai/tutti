@@ -376,6 +376,59 @@ impl Seconds {
         Self::frames(self.0 as f64 * sample_rate.into().get(), f64::ceil)
     }
 
+    /// The per-sample coefficient of a one-pole smoother with this time
+    /// constant at `rate`: `c = 1 − exp(−1 / (τ · rate))`, the fraction of
+    /// the remaining gap one sample closes (`y += c · (x − y)`; 1 is
+    /// instant, 0 holds).
+    ///
+    /// After `τ` seconds of a unit step the smoother reads `1 − e⁻¹`. A
+    /// decay length `τ · rate` that is not above zero (a zero, negative or
+    /// NaN time constant) is instant: 1. An infinite one holds: 0.
+    ///
+    /// Computed in `f64` and rounded once to `f32`, so a long time constant
+    /// keeps its own rate (`c` is small but representable, where an `f32`
+    /// `1 − exp(…)` would cancel to 0). `τ · rate` is a decay length, not a
+    /// frame count, so none of the `to_samples*` rounding applies.
+    #[inline]
+    pub fn one_pole_coeff(self, rate: impl Into<SampleRate>) -> f32 {
+        Self::one_pole(f64::from(self.0) * rate.into().get())
+    }
+
+    /// The coefficient of a one-pole smoother with this time constant
+    /// stepped once per `step` of audio time: `1 − exp(−step / τ)`, as
+    /// [`one_pole_coeff`](Self::one_pole_coeff) with the step in seconds
+    /// rather than one sample. For a smoother stepped once per block or per
+    /// display frame.
+    ///
+    /// A time constant that is not above zero (or NaN) is instant: 1. A
+    /// step that is not above zero (or NaN), with a positive time constant,
+    /// moves nothing: 0.
+    #[inline]
+    pub fn one_pole_coeff_over(self, step: Seconds) -> f32 {
+        if self.0 > 0.0 {
+            if step.0 > 0.0 {
+                Self::one_pole(f64::from(self.0) / f64::from(step.0))
+            } else {
+                0.0
+            }
+        } else {
+            1.0
+        }
+    }
+
+    /// `1 − exp(−1 / n)` for a decay length of `n` steps: 1 for an `n`
+    /// that is not above zero (or NaN), 0 for an infinite one. The
+    /// exponential is `libm`'s, so the coefficient is the same on every
+    /// target.
+    #[inline]
+    fn one_pole(n: f64) -> f32 {
+        if n > 0.0 {
+            (1.0 - libm::exp(-1.0 / n)) as f32
+        } else {
+            1.0
+        }
+    }
+
     /// Shared tail: apply `round`, then clamp into `usize`.
     ///
     /// Non-finite and negative inputs collapse to zero. `NaN as usize` is
@@ -2864,6 +2917,67 @@ mod tests {
         // `SR_44K1 + SR_48K` (not a rate), `SR_48K * 2.0` (a scaled rate is a
         // different *device* rate), and `SR_48K / SR_44K1` (that quotient is a
         // `SrcRatio`, and `for_rates` owns the derivation plus its guards).
+    }
+
+    /// **A one-pole smoother built from `one_pole_coeff` reaches `1 − e⁻¹`
+    /// of a unit step after `τ` seconds**, stepped per sample at `rate` and
+    /// per block through `one_pole_coeff_over`.
+    ///
+    /// Mutations (run): `exp(-n)` for `exp(-1 / n)` → fails; returning the
+    /// retention `exp(−1/n)` instead of `1 − exp(−1/n)` → fails; the
+    /// step form dividing `step / τ` instead of `τ / step` → fails.
+    #[test]
+    fn one_pole_step_response_reaches_one_minus_inverse_e_after_tau() {
+        let want = 1.0 - (-1.0f64).exp();
+        for (tau, rate) in [(0.01, 48_000.0), (0.5, 44_100.0), (2.0, 96_000.0)] {
+            let c = Seconds(tau).one_pole_coeff(SampleRate(rate));
+            let n = Seconds(tau).to_samples(SampleRate(rate)).get();
+            let mut y = 0.0f64;
+            for _ in 0..n {
+                y += f64::from(c) * (1.0 - y);
+            }
+            assert!((y - want).abs() < 1e-4, "τ {tau} at {rate}: {y}");
+        }
+        // Stepped once per 10 ms block, τ = 100 ms: ten steps.
+        let c = Seconds(0.1).one_pole_coeff_over(Seconds(0.01));
+        let mut y = 0.0f64;
+        for _ in 0..10 {
+            y += f64::from(c) * (1.0 - y);
+        }
+        assert!((y - want).abs() < 1e-5, "per block: {y}");
+    }
+
+    /// **A zero, negative or NaN time constant is instant (1); an infinite
+    /// one holds (0); a step form's empty step moves nothing.** And a long
+    /// time constant keeps a coefficient above zero.
+    ///
+    /// Mutations (run): `one_pole` without its `n > 0.0` guard → zero
+    /// gives `1 − exp(−inf)` = 1 still, but a negative τ gives
+    /// `1 − exp(+…)` < 0 and NaN gives NaN → fails; its `else` returning 0
+    /// (freeze) → fails; `one_pole_coeff_over` without its step guard →
+    /// a zero step goes through `τ / 0` = inf, a negative one through a
+    /// negative decay length (instant) → fails.
+    #[test]
+    fn one_pole_zero_time_is_instant_and_bad_input_is_defined() {
+        let sr = SampleRate::SR_48K;
+        for tau in [0.0, -0.0, -1.0, f32::NAN, f32::NEG_INFINITY] {
+            assert_eq!(Seconds(tau).one_pole_coeff(sr), 1.0, "τ {tau}");
+            assert_eq!(Seconds(tau).one_pole_coeff_over(Seconds(0.01)), 1.0);
+            assert_eq!(Seconds(tau).one_pole_coeff_over(Seconds(0.0)), 1.0);
+        }
+        assert_eq!(Seconds(f32::INFINITY).one_pole_coeff(sr), 0.0);
+        assert_eq!(Seconds(1.0).one_pole_coeff(SampleRate(f64::NAN)), 1.0);
+        for step in [0.0, -0.01, f32::NAN] {
+            assert_eq!(Seconds(0.1).one_pole_coeff_over(Seconds(step)), 0.0);
+        }
+        // 1000 s at 48 kHz: about 2.08e-8, not cancelled to 0.
+        let long = Seconds(1_000.0).one_pole_coeff(sr);
+        assert!((f64::from(long) * 48e6 - 1.0).abs() < 1e-6, "{long}");
+        // Every finite positive input lands in [0, 1].
+        for tau in [1e-9, 1e-3, 1.0, 1e6] {
+            let c = Seconds(tau).one_pole_coeff(sr);
+            assert!((0.0..=1.0).contains(&c), "τ {tau}: {c}");
+        }
     }
 
     #[test]

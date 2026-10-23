@@ -58,7 +58,7 @@ fn lfo_node_process_is_allocation_free() {
 
 #[test]
 fn lfo_random_shape_process_is_allocation_free() {
-    // RandomSmooth path has its own per-instance state machine. Fast enough
+    // RandomSmooth hashes its cycle index on its own path. Fast enough
     // to step inside the warm-up, so the node is audible there.
     gate(
         LfoNode::new(LfoShape::RandomSmooth).with_frequency(200.0_f32),

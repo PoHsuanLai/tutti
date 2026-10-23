@@ -22,8 +22,8 @@
 //!   [`BrickwallLimiterNode`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
-//! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over [`Lfo`],
-//!   [`SampleHold`] and [`Modulator`] (with [`RandomState`]).
+//! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
+//!   [`Modulator`] (an LFO's is `tutti-mod`'s [`Wave`]).
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
@@ -60,14 +60,14 @@ pub use tutti_core::{
 pub mod buffer;
 
 mod lfo;
-// The pure modulators the nodes here run (doc 014 §7: tutti-mod is a
-// compiler and holds none).
+// The `Modulator` trait the modulation node runs, and its impl for
+// `tutti-mod`'s `Wave` (the one wave function both tiers evaluate).
 mod modulator;
-// `LfoNode` is `ModulatorNode<Lfo>` — the graph node over a pure
-// `Modulator`. `LfoShape` is re-exported from `tutti-mod` through `lfo`, so
-// `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, LFO_PARAMS};
-pub use modulator::{Lfo, Modulator, RandomState, SampleHold};
+// `LfoNode` is `ModulatorNode<Wave>` — the graph node over a pure
+// `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-mod` through
+// `lfo`, so `use tutti_nodes::LfoShape` works.
+pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Wave, LFO_PARAMS};
+pub use modulator::Modulator;
 
 mod delay;
 pub use delay::{DelayLine, DelayLineNode, InterpolationMode, DELAY_PARAMS};

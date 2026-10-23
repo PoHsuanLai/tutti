@@ -343,9 +343,10 @@ fn convolver_only_addresses_wet() {
     assert!(!addresses(&node, UnitParam::Cutoff));
 }
 
-/// One second of a free-running 1 Hz sine `LfoNode` at depth 0.25, with a
-/// control lane on `param` (knob: the LFO's own cell) adding a constant
-/// `depth` of `range`, and the cell's value after the render.
+/// A second and a quarter (60 000 frames) of a free-running 1 Hz sine
+/// `LfoNode` at depth 0.25, with a control lane on `param` (knob: the LFO's
+/// own cell) adding a constant `depth` of `range`, and the cell's value
+/// after the render.
 fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let lfo = LfoNode::new(LfoShape::Sine)
@@ -388,20 +389,29 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
         },
     );
     ed.commit().expect("the lane commits");
-    let out = r.render(48_000).swap_remove(0);
+    let out = r.render(60_000).swap_remove(0);
     (out, knob.load(Ordering::Acquire))
 }
 
 /// **A lane drives an `LfoNode`'s depth and rate** ([`LFO_PARAMS`]), each
-/// around the LFO's own cell. The depth knob at 0.25
-/// plus half of a 0..1 range swings the 1 Hz sine to ±0.75; the 1 Hz rate
-/// knob plus a fifth of a 0..10 Hz range runs it at 3 Hz, three rising
-/// zero crossings in a second where 1 Hz has one. Neither cell moves.
+/// around the LFO's own cell. The depth knob at 0.25 plus half of a 0..1
+/// range swings the 1 Hz sine to ±0.75; the 1 Hz rate knob plus a fifth of a
+/// 0..10 Hz range runs it at 3 Hz. Over a second and a quarter, 3 Hz rises
+/// through zero at frames 16 000, 32 000 and 48 000, and 1 Hz (the depth
+/// render) once, at frame 48 000. The LFO's clock is exact, so each crossing
+/// is pinned to within a frame of where it belongs; a count alone would
+/// miss a clock that drifts. Neither cell moves.
 ///
 /// Mutation (run): the LFO reading its depth cell, not the driven
 /// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
 /// fails. Mutation (run): reading its rate cell (`block_driven(&io,
-/// 1)` replaced by `None`) → one crossing → fails.
+/// 1)` replaced by `None`) → one crossing → fails. Mutation (run): the
+/// free-running position accumulated in f32 (`self.position =
+/// f64::from(self.position as f32 + step as f32)`) → the 1 Hz crossing
+/// lands at 47 970 and the 3 Hz ones at 15 998, 32 006 and 48 015 → fails.
+/// An f32-rounded step (accumulated in f64) still lands every crossing on
+/// its frame here: its relative error is under 6e-8, so it takes over 10^7
+/// frames to move a crossing by one.
 ///
 /// [`LFO_PARAMS`]: tutti_nodes::LFO_PARAMS
 #[test]
@@ -410,11 +420,32 @@ fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
     let peak = out.iter().copied().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!((peak - 0.75).abs() < 1e-3, "peaks at 0.75, not {peak}");
     assert_eq!(knob, 0.25, "the lane never writes the depth cell");
+    assert_crossings(&out, 48_000, 1);
 
     let (out, knob) = render_lfo(UnitParam::Rate, ParamRange::new(0.0, 10.0), 0.2);
-    let rising = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
-    assert_eq!(rising, 3, "3 Hz: three rising crossings in a second");
+    assert_crossings(&out, 16_000, 3);
     assert_eq!(knob, 1.0, "the lane never writes the rate cell");
+}
+
+/// `out` rises through zero exactly `count` times, the `k`th (from 1)
+/// within one frame of `k * period`. A crossing's frame is the first one at
+/// or above zero.
+fn assert_crossings(out: &[f32], period: usize, count: usize) {
+    let rising: Vec<usize> = out
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+        .map(|(i, _)| i + 1)
+        .collect();
+    assert_eq!(rising.len(), count, "rising crossings at {rising:?}");
+    for (k, &frame) in rising.iter().enumerate() {
+        let want = (k + 1) * period;
+        assert!(
+            frame.abs_diff(want) <= 1,
+            "crossing {} at frame {frame}, not {want} ({rising:?})",
+            k + 1
+        );
+    }
 }
 
 /// `input` (mono) through `node` at 48 kHz in 128-frame blocks, with a

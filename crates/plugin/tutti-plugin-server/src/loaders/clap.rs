@@ -166,9 +166,9 @@ fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -
 #[cfg(feature = "clap")]
 use tutti_clap_host::{ClapActive, ClapLoaded};
 
-/// Active host instance, monomorphised by sample format at activation time.
-/// CLAP advertises f32 in metadata today, so the F32 arm is the live path; the
-/// F64 arm is wired for symmetry and future 64-bit support.
+/// Active host instance, monomorphised by sample format at activation time:
+/// `F64` only when the session asked for 64-bit and every port of the plugin
+/// advertises it (see [`ClapInstance::load`]).
 #[cfg(feature = "clap")]
 enum ClapInner {
     F32(ClapActive<f32>),
@@ -236,7 +236,20 @@ impl ClapInstance {
         })
     }
 
-    pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+    /// Load and activate a CLAP plugin.
+    ///
+    /// If `prefer_f64` is `true` and the plugin advertises 64-bit support on
+    /// every port, the instance is activated as `ClapActive<f64>`; otherwise
+    /// `f32`. The chosen format is what `metadata().features` reports as
+    /// [`Features::F64_AUDIO`], so the session's negotiated format and the
+    /// activation agree: the session sends the buffer width it negotiated, and
+    /// an instance activated in the other width would refuse every block.
+    pub fn load(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+    ) -> Result<Self> {
         #[cfg(feature = "clap")]
         {
             let resolved = tutti_plugin::server::resolve_bundle(path)?;
@@ -282,7 +295,6 @@ impl ClapInstance {
             let descriptor = clap_descriptor(info, EditorPresence::measured(has_editor));
 
             let mut features = Features::empty();
-            features.set(Features::F64_AUDIO, supports_f64);
             features.set(Features::MIDI_IN, has_note_in);
             features.set(Features::MIDI_OUT, has_note_out);
             features.set(Features::EDITOR, has_editor);
@@ -327,9 +339,10 @@ impl ClapInstance {
                 probed,
             };
 
-            // Activate into the typed inner. CLAP advertises f32 today, so the
-            // F32 arm is taken; F64 is wired for symmetry.
-            let inner = if supports_f64 {
+            // Activate in the format the session will process. 64-bit only
+            // when it was asked for: the session's wire format follows its
+            // preference (f32 by default), not the plugin's capability.
+            let inner = if prefer_f64 && supports_f64 {
                 ClapInner::F64(loaded.activate::<f64>().map_err(|(_, e)| {
                     BridgeError::LoadFailed {
                         path: path.to_path_buf(),
@@ -346,6 +359,11 @@ impl ClapInstance {
                     }
                 })?)
             };
+
+            // The format actually activated, as VST3 reports it.
+            loaded_meta
+                .features
+                .set(Features::F64_AUDIO, matches!(inner, ClapInner::F64(_)));
 
             // Latency and tail are queryable after activation.
             loaded_meta.latency_samples = Samples(match &inner {
@@ -373,7 +391,7 @@ impl ClapInstance {
 
         #[cfg(not(feature = "clap"))]
         {
-            let _ = (path, sample_rate, block_size);
+            let _ = (path, sample_rate, block_size, prefer_f64);
             Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,
@@ -926,7 +944,8 @@ mod tests {
     fn test_clap_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
-        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance =
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
         let meta = instance.descriptor();
         assert!(!meta.name.is_empty(), "Plugin name should not be empty");
         assert!(!meta.id.is_empty(), "Plugin id should not be empty");
@@ -937,19 +956,19 @@ mod tests {
         let outputs = loaded.total_outputs();
         assert!(inputs > 0, "Expected audio inputs > 0, got {inputs}");
         assert!(outputs > 0, "Expected audio outputs > 0, got {outputs}");
-        // NOTE: `supports_f64` is intentionally NOT asserted. f64 processing is
-        // optional in CLAP (`CLAP_AUDIO_PORT_SUPPORTS_64BITS`) and rare in
-        // practice — TAL-NoiseMaker reports f32-only. The flag must simply
-        // reflect what the plugin advertises; both values are valid. Reading it
-        // here confirms the metadata is populated without crashing.
-        let _ = instance.loaded().features.contains(Features::F64_AUDIO);
+        // `F64_AUDIO` is the format activated, and this load asked for f32.
+        // The session suite covers the 64-bit cases
+        // (`an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64` and its
+        // neighbours).
+        assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
     }
 
     #[test]
     fn test_clap_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
-        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance =
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(
@@ -985,7 +1004,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         assert!(
             instance.get_presets().is_empty(),
@@ -1018,7 +1037,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         // Asserted on the guard, not through `load_preset`: a coerced id
         // yields a nonexistent path the plugin refuses anyway, so the two
@@ -1058,7 +1077,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -1089,7 +1108,8 @@ mod tests {
     fn test_clap_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
-        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance =
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -1171,7 +1191,7 @@ mod tests {
     fn a_thread_pool_plugin_has_its_requests_served_here() {
         let _lock = crate::test_utils::plugin_load_lock();
         set_thread_pool_tasks(8);
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load CLAP plugin");
         process_blocks(&mut instance, 4);
         set_thread_pool_tasks(0);
@@ -1206,7 +1226,7 @@ mod tests {
     fn a_plugin_without_a_thread_pool_builds_no_pool() {
         let _lock = crate::test_utils::plugin_load_lock();
         set_thread_pool_tasks(0);
-        let _instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let _instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load CLAP plugin");
         assert!(THREAD_POOL.get().is_none());
     }
@@ -1216,7 +1236,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
         let num_samples = 512;
         let input_data = vec![vec![0.0f32; num_samples]; 2];
@@ -1243,9 +1263,6 @@ mod tests {
         );
     }
 
-    // Note: f64 processing test removed — TAL-NoiseMaker's CLAP plugin crashes
-    // when data32 is null (does not actually support f64-only processing).
-
     /// The host feeds a NoteOn and collects audio back.
     ///
     /// The reference plugin is an effect, not a synth, so what this pins is the
@@ -1258,7 +1275,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
         crate::test_utils::set_clap_probe_render_mode(
             crate::test_utils::CLAP_PROBE_RENDER_TAG_ONLY,
         );
@@ -1359,15 +1376,14 @@ mod tests {
     // state round-trip, voice info. Pointing it at the reference plugin keeps
     // that coverage and lets it run anywhere.
     //
-    // A genuine f64 suite still needs a plugin that advertises 64-bit ports;
-    // the reference plugin records whether `data64` was the live table
-    // (`ProcessCapture::out0_data64_present`) but does not advertise support,
-    // so that coverage does not exist here and is not claimed.
+    // The f64 suite is the session's (`an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64`
+    // and its neighbours): the reference plugin advertises 64-bit ports behind
+    // `tutti_test_plugin_set_ports_64bit`.
 
     #[test]
     fn test_surge_load() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512);
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load Surge XT: {:?}",
@@ -1384,7 +1400,7 @@ mod tests {
     #[test]
     fn test_surge_port_flags() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let port_info = instance.clap_loaded().audio_port_info(0, false);
@@ -1392,14 +1408,12 @@ mod tests {
 
         let port = port_info.unwrap();
         assert!(port.layout.count() >= 2, "Expected stereo output");
-        // Note: most CLAP synths (including Surge XT) do not advertise
-        // CLAP_AUDIO_PORT_SUPPORTS_64BITS. f64 processing is rare in practice.
     }
 
     #[test]
     fn test_surge_process_f32_silence() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let num_samples = 512;
@@ -1429,7 +1443,7 @@ mod tests {
     #[test]
     fn test_surge_process_f32_with_note() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let num_samples = 512;
@@ -1478,7 +1492,7 @@ mod tests {
     #[test]
     fn test_surge_set_parameter_flush() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let params = instance.get_parameter_list();
@@ -1493,8 +1507,8 @@ mod tests {
     #[test]
     fn test_clap_lifecycle_active_after_load() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
         // `load()` activates the plugin: `inner` is a `ClapActive` arm, so the
         // "active after load" guarantee is now encoded in the type itself.
         assert!(
@@ -1506,8 +1520,8 @@ mod tests {
     #[test]
     fn test_clap_lifecycle_processing_starts_on_process() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // A freshly-activated instance has not started processing yet — that
         // happens lazily on the first `process` call (the type guarantees it is
@@ -1549,8 +1563,8 @@ mod tests {
     #[test]
     fn test_clap_poll_initially_clear() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // All poll methods should return false on a fresh instance
         assert!(!instance.clap_loaded().poll_restart_requested());
@@ -1568,8 +1582,8 @@ mod tests {
     #[test]
     fn test_clap_poll_restart() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let state = instance.clap_loaded().host_state();
         state
@@ -1605,8 +1619,8 @@ mod tests {
     #[test]
     fn test_clap_poll_process_callback() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let state = instance.clap_loaded().host_state();
         state
@@ -1629,8 +1643,8 @@ mod tests {
     #[test]
     fn test_clap_poll_latency_tail() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let state = instance.clap_loaded().host_state();
         state
@@ -1649,8 +1663,8 @@ mod tests {
     #[test]
     fn test_clap_poll_ports_state() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let state = instance.clap_loaded().host_state();
         state.audio_ports.changed.store(true, Ordering::Release);
@@ -1671,8 +1685,8 @@ mod tests {
     #[test]
     fn test_clap_param_set_get_roundtrip() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -1698,8 +1712,8 @@ mod tests {
     #[test]
     fn test_clap_state_save_nonempty() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let state = instance.get_state().expect("save_state should succeed");
         assert!(!state.is_empty(), "Saved state should not be empty");
@@ -1708,8 +1722,8 @@ mod tests {
     #[test]
     fn test_clap_state_save_load_roundtrip() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -1740,8 +1754,8 @@ mod tests {
     #[test]
     fn test_clap_audio_port_enumeration() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let output_count = instance.clap_loaded().audio_port_count(false);
         assert!(
@@ -1762,8 +1776,8 @@ mod tests {
     #[test]
     fn test_clap_note_port_enumeration() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let input_count = instance.clap_loaded().note_port_count(true);
         assert!(
@@ -1785,8 +1799,8 @@ mod tests {
     #[test]
     fn test_clap_latency_and_tail() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Just verify no crash — values depend on plugin
         let _latency = instance.clap_loaded().get_latency();
@@ -1798,8 +1812,8 @@ mod tests {
     #[test]
     fn test_clap_process_with_param_automation() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty());
@@ -1835,8 +1849,8 @@ mod tests {
     #[test]
     fn test_clap_process_with_note_expression() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let note_on = [tutti_plugin::server::MidiEvent::note_on(
             MidiGroup::FIRST,
@@ -1881,8 +1895,8 @@ mod tests {
     #[test]
     fn test_clap_process_with_transport() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let transport = TransportInfo::new()
             .with_playing(true)
@@ -1917,7 +1931,7 @@ mod tests {
     #[test]
     fn test_surge_state_save_load() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let params = instance.get_parameter_list();
@@ -1945,7 +1959,7 @@ mod tests {
     #[test]
     fn test_surge_audio_ports() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let output_count = instance.clap_loaded().audio_port_count(false);
@@ -1965,7 +1979,7 @@ mod tests {
     #[test]
     fn test_surge_latency_tail() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         let _latency = instance.clap_loaded().get_latency();
@@ -1987,8 +2001,8 @@ mod tests {
     #[test]
     fn test_clap_has_gui() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
         assert_eq!(
             instance.descriptor().editor,
             EditorPresence::Absent,
@@ -2002,8 +2016,8 @@ mod tests {
     #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_clap_gui
     fn test_clap_gui_open_close() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let parent = create_nsview();
         assert!(!parent.is_null(), "Failed to create NSView");
@@ -2033,7 +2047,7 @@ mod tests {
     #[ignore] // Requires main-thread Cocoa environment; run with: cargo test -- --ignored test_surge_gui
     fn test_surge_gui_open_close() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         assert!(
@@ -2069,8 +2083,8 @@ mod tests {
     #[test]
     fn test_clap_render_mode() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Set offline mode — returns true if plugin supports render extension
         let _ = instance.loaded_mut().set_render_mode(true);
@@ -2082,8 +2096,8 @@ mod tests {
     #[test]
     fn test_clap_has_hard_realtime_requirement() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Most synths don't have hard RT requirements
         let _has_rt = instance.clap_loaded().has_hard_realtime_requirement();
@@ -2094,8 +2108,8 @@ mod tests {
     #[test]
     fn test_clap_voice_info() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // TAL-NoiseMaker may or may not support voice info
         if let Some(info) = instance.clap_loaded().get_voice_info() {
@@ -2107,7 +2121,7 @@ mod tests {
     #[test]
     fn test_surge_voice_info() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
         // Surge XT likely supports voice info
@@ -2125,8 +2139,8 @@ mod tests {
     #[test]
     fn test_clap_note_names() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         let count = instance.clap_loaded().note_name_count();
         // Iterate whatever's there — may be 0 for synths without custom note names
@@ -2146,8 +2160,8 @@ mod tests {
     #[test]
     fn test_clap_sample_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Change sample rate — this deactivates, updates, and requires reactivation
         instance.set_sample_rate(48000.0);
@@ -2179,8 +2193,8 @@ mod tests {
     #[test]
     fn test_clap_sample_rate_cycle_multiple() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Cycle through several sample rates
         for &rate in &[48000.0, 96000.0, 44100.0, 22050.0] {
@@ -2215,8 +2229,8 @@ mod tests {
     #[test]
     fn test_clap_state_context_support() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Just query — may or may not be supported
         let _supports = instance.clap_loaded().supports_state_context();
@@ -2225,8 +2239,8 @@ mod tests {
     #[test]
     fn test_clap_state_context_save_load() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // Save with ForProject context (falls back to regular save if unsupported)
         let saved = instance
@@ -2245,8 +2259,8 @@ mod tests {
     #[test]
     fn test_clap_state_context_for_duplicate() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
 
         // ForDuplicate context — used when duplicating a plugin instance
         let saved = instance

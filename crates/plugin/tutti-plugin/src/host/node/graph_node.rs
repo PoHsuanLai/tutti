@@ -20,7 +20,7 @@ use super::batcher::Chunks;
 use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
-use super::transport_source::{self, SteadyTime};
+use super::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use super::MidiIntake;
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
@@ -139,6 +139,8 @@ impl Node for PluginClient<Bound> {
             pending,
             out_events,
             steady,
+            project,
+            host_clock,
             segments,
             params,
             intake,
@@ -156,6 +158,11 @@ impl Node for PluginClient<Bound> {
             SortedEvents::EMPTY
         };
         let indexed = c.controls.indexed();
+        // One host-clock read per block; each chunk is placed on it by its
+        // frame. None offline, and none for a plugin told no transport.
+        let block_ns = host_clock
+            .filter(|_| c.loaded.features.contains(Features::TRANSPORT))
+            .map(HostClock::now_ns);
         let mut host = PluginChunks {
             cx: *cx,
             events,
@@ -163,6 +170,8 @@ impl Node for PluginClient<Bound> {
             meter,
             features: c.loaded.features,
             steady: *steady,
+            project,
+            block_ns,
             pending,
             out_events,
             indexed,
@@ -240,6 +249,10 @@ struct PluginChunks<'a> {
     features: Features,
     /// The steady-time counter at this block's first frame.
     steady: SteadyTime,
+    /// The node's project time, advanced at each chunk's read.
+    project: &'a mut ProjectTime,
+    /// The host clock at this block's first frame; `None` offline.
+    block_ns: Option<i64>,
     pending: &'a mut BlockPayload,
     /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
     out_events: &'a mut MidiEventVec,
@@ -261,7 +274,14 @@ impl Chunks for PluginChunks<'_> {
         self.params.begin();
         let transport = match Offset::new(at, Samples(self.frames)) {
             Some(offset) if self.features.contains(Features::TRANSPORT) => {
-                transport_source::from_cx(&self.cx, offset, self.steady.at(at), self.meter)
+                transport_source::from_cx(
+                    &self.cx,
+                    offset,
+                    self.steady.at(at),
+                    self.project,
+                    self.block_ns,
+                    self.meter,
+                )
             }
             _ => TransportInfo::default(),
         };
@@ -499,6 +519,7 @@ mod loss_tests {
         let meter = MeterMap::default();
         let mut out_events = MidiEventVec::new();
         let mut segments = SegmentPoints::default();
+        let mut project = ProjectTime::default();
         f(&mut PluginChunks {
             cx: Cx {
                 env: &env,
@@ -510,6 +531,8 @@ mod loss_tests {
             meter: &meter,
             features: Features::empty(),
             steady: SteadyTime::default(),
+            project: &mut project,
+            block_ns: None,
             pending: &mut pending,
             out_events: &mut out_events,
             indexed: false,

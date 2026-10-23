@@ -69,7 +69,9 @@
 //!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
 //!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
 //!    waits, which on a render worker would turn every chunk the subprocess
-//!    had not finished yet into silence.
+//!    had not finished yet into silence — and drop its host clock, so the
+//!    plugin is told no `systemTime`: no clock relates to a render that runs
+//!    at its own speed.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the fresh
 //! instance (if one started) is dropped with it, which kills and reaps its
@@ -389,6 +391,12 @@ impl Capture {
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
             fork.state.io.set_offline_wait(Arc::clone(&watch));
+            // Not pinned end to end here: the out-of-process reference
+            // plugin is CLAP, which has no system-time field. The in-process
+            // VST2 fork drops its clock the same way, and
+            // `vst2_in_process_fork`'s `a_fork_reads_its_transport_from_the_render`
+            // pins that.
+            fork.state.host_clock = None;
         }
         fork.fork_watch = Some(watch);
         Ok(fork)

@@ -16,7 +16,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use tutti_vst3_host::{Vst3Active, WindowHandle};
+use tutti_vst3_host::{ContentScale, Vst3Active, WindowHandle};
 
 const PLUGIN_PATH: &str =
     "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3/Contents/MacOS/TAL-NoiseMaker";
@@ -128,7 +128,8 @@ impl ApplicationHandler for App {
 
                         println!("Opening plugin editor...");
                         let handle = unsafe { WindowHandle::from_raw(parent) };
-                        match plugin.open_editor(handle) {
+                        let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
+                        match plugin.open_editor(handle, scale) {
                             Ok(size) => {
                                 println!("Editor opened: {}x{}", size.width, size.height);
                                 // Resize window to fit editor

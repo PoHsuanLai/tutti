@@ -130,6 +130,7 @@ mod tests {
             expr_ints,
             transport: TransportInfo {
                 sample_rate: 48_000.0,
+                system_time_ns: Some(0x0102_0304_0506_0708),
                 ..Default::default()
             },
         }
@@ -138,8 +139,11 @@ mod tests {
     /// `golden_block()` encoded by origin/main at `f07984d6`, the code before
     /// `smallvec` was removed (MIDI, parameter points, note expression and
     /// the harmony containers were `SmallVec`s then). Recorded by running
-    /// the same fixture there.
-    const GOLDEN_BLOCK: [u8; 427] = [
+    /// the same fixture there, then nine bytes longer: the transport's last
+    /// field, `system_time_ns`, is a later addition to the wire, and its
+    /// `Some(0x0102_0304_0506_0708)` encodes as the trailing tag `0x01` and
+    /// the eight little-endian bytes of the `i64`.
+    const GOLDEN_BLOCK: [u8; 436] = [
         0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x3c,
         0x90, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f,
@@ -168,7 +172,8 @@ mod tests {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x70, 0xe7, 0x40,
+        0x00, 0x00, 0x00, 0x00, 0x70, 0xe7, 0x40, 0x01, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02,
+        0x01,
     ];
 
     /// **A fully populated block encodes to the bytes the code before this
@@ -180,7 +185,9 @@ mod tests {
     /// back the fields the change touched.
     ///
     /// Mutation (run): `chords` and `scales` swapped in `ProcessAudioData`'s
-    /// declaration → the encoding differs → fails.
+    /// declaration → the encoding differs → fails. Mutation (run):
+    /// `#[serde(skip)]` on `TransportInfo::system_time_ns` → the nine
+    /// trailing bytes are missing → fails.
     #[test]
     fn a_block_encodes_as_before_smallvec_was_removed() {
         assert_eq!(bincode::serialize(&golden_block()).unwrap(), GOLDEN_BLOCK);
@@ -200,5 +207,26 @@ mod tests {
         assert_eq!(back.scales.changes[0].text, "D major");
         assert_eq!(back.expr_texts.changes[0].text, "ah");
         assert_eq!(back.expr_ints.changes[0].value, -1234);
+        assert_eq!(back.transport.system_time_ns, Some(0x0102_0304_0506_0708));
+    }
+
+    /// **The transport's project-time position and host clock cross the
+    /// wire**: the plugin server fills VST3 `projectTimeSamples` /
+    /// `systemTime` and VST2 `samplePos` / `nanoSeconds` from what arrives.
+    ///
+    /// Mutation (run): `#[serde(skip)]` on `TransportInfo::system_time_ns`
+    /// → it arrives `None` → fails.
+    #[test]
+    fn the_transport_clocks_cross_the_wire() {
+        let block = ProcessAudioData {
+            transport: TransportInfo::new()
+                .with_position_samples(96_007)
+                .with_system_time_ns(5_001_000_000),
+            ..Default::default()
+        };
+        let back: ProcessAudioData =
+            bincode::deserialize(&bincode::serialize(&block).unwrap()).unwrap();
+        assert_eq!(back.transport.position.samples, Some(96_007));
+        assert_eq!(back.transport.system_time_ns, Some(5_001_000_000));
     }
 }

@@ -181,6 +181,10 @@ impl Vst2Fork {
                 found: fork.metadata.id.clone(),
             });
         }
+        let offline = match mode {
+            ForkMode::Offline => true,
+            ForkMode::Live => live_offline,
+        };
         {
             let mut instance = fork.inner.lock();
             if let Some(program) = program {
@@ -194,15 +198,11 @@ impl Vst2Fork {
             instance
                 .set_state(&state)
                 .map_err(|e| PluginForkError::LoadState(StateError::Rejected(e.to_string())))?;
-            let offline = match mode {
-                ForkMode::Offline => true,
-                ForkMode::Live => live_offline,
-            };
             instance.set_offline_render(offline);
         }
 
         fork.params.seed(&delivered);
-        fork.transport = self.transport.forked();
+        fork.transport = self.transport.forked(offline);
         fork.rate_delivery = RateDelivery::InPrepare;
         Ok(fork)
     }

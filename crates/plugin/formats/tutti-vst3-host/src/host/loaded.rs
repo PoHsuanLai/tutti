@@ -59,7 +59,7 @@ use crate::helpers::cid_to_string;
 use crate::helpers::utf16_to_string;
 use crate::types::unit_ids;
 use crate::types::{
-    EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
+    ContentScale, EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
     Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
     WindowHandle,
 };
@@ -1541,6 +1541,12 @@ impl Vst3Loaded {
     /// pixel size. Only one editor may be open at a time per instance —
     /// opening a second replaces the first.
     ///
+    /// `scale` is `parent`'s backing-store scale. On a physical-pixel window
+    /// system (Win32, X11) it is sent through
+    /// `IPlugViewContentScaleSupport::setContentScaleFactor` before
+    /// `attached`, for a view that implements it; on macOS the view reads it
+    /// from its own `NSView`, and it is not sent (see [`ContentScale`]).
+    ///
     /// # Errors
     ///
     /// Returns [`Vst3Error::EditorError`](crate::Vst3Error::EditorError) if
@@ -1553,7 +1559,7 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         tutti_plugin_types::assert_main_thread();
         let ctrl = self
             .interfaces
@@ -1607,14 +1613,9 @@ impl Vst3Loaded {
         // backing-store scale factor *before* `attached`, so scale-aware plugins
         // lay their UI out at the right resolution from the first frame. Plugins
         // that don't implement the interface (cast returns None) simply no-op.
-        //
-        // TODO: thread the real backing-scale from the frontend WindowHandle —
-        // `WindowHandle` is a bare `*mut c_void` today and carries no DPI, so
-        // this passes 1.0 (the neutral default: correct on standard-DPI
-        // displays, a safe no-op elsewhere). The *call* being wired is what
-        // matters, so a
-        // real factor becomes a one-line change once the frontend supplies it.
-        set_content_scale(&view, host_backing_scale(&parent));
+        if let Some(factor) = content_scale_for(platform_type, scale) {
+            set_content_scale(&view, factor);
+        }
 
         let result = unsafe { view.attached(parent.as_ptr(), platform_type) };
         if result != kResultOk {
@@ -2262,17 +2263,33 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The backing-store scale factor to advertise to the plugin view.
+/// The factor `setContentScaleFactor` sends for a view embedded as
+/// `platform_type` in a window of backing scale `scale`, or `None` where it
+/// must not be sent.
 ///
-/// The host `WindowHandle` is a raw pointer with no attached DPI/scale
-/// information, so there is nothing to read from it yet — this returns the
-/// neutral `1.0`. When the frontend grows a way to carry the display's backing scale
-/// (e.g. `NSWindow.backingScaleFactor` / Win32 `GetDpiForWindow`), source it
-/// here and the wired `setContentScaleFactor` call starts delivering real
-/// values with no further plumbing.
-fn host_backing_scale(_parent: &WindowHandle) -> f32 {
-    // TODO: thread real backing-scale from frontend WindowHandle.
-    1.0
+/// The interface exists "on systems where plug-ins cannot get this
+/// information directly like Microsoft Windows"
+/// (`iplugviewcontentscalesupport.h`). An `NSView` (or `UIView`) already
+/// carries its backing scale in logical-pixel geometry, so a plugin told the
+/// factor as well applies it twice and opens at 2× on a Retina display: the
+/// CLAP host withholds `set_scale` on cocoa for the same reason. VST3 takes a
+/// `float`; a display's scale is far inside its precision.
+fn content_scale_for(
+    platform_type: vst3::Steinberg::FIDString,
+    scale: ContentScale,
+) -> Option<f32> {
+    use vst3::Steinberg::{kPlatformTypeNSView, kPlatformTypeUIView};
+    if platform_type.is_null() {
+        return None;
+    }
+    // SAFETY: a non-null `FIDString` is a NUL-terminated C string: the SDK's
+    // `kPlatformType*` constants are `'static` literals.
+    let name = unsafe { std::ffi::CStr::from_ptr(platform_type) };
+    let logical = [kPlatformTypeNSView, kPlatformTypeUIView]
+        .iter()
+        // SAFETY: the SDK's own NUL-terminated `'static` literals.
+        .any(|&t| name == unsafe { std::ffi::CStr::from_ptr(t) });
+    (!logical).then_some(scale.get() as f32)
 }
 
 /// Does this `isPlatformTypeSupported` result mean "no"?
@@ -3080,5 +3097,34 @@ mod unit_group_tests {
         let units = [unit(1, "")];
         let groups = unit_names(&units);
         assert_eq!(groups.get(&1), None);
+    }
+}
+
+#[cfg(test)]
+mod content_scale_tests {
+    use super::{content_scale_for, ContentScale};
+    use vst3::Steinberg::{
+        kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID,
+    };
+
+    /// **The window's scale reaches a view on a physical-pixel window system,
+    /// and never one on a logical-pixel system.** An HWND or X11 view is told
+    /// 2.0; an `NSView` or `UIView`, which already lays out in logical pixels,
+    /// is told nothing (it would apply the factor twice).
+    ///
+    /// Mutation: return `Some(1.0)` → the HWND view reads 1.0 → fails.
+    /// Mutation: drop the logical-pixel check → the `NSView` is told 2.0 →
+    /// fails.
+    #[test]
+    fn the_scale_is_sent_only_on_a_physical_pixel_window_system() {
+        let two = ContentScale::new(2.0).expect("a scale");
+        assert_eq!(content_scale_for(kPlatformTypeHWND, two), Some(2.0));
+        assert_eq!(
+            content_scale_for(kPlatformTypeX11EmbedWindowID, two),
+            Some(2.0)
+        );
+        assert_eq!(content_scale_for(kPlatformTypeNSView, two), None);
+        assert_eq!(content_scale_for(kPlatformTypeUIView, two), None);
+        assert_eq!(content_scale_for(std::ptr::null(), two), None);
     }
 }

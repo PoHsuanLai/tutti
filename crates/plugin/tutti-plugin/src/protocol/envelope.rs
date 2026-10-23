@@ -13,6 +13,7 @@ use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
+use super::ContentScale;
 use super::Normalized;
 use super::ParamAddress;
 use super::Samples;
@@ -126,6 +127,9 @@ pub enum HostMessage {
         /// Native parent window handle, cast to `u64` for the wire — an `NSView*`
         /// on macOS, an `HWND` on Windows, an X11 window id on Linux.
         parent_handle: u64,
+        /// The parent window's backing-store scale, forwarded where the
+        /// format takes one.
+        scale: ContentScale,
     },
     /// Close the plugin's editor window.
     CloseEditor,

@@ -30,7 +30,7 @@
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
-use tutti_vst3_host::{EditorSize, Vst3Active, WindowHandle};
+use tutti_vst3_host::{ContentScale, EditorSize, Vst3Active, WindowHandle};
 
 /// Compile-time default, baked in by `build.rs`.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
@@ -269,7 +269,7 @@ fn editor_open_close_pairs_attach_and_remove() {
 
     // Three full cycles: a host that forgets `removed` shows up on cycle two.
     for cycle in 0..3 {
-        match inst.open_editor(handle) {
+        match inst.open_editor(handle, ContentScale::IDENTITY) {
             Ok(size) => {
                 assert!(
                     size.width > 0 && size.height > 0,
@@ -324,7 +324,7 @@ fn editor_resize_respects_capabilities() {
         return;
     };
 
-    let Ok(initial) = inst.open_editor(handle) else {
+    let Ok(initial) = inst.open_editor(handle, ContentScale::IDENTITY) else {
         eprintln!("open_editor failed; skipping");
         return;
     };
@@ -427,7 +427,7 @@ fn editorless_plugin_is_refused_cleanly() {
     };
 
     let err = inst
-        .open_editor(handle)
+        .open_editor(handle, ContentScale::IDENTITY)
         .expect_err("audio-probe has no editor; open_editor must fail");
     eprintln!("editorless plugin refused with: {err:?}");
 
@@ -460,7 +460,7 @@ fn supported_platform_type_still_opens() {
     };
 
     let size = inst
-        .open_editor(handle)
+        .open_editor(handle, ContentScale::IDENTITY)
         .expect("host-checker supports this platform type; the check must not reject it");
     assert!(
         size.width > 0 && size.height > 0,
@@ -501,7 +501,7 @@ fn open_editor_run_loop_is_pumped() {
     // Nothing should be dispatched before an editor exists.
     let before_open = inst.run_loop_activity();
 
-    if let Err(e) = inst.open_editor(handle) {
+    if let Err(e) = inst.open_editor(handle, ContentScale::IDENTITY) {
         eprintln!("open_editor failed ({e:?}); skipping");
         return;
     }
@@ -628,7 +628,7 @@ fn has_editor_agrees_with_opening_one() {
         };
 
         let claims = inst.has_editor();
-        let opened = inst.open_editor(handle).is_ok();
+        let opened = inst.open_editor(handle, ContentScale::IDENTITY).is_ok();
         if opened {
             inst.close_editor();
             with_editor += 1;
@@ -687,7 +687,7 @@ fn a_closed_editor_reports_no_resize_request() {
         "an editor that was never opened reported a pending resize"
     );
 
-    inst.open_editor(handle)
+    inst.open_editor(handle, ContentScale::IDENTITY)
         .expect("host-checker opens an editor");
     // Drain whatever the plugin queued during open, so the post-close assertion
     // is about the close and not about start-up traffic.
@@ -748,7 +748,7 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     );
     inst.set_editor_focus(true); // must not panic
 
-    let Ok(size) = inst.open_editor(handle) else {
+    let Ok(size) = inst.open_editor(handle, ContentScale::IDENTITY) else {
         eprintln!("open_editor failed; skipping");
         return;
     };

@@ -58,10 +58,8 @@ pub mod process_context_flags {
 ///
 /// Field mapping:
 /// - `position.samples` → `projectTimeSamples` (always). VST3 has no validity
-///   bit for this field, so when the host reports `None` there is nothing
-///   honest to send and it is left `0`. TODO: source a real project-time sample
-///   clock from the transport — until then a plugin doing sample-accurate math
-///   off `projectTimeSamples` sees the project frozen at sample 0. See
+///   bit for this field, so a snapshot without one (`None`) sends `0`; the
+///   engine's plugin node reports one whenever the tempo is usable. See
 ///   `TransportPosition::samples`.
 /// - `position.continuous_samples` → `continousTimeSamples` (the monotonic
 ///   clock that does not reset on loop; falls back to `position.samples` when
@@ -69,6 +67,9 @@ pub mod process_context_flags {
 /// - `position.quarters` → `projectTimeMusic`
 /// - `bar.position_quarters` → `barPositionMusic`
 /// - `loop_region.{start,end}_quarters` → `cycleStartMusic`/`cycleEndMusic`
+/// - `system_time_ns` → `systemTime`, under `kSystemTimeValid`, when present
+/// - [`TransportInfo::samples_to_nearest_clock`] → `samplesToNextClock`,
+///   under `kClockValid`, when derivable
 /// - `sample_rate` → `sampleRate` (always)
 pub fn to_process_context(
     t: &TransportInfo,
@@ -77,6 +78,9 @@ pub fn to_process_context(
     use process_context_flags as need;
 
     let wants = |flag: u32| requirements & flag != 0;
+    // The MIDI clock grid under the playhead, at the snapshot's own rate: a
+    // guessed rate (the 44.1 kHz fallback below) is not a fact to flag.
+    let to_clock = t.samples_to_nearest_clock();
 
     // `StatesAndFlags_::*` is `u32` on unix, `c_int` (i32) on Windows — the casts
     // below are no-ops on one target and sign-changes on the other. Cleanest is
@@ -149,14 +153,17 @@ pub fn to_process_context(
         if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
             state |= StatesAndFlags_::kContTimeValid as u32;
         }
-        // Deliberately NOT set: `kSystemTimeValid` and `kClockValid`. This host
-        // has no source for `systemTime` (a host-clock reading in nanoseconds)
-        // or `samplesToNextClock` (distance to the next MIDI 24-ppq clock), so
-        // both fields are left zeroed by the `mem::zeroed` above and left
-        // unflagged. Writing a literal 0 *and* claiming validity would tell a
-        // plugin the transport is pinned at time zero, which is worse than
-        // saying nothing. Same for `kSmpteValid` / `kChordValid`, whose fields
-        // have no producer either.
+        // The host clock and the MIDI clock: flagged only when the snapshot
+        // has them (an offline render has no host clock; an unusable tempo
+        // or rate leaves no clock grid), on the same condition that fills
+        // the field below. `kSmpteValid` / `kChordValid` stay clear: their
+        // fields have no producer.
+        if wants(need::NEED_SYSTEM_TIME) && t.system_time_ns.is_some() {
+            state |= StatesAndFlags_::kSystemTimeValid as u32;
+        }
+        if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) && to_clock.is_some() {
+            state |= StatesAndFlags_::kClockValid as u32;
+        }
         state
     };
 
@@ -169,10 +176,8 @@ pub fn to_process_context(
         44100.0
     };
     // VST3 carries no `kProjectTimeSamplesValid` bit — the field is always read
-    // as fact — so an absent project-time clock can only degrade to 0. TODO
-    // (see the field doc on `TransportPosition::samples`): give the transport a
-    // real project-time sample clock; until then plugins keying sample-accurate
-    // math off this see sample 0 forever.
+    // as fact — so a snapshot without a project-time position can only send
+    // 0 (see `TransportPosition::samples`).
     ctx.projectTimeSamples = t.position.samples.unwrap_or(0);
 
     if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
@@ -186,12 +191,11 @@ pub fn to_process_context(
             t.position.samples.unwrap_or(0)
         };
     }
-    // `systemTime` is intentionally not written: there is no host-clock source
-    // in `TransportInfo`, and `kSystemTimeValid` is correspondingly left clear
-    // (see the state block above). It stays 0 from `mem::zeroed`, which a
-    // spec-correct plugin ignores.
-    // TODO: plumb a monotonic host clock through `TransportInfo` (a
-    // tutti-plugin-types change), then fill the field and set the bit here.
+    if wants(need::NEED_SYSTEM_TIME) {
+        if let Some(ns) = t.system_time_ns {
+            ctx.systemTime = ns;
+        }
+    }
     if wants(need::NEED_PROJECT_TIME_MUSIC) {
         ctx.projectTimeMusic = t.position.quarters;
     }
@@ -218,11 +222,11 @@ pub fn to_process_context(
         ctx.timeSigNumerator = t.timing.signature.beats_per_bar().into();
         ctx.timeSigDenominator = t.timing.signature.note_value().into();
     }
-    // `samplesToNextClock` is likewise not written: no MIDI-clock grid is
-    // tracked here, so `kClockValid` stays clear and the field stays 0.
-    // TODO: derive it from tempo + sample rate + project position (24 ppq) and
-    // set `kClockValid` alongside it.
-    //
+    if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) {
+        if let Some(frames) = to_clock {
+            ctx.samplesToNextClock = frames;
+        }
+    }
     // `smpteOffsetSubframes` / `frameRate` (kNeedFrameRate) and the chord field
     // (kNeedChord) are not sourced from TransportInfo yet; left zeroed with
     // `kSmpteValid` / `kChordValid` clear. When a producer exists they gate on
@@ -261,6 +265,7 @@ mod tests {
             .with_time_signature(TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH))
             .with_playing(true)
             .with_recording(true)
+            .with_system_time_ns(9_000_000_000)
     }
 
     /// `u32::MAX` (the "plugin didn't implement IProcessContextRequirements"
@@ -350,13 +355,13 @@ mod tests {
             "continousTimeSamples is filled, so kContTimeValid must be set"
         );
 
-        // Fields with no producer are neither written nor flagged. Writing a
-        // literal 0 while leaving the bit clear was dead code; claiming
-        // validity for it would be a lie.
-        assert_eq!(ctx.systemTime, 0);
-        assert_eq!(s & StatesAndFlags_::kSystemTimeValid as u32, 0);
+        // The host clock, and the MIDI clock: 4.0 quarters is on a clock.
+        assert_eq!(ctx.systemTime, 9_000_000_000);
+        assert_ne!(s & StatesAndFlags_::kSystemTimeValid as u32, 0);
         assert_eq!(ctx.samplesToNextClock, 0);
-        assert_eq!(s & StatesAndFlags_::kClockValid as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kClockValid as u32, 0);
+
+        // Fields with no producer are neither written nor flagged.
         assert_eq!(s & StatesAndFlags_::kSmpteValid as u32, 0);
         assert_eq!(s & StatesAndFlags_::kChordValid as u32, 0);
     }
@@ -410,6 +415,12 @@ mod tests {
             // table, and its absence is why `kCycleValid` could be set from
             // `cycle_active` under the transport gate for so long: no case
             // here paired the bit with the field, so nothing contradicted it.
+            (
+                "systemTime",
+                need::NEED_SYSTEM_TIME,
+                StatesAndFlags_::kSystemTimeValid as u32,
+                |c| c.systemTime != 0,
+            ),
             (
                 "cycleStartMusic",
                 need::NEED_CYCLE_MUSIC,
@@ -583,5 +594,34 @@ mod tests {
         // Everything gated is gone.
         assert_eq!(ctx.tempo, 0.0);
         assert_eq!(ctx.state, 0);
+    }
+
+    /// **`samplesToNextClock` is the signed distance to the nearest 24-ppq
+    /// MIDI clock, under `kClockValid`**, and a snapshot with no host clock
+    /// or no usable tempo claims neither field. 128 BPM at 48 kHz: a quarter
+    /// is 22 500 frames, a clock 937.5; a playhead 0.2 clock past one is
+    /// 187.5 frames after it, sent as -188 (rounded half away from zero).
+    ///
+    /// Mutation: `kClockValid` set from the requirement alone → the
+    /// zero-tempo case claims a clock → fails. Mutation:
+    /// `kSystemTimeValid` set from the requirement alone → the clockless
+    /// snapshot claims a host time → fails.
+    #[test]
+    fn the_midi_clock_and_host_time_are_flagged_only_when_known() {
+        let wants = need::NEED_SAMPLES_TO_NEXT_CLOCK | need::NEED_SYSTEM_TIME;
+        let t = populated_transport().with_position_quarters(4.0 + 0.2 / 24.0);
+        let ctx = to_process_context(&t, wants);
+        assert_eq!(ctx.samplesToNextClock, -188);
+        assert_ne!(ctx.state & StatesAndFlags_::kClockValid as u32, 0);
+        assert_eq!(ctx.systemTime, 9_000_000_000);
+        assert_ne!(ctx.state & StatesAndFlags_::kSystemTimeValid as u32, 0);
+
+        let mut bare = populated_transport().with_tempo(0.0);
+        bare.system_time_ns = None;
+        let ctx = to_process_context(&bare, wants);
+        assert_eq!(ctx.state & StatesAndFlags_::kClockValid as u32, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kSystemTimeValid as u32, 0);
+        assert_eq!(ctx.samplesToNextClock, 0);
+        assert_eq!(ctx.systemTime, 0);
     }
 }

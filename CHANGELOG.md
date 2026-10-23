@@ -51,6 +51,84 @@ the 50 ms de-zipper), and fixes what the crate could not:
 | the magic check accepted any bytes whose first four were not all wrong | the bytes must start with `HRIR` |
 | `tutti-spatial`'s `hrtf` feature pulled `hrtf` (and through it `rubato` 0.14 and `byteorder`) | it pulls `rustfft` |
 
+### Changed — plugin transport: project-time samples, host clock and MIDI clock; editors open at the window's scale
+
+A hosted plugin is now told everything its transport snapshot can know:
+
+- **Project-time sample position.** `TransportPosition::samples` is filled
+  from the plugin node's own project time: it rolls by the frames rendered
+  while the transport plays, through tempo changes, holds while it is
+  stopped (a stop, a start where it stopped and a loop edit continue it,
+  inside one chunk too), and is re-seated from the beat at the tempo only
+  at a jump: the first block, a seek (stopped or playing, however short),
+  a loop wrap, or a sample-rate change. The frames played between two
+  chunk reads come from the engine's frame count on its timeline segment
+  (`Transport::origin`), which a seek, a tempo or rate change and a wrap
+  restart and a stop or start does not: exact for one tempo change
+  between two reads, and a tempo ramp speeding up inside one chunk is
+  counted, not re-seated. A transport built by hand (`Transport::new`) has
+  no such count and is read by the playhead's rule, in a host that drives
+  `tutti_graph::Executor` itself too. VST2 `samplePos`, VST3
+  `projectTimeSamples` and AU's sample time read it.
+  CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
+  same time over the rate; it was the beat's time at the current tempo,
+  which jumped at every tempo change.
+- **Host clock.** New `TransportInfo::system_time_ns`: nanoseconds on the
+  OS's monotonic clock (`CLOCK_MONOTONIC`; macOS `CLOCK_UPTIME_RAW`, Core
+  Audio's host time; Windows QPC), read once per block and placed at the
+  chunk's frame. VST2 sets `kVstNanosValid` and VST3 `kSystemTimeValid` only when it
+  is present. An offline fork (export) leaves it `None`: its render does not
+  run in wall time.
+- **MIDI clock.** New `TransportInfo::samples_to_nearest_clock()`: the signed
+  distance in samples to the nearest 24-ppq clock, `None` without a finite
+  position, a positive tempo and a positive sample rate. VST2 sets
+  `kVstClockValid` and VST3 `kClockValid` from it.
+
+A plugin editor is opened at its window's backing scale. `ContentScale`
+(finite and positive; `ContentScale::IDENTITY` is 1.0) enters at the
+editor-open call. CLAP's `gui.set_scale` and VST3's
+`IPlugViewContentScaleSupport::setContentScaleFactor` receive it on
+physical-pixel window systems (Win32, X11); macOS views are in points, so
+neither is sent there, as before. VST2 and AU ignore it. `bevy-tutti`
+passes the editor window's `scale_factor` and sizes that window to the
+plugin's size: as its physical size off macOS (exactly, so a fractional
+scale such as 1.75 cannot truncate it a pixel short and set the window and
+the plugin trading resizes), in points on macOS; a window resize is
+multiplied back by the scale before it reaches the plugin. The scale is sent at open
+only: an editor whose window moves to a display of another scale keeps its
+scale until it is reopened.
+
+The out-of-process wire format changes: `ProcessAudioData`'s transport
+carries `system_time_ns`, and `HostMessage::OpenEditor` carries the scale.
+The plugin server and the host must be built from the same revision, as
+before.
+
+| Was | Now |
+|---|---|
+| `PluginHandle::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostEditor::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `PluginEditorHost::open_editor(&mut self, parent)` | `open_editor(&mut self, parent, scale: ContentScale)` (an implementor that cannot scale takes `_scale`) |
+| `ClapLoaded::open_editor(parent)`, `Vst3Loaded::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostMessage::OpenEditor { parent_handle }` | `HostMessage::OpenEditor { parent_handle, scale }` |
+| `TransportInfo { .. }` literal | add `system_time_ns: None` (or build it with `TransportInfo::new` / `Default` and `with_system_time_ns`) |
+| VST2 `samplePos` / VST3 `projectTimeSamples` were 0 | the node's project time: rolls with playback, re-seated at a jump |
+| CLAP `song_pos_seconds` was `beats · 60 / tempo` | the same project time, in seconds |
+| VST2 `kVstClockValid` / VST3 `kClockValid` and `kSystemTimeValid` never set | set when the value is known |
+| `Env::transport_at` / `Cx::transport_at` of a transport built at a beat (`Transport::new`, `at_beat`) had `Transport::origin()` `Some`, a frame count from that beat | `None`: the walk's frame count is not the host's (its beat and clock are unchanged, to the bit); a counted transport's walk is still counted |
+| `bevy-tutti`'s editor window sized at the plugin's pixel size as logical units | sized at it as physical pixels off macOS (logical size: pixel size over the scale), points on macOS |
+| `PluginEditorOpen::{width, height, last_applied}` documented as logical pixels | the plugin's units (`EditorSize`: physical pixels off macOS, points on macOS), as they always held |
+
+New: `tutti_plugin_types::{ContentScale, InvalidContentScale}` (re-exported
+by `tutti-clap-host`, `tutti-vst3-host` and `tutti_plugin::handles`),
+`TransportInfo::with_system_time_ns`, and `tutti_graph::Continuity` with
+`Transport::continuity` (how a transport read some frames after another got
+there: rolled, wrapped, held (a stopped transport at its beat, stopped
+still or started there) or jumped; `Playhead`'s rule).
+
+Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
+`ContentScale::IDENTITY` where the window's scale is not known, to
+`open_editor`.
+
 ### Changed — the motion machine's FSM is the engine's
 
 `MotionFsm` is now only the transport's control handle: send and schedule

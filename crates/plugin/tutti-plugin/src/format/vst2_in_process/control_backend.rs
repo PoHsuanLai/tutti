@@ -19,7 +19,7 @@ use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode,
 use crate::host::node::ParameterChangeSink;
 use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
 use crate::protocol::{Preset, PresetId};
-use crate::util::window::EditorSize;
+use crate::util::window::{ContentScale, EditorSize};
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
 /// idle calls can drain plugin-internal automation events and notify
@@ -192,7 +192,12 @@ impl HostRenderMode for InProcessVst2Backend {
 }
 
 impl HostEditor for InProcessVst2Backend {
-    fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
+    /// `_scale` is unused: VST2 has no call that takes a content scale.
+    fn open_editor(
+        &self,
+        parent_ptr: *mut c_void,
+        _scale: ContentScale,
+    ) -> std::result::Result<EditorSize, EditorError> {
         // SAFETY: caller supplied a valid native window handle (NSView*,
         // HWND, X11 window id). vst2-host only forwards it to the
         // plugin's effEditOpen.

@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, ParamAddress,
-    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
-    ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, ContentScale, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized,
+    ParamAddress, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId,
+    ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -388,7 +388,12 @@ impl PluginParams for Vst2Instance {
 }
 
 impl PluginEditorHost for Vst2Instance {
-    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
+    /// `_scale` is unused: VST2 has no call that takes a content scale.
+    fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        _scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
         #[cfg(feature = "vst2")]
         {
             // Adapt tutti-plugin's WindowHandle (own pointer) to vst2-host's

@@ -9,7 +9,7 @@
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamAddress};
-use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
 pub(crate) struct Vst3GuiInstance {
@@ -30,7 +30,7 @@ impl Vst3GuiInstance {
 }
 
 impl PluginEditor for Vst3GuiInstance {
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         tracing::info!(
             "[vst3-gui] open_editor: creating vst3 handle from ptr {:?}",
             parent.as_ptr()
@@ -39,7 +39,7 @@ impl PluginEditor for Vst3GuiInstance {
         tracing::info!("[vst3-gui] open_editor: calling inner.open_editor");
         let size = self
             .inner
-            .open_editor(vst3_handle)
+            .open_editor(vst3_handle, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 open_editor failed: {e}")))?;
         tracing::info!(
             "[vst3-gui] open_editor: success {}x{}",

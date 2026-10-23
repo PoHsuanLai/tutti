@@ -10,7 +10,7 @@
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamAddress, ParamRange};
-use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
 /// Look up declared bounds for `id` in a table sorted by id.
@@ -109,11 +109,11 @@ impl ClapGuiInstance {
 }
 
 impl PluginEditor for ClapGuiInstance {
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         let clap_handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         let size = self
             .inner
-            .open_editor(clap_handle)
+            .open_editor(clap_handle, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,

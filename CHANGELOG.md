@@ -33,7 +33,7 @@ Where the bits moved:
   the subtraction now happens in `f64` before the rounding, where it was
   `1.0f32 − exp as f32` (which lost about 1e-4 of the coefficient at
   50 ms). Pan gains move by at most 4e-6; `vbap_block_gains`' block-edge
-  goldens are re-pinned. A negative smoothing time is instant (it was
+  goldens and `tutti-export`'s quad VBAP digest are re-pinned. A negative smoothing time is instant (it was
   clamped to a hold), and a NaN one instant (it was a NaN coefficient).
 - **`tutti-analysis`'s `Ballistics::coefficient`** and **`tutti-core`'s
   `LoadMeter` mean:** computed in `f64` instead of `f32` (last-bit
@@ -46,7 +46,8 @@ Where the bits moved:
   so a zero-attack compressor never reduced and a zero-release gate never
   closed. Zero is now instant. The smoothing step is
   `env + c · (target − env)`, so every time constant's bits change in the
-  last places. The limiter keeps its 1 ms release floor.
+  last places (`bevy-tutti`'s compensated-scene digest, a limiter render,
+  is re-pinned). The limiter keeps its 1 ms release floor.
 - **`EnvelopeFollowerNode`:** the coefficient is the converter's `f32`
   instead of an `f64` retention through `libm`, and the step is
   `(1 − c) · env + c · level` in `f64` (still exact at a zero time). Sent

@@ -37,8 +37,8 @@ use clap_sys::events::{
     CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
 };
 use clap_sys::ext::audio_ports::{
-    clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
-    CLAP_PORT_MONO, CLAP_PORT_STEREO,
+    clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN,
+    CLAP_AUDIO_PORT_SUPPORTS_64BITS, CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO, CLAP_PORT_STEREO,
 };
 use clap_sys::ext::latency::{clap_host_latency, clap_plugin_latency, CLAP_EXT_LATENCY};
 use clap_sys::ext::note_ports::{
@@ -470,7 +470,19 @@ unsafe extern "C" fn plugin_process(
     // AUDIO-CORRECTNESS: write the closed-form output the routing oracle
     // asserts against. Runs after the capture so a panic-free structural
     // record exists even if the geometry is degenerate.
-    render_output(p);
+    //
+    // The host activates in one sample width and hands it for every buffer,
+    // so output 0's live pointer table names the block's width. f32 unless
+    // only `data64` is live.
+    let f64_block = p.audio_outputs_count > 0
+        && !p.audio_outputs.is_null()
+        && (*p.audio_outputs).data32.is_null()
+        && !(*p.audio_outputs).data64.is_null();
+    if f64_block {
+        render_output::<f64>(p);
+    } else {
+        render_output::<f32>(p);
+    }
 
     // Exercise one host callback so the test can assert the host received
     // it (host records the flag in its HostState). `request_callback` is
@@ -640,6 +652,9 @@ unsafe extern "C" fn audio_ports_get(
     } else {
         0
     };
+    if ports_64bit(is_input) {
+        info.flags |= CLAP_AUDIO_PORT_SUPPORTS_64BITS;
+    }
     info.channel_count = channel_count;
     info.port_type = match channel_count {
         1 => CLAP_PORT_MONO.as_ptr(),
@@ -1002,6 +1017,44 @@ pub unsafe extern "C" fn tutti_test_plugin_set_port_layout(mode: u32) {
     PORT_LAYOUT.store(mode, Ordering::SeqCst);
 }
 
+/// [`tutti_test_plugin_set_ports_64bit`] bit: every **input** port advertises
+/// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`.
+pub const PORTS_64BIT_INPUTS: u32 = 1 << 0;
+/// [`tutti_test_plugin_set_ports_64bit`] bit: every **output** port advertises
+/// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`.
+pub const PORTS_64BIT_OUTPUTS: u32 = 1 << 1;
+
+/// Which sides' ports advertise 64-bit support, as a mask of the two bits
+/// above. `0`, the default, advertises none: the plugin is f32-only, as every
+/// suite written before the switch existed assumes.
+static PORTS_64BIT: AtomicU32 = AtomicU32::new(0);
+
+fn ports_64bit(is_input: bool) -> bool {
+    let bit = if is_input {
+        PORTS_64BIT_INPUTS
+    } else {
+        PORTS_64BIT_OUTPUTS
+    };
+    PORTS_64BIT.load(Ordering::SeqCst) & bit != 0
+}
+
+/// Select which sides' audio ports advertise `CLAP_AUDIO_PORT_SUPPORTS_64BITS`
+/// (a mask of [`PORTS_64BIT_INPUTS`] and [`PORTS_64BIT_OUTPUTS`]). Call
+/// **before** the host loads the plugin: the host reads the port flags once,
+/// during load. One bit per side, so a test can build a plugin whose outputs
+/// claim 64-bit while its inputs do not.
+///
+/// The render path follows whichever width the host hands it (see
+/// `render_output`), so a 64-bit activation renders the same closed forms in
+/// `f64`.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_ports_64bit(mask: u32) {
+    PORTS_64BIT.store(mask, Ordering::SeqCst);
+}
+
 // ---------------------------------------------------------------------------
 // Output generator.
 // ---------------------------------------------------------------------------
@@ -1331,11 +1384,18 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_delay() {
 /// short write, not a segfault, so a host bug surfaces as a failed assertion
 /// rather than a crashed test process.
 ///
+/// Generic over the block's sample width. Every mode computes its value as
+/// before and widens it to `T` at the write, except `TagPassthrough`, which
+/// adds the tag in `T` so an `f64` input keeps its full precision, and
+/// `Latency`, whose delay line stores `f32` (a delayed `f64` sample comes back
+/// rounded to `f32`).
+///
 /// # Safety
 /// `p` must be the live `clap_process` the host passed to `process`, with
 /// `audio_outputs` valid for `audio_outputs_count` entries and each buffer's
-/// `data32` valid for `channel_count` pointers of `frames_count` samples.
-unsafe fn render_output(p: &clap_process) {
+/// `T` pointer table (`data32` or `data64`) valid for `channel_count`
+/// pointers of `frames_count` samples.
+unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
     let mode = RenderMode::from_u32(RENDER_MODE.load(Ordering::SeqCst));
     if mode == RenderMode::Inert {
         return;
@@ -1360,11 +1420,12 @@ unsafe fn render_output(p: &clap_process) {
 
     for port in 0..p.audio_outputs_count {
         let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
-        if out.data32.is_null() {
+        let table = T::table(out);
+        if table.is_null() {
             continue;
         }
         for ch in 0..out.channel_count {
-            let dst = *out.data32.add(ch as usize);
+            let dst = *table.add(ch as usize);
             if dst.is_null() {
                 continue;
             }
@@ -1373,10 +1434,11 @@ unsafe fn render_output(p: &clap_process) {
             // The matching input slot, when the host presented one. Absent
             // (fewer input ports/channels than output) reads as silence —
             // which is what the host's own zero-pad would have supplied.
-            let src: Option<&[f32]> = if port < p.audio_inputs_count && !p.audio_inputs.is_null() {
+            let src: Option<&[T]> = if port < p.audio_inputs_count && !p.audio_inputs.is_null() {
                 let inb: &clap_audio_buffer = &*p.audio_inputs.add(port as usize);
-                if !inb.data32.is_null() && ch < inb.channel_count {
-                    let sp = *inb.data32.add(ch as usize);
+                let in_table = T::table(inb);
+                if !in_table.is_null() && ch < inb.channel_count {
+                    let sp = *in_table.add(ch as usize);
                     (!sp.is_null()).then(|| std::slice::from_raw_parts(sp, frames))
                 } else {
                     None
@@ -1389,27 +1451,29 @@ unsafe fn render_output(p: &clap_process) {
                 RenderMode::Inert => unreachable!("returned above"),
                 RenderMode::TagOnly => {
                     let tag = probe_tag(port, ch);
-                    dst.fill(tag);
+                    dst.fill(T::from_f32(tag));
                 }
                 RenderMode::TagPassthrough => {
                     let tag = probe_tag(port, ch);
                     for i in 0..frames {
-                        dst[i] = src.map(|s| s[i]).unwrap_or(0.0) + tag;
+                        dst[i] = src.map(|s| s[i]).unwrap_or(T::ZERO) + T::from_f32(tag);
                     }
                 }
                 RenderMode::Transport => {
-                    dst.fill(0.0);
+                    dst.fill(T::ZERO);
                     if !p.transport.is_null() && frames >= TRANSPORT_ECHO_FRAMES {
                         let t: &clap_event_transport = &*p.transport;
                         let beats = |b: i64| (b as f64 / CLAP_BEATTIME_FACTOR as f64) as f32;
                         let flag = |bit: u32, v: f32| if t.flags & bit != 0 { v } else { 0.0 };
-                        dst[0] = beats(t.song_pos_beats);
-                        dst[1] = t.tempo as f32;
-                        dst[2] = flag(CLAP_TRANSPORT_IS_PLAYING, 1.0)
-                            + flag(CLAP_TRANSPORT_IS_RECORDING, 2.0)
-                            + flag(CLAP_TRANSPORT_IS_LOOP_ACTIVE, 4.0);
-                        dst[3] = beats(t.loop_start_beats);
-                        dst[4] = beats(t.loop_end_beats);
+                        dst[0] = T::from_f32(beats(t.song_pos_beats));
+                        dst[1] = T::from_f32(t.tempo as f32);
+                        dst[2] = T::from_f32(
+                            flag(CLAP_TRANSPORT_IS_PLAYING, 1.0)
+                                + flag(CLAP_TRANSPORT_IS_RECORDING, 2.0)
+                                + flag(CLAP_TRANSPORT_IS_LOOP_ACTIVE, 4.0),
+                        );
+                        dst[3] = T::from_f32(beats(t.loop_start_beats));
+                        dst[4] = T::from_f32(beats(t.loop_end_beats));
                     }
                 }
                 RenderMode::Notes => {
@@ -1426,7 +1490,7 @@ unsafe fn render_output(p: &clap_process) {
                             gate.apply(change);
                             next += 1;
                         }
-                        *sample = gate.level();
+                        *sample = T::from_f32(gate.level());
                     }
                 }
                 RenderMode::Latency => {
@@ -1446,8 +1510,8 @@ unsafe fn render_output(p: &clap_process) {
                         let at = (cursor_start + i) % len;
                         // Read the sample written `len` frames ago, then
                         // overwrite the slot with the incoming one.
-                        dst[i] = line[at];
-                        line[at] = src.map(|s| s[i]).unwrap_or(0.0);
+                        dst[i] = T::from_f32(line[at]);
+                        line[at] = src.map(|s| s[i].to_f32()).unwrap_or(0.0);
                     }
                 }
             }
@@ -1488,21 +1552,58 @@ unsafe fn render_output(p: &clap_process) {
     if gain_on {
         for port in 0..p.audio_outputs_count {
             let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
-            if out.data32.is_null() {
+            let table = T::table(out);
+            if table.is_null() {
                 continue;
             }
             for ch in 0..out.channel_count {
-                let dst = *out.data32.add(ch as usize);
+                let dst = *table.add(ch as usize);
                 if dst.is_null() {
                     continue;
                 }
                 let dst = std::slice::from_raw_parts_mut(dst, frames);
                 for (i, sample) in dst.iter_mut().enumerate() {
                     params_state::apply_param_events_through(p.in_events, i as u32);
-                    *sample *= params_state::gain_amplitude();
+                    *sample = *sample * T::from_f32(params_state::gain_amplitude());
                 }
             }
         }
+    }
+}
+
+/// The two sample widths a `clap_audio_buffer` carries, so [`render_output`]
+/// is written once for both.
+trait ProbeSample: Copy + std::ops::Add<Output = Self> + std::ops::Mul<Output = Self> {
+    const ZERO: Self;
+    /// This width's channel-pointer table on `buf` (`data32` or `data64`).
+    fn table(buf: &clap_audio_buffer) -> *mut *mut Self;
+    fn from_f32(v: f32) -> Self;
+    fn to_f32(self) -> f32;
+}
+
+impl ProbeSample for f32 {
+    const ZERO: Self = 0.0;
+    fn table(buf: &clap_audio_buffer) -> *mut *mut Self {
+        buf.data32
+    }
+    fn from_f32(v: f32) -> Self {
+        v
+    }
+    fn to_f32(self) -> f32 {
+        self
+    }
+}
+
+impl ProbeSample for f64 {
+    const ZERO: Self = 0.0;
+    fn table(buf: &clap_audio_buffer) -> *mut *mut Self {
+        buf.data64
+    }
+    fn from_f32(v: f32) -> Self {
+        f64::from(v)
+    }
+    fn to_f32(self) -> f32 {
+        self as f32
     }
 }
 

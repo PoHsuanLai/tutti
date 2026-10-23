@@ -259,6 +259,49 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Make the reference plugin's ports on the sides in `mask` advertise
+    /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS` (`tutti_clap_test_plugin::PORTS_64BIT_*`)
+    /// until the returned guard drops, which restores the f32-only default.
+    /// Call before loading: the host reads the port flags once, at load.
+    ///
+    /// Reached through the `dlopen` handle for the same reason as
+    /// [`set_clap_probe_render_mode`].
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin goes back to f32-only when the guard drops"]
+    pub fn clap_probe_ports_64bit(mask: u32) -> ClapProbePorts64 {
+        set_clap_probe_ports_64bit(mask);
+        ClapProbePorts64
+    }
+
+    /// Restores the reference plugin's f32-only ports on drop; see
+    /// [`clap_probe_ports_64bit`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbePorts64;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbePorts64 {
+        fn drop(&mut self) {
+            set_clap_probe_ports_64bit(0);
+        }
+    }
+
+    #[cfg(feature = "clap")]
+    fn set_clap_probe_ports_64bit(mask: u32) {
+        // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
+        // `tutti-clap-test-plugin`. The handle is leaked, as in
+        // `set_clap_probe_render_mode`, so the image stays resident for the
+        // instance loaded after this call.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path())
+                .expect("reference plugin opens for the 64-bit port symbol");
+            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
+                .get(b"tutti_test_plugin_set_ports_64bit\0")
+                .expect("`tutti_test_plugin_set_ports_64bit` exported by the reference plugin");
+            set(mask);
+            std::mem::forget(lib);
+        }
+    }
+
     /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the
     /// loader tests drive.
     ///

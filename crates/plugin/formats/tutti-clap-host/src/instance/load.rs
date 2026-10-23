@@ -355,12 +355,25 @@ fn port_channels(
     channels
 }
 
-/// Whether any output port advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`.
+/// Whether the plugin can be activated for 64-bit audio: every port on both
+/// sides advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, and there is at least
+/// one port.
 ///
-/// Stops at a `get` failure for the same index as [`port_channels`], though
-/// nothing here is positional: ports past the hole are absent from the
-/// presented layout, so letting one vote would make `activate::<f64>()` succeed
-/// on a claim by a port the plugin is never handed.
+/// Every port, inputs included, because the host activates in one sample
+/// width and hands that width for every buffer (`data64` with `data32` null):
+/// one port that never claimed 64-bit would be handed a table it does not read.
+///
+/// A plugin with no ports at all (or no `audio-ports` extension) is `false`.
+/// It has no buffer to gain precision on, and the host presents its fallback
+/// stereo bus on each empty side (`PortLayout::default_empty_buses`), buses
+/// the plugin never described and so never flagged; f32 is the width every
+/// CLAP plugin must accept. A side with no ports does not veto a side that
+/// has them all flagged (an instrument with only 64-bit outputs is `true`):
+/// a plugin reads no buffer on a side it declared empty.
+///
+/// Stops at a `get` failure for the same index as [`port_channels`]: ports
+/// past the hole are absent from the presented layout, so they neither count
+/// nor veto.
 fn check_f64_support(
     plugin: *const clap_plugin,
     audio_ports: *const clap_plugin_audio_ports,
@@ -372,20 +385,23 @@ fn check_f64_support(
         (Some(c), Some(g)) => (c, g),
         _ => return false,
     };
-    let count = unsafe { count_fn(plugin, false) };
-    let mut supports = false;
-    for i in 0..count {
-        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(plugin, i, false, &mut info) } {
-            // Past this index `port_channels` presents no ports, so no port
-            // past it may vote on the sample format.
-            break;
-        }
-        if (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) != 0 {
-            supports = true;
+    let mut presented = 0u32;
+    for is_input in [true, false] {
+        let count = unsafe { count_fn(plugin, is_input) };
+        for i in 0..count {
+            let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
+            if !unsafe { get_fn(plugin, i, is_input, &mut info) } {
+                // Past this index `port_channels` presents no ports, so no
+                // port past it may vote on the sample format.
+                break;
+            }
+            if (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) == 0 {
+                return false;
+            }
+            presented += 1;
         }
     }
-    supports
+    presented > 0
 }
 
 #[cfg(test)]
@@ -394,36 +410,39 @@ mod enumeration_hole_tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
 
-    /// Index at which the stub's `get` reports failure. Global because the stub
-    /// is a bare `extern "C"` fn with no state parameter.
+    // The stub's configuration. Global because the stub is a bare
+    // `extern "C"` fn with no state parameter.
+    /// Index at which the stub's `get` reports failure, on either side.
     static HOLE: AtomicU32 = AtomicU32::new(u32::MAX);
-    /// Number of ports the stub's `count` reports.
-    static COUNT: AtomicU32 = AtomicU32::new(0);
-    /// Serializes [`with_layout`]. The globals above are process-wide, every
+    /// Number of input / output ports the stub's `count` reports.
+    static COUNT_IN: AtomicU32 = AtomicU32::new(0);
+    static COUNT_OUT: AtomicU32 = AtomicU32::new(0);
+    /// Bit `i` set: input / output port `i` advertises 64-bit support.
+    static F64_IN: AtomicU32 = AtomicU32::new(0);
+    static F64_OUT: AtomicU32 = AtomicU32::new(0);
+    /// Serializes [`with_stub`]. The globals above are process-wide, every
     /// test configures them differently, and cargo runs the tests on parallel
     /// threads: unserialized, one test's `store` lands inside another's `f` and
     /// the suite fails on roughly 45% of runs.
     static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Stub layout: port `i` has `i + 1` channels, and only the **last** port
-    /// advertises 64-bit support. Distinct widths make an index shift visible;
-    /// the flag being last is what makes scanning-past differ from stopping.
-    unsafe extern "C" fn stub_count(_plugin: *const clap_plugin, _is_input: bool) -> u32 {
-        COUNT.load(Ordering::SeqCst)
+    /// Port `i` has `i + 1` channels, so an index shift is visible.
+    unsafe extern "C" fn stub_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
+        if is_input { &COUNT_IN } else { &COUNT_OUT }.load(Ordering::SeqCst)
     }
 
     unsafe extern "C" fn stub_get(
         _plugin: *const clap_plugin,
         index: u32,
-        _is_input: bool,
+        is_input: bool,
         info: *mut clap_audio_port_info,
     ) -> bool {
         if index == HOLE.load(Ordering::SeqCst) {
             return false;
         }
-        let last = COUNT.load(Ordering::SeqCst).saturating_sub(1);
+        let flagged = if is_input { &F64_IN } else { &F64_OUT }.load(Ordering::SeqCst);
         (*info).channel_count = index + 1;
-        (*info).flags = if index == last {
+        (*info).flags = if flagged & (1 << index) != 0 {
             CLAP_AUDIO_PORT_SUPPORTS_64BITS
         } else {
             0
@@ -431,11 +450,20 @@ mod enumeration_hole_tests {
         true
     }
 
-    fn stub_ext() -> clap_plugin_audio_ports {
-        clap_plugin_audio_ports {
-            count: Some(stub_count),
-            get: Some(stub_get),
-        }
+    /// One stub configuration: port counts, the hole, and which ports carry
+    /// the 64-bit flag (bit `i` = port `i`).
+    #[derive(Clone, Copy)]
+    struct Stub {
+        inputs: u32,
+        outputs: u32,
+        hole: u32,
+        f64_in: u32,
+        f64_out: u32,
+    }
+
+    /// Every port of an `n`-port side flagged.
+    const fn all(n: u32) -> u32 {
+        (1 << n) - 1
     }
 
     /// Configures the stub and runs `f` under [`LAYOUT_LOCK`], so the store and
@@ -443,13 +471,37 @@ mod enumeration_hole_tests {
     ///
     /// The lock is taken poison-tolerant: a failing assertion inside `f` panics
     /// with the guard held, and propagating that as a `PoisonError` would turn
-    /// one real failure into four misleading ones in the other tests.
-    fn with_layout<R>(count: u32, hole: u32, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
+    /// one real failure into misleading ones in the other tests.
+    fn with_stub<R>(stub: Stub, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
         let _guard = LAYOUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        COUNT.store(count, Ordering::SeqCst);
-        HOLE.store(hole, Ordering::SeqCst);
-        let ext = stub_ext();
+        COUNT_IN.store(stub.inputs, Ordering::SeqCst);
+        COUNT_OUT.store(stub.outputs, Ordering::SeqCst);
+        HOLE.store(stub.hole, Ordering::SeqCst);
+        F64_IN.store(stub.f64_in, Ordering::SeqCst);
+        F64_OUT.store(stub.f64_out, Ordering::SeqCst);
+        let ext = clap_plugin_audio_ports {
+            count: Some(stub_count),
+            get: Some(stub_get),
+        };
         f(&ext)
+    }
+
+    /// `count` ports on each side, a hole at `hole`, no 64-bit flags.
+    fn with_layout<R>(count: u32, hole: u32, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
+        with_stub(
+            Stub {
+                inputs: count,
+                outputs: count,
+                hole,
+                f64_in: 0,
+                f64_out: 0,
+            },
+            f,
+        )
+    }
+
+    fn f64_support(stub: Stub) -> bool {
+        with_stub(stub, |ext| check_f64_support(std::ptr::null(), ext))
     }
 
     /// Baseline — without it, dropping all ports unconditionally would satisfy
@@ -493,30 +545,123 @@ mod enumeration_hole_tests {
         assert!(channels.is_empty());
     }
 
-    /// The only 64-bit-capable port is the last one, past the hole — so it is
-    /// absent from the presented layout and must not vote.
+    /// Every port on both sides flagged: the plugin can run at 64-bit.
+    /// Baseline for the vetoes below; without it a constant `false` passes
+    /// them all.
+    ///
+    /// Mutation (run): `presented > 0` → `false` fails here.
+    #[test]
+    fn f64_support_when_every_port_is_flagged() {
+        assert!(f64_support(Stub {
+            inputs: 2,
+            outputs: 2,
+            hole: u32::MAX,
+            f64_in: all(2),
+            f64_out: all(2),
+        }));
+    }
+
+    /// The outputs all claim 64-bit, one input does not. The host hands
+    /// `data64` to every buffer, so that input would get a table it never
+    /// agreed to read.
+    ///
+    /// Mutation (run): scanning only the outputs (`for is_input in [false]`,
+    /// the old check) → `true`, fails.
+    #[test]
+    fn an_unflagged_input_port_vetoes_f64() {
+        assert!(!f64_support(Stub {
+            inputs: 2,
+            outputs: 2,
+            hole: u32::MAX,
+            f64_in: 0b01,
+            f64_out: all(2),
+        }));
+    }
+
+    /// One flagged output is not enough when another output is not.
+    ///
+    /// Mutation (run): `continue` instead of `return false` at an unflagged
+    /// port (any flagged port then suffices) → `true`, fails.
+    #[test]
+    fn an_unflagged_output_port_vetoes_f64() {
+        assert!(!f64_support(Stub {
+            inputs: 1,
+            outputs: 2,
+            hole: u32::MAX,
+            f64_in: all(1),
+            f64_out: 0b10,
+        }));
+    }
+
+    /// No ports at all: f32, the width every CLAP plugin must accept (see
+    /// `check_f64_support` for why it is not the vacuous `true`).
+    ///
+    /// Mutation (run): returning `true` instead of `presented > 0` fails.
+    #[test]
+    fn a_plugin_with_no_ports_is_f32() {
+        assert!(!f64_support(Stub {
+            inputs: 0,
+            outputs: 0,
+            hole: u32::MAX,
+            f64_in: 0,
+            f64_out: 0,
+        }));
+    }
+
+    /// An instrument (no inputs) whose outputs are all flagged runs at 64-bit:
+    /// the empty side does not veto.
+    ///
+    /// Mutation (run): requiring a port on each side → `false`, fails.
+    #[test]
+    fn an_empty_side_does_not_veto_f64() {
+        assert!(f64_support(Stub {
+            inputs: 0,
+            outputs: 2,
+            hole: u32::MAX,
+            f64_in: 0,
+            f64_out: all(2),
+        }));
+    }
+
+    /// The only unflagged port lies past the hole, so it is absent from the
+    /// presented layout and must not veto.
+    ///
+    /// Mutation (run): `continue` instead of `break` at the failed `get` →
+    /// port 3 vetoes, fails.
     #[test]
     fn f64_support_ignores_ports_past_a_hole() {
-        let supports = with_layout(4, 2, |ext| check_f64_support(std::ptr::null(), ext));
         assert!(
-            !supports,
-            "the only 64-bit-capable port (index 3) lies past the hole at \
-             index 2, so it is absent from the presented layout and must not \
-             decide the sample format"
+            f64_support(Stub {
+                inputs: 4,
+                outputs: 4,
+                hole: 2,
+                f64_in: 0b0111,
+                f64_out: 0b0111,
+            }),
+            "the only unflagged ports (index 3) lie past the hole at index 2, \
+             so they are absent from the presented layout and must not decide \
+             the sample format"
         );
     }
 
-    /// The complement — without it, a constant `false` would pass the test
-    /// above.
+    /// The complement: an unflagged port before the hole still vetoes, on the
+    /// side scanned after a side that hit its hole.
+    ///
+    /// Mutation (run): `return true` instead of `break` at the failed `get`
+    /// (a hole ends the whole scan as a success) passes the test above and
+    /// fails here.
     #[test]
     fn f64_support_still_sees_ports_before_a_hole() {
-        // count = 1 → index 0 is the last port, so it carries the flag; the
-        // hole at 1 is past the end of the surviving prefix.
-        let supports = with_layout(1, 1, |ext| check_f64_support(std::ptr::null(), ext));
         assert!(
-            supports,
-            "port 0 advertises 64-bit and precedes the hole, so support must \
-             still be reported"
+            !f64_support(Stub {
+                inputs: 4,
+                outputs: 4,
+                hole: 2,
+                f64_in: all(4),
+                f64_out: 0b1110,
+            }),
+            "output port 0 does not advertise 64-bit and precedes the hole, so \
+             it must still veto"
         );
     }
 }

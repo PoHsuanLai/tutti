@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a 64-bit-capable CLAP plugin runs in an f32 session
+
+The plugin server activated a CLAP plugin at 64-bit whenever it could do
+64-bit, while the session's wire format follows the host's preference (f32
+by default). In an f32 session such a plugin refused every block as a format
+mismatch, so it rendered silence. It is now activated in the format the
+session will process, as VST3 is: f64 only when the session asked for it and
+the plugin can do it, and `Features::F64_AUDIO` reports the format activated
+rather than the capability.
+
+`ClapLoaded::supports_f64` was `true` when any **output** port advertised
+`CLAP_AUDIO_PORT_SUPPORTS_64BITS`. The host hands one sample width for every
+buffer, so it now requires every input and output port to advertise it. A
+plugin with no audio ports at all is f32 (the width every CLAP plugin must
+accept; the host presents a fallback stereo bus it never flagged), and a side
+with no ports does not veto the other (an instrument whose outputs are all
+64-bit can run at 64-bit).
+
+Migration: `tutti-plugin-server`'s `ClapInstance::load(path, sample_rate,
+block_size)` takes a fourth argument, `prefer_f64: bool`, matching
+`Vst3Instance::load`; pass `false` for the old f32 behaviour of a plugin
+without 64-bit ports. The reference CLAP plugin can advertise 64-bit ports
+(`tutti_test_plugin_set_ports_64bit`, per side) and renders in whichever width
+the host hands it.
+
 ### Fixed — a SysEx longer than one UMP packet reaches plugins whole
 
 A SysEx7 message spanning several UMP packets (any message over six bytes)

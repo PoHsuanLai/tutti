@@ -819,9 +819,11 @@ mod tests {
         .unwrap();
 
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
+        // The negotiated format, not the requested one, as the host's
+        // `setup_shm` sizes the slab.
         let layout = tutti_plugin::server::SlabLayout {
             samples_per_channel: 8192,
-            format: preferred_format,
+            format: s.clock.format,
             slots: tutti_plugin::server::RING_SLOTS as u32,
             inputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
             outputs: vec![tutti_plugin::server::ChannelLayout::STEREO],
@@ -831,17 +833,172 @@ mod tests {
         (s, shm_guard)
     }
 
+    /// An f64 session with a plugin that advertises no 64-bit port runs in
+    /// f32: the request is a preference, and the reference plugin's default
+    /// ports are f32-only.
     #[test]
     #[cfg(feature = "clap")]
     fn load_clap_plugin_f64() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("load_clap_f64", SampleFormat::Float64);
         let loaded = s.plugin.as_ref().unwrap().instance().loaded();
-        if loaded.features.contains(Features::F64_AUDIO) {
-            assert_eq!(s.clock.format, SampleFormat::Float64);
-        } else {
-            assert_eq!(s.clock.format, SampleFormat::Float32);
+        assert!(!loaded.features.contains(Features::F64_AUDIO));
+        assert_eq!(s.clock.format, SampleFormat::Float32);
+    }
+
+    /// The frames each 64-bit round trip below renders.
+    #[cfg(feature = "clap")]
+    const F64_FRAMES: usize = 64;
+
+    /// Load the reference plugin with the 64-bit port `mask` into a session
+    /// that prefers `format`, in `TagPassthrough` mode
+    /// (`out[0][ch] = in[0][ch] + probe_tag(0, ch)`), and run one block with
+    /// `input` on both channels through the shared-memory slab, as the host
+    /// does. Returns the session's negotiated format, the plugin's
+    /// `F64_AUDIO` bit and the two output channels.
+    #[cfg(feature = "clap")]
+    fn clap_round_trip<T>(
+        name: &str,
+        mask: u32,
+        format: SampleFormat,
+        input: T,
+    ) -> (SampleFormat, bool, [Vec<T>; 2])
+    where
+        T: tutti_plugin::server::Sample + Copy + Default,
+    {
+        const SEQ: u64 = 1;
+        let _ports = crate::test_utils::clap_probe_ports_64bit(mask);
+        crate::test_utils::set_clap_probe_render_mode(
+            tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
+        );
+        let (mut s, shm) = load_clap(name, format);
+        for ch in 0..2 {
+            shm.write_input::<T>(SEQ, ch, &[input; F64_FRAMES]).unwrap();
         }
+        shm.publish_input(SEQ);
+        let reply = s
+            .handle(HostMessage::ProcessAudio(Box::new(
+                tutti_plugin::server::ProcessAudioData {
+                    seq: SEQ,
+                    num_samples: F64_FRAMES,
+                    ..Default::default()
+                },
+            )))
+            .unwrap()
+            .into_reply();
+        assert!(
+            matches!(reply, BridgeMessage::AudioProcessed { .. }),
+            "unexpected reply: {reply:?}"
+        );
+        assert!(
+            shm.has_output(SEQ),
+            "the block was not published: the plugin refused it"
+        );
+        let out = [0, 1].map(|ch| {
+            let mut v = vec![T::default(); F64_FRAMES];
+            shm.read_output_into::<T>(SEQ, ch, &mut v).unwrap();
+            v
+        });
+        let f64_audio = s
+            .plugin
+            .as_ref()
+            .unwrap()
+            .instance()
+            .loaded()
+            .features
+            .contains(Features::F64_AUDIO);
+        crate::test_utils::set_clap_probe_render_mode(
+            tutti_clap_test_plugin::RenderMode::Inert as u32,
+        );
+        (s.clock.format, f64_audio, out)
+    }
+
+    /// An f32 session (the default) runs a plugin whose every port can do
+    /// 64-bit at f32, and its audio comes back.
+    ///
+    /// Mutation (run): activating `F64` whenever the plugin supports it (the
+    /// old `if supports_f64`, ignoring `prefer_f64`) → every block is refused
+    /// as a format mismatch and nothing is published; fails. Reporting
+    /// `F64_AUDIO` from the capability rather than the activation (the old
+    /// `features.set(F64_AUDIO, supports_f64)`) also fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn an_f32_session_processes_audio_through_a_64bit_capable_clap_plugin() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let (format, f64_audio, out) = clap_round_trip(
+            "f32_session_64bit_clap",
+            both,
+            SampleFormat::Float32,
+            0.5f32,
+        );
+        assert_eq!(format, SampleFormat::Float32);
+        assert!(!f64_audio, "activated f64 for an f32 session");
+        for (ch, samples) in out.iter().enumerate() {
+            let want = 0.5 + tutti_clap_test_plugin::probe_tag(0, ch as u32);
+            assert!(
+                samples.iter().all(|&x| x == want),
+                "channel {ch}: want {want}, got {:?}",
+                &samples[..4]
+            );
+        }
+    }
+
+    /// An f64 session runs a plugin whose every port can do 64-bit at f64,
+    /// end to end: the input keeps precision f32 cannot carry.
+    ///
+    /// `0.1 + tag` is an exact IEEE sum, so it is compared exactly; the same
+    /// sum through f32 lands on a different value (asserted, so the check
+    /// cannot pass on a path that rounds through f32).
+    ///
+    /// Mutation (run): `prefer_f64 && supports_f64` → `false` in
+    /// `ClapInstance::load` → the session negotiates f32; fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let (format, f64_audio, out) = clap_round_trip(
+            "f64_session_64bit_clap",
+            both,
+            SampleFormat::Float64,
+            0.1f64,
+        );
+        assert_eq!(format, SampleFormat::Float64);
+        assert!(f64_audio);
+        for (ch, samples) in out.iter().enumerate() {
+            let tag = tutti_clap_test_plugin::probe_tag(0, ch as u32);
+            let want = 0.1f64 + f64::from(tag);
+            assert_ne!(want, f64::from(0.1f32 + tag), "the input must not fit f32");
+            assert!(
+                samples.iter().all(|&x| x == want),
+                "channel {ch}: want {want}, got {:?}",
+                &samples[..4]
+            );
+        }
+    }
+
+    /// A plugin whose outputs claim 64-bit but whose inputs do not runs at
+    /// f32 even in an f64 session: the host hands one width for every buffer.
+    ///
+    /// Mutation (run): `check_f64_support` scanning the outputs only (the old
+    /// check) → the session negotiates f64; fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn an_f64_session_runs_a_clap_plugin_with_f32_inputs_in_f32() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (format, f64_audio, out) = clap_round_trip(
+            "f64_session_f32_inputs_clap",
+            tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS,
+            SampleFormat::Float64,
+            0.5f32,
+        );
+        assert_eq!(format, SampleFormat::Float32);
+        assert!(!f64_audio);
+        let want = 0.5 + tutti_clap_test_plugin::probe_tag(0, 0);
+        assert!(out[0].iter().all(|&x| x == want));
     }
 
     /// Fetch any param_id from the loaded plugin's parameter list.

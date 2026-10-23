@@ -36,12 +36,11 @@ impl ExponentialSmoother {
         }
     }
 
-    /// `1 - e^(-stride / (tau * sr))`: the fraction of the gap one step of
-    /// `stride` samples closes.
+    /// The fraction of the gap one step of `stride` samples closes: the
+    /// one-pole coefficient at the rate the smoother is stepped,
+    /// `sr / stride` ([`Seconds::one_pole_coeff`]; a zero time is instant).
     fn coeff(smooth_time: Seconds, sr: SampleRate, stride: Samples) -> f32 {
-        let steps_per_tau = smooth_time.get() as f64 * sr.get() / stride.get() as f64;
-        let coeff = 1.0 - (-1.0 / steps_per_tau).exp() as f32;
-        coeff.clamp(0.0, 1.0)
+        smooth_time.one_pole_coeff(SampleRate(sr.get() / stride.get() as f64))
     }
 
     /// Recomputes the smoothing coefficient for a new sample rate, holding the
@@ -155,6 +154,25 @@ mod tests {
                 (-180.0..=180.0).contains(&v.get()),
                 "bearing {v:?} left the circle"
             );
+        }
+    }
+
+    /// **A zero smoothing time is instant**, stepped per sample or per
+    /// frame: the first step lands on the target, in either space. A
+    /// negative time is instant too (it used to clamp to a frozen 0).
+    ///
+    /// Mutation (run): `coeff` returning 0 for a non-positive time (the
+    /// freeze) → fails.
+    #[test]
+    fn a_zero_smoothing_time_is_instant() {
+        for tau in [0.0, -0.05] {
+            for stride in [Samples(1), Samples(64)] {
+                let mut s = ExponentialSmoother::new(Seconds(tau), SampleRate(48_000.0), stride);
+                s.seed_at(10.0);
+                assert_eq!(s.process(Elevation(40.0)), Elevation(40.0));
+                s.seed_at(170.0);
+                assert_eq!(s.process_angle(Azimuth(-170.0)), Azimuth(-170.0));
+            }
         }
     }
 

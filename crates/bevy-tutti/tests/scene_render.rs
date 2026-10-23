@@ -25,10 +25,13 @@
 //!   ends on the new filter as if it had run from the fade's start: a
 //!   hand-wired graph whose filter hears silence until then.
 //! - **A golden digest** of the scene, Linux/glibc only: recorded when the
-//!   render was checked against an independent reference implementation. The
-//!   filter's coefficients, the waveshaper and the limiter call `tan`,
-//!   `tanh` and `exp`, libm quality-of-implementation that differs in the
-//!   last ulp between C runtimes, so it is asserted where it was recorded.
+//!   render was checked against an independent reference implementation,
+//!   and re-recorded for the limiter's one-pole release moving to
+//!   `Seconds::one_pole_coeff` (a last-bits change; the channel checks above
+//!   are independent of it). The filter's coefficients, the waveshaper and
+//!   the limiter's detector call the platform's `tan`, `tanh` and `log10`,
+//!   whose last ulp differs between C runtimes, so it is asserted where it
+//!   was recorded.
 
 #[macro_use]
 mod common;
@@ -227,8 +230,8 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     if GOLDEN_HERE {
         assert_eq!(
             digest(&b),
-            0x95d4_ff05_5210_e428,
-            "the Net era's samples: digest {:#018x}",
+            0xebe5_2622_021b_4654,
+            "the recorded samples: digest {:#018x}",
             digest(&b)
         );
     }

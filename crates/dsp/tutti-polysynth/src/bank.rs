@@ -270,7 +270,7 @@ impl VoiceBank {
             filter,
             env_config: *envelope,
             shape: EnvShape::new(envelope, sample_rate),
-            gain_glide: gain_glide(sample_rate),
+            gain_glide: GAIN_GLIDE.one_pole_coeff(sample_rate),
             sample_rate,
             stride: stride.max(1),
             voices,
@@ -412,7 +412,7 @@ impl VoiceBank {
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         self.shape = EnvShape::new(&self.env_config, sample_rate);
-        self.gain_glide = gain_glide(sample_rate);
+        self.gain_glide = GAIN_GLIDE.one_pole_coeff(sample_rate);
         // The SVF's output mix depends on the tap and `Q`, not the rate, so
         // only the per-lane coefficients need recomputing.
         self.cutoff_seen.fill(f32::NAN);
@@ -825,12 +825,6 @@ impl VoiceBank {
 /// velocity change to 1% in about 2.3 ms — inaudible as a fade, long enough
 /// that no single sample steps by more than 4% of the change at 48 kHz.
 const GAIN_GLIDE: Seconds = Seconds(0.0005);
-
-/// Per-sample one-pole coefficient for [`GAIN_GLIDE`] at `sample_rate`.
-fn gain_glide(sample_rate: SampleRate) -> f32 {
-    let tau_frames = f64::from(GAIN_GLIDE.get()) * sample_rate.get();
-    (1.0 - (-1.0 / tau_frames.max(1.0)).exp()) as f32
-}
 
 /// The `n`th noise seed: a bijective mix (odd multiply, xorshift) of the
 /// counter, so distinct counters give distinct seeds, forced nonzero.

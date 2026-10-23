@@ -23,23 +23,6 @@ pub const FOLLOWER_EVENT_CAPACITY: u32 = 256;
 /// sends nothing.
 const FLOOR: f64 = 1e-7;
 
-/// The one-pole coefficient of time constant `tau` at `rate`:
-/// `exp(−1 / (τ · rate))` in `f64` through `libm` (the same bits on every
-/// target), 0 (follow exactly) for a `τ` that is not above zero. A rate
-/// times a time constant is a decay length, not a frame count, so no
-/// `Seconds::to_samples*` rounding applies. Kept in `f64`, as the envelope
-/// is: in `f32`, `c` would round to 1 past about 640 s at 48 kHz (the
-/// envelope would never decay) and shorten long constants well before
-/// that (400 s would act as about 349 s).
-fn coeff(tau: Seconds, rate: SampleRate) -> f64 {
-    let frames = f64::from(tau.get()) * rate.get();
-    if frames > 0.0 && frames.is_finite() {
-        libm::exp(-1.0 / frames)
-    } else {
-        0.0
-    }
-}
-
 /// An **envelope follower**: the level of its audio input, sent raw in
 /// `[0, 1]` as linear pieces on the graph's play-clock grid, addressed
 /// `ParamAddr::Id(source.0)` for every control lane that reads `source`.
@@ -51,9 +34,11 @@ fn coeff(tau: Seconds, rate: SampleRate) -> f64 {
 ///   and all of itself in mono; the peak reads the same at any width, as a
 ///   compressor's linked sidechain does.
 /// - **One-pole attack and release**, per frame:
-///   `env ← c · env + (1 − c) · level`, `c = exp(−1 / (τ · rate))`, in
-///   `f64`, with `τ` the attack while the level is above the envelope and
-///   the release otherwise. A `τ` of zero follows the level exactly. Below
+///   `env ← (1 − c) · env + c · level`, `c = 1 − exp(−1 / (τ · rate))`
+///   ([`Seconds::one_pole_coeff`]), the envelope in `f64`, with `τ` the
+///   attack while the level is above the envelope and the release
+///   otherwise. A `τ` of zero (or below) follows the level exactly, and
+///   an infinite one holds (the envelope never moves that way). Below
 ///   `1e-7` the envelope is 0, so a release reaches silence in finite
 ///   time. The pieces it sends are `f32`.
 /// - **On the grid, one step late.** On every frame `g` whose play count is
@@ -77,9 +62,11 @@ pub struct EnvelopeFollowerNode {
     attack: Seconds,
     release: Seconds,
     input: ChannelLayout,
-    attack_coeff: f64,
-    release_coeff: f64,
-    /// In `f64`, so a long time constant decays at its own rate (`coeff`).
+    attack_coeff: f32,
+    release_coeff: f32,
+    /// In `f64`, so a long time constant decays at its own rate: in `f32`,
+    /// `1 − c` would round to 1 past about 640 s at 48 kHz and the envelope
+    /// would never decay.
     env: f64,
     /// `env` at the last grid point: the next piece's start.
     from: f64,
@@ -100,8 +87,8 @@ impl EnvelopeFollowerNode {
             attack,
             release,
             input,
-            attack_coeff: coeff(attack, rate),
-            release_coeff: coeff(release, rate),
+            attack_coeff: attack.one_pole_coeff(rate),
+            release_coeff: release.one_pole_coeff(rate),
             env: 0.0,
             from: 0.0,
             sent: 0.0,
@@ -140,12 +127,12 @@ impl EnvelopeFollowerNode {
     /// One frame's level into the envelope.
     #[inline]
     fn follow(&mut self, level: f64) {
-        let c = if level > self.env {
+        let c = f64::from(if level > self.env {
             self.attack_coeff
         } else {
             self.release_coeff
-        };
-        let env = c * self.env + (1.0 - c) * level;
+        });
+        let env = (1.0 - c) * self.env + c * level;
         self.env = if env < FLOOR { 0.0 } else { env };
     }
 
@@ -170,8 +157,8 @@ impl Node for EnvelopeFollowerNode {
 
     fn prepare(&mut self, prepare: &Prepare) {
         let rate = prepare.sample_rate();
-        self.attack_coeff = coeff(self.attack, rate);
-        self.release_coeff = coeff(self.release, rate);
+        self.attack_coeff = self.attack.one_pole_coeff(rate);
+        self.release_coeff = self.release.one_pole_coeff(rate);
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {

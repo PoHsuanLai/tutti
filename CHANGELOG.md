@@ -34,13 +34,6 @@ A `DistortionNode` with the `Softsign` or `HardClip` curve now declares
 the other curves stay `Moderate`. No signature changed; nothing to
 migrate.
 
-### Fixed — `LimiterNode` declared a tail one frame short
-
-The lookahead ring delays by its whole length, so the last input frame
-comes out that many frames after it went in, but the node declared one
-frame less. The executor parks a node whose inputs have been quiet for
-its tail, so a limiter parked at that moment could drop the ring's last
-frame. It now declares the full length. Its audio is unchanged.
 ### Changed — one one-pole coefficient: `Seconds::one_pole_coeff`
 
 The one-pole smoothing coefficient was computed six ways, with two

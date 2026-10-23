@@ -111,6 +111,8 @@ fn downmix_process_is_allocation_free() {
 /// Mutation (run): a `black_box(vec![0.0f32; size])` at the top of the
 /// unfed arm → the unfed gate fails; the same in the fed arm → the fed
 /// gate fails.
+/// Dropping the `feed` → the fed render equals the unfed one → the
+/// precondition fails.
 #[test]
 fn distortion_process_is_allocation_free_fed_and_unfed() {
     use tutti_core::SampleRate;
@@ -127,6 +129,8 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
     ];
     let drive: Vec<f32> = (0..64).map(|i| 1.0 + 0.0625 * i as f32).collect();
     for kind in kinds {
+        // The unfed render's first block, kept to prove the fed arm ran.
+        let mut unfed: Vec<Vec<f32>> = Vec::new();
         for fed in [false, true] {
             let mut node = Direct::new(
                 DistortionNode::with_channels(3, kind, 2.0),
@@ -146,6 +150,15 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
                 (0..3).all(|c| node.output(c).iter().any(|s| s.abs() > 1e-6)),
                 "{kind:?} fed={fed} rendered a silent channel; the gate would walk no curve"
             );
+            let first: Vec<Vec<f32>> = (0..3).map(|c| node.output(c).to_vec()).collect();
+            if fed {
+                assert_ne!(
+                    first, unfed,
+                    "{kind:?}: the fed drive changed nothing; the gate would walk the unfed arm"
+                );
+            } else {
+                unfed = first;
+            }
             assert_no_alloc::assert_no_alloc(|| {
                 for _ in 0..1_000 {
                     node.block();

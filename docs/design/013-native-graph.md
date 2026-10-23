@@ -3522,11 +3522,11 @@ Decisions:
    on a third 4-core container (Xeon, 2.8 GHz), beside both references
    there: a gain 0.03–0.05 and `SvfFilterNode<f64>` 6.6–6.8, so it is
    placed by the same log-scale rule, with the boundary at about 1.7 on
-   that box. The two arithmetic curves are far under it, fed or not
-   (fed, they sit about 0.6 of the way from the gain to the filter). `Crush`, at 2.2, is
-   the nearest to it, 0.78 of the way, and is `Moderate`, with the
-   other three above it; `Tanh`, the most expensive, is far under the
-   `Heavy` boundary (about 100 on that box). Every curve pays about 110–130 ns a
+   that box. The two arithmetic curves are under it, fed or not (fed,
+   about 0.6 against the boundary's 0.73). `Crush`, at 2.2, is the
+   nearest to it, 0.78 of the way, and is `Moderate`, with the other
+   three above it; `Tanh`, the most expensive, is far under the `Heavy`
+   boundary (about 100 on that box). Every curve pays about 110–130 ns a
    block fixed, against the gain's 100–120. The class is per curve, not
    per node: the curve is fixed at construction, and the declared shape
    reads it.

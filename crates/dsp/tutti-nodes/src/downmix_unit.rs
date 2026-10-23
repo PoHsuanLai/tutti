@@ -12,9 +12,10 @@
 //! **This module contains no matrix of its own and must never grow one.**
 //! Every coefficient comes from [`fold_planar_channel`], the planar entry
 //! point beside [`fold_frame`] in `tutti-types`, which shares its stereo
-//! kernel and gives the same bits as the per-frame fold. That module exists precisely so the live path and the
-//! offline export path cannot drift apart, and a second copy here would defeat
-//! it — the node below only hands it one output channel at a time.
+//! kernel and gives the same bits as the per-frame fold. That module exists
+//! precisely so the live path and the offline export path cannot drift
+//! apart, and a second copy here would defeat it — the node below only
+//! hands it one output channel at a time.
 //!
 //! # Upmix zero-fills
 //!

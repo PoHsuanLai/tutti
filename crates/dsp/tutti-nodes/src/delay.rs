@@ -12,7 +12,9 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 
 use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_graph::{
+    Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 use tutti_types::UnitParam;
 
 use crate::ramp::{block_driven, finite_or, LastGood, Ramp};
@@ -156,8 +158,10 @@ impl DelayLine {
     #[inline]
     fn read_at(&self, delay_samples: usize) -> f32 {
         let len = self.buffer.len();
-        let idx = (self.write_pos + len - 1 - delay_samples.min(self.max_delay_samples)) % len;
-        self.buffer[idx]
+        // `write_pos < len` and the clamped delay is below `len`, so the sum
+        // is below `2 * len`: one conditional subtract wraps it.
+        let idx = self.write_pos + len - 1 - delay_samples.min(self.max_delay_samples);
+        self.buffer[if idx >= len { idx - len } else { idx }]
     }
 }
 
@@ -547,8 +551,8 @@ impl DelayLineNode {
     fn render(
         &mut self,
         size: usize,
-        x: impl Fn(usize, usize) -> f32,
-        y: impl FnMut(usize, usize, f32),
+        inputs: &Inputs<'_>,
+        outputs: &mut Outputs<'_, '_>,
         fb_port: Option<&[f32]>,
         dt_port: Option<&[f32]>,
         mix_port: Option<f32>,
@@ -605,7 +609,14 @@ impl DelayLineNode {
             let (fb, cf) = Feedback::stable_pair(target.fb, target.cf);
             let (fb, cf, mix) = (fb.get(), cf.get(), target.mix);
             let ramps = &self.delay_ramps;
-            lines.run(size, x, y, |_| (fb, cf), |c, _| ramps[c].at(0), |_| mix);
+            lines.run(
+                size,
+                inputs,
+                outputs,
+                |_| (fb, cf),
+                |c, _| ramps[c].at(0),
+                |_| mix,
+            );
         } else {
             // Self- and cross-feedback feed the same loop, so they are bounded
             // as a pair — clamping each alone still admits a combined 1.98. A
@@ -631,7 +642,7 @@ impl DelayLineNode {
                     _ => ramps[c].at(i),
                 }
             };
-            lines.run(size, x, y, loop_gain, delay_at, |i| mix_r.at(i));
+            lines.run(size, inputs, outputs, loop_gain, delay_at, |i| mix_r.at(i));
         }
 
         // Where the next block's ramps start.
@@ -665,8 +676,8 @@ impl Lines<'_> {
     fn run(
         self,
         size: usize,
-        x: impl Fn(usize, usize) -> f32,
-        mut y: impl FnMut(usize, usize, f32),
+        inputs: &Inputs<'_>,
+        outputs: &mut Outputs<'_, '_>,
         gain: impl Fn(usize) -> (f32, f32),
         delay_at: impl Fn(usize, usize) -> f32,
         mix_at: impl Fn(usize) -> f32,
@@ -675,10 +686,10 @@ impl Lines<'_> {
         if !self.coupled {
             // Independent channels: channel-outer, one line at a time.
             for (c, line) in self.delays.iter_mut().enumerate() {
-                for i in 0..size {
+                let (input, output) = (&inputs.get(c)[..size], &mut outputs.get(c)[..size]);
+                for (i, (y, &x)) in output.iter_mut().zip(input).enumerate() {
                     let (fb, _) = gain(i);
-                    let v = delay_step(line, x(c, i), delay_at(c, i), fb, mix_at(i), interp);
-                    y(c, i, v);
+                    *y = delay_step(line, x, delay_at(c, i), fb, mix_at(i), interp);
                 }
             }
             return;
@@ -694,7 +705,7 @@ impl Lines<'_> {
                 self.taps[c] = line.read_sample((d.max(1.0) - 1.0).max(0.0), interp);
             }
             for (c, line) in self.delays.iter_mut().enumerate() {
-                let mut acc = x(c, i) + self.taps[c] * fb;
+                let mut acc = inputs.get(c)[i] + self.taps[c] * fb;
                 for (j, &w) in self.routing[c * n..(c + 1) * n].iter().enumerate() {
                     if w != 0.0 {
                         acc += (w * cf) * self.taps[j];
@@ -704,7 +715,7 @@ impl Lines<'_> {
             }
             for (c, line) in self.delays.iter().enumerate() {
                 let wet = line.read_sample(delay_at(c, i), interp);
-                y(c, i, mix.blend(x(c, i), wet));
+                outputs.get(c)[i] = mix.blend(inputs.get(c)[i], wet);
             }
         }
     }
@@ -764,14 +775,7 @@ impl Node for DelayLineNode {
             block_driven(&io, 2),
         );
         let (inputs, mut outputs) = io.split();
-        self.render(
-            size,
-            |c, i| inputs.get(c)[i],
-            |c, i, v| outputs.get(c)[i] = v,
-            fb,
-            dt,
-            mix,
-        );
+        self.render(size, &inputs, &mut outputs, fb, dt, mix);
         Status::Modified
     }
 
@@ -866,6 +870,29 @@ mod tests {
 
         let val = dl.read_sample(2.0, InterpolationMode::None);
         assert!((val - 1.0).abs() < 0.001, "Expected 1.0, got {val}");
+    }
+
+    /// An integer read is a delay of exactly that many frames, at every
+    /// delay the line holds and every cursor position: an impulse pushed at
+    /// frame `k` reads back at `d` only on frame `k + d`.
+    ///
+    /// Mutation (run): drop the wrap's subtract in `read_at` → reads past the
+    /// end → panics; wrap at `idx > len` → reads index `len` → panics;
+    /// subtract one fewer → the impulse lands a frame early → fails.
+    #[test]
+    fn an_integer_read_delays_by_exactly_that_many_frames() {
+        const MAX: usize = 6;
+        for at in 0..3 * (MAX + 1) {
+            let mut dl = DelayLine::new(MAX);
+            for frame in 0..at + MAX + 2 {
+                dl.push_sample(if frame == at { 1.0 } else { 0.0 });
+                for d in 0..=MAX {
+                    let want = if frame == at + d { 1.0 } else { 0.0 };
+                    let got = dl.read_sample(d as f32, InterpolationMode::None);
+                    assert_eq!(got, want, "impulse at {at}, frame {frame}, delay {d}");
+                }
+            }
+        }
     }
 
     #[test]

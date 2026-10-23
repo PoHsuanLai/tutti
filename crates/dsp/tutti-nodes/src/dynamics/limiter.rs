@@ -52,7 +52,7 @@ impl LookaheadRing {
 
     /// Frames still held when the input stops.
     ///
-    /// The ring delays by `lookahead_samples - 1` (see `read_back` below), so
+    /// The ring delays by `lookahead_samples - 1` (see `step` below), so
     /// that many frames outlive a silent input. The release envelope is not part
     /// of this: it shapes gain, and gain applied to silence is silence.
     fn ring_out(&self) -> Samples {
@@ -73,9 +73,10 @@ impl LookaheadRing {
     /// share). `delayed` and `frame` are both `width` long.
     #[inline]
     fn step(&mut self, frame: &[f32], gain: f32, delayed: &mut [f32]) -> f32 {
+        // Each ring holds `lookahead_samples`, so its oldest slot is the
+        // sample `lookahead_samples` pushes back.
         for (c, b) in self.buffers.iter_mut().enumerate() {
-            delayed[c] = b.read_back(self.lookahead_samples - 1);
-            b.push(frame[c]);
+            delayed[c] = b.replace_oldest(frame[c]);
         }
 
         // The deque's window is the lookahead: the push drops the gain
@@ -660,14 +661,27 @@ impl Node for BrickwallLimiterNode {
         let n = self.channels;
         let ceiling_fed = io.param(0).frames();
         let (inputs, mut outputs) = io.split();
+        // Channel-major: the clip is memoryless, so a sample's value depends
+        // only on its input and its frame's ceiling, not on the loop order.
 
-        // Modulated path: read the ceiling per sample.
+        // Modulated path: read the ceiling per frame. Each frame's linear
+        // ceiling is converted once and lands in channel 0's output, which
+        // every channel then clips against; channel 0 is clipped last, over
+        // its own ceiling.
         if let Some(v) = ceiling_fed {
-            for (i, &db) in v.iter().enumerate() {
-                let ceiling_linear = db_to_amplitude(Db(db)).get();
-                for c in 0..n {
-                    outputs.get(c)[i] = Self::clip_at(inputs.get(c)[i], ceiling_linear);
+            let mut outs = outputs.iter_mut();
+            let first = &mut outs.next().expect("at least one channel")[..size];
+            for (o, &db) in first.iter_mut().zip(v) {
+                *o = db_to_amplitude(Db(db)).get();
+            }
+            for (c, out) in outs.enumerate() {
+                let input = &inputs.get(c + 1)[..size];
+                for ((o, &x), &ceiling) in out[..size].iter_mut().zip(input).zip(&*first) {
+                    *o = Self::clip_at(x, ceiling);
                 }
+            }
+            for (o, &x) in first.iter_mut().zip(&inputs.get(0)[..size]) {
+                *o = Self::clip_at(x, *o);
             }
             return Status::Modified;
         }
@@ -677,9 +691,10 @@ impl Node for BrickwallLimiterNode {
             self.ceiling_linear = db_to_amplitude(ceiling).get();
         }
 
-        for i in 0..size {
-            for c in 0..n {
-                outputs.get(c)[i] = self.clip(inputs.get(c)[i]);
+        for c in 0..n {
+            let (input, out) = (&inputs.get(c)[..size], &mut outputs.get(c)[..size]);
+            for (o, &x) in out.iter_mut().zip(input) {
+                *o = self.clip(x);
             }
         }
         Status::Modified
@@ -1144,6 +1159,56 @@ mod tests {
                     (ratio - 0.5).abs() < 0.1,
                     "ch{c} not linked to ch0: ratio {ratio}"
                 );
+            }
+        }
+    }
+
+    /// A block of every channel clips each sample against its own frame's
+    /// fed ceiling: frame `i` is fed `-i/4` dB and every channel holds
+    /// `±2`, so each output is exactly that frame's linear ceiling, signed,
+    /// and a quiet sample passes through.
+    ///
+    /// Mutation (run): skip channel 0's final clip → channel 0 outputs the
+    /// bare ceiling, unsigned → fails; read the ceiling of frame `i - 1` for
+    /// the other channels → fails; unfed, read `inputs.get(0)` for every
+    /// channel → channel 1's sign is wrong → fails.
+    #[test]
+    fn brickwall_clips_each_frame_at_its_own_ceiling() {
+        use crate::test_support::RATE;
+        use tutti_graph::contract::drive;
+        const N: usize = 64;
+        let fed: Vec<f32> = (0..N).map(|i| -(i as f32) / 4.0).collect();
+        let ins: Vec<Vec<f32>> = (0..3)
+            .map(|c| {
+                (0..N)
+                    .map(|i| match (i + c) % 3 {
+                        0 => 2.0,
+                        1 => -2.0,
+                        _ => 0.0625,
+                    })
+                    .collect()
+            })
+            .collect();
+        let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
+        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(3u16), 0.0);
+        let out = drive(&mut bw, RATE, &refs, &[Some(&fed)]);
+        for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
+            for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
+                let ceiling = Db(fed[i]).to_amplitude().get();
+                let want = if x.abs() > ceiling {
+                    ceiling.copysign(x)
+                } else {
+                    x
+                };
+                assert_eq!(y, want, "fed: channel {c}, frame {i}");
+            }
+        }
+        // Unfed: one ceiling, 0 dB, for the whole block.
+        let out = drive(&mut bw, RATE, &refs, &[None]);
+        for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
+            for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
+                let want = if x.abs() > 1.0 { x.signum() } else { x };
+                assert_eq!(y, want, "unfed: channel {c}, frame {i}");
             }
         }
     }

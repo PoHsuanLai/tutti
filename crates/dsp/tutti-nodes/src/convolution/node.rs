@@ -60,9 +60,7 @@ impl DryAlign {
     /// before the push overwrites its slot — is `latency` pushes old.
     #[inline]
     pub(super) fn step(&mut self, input: f32) -> f32 {
-        let delayed = self.ring.read_back(self.ring.len() - 1);
-        self.ring.push(input);
-        delayed
+        self.ring.replace_oldest(input)
     }
 
     pub(super) fn clear(&mut self) {

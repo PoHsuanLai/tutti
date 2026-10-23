@@ -63,18 +63,17 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
     gate(ConvolverNode::folded(&refs, 256));
 }
 
-/// `DownmixNode::process` gathers an interleaved frame per sample and folds it.
-/// Both scratch buffers are sized at construction and taken with `mem::take`
-/// precisely so that path never allocates — this is the test that makes those
-/// two fields load-bearing rather than incidental. Driven alone in a
-/// graph (`BlockRig`).
+/// `DownmixNode::process` folds each output channel over whole slices with
+/// `tutti_types::fold_planar`, whose table of input channels is a stack array
+/// rather than a collected `Vec`, so the fold at any width allocates nothing.
+/// Driven alone in a graph (`BlockRig`).
 ///
 /// 6→2 is the shape that matters: it is the only one where the fold does real
 /// work (an equal-width or upmix fold is a copy), and it is what a 5.1 bus
 /// feeding a stereo master looks like.
 ///
-/// Mutation (run): build `frame` with `vec!` inside `process` instead of
-/// taking the scratch → fails.
+/// Mutation (run): collect the input slices into a `Vec` inside `process`
+/// → fails.
 #[test]
 fn downmix_process_is_allocation_free() {
     // Imported here rather than at file scope: the module-level imports are

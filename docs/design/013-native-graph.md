@@ -3776,6 +3776,19 @@ What they show:
   2005 → 221, 2261 → 539 and 2469 → 763. The `busstrip` rows above,
   re-run: 16 × 128 14.9 → 2.1 µs, 32 × 128 29.9 → 3.7.
 
+  The same change, made to the other frame-major kernels, gives the same
+  kind of win (`benches/node_kernels.rs`, `contract::Direct`, 4 cores,
+  the fastest of three interleaved runs, 64 / 1024 frames):
+  `ChannelSumNode` 8 × stereo 2.2 → 0.25 µs / 41.7 → 2.6;
+  `DistortionNode` hard clip at six channels 1.5 → 0.18 / 22.1 → 1.2
+  (tanh, bound by its libm call, 1.2×); `BrickwallLimiterNode` at six
+  channels 1.1 → 0.19 / 16.8 → 1.1; `DownmixNode` 6 → 2 1.3 → 0.30 /
+  18.9 → 2.5, through a planar `tutti_types::fold_planar` beside
+  `fold_frame`. Every one renders the same bits as before. A recurrence
+  is the exception: the phaser's stages are one dependent chain a
+  sample, and running it channel-outer measured 1.3–2× slower than the
+  sample-outer loop, which keeps one chain per channel in flight at once.
+
 Why the biquad ceiling does not carry over to tutti's graphs:
 
 - **No recursive siblings.** The same-kind sets that occur are:

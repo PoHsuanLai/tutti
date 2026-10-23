@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the motion machine's FSM is the engine's
+
+`MotionFsm` is now only the transport's control handle: send and schedule
+commands, read the published motion, the seek slot and the declick. The
+state machine itself is a plain field of an engine-owned audio half, which
+`Engine` keeps in its render state and drives through `&mut`; it is no
+longer behind an `AudioThreadCell`, so no other thread can be inside it
+while a block runs, and nothing on the audio path can be refused it. The
+engine takes the FSM when it is built (under the playhead claim it already
+held) and hands it back when it is dropped, so an engine built later over
+the same transport resumes the same motion state.
+
+With no engine, a command sent through `MotionFsm` stays queued: nothing
+applies it until an engine renders a block (`Engine::process` drains the
+queue at the start of every block, as before).
+
+| Was | Now |
+|---|---|
+| `MotionFsm::drain(&self) -> bool` (tutti-core) | removed. `Engine::process` drains at each block's start; delete the call before rendering. A test of the machine without an engine renders a block through an `Engine` instead |
+| `MotionFsm::complete_declick(&self) -> bool` (tutti-core) | removed: the engine completes its own fades |
+| — | `GraphEngineError::MotionHeld`: the transport's motion machine is held by an engine over another transport that shares its `motion` handle (`t.motion = other.motion.clone()`). A `match` on `GraphEngineError` needs the arm |
+
+### Fixed — a seek after a declicked seek no longer stops the transport
+
+A completed fade settled only the published motion; the state machine
+stayed in its declick state. A declicked seek while rolling therefore left
+the machine in `DeclickToLocate`, and the next seek that keeps the motion
+(`MotionEvent::locate`, `Then::Keep`) resolved it as stopped, stopping the
+transport; a scrub's `EndScrub` returned to stopped the same way. The
+machine now settles into the motion its fade was heading for when the fade
+completes. No migration.
 ### Added — a `ParamRamp` can follow a curve shape
 
 A `ParamRamp` is the relative move, from wherever the param stands; it

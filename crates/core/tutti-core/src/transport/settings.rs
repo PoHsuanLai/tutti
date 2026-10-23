@@ -63,7 +63,7 @@ pub struct TransportSettings {
     /// No engine-side writer sets it; a host drives it around its own
     /// count-in.
     pub in_preroll: Arc<AtomicBool>,
-    /// Derived from motion by [`MotionFsm`](super::MotionFsm) — the clock
+    /// Derived from motion by the engine's motion machine — the clock
     /// reads it to decide whether to advance. Not set directly.
     pub paused: Arc<AtomicBool>,
     /// Free-running sample count since the stream started, written by
@@ -155,7 +155,7 @@ impl TransportSettings {
     /// Whether the clock is holding position.
     ///
     /// Read-only here: the flag is derived from motion by
-    /// [`MotionFsm`](super::MotionFsm), so there is no setter to race it with.
+    /// the engine's motion machine, so there is no setter to race it with.
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Acquire)
     }

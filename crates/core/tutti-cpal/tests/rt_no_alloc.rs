@@ -81,7 +81,6 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
 
     transport.settings.set_tempo(120.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
-    transport.motion.drain();
 
     (transport, state)
 }

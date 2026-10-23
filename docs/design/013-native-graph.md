@@ -5533,11 +5533,9 @@ the source stands ("Shaped ramps" below).
   (`√t`) → `PowerIn(0.5)`; the cubic, quartic and quintic ins → `PowerIn(3,
   4, 5)`; the outs → `PowerOut(2 … 5)`; `SCurve` and `QuadInOut` →
   `PowerInOut(2)`, the other in-outs `PowerInOut(3 … 5)`. **Not carried:**
-  `Back`, `Elastic`, `Bounce` (they overshoot their endpoints), `Bezier`
-  (two control values; also `audio-automation`'s evaluates to its end value
-  at `t = 0`) and `Circular`. A lane sends those pieces as the
-  piecewise-linear fallback below. The pinned `audio-automation` rev is
-  unchanged.
+  `Back` and `Elastic` (they dip below their start), `Bounce` (not
+  monotone), `Bezier` (two control values) and `Circular`. A lane sends
+  those pieces as the piecewise-linear fallback below.
 - **The param port** (`param.rs`). An event source's running state
   (`Ramp`) gains the segment's timing and shape (`Curve`); `render_ramps`
   starts a segment on its frame from its own endpoints, and `step`

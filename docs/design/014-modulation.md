@@ -498,9 +498,15 @@ the play clock plus every corner.
 **Corners** (exact, whatever the step): an automation breakpoint; a
 square's edge, a saw's wrap, a random step; a triangle's peak; a drawn
 point; and **every zero crossing of a bipolar layer with a non-Linear
-curve**, because `shape()` curves `|x|` (`crates/core/tutti-mod/src/shape.rs:175-189`),
-which breaks the slope at each crossing. Closed-form waves give crossings
+curve**, because `shape()` curves `|x|` (`shape` in `crates/core/tutti-mod/src/shape.rs`):
+the offset `sign(x)·f(|x|)` is continuous at a crossing (every curve has
+`f(0) = 0`; `Elastic` by a special case, its formula's limit being about
+−5e-4) with the same slope either side, but where `f''(0) ≠ 0` its
+curvature flips sign there, so it is not smooth across it. A curve smooth
+through zero (`CubicIn`, `x³`) only gains a harmless extra corner. Closed-form waves give crossings
 analytically; a drawn piece's crossing is solved once per piece.
+`Stepped`'s jump at full magnitude and `Bounce`'s slope breaks inside the
+range are not corners: they fall under the last row of the table below.
 
 **The error bound.** Between corners an offset is smooth, and linear
 interpolation over a step `h` errs by at most `h² · max|f''| / 8`. For a sine
@@ -513,10 +519,17 @@ depth, is `(a + b)(2πfh)² / 8`:
 | `Linear` | 1 | 2.2e-4 (−73 dB) | 8.8e-4 (−61 dB) |
 | `PowerIn(k)`, `PowerOut(k)`, k ≥ 2 (`PowerInOut(k)`: 2k² − k) | k² | k = 2: 8.8e-4; k = 5: 5.5e-3 | k = 2: 3.5e-3 |
 | any other curve with bounded `g'`, `g''` | its own `a + b` | scale the `Linear` row | |
-| `PowerIn(k)`, `PowerOut(k)` with 1 < k < 2; `Logarithmic` (√t, a vertical tangent); `Circular`, `Back`, `Elastic`, `Bounce`, `Bezier` | unbounded (`g''` unbounded at an end, `Circular`'s vertical tangent, `Bounce`'s kinks) | no bound from this formula | |
+| `PowerIn(k)`, `PowerOut(k)` with 1 < k < 2; `Logarithmic` (√t, a vertical tangent); `Circular`, `Back`, `Elastic`, `Bounce`, `Bezier`, `Stepped` | unbounded (`g''` unbounded at an end, `Circular`'s vertical tangent, `Bounce`'s kinks, `Stepped`'s jump) | no bound from this formula | |
 
 For the last row the grid is the approximation, as it is today at block
-edges; the lane's tests pin each one's measured error at 10 Hz as a figure. **A
+edges. `Stepped` is 0 below full magnitude and 1 only at it, a single point
+no piece carries: a triangle's peak is a corner, so the lane evaluates the
+full-depth value there and ramps back to 0 over the next piece, a spike up
+to full depth whose width depends on where the grid falls. A sine's peak is
+not a corner, so a frame on it reads full depth while the lane reads 0. The
+error is up to the whole depth, and
+`the_curves_with_no_bound_err_as_measured` (`tutti-nodes/tests/control_lane.rs`)
+pins each curve's measured error at 10 Hz as a figure. **A
 triangle or a saw renders exactly only with a `Linear` curve**, the only one
 that keeps them linear between corners; under another curve they fall under
 the table. A square and a random step are constant between corners, so they
@@ -896,7 +909,7 @@ open:
 
 | Module (`crates/core/tutti-mod/src`) | Fate |
 |---|---|
-| `shape.rs` (`shape`, `curve_apply`, `LfoShape`, `Polarity`) | kept; `fold` deleted |
+| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `audio-automation`'s `CurveType::interpolate`, the editor's evaluation |
 | `curve.rs` | kept, moved into the floor |
 | `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
 | `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-mod` with `routing`. `tutti-mod` keeps no runtime. |

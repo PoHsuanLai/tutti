@@ -134,7 +134,7 @@ criterion = "0.8"
 #
 # `default-features = false` here is the floor: members that need reflection
 # opt in with `features = ["bevy_reflect"]` on their own line.
-audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "be7ccb9", default-features = false }
+audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "5c9c3a7", default-features = false }
 
 midly = { version = "0.5", default-features = false }
 midi2 = { version = "0.11", default-features = false, features = [

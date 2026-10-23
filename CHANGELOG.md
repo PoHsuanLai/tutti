@@ -58,6 +58,49 @@ Where the bits moved:
 Migration: no public signature changed. Replace a hand-written
 `exp(−1 / (τ · sr))` retention with `1.0 − tau.one_pole_coeff(sr)`, or
 better, step with `y += c · (x − y)`.
+### Changed — modulation curves evaluate as the editor draws them; renders change
+
+A modulation route's response curve (`Amount::curve`, `ModRoute::curve` in
+`bevy-tutti`) was evaluated by its own copy, `tutti_mod::curve_apply`, which
+disagreed with `audio-automation`'s `CurveType::interpolate`, the evaluation
+the editor draws and an automation envelope renders with:
+
+- `SCurve` was the smoothstep `3x² − 2x³`; it is now the quadratic in-out
+  (`2x²` to the half, mirrored after), as everywhere else. At a quarter the
+  shaped magnitude is 0.125, not 0.15625.
+- `Stepped`, `Bezier`, `Circular`, `Back`, `Elastic`, `Bounce` and every
+  `Quad`/`Cubic`/`Quart`/`Quint` variant were silently linear. They now shape
+  the offset by their own curve (`QuadIn` at a half is 0.25, not 0.5;
+  `Bezier(c1, c2)` at a half is `(3·c1 + 3·c2 + 1)/8`).
+- Every curve runs from 0 at no input to 1 at full input. `Back` and
+  `Elastic` dip below 0 on the way (minima about −0.10 and −0.373; neither
+  exceeds 1), so a small input pushes the other way: a bipolar offset
+  opposite its sign, a unipolar one below base, and a `DepthBy` scale
+  inverts the offset instead of shrinking it. A `Bezier` with control
+  values outside `[0, 1]` can leave `[0, 1]` either way. `Bounce` stays in
+  `[0, 1]` but is not monotone. These curves are accepted, not refused.
+
+**Renders change** for any route whose curve is not `Linear`,
+`Exponential` or `Logarithmic` (those three were already equal). That is
+intended: a curve now sounds as it is drawn. A bipolar route with any curve
+but `Linear` now takes corners at its wave's zero crossings
+(`Amount::kinks_at_zero`), as doc 014 §5.3 states, so the lane's
+piecewise-linear pieces stay on the curve there. `Stepped`'s jump at full
+magnitude and `Bounce`'s slope breaks are not corners: they join doc 014
+§5.3's curves with no error bound, and a bipolar triangle through `Stepped`
+spikes at its peak by up to the whole depth, depending on where the grid
+falls.
+
+The automation lane's segment mapping (`tutti_nodes::automation::segment_shape`)
+was already equal to `interpolate` on every curve it maps; a test now pins
+that over every `CurveType`.
+
+**Migration:** `tutti_mod::curve_apply` is removed. Call
+`curve.interpolate(0.0, 1.0, x)` (or `tutti_mod::shape`, which applies it).
+**Consumers must bump their `audio-automation` pin to `5c9c3a7`** (the
+workspace's `[workspace.dependencies]` rev), where `CurveType::Bezier` runs
+from its start value: two revs are two disjoint `CurveType`s, and a
+mismatch surfaces as `expected CurveType, found CurveType`.
 
 ### Changed — one random LFO: `LfoNode` runs `tutti-mod`'s `Wave`, and its random sequence changes
 

@@ -931,6 +931,73 @@ fn a_triangle_is_exact_and_a_sine_within_the_bound() {
     }
 }
 
+/// The curves doc 014 §5.3's formula gives no bound for err at 10 Hz
+/// (h = 32 at 48 kHz) by the figures measured here, as a fraction of
+/// depth: a bipolar sine through each, and a bipolar triangle through
+/// `Stepped`. `Stepped` is 0 below full magnitude and 1 only at it, a
+/// single point: the sine's peak lands on a frame (1200) the grid does
+/// not, so the lane reads 0 where the curve is 1; the triangle's peak is a
+/// corner, so the lane evaluates 1 there (frame 1200) and ramps to 0 by
+/// the next grid point (1216): the frame after the peak reads 15/16 of
+/// depth where the curve is 0. How wide the spike is depends on where the
+/// grid falls. The
+/// smooth curves' figures are pinned to 10 % (they read `sin` and `powf`,
+/// which differ in the last bits across targets); `Stepped`'s are exact
+/// fractions, pinned to 1e-3.
+///
+/// Mutations (run), each fails: the grid step doubled (`stride` 64) →
+/// `Logarithmic` errs 0.072, past its 0.0512; a triangle's peaks dropped
+/// from its corners (`corners_in`) → the `Stepped` triangle errs 1.0, not
+/// 0.9375. Dropping the zero-crossing corners does not fail it: this
+/// sine's crossings fall on grid frames.
+#[test]
+fn the_curves_with_no_bound_err_as_measured() {
+    let cases: [(LfoShape, CurveType, f64, f64); 8] = [
+        (LfoShape::Sine, CurveType::Logarithmic, 0.0512, 0.1),
+        (LfoShape::Sine, CurveType::Circular, 0.0209, 0.1),
+        (LfoShape::Sine, CurveType::Back, 0.00103, 0.1),
+        (LfoShape::Sine, CurveType::Elastic, 0.0100, 0.1),
+        (LfoShape::Sine, CurveType::Bounce, 0.0640, 0.1),
+        (LfoShape::Sine, CurveType::Bezier(0.25, 0.75), 0.000311, 0.1),
+        (LfoShape::Sine, CurveType::Stepped, 1.0, 1e-3),
+        (LfoShape::Triangle, CurveType::Stepped, 0.9375, 1e-3),
+    ];
+    let keys: Vec<u64> = (0..cases.len() as u64).map(|k| k + 2).collect();
+    let (mut ed, mut exec) = probes(128, &keys, (-10_000.0, 10_000.0));
+    for (&(shape, curve, ..), &k) in cases.iter().zip(&keys) {
+        let a = Amount {
+            curve,
+            ..amount(0.025)
+        };
+        let p = program(None, vec![layer(1, seconds(10.0), wave(shape), a)]);
+        // ±500 on a span of 20 000.
+        let lane = native(&ed, k, p, Some(1000.0));
+        wire(&mut ed, k + 100, lane, k);
+    }
+    ed.commit().expect("commits");
+    let (mut host, mut all) = (Host::new(), Vec::new());
+    for n in ragged(24_000, 128) {
+        host.roll(&mut ed, &mut exec, n, &mut all);
+    }
+    for (i, &(shape, curve, figure, within)) in cases.iter().enumerate() {
+        let mut err = 0.0f64;
+        for (f, &v) in all[i].iter().enumerate() {
+            let c = 10.0 * f as f64 / RATE;
+            let x = match shape {
+                LfoShape::Triangle => triangle(c),
+                _ => (std::f64::consts::TAU * c).sin(),
+            };
+            let mag = f64::from(curve.interpolate(0.0, 1.0, x.abs() as f32));
+            let want = 1000.0 + 500.0 * mag * x.signum();
+            err = err.max((f64::from(v) - want).abs() / 500.0);
+        }
+        assert!(
+            (err - figure).abs() <= within * figure,
+            "{shape:?} through {curve:?}: error {err}, measured {figure}"
+        );
+    }
+}
+
 /// Capacity (doc 014 §5.3): a 703.125 Hz square (120 edges per 4096
 /// frames, between frames and on them) in 4096-frame blocks takes the grid
 /// and every edge with nothing thinned or dropped, exact at every frame;

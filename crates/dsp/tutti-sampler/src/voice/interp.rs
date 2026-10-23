@@ -211,15 +211,19 @@ impl Gate {
 /// bit for bit at the clocks `tests/block_length_invariance.rs` pins). The step
 /// is the read's own rate (with the conversion to the render rate), the
 /// origin the gate's (in the source's frames); they agree to rounding.
+///
+/// Returns whether any frame has a position: `false` is a range the read
+/// is silent over from end to end.
 pub(crate) fn place(
     clock: &BlockClock<'_>,
     range: Range<usize>,
     gate: Gate,
     step: ReadRate,
     out: &mut [Option<SamplePosition>],
-) {
+) -> bool {
     debug_assert_eq!(out.len(), range.len(), "one position per frame");
     let base = range.start;
+    let mut sounds = false;
     for run in clock.runs_in(range) {
         let (a, b) = (run.start, run.end);
         let slots = &mut out[a - base..b - base];
@@ -236,12 +240,14 @@ pub(crate) fn place(
         slots[..e - a].fill(None);
         slots[x - a..].fill(None);
         if e < x {
+            sounds = true;
             let origin = gate.origin(run.beat_at(e), run.tempo());
             for (k, p) in slots[e - a..x - a].iter_mut().enumerate() {
                 *p = Some(origin + step.advance(Samples(k)));
             }
         }
     }
+    sounds
 }
 
 /// Whether the playhead has left `window` for good by the last frame of
@@ -888,6 +894,50 @@ mod tests {
         let mut out = vec![None; env.block_len.get()];
         place(&block, 0..out.len(), gate, ReadRate::UNITY, &mut out);
         out.into_iter().map(|p| p.map(|p| p.get())).collect()
+    }
+
+    /// **`place` reports a sound iff some frame has a position**: the
+    /// slot skips the read of a range it calls silent, so a `false` with a
+    /// position in it drops audio and a `true` over silence wastes the skip.
+    /// Over a window before, across and after the block, entered and left
+    /// mid-block, a stopped transport, a stop and a seek inside the block.
+    ///
+    /// Mutation (run): `sounds` set for every rolling run (outside the
+    /// `e < x` test) → the window after the block reports a sound → fails.
+    /// Mutation (run): `sounds` never set → every sounding row fails.
+    #[test]
+    fn place_sounds_iff_a_frame_has_a_position() {
+        let stopped = Transport::new(false, Bpm(120.0), Beat(1.0), None);
+        let span = |start: f64, frames: f64| {
+            gate(VoiceWindow::span(Beat(start), BeatDuration(frames / FPB)))
+        };
+        let rows: [(Env, Gate); 7] = [
+            (env(64, rolling(1.0), &[]), gate(VoiceWindow::default())),
+            (env(64, rolling(1.0), &[]), span(2.0, 100.0)),
+            (env(64, rolling(1.0), &[]), span(0.0, 100.0)),
+            (env(64, rolling(1.0 - 10.0 / FPB), &[]), span(1.0, 30.0)),
+            (env(64, stopped, &[]), gate(VoiceWindow::default())),
+            (
+                env(64, rolling(1.0), &[(5, stopped)]),
+                span(1.0 + 5.0 / FPB, 100.0),
+            ),
+            (
+                env(64, rolling(1.0), &[(40, rolling(3.0))]),
+                span(3.0, 100.0),
+            ),
+        ];
+        let mut sounding = 0;
+        for (i, (env, gate)) in rows.iter().enumerate() {
+            let block = super::super::clock::Clock::new().observe(env);
+            let mut out = vec![None; 64];
+            let sounds = place(&block, 0..64, *gate, ReadRate::UNITY, &mut out);
+            assert_eq!(sounds, out.iter().any(Option::is_some), "row {i}");
+            sounding += usize::from(sounds);
+        }
+        assert!(
+            (1..rows.len()).contains(&sounding),
+            "both answers are pinned"
+        );
     }
 
     /// **A window that opens and closes inside a block does so on its

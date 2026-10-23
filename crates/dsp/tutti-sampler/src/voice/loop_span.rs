@@ -58,6 +58,7 @@
 //! file where its length is known.
 
 use super::LoopSetting;
+use std::cmp::Ordering;
 use tutti_core::SamplePosition;
 
 /// A loop over whole file frames `[start, end)`, with a crossfade of `fade`
@@ -152,10 +153,19 @@ impl LoopSpan {
     /// Modulo, so an overshoot longer than the loop still lands inside it.
     pub(crate) fn place(&self, pos: f64) -> (f64, bool) {
         let (resume, end) = (self.resume as f64, self.end as f64);
-        if pos < end {
+        if !self.wrapped(pos) {
             return (pos, false);
         }
         (resume + (pos - end).rem_euclid(end - resume), true)
+    }
+
+    /// Whether [`place`](Self::place) puts a read at `pos` past the loop's
+    /// first pass (its second value), without placing it.
+    #[inline]
+    pub(crate) fn wrapped(&self, pos: f64) -> bool {
+        // Not "below the end", so a NaN position counts as wrapped, as
+        // `place` has always placed it.
+        !matches!(pos.partial_cmp(&(self.end as f64)), Some(Ordering::Less))
     }
 
     /// [`place`](Self::place) for a whole frame: the file frame a forward
@@ -204,6 +214,25 @@ impl LoopSpan {
     #[inline]
     pub(crate) fn taps(&self, len: usize, pos: f64, looped: bool) -> ([LoopTap; 4], f32) {
         let (idx, frac) = super::interp::split_position(pos);
+        (self.frame_taps(len, idx, looped), frac)
+    }
+
+    /// Whether [`frame_taps`](Self::frame_taps) for whole frame `idx` (of a
+    /// file at least [`end`](Self::end) long) are the file's own
+    /// `idx - 1 ..= idx + 2`, unclamped and outside the fade: the frame is
+    /// past the file's first, its taps short of the fade (and of the wrap
+    /// behind it), and not on `resume` after a wrap (where the frame behind
+    /// is the loop's last). Then a looped read takes the taps an unlooped
+    /// one does.
+    #[inline]
+    pub(crate) fn plain(&self, idx: usize, looped: bool) -> bool {
+        idx >= 1 && idx + 2 < self.end - self.fade && !(looped && idx == self.resume)
+    }
+
+    /// [`taps`](Self::taps) for whole frame `idx` (the position split by
+    /// `interp::split_position`): the four frames, without the fraction.
+    #[inline]
+    pub(crate) fn frame_taps(&self, len: usize, idx: usize, looped: bool) -> [LoopTap; 4] {
         let cycle = self.end - self.resume;
         let last = len - 1;
         let back_wraps = looped && idx >= self.resume;
@@ -224,7 +253,7 @@ impl LoopSpan {
                 fade: self.fade_at(frame),
             }
         };
-        ([tap(-1), tap(0), tap(1), tap(2)], frac)
+        [tap(-1), tap(0), tap(1), tap(2)]
     }
 }
 
@@ -246,6 +275,48 @@ mod tests {
     use super::*;
 
     const ANY: usize = usize::MAX;
+
+    /// **`plain` is exactly the frames whose looped taps are the file's
+    /// own `idx - 1 ..= idx + 2`, none in the fade**: a looped block read
+    /// takes those four straight from the wave, so a `plain` frame whose
+    /// taps wrap or fade would read the wrong frames, and one missed is only
+    /// slower. Exhaustive over small loops in both fade modes, before and
+    /// after the first wrap, every frame from 1 (frame 0's tap behind clamps
+    /// to itself) to past the loop.
+    ///
+    /// Mutation (run): `idx + 2 <= end - fade` → the frame whose last tap is
+    /// the fade's first is plain → fails. Mutation (run): the
+    /// `looped && idx == resume` exclusion dropped → `resume`'s tap behind
+    /// wraps to `end - 1` → fails.
+    #[test]
+    fn plain_is_exactly_the_unwrapped_unfaded_taps() {
+        let mut plain = 0;
+        for start in 0..6 {
+            for end in start + 1..start + 12 {
+                for fade in 0..6 {
+                    let Some(span) = LoopSpan::new(start, end, fade, end) else {
+                        continue;
+                    };
+                    for looped in [false, true] {
+                        for idx in 1..end {
+                            let own = span
+                                .frame_taps(end, idx, looped)
+                                .iter()
+                                .enumerate()
+                                .all(|(k, tap)| tap.frame + 1 == idx + k && tap.fade.is_none());
+                            assert_eq!(
+                                span.plain(idx, looped),
+                                own,
+                                "[{start}, {end}) fade {fade}, frame {idx}, looped {looped}"
+                            );
+                            plain += usize::from(own);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(plain > 0, "some frames are plain");
+    }
 
     /// **The fade leads into `start`.** A 4-frame fade on `[10, 20)` blends
     /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else; the

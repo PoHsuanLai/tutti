@@ -1296,7 +1296,7 @@ impl Reference {
                 while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                     match e.kind {
                         EventKind::Ramp(r) if r.addr() == want => {
-                            // A first ramp starts from the base.
+                            // A first ramp starts from the base at this frame.
                             let cur = if st.ramp.started {
                                 st.ramp.value
                             } else {

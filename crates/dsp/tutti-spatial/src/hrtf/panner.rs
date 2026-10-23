@@ -128,7 +128,10 @@ pub const MAX_SPHERE_RATE: u32 = 384_000;
 /// prepared response is at most `MAX_PREPARED_RATE / 20` frames (50 ms
 /// here) whatever rate the graph asks for: an unbounded one (`1e10`) once
 /// sized each vertex's spectrum at 2^26 values and aborted on allocation.
-/// 768 kHz is twice the highest rate audio hardware runs at.
+/// 768 kHz is twice the highest rate audio hardware runs at. Above it the
+/// HRIR is applied time-compressed by `rate / 768 kHz`, which shifts its
+/// spectral cues up by that factor; the de-zipper still glides in the
+/// graph's own time.
 pub const MAX_PREPARED_RATE: u32 = 768_000;
 
 /// The sphere's rate vocabulary: an integral Hz, as the file stores it. It is
@@ -219,9 +222,11 @@ impl HrtfBinaural {
     }
 
     /// Prepares the sphere at a new rate and clears the streaming state,
-    /// seating the de-zipper on `target`. A no-op at the current rate, so a
-    /// re-prepare for a new block size keeps the tail in flight. Allocates:
-    /// control thread only.
+    /// seating the de-zipper on `target`. At the set's current rate it only
+    /// retunes the de-zipper (allocation-free), so a re-prepare for a new
+    /// block size keeps the tail in flight. Two graph rates above
+    /// [`MAX_PREPARED_RATE`] share one set but not one glide coefficient.
+    /// Allocates on a new rate: control thread only.
     pub(crate) fn set_sample_rate(
         &mut self,
         sample_rate: SampleRate,
@@ -229,6 +234,7 @@ impl HrtfBinaural {
     ) {
         let rate = rate_key(sample_rate);
         if rate == self.set.rate {
+            self.aim.set_sample_rate(sample_rate);
             return;
         }
         let set = HrtfSet::build(&self.sphere, rate, STEP);
@@ -433,6 +439,34 @@ mod tests {
         assert!(Arc::ptr_eq(&a.sphere, &b.sphere));
         assert!(!Arc::ptr_eq(&a.set, &b.set));
         assert_eq!(a.set.rate, 96_000);
+    }
+
+    /// Two graph rates above [`MAX_PREPARED_RATE`] share one prepared set,
+    /// but the de-zipper still glides in the graph's own time: built at
+    /// 1.536 MHz and prepared at 1.024 MHz, 50 ms is 51 200 samples, exactly
+    /// 400 steps, and leaves `e^-1` of a move. Left at 1.536 MHz's
+    /// coefficient (600 steps per 50 ms) it would leave `e^-(2/3)` = 0.51.
+    ///
+    /// Mutation (run): drop `self.aim.set_sample_rate(sample_rate)` from
+    /// `set_sample_rate`'s same-set branch → 0.513 of the move is left and
+    /// the glide assertion fails.
+    #[test]
+    fn a_prepare_above_the_ceiling_retunes_the_glide() {
+        assert_eq!(STEP, 128, "the rates below assume 128-sample steps");
+        let front = (Azimuth::FRONT, Elevation::LEVEL);
+        let mut a =
+            HrtfBinaural::new(&tetrahedron(48_000), SampleRate(1_536_000.0)).expect("parses");
+        let set = a.set.clone();
+        a.set_sample_rate(SampleRate(1_024_000.0), front);
+        assert!(Arc::ptr_eq(&a.set, &set), "both rates key to one set");
+        assert_eq!(a.set.rate, MAX_PREPARED_RATE);
+
+        let e_inv = (-1.0f32).exp();
+        let left = remaining_after(&mut a.aim, 400);
+        assert!(
+            (left - e_inv).abs() < 1e-4,
+            "after 50 ms at 1.024 MHz {left} of the move is left, expected e^-1 = {e_inv}"
+        );
     }
 
     /// Remaining fraction of a step from 0 to 90 degrees of height after

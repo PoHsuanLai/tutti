@@ -242,20 +242,30 @@ pub(crate) mod test_utils {
     /// would be a different static that `process` never reads.
     #[cfg(feature = "clap")]
     pub fn set_clap_probe_render_mode(mode: u32) {
-        // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
-        // `tutti-clap-test-plugin`, and the library is already resident (the
-        // instance under test holds it open), so this re-open is a refcount
-        // bump rather than a fresh load.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path())
-                .expect("reference plugin opens for the render-mode symbol");
-            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                .get(b"tutti_test_plugin_set_render_mode\0")
-                .expect("`tutti_test_plugin_set_render_mode` exported by the reference plugin");
-            set(mode);
-            // Leak the handle: dropping it would decrement the refcount on a
-            // library the live instance is still using.
-            std::mem::forget(lib);
+        set_clap_probe_switch(b"tutti_test_plugin_set_render_mode\0", mode);
+    }
+
+    /// Call the reference plugin's `#[no_mangle] extern "C" fn(u32)` switch
+    /// `symbol` in every image of it a test loads: the cargo artifact and its
+    /// `.clap` alias. On unix the alias is a symlink, so both opens reach one
+    /// image; on Windows it is a copy, which the loader maps as a second
+    /// module with its own statics.
+    #[cfg(feature = "clap")]
+    fn set_clap_probe_switch(symbol: &[u8], value: u32) {
+        for path in [clap_probe_path(), clap_probe_path_dot_clap()] {
+            // SAFETY: every switch is `#[no_mangle] extern "C" fn(u32)` in
+            // `tutti-clap-test-plugin`. The handle is leaked: dropping it
+            // would decrement the refcount on a library a live instance may
+            // be using, and a switch set before a load must stay resident
+            // for the instance loaded after it.
+            unsafe {
+                let lib = libloading::Library::new(path).expect("reference plugin opens");
+                let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
+                    .get(symbol)
+                    .expect("switch exported by the reference plugin");
+                set(value);
+                std::mem::forget(lib);
+            }
         }
     }
 
@@ -310,19 +320,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_port_layout(mode: u32) {
-        // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
-        // `tutti-clap-test-plugin`. The handle is leaked, as in
-        // `set_clap_probe_render_mode`, so the image stays resident for the
-        // instance loaded after this call.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path())
-                .expect("reference plugin opens for the port-layout symbol");
-            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                .get(b"tutti_test_plugin_set_port_layout\0")
-                .expect("`tutti_test_plugin_set_port_layout` exported by the reference plugin");
-            set(mode);
-            std::mem::forget(lib);
-        }
+        set_clap_probe_switch(b"tutti_test_plugin_set_port_layout\0", mode);
     }
 
     /// Make the reference plugin's ports on the sides in `mask` advertise
@@ -353,19 +351,7 @@ pub(crate) mod test_utils {
 
     #[cfg(feature = "clap")]
     fn set_clap_probe_ports_64bit(mask: u32) {
-        // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
-        // `tutti-clap-test-plugin`. The handle is leaked, as in
-        // `set_clap_probe_render_mode`, so the image stays resident for the
-        // instance loaded after this call.
-        unsafe {
-            let lib = libloading::Library::new(clap_probe_path())
-                .expect("reference plugin opens for the 64-bit port symbol");
-            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-                .get(b"tutti_test_plugin_set_ports_64bit\0")
-                .expect("`tutti_test_plugin_set_ports_64bit` exported by the reference plugin");
-            set(mask);
-            std::mem::forget(lib);
-        }
+        set_clap_probe_switch(b"tutti_test_plugin_set_ports_64bit\0", mask);
     }
 
     /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the

@@ -602,7 +602,9 @@ place that loses precision to be written out explicitly:
      `Transport`'s position is private: `Transport::new(.., beat, ..)` (a
      bare beat, the block start its own origin, for a transport built by
      hand) or `Transport::counted(.., SegmentOrigin, ..)` (the host's
-     origin beat, the frames rolled since, and **their rate**). `beat()`
+     origin beat, the frames rolled since, and **their rate**). A bare
+     beat walked on to a frame stays bare to `Transport::origin`: its
+     frame count is the walk's, not the host's. `beat()`
      derives a counted position's beat, so the beat and its frame count are
      one value, and the origin's rate travels with it (`Transport::clock`
      debug-asserts it matches the block's). `EnvClock` and
@@ -6489,8 +6491,8 @@ metronome's meter is 7/8.
 
 #### Plugin transport: project time, host clock, MIDI clock; editor scale
 
-The snapshot a plugin chunk is handed (`transport_source::from_cx`) now
-fills the three fields the ABIs ask for that it used to leave empty:
+The snapshot a plugin chunk is handed (`transport_source::from_cx`)
+fills three fields the ABIs ask for beyond the beat and the tempo:
 
 - **Project time** (`TransportPosition::samples`: VST2 `samplePos`, VST3
   `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
@@ -6515,15 +6517,23 @@ fills the three fields the ABIs ask for that it used to leave empty:
   exact for one tempo change between two reads; with more (a ramp's steps
   inside one chunk) the frames at the tempos between are counted at the
   earlier one, and a tempo that changes and comes back inside one chunk
-  re-seats. A seek and a tempo change inside one chunk cannot be told
-  from a tempo change alone, so a seek forward by less than the chunk
-  plays is then counted as played. A wrap or a seek that lands back on a
+  re-seats. A ramp that speeds up plays those beats in fewer frames than
+  that count, which can pass the gap (beat 100, 120 → 130 BPM at frame 16
+  → 140 at frame 32: 17 frames counted for 16), so the count is capped at
+  the room the gap leaves whenever the beats moved fit it at the faster
+  of the two tempos; only beats that do not fit even then re-seat. A seek
+  and a tempo change inside one chunk cannot be told from a tempo change
+  alone, and the cap widens that: a seek forward whose beats fit the gap
+  at the faster tempo is counted as played. A wrap or a seek that lands back on a
   segment's first beat starts a segment with the same origin; counting
   it reads what a re-seat would, since project time has been the beat's
   time from that segment's own wrap or seek on, except for a segment
   begun at a tempo change and sought back to within one chunk.
   A transport built by hand (`Transport::new`, which no engine block
-  carries) has no segment, and is read by the playhead's rule instead
+  carries) has no segment, and neither has its walk to a frame
+  (`Env::transport_at`, the transport history): a frame count from a
+  bare beat is not the host's, so `Transport::origin` is `None` for it.
+  It is read by the playhead's rule instead
   (`continued_without_origin`): `tutti_graph::Transport::continuity`
   judged against the earlier read's loop, a stop or a start between the
   reads counted by `played_across` as the beats moved forward at a tempo
@@ -6533,11 +6543,9 @@ fills the three fields the ABIs ask for that it used to leave empty:
   off by `n · |1 − r|`, `r` the ratio of the two, up to the whole gap at
   a 2 : 1 change. A start where the
   transport stopped continues the time the plugin was told there, as a
-  tempo map would; re-seating at a stop made `samplePos` jump at the stop
-  after any tempo change. Re-deriving every chunk instead made project
-  time jump back at each tempo change (beat 100, 120 → 121 BPM: 2 400 031
-  then 2 380 197), since without a tempo map the beat's time at the new
-  tempo is not the time played. The free-running counter stays
+  tempo map would: after a tempo change the beat's time at the tempo in
+  force is not the time played, so a re-seat at a stop, or at every
+  chunk, would make `samplePos` jump back. The free-running counter is
   `SteadyTime`.
 - **Host clock** (`TransportInfo::system_time_ns`: VST2 `nanoSeconds`, VST3
   `systemTime`) is a `HostClock` reading of the OS's monotonic clock, the
@@ -6584,9 +6592,12 @@ Pinned analytically: `transport_source`'s unit tests (project time
 rolling through a tempo change, held through a stop and a start where it
 stood, through a stop and a start inside one chunk and a loop edit,
 counted exactly across a tempo change between two reads, and re-seated at
-a seek (stopped or playing, inside one chunk too), a loop wrap, a rate
-change and a start elsewhere, each on the engine's own `FrameClock`;
-a hand-built transport read by the playhead's rule; the host clock at a chunk's frame, and on the OS clock),
+a seek (stopped or playing, inside one chunk too, and forward with a
+tempo change), a loop wrap, a rate change and a start elsewhere, each on
+the engine's own `FrameClock`; a tempo ramp that speeds up inside one
+chunk counted, not re-seated; a hand-built transport read by the
+playhead's rule through `Cx::transport_at`, and `tutti-graph`'s
+`a_bare_beats_walk_has_no_origin`; the host clock at a chunk's frame, and on the OS clock),
 `Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
 bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
 `the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,

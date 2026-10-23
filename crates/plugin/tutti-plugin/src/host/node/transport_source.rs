@@ -158,18 +158,24 @@ impl SteadyTime {
 ///   the earlier read up to the new segment's first beat, at the earlier
 ///   tempo, plus the new segment's frames. Exact for one tempo change
 ///   between the reads; with more (a ramp's steps inside one chunk), the
-///   frames at the tempos between are counted at the earlier one.
+///   frames at the tempos between are counted at the earlier one. A ramp
+///   that speeds up plays those beats in fewer frames than that count, so
+///   the count is capped at the frames between the reads: if those beats
+///   fit the gap at the faster of the two tempos, it is a ramp, not a seek.
+///   The cost is a wider seek-plus-tempo ambiguity (below): a seek forward
+///   and a tempo change inside one chunk are counted as played whenever the
+///   beats moved fit the gap at the faster tempo.
 /// - **A new segment at the same tempo**: a seek or a wrap, a re-seat. So is
 ///   a tempo that changes and comes back inside one chunk.
 ///
 /// Either count must be no more than the frames between the reads, or it
 /// re-seats. A seek and a tempo change inside one chunk cannot be told
 /// from a tempo change alone: a seek forward by less than the chunk plays
-/// is counted as played.
+/// at the faster tempo is counted as played, as the gap.
 ///
 /// A transport built by hand ([`Transport::new`]: no frame count, which no
-/// engine block carries) is read by the playhead's rule instead
-/// ([`continued_without_origin`]).
+/// engine block carries, and none when walked on to a frame) is read by the
+/// playhead's rule instead ([`continued_without_origin`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ProjectTime {
     last: Option<ProjectRead>,
@@ -238,10 +244,18 @@ fn played_between(
         b.frame.get().checked_sub(a.frame.get())?
     } else if from.tempo != to.tempo {
         // `to`'s segment began at the tempo change, on the beat `from`'s
-        // segment had reached there.
-        let per_beat = 60.0 / from.tempo.get() * rate.get();
-        let before = ((b.beat.get() - from.beat().get()) * per_beat).round();
-        if !(0.0..=gap as f64).contains(&before) {
+        // segment had reached there: the beats between, as frames at
+        // `from`'s tempo. Steps of a ramp between the reads played some of
+        // them at tempos between the two, so they took no fewer frames than
+        // at the faster of the two; a speeding-up ramp's count at `from`'s
+        // tempo can pass the room the gap leaves, and is capped there.
+        let beats = b.beat.get() - from.beat().get();
+        let frames_at = |tempo: Bpm| (beats * 60.0 / tempo.get() * rate.get()).round();
+        let least = frames_at(Bpm(from.tempo.get().max(to.tempo.get())));
+        let room = gap.saturating_sub(usize::try_from(b.frame.get()).ok()?) as f64;
+        // More than the fewest is not capped, so the check below re-seats it.
+        let before = frames_at(from.tempo).min(least.max(room));
+        if before.is_nan() || before < 0.0 {
             return None;
         }
         (before as u64).checked_add(b.frame.get())?
@@ -1050,6 +1064,55 @@ mod tests {
         );
     }
 
+    /// **A tempo ramp that speeds up inside one chunk keeps project time**:
+    /// beat 100 at 120 BPM, 130 BPM at frame 16 and 140 BPM at frame 32,
+    /// read once a block. The 16 frames at 130 counted at 120 are 17, one
+    /// more than the gap leaves, so the count is capped there: 64 frames
+    /// played, where a re-seat would jump about 7 s back (2 057 203 at the
+    /// second read).
+    ///
+    /// Mutation (run): drop the cap (the count before the new segment at
+    /// `from`'s tempo only) → the second read is 65 frames past a gap of 64
+    /// and re-seats to 2 057 203 → fails.
+    #[test]
+    fn a_tempo_ramp_that_speeds_up_inside_one_chunk_keeps_project_time() {
+        let mut h = Host::new(true, 120.0, 100.0);
+        let blocks = [
+            h.block(64, &[(16, Cmd::Tempo(130.0)), (32, Cmd::Tempo(140.0))]),
+            h.block(64, &[]),
+            h.block(64, &[]),
+        ];
+        assert_eq!(
+            read_firsts(&blocks),
+            [2_400_000, 2_400_064, 2_400_128].map(Some)
+        );
+    }
+
+    /// **A seek forward by beats and a tempo change inside one chunk
+    /// re-seat**: after 120 → 121 BPM, a block seeks 4 beats on and changes
+    /// to 130 BPM at frame 8. The beats moved take far more frames than
+    /// the gap at either tempo, so the next read is the beat's time at
+    /// 130 BPM.
+    ///
+    /// Mutation (run): drop the cap on the count (`filter(|&n| n <= gap)`
+    /// in `played_between`) → the seek is counted, 2 488 743 → fails (and
+    /// so does the seek at 90 BPM in
+    /// `a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time`). Mutation (run): cap the count before the new segment at the
+    /// room the gap leaves whatever the fewest frames those beats take
+    /// (`frames_at(from.tempo).min(room)`) → the seek is counted as the
+    /// 64-frame gap, 2 400 128 → fails.
+    #[test]
+    fn a_seek_forward_with_a_tempo_change_inside_one_chunk_re_seats() {
+        let (first, mut h) = after_a_tempo_change();
+        let target = h.ahead(8.0) + 4.0;
+        let seek = h.block(64, &[(8, Cmd::Seek(target)), (8, Cmd::Tempo(130.0))]);
+        let end = h.beat();
+        assert_eq!(
+            read_firsts(&[first, seek, h.block(64, &[])]),
+            [Some(2_400_000), Some(2_400_064), reseat(end, 130.0)]
+        );
+    }
+
     /// **A seek inside one chunk re-seats, however short.** After 120 →
     /// 121 BPM, read every 1 024 frames: a seek 500 frames back while
     /// playing, one 800 frames forward while stopped, both shorter than the
@@ -1150,8 +1213,9 @@ mod tests {
     /// **A transport built by hand (no frame count) is read by the
     /// playhead's rule.** Beat 10 at 120 BPM, then 64 frames on at 121
     /// BPM: 240 064, where the beat's time at 121 is about 238 080. The
-    /// next read, 64 frames on, is a stopped transport built by hand:
+    /// next read, 64 frames on, is a transport built by hand:
     ///
+    /// - playing on at 121 BPM, it rolls (240 128);
     /// - past the loop's end (unchanged), by a stop 20 frames on or at the
     ///   whole 64, re-seats: playback would have wrapped;
     /// - past it with the loop switched off, it continues, whether the
@@ -1163,6 +1227,14 @@ mod tests {
     ///   later read's tempo (80 at the earlier one's is past the gap);
     /// - at another rate it re-seats, even unmoved.
     ///
+    /// Every read goes through `Cx::transport_at`, which walks the block's
+    /// transport to the frame: the walk of a bare beat has no origin, so
+    /// these reads take the playhead's rule, not `played_between`.
+    ///
+    /// Mutation (run): the walk of a bare beat counted as the host's
+    /// (`Transport::walked_to` keeping `Position::Counted` for every
+    /// position) → each block looks like a new segment at the same tempo,
+    /// and the read playing on re-seats to 238 144 → fails.
     /// Mutation (run): drop the loop-end check → the stop 20 frames past the
     /// unchanged loop's end continues to 240 084 → fails. Mutation (run):
     /// apply it with the loop changed too (drop `from.looping ==
@@ -1204,7 +1276,9 @@ mod tests {
         };
         let past = |n: f64| reseat(b1 + per(n, 121.0), 121.0);
         let faster = Transport::new(false, Bpm(242.0), Beat(b1 + per(40.0, 242.0)), None);
+        let rolling = Transport::new(true, Bpm(121.0), Beat(b1 + per(64.0, 121.0)), None);
         let cases = [
+            (None, true, rolling, SR, Some(240_128)),
             (crossing, true, stopped(20.0, crossing), SR, past(20.0)),
             (crossing, true, stopped(64.0, crossing), SR, past(64.0)),
             (crossing, true, stopped(20.0, None), SR, Some(240_084)),

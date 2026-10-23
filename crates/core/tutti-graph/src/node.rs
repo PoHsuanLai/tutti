@@ -560,8 +560,8 @@ pub struct Transport {
     /// [`recording`](Self::recording). Private, like the position, so a
     /// transport is only ever built through its constructors.
     recording: bool,
-    /// Where the block's first frame is: a bare beat, or a frame count on the
-    /// host's segment. Private, so the beat and the frame count it is derived
+    /// Where the block's first frame is: a bare beat, a frame count on the
+    /// host's segment, or one walked on from a bare beat. Private, so the beat and the frame count it is derived
     /// from cannot disagree: [`beat`](Self::beat) *computes* the beat of a
     /// counted position.
     position: Position,
@@ -578,6 +578,12 @@ enum Position {
     /// truth): the beat is derived from it, at the transport's
     /// tempo.
     Counted(SegmentOrigin),
+    /// A bare beat walked on ([`Env::transport_at`], the transport
+    /// history): a frame count from that beat, derived like a counted one,
+    /// but not the host's, so it has no [`origin`](Transport::origin). A
+    /// reader that tells the host's segments apart by their origin would
+    /// otherwise see every hand-built block start a new one.
+    Walked(SegmentOrigin),
 }
 
 impl Transport {
@@ -644,28 +650,45 @@ impl Transport {
     pub fn beat(&self) -> Beat {
         match self.position {
             Position::At(beat) => beat,
-            Position::Counted(origin) => FrameClock::from_origin(origin, self.tempo).beat(),
+            Position::Counted(origin) | Position::Walked(origin) => {
+                FrameClock::from_origin(origin, self.tempo).beat()
+            }
         }
     }
 
-    /// The host's frame count, when the position is counted.
+    /// The host's frame count, when the position is counted: `None` for a
+    /// transport built at a beat ([`new`](Self::new),
+    /// [`at_beat`](Self::at_beat)), and for one walked on from such a beat
+    /// ([`Env::transport_at`]), whose frame count is the walk's, not the
+    /// host's.
     pub fn origin(&self) -> Option<SegmentOrigin> {
         match self.position {
-            Position::At(_) => None,
+            Position::At(_) | Position::Walked(_) => None,
             Position::Counted(origin) => Some(origin),
         }
     }
 
+    /// This transport with its clock moved to `origin` (`clock` advanced):
+    /// counted if it was, else walked from its beat.
+    pub(crate) const fn walked_to(self, origin: SegmentOrigin) -> Self {
+        let position = match self.position {
+            Position::Counted(_) => Position::Counted(origin),
+            Position::At(_) | Position::Walked(_) => Position::Walked(origin),
+        };
+        Self { position, ..self }
+    }
+
     /// The clock this transport's position is, to walk the block with: the
     /// host's [`FrameClock`] for a counted position (at the rate its origin
-    /// carries), or a clock starting at [`beat`](Self::beat) at
+    /// carries; a walked one's is the walk's), or a clock starting at
+    /// [`beat`](Self::beat) at
     /// `block_rate` for a bare one. `block_rate` is the block's
     /// ([`Env::sample_rate`]); a counted origin's rate is the host's, and
     /// the two agree whenever a host is consistent (debug-asserted).
     pub fn clock(&self, block_rate: SampleRate) -> FrameClock {
         match self.position {
             Position::At(beat) => FrameClock::new(beat, self.tempo, block_rate),
-            Position::Counted(origin) => {
+            Position::Counted(origin) | Position::Walked(origin) => {
                 debug_assert_eq!(
                     origin.sample_rate, block_rate,
                     "a counted transport at another rate than its block"

@@ -21,7 +21,10 @@ A hosted plugin is now told everything its transport snapshot can know:
   chunk reads come from the engine's frame count on its timeline segment
   (`Transport::origin`), which a seek, a tempo or rate change and a wrap
   restart and a stop or start does not: exact for one tempo change
-  between two reads. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's
+  between two reads, and a tempo ramp speeding up inside one chunk is
+  counted, not re-seated. A transport built by hand (`Transport::new`) has
+  no such count and is read by the playhead's rule, in a host that drives
+  `tutti_graph::Executor` itself too. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's
   sample time read it.
   CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
   same time over the rate; it was the beat's time at the current tempo,
@@ -67,6 +70,7 @@ before.
 | VST2 `samplePos` / VST3 `projectTimeSamples` were 0 | the node's project time: rolls with playback, re-seated at a jump |
 | CLAP `song_pos_seconds` was `beats · 60 / tempo` | the same project time, in seconds |
 | VST2 `kVstClockValid` / VST3 `kClockValid` and `kSystemTimeValid` never set | set when the value is known |
+| `Env::transport_at` / `Cx::transport_at` of a transport built at a beat (`Transport::new`, `at_beat`) had `Transport::origin()` `Some`, a frame count from that beat | `None`: the walk's frame count is not the host's (its beat and clock are unchanged, to the bit); a counted transport's walk is still counted |
 | `bevy-tutti`'s editor window sized at the plugin's pixel size as logical units | sized at it as physical pixels off macOS (logical size: pixel size over the scale), points on macOS |
 | `PluginEditorOpen::{width, height, last_applied}` documented as logical pixels | the plugin's units (`EditorSize`: physical pixels off macOS, points on macOS), as they always held |
 

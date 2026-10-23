@@ -9,8 +9,7 @@
 //! the derived quantities those structs stored — and could therefore
 //! contradict.
 
-use tutti_core::SampleRate;
-use tutti_types::{Hz, Samples, Seconds};
+use tutti_types::{Hz, SampleRate, Samples, Seconds};
 
 use crate::error::{Error, Result};
 use crate::grid::{BinCount, BinIndex, FrameCount};

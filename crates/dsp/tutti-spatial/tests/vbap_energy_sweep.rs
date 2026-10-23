@@ -76,17 +76,16 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 ///
 /// # No leading `tick`, on purpose
 ///
-/// `reset` seeds the smoother from the **panner's** copy of the position, and
-/// `set_position` writes the *node's* `SpatialTarget`; `sync_position` joins
-/// them. If `reset` skipped that join, a bare `set_position` → `reset` →
-/// `tick` would seed the ramp at the panner's *stale* bearing: every azimuth
-/// would read back as roughly `[0.707, 0.707]`, a plausible-looking unity that
-/// is front-centre everywhere. A leading `tick` would hide that, so there is
-/// none.
+/// `reset` seats the smoother on the bearing in the node's control cells,
+/// which `set_position` writes. If `reset` seated it anywhere else (front
+/// centre, say), a bare `set_position` → `reset` → `tick` would start the
+/// ramp there: every azimuth would read back as roughly `[0.707, 0.707]`, a
+/// plausible-looking unity that is front-centre everywhere. A leading `tick`
+/// would hide that, so there is none.
 ///
 /// # Only the gain assertions catch that bug, and that is worth knowing
 ///
-/// Mutation testing shows that dropping the join from `reset` leaves the
+/// Mutation testing shows that seating `reset` on front centre leaves the
 /// two energy tests **passing**: front-centre is `[0.707, 0.707]`, which is unit
 /// energy, so a sweep that only sums squares cannot tell "correctly panned" from
 /// "not panned at all". The tests that fail are
@@ -252,8 +251,8 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 /// Mutation: normalize before clamping (i.e. drop `solve_gains` and call
 /// upstream directly) → fails at 90°, energy 0.500 against 1.0. Fold without
 /// renormalizing → also fails at 90°, same figure. Renormalize without folding
-/// → fails at 180°, energy 0.000. Break the reset seeding (drop
-/// `sync_position` from `VbapPannerNode::reset`) → fails at 30°, reading
+/// → fails at 180°, energy 0.000. Break the reset seeding (seat
+/// `VbapPannerNode::reset` on `Azimuth::FRONT`) → fails at 30°, reading
 /// front-centre; this test and
 /// [`a_surrounding_layout_does_not_fold_its_rear_arc`] are the only two here
 /// that catch it.

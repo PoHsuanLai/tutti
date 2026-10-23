@@ -4259,7 +4259,6 @@ dependencies = [
  "pitch-detection",
  "rand 0.8.8",
  "rustfft",
- "serde",
  "thiserror 2.0.21",
  "tutti-core",
  "tutti-types",

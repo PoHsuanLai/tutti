@@ -1,7 +1,4 @@
 use super::error::Result;
-use core::sync::atomic::Ordering;
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
 use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Samples, Spread, StereoWidth};
 use vbap::VBAPanner;
 
@@ -27,12 +24,14 @@ const MAX_ELEVATION_RETREATS: u32 = 8;
 const ENERGY_EPSILON: f32 = 1e-10;
 
 /// VBAP panner internals. Use `VbapPannerNode` instead.
+///
+/// Holds no control state: the node reads its cells once per block and
+/// passes the target, spread and width in, already normalized (bearing
+/// wrapped, height and spread clamped).
+#[derive(Clone)]
 pub(crate) struct VbapPanner {
     panner: VBAPanner,
-    azimuth_target: Arc<AtomicF32>,
-    elevation_target: Arc<AtomicF32>,
     smoother: AngleSmoother,
-    spread: Spread,
     /// Whether this layout has a speaker behind the listener (any `|azimuth|`
     /// past 90°), which decides whether [`solve_gains`](Self::solve_gains)
     /// folds a rear bearing into the front hemisphere.
@@ -50,6 +49,16 @@ pub(crate) struct VbapPanner {
     /// (its length *is* the speaker count), so there is no active length to
     /// get wrong and nothing to clamp.
     gains_scratch: Box<[f64]>,
+    /// The target bits the smoother has reached a fixed point for: stepping
+    /// it toward this target returns its own state unchanged, bit for bit,
+    /// so further steps are skipped. Cleared by anything that moves the
+    /// state or the coefficient (a reseed, a new sample rate).
+    settled_at: Option<[u32; 2]>,
+    /// The last [`frame_gains`](Self::frame_gains) result and the input bits
+    /// it was solved for (bearing, height, width, spread). The solve is a
+    /// pure function of those four, so a held source reuses it instead of
+    /// running two VBAP solves per block.
+    last_solve: Option<([u32; 4], BlockGains)>,
 }
 
 impl VbapPanner {
@@ -59,12 +68,11 @@ impl VbapPanner {
         let has_rear_speakers = panner.speakers().iter().any(|s| s.azimuth().abs() > 90.0);
         Self {
             panner,
-            azimuth_target: Arc::new(AtomicF32::new(0.0)),
-            elevation_target: Arc::new(AtomicF32::new(0.0)),
             smoother: AngleSmoother::new(sample_rate, Samples(1)),
-            spread: Spread::POINT,
             has_rear_speakers,
             gains_scratch: vec![0.0; speaker_count].into_boxed_slice(),
+            settled_at: None,
+            last_solve: None,
         }
     }
 
@@ -93,48 +101,22 @@ impl VbapPanner {
         Ok(Self::new_with_layout(panner))
     }
 
-    /// Set position in degrees (smoothed over 50ms)
-    ///
-    /// Uses VBAP angle convention:
-    /// - `azimuth`: Horizontal angle (-180 to 180, 0 = front, 90 = left, -90 = right)
-    /// - `elevation`: Vertical angle (-90 to 90, 0 = ear level, positive = up)
-    pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {
-        // Azimuth WRAPS, elevation SATURATES. A `clamp` is right for a height
-        // and wrong for a bearing: 190 degrees is 170 to the right, not 180
-        // (hard left).
-        //
-        // The atomics stay raw `f32`: they are the lock-free control→RT
-        // boundary, which a newtype cannot cross. Normalizing here means the
-        // stored float is always already wrapped/clamped.
-        self.azimuth_target
-            .store(azimuth.wrap().get(), Ordering::Release);
-        self.elevation_target.store(
-            Elevation::new_clamped(elevation.get()).get(),
-            Ordering::Release,
-        );
-    }
-
-    /// Set spread factor (0.0 = point source, 1.0 = diffuse)
-    pub(crate) fn set_spread(&mut self, spread: Spread) {
-        self.spread = Spread::new_clamped(spread.get());
-    }
-
     /// Retune the position smoothers so the 50ms de-zipper ramp holds at any
     /// sample rate (the smoothers are built at 48kHz in `new_with_layout`).
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.smoother.set_sample_rate(sample_rate);
+        // A new coefficient can move a state the old one held still.
+        self.settled_at = None;
     }
 
-    /// Drop the in-flight de-zipper ramp, leaving the commanded position and
-    /// spread untouched.
+    /// Drop the in-flight de-zipper ramp, seating it on the commanded
+    /// `(azimuth, elevation)`.
     ///
-    /// The smoother is this panner's only per-block history; the two target
-    /// atomics and `spread` are caller-set configuration, which is why nothing
-    /// here writes them.
-    pub(crate) fn reset_state(&mut self) {
-        let azimuth = Azimuth(self.azimuth_target.load(Ordering::Acquire));
-        let elevation = Elevation(self.elevation_target.load(Ordering::Acquire));
+    /// The smoother is this panner's only per-block history; the commanded
+    /// position is the caller's, which is why it is passed in.
+    pub(crate) fn reset_state(&mut self, azimuth: Azimuth, elevation: Elevation) {
         self.smoother.reset_to_target(azimuth, elevation);
+        self.settled_at = None;
     }
 
     /// Fold a bearing into the front hemisphere by mirroring it about the
@@ -273,10 +255,10 @@ impl VbapPanner {
     /// 1.0 — the same energy law [`solve_gains`](Self::solve_gains) establishes,
     /// preserved across the diffusion blend rather than newly imposed by it.
     #[inline]
-    fn apply_spread(&self, gains: &mut [f32], count: usize) {
+    fn apply_spread(spread: Spread, gains: &mut [f32], count: usize) {
         // Unwrapped once here: the blend below is interpolation arithmetic on
         // the scalar, which `Spread` deliberately does not define operators for.
-        let spread = self.spread.get();
+        let spread = spread.get();
         if spread <= 0.0 {
             return;
         }
@@ -295,7 +277,12 @@ impl VbapPanner {
 
     /// Unit-energy gains for one source at `(azimuth, elevation)`, spread
     /// applied. Entries past the layout's speaker count are zero.
-    fn source_gains(&mut self, azimuth: Azimuth, elevation: Elevation) -> [f32; MAX_SPEAKERS] {
+    fn source_gains(
+        &mut self,
+        azimuth: Azimuth,
+        elevation: Elevation,
+        spread: Spread,
+    ) -> [f32; MAX_SPEAKERS] {
         // RT invariant: `solve_gains` must reach `compute_gains_into`, not
         // `compute_gains`. The latter allocates a fresh `Vec<f64>` per call
         // (and is `#[deprecated]` in vbap 0.1.2). Backstop:
@@ -313,7 +300,7 @@ impl VbapPanner {
         for (i, &g) in scratch.iter().enumerate().take(count) {
             gains[i] = g as f32;
         }
-        self.apply_spread(&mut gains, count);
+        Self::apply_spread(spread, &mut gains, count);
         gains
     }
 
@@ -340,39 +327,64 @@ impl VbapPanner {
         azimuth: Azimuth,
         elevation: Elevation,
         width: StereoWidth,
+        spread: Spread,
+    ) -> BlockGains {
+        let key = [
+            azimuth.get().to_bits(),
+            elevation.get().to_bits(),
+            width.get().to_bits(),
+            spread.get().to_bits(),
+        ];
+        if let Some((solved_for, gains)) = self.last_solve {
+            if solved_for == key {
+                return gains;
+            }
+        }
+        let gains = self.solve_frame(azimuth, elevation, width, spread);
+        self.last_solve = Some((key, gains));
+        gains
+    }
+
+    /// [`frame_gains`](Self::frame_gains) without the reuse.
+    fn solve_frame(
+        &mut self,
+        azimuth: Azimuth,
+        elevation: Elevation,
+        width: StereoWidth,
+        spread: Spread,
     ) -> BlockGains {
         // Unwrapped once: the angle offset below scales the scalar.
         let width = width.get().max(0.0);
         if width < 0.001 {
             return BlockGains {
                 mono: true,
-                a: self.source_gains(azimuth, elevation),
+                a: self.source_gains(azimuth, elevation, spread),
                 b: [0.0; MAX_SPEAKERS],
             };
         }
         // The two virtual sources sit one offset either side of the bearing.
         // `rotate_by`, not `+`: the sum crosses the seam. At azimuth 170 with
         // full width the left source is at 185, which *is* -175 — the same
-        // wraparound `set_position` normalizes on store, re-introduced here by
+        // wraparound the node normalizes the target to, re-introduced here by
         // adding to the already-wrapped value.
         let angle_offset = ArcDegrees(15.0 * width);
         BlockGains {
             mono: false,
-            a: self.source_gains(azimuth.rotate_by(angle_offset), elevation),
-            b: self.source_gains(azimuth.rotate_by(-angle_offset), elevation),
+            a: self.source_gains(azimuth.rotate_by(angle_offset), elevation, spread),
+            b: self.source_gains(azimuth.rotate_by(-angle_offset), elevation, spread),
         }
     }
 
     /// The gains at the smoother's **current** position, without advancing
-    /// it — the starting point of the first ramp after a construction, clone
-    /// or reset.
-    pub(crate) fn gains_now(&mut self, width: StereoWidth) -> BlockGains {
+    /// it — the starting point of the first ramp after a construction or a
+    /// reset.
+    pub(crate) fn gains_now(&mut self, width: StereoWidth, spread: Spread) -> BlockGains {
         let (azimuth, elevation) = self.smoother.current();
-        self.frame_gains(azimuth, elevation, width)
+        self.frame_gains(azimuth, elevation, width, spread)
     }
 
-    /// Advance the de-zipper `frames` steps and solve the gains **once**, at
-    /// the block's last frame.
+    /// Advance the de-zipper `frames` steps toward the target and solve the
+    /// gains **once**, at the block's last frame.
     ///
     /// The smoother still steps once per frame, so the 50 ms ramp keeps its
     /// timing and the returned set is bit-for-bit what a per-frame solve would
@@ -380,18 +392,40 @@ impl VbapPanner {
     /// ramps linearly towards this set instead, which saves two VBAP solves
     /// per frame.
     ///
-    /// The target atomics are read once here: they are written once per block
-    /// (by the node's `sync_position`), so every frame would see the same
-    /// value.
-    pub(crate) fn solve_block(&mut self, width: StereoWidth, frames: usize) -> BlockGains {
-        let target_azimuth = Azimuth(self.azimuth_target.load(Ordering::Acquire));
-        let target_elevation = Elevation(self.elevation_target.load(Ordering::Acquire));
-        let mut smoothed = self.smoother.current();
-        for _ in 0..frames {
-            smoothed = self.smoother.step(target_azimuth, target_elevation);
+    /// A step is a pure function of the smoother's state and the target, so
+    /// once one returns the state unchanged every later step toward the same
+    /// target would too: the loop stops there, and a held source skips it
+    /// entirely, with the same bits as stepping all `frames`.
+    pub(crate) fn solve_block(
+        &mut self,
+        target: (Azimuth, Elevation),
+        width: StereoWidth,
+        spread: Spread,
+        frames: usize,
+    ) -> BlockGains {
+        let target_bits = [target.0.get().to_bits(), target.1.get().to_bits()];
+        if self.settled_at != Some(target_bits) {
+            self.settled_at = None;
+            let mut state = self.smoother.current();
+            for _ in 0..frames {
+                let next = self.smoother.step(target.0, target.1);
+                if same_bits(next, state) {
+                    self.settled_at = Some(target_bits);
+                    break;
+                }
+                state = next;
+            }
         }
-        self.frame_gains(smoothed.0, smoothed.1, width)
+        let (azimuth, elevation) = self.smoother.current();
+        self.frame_gains(azimuth, elevation, width, spread)
     }
+}
+
+/// Whether two positions are the same bits (not merely `==`: `-0.0` and
+/// `0.0` are different smoother states).
+#[inline]
+fn same_bits(a: (Azimuth, Elevation), b: (Azimuth, Elevation)) -> bool {
+    a.0.get().to_bits() == b.0.get().to_bits() && a.1.get().to_bits() == b.1.get().to_bits()
 }
 
 /// One frame's speaker gains, as the start or end point of a block's ramp.
@@ -432,6 +466,42 @@ mod tests {
     fn virtual_sources(bearing: Azimuth, width: f32) -> (Azimuth, Azimuth) {
         let offset = ArcDegrees(15.0 * width);
         (bearing.rotate_by(offset), bearing.rotate_by(-offset))
+    }
+
+    /// `solve_block` over `k` frames leaves the smoother exactly where `k`
+    /// plain steps leave it, before, at and after the fixed point where it
+    /// stops stepping, and again after a new sample rate moves that point.
+    ///
+    /// Settled at 192 kHz (a small coefficient, so the state stops thousands
+    /// of ulps short of the target), then retuned to 8 kHz, whose larger
+    /// coefficient moves it again.
+    ///
+    /// Mutations (each run, each fails): `same_bits` with a 1e-4 tolerance
+    /// (stops before the fixed point); `set_sample_rate` not clearing
+    /// `settled_at` (the 8 kHz blocks skip the steps that still move it).
+    #[test]
+    fn solve_block_steps_exactly_as_far_as_plain_steps() {
+        let mut panner = VbapPanner::stereo().unwrap();
+        panner.set_sample_rate(SampleRate(192_000.0));
+        let mut reference = panner.smoother.clone();
+        let target = (Azimuth(20.0), Elevation(5.0));
+        let check = |panner: &mut VbapPanner, reference: &mut AngleSmoother, blocks| {
+            for block in 0..blocks {
+                panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, 64);
+                for _ in 0..64 {
+                    reference.step(target.0, target.1);
+                }
+                let (a, b) = (panner.smoother.current(), reference.current());
+                assert!(same_bits(a, b), "block {block}: {a:?} vs {b:?}");
+            }
+        };
+        // 4 s at 192 kHz: far past the fixed point.
+        check(&mut panner, &mut reference, 12_000);
+        assert!(panner.settled_at.is_some(), "never reached the fixed point");
+
+        panner.set_sample_rate(SampleRate(8_000.0));
+        reference.set_sample_rate(SampleRate(8_000.0));
+        check(&mut panner, &mut reference, 2_000);
     }
 
     #[test]

@@ -14,8 +14,7 @@
 //! the defect `LoudnessConfig` makes unrepresentable.
 
 use tutti_analysis::{measure_loudness, ChannelLayout, LoudnessConfig};
-use tutti_core::SampleRate;
-use tutti_types::{Db, Interleaved};
+use tutti_types::{Db, Interleaved, SampleRate};
 
 /// Interleaved stereo sine, both channels identical.
 fn stereo_sine(rate: f64, freq: f64, secs: f64, amp: f64) -> Vec<f32> {

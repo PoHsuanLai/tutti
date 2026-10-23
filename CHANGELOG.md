@@ -54,6 +54,40 @@ latency, so the plugin's figure already excludes it. Migration for a node
 of your own: if its tail counted its latency (a lookahead or FFT block
 declared as both), subtract the latency from the tail.
 
+### Changed — faster VBAP for a held source and faster analysis, results bit-identical
+
+`VbapPannerNode` stops stepping its 50 ms de-zipper once a step returns
+its own state bit for bit (every later step toward the same target would
+too), reuses the last gain solve while its inputs are unchanged, and
+renders a held gain without the ramp arithmetic. A held source is about
+9–10x faster per 64-frame block and 23–37x per 1024-frame block; a moving
+one is unchanged. The panner's target is no longer stored twice (the
+node's cells and a private copy synced every block): the node reads its
+cells once per block and passes them in.
+
+In tutti-analysis, `step_onset` builds its window once per config instead
+of once per frame (spectral flux about 3x faster, energy about 10x);
+`yin`/`yin_track` plan their FFTs and size every buffer once per detector
+(about 1.1–1.2x); `suppress_close_onsets` walks the list once instead of
+removing from the middle (O(n) instead of O(n²)); `summarize` blocks the
+buffer a few thousand frames at a time instead of deinterleaving all of
+it first; `median_filter` reuses one sort buffer; `correlate` drops two
+duplicate accumulators.
+
+**Every output is bit-identical to before**, checked against the previous
+code on randomized inputs (signed zeros and non-finite controls included).
+
+Migration:
+
+- tutti-analysis's `serde` feature is removed. It derived only on an
+  internal type, so it serialized nothing public; drop it from your
+  feature list.
+- tutti-analysis no longer depends on tutti-core (`tutti_types` supplies
+  everything it uses; `tutti_analysis::ChannelLayout` is the same type).
+- `VbapPannerNode`'s `Clone` copies the node's de-zipper state. It used to
+  restart a clone's glide from front-centre. A fork (a clone that is
+  detached and reset, which is what the graph renders) is unchanged.
+
 ### Changed — faster summing, shaping, clipping, downmix and delay kernels, renders bit-identical
 
 `ChannelSumNode`, `DistortionNode`, `BrickwallLimiterNode` and

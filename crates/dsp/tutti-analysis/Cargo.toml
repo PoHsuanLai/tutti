@@ -12,13 +12,9 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-# `default-features = false` matches every sibling and keeps this crate immune
-# if tutti-core ever grows a default — it has none today (`default = []`), so
-# the flag currently suppresses nothing.
-tutti-core = { path = "../../core/tutti-core", default-features = false }
-# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …) and
-# the downmix matrices. Direct rather than through tutti-core's re-exports so
-# the units this crate's signatures speak are named at their source.
+# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
+# `ChannelLayout`, `Interleaved` and the downmix helpers. Nothing here needs
+# the engine runtime, so this is the only tutti edge.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # FFT for spectral analysis (transient detection, pitch detection)
@@ -31,25 +27,16 @@ ebur128 = "0.1"
 # The `Error` enum's Display/Error impls.
 thiserror.workspace = true
 
-# Serialization (optional)
-serde = { version = "1", features = ["derive"], optional = true }
-
 [features]
 # No `bevy` feature, and no default features. This crate is a library of
 # analysis algorithms over `&[f32]`; a host that wants these results in an ECS
 # wires them up on its own side.
 default = []
-# `dep:serde` (not bare `serde`) so this feature replaces the implicit
-# optional-dep feature rather than colliding with it.
-#
-# `tutti-types/serde` is not optional bookkeeping: the only type this feature
-# derives on (`PitchResult`) is built from `Hz` and `Confidence`, so without it
-# the derive fails to find `Serialize`/`Deserialize` on its own fields and the
-# crate does not compile under `--all-features`. Any new `serde` derive here
-# will be over unit newtypes too, so the edge stays required.
-serde = ["dep:serde", "tutti-types/serde"]
 
 [dev-dependencies]
+# The README's "Reading from a running graph" doctest shows the engine-side
+# seam (`tutti_core::AudioTap`); nothing in the library reaches tutti-core.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
 # Reproducible noise for the correlation tests, which otherwise hand-roll a
 # generator. Seeded, so an uncorrelated-input assertion is not flaky.
 #

@@ -149,10 +149,7 @@ across calls.
 
 ## Features
 
-`default = []`.
-
-- `serde` — pulls the `serde` dependency. It currently derives only on an
-  internal type, so it adds nothing to the public API yet.
+None: `default = []`.
 
 The `tutti` crate re-exports this one as `tutti::analysis` behind its
 `analysis` feature. `tutti-export` uses it for loudness measurement and

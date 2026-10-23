@@ -36,7 +36,7 @@ mod transform;
 mod window;
 mod yin;
 
-pub use tutti_core::ChannelLayout;
+pub use tutti_types::ChannelLayout;
 
 pub use error::{Error, Result};
 pub use fft::FftScratch;

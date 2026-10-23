@@ -489,13 +489,33 @@ impl PeakAccum {
     }
 }
 
+/// Frames [`summarize`] hands [`step_peaks`] per call, rounded down to whole
+/// blocks: small enough that the deinterleave scratch stays in cache, large
+/// enough that the per-call overhead vanishes.
+const SUMMARIZE_CHUNK_FRAMES: usize = 4096;
+
 /// Summarizes a whole buffer, per channel.
 ///
-/// Folds [`step_peaks`] — the same implementation the streaming path uses.
+/// Folds [`step_peaks`] — the same implementation the streaming path uses —
+/// over chunks of whole blocks, so the deinterleave scratch is a few
+/// thousand frames rather than a copy of the whole buffer. Every block is
+/// summarized from the same samples in the same order either way.
 pub fn summarize(cfg: &PeakConfig, buffer: Interleaved<'_>) -> PeakBlocks {
     let mut out = PeakAccum::new();
     let mut state = PeakState::new();
-    step_peaks(cfg, &mut state, buffer, &mut out);
+    let block = cfg.samples_per_block.get().max(1);
+    let per_chunk = (SUMMARIZE_CHUNK_FRAMES / block).max(1) * block;
+    let frames = buffer.len();
+    let mut start = 0;
+    // At least one call, so an empty buffer still adopts the layout.
+    loop {
+        let end = frames.min(start + per_chunk);
+        step_peaks(cfg, &mut state, buffer.window(start..end), &mut out);
+        start = end;
+        if start >= frames {
+            break;
+        }
+    }
     finish(&mut state, out)
 }
 
@@ -824,6 +844,46 @@ mod tests {
             "no chunk was appended, so no width was adopted"
         );
         assert_eq!(blocks.channel(0), None);
+    }
+
+    /// `summarize` feeds `step_peaks` a few thousand frames at a time; every
+    /// block is still exact, including blocks past the first chunk and the
+    /// short final one.
+    ///
+    /// A stereo ramp (left `i`, right `-i` at frame `i`) over 20 000 frames
+    /// with 3 000-frame blocks: chunks of 3 000 frames, so 7 calls, the last
+    /// a partial block. Block `k` of the left channel spans exactly
+    /// `[3000k, min(3000k + 2999, 19999)]`, the right its negation.
+    ///
+    /// Mutation (run): stop the chunk loop one chunk early (break on
+    /// `start + per_chunk >= frames`, before the last call) → the final
+    /// blocks are missing, fails on the block count.
+    #[test]
+    fn summarize_is_exact_across_its_chunks() {
+        let frames = 20_000;
+        let samples: Vec<f32> = (0..frames).flat_map(|i| [i as f32, -(i as f32)]).collect();
+        let cfg = PeakConfig::new(Samples(3_000), ChannelLayout::STEREO);
+        let blocks = summarize(&cfg, Interleaved::new(&samples, ChannelLayout::STEREO));
+        assert_eq!(blocks.blocks_per_channel(), 7);
+        for (k, (l, r)) in ch(&blocks, 0).iter().zip(ch(&blocks, 1)).enumerate() {
+            let lo = (k * 3_000) as f32;
+            let hi = ((k * 3_000 + 2_999).min(frames - 1)) as f32;
+            assert_eq!((l.min, l.max), (lo, hi), "left block {k}");
+            assert_eq!((r.min, r.max), (-hi, -lo), "right block {k}");
+        }
+    }
+
+    /// An empty buffer still adopts the config's width: `summarize` makes at
+    /// least one `step_peaks` call, which is where the width is adopted.
+    ///
+    /// Mutation (run): a `while start < frames` loop (no call for an empty
+    /// buffer) → the summary is `EMPTY`-wide, fails.
+    #[test]
+    fn summarizing_nothing_keeps_the_layout() {
+        let cfg = PeakConfig::new(Samples(64), ChannelLayout::STEREO);
+        let blocks = summarize(&cfg, Interleaved::new(&[], ChannelLayout::STEREO));
+        assert_eq!(blocks.layout(), ChannelLayout::STEREO);
+        assert!(blocks.is_empty());
     }
 
     #[test]

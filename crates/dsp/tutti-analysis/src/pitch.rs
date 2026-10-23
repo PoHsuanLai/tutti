@@ -24,12 +24,8 @@
 //! computation: r(τ) = IFFT(|FFT(x)|²)
 
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct PitchResult {
     /// The detected pitch in [`Hz`]; `Hz(0.0)` if unvoiced.
-    ///
-    /// Typed to match `PitchDetector`'s own `min_freq`/`max_freq`, so a caller
-    /// never re-wraps this crate's output field by field.
     pub frequency: Hz,
     /// Detection strength as a [`Confidence`] reading, `0.0..=1.0`. A
     /// measurement, not a blend — deliberately not `Mix`.
@@ -44,63 +40,58 @@ impl PitchResult {
     }
 }
 
-use rustfft::{num_complex::Complex, FftPlanner};
+use std::sync::Arc;
+
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use tutti_types::{Confidence, Hz};
+
+use crate::yin::YinConfig;
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
-/// Uses FFT-based autocorrelation for O(n log n) performance.
+/// Uses FFT-based autocorrelation for O(n log n) performance. Everything a
+/// call needs is sized and planned at construction, so [`detect`](Self::detect)
+/// allocates nothing and a track reuses one detector for every frame.
 pub(crate) struct PitchDetector {
-    sample_rate: tutti_core::SampleRate,
-    min_freq: Hz,
-    max_freq: Hz,
-    /// The YIN aperiodicity cutoff — a confidence reading, not a blend.
-    threshold: Confidence,
+    /// The validated range, rate and threshold this detector runs at.
+    cfg: YinConfig,
     difference: Vec<f32>,
     cumulative_mean: Vec<f32>,
-    fft_planner: FftPlanner<f32>,
+    fft_forward: Arc<dyn Fft<f32>>,
+    fft_inverse: Arc<dyn Fft<f32>>,
+    /// The FFT of the analysis window `x[0..W]`, zero-padded.
+    fft_a: Vec<Complex<f32>>,
+    /// The FFT of `x[0..W+max_period]`, zero-padded; then the cross-power
+    /// spectrum; then the cross-correlation.
     fft_buffer: Vec<Complex<f32>>,
     fft_scratch: Vec<Complex<f32>>,
+    /// Prefix sums of the squared input, for the windowed energies.
+    cum_sq: Vec<f64>,
 }
 
 impl PitchDetector {
-    /// Default range: 50..2000 Hz.
-    pub fn with_range(
-        sample_rate: impl Into<tutti_core::SampleRate>,
-        min_freq: impl Into<Hz>,
-        max_freq: impl Into<Hz>,
-    ) -> Self {
-        let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
-        let sample_rate = sample_rate.into();
-        let max_period = (sample_rate.get() / f64::from(min_freq.get())) as usize;
+    pub fn new(cfg: YinConfig) -> Self {
+        let max_period = cfg.max_period().get();
         let fft_size = (max_period * 2).next_power_of_two();
+        let mut planner = FftPlanner::new();
 
         Self {
-            sample_rate,
-            min_freq,
-            max_freq,
-            threshold: Confidence(0.1),
+            cfg,
             difference: vec![0.0; max_period + 1],
             cumulative_mean: vec![0.0; max_period + 1],
-            fft_planner: FftPlanner::new(),
+            fft_forward: planner.plan_fft_forward(fft_size),
+            fft_inverse: planner.plan_fft_inverse(fft_size),
+            fft_a: vec![Complex::new(0.0, 0.0); fft_size],
             fft_buffer: vec![Complex::new(0.0, 0.0); fft_size],
             fft_scratch: vec![Complex::new(0.0, 0.0); fft_size],
+            // `usable` is at most `2 * max_period` (see `compute_difference`).
+            cum_sq: vec![0.0; 2 * max_period + 1],
         }
-    }
-
-    /// YIN threshold (0.01..0.5, default 0.1 per the original paper).
-    /// Lower = stricter, higher = more permissive.
-    pub fn set_threshold(&mut self, threshold: impl Into<Confidence>) {
-        self.threshold = Confidence(threshold.into().get().clamp(0.01, 0.5));
     }
 
     /// Needs at least `buffer_size()` samples.
     pub fn detect(&mut self, samples: &[f32]) -> PitchResult {
-        let min_period = (self.sample_rate.get() / f64::from(self.max_freq.get())) as usize;
-        let max_period = (self.sample_rate.get() / f64::from(self.min_freq.get())) as usize;
-        let max_period = max_period
-            .min(samples.len() / 2)
-            .min(self.difference.len() - 1);
+        let (min_period, max_period) = self.periods(samples.len());
 
         if samples.len() < max_period * 2 || max_period <= min_period {
             return PitchResult::default();
@@ -115,7 +106,7 @@ impl PitchDetector {
         }
 
         let refined_period = self.parabolic_interpolation(period, max_period);
-        let frequency = Hz((self.sample_rate.get() / refined_period) as f32);
+        let frequency = Hz((self.cfg.sample_rate().get() / refined_period) as f32);
         // Clamped rather than wrapped raw: `Confidence` is a 0..=1 reading, and
         // this is the one place the aperiodicity inversion could leave the range.
         let confidence = Confidence::new_clamped(1.0 - aperiodicity);
@@ -124,6 +115,18 @@ impl PitchDetector {
             frequency,
             confidence,
         }
+    }
+
+    /// The lag range one call searches: the config's, the longest capped by
+    /// what `len` samples can hold.
+    fn periods(&self, len: usize) -> (usize, usize) {
+        let max_period = self
+            .cfg
+            .max_period()
+            .get()
+            .min(len / 2)
+            .min(self.difference.len() - 1);
+        (self.cfg.min_period().get(), max_period)
     }
 
     /// YIN steps 1-2: `d(τ) = r_x(0,W) + r_x(τ,W) - 2*autocorr(τ)`, with the
@@ -141,10 +144,12 @@ impl PitchDetector {
         let usable = samples.len().min(window + max_period);
 
         // Cumulative squared energy for running window sums
-        let mut cum_sq = vec![0.0f64; usable + 1];
+        let cum_sq = &mut self.cum_sq;
+        cum_sq[0] = 0.0;
         for i in 0..usable {
             cum_sq[i + 1] = cum_sq[i] + (samples[i] as f64) * (samples[i] as f64);
         }
+        let cum_sq = &*cum_sq;
 
         let energy = |start: usize, len: usize| -> f64 {
             let end = (start + len).min(usable);
@@ -156,26 +161,27 @@ impl PitchDetector {
         };
 
         // FFT of signal a = x[0..W] zero-padded
-        let mut fft_a = vec![Complex::new(0.0f32, 0.0); fft_size];
-        for i in 0..window.min(usable) {
-            fft_a[i] = Complex::new(samples[i], 0.0);
+        let a_len = window.min(usable);
+        let (head, tail) = self.fft_a.split_at_mut(a_len);
+        for (a, &x) in head.iter_mut().zip(samples) {
+            *a = Complex::new(x, 0.0);
         }
+        tail.fill(Complex::new(0.0, 0.0));
 
         // FFT of signal b = x[0..W+max_period] zero-padded
-        for (i, buf) in self.fft_buffer[..fft_size].iter_mut().enumerate() {
-            *buf = if i < usable {
-                Complex::new(samples[i], 0.0)
-            } else {
-                Complex::new(0.0, 0.0)
-            };
+        let (head, tail) = self.fft_buffer.split_at_mut(usable);
+        for (b, &x) in head.iter_mut().zip(samples) {
+            *b = Complex::new(x, 0.0);
         }
+        tail.fill(Complex::new(0.0, 0.0));
 
-        let fft_fwd = self.fft_planner.plan_fft_forward(fft_size);
-        fft_fwd.process_with_scratch(&mut fft_a, &mut self.fft_scratch);
-        fft_fwd.process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
+        self.fft_forward
+            .process_with_scratch(&mut self.fft_a, &mut self.fft_scratch);
+        self.fft_forward
+            .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
 
         // Cross-power spectrum: conj(A) * B
-        for (a, buf) in fft_a[..fft_size]
+        for (a, buf) in self.fft_a[..fft_size]
             .iter()
             .zip(self.fft_buffer[..fft_size].iter_mut())
         {
@@ -184,15 +190,15 @@ impl PitchDetector {
         }
 
         // Inverse FFT -> cross-correlation
-        let fft_inv = self.fft_planner.plan_fft_inverse(fft_size);
-        fft_inv.process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
+        self.fft_inverse
+            .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
 
         let inv_n = 1.0 / fft_size as f64;
         self.difference[0] = 0.0;
 
+        let e0 = energy(0, window);
         for tau in 1..=max_period {
             let autocorr = (self.fft_buffer[tau].re as f64) * inv_n;
-            let e0 = energy(0, window);
             let e_tau = energy(tau, window);
             self.difference[tau] = (e0 + e_tau - 2.0 * autocorr).max(0.0) as f32;
         }
@@ -220,7 +226,7 @@ impl PitchDetector {
         let mut tau = min_period;
 
         while tau < max_period {
-            if self.cumulative_mean[tau] < self.threshold.get() {
+            if self.cumulative_mean[tau] < self.cfg.threshold().get() {
                 // Walk to the local minimum
                 while tau + 1 < max_period
                     && self.cumulative_mean[tau + 1] < self.cumulative_mean[tau]
@@ -274,7 +280,7 @@ impl PitchDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::SampleRate;
+    use tutti_types::SampleRate;
 
     const SR: SampleRate = SampleRate::SR_48K;
     const N: usize = 4096;
@@ -311,7 +317,7 @@ mod tests {
     }
 
     fn detector() -> PitchDetector {
-        PitchDetector::with_range(SR, Hz(50.0), Hz(2000.0))
+        PitchDetector::new(YinConfig::standard(SR).unwrap())
     }
 
     fn period_samples(freq: Hz) -> f64 {
@@ -319,11 +325,7 @@ mod tests {
     }
 
     fn fill_cmndf(det: &mut PitchDetector, samples: &[f32]) -> (usize, usize) {
-        let min_period = (det.sample_rate.get() / f64::from(det.max_freq.get())) as usize;
-        let max_period = (det.sample_rate.get() / f64::from(det.min_freq.get())) as usize;
-        let max_period = max_period
-            .min(samples.len() / 2)
-            .min(det.difference.len() - 1);
+        let (min_period, max_period) = det.periods(samples.len());
         det.compute_difference(samples, max_period);
         det.compute_cumulative_mean(max_period);
         (min_period, max_period)
@@ -353,10 +355,10 @@ mod tests {
         let mut det = detector();
         fill_cmndf(&mut det, &sine(freq, 1.0));
         assert!(
-            det.cumulative_mean[tau] < det.threshold.get(),
+            det.cumulative_mean[tau] < det.cfg.threshold().get(),
             "d'({tau}) = {} was not below threshold {}",
             det.cumulative_mean[tau],
-            det.threshold.get()
+            det.cfg.threshold().get()
         );
     }
 
@@ -383,7 +385,7 @@ mod tests {
             "precondition: the 2T dip ({dip_2t}) must be deeper than the T dip ({dip_t})"
         );
         assert!(
-            dip_t < det.threshold.get(),
+            dip_t < det.cfg.threshold().get(),
             "precondition: the fundamental dip {dip_t} must be below threshold"
         );
 

@@ -25,13 +25,22 @@ in one sum (the bus, a mono or 7.1.4 downmix): the optimiser may swap the
 operands of an addition, which IEEE and LLVM leave free, so that payload
 was already the compiler's choice.
 
-Added `tutti_types::fold_planar`, the planar counterpart of `fold_frame`
-(one output channel of the fold, over whole slices), which `DownmixNode`
-now folds through, and `CircularBuffer::replace_oldest`. `DownmixNode`
-holds no scratch any more. A `DistortionNode` with the `Softsign` or
-`HardClip` curve now declares `Cost::Light` (it measured well under a
-nanosecond a sample); the other curves stay `Moderate`. No signature
-changed; nothing to migrate.
+Added `tutti_types::fold_planar_channel`, the planar counterpart of
+`fold_frame` (one output channel of the fold, over whole slices, through
+the same stereo kernel), which `DownmixNode` now folds through, and
+`CircularBuffer::replace_oldest`. `DownmixNode` holds no scratch any more.
+A `DistortionNode` with the `Softsign` or `HardClip` curve now declares
+`Cost::Light` (measured by doc 013's fit against its reference nodes);
+the other curves stay `Moderate`. No signature changed; nothing to
+migrate.
+
+### Fixed — `LimiterNode` declared a tail one frame short
+
+The lookahead ring delays by its whole length, so the last input frame
+comes out that many frames after it went in, but the node declared one
+frame less. The executor parks a node whose inputs have been quiet for
+its tail, so a limiter parked at that moment could drop the ring's last
+frame. It now declares the full length. Its audio is unchanged.
 
 ### Changed — one random LFO: `LfoNode` runs `tutti-mod`'s `Wave`, and its random sequence changes
 

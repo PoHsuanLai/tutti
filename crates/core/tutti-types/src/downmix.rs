@@ -72,50 +72,39 @@ fn ch(frame: &[f32], i: usize) -> f32 {
 /// ```
 #[inline]
 pub fn fold_frame_to_stereo(frame: &[f32]) -> (f32, f32) {
-    match frame.len() {
-        0 => (0.0, 0.0),
-        1 => (frame[0], frame[0]),
-        2 => (frame[0], frame[1]),
-        4 => {
-            // Quad: FL FR BL BR (no center, no LFE).
-            let (fl, fr, bl, br) = (ch(frame, 0), ch(frame, 1), ch(frame, 2), ch(frame, 3));
-            (fl + M3DB * bl, fr + M3DB * br)
-        }
-        6 => {
-            // 5.1: FL FR C LFE SL SR — LFE (idx 3) omitted.
-            let (fl, fr, c, sl, sr) = (
-                ch(frame, 0),
-                ch(frame, 1),
-                ch(frame, 2),
-                ch(frame, 4),
-                ch(frame, 5),
-            );
-            (fl + M3DB * c + M3DB * sl, fr + M3DB * c + M3DB * sr)
-        }
-        8 => {
-            // 7.1: FL FR C LFE SL SR BL BR — LFE omitted, rears fold into surrounds.
-            let (fl, fr, c) = (ch(frame, 0), ch(frame, 1), ch(frame, 2));
-            let (sl, sr, bl, br) = (ch(frame, 4), ch(frame, 5), ch(frame, 6), ch(frame, 7));
-            (
-                fl + M3DB * c + M3DB * sl + M3DB * bl,
-                fr + M3DB * c + M3DB * sr + M3DB * br,
-            )
-        }
-        12 => {
-            // 7.1.4 Atmos: FL FR C LFE Lss Rss Lrs Rrs + 4 heights (8..11).
-            // LFE (idx 3) omitted; every left-side channel folds into Lo, every
-            // right-side into Ro, at −3 dB (heights collapse to their floor pair).
-            let (fl, fr, c) = (ch(frame, 0), ch(frame, 1), ch(frame, 2));
-            let (lss, rss, lrs, rrs) = (ch(frame, 4), ch(frame, 5), ch(frame, 6), ch(frame, 7));
-            // Heights are paired L/R: (8,10) left, (9,11) right in SMPTE order.
-            let (ltf, rtf, ltr, rtr) = (ch(frame, 8), ch(frame, 9), ch(frame, 10), ch(frame, 11));
-            (
-                fl + M3DB * (c + lss + lrs + ltf + ltr),
-                fr + M3DB * (c + rss + rrs + rtf + rtr),
-            )
-        }
-        // Unknown wide layout: best-effort front-pair passthrough.
-        _ => (ch(frame, 0), ch(frame, 1)),
+    let n = frame.len();
+    (
+        stereo_side(n, 0, |c| frame[c]),
+        stereo_side(n, 1, |c| frame[c]),
+    )
+}
+
+/// Side `s` (0 left, 1 right) of the stereo fold of a `width`-wide frame
+/// whose channel `c` is `get(c)`: the one place the coefficients and their
+/// order of operations live. [`fold_frame_to_stereo`] reads it from a
+/// frame, [`fold_planar_channel`] from planar slices at one frame; with a
+/// constant `width` the `match` folds away.
+///
+/// Reads only channels below `width`. Channel order is SMPTE:
+/// `FL FR C LFE SL SR [BL BR]`, the LFE (3) never read.
+#[inline(always)]
+fn stereo_side(width: usize, s: usize, get: impl Fn(usize) -> f32) -> f32 {
+    match width {
+        0 => 0.0,
+        // Mono is duplicated to both sides.
+        1 => get(0),
+        // Quad: FL FR BL BR (no center, no LFE).
+        4 => get(s) + M3DB * get(2 + s),
+        // 5.1: FL FR C LFE SL SR.
+        6 => get(s) + M3DB * get(2) + M3DB * get(4 + s),
+        // 7.1: FL FR C LFE SL SR BL BR, the rears into their side.
+        8 => get(s) + M3DB * get(2) + M3DB * get(4 + s) + M3DB * get(6 + s),
+        // 7.1.4: FL FR C LFE Lss Rss Lrs Rrs Ltf Rtf Ltr Rtr. Every channel
+        // on a side, heights included, folds into it at −3 dB (the heights
+        // pair L/R as (8, 10) and (9, 11)).
+        12 => get(s) + M3DB * (get(2) + get(4 + s) + get(6 + s) + get(8 + s) + get(10 + s)),
+        // Stereo, and any unknown width: the front pair passes through.
+        _ => get(s),
     }
 }
 
@@ -190,22 +179,24 @@ pub fn fold_frame(src: &[f32], dst: &mut [f32]) {
 /// Allocation-free, so safe on the audio thread.
 ///
 /// ```
-/// use tutti_types::{fold_planar, M3DB};
+/// use tutti_types::{fold_planar_channel, M3DB};
 ///
 /// // 5.1 with only the centre active, folded to stereo: both sides get it.
 /// let silent = [0.0f32; 4];
 /// let centre = [1.0f32; 4];
 /// let src = |c: usize| -> &[f32] { if c == 2 { &centre } else { &silent } };
 /// let mut lo = [0.0f32; 4];
-/// fold_planar(src, 6, 2, 0, &mut lo);
+/// fold_planar_channel(src, 6, 2, 0, &mut lo);
 /// assert_eq!(lo, [M3DB; 4]);
 /// ```
 ///
 /// # Panics
 ///
-/// If `dst_c` is not below `dst_width`, or a channel the fold reads is
-/// shorter than `out`.
-pub fn fold_planar<'a>(
+/// If `dst_c` is not below `dst_width`, or any of the first
+/// `min(src_width, 12)` channels is shorter than `out`: those are all cut to
+/// the block before the widths are matched, so this holds on the copy and
+/// zero-fill paths too.
+pub fn fold_planar_channel<'a>(
     src: impl Fn(usize) -> &'a [f32],
     src_width: usize,
     dst_width: usize,
@@ -253,27 +244,10 @@ pub fn fold_planar<'a>(
     }
 }
 
-/// [`fold_frame_to_stereo`]'s side `s` (0 left, 1 right) of a `W`-wide frame
-/// at frame `i`, with its exact order of operations. `W` is 2 for every
-/// width that passes the front pair through.
-#[inline(always)]
-fn side_at<const W: usize>(ch: &[&[f32]; 12], s: usize, i: usize) -> f32 {
-    match W {
-        4 => ch[s][i] + M3DB * ch[2 + s][i],
-        6 => ch[s][i] + M3DB * ch[2][i] + M3DB * ch[4 + s][i],
-        8 => ch[s][i] + M3DB * ch[2][i] + M3DB * ch[4 + s][i] + M3DB * ch[6 + s][i],
-        12 => {
-            ch[s][i]
-                + M3DB * (ch[2][i] + ch[4 + s][i] + ch[6 + s][i] + ch[8 + s][i] + ch[10 + s][i])
-        }
-        _ => ch[s][i],
-    }
-}
-
 /// One side of the stereo fold of a `W`-wide source, over the block.
 fn side<const W: usize>(ch: &[&[f32]; 12], s: usize, out: &mut [f32]) {
     for (i, o) in out.iter_mut().enumerate() {
-        *o = side_at::<W>(ch, s, i);
+        *o = stereo_side(W, s, |c| ch[c][i]);
     }
 }
 
@@ -281,7 +255,7 @@ fn side<const W: usize>(ch: &[&[f32]; 12], s: usize, out: &mut [f32]) {
 /// block.
 fn mono<const W: usize>(ch: &[&[f32]; 12], out: &mut [f32]) {
     for (i, o) in out.iter_mut().enumerate() {
-        *o = (side_at::<W>(ch, 0, i) + side_at::<W>(ch, 1, i)) * M3DB;
+        *o = (stereo_side(W, 0, |c| ch[c][i]) + stereo_side(W, 1, |c| ch[c][i])) * M3DB;
     }
 }
 
@@ -501,7 +475,7 @@ mod tests {
                 let m = matrix(src, dst);
                 for (o, row) in m.iter().enumerate() {
                     let mut out = vec![f32::NAN; src];
-                    fold_planar(|c| &pulses[c][..], src, dst, o, &mut out);
+                    fold_planar_channel(|c| &pulses[c][..], src, dst, o, &mut out);
                     for (k, (&got, &want)) in out.iter().zip(row).enumerate() {
                         assert!(
                             (got - want).abs() < 1e-6,

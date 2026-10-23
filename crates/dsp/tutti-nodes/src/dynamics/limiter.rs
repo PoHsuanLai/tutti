@@ -52,11 +52,13 @@ impl LookaheadRing {
 
     /// Frames still held when the input stops.
     ///
-    /// The ring delays by `lookahead_samples - 1` (see `step` below), so
-    /// that many frames outlive a silent input. The release envelope is not part
-    /// of this: it shapes gain, and gain applied to silence is silence.
+    /// The ring delays by `lookahead_samples` (`step` reads each ring's
+    /// oldest slot before overwriting it), so the last input frame comes out
+    /// that many frames later, and that many frames outlive a silent input.
+    /// The release envelope is not part of this: it shapes gain, and gain
+    /// applied to silence is silence.
     fn ring_out(&self) -> Samples {
-        Samples(self.lookahead_samples.saturating_sub(1))
+        Samples(self.lookahead_samples)
     }
 
     fn clear(&mut self) {
@@ -670,7 +672,10 @@ impl Node for BrickwallLimiterNode {
         // its own ceiling.
         if let Some(v) = ceiling_fed {
             let mut outs = outputs.iter_mut();
-            let first = &mut outs.next().expect("at least one channel")[..size];
+            let Some(first) = outs.next() else {
+                return Status::Modified;
+            };
+            let first = &mut first[..size];
             for (o, &db) in first.iter_mut().zip(v) {
                 *o = db_to_amplitude(Db(db)).get();
             }
@@ -907,6 +912,46 @@ mod tests {
             out[0].abs() > 0.01,
             "Quiet signal should pass through, got {}",
             out[0]
+        );
+    }
+
+    /// The declared tail is the frames the node produces after its input
+    /// stops: an impulse comes out (scaled by the gain) after the
+    /// lookahead, and its last frame out is `tail` frames after its last
+    /// frame in. The executor parks a quiet node once its inputs have been
+    /// silent for the tail, so a tail one short drops the ring's last frame.
+    ///
+    /// Mutation (run): `ring_out` returns `lookahead_samples - 1` → the last
+    /// frame out is one past the tail → fails.
+    #[test]
+    fn the_tail_is_the_measured_delay_of_an_impulse() {
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let shape = lim.shape();
+        let Tail::Finite(tail) = shape.tail else {
+            panic!("a lookahead ring has a finite tail, got {:?}", shape.tail);
+        };
+        let mut out = [0.0f32; 2];
+        let mut first = None;
+        let mut last = None;
+        for n in 0..3 * tail.get() + 1 {
+            let x = if n == 0 { 0.1 } else { 0.0 };
+            tick(&mut lim, &[x, x], &mut out);
+            if out[0] != 0.0 {
+                first.get_or_insert(n);
+                last = Some(n);
+            }
+        }
+        let (first, last) = (first.expect("the impulse came out"), last.unwrap());
+        assert_eq!(first, last, "a pure delay rings for one frame");
+        assert_eq!(
+            Samples(last),
+            tail,
+            "the last frame out is the tail after the last in"
+        );
+        assert_eq!(
+            Latency::new(Samples(first)),
+            shape.latency,
+            "the delay is the latency"
         );
     }
 

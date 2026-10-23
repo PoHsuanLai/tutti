@@ -168,3 +168,40 @@ fn limiter_node_burst_and_release_are_allocation_free() {
         "the limiter rendered silence after the release"
     );
 }
+
+/// The brickwall with its ceiling port fed a per-frame ramp (the path that
+/// writes each frame's linear ceiling into channel 0 and clips it last),
+/// 6 channels, 1 000 blocks under `assert_no_alloc`. `Direct` feeds the
+/// port, which `BlockRig` cannot.
+///
+/// Mutation (run): a `black_box(vec![0.0f32; size])` inside the fed
+/// branch of `BrickwallLimiterNode::process` → fails.
+#[test]
+fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
+    use tutti_graph::contract::Direct;
+
+    let mut node = Direct::new(
+        BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3),
+        SampleRate(48_000.0),
+        64,
+    );
+    for c in node.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 1.5 } else { -1.5 };
+        }
+    }
+    let ceiling: Vec<f32> = (0..64).map(|i| -12.0 + 0.1875 * i as f32).collect();
+    node.feed(0, Some(&ceiling));
+    node.block();
+    let first = tutti_core::Db(-12.0).to_amplitude().get();
+    assert!(
+        (node.output(5)[0] - first).abs() < 1e-5,
+        "the fed ceiling did not reach the clip: {}",
+        node.output(5)[0]
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            node.block();
+        }
+    });
+}

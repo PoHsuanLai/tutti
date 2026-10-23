@@ -258,10 +258,11 @@ impl Node for DistortionNode {
     /// `channels` in and out, drive modulatable ([`DISTORTION_PARAMS`]).
     /// The shapers carry no z-state, so the output stops with the input.
     ///
-    /// The cost is the curve's (`benches/node_kernels.rs`, per sample and
-    /// channel at 1024 frames): `Softsign` and `HardClip` take well under a
-    /// nanosecond, `Light`; `Crush` and `SoftCrush` (a rounding call) take
-    /// 3–4 and `Tanh` and `Atan` (a libm call) 9–20, `Moderate`.
+    /// The cost is the curve's, measured by doc 013's fixed-plus-per-frame
+    /// fit against its two reference nodes (its cost table has the row):
+    /// `Softsign` and `HardClip` are arithmetic, `Light`; `Crush` and
+    /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
+    /// are `Moderate`.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.channels as u16);
         let cost = match self.kind {
@@ -306,7 +307,10 @@ impl Node for DistortionNode {
             // last, over its own hardness.
             Some(drive) => {
                 let mut outs = outputs.iter_mut();
-                let first = &mut outs.next().expect("at least one channel")[..size];
+                let Some(first) = outs.next() else {
+                    return Status::Modified;
+                };
+                let first = &mut first[..size];
                 for (h, &d) in first.iter_mut().zip(drive) {
                     self.maybe_update_modulated(d.max(0.0));
                     *h = self.shaper.hardness;

@@ -10,9 +10,9 @@
 //! needs a node, and this is that node and nothing more.
 //!
 //! **This module contains no matrix of its own and must never grow one.**
-//! Every coefficient comes from [`fold_planar`], the planar entry point beside
-//! [`fold_frame`] in `tutti-types`, which gives the same bits as the
-//! per-frame fold. That module exists precisely so the live path and the
+//! Every coefficient comes from [`fold_planar_channel`], the planar entry
+//! point beside [`fold_frame`] in `tutti-types`, which shares its stereo
+//! kernel and gives the same bits as the per-frame fold. That module exists precisely so the live path and the
 //! offline export path cannot drift apart, and a second copy here would defeat
 //! it — the node below only hands it one output channel at a time.
 //!
@@ -29,7 +29,7 @@
 
 use tutti_core::{ChannelLayout, Tail};
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::fold_planar;
+use tutti_types::fold_planar_channel;
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
 /// Dolby matrices.
@@ -92,7 +92,7 @@ impl Node for DownmixNode {
         let (inputs, mut outputs) = io.split();
         let (src, dst) = (self.src.count() as usize, self.dst.count() as usize);
         for (c, out) in outputs.iter_mut().enumerate() {
-            fold_planar(|k| inputs.get(k), src, dst, c, &mut out[..size]);
+            fold_planar_channel(|k| inputs.get(k), src, dst, c, &mut out[..size]);
         }
         Status::Modified
     }

@@ -3465,7 +3465,11 @@ Decisions:
    partitions) declares nothing. The bus strip is `Light`: steady or
    ramping its channel-major kernel is far under the boundary, and with
    its volume fed per frame it is borderline (the table below and the
-   note after it).
+   note after it). `DistortionNode` declares its class by its curve:
+   `Softsign` and `HardClip` (arithmetic only) are `Light`, and `Crush`,
+   `SoftCrush`, `Atan` and `Tanh` (each calls `round`, `floor`, `atan` or
+   `tanh`) are `Moderate` (the table below and the note after the
+   strip's).
 
    **The other crates declare too**, each class from a
    measured cost, not a guess. The method: each node driven alone through
@@ -3484,6 +3488,7 @@ Decisions:
    |---|---|---|
    | `BusStripNode` (tutti-nodes), channel-major kernel, measured on another box (the note below) | 0.06 steady, 0.4 ramping every block, 0.6–1.0 with the volume fed per frame | `Light` (fed: borderline) |
    | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
+   | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `MicMonitorNode` (a ring pop per frame) | 5.4 | `Moderate` |
    | `VbapPannerNode` | 10.9 stereo, 4.3 at 5.1 | `Moderate` |
@@ -3510,6 +3515,21 @@ Decisions:
    (a few nodes packed that could have spread; see point 2 above). The
    frame-major kernel it replaced measured 2.5–4.7 the same way. Each
    block also pays about 120 ns fixed, against a gain's 100.
+
+   `DistortionNode`'s row was measured the same way (stereo, best of five
+   runs of 4 000 blocks at 256 frames and 20 000 at 16, solved for a fixed
+   and a per-frame-and-channel cost; "fed" is the drive fed per frame),
+   on a third 4-core container (Xeon, 2.8 GHz), beside both references
+   there: a gain 0.03–0.05 and `SvfFilterNode<f64>` 6.6–6.8, so it is
+   placed by the same log-scale rule, with the boundary at about 1.7 on
+   that box. The two arithmetic curves are far under it, fed or not
+   (fed, they sit about 0.6 of the way from the gain to the filter). `Crush`, at 2.2, is
+   the nearest to it, 0.78 of the way, and is `Moderate`, with the
+   other three above it; `Tanh`, the most expensive, is far under the
+   `Heavy` boundary (about 100 on that box). Every curve pays about 110–130 ns a
+   block fixed, against the gain's 100–120. The class is per curve, not
+   per node: the curve is fixed at construction, and the declared shape
+   reads it.
 
    **One exception to the nearest-class rule: HRTF.** Its average is
    under the 45 boundary, but the renderer does all of a 128-frame
@@ -3783,7 +3803,7 @@ What they show:
   `DistortionNode` hard clip at six channels 1.5 → 0.18 / 22.1 → 1.2
   (tanh, bound by its libm call, 1.2×); `BrickwallLimiterNode` at six
   channels 1.1 → 0.19 / 16.8 → 1.1; `DownmixNode` 6 → 2 1.3 → 0.30 /
-  18.9 → 2.5, through a planar `tutti_types::fold_planar` beside
+  18.9 → 2.5, through a planar `tutti_types::fold_planar_channel` beside
   `fold_frame`. Every one renders the same bits as before. A recurrence
   is the exception: the phaser's stages are one dependent chain a
   sample, and running it channel-outer measured 1.3–2× slower than the
@@ -4439,7 +4459,7 @@ class impossible; each `route` was fixed to report processing latency only.
 |---|---|
 | `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar` kernel in `tutti-types` |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar_channel` kernel in `tutti-types` |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
@@ -6833,7 +6853,7 @@ converts at its edges in an f64 graph.
 | `SvfFilterNode<F>`, `EqBandNode<F>`, `LadderFilterNode<F>` | tutti-nodes | Both; `F` stays the state precision | already generic over their state type (`Real`). With f64 buffers the per-sample conversion inside the node disappears; measured no slower than the shipped f64-state, f32-I/O filter |
 | `DelayLineNode`, `ModDelayNode` | tutti-nodes | Both | the ring holds the format; its memory doubles (8 bytes per frame and channel), allocated in `prepare` as today |
 | `CompressorNode`, `GateNode`, `LimiterNode`, `BrickwallLimiterNode` | tutti-nodes | Both | the gain computer is control maths and may stay f32; the gain multiply and the lookahead ring are on the signal and take the format |
-| `DistortionNode` | tutti-nodes | Both | a waveshaper; the f64 path calls `libm`'s f64 functions, which cost more than the f32 ones, so measure before declaring its cost class |
+| `DistortionNode` | tutti-nodes | Both | a waveshaper; its f32 class is declared per curve from a measurement (the cost table under ["The cost model and coarsening"](#the-cost-model-and-coarsening)), but the f64 path calls `libm`'s f64 functions, which cost more than the f32 ones, so measure that path before keeping the class |
 | `PhaserNode`, `DownmixNode` | tutti-nodes | Both | an allpass chain and a mixing matrix |
 | `ModulatorNode<M>` (LFO), `AutomationLaneNode` | tutti-nodes | Both | they write a control signal on an audio port; writing it in the graph's format saves a conversion on every edge it feeds |
 | `ConvolverNode` | tutti-nodes | f32, converted at its edges; an f64 convolution is a type parameter | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |

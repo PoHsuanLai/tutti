@@ -210,14 +210,38 @@ fn delay(c: &mut Criterion) {
         },
         None,
     );
-    run(c, "limiter", "2", || LimiterNode::new(-6.0, -0.3), None);
-    #[cfg(feature = "convolution")]
-    {
-        use tutti_nodes::{generate_test_ir, ConvolverNode};
-        let ir = generate_test_ir(256, 0.05, SR);
-        run(c, "convolver", "1", || ConvolverNode::new(&ir, 64), None);
-    }
 }
 
-criterion_group!(benches, channel_sum, distortion, brickwall, downmix, delay);
+fn limiter(c: &mut Criterion) {
+    run(c, "limiter", "2", || LimiterNode::new(-6.0, -0.3), None);
+}
+
+#[cfg(feature = "convolution")]
+fn convolver(c: &mut Criterion) {
+    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    let ir = generate_test_ir(256, 0.05, SR);
+    run(c, "convolver", "1", || ConvolverNode::new(&ir, 64), None);
+}
+
+#[cfg(not(feature = "convolution"))]
+criterion_group!(
+    benches,
+    channel_sum,
+    distortion,
+    brickwall,
+    downmix,
+    delay,
+    limiter
+);
+#[cfg(feature = "convolution")]
+criterion_group!(
+    benches,
+    channel_sum,
+    distortion,
+    brickwall,
+    downmix,
+    delay,
+    limiter,
+    convolver
+);
 criterion_main!(benches);

@@ -178,8 +178,8 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
         VstInner::F64(i) => i.read_latency_samples(),
     } as usize);
     // VST3 always answers `getTailSamples`, so there is no "unasked" case here —
-    // `from_samples` maps 0 to `None` and the saturating max to `Unbounded`.
-    let tail = PluginTail::from_samples(match &inner {
+    // `from_vst3_samples` maps 0 to `None` and `kInfiniteTail` to `Unbounded`.
+    let tail = PluginTail::from_vst3_samples(match &inner {
         VstInner::F32(i) => i.read_tail_samples(),
         VstInner::F64(i) => i.read_tail_samples(),
     });

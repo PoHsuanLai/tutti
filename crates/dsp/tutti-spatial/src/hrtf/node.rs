@@ -10,6 +10,7 @@ use tutti_types::Latency;
 
 use super::panner::{HrtfBinaural, HrtfBinauralError, LATENCY};
 use crate::fork::{fresh_fork_parts, FreshFork};
+use crate::target::hold_finite;
 use crate::SpatialTarget;
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
@@ -22,7 +23,9 @@ use crate::SpatialTarget;
 /// [`HrtfBinauralControls`], which move the source lock-free while it renders.
 /// Position changes are de-zippered over 50 ms, and each step of the glide
 /// crossfades between the filters on either side of it. The filter for a
-/// direction is blended across the sphere face that direction crosses.
+/// direction is blended across the sphere face that direction crosses. A
+/// non-finite bearing or height (NaN, ±∞) is ignored: the source stays at the
+/// last finite one, and the next finite position moves it as usual.
 ///
 /// Output lags input by 128 samples (one convolution step), on both the wet
 /// and the dry half. The node declares this as latency, so the graph's delay
@@ -37,6 +40,10 @@ pub struct HrtfBinauralNode {
     /// [`HrtfBinauralControls`] an insert hands back write.
     controls: HrtfBinauralControls,
     sample_rate: SampleRate,
+    /// The last finite azimuth and elevation the cells held. The de-zipper
+    /// smoother is recursive, so one NaN or ±∞ coordinate would leave it NaN
+    /// for good; a non-finite write reads as unchanged instead.
+    good: [f32; 2],
 }
 
 /// The live controls of an [`HrtfBinauralNode`]: its position and its
@@ -107,6 +114,7 @@ impl Clone for HrtfBinauralNode {
             panner: self.panner.clone(),
             controls: self.controls.clone(),
             sample_rate: self.sample_rate,
+            good: self.good,
         }
     }
 }
@@ -140,6 +148,7 @@ impl HrtfBinauralNode {
                 blend: Param::new(Mix::WET),
             },
             sample_rate,
+            good: [Azimuth::FRONT.get(), Elevation::LEVEL.get()],
         })
     }
 
@@ -177,6 +186,17 @@ impl HrtfBinauralNode {
     /// Returns the current HRTF/dry [`Mix`], `0..1`.
     pub fn blend(&self) -> Mix {
         self.controls.blend()
+    }
+
+    /// The position cells, read once: a non-finite coordinate held at the
+    /// last finite one.
+    #[inline]
+    fn placement(&mut self) -> (Azimuth, Elevation) {
+        let (azimuth, elevation) = self.controls.target.load();
+        (
+            Azimuth(hold_finite(&mut self.good[0], azimuth.get())),
+            Elevation(hold_finite(&mut self.good[1], elevation.get())),
+        )
     }
 }
 
@@ -216,14 +236,14 @@ impl Node for HrtfBinauralNode {
     /// Resamples the sphere to the graph's rate (allocates; control thread).
     fn prepare(&mut self, p: &Prepare) {
         self.sample_rate = p.sample_rate();
-        self.panner
-            .set_sample_rate(self.sample_rate, self.controls.target.load());
+        let target = self.placement();
+        self.panner.set_sample_rate(self.sample_rate, target);
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // The controls' cells are the one copy of the commanded position and
         // blend; the renderer reads them here, once per block.
-        let target = self.controls.target.load();
+        let target = self.placement();
         let blend = self.controls.blend.load();
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
@@ -242,7 +262,8 @@ impl Node for HrtfBinauralNode {
     }
 
     fn reset(&mut self) {
-        self.panner.reset_state(self.controls.target.load());
+        let target = self.placement();
+        self.panner.reset_state(target);
     }
 }
 
@@ -333,6 +354,77 @@ mod tests {
         let bytes = synthetic_hrir_sphere(44_100, 64);
         let node = HrtfBinauralNode::new(&bytes, RATE).expect("synthetic sphere should parse");
         prepared(node, RATE, BLOCK)
+    }
+
+    /// A NaN or infinite position is ignored rather than sticking: while it
+    /// is set the de-zipper stays aimed at the last finite position, and a
+    /// finite position after it is reached as usual.
+    ///
+    /// Asserted on the de-zipper's aim, the direction each step renders:
+    /// the output alone cannot show it, since the sphere's face search
+    /// answers some face for a NaN direction and the output stays finite,
+    /// at the wrong place. Without `hold_finite` the smoother's state turns
+    /// NaN on the first step and stays NaN through every later target.
+    ///
+    /// Mutation (run): `placement` returning the raw cells
+    /// (`self.controls.target.load()`) → the aim is NaN while the position
+    /// is NaN and never returns to 90° → fails.
+    #[test]
+    fn a_non_finite_position_is_ignored_and_does_not_stick() {
+        let mut node = make_node();
+        let block = |node: &mut HrtfBinauralNode| {
+            let input: Vec<f32> = (0..BLOCK).map(|i| ((i as f32) * 0.05).sin()).collect();
+            drive(node, RATE, &[&input, &input], &[])
+        };
+        // 0.5 s: ten 50 ms time constants, so the aim settles to well
+        // within the tolerance below.
+        let settle = |node: &mut HrtfBinauralNode| {
+            for _ in 0..(RATE.get() as usize / 2).div_ceil(BLOCK) {
+                let out = block(node);
+                assert!(out.iter().flatten().all(|s| s.is_finite()));
+            }
+        };
+        let near = |(az, el): (Azimuth, Elevation), want: (f32, f32)| {
+            (az.get() - want.0).abs() < 0.01 && (el.get() - want.1).abs() < 0.01
+        };
+        node.set_position(-45.0, 30.0);
+        settle(&mut node);
+        assert!(
+            near(node.panner.aim(), (-45.0, 30.0)),
+            "{:?}",
+            node.panner.aim()
+        );
+        // An infinite bearing wraps to NaN on the way into the cell; an
+        // infinite height is clamped to the pole there, so it is a position.
+        for (az, el) in [(f32::NAN, 0.0), (0.0, f32::NAN), (f32::INFINITY, 10.0)] {
+            // Only the bad coordinate is ignored; the other moves.
+            let want = (
+                if az.is_finite() { az } else { -45.0 },
+                if el.is_finite() { el } else { 30.0 },
+            );
+            node.set_position(az, el);
+            settle(&mut node);
+            assert!(
+                near(node.panner.aim(), want),
+                "({az}, {el}): aimed at {:?}, want {want:?}",
+                node.panner.aim()
+            );
+            node.set_position(-45.0, 30.0);
+            settle(&mut node);
+            assert!(
+                near(node.panner.aim(), (-45.0, 30.0)),
+                "did not recover from ({az}, {el}): {:?}",
+                node.panner.aim()
+            );
+        }
+        // A reset (and a fork's) seats on the held position, not on a NaN.
+        node.set_position(f32::NAN, f32::NAN);
+        Node::reset(&mut node);
+        assert!(
+            near(node.panner.aim(), (-45.0, 30.0)),
+            "{:?}",
+            node.panner.aim()
+        );
     }
 
     #[test]

@@ -205,3 +205,51 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
         }
     });
 }
+
+/// A lookahead limiter cloned mid-release, and the clone processed on
+/// through the rest of the release under `assert_no_alloc`, with no
+/// `prepare` between (which would rebuild the deque at full capacity and
+/// hide a short one). At the clone the window-minimum deque holds about
+/// one block of a rising run, fewer entries than its window; the clone must
+/// still hold the whole window's allocation, or the release grows it on
+/// the audio thread.
+///
+/// Mutation (run): derive `Clone` for `MonotonicMinDeque` (the copy is
+/// sized to the entries it holds) → the clone's deque grows inside the
+/// gate → fails.
+#[test]
+fn a_limiter_cloned_mid_release_processes_allocation_free() {
+    use tutti_graph::contract::Direct;
+
+    let node = LimiterNode::new(-3.0, -0.3)
+        .with_lookahead(0.005)
+        .with_release(0.1);
+    let mut d = Direct::new(node, SampleRate(48_000.0), 64);
+    let fill = |d: &mut Direct<LimiterNode>, amplitude: f32| {
+        for c in d.inputs_mut() {
+            for (i, x) in c.iter_mut().enumerate() {
+                *x = if i % 2 == 0 { amplitude } else { -amplitude };
+            }
+        }
+    };
+    // A held burst, long enough (25 release time constants) for the
+    // envelope to settle: the gain is then constant, and the deque holds
+    // one entry.
+    fill(&mut d, 4.0);
+    for _ in 0..1_875 {
+        d.block();
+    }
+    // One block into the release: 64 rising gains of a 240-frame window.
+    fill(&mut d, 0.05);
+    d.block();
+    d.node = d.node.clone();
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..200 {
+            d.block();
+        }
+    });
+    assert!(
+        d.output(0).iter().any(|s| s.abs() > 1e-6),
+        "the clone rendered silence after the release"
+    );
+}

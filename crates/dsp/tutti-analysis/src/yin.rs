@@ -13,8 +13,7 @@
 //! across frames, which relies on that property — and
 //! `a_reused_detector_matches_fresh_ones` pins it.
 
-use tutti_core::SampleRate;
-use tutti_types::{Cents, Confidence, Hz, Note, Samples};
+use tutti_types::{Cents, Confidence, Hz, Note, SampleRate, Samples};
 
 use crate::error::{Error, Result};
 use crate::grid::FrameCount;
@@ -133,10 +132,7 @@ impl YinConfig {
     }
 
     fn detector(&self) -> PitchDetector {
-        let mut detector =
-            PitchDetector::with_range(self.sample_rate, self.min_freq(), self.max_freq());
-        detector.set_threshold(self.threshold);
-        detector
+        PitchDetector::new(*self)
     }
 }
 
@@ -302,14 +298,15 @@ pub fn median_filter(pitches: &[PitchEstimate], window: FrameCount) -> Vec<Pitch
     }
 
     let half = w / 2;
+    // One sort buffer for the whole track, refilled per frame.
+    let mut freqs: Vec<f32> = Vec::with_capacity(2 * half + 1);
     (0..pitches.len())
         .map(|i| {
             if i < half || i + half >= pitches.len() {
                 return pitches[i];
             }
-            let mut freqs: Vec<f32> = (i - half..=i + half)
-                .map(|j| pitches[j].frequency().get())
-                .collect();
+            freqs.clear();
+            freqs.extend((i - half..=i + half).map(|j| pitches[j].frequency().get()));
             freqs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
             let median = freqs[freqs.len() / 2];
 

@@ -1,13 +1,16 @@
-//! **What does one 64-frame block of VBAP panning cost, at 2 and 6 speakers?**
+//! **What does one block of VBAP panning cost, at 2 and 6 speakers, for a
+//! 64-frame and a 1024-frame block?**
 //!
-//! A 64-frame block at 48 kHz has **1.333 ms**; divide a case's time by that
-//! for the fraction of the budget one panned source consumes.
+//! A 64-frame block at 48 kHz has **1.333 ms** (1024 frames: 21.3 ms); divide
+//! a case's time by that for the fraction of the budget one panned source
+//! consumes.
 //!
-//! `vbap_static` holds the source still; `vbap_moving` writes a new bearing
-//! every block, which keeps the 50 ms de-zipper ramp permanently in flight —
-//! the case where the gain vector genuinely changes inside a block. Both feed a
-//! stereo pair at the default width, the branch that solves two virtual
-//! sources.
+//! `vbap_static` holds the source still, warmed up for two seconds of audio
+//! first so the 50 ms de-zipper has reached its fixed point (a shorter warmup
+//! measures the tail of the initial glide instead); `vbap_moving` writes a new
+//! bearing every block, which keeps the ramp permanently in flight — the case
+//! where the gain vector genuinely changes inside a block. Both feed a stereo
+//! pair at the default width, the branch that solves two virtual sources.
 //!
 //! The panner is a graph node, called by hand through
 //! `tutti_graph::contract::Direct` (no graph around it, no allocation per
@@ -20,7 +23,9 @@ use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_spatial::VbapPannerNode;
 
-const BLOCK: usize = 64;
+/// Warmup before measuring, in frames: two seconds at 48 kHz, 40 time
+/// constants of the de-zipper, so a held source is settled bit for bit.
+const WARMUP_FRAMES: usize = 96_000;
 
 /// Deterministic broadband input: a cheap LCG, so the bench needs no `rand`.
 fn fill_noise(channels: &mut [Vec<f32>]) {
@@ -37,17 +42,18 @@ fn bench(c: &mut Criterion) {
     for moving in [false, true] {
         let name = if moving { "vbap_moving" } else { "vbap_static" };
         let mut g = c.benchmark_group(name);
-        for speakers in [2u16, 6] {
-            g.throughput(Throughput::Elements(BLOCK as u64));
+        for (speakers, block) in [(2u16, 64usize), (6, 64), (2, 1024), (6, 1024)] {
+            g.throughput(Throughput::Elements(block as u64));
             let node = VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap();
             node.set_position(Azimuth(20.0), Elevation::LEVEL);
-            let mut d = Direct::new(node, SampleRate(48_000.0), BLOCK);
+            let mut d = Direct::new(node, SampleRate(48_000.0), block);
             fill_noise(d.inputs_mut());
-            for _ in 0..16 {
+            for _ in 0..WARMUP_FRAMES / block {
                 d.block();
             }
             let mut bearing = 0.0f32;
-            g.bench_with_input(BenchmarkId::from_parameter(speakers), &speakers, |b, _| {
+            let id = BenchmarkId::new(format!("{speakers}sp"), block);
+            g.bench_with_input(id, &speakers, |b, _| {
                 b.iter(|| {
                     if moving {
                         bearing = if bearing > 170.0 {
@@ -58,7 +64,7 @@ fn bench(c: &mut Criterion) {
                         d.node.set_position(Azimuth(bearing), Elevation::LEVEL);
                     }
                     d.block();
-                    black_box(d.output(0)[BLOCK - 1]);
+                    black_box(d.output(0)[block - 1]);
                 })
             });
         }

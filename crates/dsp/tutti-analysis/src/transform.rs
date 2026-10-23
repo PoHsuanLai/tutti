@@ -13,8 +13,7 @@
 //! panicked, and how a decimated display transform reached it and produced a
 //! comb of islands separated by silence.
 
-use tutti_core::SampleRate;
-use tutti_types::{Amplitude, Samples};
+use tutti_types::{Amplitude, SampleRate, Samples};
 
 use crate::error::{Error, Result};
 use crate::fft::FftScratch;

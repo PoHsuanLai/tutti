@@ -107,16 +107,14 @@ pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
 
     // f64 accumulators: these sums run over whole blocks and f32 loses
     // precision quickly on the squared terms.
-    let (mut sum_l, mut sum_r, mut sum_lr, mut sum_ll, mut sum_rr) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
+    let (mut sum_ll, mut sum_rr, mut sum_lr) = (0.0f64, 0.0, 0.0);
     let (mut sum_mid, mut sum_side) = (0.0f64, 0.0f64);
 
     for i in 0..n {
         let (l, r) = (left[i] as f64, right[i] as f64);
-        sum_l += l * l;
-        sum_r += r * r;
-        sum_lr += l * r;
         sum_ll += l * l;
         sum_rr += r * r;
+        sum_lr += l * r;
 
         let mid = (l + r) * 0.5;
         let side = (l - r) * 0.5;
@@ -134,7 +132,7 @@ pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
         Correlation::UNCORRELATED
     };
 
-    let (level_l, level_r) = (rms(sum_l), rms(sum_r));
+    let (level_l, level_r) = (rms(sum_ll), rms(sum_rr));
     let total = level_l.get() + level_r.get();
     let balance = if total > 1e-20 {
         Pan::new_clamped((level_r.get() - level_l.get()) / total)
@@ -181,7 +179,7 @@ impl Ballistics {
     /// How far to move toward a new value over `dt`, in `[0, 1]`.
     ///
     /// Public because ballistics are not stereo-specific: a level meter smooths
-    /// [`MeterReading`](tutti_core::MeterReading)'s four amplitudes
+    /// `tutti_core::MeterReading`'s four amplitudes
     /// with the same attack and release. [`step_ballistics`] stays the
     /// convenience for the stereo case.
     ///

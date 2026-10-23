@@ -11,8 +11,7 @@
 //! frame 0 of one call against the last frame of the *previous* one. Here you
 //! cannot forget to reset something you have to pass in.
 
-use tutti_core::SampleRate;
-use tutti_types::{Amplitude, Samples, Seconds};
+use tutti_types::{Amplitude, SampleRate, Samples, Seconds};
 
 use crate::error::Result;
 use crate::fft::FftScratch;
@@ -208,6 +207,9 @@ pub struct OnsetState {
     /// own, and it sits beside `previous` because the two are resized by the
     /// same bin count on the same line.
     spectrum: Vec<Complex>,
+    /// The analysis window of `config`'s geometry, built when the config is
+    /// adopted.
+    window: Vec<f32>,
     /// Novelty per frame, in analysis order. Thresholding is global, so peaks
     /// can only be picked once the run is complete.
     novelty: Vec<(Samples, f32)>,
@@ -224,6 +226,7 @@ impl OnsetState {
         self.config = None;
         self.previous.clear();
         self.spectrum.clear();
+        self.window.clear();
         self.novelty.clear();
     }
 
@@ -252,6 +255,9 @@ pub fn step_onset(
     if state.config != Some(*cfg) {
         state.reset();
         state.config = Some(*cfg);
+        // The window is the geometry's, so it is built once per config
+        // rather than once per frame.
+        state.window = cfg.geometry.window_coefficients();
     }
 
     let bins = cfg.geometry.bins_per_frame().get();
@@ -265,7 +271,6 @@ pub fn step_onset(
     }
 
     let position = Samples(frame.get() * cfg.geometry.hop().get());
-    let window = cfg.geometry.window_coefficients();
 
     // Every spectral branch stores its magnitudes, including the ones that do
     // not read them. Skipping the store leaves `previous` stale or zeroed, so
@@ -274,24 +279,27 @@ pub fn step_onset(
     // ~15,000x in measurement, which then dominates the adaptive threshold and
     // the strength normalization for the *whole* run.
     let OnsetState {
-        previous, spectrum, ..
+        previous,
+        spectrum,
+        window,
+        ..
     } = state;
     let value = match cfg.function {
         DetectionFunction::Energy => spectral_energy(samples),
         DetectionFunction::SpectralFlux => {
-            fft.forward(samples, &window, spectrum);
+            fft.forward(samples, window, spectrum);
             let v = spectral_flux(previous, spectrum);
             store_magnitudes(previous, spectrum);
             v
         }
         DetectionFunction::HighFrequencyContent => {
-            fft.forward(samples, &window, spectrum);
+            fft.forward(samples, window, spectrum);
             let v = high_frequency_content(spectrum) * 0.01;
             store_magnitudes(previous, spectrum);
             v
         }
         DetectionFunction::ComplexDomain => {
-            fft.forward(samples, &window, spectrum);
+            fft.forward(samples, window, spectrum);
             let v = complex_domain_deviation(previous, spectrum);
             store_magnitudes(previous, spectrum);
             v
@@ -340,6 +348,9 @@ pub fn detect_onsets(
 
 /// Drops onsets closer together than `min_gap`, keeping the stronger of a pair.
 ///
+/// Walks the list once: each onset is compared with the last one kept, and
+/// either replaces it (when stronger), is dropped, or is kept after it.
+///
 /// Order-independent: the gap is a distance, so an unsorted list is compared
 /// correctly rather than underflowing. `pick_peaks` emits ascending positions,
 /// but this is public and takes a plain `Vec`, so it cannot assume that.
@@ -347,24 +358,20 @@ pub fn suppress_close_onsets(onsets: &mut Vec<Onset>, min_gap: Samples) {
     if onsets.len() < 2 {
         return;
     }
-    let mut i = 1;
-    while i < onsets.len() {
-        let too_close = onsets[i]
-            .position
-            .get()
-            .abs_diff(onsets[i - 1].position.get())
-            < min_gap.get();
-        if too_close {
-            let weaker = if onsets[i].strength > onsets[i - 1].strength {
-                i - 1
-            } else {
-                i
-            };
-            onsets.remove(weaker);
-        } else {
-            i += 1;
+    // `onsets[..kept]` is the result so far; `onsets[kept - 1]` the last kept.
+    let mut kept = 1;
+    for i in 1..onsets.len() {
+        let next = onsets[i];
+        let last = onsets[kept - 1];
+        let too_close = next.position.get().abs_diff(last.position.get()) < min_gap.get();
+        if !too_close {
+            onsets[kept] = next;
+            kept += 1;
+        } else if next.strength > last.strength {
+            onsets[kept - 1] = next;
         }
     }
+    onsets.truncate(kept);
 }
 
 /// Strict local maxima above an adaptive `mean + k·σ` threshold.
@@ -693,6 +700,49 @@ mod tests {
         let mut single = vec![onset(100, 0.5)];
         suppress_close_onsets(&mut single, Samples(1000));
         assert_eq!(single.len(), 1);
+    }
+
+    /// Each onset is compared with the last one *kept*, not with its
+    /// neighbour in the input: a falling run 600 apart under a 1000 gap keeps
+    /// 0 (600 is too close to it), then 1200 (1200 from 0), then drops 1800.
+    ///
+    /// Mutation (run): compare against `onsets[i - 1]` of the input instead
+    /// of the last kept → 1200 is dropped as too close to the discarded 600,
+    /// fails.
+    #[test]
+    fn suppression_measures_from_the_last_kept_onset() {
+        let at = |p: usize, s: f32| Onset {
+            position: Samples(p),
+            strength: Amplitude(s),
+        };
+        let mut onsets = vec![at(0, 1.0), at(600, 0.9), at(1200, 0.8), at(1800, 0.7)];
+        suppress_close_onsets(&mut onsets, Samples(1000));
+        let kept: Vec<usize> = onsets.iter().map(|o| o.position.get()).collect();
+        assert_eq!(kept, [0, 1200]);
+    }
+
+    /// The analysis window is the config's: a state that switches to a
+    /// geometry with another window function analyses with the new one.
+    ///
+    /// Mutation (run): rebuild the window only when its length differs from
+    /// the geometry's (as `previous` is resized), not on every config change
+    /// → the same-length Blackman config keeps the Hann window, fails.
+    #[test]
+    fn a_config_switch_rebuilds_the_window() {
+        let hann = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
+        let blackman = OnsetConfig::new(
+            geometry().with_window_fn(crate::CosineWindow::BLACKMAN),
+            DetectionFunction::SpectralFlux,
+        );
+        let samples = signal(0.1, &[0.01]);
+        let frame = &samples[..geometry().window().get()];
+        let mut fft = FftScratch::new();
+        let mut state = OnsetState::new();
+        step_onset(&hann, &mut state, FrameIndex(0), frame, &mut fft);
+        assert_eq!(state.window, hann.geometry().window_coefficients());
+        step_onset(&blackman, &mut state, FrameIndex(1), frame, &mut fft);
+        assert_eq!(state.window, blackman.geometry().window_coefficients());
+        assert_ne!(state.window, hann.geometry().window_coefficients());
     }
 
     /// Unsorted input must not underflow.

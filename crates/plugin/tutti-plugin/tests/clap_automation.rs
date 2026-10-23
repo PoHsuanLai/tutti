@@ -1,6 +1,7 @@
 //! Parameter automation reaches a hosted plugin through the graph: a
 //! foreign control lane on the plugin node's event input, a curve segment
-//! scheduled into it, and a lane sending an envelope's segments, against
+//! and a shaped ramp scheduled into it, and a lane sending an envelope's
+//! segments, against
 //! the reference CLAP plugin's gain parameter.
 //!
 //! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).
@@ -271,6 +272,37 @@ fn a_scheduled_segment_drives_a_plugin_parameter_to_its_end() {
         latency,
         AT as usize,
         end,
+        1,
+        |f| seg.raw_value_after(Samples(f - AT as usize)),
+        0.75,
+    );
+}
+
+/// **A shaped ramp reaches a plugin along its shape.** A step to 0.5, then
+/// a `PowerIn(2)` ramp to 0.75 over 1000 frames, scheduled into the plugin:
+/// the ramp starts from the 0.5 the node gave the gain, so the gain follows
+/// the segment from 0.5 to 0.75 along `PowerIn(2)` that a param port would
+/// render, and lands exactly on the end gain on the ramp's last frame.
+///
+/// Mutations (run), each fails: the plugin node ignoring a ramp's duration
+/// (every ramp a step) → the gain is at 0.75 from frame 300; sending the
+/// ramp `Linear` → the gain lies above the curve's upper bound mid-ramp.
+#[test]
+fn a_shaped_ramp_drives_a_plugin_parameter_along_its_shape() {
+    const AT: u64 = 300;
+    let step = ParamRamp::foreign(GAIN, 0.5, Samples(0));
+    let ramp = ParamRamp::foreign(GAIN, 0.75, Samples(1000)).with_shape(SegmentShape::PowerIn(2.0));
+    let (out, latency) = render_gain(
+        None,
+        &[(100, EventKind::Ramp(step)), (AT, EventKind::Ramp(ramp))],
+        10,
+    );
+    let seg = ParamSegment::foreign(GAIN, 0.5, 0.75, Samples(1000), SegmentShape::PowerIn(2.0));
+    follows(
+        &out,
+        latency,
+        AT as usize,
+        AT as usize + 999,
         1,
         |f| seg.raw_value_after(Samples(f - AT as usize)),
         0.75,

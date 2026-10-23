@@ -965,6 +965,10 @@ pub enum PortLayoutMode {
     /// widths differ, so the same transposition is visible in the geometry
     /// too — and the tag arithmetic pins which slot went where.
     AsymmetricAux = 1,
+    /// An instrument: no input port, one stereo main bus out (`in = []`,
+    /// `out = [2]`). CLAP requires a host to hand exactly the declared count
+    /// on each side, so this pins that the host hands no input buffer.
+    Instrument = 2,
 }
 
 /// Process-global selected layout. `AtomicU32` rather than a `Mutex` because
@@ -976,15 +980,17 @@ impl PortLayoutMode {
     fn from_u32(v: u32) -> Self {
         match v {
             1 => Self::AsymmetricAux,
+            2 => Self::Instrument,
             _ => Self::SymmetricStereo,
         }
     }
 
     /// Number of ports on the given side.
-    fn port_count(self, _is_input: bool) -> u32 {
+    fn port_count(self, is_input: bool) -> u32 {
         match self {
             Self::SymmetricStereo => 1,
             Self::AsymmetricAux => 2,
+            Self::Instrument => u32::from(!is_input),
         }
     }
 
@@ -994,8 +1000,9 @@ impl PortLayoutMode {
         let ports: &[u32] = match self {
             Self::SymmetricStereo => &[2],
             Self::AsymmetricAux => &[2, 1],
+            Self::Instrument if is_input => &[],
+            Self::Instrument => &[2],
         };
-        let _ = is_input;
         ports.get(index as usize).copied()
     }
 }

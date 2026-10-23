@@ -854,21 +854,16 @@ mod tests {
     /// that prefers `format`, in `TagPassthrough` mode
     /// (`out[0][ch] = in[0][ch] + probe_tag(0, ch)`), and run one block with
     /// `input` on both channels through the shared-memory slab, as the host
-    /// does. Returns the session's negotiated format, the plugin's
-    /// `F64_AUDIO` bit and the two output channels.
+    /// does. The render mode goes back to `Inert` when the guard drops, on a
+    /// failed assertion too.
     #[cfg(feature = "clap")]
-    fn clap_round_trip<T>(
-        name: &str,
-        mask: u32,
-        format: SampleFormat,
-        input: T,
-    ) -> (SampleFormat, bool, [Vec<T>; 2])
+    fn clap_round_trip<T>(name: &str, mask: u32, format: SampleFormat, input: T) -> RoundTrip<T>
     where
         T: tutti_plugin::server::Sample + Copy + Default,
     {
         const SEQ: u64 = 1;
         let _ports = crate::test_utils::clap_probe_ports_64bit(mask);
-        crate::test_utils::set_clap_probe_render_mode(
+        let _render = crate::test_utils::clap_probe_render_mode(
             tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
         );
         let (mut s, shm) = load_clap(name, format);
@@ -899,18 +894,29 @@ mod tests {
             shm.read_output_into::<T>(SEQ, ch, &mut v).unwrap();
             v
         });
-        let f64_audio = s
-            .plugin
-            .as_ref()
-            .unwrap()
-            .instance()
-            .loaded()
-            .features
-            .contains(Features::F64_AUDIO);
-        crate::test_utils::set_clap_probe_render_mode(
-            tutti_clap_test_plugin::RenderMode::Inert as u32,
-        );
-        (s.clock.format, f64_audio, out)
+        let loaded = s.plugin.as_ref().unwrap().instance().loaded();
+        RoundTrip {
+            format: s.clock.format,
+            f64_audio: loaded.features.contains(Features::F64_AUDIO),
+            inputs: loaded.inputs.clone(),
+            outputs: loaded.outputs.clone(),
+            out,
+        }
+    }
+
+    /// What [`clap_round_trip`] observed.
+    #[cfg(feature = "clap")]
+    struct RoundTrip<T> {
+        /// The session's negotiated format.
+        format: SampleFormat,
+        /// The plugin's `F64_AUDIO` bit.
+        f64_audio: bool,
+        /// The node's graph-facing input buses, as the server reports them.
+        inputs: tutti_plugin::server::BusChannels,
+        /// The node's graph-facing output buses.
+        outputs: tutti_plugin::server::BusChannels,
+        /// The two output channels.
+        out: [Vec<T>; 2],
     }
 
     /// An f32 session (the default) runs a plugin whose every port can do
@@ -927,7 +933,12 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
-        let (format, f64_audio, out) = clap_round_trip(
+        let RoundTrip {
+            format,
+            f64_audio,
+            out,
+            ..
+        } = clap_round_trip(
             "f32_session_64bit_clap",
             both,
             SampleFormat::Float32,
@@ -948,9 +959,10 @@ mod tests {
     /// An f64 session runs a plugin whose every port can do 64-bit at f64,
     /// end to end: the input keeps precision f32 cannot carry.
     ///
-    /// `0.1 + tag` is an exact IEEE sum, so it is compared exactly; the same
-    /// sum through f32 lands on a different value (asserted, so the check
-    /// cannot pass on a path that rounds through f32).
+    /// `0.1 + tag` is correctly rounded and deterministic, so the plugin's
+    /// f64 sum is compared exactly against the same sum here; the same sum
+    /// through f32 lands on a different value (asserted, so the check cannot
+    /// pass on a path that rounds through f32).
     ///
     /// Mutation (run): `prefer_f64 && supports_f64` → `false` in
     /// `ClapInstance::load` → the session negotiates f32; fails.
@@ -960,7 +972,12 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
-        let (format, f64_audio, out) = clap_round_trip(
+        let RoundTrip {
+            format,
+            f64_audio,
+            out,
+            ..
+        } = clap_round_trip(
             "f64_session_64bit_clap",
             both,
             SampleFormat::Float64,
@@ -989,7 +1006,12 @@ mod tests {
     #[cfg(feature = "clap")]
     fn an_f64_session_runs_a_clap_plugin_with_f32_inputs_in_f32() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let (format, f64_audio, out) = clap_round_trip(
+        let RoundTrip {
+            format,
+            f64_audio,
+            out,
+            ..
+        } = clap_round_trip(
             "f64_session_f32_inputs_clap",
             tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS,
             SampleFormat::Float64,
@@ -999,6 +1021,62 @@ mod tests {
         assert!(!f64_audio);
         let want = 0.5 + tutti_clap_test_plugin::probe_tag(0, 0);
         assert!(out[0].iter().all(|&x| x == want));
+    }
+
+    /// An f64 instrument (no input port, 64-bit stereo out) runs end to end
+    /// in an f64 session and is handed no input buffer, as CLAP requires
+    /// (`audio_inputs_count` equals the plugin's own input port count), while
+    /// the node keeps its graph-facing stereo input bus.
+    ///
+    /// The slab's inputs carry `0.1`; `TagPassthrough` adds input port 0 to
+    /// output port 0 when the host hands one, so an undeclared input bus
+    /// shows up as `0.1 + tag` rather than `tag`. With the bus handed at f64
+    /// its `data32` is null, which a plugin that reads `data32` for every
+    /// counted input would dereference.
+    ///
+    /// Mutation (run): handing the plugin the defaulted layout again
+    /// (`ports.default_empty_buses()` on the layout `ClapLoaded` keeps, in
+    /// `load_with_library`) → the plugin is handed a stereo input bus
+    /// carrying the slab's `0.1`, and every output sample is `0.1 + tag`;
+    /// fails. Deriving the reported totals from the declared layout instead
+    /// of the defaulted copy (`ports.input_channel_total()`) → the node's
+    /// input shape becomes `[Empty]`; fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn an_f64_clap_instrument_is_handed_no_input_buffer() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let _layout = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::Instrument as u32,
+        );
+        let RoundTrip {
+            format,
+            f64_audio,
+            inputs,
+            outputs,
+            out,
+        } = clap_round_trip(
+            "f64_clap_instrument",
+            tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS,
+            SampleFormat::Float64,
+            0.1f64,
+        );
+        assert_eq!(format, SampleFormat::Float64);
+        assert!(f64_audio, "an instrument with 64-bit outputs runs at f64");
+        let stereo = [tutti_plugin::server::ChannelLayout::STEREO];
+        assert_eq!(
+            inputs.as_slice(),
+            &stereo,
+            "the graph-facing input shape is still one stereo bus"
+        );
+        assert_eq!(outputs.as_slice(), &stereo);
+        for (ch, samples) in out.iter().enumerate() {
+            let want = f64::from(tutti_clap_test_plugin::probe_tag(0, ch as u32));
+            assert!(
+                samples.iter().all(|&x| x == want),
+                "channel {ch}: want {want} (no input handed), got {:?}",
+                &samples[..4]
+            );
+        }
     }
 
     /// Fetch any param_id from the loaded plugin's parameter list.

@@ -23,9 +23,14 @@ port to advertise it. That is this host's conservative rule, not a CLAP
 requirement (CLAP flags 64-bit per port): the host hands one sample width for
 every buffer, so it picks 64-bit only when every port takes it. A
 plugin with no audio ports at all is f32 (the width every CLAP plugin must
-accept; the host presents a fallback stereo bus it never flagged), and a side
-with no ports does not veto the other (an instrument whose outputs are all
-64-bit can run at 64-bit).
+accept), and a side with no ports does not veto the other (an instrument
+whose outputs are all 64-bit can run at 64-bit).
+
+The host now hands a CLAP plugin exactly its declared port count on each
+side, as `process.h` requires: none on a side with no ports. It used to hand
+a stereo bus there that the plugin never declared, which at 64-bit carries a
+null `data32`. The node's graph-facing shape is unchanged: an empty side is
+still reported as one stereo bus.
 
 The change is internal to the plugin server: no public signature moved. The
 reference CLAP plugin can advertise 64-bit ports

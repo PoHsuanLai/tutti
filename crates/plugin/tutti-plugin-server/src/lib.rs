@@ -259,6 +259,72 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// [`set_clap_probe_render_mode`] until the returned guard drops, which
+    /// puts the plugin back to `Inert`.
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin goes back to `Inert` when the guard drops"]
+    pub fn clap_probe_render_mode(mode: u32) -> ClapProbeRenderMode {
+        set_clap_probe_render_mode(mode);
+        ClapProbeRenderMode
+    }
+
+    /// Restores the reference plugin's `Inert` render mode on drop; see
+    /// [`clap_probe_render_mode`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeRenderMode;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeRenderMode {
+        fn drop(&mut self) {
+            set_clap_probe_render_mode(tutti_clap_test_plugin::RenderMode::Inert as u32);
+        }
+    }
+
+    /// Select the reference plugin's audio-port layout
+    /// (`tutti_clap_test_plugin::PortLayoutMode`) until the returned guard
+    /// drops, which restores `SymmetricStereo`. Call before loading: the host
+    /// reads the layout once, at load.
+    ///
+    /// Reached through the `dlopen` handle for the same reason as
+    /// [`set_clap_probe_render_mode`].
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin goes back to `SymmetricStereo` when the guard drops"]
+    pub fn clap_probe_port_layout(mode: u32) -> ClapProbePortLayout {
+        set_clap_probe_port_layout(mode);
+        ClapProbePortLayout
+    }
+
+    /// Restores the reference plugin's `SymmetricStereo` layout on drop; see
+    /// [`clap_probe_port_layout`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbePortLayout;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbePortLayout {
+        fn drop(&mut self) {
+            set_clap_probe_port_layout(
+                tutti_clap_test_plugin::PortLayoutMode::SymmetricStereo as u32,
+            );
+        }
+    }
+
+    #[cfg(feature = "clap")]
+    fn set_clap_probe_port_layout(mode: u32) {
+        // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
+        // `tutti-clap-test-plugin`. The handle is leaked, as in
+        // `set_clap_probe_render_mode`, so the image stays resident for the
+        // instance loaded after this call.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path())
+                .expect("reference plugin opens for the port-layout symbol");
+            let set: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
+                .get(b"tutti_test_plugin_set_port_layout\0")
+                .expect("`tutti_test_plugin_set_port_layout` exported by the reference plugin");
+            set(mode);
+            std::mem::forget(lib);
+        }
+    }
+
     /// Make the reference plugin's ports on the sides in `mask` advertise
     /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS` (`tutti_clap_test_plugin::PORTS_64BIT_*`)
     /// until the returned guard drops, which restores the f32-only default.

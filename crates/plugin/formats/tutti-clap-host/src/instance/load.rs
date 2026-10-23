@@ -19,8 +19,7 @@ use clap_sys::plugin::clap_plugin;
 use std::path::Path;
 use std::sync::Arc;
 use tutti_plugin_types::BusChannels;
-// Layout construction moved into `PortLayout::default_empty_buses`; the tests
-// below still name the type directly to assert on canonicalized widths.
+// The tests below name the type directly to assert on canonicalized widths.
 #[cfg(test)]
 use tutti_plugin_types::ChannelLayout;
 
@@ -252,18 +251,22 @@ impl ClapLoaded {
 
         let extensions = ExtensionCache::query(plugin.as_ptr());
 
-        let mut ports = PortLayout {
+        // The declared layout, empty sides included: `process` hands the
+        // plugin exactly these buffers, as CLAP requires (`audio_inputs_count`
+        // equals the plugin's own port count on that side).
+        let ports = PortLayout {
             inputs: port_channels(plugin.as_ptr(), extensions.audio.ports, true),
             outputs: port_channels(plugin.as_ptr(), extensions.audio.ports, false),
         };
 
-        // Default the bus lists FIRST, then derive the totals from them, so the
-        // two cannot disagree. See `PortLayout::default_empty_buses` for why the
-        // old `.max(2)` on the totals was the wrong shape.
-        ports.default_empty_buses();
-
-        plugin_info.audio_inputs = ports.input_channel_total();
-        plugin_info.audio_outputs = ports.output_channel_total();
+        // The reported totals state an empty side as one stereo bus (the
+        // graph-facing shape). Default a copy's bus lists, then derive the
+        // totals from it, so the two cannot disagree; see
+        // `PortLayout::default_empty_buses`.
+        let mut reported = ports.clone();
+        reported.default_empty_buses();
+        plugin_info.audio_inputs = reported.input_channel_total();
+        plugin_info.audio_outputs = reported.output_channel_total();
 
         let audio = AudioConfig {
             sample_rate,
@@ -359,17 +362,17 @@ fn port_channels(
 /// sides advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, and there is at least
 /// one port.
 ///
-/// Every port, inputs included, because the host activates in one sample
-/// width and hands that width for every buffer (`data64` with `data32` null):
-/// one port that never claimed 64-bit would be handed a table it does not read.
+/// Every port, inputs included, is this host's conservative rule, not a CLAP
+/// requirement: CLAP flags 64-bit per port, and a host may hand each port
+/// its own width. This host activates in one sample width and hands it for
+/// every buffer (`data64` with `data32` null), so it picks 64-bit only when
+/// no port would be handed a table it never claimed to read.
 ///
-/// A plugin with no ports at all (or no `audio-ports` extension) is `false`.
-/// It has no buffer to gain precision on, and the host presents its fallback
-/// stereo bus on each empty side (`PortLayout::default_empty_buses`), buses
-/// the plugin never described and so never flagged; f32 is the width every
-/// CLAP plugin must accept. A side with no ports does not veto a side that
-/// has them all flagged (an instrument with only 64-bit outputs is `true`):
-/// a plugin reads no buffer on a side it declared empty.
+/// A plugin with no ports at all (or no `audio-ports` extension) is `false`:
+/// it has no buffer to gain precision on, and f32 is the width every CLAP
+/// plugin must accept. A side with no ports does not veto a side that has
+/// them all flagged (an instrument with only 64-bit outputs is `true`): the
+/// host hands no buffer on a side the plugin declared empty.
 ///
 /// Stops at a `get` failure for the same index as [`port_channels`]: ports
 /// past the hole are absent from the presented layout, so they neither count

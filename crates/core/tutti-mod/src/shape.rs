@@ -28,13 +28,14 @@ pub enum Polarity {
     Unipolar,
 }
 
-/// LFO waveform. Owned here (the single source of truth); the app-side and
-/// `tutti_nodes` `LfoShape`s are `From`-bridged mirrors.
+/// LFO waveform. Owned here (the single source of truth); `tutti_nodes`
+/// re-exports it.
 ///
 /// The first five are pure functions of [`Phase`] and evaluate through
 /// [`LfoShape::evaluate_periodic`]. The last two are *stepped* — their value
-/// depends on per-instance state, so a caller must branch on
-/// [`LfoShape::is_random`] first.
+/// depends on the cycle index, so a caller must branch on
+/// [`LfoShape::is_random`] first, or evaluate any shape at an unwrapped
+/// position through [`Wave::raw_at`](crate::Wave::raw_at).
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
@@ -51,17 +52,23 @@ pub enum LfoShape {
     Sawtooth,
     /// Falling ramp — [`Sawtooth`](Self::Sawtooth) reversed: `+1` down to `-1`.
     SawtoothDown,
-    /// Stepped noise: one value per cycle, held across it. Needs per-instance
-    /// state ([`is_random`](Self::is_random) is true).
+    /// Stepped noise: one value per cycle, held across it, a hash of the cycle
+    /// index and a seed, so it needs the unwrapped position, not just the
+    /// phase ([`is_random`](Self::is_random) is true; [`Wave::raw_at`]
+    /// evaluates it).
+    ///
+    /// [`Wave::raw_at`]: crate::Wave::raw_at
     Random,
     /// [`Random`](Self::Random)'s steps, linearly interpolated across the cycle
-    /// instead of held. Needs per-instance state.
+    /// instead of held: from the previous cycle's step to this one's.
     RandomSmooth,
 }
 
 impl LfoShape {
-    /// True for shapes whose output depends on per-instance state (not just
-    /// phase). Callers must branch on this before [`LfoShape::evaluate_periodic`].
+    /// True for shapes whose output depends on the cycle index (and a seed),
+    /// not just the phase. Callers must branch on this before
+    /// [`LfoShape::evaluate_periodic`], or evaluate through
+    /// [`Wave::raw_at`](crate::Wave::raw_at), which takes every shape.
     #[inline]
     pub fn is_random(&self) -> bool {
         matches!(self, Self::Random | Self::RandomSmooth)
@@ -69,8 +76,8 @@ impl LfoShape {
 
     /// Evaluate a purely phase-deterministic shape at [`Phase`] → `[-1, 1]`.
     ///
-    /// Callers must first check [`LfoShape::is_random`]; random shapes require
-    /// per-instance state and are not handled here (they debug-assert).
+    /// Callers must first check [`LfoShape::is_random`]; random shapes need the
+    /// cycle index and are not handled here (they debug-assert).
     #[inline]
     pub fn evaluate_periodic(&self, phase_t: Phase) -> f32 {
         let phase = phase_t.get();

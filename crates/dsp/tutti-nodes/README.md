@@ -19,8 +19,9 @@ change the running node without a lock.
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
-  adapter over a pure `Modulator`: an audio generator, whose output feeds a
-  node's audio input.
+  adapter over a pure `Modulator` (an LFO's is `tutti_mod::Wave`, the wave a
+  control lane evaluates): an audio generator, whose output feeds a node's
+  audio input.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
   `DownmixNode`, `BusStripNode` (volume / balance / mute).
 - **Param ports** — each modulatable node declares its params (its
@@ -36,7 +37,7 @@ change the running node without a lock.
   generators (behind a feature).
 
 A `*Node` is the graph-facing node; the inner DSP objects some are built
-from — `DelayLine`, `Lfo`, `Modulator`, `BandState` — carry no suffix, because
+from — `DelayLine`, `Modulator`, `BandState` — carry no suffix, because
 they are not nodes and can be used on their own.
 
 Nothing in this crate can fail: there is no `Error` type, and a node is ready

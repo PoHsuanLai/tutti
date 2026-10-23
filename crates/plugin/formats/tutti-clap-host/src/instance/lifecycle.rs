@@ -35,8 +35,10 @@ const EVENT_SCRATCH_CAPACITY: usize = 256;
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
-    /// Whether any of the plugin's audio ports advertises 64-bit support.
-    /// Activating as `ClapActive<f64>` requires this.
+    /// Whether every one of the plugin's audio ports, inputs and outputs,
+    /// advertises 64-bit support (and it has at least one). Activating as
+    /// `ClapActive<f64>` requires this, because the host hands one sample
+    /// width for every buffer.
     pub fn supports_f64(&self) -> bool {
         self.audio.supports_f64
     }

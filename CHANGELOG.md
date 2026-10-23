@@ -51,6 +51,35 @@ the 50 ms de-zipper), and fixes what the crate could not:
 | the magic check accepted any bytes whose first four were not all wrong | the bytes must start with `HRIR` |
 | `tutti-spatial`'s `hrtf` feature pulled `hrtf` (and through it `rubato` 0.14 and `byteorder`) | it pulls `rustfft` |
 
+### Fixed — a 64-bit-capable CLAP plugin runs in an f32 session
+
+The plugin server activated a CLAP plugin at 64-bit whenever it could do
+64-bit, while the session's wire format follows the host's preference (f32
+by default). In an f32 session such a plugin refused every block as a format
+mismatch, so it rendered silence. It is now activated in the format the
+session will process, as VST3 is: f64 only when the session asked for it and
+the plugin can do it, and `Features::F64_AUDIO` reports the format activated
+rather than the capability.
+
+`ClapLoaded::supports_f64` was `true` when any **output** port advertised
+`CLAP_AUDIO_PORT_SUPPORTS_64BITS`. It now requires every input and output
+port to advertise it. That is this host's conservative rule, not a CLAP
+requirement (CLAP flags 64-bit per port): the host hands one sample width for
+every buffer, so it picks 64-bit only when every port takes it. A
+plugin with no audio ports at all is f32 (the width every CLAP plugin must
+accept), and a side with no ports does not veto the other (an instrument
+whose outputs are all 64-bit can run at 64-bit).
+
+The host now hands a CLAP plugin exactly its declared port count on each
+side, as `process.h` requires: none on a side with no ports. It used to hand
+a stereo bus there that the plugin never declared, which at 64-bit carries a
+null `data32`. The node's graph-facing shape is unchanged: an empty side is
+still reported as one stereo bus.
+
+The change is internal to the plugin server: no public signature moved. The
+reference CLAP plugin can advertise 64-bit ports
+(`tutti_test_plugin_set_ports_64bit`, per side) and renders in whichever width
+the host hands it.
 ### Changed — plugin transport: project-time samples, host clock and MIDI clock; editors open at the window's scale
 
 A hosted plugin is now told everything its transport snapshot can know:

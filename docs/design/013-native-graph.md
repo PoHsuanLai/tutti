@@ -4459,7 +4459,7 @@ class impossible; each `route` was fixed to report processing latency only.
 
 **Port mechanically (drop the shell, keep the body):** `DistortionNode` (curves
 move to `kernel`, drive becomes an a-rate port), `LimiterNode` (ring sized in
-`prepare`), `HrtfBinauralNode` (plus `Shape.latency = FRAME_LEN`, which reports
+`prepare`), `HrtfBinauralNode` (plus `Shape.latency = LATENCY`, one 128-frame `STEP`, which reports
 its full latency; stored once so the HRIR is parsed once), `ModulatorNode` (beat from `Env`,
 no beat input ports), `MicMonitorNode` (owns its `HeapCons` and pops a slice
 per block), `MemorySource`, `DiskSource`/`DiskVoice` (fetch capacity moves to

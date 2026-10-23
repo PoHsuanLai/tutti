@@ -243,7 +243,8 @@ pub struct NodeSpec {
     /// effect, a lookahead limiter's, never a delay line's. A voluntary delay is
     /// the effect, and compensating for it would drag every parallel path late.
     pub latency: Samples,
-    /// How long it rings after its input stops.
+    /// How long it rings after its input stops, counted once its `latency`
+    /// is compensated: a tail excludes latency ([`Tail`]).
     pub tail: Tail,
     /// Initial parameter values by name. `BTreeMap` so the whole spec hashes
     /// deterministically — a `HashMap` here would make `Topology: Hash` a lie.
@@ -275,7 +276,7 @@ impl NodeSpec {
         self
     }
 
-    /// Returns this spec with the given ring-out.
+    /// Returns this spec with the given ring-out, which excludes latency.
     #[must_use]
     pub fn with_tail(mut self, tail: Tail) -> Self {
         self.tail = tail;

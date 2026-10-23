@@ -267,7 +267,7 @@ the interpreter.
   `basedrop`, `left-right` and the locks, and with the shared-slot design
   it replaced.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
-  tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
+  latency plus tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
   the node's job (PolySynth already does it, SoundFont is limited to 8 frames
   by rustysynth). An out-of-process plugin must get whole blocks, or its
@@ -277,9 +277,25 @@ the interpreter.
   `Env`/`Transport` carries the wrap position instead, and a node that cares
   handles the wrap itself.
 - **Silence skip**: a node is skipped only when its inputs are quiet, its
-  *previous call* reported every output silent, and its tail has elapsed.
+  *previous call* reported every output silent, and its declared latency
+  plus its declared tail have elapsed since the inputs went quiet.
   Quiet event inputs do not make a node idle: a held note on a finite-tail
   synth keeps sounding.
+- **A tail excludes latency.** `Shape::tail` (a `tutti_types::Tail`) is how
+  long the node keeps sounding *after its latency is compensated*. A pure
+  delay declared as latency (a lookahead limiter) has `Tail::None`; a
+  convolver with an `L`-tap response has `L - 1` beside its FFT block
+  latency; the HRTF panner has its response length less one beside its
+  128-frame step. Export trims the graph's latency and then extends the
+  render by `graph_tail`, and the silence skip waits for latency plus tail
+  (`NodeRec::settle`), because a node whose output reads silent can still
+  hold its last latency's worth of input. CLAP, VST3 and AU all report a
+  tail apart from latency, so a plugin's figure is taken as reported. Pinned
+  by `tests/executor.rs` `the_skip_waits_for_latency_plus_tail`, the
+  limiter's `the_limiter_stops_at_its_latency_and_declares_no_tail`,
+  `hrtf_render.rs` `the_tail_is_the_ring_out_after_the_latency`, and
+  `tutti-export`'s `a_limiter_adds_no_tail_to_the_render` and
+  `the_tail_extends_the_render_by_the_ring_out`.
 - **Feedback edges delay by exactly `MaxBlock` frames**, through an audio ring
   and an event FIFO, independent of the current block length. Ragged blocks
   therefore lose nothing.
@@ -951,7 +967,7 @@ bench (criterion medians, Ryzen 9 7950X) and callgrind; `perf` is not
 available on the build box.
 
 **What changed.** The compiler lowers each node op into one record
-(`NodeRec`): store index, generation, arrival, tail, the port slots, and the
+(`NodeRec`): store index, generation, arrival, latency plus tail, the port slots, and the
 buffer borrow requests **sorted at compile time**. The verifier checks the
 record is exactly the lowering of its op (rule 7), so the executor runs
 what was verified, still with no `unsafe`. A call now does one lookup where

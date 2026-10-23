@@ -186,9 +186,9 @@ impl HrtfBinauralNode {
 ///
 /// The step's delay, 128 samples, is declared as the node's processing
 /// latency, true of both outputs at every blend, so the graph's delay
-/// compensation lines the rest of the mix up with it. The tail is that delay
-/// plus the response length less one, both fixed sizes at a rate, so it is
-/// exact rather than an estimate.
+/// compensation lines the rest of the mix up with it. The tail excludes that
+/// delay: it is the response length less one, a fixed size at a rate, so it
+/// is exact rather than an estimate.
 ///
 /// # Reset clears time, not placement
 ///
@@ -200,7 +200,10 @@ impl Node for HrtfBinauralNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
             .with_latency(Latency::new(Samples(LATENCY)))
-            .with_tail(Tail::Finite(Samples(self.panner.ring_out())))
+            .with_tail(match self.panner.ring_out() {
+                0 => Tail::None,
+                n => Tail::Finite(Samples(n)),
+            })
             // An exception to the nearest-class rule (doc 013, "The cost
             // model and coarsening"). The FFT work lands all at once in the
             // block that completes a 128-frame step: at 64-frame blocks that

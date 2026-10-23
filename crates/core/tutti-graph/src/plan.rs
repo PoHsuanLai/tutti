@@ -541,8 +541,9 @@ pub(crate) struct NodeRec {
     pub(crate) gen: u32,
     /// Compiled arrival latency.
     pub(crate) arrival: Latency,
-    /// Declared tail, for the silence skip.
-    pub(crate) tail: Tail,
+    /// Declared latency then declared tail (`Shape::settle`):
+    /// the quiet input frames the silence skip waits for.
+    pub(crate) settle: Tail,
     /// Declared events per event output port per block
     /// ([`Shape::event_capacity`]), which its writers enforce; `None` for
     /// the executor's default.
@@ -689,7 +690,7 @@ impl NodeTables {
                 store: pu.idx.0,
                 gen: pu.gen,
                 arrival: pu.arrival,
-                tail: pu.shape.tail,
+                settle: pu.shape.settle(),
                 event_capacity: pu.shape.event_capacity,
                 in_place,
                 ports,
@@ -716,7 +717,7 @@ impl NodeTables {
                     store: units[u].idx.0,
                     gen: units[u].gen,
                     arrival: units[u].arrival,
-                    tail: units[u].shape.tail,
+                    settle: units[u].shape.settle(),
                     event_capacity: units[u].shape.event_capacity,
                     in_place: InPlaceMask::NONE,
                     ports: 0,

@@ -13,7 +13,7 @@ use tutti_graph::{
     Status, Transport, Unforkable, QUEUE_CAPACITY,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail};
+use tutti_types::{Amplitude, ChannelLayout, Latency, NodeKey, Param, Samples, Tail};
 
 const SRC: NodeKey = NodeKey(1);
 const FX: NodeKey = NodeKey(2);
@@ -41,6 +41,14 @@ fn render(exec: &mut Executor, frames: usize, outs: usize) -> Vec<Vec<f32>> {
 /// A node that counts its calls and has a chosen tail, fed by a silent
 /// constant.
 fn counted_after_silence(tail: Tail) -> (Editor, Executor, Arc<AtomicUsize>) {
+    counted_after_silence_with(Samples::ZERO, tail)
+}
+
+/// [`counted_after_silence`], the probe declaring `latency` too.
+fn counted_after_silence_with(
+    latency: Samples,
+    tail: Tail,
+) -> (Editor, Executor, Arc<AtomicUsize>) {
     let (mut ed, mut exec) = Editor::new(prepare(64));
     ed.insert(
         SRC,
@@ -55,6 +63,7 @@ fn counted_after_silence(tail: Tail) -> (Editor, Executor, Arc<AtomicUsize>) {
         FX,
         "probe",
         Unforkable(TailProbe {
+            latency,
             tail,
             calls: Arc::clone(&calls),
         }),
@@ -70,13 +79,16 @@ fn counted_after_silence(tail: Tail) -> (Editor, Executor, Arc<AtomicUsize>) {
 /// Passes its input through and counts calls. Honest about silence: a
 /// silent input gives `Status::Silent`, which is what lets the skip trust it.
 struct TailProbe {
+    latency: Samples,
     tail: Tail,
     calls: Arc<AtomicUsize>,
 }
 
 impl Node for TailProbe {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_tail(self.tail)
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_latency(Latency::new(self.latency))
+            .with_tail(self.tail)
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -135,6 +147,36 @@ fn silent_inputs_skip_nodes_whose_tail_has_elapsed() {
     );
 }
 
+/// A tail excludes latency, so the skip waits for latency **plus** tail:
+/// a node declaring latency `D` and tail `T` whose output reads silent from
+/// the first quiet frame is still called on every one of the first `D + T`
+/// quiet frames, and skipped from then on. In one-frame blocks the count is
+/// exact: called at quiet counts `0..D + T`, so `D + T` calls.
+///
+/// The second case is a pure delay (`Tail::None`): still called for `D`
+/// frames, because its line holds `D` frames of input when the input stops.
+///
+/// Mutation (run): `Shape::settle` returning `self.tail` (dropping the
+/// latency) → the first case fails with 23 calls against 60 (the second
+/// would see 1 against 37).
+#[test]
+fn the_skip_waits_for_latency_plus_tail() {
+    const D: usize = 37;
+    const T: usize = 23;
+    for (tail, want) in [(Tail::Finite(Samples(T)), D + T), (Tail::None, D)] {
+        let (_ed, mut exec, calls) = counted_after_silence_with(Samples(D), tail);
+        for _ in 0..(D + T) * 3 {
+            let out = render(&mut exec, 1, 1);
+            assert_eq!(out[0][0], 0.0);
+        }
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            want,
+            "{tail:?} after latency {D}: called for the first {want} quiet frames"
+        );
+    }
+}
+
 /// A node that writes garbage and returns `Status::Silent` produces silence,
 /// and its flag lets the next node be skipped.
 ///
@@ -161,6 +203,7 @@ fn status_silent_zeroes_and_flags() {
         FX,
         "probe",
         Unforkable(TailProbe {
+            latency: Samples::ZERO,
             tail: Tail::None,
             calls: Arc::clone(&calls),
         }),

@@ -9,9 +9,7 @@ use tutti_analysis::StftGeometry;
 
 use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};
-use tutti_core::{
-    AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate, Samples, StretchFactor, Tail,
-};
+use tutti_core::{AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate, StretchFactor};
 
 /// Real-time time-stretching and pitch-shifting unit.
 ///
@@ -282,7 +280,7 @@ impl Unit {
     /// `false` when disabled, or when stretch is within `0.001` of unity *and*
     /// pitch within half a cent of zero — both beneath audibility, so the unit
     /// bypasses rather than paying for an FFT. This is the condition every other
-    /// branch keys off: latency, `tail`, and the fast paths in `tick` and
+    /// branch keys off: latency and the fast paths in `tick` and
     /// `process`.
     pub fn is_processing(&self) -> bool {
         self.enabled
@@ -729,23 +727,6 @@ impl Unit {
             for (i, (l, &s)) in lane[frames.clone()].iter_mut().zip(out.iter()).enumerate() {
                 *l = if i < count { s } else { 0.0 };
             }
-        }
-    }
-
-    /// The overlap-add accumulator's contents — one FFT window.
-    ///
-    /// The same number [`latency_samples`](Self::latency_samples) reports, and
-    /// for the same reason: a window's worth of audio has been written into the
-    /// accumulator but not yet advanced past. It must be drained after the input
-    /// stops or the stretched material ends a window early.
-    ///
-    /// The bypass branch is mirrored deliberately. A unit sitting at unity does
-    /// no overlap-add and holds nothing, so reporting a window there would
-    /// append ~46 ms of silence to every unstretched voice.
-    pub fn tail(&self) -> Tail {
-        match self.latency_samples() {
-            0 => Tail::None,
-            n => Tail::Finite(Samples(n)),
         }
     }
 }

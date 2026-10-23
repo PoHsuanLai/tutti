@@ -1252,7 +1252,8 @@ impl Node for Lookahead {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_latency(self.latency)
-            .with_tail(tutti_types::Tail::Finite(self.latency.samples()))
+            // Pure delay: nothing rings once the latency is compensated.
+            .with_tail(tutti_types::Tail::None)
     }
 
     fn prepare(&mut self, _: &Prepare) {}

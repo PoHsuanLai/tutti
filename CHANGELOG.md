@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a node's tail excludes its latency
+
+`Tail` (`Shape::tail`, `NodeSpec::tail`) is now defined as how long a node
+keeps sounding **after its latency is compensated**. Export already worked
+this way (it trims the latency, then extends the render by the tail), and
+so did `ConvolverNode` (`L - 1` beside its FFT block latency). What changes:
+
+- **The executor's silence skip waits for latency plus tail.** A node
+  without event inputs is parked only once its declared latency and its
+  declared tail have both elapsed since its inputs went quiet (it used to
+  wait for the tail alone). A node that holds input in a delay line while
+  its output reads silent is now called until that input is out.
+- **`LimiterNode` declares `Tail::None`** (was `lookahead - 1` frames). Its
+  lookahead is a pure delay, already its latency; the release envelope
+  shapes gain, and gain on silence is silence. An export that takes its
+  tail from a graph with a limiter is that many frames shorter: 239 at
+  48 kHz with the default 5 ms lookahead (`tutti-export`'s
+  `a_limiter_adds_no_tail_to_the_render` pins the length).
+- **`HrtfBinauralNode` declares its response length less one** (was the
+  128-frame step plus that). An export that takes its tail from a graph
+  with one is 128 frames shorter.
+- **`stretch::Unit::tail` is removed.** Nothing read it, and it returned
+  the vocoder's window, which is its latency; measured, the vocoder rings a
+  further 1 000 to 4 000 frames past that depending on the factor, so no
+  fixed figure was right. Migration: `latency_samples()` is still the
+  latency; a sampler voice declares `Tail::Unbounded` and ends itself.
+
+`tutti_graph::contract::Lookahead`, the contract suite's pure delay,
+declares `Tail::None` too.
+
+Plugin nodes are unchanged: CLAP, VST3 and AU report a tail apart from
+latency, so the plugin's figure already excludes it. Migration for a node
+of your own: if its tail counted its latency (a lookahead or FFT block
+declared as both), subtract the latency from the tail.
+
 ### Changed — faster summing, shaping, clipping, downmix and delay kernels, renders bit-identical
 
 `ChannelSumNode`, `DistortionNode`, `BrickwallLimiterNode` and

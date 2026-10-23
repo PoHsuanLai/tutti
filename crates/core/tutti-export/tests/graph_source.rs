@@ -555,6 +555,30 @@ fn the_latency_trim_drops_the_lookahead() {
     assert_same("trimmed against untrimmed from 240", &a, &shifted);
 }
 
+/// A lookahead limiter reports no tail: a tail excludes latency, and its
+/// lookahead is a pure delay the trim already removes. So a render trimmed
+/// by its latency and extended by its tail is exactly the requested
+/// duration, `FRAMES`, and not the 239 frames longer the lookahead less one
+/// used to add.
+///
+/// Mutation (run): `LimiterNode::shape` declaring its old
+/// `lookahead_samples - 1` tail → `Some(239)` against `Some(0)`; the first
+/// assertion fails.
+#[test]
+fn a_limiter_adds_no_tail_to_the_render() {
+    let graph = built(limited());
+    assert_eq!(graph.reported_tail().samples(), Some(Samples::ZERO));
+    let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
+    cfg.render.latency = graph.reported_latency();
+    cfg.render.tail = graph.reported_tail().samples().unwrap();
+    let planes = buffers(built(limited()), &cfg).planes;
+    assert_eq!(
+        planes[0].len(),
+        FRAMES,
+        "the duration, and nothing after it"
+    );
+}
+
 /// The graph reports a convolver's tail analytically (a 3 000-tap IR rings
 /// 2 999 frames), and a render trimmed by its latency and extended by its
 /// tail is the direct convolution, frame for frame, through the tail.

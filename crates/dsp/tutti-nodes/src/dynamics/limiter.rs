@@ -50,19 +50,6 @@ impl LookaheadRing {
         *self = Self::new(self.buffers.len(), lookahead_samples);
     }
 
-    /// Frames still held when the input stops.
-    ///
-    /// The ring delays by `lookahead_samples` (`step` reads each ring's
-    /// oldest slot before overwriting it), so the last input frame comes out
-    /// that many frames later. The figure declared here is one less,
-    /// `lookahead_samples - 1`, and does not follow that raw ring-out;
-    /// whether a node's tail should count its latency is an open question.
-    /// The release envelope is not part of this: it shapes gain, and gain
-    /// applied to silence is silence.
-    fn ring_out(&self) -> Samples {
-        Samples(self.lookahead_samples.saturating_sub(1))
-    }
-
     fn clear(&mut self) {
         for b in &mut self.buffers {
             b.clear();
@@ -420,19 +407,16 @@ impl Node for LimiterNode {
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
     /// prepared rate: the audio is delayed by the window.
     ///
-    /// Its tail is the ring's contents, which outlive a silent input: the
-    /// ring is a fixed delay, so when the input stops it still holds that
-    /// many frames. The release envelope is deliberately not included — it
-    /// shapes gain, and gain applied to silence is silence.
+    /// It has no tail. A tail excludes latency, and the ring is a pure
+    /// delay of exactly that latency: when the input stops it holds the last
+    /// `lookahead` frames, which come out within the latency PDC compensates.
+    /// The release envelope adds nothing after them: it shapes gain, and gain
+    /// applied to silence is silence.
     fn shape(&self) -> Shape {
-        let tail = match self.ring.ring_out() {
-            s if s.is_zero() => Tail::None,
-            s => Tail::Finite(s),
-        };
         Shape::audio(self.layout, self.layout)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_latency(Latency::new(Samples(self.ring.lookahead_samples)))
-            .with_tail(tail)
+            .with_tail(Tail::None)
             .with_params(&LIMITER_PARAMS)
     }
 
@@ -876,6 +860,42 @@ mod tests {
                 "a rate change must not accumulate rounding across calls"
             );
         }
+    }
+
+    /// The limiter's output ends exactly its latency after its input:
+    /// nothing rings once the lookahead is compensated, so it declares no
+    /// tail. A tone over the threshold (so the release envelope is mid-swing
+    /// when the input stops) leaves its last non-zero frame `lookahead`
+    /// frames after the last input frame, and silence after that.
+    ///
+    /// Mutation (run): declaring the ring's `lookahead - 1` as the tail (the
+    /// old figure) → the tail assertion fails. Mutation (run): each channel's
+    /// ring one slot longer than the declared latency
+    /// (`CircularBuffer::new(n + 1)`) → the last non-zero frame is one past
+    /// the latency and the second assertion fails.
+    #[test]
+    fn the_limiter_stops_at_its_latency_and_declares_no_tail() {
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let shape = lim.shape();
+        let n = shape.latency.samples().get();
+        assert!(n > 1, "a lookahead to compensate");
+        assert_eq!(shape.tail, Tail::None, "a tail excludes latency");
+
+        const SOUNDING: usize = 1_000;
+        let mut out = [0.0f32; 2];
+        let mut last = None;
+        for i in 0..SOUNDING + 4 * n {
+            let x = if i < SOUNDING { 0.9 } else { 0.0 };
+            tick(&mut lim, &[x, x], &mut out);
+            if out.iter().any(|&y| y != 0.0) {
+                last = Some(i);
+            }
+        }
+        assert_eq!(
+            last,
+            Some(SOUNDING - 1 + n),
+            "the last input frame leaves exactly the latency later, and nothing after"
+        );
     }
 
     #[test]

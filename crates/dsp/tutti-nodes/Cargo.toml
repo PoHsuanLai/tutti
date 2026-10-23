@@ -99,6 +99,10 @@ harness = false
 name = "bus_strip"
 harness = false
 
+[[bench]]
+name = "node_kernels"
+harness = false
+
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the
 # feature-gated half of the public API missing.

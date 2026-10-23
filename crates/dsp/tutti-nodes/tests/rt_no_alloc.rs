@@ -63,18 +63,18 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
     gate(ConvolverNode::folded(&refs, 256));
 }
 
-/// `DownmixNode::process` gathers an interleaved frame per sample and folds it.
-/// Both scratch buffers are sized at construction and taken with `mem::take`
-/// precisely so that path never allocates — this is the test that makes those
-/// two fields load-bearing rather than incidental. Driven alone in a
-/// graph (`BlockRig`).
+/// `DownmixNode::process` folds each output channel over whole slices with
+/// `tutti_types::fold_planar_channel`, whose table of input channels is a
+/// stack array rather than a collected `Vec`, so the fold at any width
+/// allocates nothing.
+/// Driven alone in a graph (`BlockRig`).
 ///
 /// 6→2 is the shape that matters: it is the only one where the fold does real
 /// work (an equal-width or upmix fold is a copy), and it is what a 5.1 bus
 /// feeding a stereo master looks like.
 ///
-/// Mutation (run): build `frame` with `vec!` inside `process` instead of
-/// taking the scratch → fails.
+/// Mutation (run): collect the input slices into a `Vec` inside `process`
+/// → fails.
 #[test]
 fn downmix_process_is_allocation_free() {
     // Imported here rather than at file scope: the module-level imports are
@@ -96,6 +96,102 @@ fn downmix_process_is_allocation_free() {
         "the fold rendered silence; the gate would walk no DSP"
     );
 
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            rig.block();
+        }
+    });
+}
+
+/// Every curve of the shaper, unfed (the block-rate drive) and with its
+/// drive port fed a per-frame ramp (the path that writes each frame's
+/// hardness into channel 0 and shapes it last), 1 000 blocks each under
+/// `assert_no_alloc`. `Direct` feeds the port, which `BlockRig` cannot.
+///
+/// Mutation (run): a `black_box(vec![0.0f32; size])` at the top of the
+/// unfed arm → the unfed gate fails; the same in the fed arm → the fed
+/// gate fails.
+/// Dropping the `feed` → the fed render equals the unfed one → the
+/// precondition fails.
+#[test]
+fn distortion_process_is_allocation_free_fed_and_unfed() {
+    use tutti_core::SampleRate;
+    use tutti_graph::contract::Direct;
+    use tutti_nodes::{DistortionNode, ShapeKind};
+
+    let kinds = [
+        ShapeKind::Tanh,
+        ShapeKind::Atan,
+        ShapeKind::Softsign,
+        ShapeKind::HardClip,
+        ShapeKind::Crush,
+        ShapeKind::SoftCrush,
+    ];
+    let drive: Vec<f32> = (0..64).map(|i| 1.0 + 0.0625 * i as f32).collect();
+    for kind in kinds {
+        // The unfed render's first block, kept to prove the fed arm ran.
+        let mut unfed: Vec<Vec<f32>> = Vec::new();
+        for fed in [false, true] {
+            let mut node = Direct::new(
+                DistortionNode::with_channels(3, kind, 2.0),
+                SampleRate(48_000.0),
+                64,
+            );
+            for (c, x) in node.inputs_mut().iter_mut().enumerate() {
+                for (i, s) in x.iter_mut().enumerate() {
+                    *s = 0.9 * (((i + 7 * c) % 13) as f32 / 6.0 - 1.0);
+                }
+            }
+            if fed {
+                node.feed(0, Some(&drive));
+            }
+            node.block();
+            assert!(
+                (0..3).all(|c| node.output(c).iter().any(|s| s.abs() > 1e-6)),
+                "{kind:?} fed={fed} rendered a silent channel; the gate would walk no curve"
+            );
+            let first: Vec<Vec<f32>> = (0..3).map(|c| node.output(c).to_vec()).collect();
+            if fed {
+                assert_ne!(
+                    first, unfed,
+                    "{kind:?}: the fed drive changed nothing; the gate would walk the unfed arm"
+                );
+            } else {
+                unfed = first;
+            }
+            assert_no_alloc::assert_no_alloc(|| {
+                for _ in 0..1_000 {
+                    node.block();
+                }
+            });
+        }
+    }
+}
+
+/// The channel-major bus: four stereo sources summed, 1 000 blocks under
+/// `assert_no_alloc`.
+///
+/// Mutation (run): a `black_box(vec![0.0f32; size])` at the top of
+/// `ChannelSumNode::process` → fails.
+#[test]
+fn channel_sum_process_is_allocation_free() {
+    use tutti_core::{ChannelLayout, SampleRate};
+    use tutti_graph::contract::BlockRig;
+    use tutti_nodes::ChannelSumNode;
+
+    let (mut rig, ()) = BlockRig::new(
+        ChannelSumNode::new(4, ChannelLayout::STEREO),
+        SampleRate(48_000.0),
+        64,
+    );
+    for (c, x) in rig.inputs_mut().iter_mut().enumerate() {
+        x.fill(0.05 * (c + 1) as f32);
+    }
+    rig.block();
+    assert!(
+        (0..2).all(|c| rig.output(c).iter().any(|s| s.abs() > 1e-6)),
+        "the bus rendered silence; the gate would walk no sum"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
             rig.block();

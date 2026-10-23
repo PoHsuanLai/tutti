@@ -71,7 +71,7 @@ impl ShapeKind {
     ///
     /// The operation order within each arm is fixed: the pinned values in the
     /// tests depend on it bit for bit.
-    #[inline]
+    #[inline(always)]
     fn curve(self, hardness: f32, x: f32) -> f32 {
         use core::f32::consts::PI;
         match self {
@@ -91,6 +91,40 @@ impl ShapeKind {
             }
         }
     }
+}
+
+/// Runs `$body` with `$k` bound to `$kind` as a **constant**, one arm per
+/// kind, so each arm's loop is compiled for its own curve: the `match` in
+/// [`ShapeKind::curve`] folds away instead of running per sample.
+macro_rules! with_kind {
+    ($kind:expr, |$k:ident| $body:expr) => {
+        match $kind {
+            ShapeKind::Tanh => {
+                const $k: ShapeKind = ShapeKind::Tanh;
+                $body
+            }
+            ShapeKind::Atan => {
+                const $k: ShapeKind = ShapeKind::Atan;
+                $body
+            }
+            ShapeKind::Softsign => {
+                const $k: ShapeKind = ShapeKind::Softsign;
+                $body
+            }
+            ShapeKind::HardClip => {
+                const $k: ShapeKind = ShapeKind::HardClip;
+                $body
+            }
+            ShapeKind::Crush => {
+                const $k: ShapeKind = ShapeKind::Crush;
+                $body
+            }
+            ShapeKind::SoftCrush => {
+                const $k: ShapeKind = ShapeKind::SoftCrush;
+                $body
+            }
+        }
+    };
 }
 
 /// The ninth-order smoothstep: `0 → 0`, `1 → 1`, with the first four
@@ -223,10 +257,20 @@ impl Clone for DistortionNode {
 impl Node for DistortionNode {
     /// `channels` in and out, drive modulatable ([`DISTORTION_PARAMS`]).
     /// The shapers carry no z-state, so the output stops with the input.
+    ///
+    /// The cost is the curve's, measured by doc 013's fixed-plus-per-frame
+    /// fit against its two reference nodes (its cost table has the row):
+    /// `Softsign` and `HardClip` are arithmetic, `Light`; `Crush` and
+    /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
+    /// are `Moderate`.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.channels as u16);
+        let cost = match self.kind {
+            ShapeKind::Softsign | ShapeKind::HardClip => tutti_graph::Cost::Light,
+            _ => tutti_graph::Cost::Moderate,
+        };
         Shape::audio(width, width)
-            .with_cost(tutti_graph::Cost::Moderate)
+            .with_cost(cost)
             .with_tail(Tail::None)
             .with_params(&DISTORTION_PARAMS)
     }
@@ -238,26 +282,50 @@ impl Node for DistortionNode {
         let size = io.frames();
         let drive = io.param(0).frames();
         let (inputs, mut outputs) = io.split();
+        // Both paths are channel-major, each loop compiled for its curve
+        // (`with_kind!`). The curve is memoryless, so a sample's value depends
+        // only on its input and its frame's hardness, not on the loop order.
         match drive {
             // Fast path: drive not modulated — block-rate shaper update,
             // bit-identical to a node nothing modulates.
             None => {
                 self.maybe_update();
-                for i in 0..size {
-                    for c in 0..self.channels {
-                        outputs.get(c)[i] = self.shaper.shape(inputs.get(c)[i]);
+                let h = self.shaper.hardness;
+                with_kind!(self.kind, |K| {
+                    for (c, out) in outputs.iter_mut().enumerate() {
+                        let input = &inputs.get(c)[..size];
+                        for (o, &x) in out[..size].iter_mut().zip(input) {
+                            *o = K.curve(h, x);
+                        }
                     }
-                }
+                })
             }
-            // Modulated path: read the drive per sample and rebuild the
-            // shaper when it moves before shaping every channel.
+            // Modulated path: the per-frame drive rebuilds the shaper when it
+            // moves (a sequential guard, so it runs once, in frame order),
+            // and each frame's hardness lands in channel 0's output, which
+            // is then the hardness every channel reads. Channel 0 is shaped
+            // last, over its own hardness.
             Some(drive) => {
-                for (i, &d) in drive.iter().enumerate() {
+                let mut outs = outputs.iter_mut();
+                let Some(first) = outs.next() else {
+                    return Status::Modified;
+                };
+                let first = &mut first[..size];
+                for (h, &d) in first.iter_mut().zip(drive) {
                     self.maybe_update_modulated(d.max(0.0));
-                    for c in 0..self.channels {
-                        outputs.get(c)[i] = self.shaper.shape(inputs.get(c)[i]);
-                    }
+                    *h = self.shaper.hardness;
                 }
+                with_kind!(self.kind, |K| {
+                    for (c, out) in outs.enumerate() {
+                        let input = &inputs.get(c + 1)[..size];
+                        for ((o, &x), &h) in out[..size].iter_mut().zip(input).zip(&*first) {
+                            *o = K.curve(h, x);
+                        }
+                    }
+                    for (o, &x) in first.iter_mut().zip(&inputs.get(0)[..size]) {
+                        *o = K.curve(*o, x);
+                    }
+                })
             }
         }
         Status::Modified
@@ -514,6 +582,85 @@ mod tests {
             out.iter().all(|o| o.iter().all(|&y| y == 0.25)),
             "the control again"
         );
+    }
+
+    const KINDS: [ShapeKind; 6] = [
+        ShapeKind::Tanh,
+        ShapeKind::Atan,
+        ShapeKind::Softsign,
+        ShapeKind::HardClip,
+        ShapeKind::Crush,
+        ShapeKind::SoftCrush,
+    ];
+
+    /// Every output sample of a block is the node's curve applied to that
+    /// channel's own input at the node's drive: the per-kind loops pick the
+    /// curve they name and read their own channel at their own frame.
+    ///
+    /// Mutation (run): map `Atan`'s arm in `with_kind!` to `Tanh` → the Atan
+    /// row fails; read `inputs.get(0)` for every channel → channel 1 fails.
+    #[test]
+    fn a_block_is_the_curve_of_each_sample() {
+        use crate::test_support::noise;
+        for kind in KINDS {
+            let mut n = DistortionNode::with_channels(3, kind, 2.5);
+            let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 7, 64)).collect();
+            let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
+            let out = drive(&mut n, RATE, &refs, &[None]);
+            for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
+                for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
+                    let want = kind.apply(x, Drive(2.5));
+                    assert_eq!(y.to_bits(), want.to_bits(), "{kind:?} ch{c} frame {i}");
+                }
+            }
+        }
+    }
+
+    /// With a drive fed that moves every frame, every channel's sample is
+    /// the curve at that frame's drive, channel 0 included (whose output
+    /// holds the hardness until it is shaped last).
+    ///
+    /// Mutation (run): skip channel 0's final pass → channel 0 outputs the
+    /// hardness → fails; read frame `i - 1`'s hardness for the other
+    /// channels → fails.
+    #[test]
+    fn a_fed_drive_is_read_per_frame_on_every_channel() {
+        use crate::test_support::noise;
+        let fed: Vec<f32> = (0..64).map(|i| 1.0 + 0.125 * i as f32).collect();
+        for kind in KINDS {
+            let mut n = DistortionNode::with_channels(3, kind, 1.0);
+            let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 11, 64)).collect();
+            let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
+            let out = drive(&mut n, RATE, &refs, &[Some(&fed)]);
+            for (c, (o, x)) in out.iter().zip(&ins).enumerate() {
+                for (i, (&y, &x)) in o.iter().zip(x).enumerate() {
+                    let want = kind.apply(x, Drive(fed[i]));
+                    assert_eq!(y.to_bits(), want.to_bits(), "{kind:?} ch{c} frame {i}");
+                }
+            }
+        }
+    }
+
+    /// The two arithmetic-only curves declare themselves `Light`, the four
+    /// that call a math routine (`tanh`, `atan`, `round`, `floor`)
+    /// `Moderate`.
+    ///
+    /// Mutation (run): declare `Moderate` for every kind → the `HardClip`
+    /// row fails; add `Crush` to the light arm → its row fails.
+    #[test]
+    fn the_declared_cost_follows_the_curve() {
+        use tutti_graph::Cost;
+        for kind in KINDS {
+            let want = match kind {
+                ShapeKind::Softsign | ShapeKind::HardClip => Cost::Light,
+                _ => Cost::Moderate,
+            };
+            assert_eq!(
+                DistortionNode::new(kind, 1.0).shape().cost,
+                want,
+                "{kind:?}"
+            );
+        }
     }
 
     /// The curves, pinned.

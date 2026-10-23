@@ -94,8 +94,25 @@ impl<T: Copy + Default> CircularBuffer<T> {
     pub fn read_back(&self, delay_samples: usize) -> T {
         let len = self.buf.len();
         let d = delay_samples.min(len - 1);
-        let idx = (self.write + len - 1 - d) % len;
-        self.buf[idx]
+        // `write < len` and `d < len`, so the sum is below `2 * len`: one
+        // conditional subtract wraps it, where `%` would divide per tap.
+        let idx = self.write + len - 1 - d;
+        self.buf[if idx >= len { idx - len } else { idx }]
+    }
+
+    /// Writes `sample` over the oldest slot and returns what it held: the
+    /// sample pushed `len()` pushes ago.
+    ///
+    /// The same as `read_back(len() - 1)` followed by [`push`](Self::push),
+    /// as one slot access — the form a fixed delay of the whole ring wants.
+    #[inline]
+    pub fn replace_oldest(&mut self, sample: T) -> T {
+        let oldest = core::mem::replace(&mut self.buf[self.write], sample);
+        self.write += 1;
+        if self.write >= self.buf.len() {
+            self.write = 0;
+        }
+        oldest
     }
 
     /// Zeroes every slot and returns the write cursor to 0.
@@ -235,7 +252,51 @@ impl Clone for MonotonicMinDeque {
 
 #[cfg(test)]
 mod tests {
-    use super::MonotonicMinDeque;
+    use super::{CircularBuffer, MonotonicMinDeque};
+
+    /// `read_back(d)` is the sample pushed `d` pushes before the newest, at
+    /// every cursor position (so across every wrap), and clamps past the
+    /// capacity to the oldest. Sample `k` is pushed as `k + 1`, so a slot
+    /// never written reads its default `0`.
+    ///
+    /// Mutation (run): drop the wrap's subtract (index with `idx`) → reads
+    /// past the end → panics; wrap at `idx > len` → reads index `len` →
+    /// panics; subtract one more → reads the wrong tap → fails.
+    #[test]
+    fn read_back_counts_back_across_every_wrap() {
+        const LEN: usize = 5;
+        let mut ring = CircularBuffer::<f32>::new(LEN);
+        for k in 0..4 * LEN {
+            ring.push((k + 1) as f32);
+            for d in 0..LEN + 3 {
+                let back = d.min(LEN - 1);
+                let want = if k >= back {
+                    (k - back + 1) as f32
+                } else {
+                    0.0
+                };
+                assert_eq!(ring.read_back(d), want, "after push {k}, {d} back");
+            }
+        }
+    }
+
+    /// `replace_oldest` is a delay of the whole ring: it returns the sample
+    /// pushed `len()` calls earlier (the default before that), and leaves
+    /// the ring as a push would.
+    ///
+    /// Mutation (run): return the slot after writing it (`buf[write]` once
+    /// replaced) → returns the input itself → fails; skip the cursor's
+    /// advance → returns the previous call's input → fails.
+    #[test]
+    fn replace_oldest_delays_by_the_whole_ring() {
+        const LEN: usize = 4;
+        let mut ring = CircularBuffer::<f32>::new(LEN);
+        for k in 0..5 * LEN {
+            let want = if k >= LEN { (k - LEN + 1) as f32 } else { 0.0 };
+            assert_eq!(ring.replace_oldest((k + 1) as f32), want, "call {k}");
+            assert_eq!(ring.read_back(0), (k + 1) as f32, "newest after call {k}");
+        }
+    }
 
     /// A rising run (a limiter's release) keeps every push: the deque fills
     /// to the window and must not grow past the allocation `new` made.

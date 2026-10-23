@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — faster summing, shaping, clipping, downmix and delay kernels, renders bit-identical
+
+`ChannelSumNode`, `DistortionNode`, `BrickwallLimiterNode` and
+`DownmixNode` loop channel-major over whole slices instead of frame by
+frame, the waveshaper with one loop compiled per curve. The delay rings
+wrap with a compare and subtract instead of `%` (`DelayLine`,
+`CircularBuffer::read_back`, and so the lookahead limiter and the
+convolver's dry alignment), and the feedback delay reads and writes its
+channels as slices instead of through a per-sample closure.
+
+**Every render is bit-identical to before**: each sample is computed by the
+same operations in the same order, only the loop order changed. Signed
+zeros, infinities and denormals come out the same; a NaN stays a NaN. The
+one thing not pinned is *which* NaN's payload survives where two NaNs meet
+in one sum (the bus, a mono or 7.1.4 downmix): the optimiser may swap the
+operands of an addition, which IEEE and LLVM leave free, so that payload
+was already the compiler's choice.
+
+Added `tutti_types::fold_planar_channel`, the planar counterpart of
+`fold_frame` (one output channel of the fold, over whole slices, through
+the same stereo kernel), which `DownmixNode` now folds through, and
+`CircularBuffer::replace_oldest`. `DownmixNode` holds no scratch any more.
+A `DistortionNode` with the `Softsign` or `HardClip` curve now declares
+`Cost::Light` (measured by doc 013's fit against its reference nodes);
+the other curves stay `Moderate`. No signature changed; nothing to
+migrate.
+
 ### Changed — one one-pole coefficient: `Seconds::one_pole_coeff`
 
 The one-pole smoothing coefficient was computed six ways, with two

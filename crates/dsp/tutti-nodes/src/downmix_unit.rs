@@ -6,14 +6,16 @@
 //! knows how to do that — [`tutti_types::downmix`] holds the ITU-R BS.775 /
 //! Dolby matrices, and the graph root folds through them every block.
 //!
-//! What was missing was a way to do it *inside* the graph. `fold_frame` is a
-//! function over two slices; a mismatched edge needs a node. This is that node
-//! and nothing more.
+//! What was missing was a way to do it *inside* the graph. A mismatched edge
+//! needs a node, and this is that node and nothing more.
 //!
 //! **This module contains no matrix of its own and must never grow one.**
-//! Every coefficient comes from [`fold_frame`]. That module exists precisely so
-//! the live path and the offline export path cannot drift apart, and a second
-//! copy here would defeat it — the arithmetic below is gather, call, scatter.
+//! Every coefficient comes from [`fold_planar_channel`], the planar entry
+//! point beside [`fold_frame`] in `tutti-types`, which shares its stereo
+//! kernel and gives the same bits as the per-frame fold. That module exists
+//! precisely so the live path and the offline export path cannot drift
+//! apart, and a second copy here would defeat it — the node below only
+//! hands it one output channel at a time.
 //!
 //! # Upmix zero-fills
 //!
@@ -24,19 +26,11 @@
 //! quietly inserted by a reconciler. Silence is visible; an invented centre
 //! channel is not.
 //!
-//! # Why per-sample gather
-//!
-//! `process` reads one interleaved frame at a time into a scratch `Vec`, which
-//! costs a gather/scatter per sample. A channel-major form would be faster
-//! (SIMD-friendly, no scratch) but would have to re-derive the ITU matrix in
-//! planar form — exactly the duplication this module refuses. If profiling ever
-//! shows this hot, the right move is a `fold_planar` entry point beside the
-//! other folds in `tutti-types`, so this node and the root fold share it and
-//! the coefficients stay singular.
+//! [`fold_frame`]: tutti_types::fold_frame
 
 use tutti_core::{ChannelLayout, Tail};
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::fold_frame;
+use tutti_types::fold_planar_channel;
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
 /// Dolby matrices.
@@ -51,19 +45,6 @@ use tutti_types::fold_frame;
 pub struct DownmixNode {
     src: ChannelLayout,
     dst: ChannelLayout,
-    /// Scratch for one interleaved input frame, sized at construction.
-    ///
-    /// A `Vec` rather than a fixed array because a graph node's width is
-    /// *authored* and this crate sets no ceiling: a stack array would have to
-    /// pick one, and truncating at it would silently drop channels of a
-    /// 12-channel Atmos bed — a width the stereo fold has an explicit matrix
-    /// for. Taken with `mem::take` in the RT path and put back, so `process`
-    /// never allocates.
-    frame: Vec<f32>,
-    /// Scratch for one folded output frame, sized at construction for the same
-    /// reason. `fold_frame` writes into a contiguous slice, but the outputs are
-    /// planar, one slice per channel, so the fold needs a landing place first.
-    folded: Vec<f32>,
 }
 
 impl DownmixNode {
@@ -72,12 +53,7 @@ impl DownmixNode {
     pub fn new(src: impl Into<ChannelLayout>, dst: impl Into<ChannelLayout>) -> Self {
         let src = ChannelLayout::from(src.into().count().max(1));
         let dst = ChannelLayout::from(dst.into().count().max(1));
-        Self {
-            src,
-            dst,
-            frame: vec![0.0; src.count() as usize],
-            folded: vec![0.0; dst.count() as usize],
-        }
+        Self { src, dst }
     }
 
     /// The width this unit folds *from*.
@@ -115,22 +91,10 @@ impl Node for DownmixNode {
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
-        // Take both scratches so `fold_frame` can borrow them while `self` is
-        // borrowed mutably; put them back before returning. Both are sized at
-        // construction, so this path allocates nothing at any width.
-        let mut frame = core::mem::take(&mut self.frame);
-        let mut folded = core::mem::take(&mut self.folded);
-        for i in 0..size {
-            for (c, f) in frame.iter_mut().enumerate() {
-                *f = inputs.get(c)[i];
-            }
-            fold_frame(&frame, &mut folded);
-            for (c, v) in folded.iter().enumerate() {
-                outputs.get(c)[i] = *v;
-            }
+        let (src, dst) = (self.src.count() as usize, self.dst.count() as usize);
+        for (c, out) in outputs.iter_mut().enumerate() {
+            fold_planar_channel(|k| inputs.get(k), src, dst, c, &mut out[..size]);
         }
-        self.frame = frame;
-        self.folded = folded;
         Status::Modified
     }
 
@@ -138,7 +102,7 @@ impl Node for DownmixNode {
 }
 
 /// No controls; a fork is a clone ([`ForkByClone`]): the node holds only its
-/// widths and scratch.
+/// widths.
 impl IntoNode for DownmixNode {
     type Controls = ();
 
@@ -230,6 +194,32 @@ mod tests {
                     "the block diverged from the matrix at sample {i}, channel {c}: {got} vs {e}"
                 );
             }
+        }
+    }
+
+    /// One block applies the matrix to unit vectors, one per frame: input
+    /// channel `k` pulses at frame `k`, so frame `k` of each output is the
+    /// matrix entry for `k`, and a channel read at the wrong frame or for
+    /// the wrong output moves it. 7.1 to stereo: `Lo` takes FL and, at
+    /// −3 dB, C, SL and BL; `Ro` the mirror; LFE neither.
+    ///
+    /// Mutation (run): pass the output index as the source width in
+    /// `process` → fails; slice each input from frame 1 → fails.
+    #[test]
+    fn a_block_of_unit_pulses_reads_out_the_matrix() {
+        let m = M3DB;
+        let want = [
+            [1.0, 0.0, m, 0.0, m, 0.0, m, 0.0],
+            [0.0, 1.0, m, 0.0, 0.0, m, 0.0, m],
+        ];
+        let mut u = DownmixNode::new(ChannelLayout::from(8u16), ChannelLayout::STEREO);
+        let pulses: Vec<Vec<f32>> = (0..8)
+            .map(|k| (0..8).map(|i| if i == k { 1.0 } else { 0.0 }).collect())
+            .collect();
+        let refs: Vec<&[f32]> = pulses.iter().map(|c| &c[..]).collect();
+        let out = drive(&mut u, RATE, &refs, &[]);
+        for (o, row) in want.iter().enumerate() {
+            assert_eq!(out[o], row, "output {o}");
         }
     }
 

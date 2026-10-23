@@ -107,13 +107,20 @@ impl Node for ChannelSumNode {
         // loop-invariant.
         let channels = self.channels();
         let (inputs, mut outputs) = io.split();
-        for i in 0..size {
-            for c in 0..channels {
-                let mut acc = 0.0f32;
-                for s in 0..self.sources {
-                    acc += inputs.get(s * channels + c)[i];
+        // Channel-major: each output starts at `+0.0` and adds its sources in
+        // order, one whole slice at a time. That is the per-frame
+        // `0.0 + s0 + s1 + …` exactly, so the bits do not depend on the loop
+        // order. The `+0.0` start is not dead: copying source 0 instead would
+        // pass `-0.0` and a signalling NaN through where the sum gives `+0.0`
+        // and a quiet NaN.
+        for c in 0..channels {
+            let out = &mut outputs.get(c)[..size];
+            out.fill(0.0);
+            for s in 0..self.sources {
+                let src = &inputs.get(s * channels + c)[..size];
+                for (o, &x) in out.iter_mut().zip(src) {
+                    *o += x;
                 }
-                outputs.get(c)[i] = acc;
             }
         }
         Status::Modified
@@ -232,6 +239,53 @@ mod tests {
             let want = if i == 64 { 2.0 } else { 0.0 };
             assert_eq!(y, want, "frame {i}");
         }
+    }
+
+    /// A whole block sums per channel and per frame: each port carries
+    /// `(i + 1) · 2^port`, so every sum is an exact integer and a port read
+    /// for the wrong channel, source or frame changes it. The outputs start
+    /// out holding a stale value, as a reused buffer does, which the node
+    /// must overwrite rather than add to.
+    ///
+    /// Mutation (run): index the input with `s * channels + 0` → channel 1
+    /// reads channel 0's ports → fails; drop the `fill(0.0)` → the sum is
+    /// added to the stale value → fails.
+    #[test]
+    fn a_block_of_known_signals_sums_exactly() {
+        use crate::test_support::RATE;
+        use tutti_graph::contract::Direct;
+
+        const N: usize = 64;
+        let (sources, width) = (3usize, 2usize);
+        let mut d = Direct::new(ChannelSumNode::new(sources, ChannelLayout::STEREO), RATE, N);
+        for (p, port) in d.inputs_mut().iter_mut().enumerate() {
+            for (i, x) in port.iter_mut().enumerate() {
+                *x = ((i + 1) << p) as f32;
+            }
+        }
+        for o in d.outputs_mut() {
+            o.fill(0.5);
+        }
+        d.block();
+        for c in 0..width {
+            for (i, &y) in d.output(c).iter().enumerate() {
+                let want: usize = (0..sources).map(|s| (i + 1) << (s * width + c)).sum();
+                assert_eq!(y, want as f32, "channel {c}, frame {i}");
+            }
+        }
+    }
+
+    /// The sum starts from `+0.0`, as IEEE addition defines it: sources that
+    /// are all `-0.0` sum to `+0.0`, not to `-0.0`.
+    ///
+    /// Mutation (run): start each output from a copy of source 0 instead of
+    /// `0.0` → the output is `-0.0` → fails.
+    #[test]
+    fn negative_zeros_sum_to_positive_zero() {
+        let mut u = ChannelSumNode::new(2, ChannelLayout::MONO);
+        let mut out = [1.0f32; 1];
+        tick(&mut u, &[-0.0, -0.0], &mut out);
+        assert_eq!(out[0].to_bits(), 0.0f32.to_bits());
     }
 
     /// Summing, not averaging.

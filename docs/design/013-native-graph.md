@@ -3490,7 +3490,7 @@ Decisions:
    | `MidiClipNode`, `ClockNode` (measured); `HarmonyNode`, `MidiQueueNode`, `MidiInputNode`, `MidiOutNode` (the same shape of work) | 0 (event-only: about 0.3 µs a block at any length; a gain's 256 frames take 0.2) | `Light` |
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
-   | `MicMonitorNode` (a ring pop per frame) | 5.4 | `Moderate` |
+   | `MicMonitorNode`, one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
    | `VbapPannerNode` | 10.9 stereo, 4.3 at 5.1 while moving; held (the de-zipper at its fixed point, the solve reused) 1.5 and 0.6 | `Moderate` (classed by the moving case) |
    | `VoiceNode`, a plain memory voice | 13 | `Moderate` |
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
@@ -3530,6 +3530,15 @@ Decisions:
    block fixed, against the gain's 100–120. The class is per curve, not
    per node: the curve is fixed at construction, and the declared shape
    reads it.
+
+   `MicMonitorNode`'s row was measured the same way (stereo, a full ring,
+   so every frame is a pop), on a fourth 4-core container, beside both
+   references there: a gain 0.05–0.06 and `SvfFilterNode<f64>` 3.9–4.7.
+   It copies a block out of the ring with one read of the producer's index
+   and one advance of its own, 0.4–0.6 per frame and channel, about 0.5 of
+   the way from the gain to the filter: `Light`. The pop per frame it
+   replaced (two atomics a frame) measured 3.0–3.5 there, 0.96 of the way.
+   Each block pays about 110 ns fixed, against the gain's 125.
 
    **One exception to the nearest-class rule: HRTF.** Its average is
    under the 45 boundary, but the renderer does all of a 128-frame

@@ -66,15 +66,6 @@ impl Encoder for OggEncoder {
         let ch = config.encode.channels.count() as usize;
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); ch];
         pump_blocks(src, source_rate, plan, config, |frames| {
-            for p in planes.iter_mut() {
-                p.clear();
-                p.reserve(frames.len());
-            }
-            for f in frames.iter() {
-                for (p, &s) in planes.iter_mut().zip(f.iter()) {
-                    p.push(s);
-                }
-            }
             // An EMPTY block is vorbis's end-of-stream signal, and `pump_blocks`
             // legitimately emits one (the resampler flushes after its last real
             // block). Passing it through closes the stream early and leaves the
@@ -83,9 +74,9 @@ impl Encoder for OggEncoder {
             if frames.is_empty() {
                 return Ok(());
             }
-            let block: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
+            frames.deinterleave_into(&mut planes);
             self.encoder
-                .encode_audio_block(block.as_slice())
+                .encode_audio_block(&planes)
                 .map_err(|e| Error::Encoding(format!("OGG encoding failed: {e}")))
         })?;
 

@@ -6,8 +6,8 @@
 //! from [`PlaneSource`], replaying a render already held), so the graph is
 //! stepped exactly once per block no matter which encoder is driving.
 //!
-//! The frame width is a **runtime** value carried by [`Frames`], never a
-//! `const CH`. A width in the type can only carry one that is a property of the
+//! The frame width is a **runtime** value carried by
+//! [`Interleaved`](tutti_types::Interleaved), never a `const CH`. A width in the type can only carry one that is a property of the
 //! *code*; the destination width here is a property of the caller's config, so
 //! any positive count renders — 3- and 5-wide masters included.
 //!
@@ -26,7 +26,7 @@
 use crate::render::BlockCursor;
 use crate::RenderGraph;
 use tutti_core::transport::RenderClock;
-use tutti_types::Samples;
+use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// Widest graph output the fold handles (mono … 7.1.4). Channels past this are
 /// dropped by the gather.
@@ -37,70 +37,6 @@ use tutti_types::Samples;
 /// 8 — deliberately not unified here, since an offline render has no RT root's
 /// constraints.
 const MAX_SOURCE_CHANNELS: usize = 12;
-
-/// A borrowed run of interleaved frames, `ch` samples wide.
-///
-/// The width travels **with** the buffer rather than beside it. A flat
-/// `&[f32]` plus a separate `ch: usize` reads identically whether an index is a
-/// frame index or a sample index, and the driver's gate windows in *frames*
-/// while the buffer is in *samples* — the exact confusion this newtype makes
-/// unrepresentable. [`Frames::window`] is the only way to take a frame range,
-/// and it does the `* ch` itself.
-#[derive(Clone, Copy)]
-pub(crate) struct Frames<'a> {
-    data: &'a [f32],
-    ch: usize,
-}
-
-impl<'a> Frames<'a> {
-    /// Wrap `data` as `ch`-wide frames.
-    ///
-    /// # Panics
-    /// If `ch` is 0, or `data` is not a whole number of frames.
-    pub(crate) fn new(data: &'a [f32], ch: usize) -> Self {
-        assert!(ch > 0, "frame width must be non-zero");
-        debug_assert_eq!(data.len() % ch, 0, "buffer is not a whole number of frames");
-        Self { data, ch }
-    }
-
-    /// Frame count — *not* sample count.
-    pub(crate) fn len(&self) -> usize {
-        self.data.len() / self.ch
-    }
-
-    /// Kept even where nothing calls it: it is `len`'s conventional companion
-    /// (clippy's `len_without_is_empty`), and Ogg is currently its only caller
-    /// — so any build without that feature sees no consumer.
-    #[cfg_attr(not(feature = "ogg"), allow(dead_code))]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    /// The interleaved samples, as the encoders want them.
-    pub(crate) fn samples(&self) -> &'a [f32] {
-        self.data
-    }
-
-    /// The sub-run covering a **frame** range.
-    pub(crate) fn window(&self, frames: std::ops::Range<usize>) -> Frames<'a> {
-        Frames {
-            data: &self.data[frames.start * self.ch..frames.end * self.ch],
-            ch: self.ch,
-        }
-    }
-
-    /// One frame, by frame index. Only the tests index a single frame; the
-    /// encoders all want either the whole run or a frame iterator.
-    #[cfg(test)]
-    pub(crate) fn frame(&self, i: usize) -> &'a [f32] {
-        &self.data[i * self.ch..(i + 1) * self.ch]
-    }
-
-    /// Iterate frame by frame.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
-        self.data.chunks_exact(self.ch)
-    }
-}
 
 /// Map frame `i` of the graph's output `planes` (one per global output) onto a
 /// destination frame of whatever width `dst` is.
@@ -133,9 +69,9 @@ fn fold_graph_frame(planes: &[Vec<f32>], i: usize, dst: &mut [f32]) {
 /// normalized export (render → measure → apply → write) shares every codec
 /// path with a streamed one instead of growing a second writer per format.
 pub(crate) trait FrameSource {
-    /// Fill `out` — an interleaved buffer `ch` samples per frame — returning how
-    /// many **frames** were written.
-    fn fill(&mut self, out: &mut [f32], ch: usize) -> usize;
+    /// Fill the leading frames of `out`, returning how many **frames** were
+    /// written.
+    fn fill(&mut self, out: InterleavedMut<'_>) -> usize;
     /// Frames handed out so far.
     fn produced(&self) -> Samples;
     /// The most frames one [`fill`](Self::fill) produces — what [`drive`]
@@ -220,9 +156,9 @@ impl FrameSource for GraphSource<'_> {
     /// finite one — which is why that trait carries `ON_EMPTY`. An offline
     /// render is driven to a known frame count rather than polled until dry, so
     /// the ambiguity never arises and this is not an `AudioIn`.
-    fn fill(&mut self, out: &mut [f32], ch: usize) -> usize {
-        debug_assert!(ch > 0, "frame width must be non-zero");
-        let block_size = (out.len() / ch).min(self.max_block);
+    fn fill(&mut self, mut out: InterleavedMut<'_>) -> usize {
+        let ch = out.stride();
+        let block_size = out.len().min(self.max_block);
         if block_size == 0 {
             return 0;
         }
@@ -251,7 +187,10 @@ impl FrameSource for GraphSource<'_> {
         // as a host's control loop would free them.
         self.editor.collect();
 
-        for (i, frame) in out[..block_size * ch].chunks_exact_mut(ch).enumerate() {
+        for (i, frame) in out.samples_mut()[..block_size * ch]
+            .chunks_exact_mut(ch)
+            .enumerate()
+        {
             fold_graph_frame(&self.planes, i, frame);
         }
         self.produced = Samples(self.produced.get() + block_size);
@@ -312,28 +251,22 @@ impl<'a> PlaneSource<'a> {
 }
 
 impl FrameSource for PlaneSource<'_> {
-    fn fill(&mut self, out: &mut [f32], ch: usize) -> usize {
-        debug_assert!(ch > 0, "frame width must be non-zero");
+    fn fill(&mut self, mut out: InterleavedMut<'_>) -> usize {
         let available = self
             .planes
             .first()
             .map_or(0, |p| p.len().saturating_sub(self.pos.get()));
-        let n = (out.len() / ch).min(available);
-        for (i, frame) in out[..n * ch].chunks_exact_mut(ch).enumerate() {
-            let at = self.pos.get() + i;
-            // A plane narrower than the frame zero-fills, matching the graph
-            // path's upmix rule. Written explicitly (rather than left to
-            // whatever the buffer held) because `drive`'s block is reused
-            // across iterations.
-            for (c, s) in frame.iter_mut().enumerate() {
-                *s = self
-                    .planes
-                    .get(c)
-                    .and_then(|p| p.get(at))
-                    .copied()
-                    .unwrap_or(0.0);
-            }
-        }
+        let n = out.len().min(available);
+        // A channel with no plane zero-fills, matching the graph path's
+        // upmix rule. `interleave_from` writes every sample of every frame
+        // (rather than leaving whatever the buffer held), which matters
+        // because `drive`'s block is reused across iterations.
+        let layout = out.layout();
+        InterleavedMut::new(
+            &mut out.samples_mut()[..n * layout.count() as usize],
+            layout,
+        )
+        .interleave_from(self.planes, self.pos.get());
         self.pos = Samples(self.pos.get() + n);
         n
     }
@@ -343,6 +276,11 @@ impl FrameSource for PlaneSource<'_> {
 
     /// The planes are already rendered, so the size only paces the encoder:
     /// 64 frames.
+    ///
+    /// Not raised to the graph's block: Ogg Vorbis's bytes depend on how its
+    /// input is split into `encode_audio_block` calls, so this size is part of
+    /// what a replayed Ogg export writes, and a 1024-frame replay measured no
+    /// faster for the PCM formats.
     fn max_block(&self) -> usize {
         64
     }
@@ -356,13 +294,14 @@ impl FrameSource for PlaneSource<'_> {
 /// frames that survive it.
 pub(crate) fn drive<F>(
     src: &mut dyn FrameSource,
-    ch: usize,
+    layout: ChannelLayout,
     plan: &crate::render::RenderPlan,
     mut consume: F,
 ) -> crate::Result<()>
 where
-    F: FnMut(Frames<'_>) -> crate::Result<()>,
+    F: FnMut(Interleaved<'_>) -> crate::Result<()>,
 {
+    let ch = layout.count() as usize;
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
     }
@@ -382,7 +321,7 @@ where
             .min(Samples(max_block));
         let block_start = src.produced();
         // `want` is a FRAME count and `block` is flat samples, hence `* ch`.
-        let n = src.fill(&mut block[..want.get() * ch], ch);
+        let n = src.fill(InterleavedMut::new(&mut block[..want.get() * ch], layout));
         if n == 0 {
             break;
         }
@@ -395,8 +334,9 @@ where
         };
         let window = cursor.window(Samples(n));
         if !window.is_empty() {
-            // `window` is a frame range; `Frames::window` applies the stride.
-            let filled = Frames::new(&block[..n * ch], ch);
+            // `window` is a frame range; `Interleaved::window` applies the
+            // stride.
+            let filled = Interleaved::new(&block[..n * ch], layout);
             consume(filled.window(window.clone()))?;
             kept = Samples(kept.get() + window.len());
         }
@@ -439,8 +379,8 @@ mod tests {
         };
         let mut out = Vec::new();
         with_source(graph, RATE, clock, |src| {
-            drive(src, ch, &plan, |b| {
-                out.extend(b.iter().map(<[f32]>::to_vec));
+            drive(src, ChannelLayout::from(ch), &plan, |b| {
+                out.extend(b.frames().map(<[f32]>::to_vec));
                 Ok(())
             })
         })
@@ -555,19 +495,6 @@ mod tests {
         );
     }
 
-    /// `Frames` windows in FRAMES while carrying flat interleaved samples —
-    /// the index confusion the newtype exists to prevent.
-    #[test]
-    fn frames_windows_by_frame_not_by_sample() {
-        let data: Vec<f32> = (0..12).map(|i| i as f32).collect();
-        let f = Frames::new(&data, 3);
-        assert_eq!(f.len(), 4, "12 samples at width 3 is 4 frames");
-        let w = f.window(1..3);
-        assert_eq!(w.len(), 2);
-        assert_eq!(w.samples(), &[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-        assert_eq!(f.frame(2), &[6.0, 7.0, 8.0]);
-    }
-
     /// A plane set narrower than the requested width zero-fills the tail —
     /// and does so on EVERY block, not just the first. `drive` reuses one
     /// buffer, so a `PlaneSource` that skipped the missing channels would leak
@@ -577,13 +504,14 @@ mod tests {
         let planes = vec![vec![1.0f32; 64]];
         let mut src = PlaneSource::new(&planes);
         let mut out = vec![9.9f32; 4 * 4];
-        assert_eq!(src.fill(&mut out, 4), 4);
+        let quad = ChannelLayout::from(4u16);
+        assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);
         for f in out.as_chunks::<4>().0 {
             assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
         }
         // Second pull into the same dirty buffer.
         out.fill(9.9);
-        assert_eq!(src.fill(&mut out, 4), 4);
+        assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);
         for f in out.as_chunks::<4>().0 {
             assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
         }

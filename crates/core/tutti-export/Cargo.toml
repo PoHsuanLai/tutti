@@ -14,7 +14,7 @@ workspace = true
 [features]
 default = ["wav", "flac", "aiff", "ogg"]
 wav = ["hound"]
-flac = ["flacenc"]
+flac = ["flacenc", "md-5"]
 aiff = ["aifc"]
 ogg = ["vorbis_rs"]
 
@@ -33,6 +33,11 @@ tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
 rubato = "0.16"
 hound = { version = "3.5", optional = true }
 flacenc = { version = "0.4", optional = true }
+# The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
+# only inside its own encode loop, which pads the last block; the FLAC encoder
+# drives flacenc's frame encoder itself, so it hashes the samples here. The
+# same crate and version flacenc already pulls in.
+md-5 = { version = "0.10", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
 # AIFF/AIFF-C. Replaced ~200 lines of hand-rolled IFF chunk writing (including a
 # by-hand 80-bit IEEE 754 extended encoder); its I16/I24/F32 formats match our

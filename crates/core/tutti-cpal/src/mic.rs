@@ -297,19 +297,10 @@ impl AudioIn for MicIn {
         // Pop up to `out.len() / 2` FRAMES the callback has pushed — the return
         // is frames, the slice is samples. A short/zero count is normal for a
         // live source — the pump backs off and tries again.
-        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
-        let mut n = 0;
-        while n < frames {
-            match self.cons.try_pop() {
-                Some([l, r]) => {
-                    out[n * 2] = l;
-                    out[n * 2 + 1] = r;
-                    n += 1;
-                }
-                None => break,
-            }
-        }
-        Samples(n)
+        //
+        // One copy and one read-index update for the run: the ring's
+        // `[f32; 2]` element is one interleaved frame.
+        Samples(self.cons.pop_slice(out.as_chunks_mut::<2>().0))
     }
 }
 

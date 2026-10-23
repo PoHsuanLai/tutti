@@ -51,6 +51,11 @@ impl DitherState {
         }
     }
 
+    /// Whether [`apply`](Self::apply) leaves every sample as it is.
+    pub(crate) fn is_off(&self) -> bool {
+        self.lsb.is_none()
+    }
+
     /// Dither one block of **interleaved** samples in place. A no-op when
     /// nothing quantizes.
     ///

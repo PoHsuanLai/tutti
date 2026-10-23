@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — streamed FLAC export, bulk ring copies in the I/O edges, renders bit-identical
+
+**FLAC export streams and is spec-correct at the end.** It no longer holds
+the whole render as PCM and then the whole compressed stream: each full
+4 096-frame block is encoded on a worker as it arrives and written in order,
+and the STREAMINFO is rewritten at the end (peak memory for a 180 s stereo
+24-bit export: about 150 MB before, 8 MB after). Every full-size frame is
+byte-identical to before. What changed is the end of the file: the last
+block was zero-padded to 4 096 frames, so a decoder that does not trim to
+STREAMINFO's sample count played extra silence, the MD5 covered that
+padding (a verifying decoder reported a mismatch), and for mono the padding
+was stale samples rather than zeros. The last block is now encoded at its
+own length, the file decodes to exactly the rendered frames, and the MD5
+verifies. A length that is a multiple of 4 096 writes the same bytes as
+before. `tutti-export`'s `flac` feature now also pulls in `md-5`.
+
+**The rest of export is byte-identical**, and allocates less: the
+interleave and deinterleave copies go through two new helpers,
+`tutti_types::Interleaved::append_to_planes` (deinterleave onto the end of
+caller-owned planes) and `InterleavedMut::interleave_from` (planes at an
+offset into every whole frame, zero where no plane reaches); the resampler
+writes into a preallocated output; an export with dither off writes the
+render's blocks without a staging copy; Ogg reuses its planes.
+
+**The audio-thread rings copy a block at a time.** `MicMonitorNode` reads
+what the capture ring holds straight out of its storage and advances the
+read index once per block (it was two atomics per frame), and now declares
+`Cost::Light` (measured by doc 013's method: 0.4–0.6 ns per frame and
+channel against 3.0–3.5 before). The master tap pushes a block with one
+`push_slice`; `TapIn` and `tutti_cpal::MicIn` poll with one `pop_slice`;
+`FileIn` interleaves a decoded packet channel by channel. `tutti-cpal`'s
+output callback skips the metering fold when the meter is disabled and the
+tap closed, where nothing read it.
+
+Migration: `tutti_core::TapCons` gained `pop_interleaved(&mut [f32]) ->
+Samples`, the bulk form of `try_pop` (its ring element is now `[f32; 2]`;
+`try_pop` still returns `(f32, f32)`). Nothing else changed signature.
+
 ### Changed — faster VBAP for a held source and faster analysis, results bit-identical
 
 `VbapPannerNode` stops stepping its 50 ms de-zipper once a step returns

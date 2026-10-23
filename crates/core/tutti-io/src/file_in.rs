@@ -225,12 +225,13 @@ impl FileIn {
             // zero-filled up to `self.channels`, so the interleave stride stays
             // constant and never runs past the buffer.
             let ch = num_ch.min(self.channels);
-            for i in 0..frames {
-                for c in 0..ch {
-                    self.leftover.push(buf.chan(c)[i]);
-                }
-                for _ in ch..self.channels {
-                    self.leftover.push(0.0);
+            // Channel by channel into a zeroed buffer, so the channels the
+            // packet lacks are already silence.
+            self.leftover.resize(frames * self.channels, 0.0);
+            for c in 0..ch {
+                let dst = self.leftover[c..].iter_mut().step_by(self.channels);
+                for (d, &s) in dst.zip(&buf.chan(c)[..frames]) {
+                    *d = s;
                 }
             }
             return Ok((frames, ts));

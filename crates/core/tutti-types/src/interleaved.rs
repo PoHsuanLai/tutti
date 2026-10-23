@@ -170,14 +170,26 @@ impl<'a> Interleaved<'a> {
     /// a wider `planes` does not carry stale data from a previous block. Extra
     /// channels beyond `planes.len()` are skipped.
     pub fn deinterleave_into(&self, planes: &mut [Vec<f32>]) {
+        for plane in planes.iter_mut() {
+            plane.clear();
+        }
+        self.append_to_planes(planes);
+    }
+
+    /// Deinterleaves onto the end of caller-owned planes: channel `c` is
+    /// appended to `planes[c]`.
+    ///
+    /// The accumulating form of [`deinterleave_into`](Self::deinterleave_into),
+    /// for a caller collecting a whole render block by block. Planes past
+    /// `stride()` are left as they are, and channels past `planes.len()` are
+    /// skipped. A trailing partial frame is not appended, matching
+    /// [`len`](Self::len).
+    pub fn append_to_planes(&self, planes: &mut [Vec<f32>]) {
         let ch = self.stride();
         let frames = self.len();
-        for (c, plane) in planes.iter_mut().enumerate() {
-            plane.clear();
-            if c < ch {
-                plane.reserve(frames);
-                plane.extend(self.data.chunks_exact(ch).map(|f| f[c]));
-            }
+        for (c, plane) in planes.iter_mut().enumerate().take(ch) {
+            plane.reserve(frames);
+            plane.extend(self.data.chunks_exact(ch).map(|f| f[c]));
         }
     }
 }
@@ -265,6 +277,41 @@ impl<'a> InterleavedMut<'a> {
     pub fn frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
         let ch = self.stride();
         self.data.chunks_exact_mut(ch)
+    }
+
+    /// Interleaves planes into every whole frame: frame `i`, channel `c` is
+    /// `planes[c][start + i]`.
+    ///
+    /// Every sample of every whole frame is written, so a reused buffer keeps
+    /// nothing from its last use: a channel with no plane, and the frames a
+    /// plane is too short to reach, are zero. A plane past `stride()` is
+    /// ignored. A trailing partial frame is left as it was, matching
+    /// [`len`](Self::len).
+    pub fn interleave_from<P: AsRef<[f32]>>(&mut self, planes: &[P], start: usize) {
+        let ch = self.stride();
+        let frames = self.len();
+        for c in 0..ch {
+            let src = planes
+                .get(c)
+                .and_then(|p| p.as_ref().get(start..))
+                .unwrap_or(&[]);
+            let src = &src[..src.len().min(frames)];
+            let mut dst = self
+                .data
+                .get_mut(c..)
+                .unwrap_or_default()
+                .iter_mut()
+                .step_by(ch)
+                .take(frames);
+            // `src` leads the zip: it is the one that runs out, and a zip
+            // whose first side is `dst` would take one slot past it.
+            for (&s, d) in src.iter().zip(&mut dst) {
+                *d = s;
+            }
+            for d in dst {
+                *d = 0.0;
+            }
+        }
     }
 }
 
@@ -429,6 +476,64 @@ mod tests {
             planes[2].is_empty(),
             "the third plane must not keep old data"
         );
+    }
+
+    /// Appending keeps what the planes held: a render collected block by
+    /// block is the concatenation of its blocks, channel by channel.
+    ///
+    /// Mutation (run): `plane.clear()` at the top of `append_to_planes` →
+    /// the first block is lost and the planes read `[3.0]` / `[-3.0]`.
+    #[test]
+    fn append_to_planes_accumulates_across_blocks() {
+        let mut planes = vec![Vec::new(), Vec::new()];
+        let a = [1.0f32, -1.0, 2.0, -2.0];
+        let b = [3.0f32, -3.0, 9.0];
+        Interleaved::new(&a, ChannelLayout::STEREO).append_to_planes(&mut planes);
+        Interleaved::new(&b, ChannelLayout::STEREO).append_to_planes(&mut planes);
+        assert_eq!(planes[0], vec![1.0, 2.0, 3.0]);
+        assert_eq!(
+            planes[1],
+            vec![-1.0, -2.0, -3.0],
+            "the ragged 9.0 is not a frame"
+        );
+    }
+
+    /// Every sample of every whole frame is written from its plane at
+    /// `start`, and nothing of a dirty buffer survives: a missing plane and
+    /// the frames past a short plane are zero. The ragged tail is untouched.
+    ///
+    /// Mutations (run): drop the zero-fill loop → the third channel and
+    /// the short plane's last frame keep 7.0; read `planes[c][i]` without
+    /// `start` → frame 0 reads 10.0, not 11.0.
+    #[test]
+    fn interleave_from_writes_every_whole_frame() {
+        let planes = [vec![10.0f32, 11.0, 12.0, 13.0], vec![20.0, 21.0, 22.0]];
+        let mut buf = [7.0f32; 3 * 3 + 1];
+        InterleavedMut::new(&mut buf, ChannelLayout::from(3u16)).interleave_from(&planes, 1);
+        assert_eq!(
+            buf,
+            [11.0, 21.0, 0.0, 12.0, 22.0, 0.0, 13.0, 0.0, 0.0, 7.0],
+            "frame-major, zero where no plane reaches, the tail sample kept"
+        );
+    }
+
+    /// `interleave_from` is the inverse of `deinterleave_into` at every
+    /// width, so the two cannot drift apart on a stride.
+    ///
+    /// Mutation (run): `interleave_from` striding by `ch.max(2)` → width 1
+    /// writes every other sample and leaves NaN between → fails.
+    #[test]
+    fn interleave_from_inverts_deinterleave_into() {
+        for width in 1u16..=8 {
+            let layout = ChannelLayout::from(width);
+            let data: Vec<f32> = (0..width as usize * 37).map(|i| i as f32).collect();
+            let mut planes = Vec::new();
+            planes.resize(width as usize, Vec::new());
+            Interleaved::new(&data, layout).deinterleave_into(&mut planes);
+            let mut back = vec![f32::NAN; data.len()];
+            InterleavedMut::new(&mut back, layout).interleave_from(&planes, 0);
+            assert_eq!(back, data, "width {width}");
+        }
     }
 
     /// A whole-buffer fold needs no index arithmetic: `frames()` hands

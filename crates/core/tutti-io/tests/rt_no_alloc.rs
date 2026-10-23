@@ -1,8 +1,9 @@
 //! Regression gate: the monitor node's hot path must not allocate per block.
 //!
-//! [`MicMonitorNode`] drains a shared capture ring on the audio thread. The pop
-//! goes through `AudioThreadCell::borrow_mut` — no lock, no alloc — and an
-//! underrun emits silence rather than stalling. A block must be
+//! [`MicMonitorNode`] drains a capture ring it owns on the audio thread. A
+//! block copies what the ring holds straight out of its storage and advances
+//! the read index once — no lock, no alloc — and an underrun emits silence
+//! rather than stalling. A block must be
 //! allocation-free, exactly like the playback units'.
 //!
 //! Driven through `tutti_graph::contract::Direct`: the node's own

@@ -216,7 +216,12 @@ fn flac_and_wav_agree_sample_for_sample() {
             assert_eq!(wr, fr, "{bit_depth:?} @ {level}: sample rate differs");
             assert_eq!(wc, fc, "{bit_depth:?} @ {level}: channel count differs");
 
-            let n = std::cmp::Ord::min(ws.len(), fs.len());
+            assert_eq!(
+                ws.len(),
+                fs.len(),
+                "{bit_depth:?} @ {level}: length differs"
+            );
+            let n = ws.len();
             assert!(n > 1000, "{bit_depth:?} @ {level}: too little audio");
             // NOT a float tolerance. Both files are lossless at the same depth,
             // read by the same decoder, so the honest claim is *bit* equality —
@@ -389,11 +394,8 @@ fn the_flac_compression_level_changes_the_size_not_the_samples() {
             &flac,
         )
         .unwrap();
-        // symphonia decodes the last fixed-size FLAC block whole, so the
-        // FLAC reads at least as long as the WAV (as in
-        // `flac_and_wav_agree_sample_for_sample`); compare the WAV's length.
         let (_, _, fs) = decode(&flac, "flac");
-        assert!(fs.len() >= ws.len(), "level {level}: too little audio");
+        assert_eq!(fs.len(), ws.len(), "level {level}: length differs");
         assert!(
             ws.iter().zip(&fs).all(|(&a, &b)| q(a) == q(b)),
             "level {level}: the FLAC does not hold the WAV's samples"
@@ -406,4 +408,123 @@ fn the_flac_compression_level_changes_the_size_not_the_samples() {
         sizes[3],
         sizes[0]
     );
+}
+
+/// Decode a FLAC with symphonia's MD5 check on: the interleaved samples, the
+/// width, and whether the STREAMINFO MD5 matched what was decoded.
+fn decode_flac_verified(path: &std::path::Path) -> (Vec<f32>, usize, Option<bool>) {
+    let file = std::fs::File::open(path).expect("open");
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("flac");
+    let mut format = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .expect("probe format")
+        .format;
+    let track = format.default_track().expect("default track").clone();
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions { verify: true })
+        .expect("make decoder");
+    let channels = track.codec_params.channels.map_or(0, |c| c.count());
+    let mut out = Vec::new();
+    while let Ok(packet) = format.next_packet() {
+        let audio = decoder.decode(&packet).expect("a valid frame");
+        let mut buf = SampleBuffer::<f32>::new(audio.capacity() as u64, *audio.spec());
+        buf.copy_interleaved_ref(audio);
+        out.extend_from_slice(buf.samples());
+    }
+    (out, channels, decoder.finalize().verify_ok)
+}
+
+/// **A FLAC decodes to exactly the frames rendered, and its MD5 checks.**
+///
+/// The render is `tail` frames with no duration, so its length is that
+/// figure, analytically. Every length here either fills its last 4096-frame
+/// block exactly or leaves a short one, including tails under flacenc's
+/// 64-frame block minimum (FLAC allows any length for the last block). The
+/// samples are the WAV's, quantized to integers as above, at three widths.
+///
+/// Mutations (run): encode the last block padded to the full block size
+/// (`buf.resize(BLOCK_SIZE)` in `FrameWriter::block`) → every short-tailed
+/// length decodes 4096-frame-rounded and the length assertion fails (the
+/// pre-streaming encoder's behaviour); hash each sample's full four bytes
+/// (`v.to_le_bytes()` without the `bytes_per_sample` cut) → the MD5 check
+/// fails on every file.
+#[test]
+fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
+    let d = tempfile::tempdir().unwrap();
+    for width in [1usize, 2, 6] {
+        let layout = ChannelLayout::from(width);
+        let graph = || {
+            let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
+            let id = g.add(
+                Osc::sine(Hz(997.0))
+                    .with_amplitude(Amplitude(0.5))
+                    .with_layout(layout),
+            );
+            g.pipe_output(id);
+            built(g)
+        };
+        for (bit_depth, scale) in [
+            (BitDepth::Int16, 32_767.0f32),
+            (BitDepth::Int24, 8_388_607.0),
+        ] {
+            for frames in [1usize, 15, 63, 64, 4095, 4096, 4097, 3 * 4096 + 17] {
+                let cfg = |format| ExportConfig {
+                    render: RenderConfig {
+                        sample_rate: tutti_core::SampleRate(SR),
+                        duration_seconds: 0.0,
+                        tail: tutti_core::Samples(frames),
+                        ..Default::default()
+                    },
+                    encode: EncodeConfig {
+                        format,
+                        bit_depth,
+                        channels: layout,
+                    },
+                    dither: Dither::Off,
+                    ..Default::default()
+                };
+                let tag = format!("w{width}_{bit_depth:?}_{frames}");
+                let wav = d.path().join(format!("{tag}.wav"));
+                render_to_file(graph(), &cfg(AudioFormat::Wav), &FrozenClock, &wav).unwrap();
+                let (_, _, ws) = decode(&wav, "wav");
+                assert_eq!(
+                    ws.len(),
+                    frames * width,
+                    "{tag}: the WAV is the analytic length"
+                );
+                for level in [0u8, 8] {
+                    let flac = d.path().join(format!("{tag}_{level}.flac"));
+                    let format = AudioFormat::Flac(Flac {
+                        compression_level: level,
+                    });
+                    render_to_file(graph(), &cfg(format), &FrozenClock, &flac).unwrap();
+                    let (fs, fc, md5_ok) = decode_flac_verified(&flac);
+                    assert_eq!(fc, width, "{tag} level {level}: width");
+                    assert_eq!(
+                        fs.len(),
+                        frames * width,
+                        "{tag} level {level}: decoded {} frames, rendered {frames}",
+                        fs.len() / width
+                    );
+                    let q = |s: f32| (s * scale).round() as i64;
+                    assert!(
+                        ws.iter().zip(&fs).all(|(&a, &b)| q(a) == q(b)),
+                        "{tag} level {level}: the FLAC does not hold the WAV's samples"
+                    );
+                    assert_eq!(
+                        md5_ok,
+                        Some(true),
+                        "{tag} level {level}: the MD5 does not match"
+                    );
+                }
+            }
+        }
+    }
 }

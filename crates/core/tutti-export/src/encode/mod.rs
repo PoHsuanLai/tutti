@@ -2,19 +2,20 @@
 //!
 //! # Why the encoder pulls
 //!
-//! The obvious shape is push — a `write(block)` sink the renderer feeds. It is
-//! the wrong one here, because flacenc is **pull**-based:
-//! `encode_with_fixed_block_size` calls `Source::read_samples` until the source
-//! is dry. The render is also a pull ([`GraphSource`](crate::render::driver::GraphSource) is
-//! a [`FrameSource`](crate::render::FrameSource)), so making the encoder the
-//! driver lets FLAC hand that source straight to its library, and costs the push
-//! formats only a small loop they run internally. Everything streams, and there
-//! is no buffered-vs-streaming decision for a caller to get wrong.
+//! The encoder drives the render rather than being fed by it: each format's
+//! `encode` takes the [`FrameSource`](crate::render::FrameSource) (a live
+//! [`GraphSource`](crate::render::driver::GraphSource) or a rendered
+//! [`PlaneSource`](crate::render::PlaneSource)) and pulls it block by block
+//! through [`pump_blocks`], the one place the gate, the resample and the
+//! dither live. Every format streams, FLAC included (it encodes a frame per
+//! full block as it arrives), so there is no buffered-vs-streaming decision
+//! for a caller to get wrong.
 //!
 //! Every encoder is width-agnostic: the width comes from the caller's
 //! [`ChannelLayout`](tutti_types::ChannelLayout) at runtime, the render folds the
 //! graph onto it once, and the file header is simply that width. Nothing here is
-//! generic over the width — [`Frames`] carries it — so *any* width encodes.
+//! generic over the width — [`Interleaved`](tutti_types::Interleaved) carries
+//! it — so *any* width encodes.
 
 #[cfg(feature = "aiff")]
 pub(crate) mod aiff;
@@ -27,12 +28,15 @@ pub(crate) mod wav;
 
 use crate::config::ExportConfig;
 use crate::error::Result;
-// `drive` and `Frames` are `pump_blocks`'s, and it carries the same codec gate.
+// `drive` and the buffer views are `pump_blocks`'s, and it carries the same
+// codec gate.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-use crate::render::{drive, Frames};
+use crate::render::drive;
 use crate::render::{FrameSource, PlaneSource, RenderPlan};
 use crate::Written;
 use std::path::Path;
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// The rate the file is written at: the resample target, else the render rate.
 ///
@@ -166,13 +170,12 @@ pub(crate) fn encode_to_file(
 
 /// Pull every FRAME of the render through resample → dither, into `write`.
 ///
-/// `write` receives [`Frames`], which carries its own width, so the frame/sample
-/// distinction never has to be tracked by the caller.
+/// `write` receives [`Interleaved`], which carries its own width, so the
+/// frame/sample distinction never has to be tracked by the caller.
 ///
-/// Every encoder goes through this — including FLAC, whose library owns its own
-/// pull loop but whose frames are collected through here first. That is the
-/// point: this is where the gate, the resample and the dither live, so an
-/// encoder that skips it writes un-resampled audio under a resampled header.
+/// Every encoder goes through this. That is the point: this is where the
+/// gate, the resample and the dither live, so an encoder that skips it writes
+/// un-resampled audio under a resampled header.
 ///
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
@@ -186,10 +189,11 @@ pub(crate) fn pump_blocks<W>(
     mut write: W,
 ) -> Result<()>
 where
-    W: FnMut(Frames<'_>) -> Result<()>,
+    W: FnMut(Interleaved<'_>) -> Result<()>,
 {
     // Once, at entry — never inside a per-block or per-frame loop.
-    let ch = config.encode.channels.count() as usize;
+    let layout = config.encode.channels;
+    let ch = layout.count() as usize;
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
     }
@@ -220,51 +224,51 @@ where
         _ => None,
     };
 
-    /// Interleave the resampler's planes, dither, and hand them on.
-    macro_rules! emit_planes {
-        ($out:expr, $staging:expr, $dither:expr, $write:expr, $ch:expr) => {{
-            let frames = $out.first().map_or(0, |p: &Vec<f32>| p.len());
-            $staging.clear();
-            $staging.reserve(frames * $ch);
-            for i in 0..frames {
-                for p in $out.iter() {
-                    $staging.push(p[i]);
-                }
-            }
-            $dither.apply(&mut $staging);
-            let r = $write(Frames::new(&$staging, $ch));
-            for p in $out.iter_mut() {
-                p.clear();
-            }
-            r
-        }};
-    }
-
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        drive(src, ch, plan, |block| {
-            for p in planes.iter_mut() {
-                p.clear();
-                p.reserve(block.len());
-            }
-            for f in block.iter() {
-                for (p, &s) in planes.iter_mut().zip(f.iter()) {
-                    p.push(s);
-                }
-            }
+        drive(src, layout, plan, |block| {
+            block.deinterleave_into(planes);
             rs.push(planes, out)?;
-            emit_planes!(out, staging, dither, write, ch)
+            emit_planes(out, &mut staging, &mut dither, layout, &mut write)
         })?;
         rs.finish(out)?;
-        emit_planes!(out, staging, dither, write, ch)?;
-        Ok(())
+        emit_planes(out, &mut staging, &mut dither, layout, &mut write)
+    } else if dither.is_off() {
+        // Nothing to add, so nothing to copy: the gated block goes straight
+        // to the encoder.
+        drive(src, layout, plan, write)
     } else {
-        drive(src, ch, plan, |block| {
+        drive(src, layout, plan, |block| {
             staging.clear();
             staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
-            write(Frames::new(&staging, ch))
+            write(Interleaved::new(&staging, layout))
         })
     }
+}
+
+/// Interleave the resampler's output planes, dither, hand them on, and clear
+/// the planes for the next push.
+#[cfg(any(feature = "wav", feature = "flac", feature = "ogg", feature = "aiff"))]
+fn emit_planes<W>(
+    out: &mut [Vec<f32>],
+    staging: &mut Vec<f32>,
+    dither: &mut crate::process::DitherState,
+    layout: ChannelLayout,
+    write: &mut W,
+) -> Result<()>
+where
+    W: FnMut(Interleaved<'_>) -> Result<()>,
+{
+    let frames = Samples(out.first().map_or(0, Vec::len));
+    staging.clear();
+    staging.resize(frames.interleaved_len(layout), 0.0);
+    InterleavedMut::new(staging, layout).interleave_from(out, 0);
+    dither.apply(staging);
+    let r = write(Interleaved::new(staging, layout));
+    for p in out.iter_mut() {
+        p.clear();
+    }
+    r
 }
 
 /// Write already-rendered planes to `path`.

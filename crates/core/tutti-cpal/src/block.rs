@@ -133,22 +133,29 @@ impl OutputBlock {
         // unchanged, so this only replaces a per-frame call with one bulk
         // memcpy. Keep them in step — if the fold's stereo arm ever stops
         // being a passthrough, this branch has to go, not be patched.
-        let meter = &mut self.meter_buf[..frames * 2];
-        if self.layout == ChannelLayout::STEREO {
-            meter.copy_from_slice(mix);
-        } else {
-            for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                let f = &mix[i * channels..i * channels + channels];
-                tutti_core::fold_frame(f, out);
+        //
+        // Only when something reads it: with the meter disabled and the tap
+        // closed, `meter_output` does nothing, so neither is the fold done.
+        // Each flag is one atomic load; a flag that flips after this check
+        // is seen from the next callback.
+        if self.state.meter.is_enabled() || self.state.tap.is_open() {
+            let meter = &mut self.meter_buf[..frames * 2];
+            if self.layout == ChannelLayout::STEREO {
+                meter.copy_from_slice(mix);
+            } else {
+                for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    let f = &mix[i * channels..i * channels + channels];
+                    tutti_core::fold_frame(f, out);
+                }
             }
+            meter_output(
+                meter,
+                frames,
+                &self.state.meter,
+                &self.state.tap,
+                &mut self.metering_ctx,
+            );
         }
-        meter_output(
-            meter,
-            frames,
-            &self.state.meter,
-            &self.state.tap,
-            &mut self.metering_ctx,
-        );
 
         write_output(data, channels, mix, frames);
     }

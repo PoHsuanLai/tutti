@@ -3,7 +3,6 @@
 //! - [`plan::RenderPlan`] — frame counts, derived once.
 //! - [`driver::GraphSource`] — a graph as a [`driver::FrameSource`],
 //!   built by [`driver::with_source`].
-//! - [`driver::Frames`] — interleaved samples that know their own width.
 //! - [`driver::drive`] — the pull loop, applying the [`sink::BlockCursor`] gate.
 //!
 //! There is no sink type here. The *encoder* owns the pull (see
@@ -13,11 +12,6 @@
 pub(crate) mod driver;
 pub(crate) mod plan;
 pub(crate) mod sink;
-
-// `Frames` is only named by the codec-gated encode arms; the rest are used by
-// the render path, which is available whether or not a format can be written.
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use driver::Frames;
 pub(crate) use driver::{drive, with_source, FrameSource, PlaneSource};
 pub(crate) use plan::RenderPlan;
 pub(crate) use sink::BlockCursor;

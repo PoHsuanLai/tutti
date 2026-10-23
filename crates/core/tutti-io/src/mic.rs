@@ -17,7 +17,7 @@
 //!
 //! # Single-consumer invariant
 //!
-//! [`HeapCons::try_pop`] advances the read index, so exactly one party may pop.
+//! Popping advances the read index, so exactly one party may pop.
 //! What keeps that true: **the ring is popped only from
 //! [`Node::process`](tutti_graph::Node::process), and there is one node.**
 //!
@@ -90,11 +90,34 @@ impl MicRing {
         Self(consumer)
     }
 
-    /// Pop the next captured frame. Crate-internal so only `MicMonitorNode`'s
-    /// audio-thread `process` can advance the SPSC read index.
+    /// Pop up to `left.len()` captured frames into the two planes, scaled by
+    /// `gain`, returning how many were popped. Crate-internal so only
+    /// `MicMonitorNode`'s audio-thread `process` can advance the SPSC read
+    /// index.
+    ///
+    /// Reads what the producer had pushed when it is called (one read of its
+    /// index), copies straight out of the ring's storage, then advances the
+    /// read index once: two atomics per block, where a pop per frame paid
+    /// two per frame.
     #[inline]
-    pub(crate) fn try_pop(&mut self) -> Option<[f32; 2]> {
-        self.0.try_pop()
+    pub(crate) fn pop_planes(&mut self, left: &mut [f32], right: &mut [f32], gain: f32) -> usize {
+        let want = left.len().min(right.len());
+        let (head, tail) = self.0.as_slices();
+        let mut n = 0;
+        for run in [head, tail] {
+            let take = run.len().min(want - n);
+            for ((l, r), &[a, b]) in left[n..n + take]
+                .iter_mut()
+                .zip(&mut right[n..n + take])
+                .zip(&run[..take])
+            {
+                *l = a * gain;
+                *r = b * gain;
+            }
+            n += take;
+        }
+        self.0.skip(n);
+        n
     }
 }
 
@@ -172,17 +195,6 @@ impl MicMonitorNode {
             device_rate: None,
         }
     }
-
-    /// Pop the next captured frame, or `(0.0, 0.0)` on underrun. Audio-thread
-    /// only (see the single-consumer invariant in the module docs).
-    #[inline]
-    fn next_frame(&mut self) -> (f32, f32) {
-        let g = self.gain.get();
-        match self.ring.try_pop() {
-            Some([l, r]) => (l * g, r * g),
-            None => (0.0, 0.0),
-        }
-    }
 }
 
 impl Node for MicMonitorNode {
@@ -200,10 +212,11 @@ impl Node for MicMonitorNode {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
             .with_tail(Tail::Unbounded)
-            // A ring pop (two atomics) per frame: measured 5.4 ns per frame
-            // and channel, against a gain's 0.2 and `SvfFilterNode`'s 7.2
-            // (doc 013, "The cost model and coarsening").
-            .with_cost(tutti_graph::Cost::Moderate)
+            // A block copy out of the ring: measured 0.4–0.6 ns per frame and
+            // channel, against a gain's 0.05 and `SvfFilterNode`'s 4.0 on the
+            // same box, under the boundary (doc 013, "The cost model and
+            // coarsening").
+            .with_cost(tutti_graph::Cost::Light)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -225,7 +238,7 @@ impl Node for MicMonitorNode {
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
-        // Width check BEFORE any pop: `next_frame` consumes from the ring, so
+        // Width check BEFORE any pop: `pop_planes` consumes from the ring, so
         // popping and then declining to write would throw captured frames
         // away. Unreachable through the graph — the node declares stereo and
         // is handed two outputs — but a discard is never the branch you want
@@ -233,9 +246,11 @@ impl Node for MicMonitorNode {
         let (Some(left), Some(right)) = (channels.next(), channels.next()) else {
             return Status::Modified;
         };
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            (*l, *r) = self.next_frame();
-        }
+        // The frames the ring holds, then silence for the rest: an underrun
+        // yields silence rather than stalling.
+        let n = self.ring.pop_planes(left, right, self.gain.get());
+        left[n..].fill(0.0);
+        right[n..].fill(0.0);
         Status::Modified
     }
 
@@ -340,8 +355,8 @@ mod tests {
 
     /// `reset` pops nothing: the frames are still there for the next block.
     ///
-    /// Mutation (run): `reset` draining the ring (`while self.ring.try_pop()
-    /// .is_some() {}`) → the block reads silence → fails.
+    /// Mutation (run): `reset` draining the ring (`self.ring.0.clear()`) →
+    /// the block reads silence → fails.
     #[test]
     fn reset_does_not_consume_the_ring() {
         let (ring, _prod) = ring_with(&[[9.0, 9.0]]);
@@ -365,11 +380,11 @@ mod tests {
     /// a block that is refused before the pop.
     ///
     /// What this pins is the order, through the one path that can reach
-    /// it: the `let … else` returns before `next_frame` runs.
+    /// it: the `let … else` returns before `pop_planes` runs.
     ///
-    /// Mutation (run): pop a frame before the width check (`let _ =
-    /// self.next_frame();` above the `let … else`) → the good block below
-    /// reads `[3.0, 4.0]` first → fails.
+    /// Mutation (run): pop a frame before the width check
+    /// (`self.ring.0.skip(1);` above the `let … else`) → the good block
+    /// below reads `[3.0, 4.0]` first → fails.
     #[test]
     fn a_block_leaves_the_ring_untouched_until_it_can_write() {
         let (ring, _prod) = ring_with(&[[7.0, 8.0], [3.0, 4.0]]);
@@ -380,6 +395,30 @@ mod tests {
             (7.0, 8.0),
             "one block, one frame: nothing popped ahead of what is written"
         );
+    }
+
+    /// A block reads across the ring's wrap: the frames stored at the end
+    /// of its storage, then the ones at the start, in push order, and pads
+    /// with silence past them.
+    ///
+    /// Mutation (run): copy only the first of `as_slices`' two runs (`for
+    /// run in [head]`) → the frames past the wrap read as silence → fails.
+    #[test]
+    fn a_block_reads_across_the_ring_wrap() {
+        let rb = HeapRb::<[f32; 2]>::new(4);
+        let (mut prod, cons) = rb.split();
+        let mut node = monitor(MicRing::new(cons));
+        for f in [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]] {
+            let _ = prod.try_push(f);
+        }
+        assert_eq!(block(&mut node, 3)[0], [1.0, 2.0, 3.0]);
+        // Three more: the fourth slot, then the first two, wrapped.
+        for f in [[4.0, -4.0], [5.0, -5.0], [6.0, -6.0]] {
+            let _ = prod.try_push(f);
+        }
+        let out = block(&mut node, 5);
+        assert_eq!(out[0], [4.0, 5.0, 6.0, 0.0, 0.0]);
+        assert_eq!(out[1], [-4.0, -5.0, -6.0, 0.0, 0.0]);
     }
 
     /// The declared shape: no inputs, stereo out, never skipped as silent,

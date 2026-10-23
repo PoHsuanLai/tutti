@@ -797,7 +797,11 @@ impl Wave {
         }
     }
 
-    /// The raw value at `cycles` (just before it when `left`).
+    /// The raw value at `cycles` (just before it when `left`), an unwrapped
+    /// position: the integer part is the cycle index a random shape hashes,
+    /// the `floor`-based fraction the phase. A pure function of its address,
+    /// so a seek or a fork reads the same value; the control lane and the
+    /// audio-rate `tutti_nodes::LfoNode` both evaluate through it.
     pub fn raw_at(&self, cycles: f64, left: bool) -> f32 {
         let c = if left { cycles - tol(cycles) } else { cycles };
         let n = c.floor();

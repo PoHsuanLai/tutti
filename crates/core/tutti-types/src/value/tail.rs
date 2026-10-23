@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 
 /// How long a node keeps producing audio after its input goes silent.
 ///
+/// **A tail excludes latency**: it is how long the node keeps sounding after
+/// its latency is compensated. A lookahead that only delays has no tail; a
+/// convolver with an `L`-tap response has `L - 1` whatever its block latency.
+/// Export trims the latency and extends the render by the tail, and the
+/// executor's silence skip waits for latency plus tail.
+///
 /// A reverb with a 4-second decay rings for 4 seconds past its last input; a
 /// gain stage stops immediately. A bounce that stops rendering when the last
 /// clip ends truncates the first mid-decay, so the render has to keep pulling
@@ -43,6 +49,10 @@ use serde::{Deserialize, Serialize};
 /// it, so [`from_samples`](Self::from_samples) names the sentinel once here
 /// rather than each loader spelling the literal.
 /// - **VST2** has no tail concept the vendored bindings surface.
+///
+/// All three report latency through a separate query, and none folds it into
+/// the tail (VST3's own example: a 2-second reverb answers 2 seconds), so a
+/// plugin's figure already excludes latency and is taken as reported.
 ///
 /// [`Unbounded`](Self::Unbounded) exists because a real plugin uses it and a
 /// number cannot carry it. TAL Reverb 4 answers `f64::INFINITY` for its tail

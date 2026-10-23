@@ -44,7 +44,9 @@ impl Node for PluginClient<Bound> {
     /// change reaches the graph through `Editor::set_latency` with the same
     /// figure (a host reads it off its [`PluginControls`](super::PluginControls));
     /// the next commit re-plans PDC. The tail is the plugin's, as it reports
-    /// it (a CLAP plugin's live cell).
+    /// it (a CLAP plugin's live cell). Every format reports it apart from
+    /// latency, so it excludes the plugin's latency and the chunk, as
+    /// [`Shape::tail`] asks.
     ///
     /// **One MIDI event input**: what reaches it (a clip node, an
     /// arpeggiator) is sent with the chunk its frames go into, on its frame,

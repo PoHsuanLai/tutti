@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a node's tail excludes its latency
+
+`Tail` (`Shape::tail`, `NodeSpec::tail`) is now defined as how long a node
+keeps sounding **after its latency is compensated**. Export already worked
+this way (it trims the latency, then extends the render by the tail), and
+so did `ConvolverNode` (`L - 1` beside its FFT block latency). What changes:
+
+- **The executor's silence skip waits for latency plus tail.** A node
+  without event inputs is parked only once its declared latency and its
+  declared tail have both elapsed since its inputs went quiet (it used to
+  wait for the tail alone). A node that holds input in a delay line while
+  its output reads silent is now called until that input is out.
+- **`LimiterNode` declares `Tail::None`** (was `lookahead - 1` frames). Its
+  lookahead is a pure delay, already its latency; the release envelope
+  shapes gain, and gain on silence is silence. An export that trims the
+  latency and takes its tail from a graph with a limiter is that many
+  frames shorter: 239 at 48 kHz with the default 5 ms lookahead
+  (`tutti-export`'s `a_limiter_adds_no_tail_to_the_render` pins the
+  length).
+- **`HrtfBinauralNode` declares its response length less one** (was the
+  128-frame step plus that). An export that trims the latency and takes
+  its tail from a graph with one is 128 frames shorter.
+- **`stretch::Unit::tail` is removed.** Nothing read it, and it returned
+  the vocoder's window, which is its latency; measured, the vocoder rings
+  on past that by an amount that varies with factor and pitch, so no fixed
+  figure was right. Migration: `latency_samples()` is still the
+  latency; a sampler voice declares `Tail::Unbounded` and ends itself.
+- **An export that takes its tail from the graph renders the untrimmed
+  latency too.** `ExportRequest::with_reported_tail` (tutti-session, and
+  bevy-tutti's through it) now renders the resolved tail **plus** whatever
+  of the graph's reported latency the render does not trim. Untrimmed, the
+  file is duration + latency + tail long and keeps the programme's last
+  frames (a limiter graph exported untrimmed used to lose its last frame of
+  programme; it now renders 240 frames past the span at 48 kHz, its
+  latency, where it rendered 239, its old tail). With `trim_reported_latency` nothing changes. The cap
+  bounds the tail only. `RenderConfig::tail` is unchanged; a caller setting
+  it by hand without trimming adds the untrimmed latency itself
+  (`an_untrimmed_export_renders_the_latency_past_the_programme`).
+
+`tutti_graph::contract::Lookahead`, the contract suite's pure delay,
+declares `Tail::None` too.
+
+Plugin nodes are unchanged: CLAP, VST3 and AU report a tail apart from
+latency, so the plugin's figure already excludes it. Migration for a node
+of your own: if its tail counted its latency (a lookahead or FFT block
+declared as both), subtract the latency from the tail.
+
 ### Changed — faster VBAP for a held source and faster analysis, results bit-identical
 
 `VbapPannerNode` stops stepping its 50 ms de-zipper once a step returns

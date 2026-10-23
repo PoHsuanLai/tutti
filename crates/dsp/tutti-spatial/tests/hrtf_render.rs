@@ -458,6 +458,61 @@ fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
     (verts, faces)
 }
 
+/// The declared tail is the ring-out once the latency is compensated: an
+/// impulse through a response whose last tap is non-zero sounds for the
+/// last time exactly latency + tail frames after it, and never after,
+/// wherever in the 128-frame step it lands (first, second, a middle and the
+/// last frame). Every vertex has the same response, so the blend cannot
+/// move the last tap.
+///
+/// Mutation (run): `ring_out` counting the latency again (`LATENCY +
+/// ir_len - 1`, the old figure) → the declared tail is 327 against the
+/// 199 the render shows, and the first assertion fails.
+#[test]
+fn the_tail_is_the_ring_out_after_the_latency() {
+    const LEN: usize = 200;
+    let (verts, faces) = tetrahedron();
+    let bytes = sphere_bytes(RATE, LEN, &verts, &faces, |_, _| {
+        let mut r = vec![0.0f32; LEN];
+        r[0] = 1.0;
+        r[LEN - 1] = 0.5;
+        r
+    });
+    for offset in [0, 1, 100, STEP - 1] {
+        let mut node = node(&bytes, RATE);
+        let (azimuth, elevation) = bearing_of(verts[0]);
+        node.set_position(azimuth, elevation);
+        Node::reset(&mut node);
+        let shape = node.shape();
+        let latency = shape.latency.samples().get();
+        let lead = STEP + offset;
+        let mut input = vec![0.0f32; lead + 4 * (latency + LEN)];
+        input[lead] = 1.0;
+        let mut last = None;
+        let mut at = 0;
+        for chunk in input.chunks(64) {
+            let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
+            for (i, (l, r)) in out[0].iter().zip(&out[1]).enumerate() {
+                if l.abs() > 1e-4 || r.abs() > 1e-4 {
+                    last = Some(at + i);
+                }
+            }
+            at += chunk.len();
+        }
+        let rings = last.expect("the impulse sounds") - (lead + latency);
+        assert_eq!(
+            shape.tail,
+            Tail::Finite(Samples(rings)),
+            "offset {offset}: the tail is what sounds after the compensated latency"
+        );
+        assert_eq!(
+            rings,
+            LEN - 1,
+            "offset {offset}: the response spreads the impulse LEN - 1 frames"
+        );
+    }
+}
+
 /// Preparing a sphere resamples it, which scales its response length by
 /// the ratio of the rates. The file's rate is held to
 /// `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` and its responses to 50 ms there
@@ -467,8 +522,8 @@ fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 /// 48 kHz.
 ///
 /// The bound is pinned at both edges, and at the longest response allowed
-/// the tail at a new rate is the latency plus exactly 50 ms of frames
-/// there, less one.
+/// the tail at a new rate is exactly 50 ms of frames there, less one (a
+/// tail excludes latency).
 ///
 /// Mutations (run): no lower rate bound → the 1 Hz sphere is refused for
 /// its length instead and the `Rate` match fails; `rate > MAX_SPHERE_RATE`
@@ -512,7 +567,7 @@ fn the_spheres_rate_and_response_length_are_bounded() {
     let fifty_ms = to as usize / 20;
     assert_eq!(
         node.shape().tail,
-        Tail::Finite(Samples(STEP + fifty_ms - 1)),
+        Tail::Finite(Samples(fifty_ms - 1)),
         "50 ms at {to} Hz is {fifty_ms} frames"
     );
 }
@@ -535,7 +590,7 @@ fn the_prepared_rate_is_held_to_its_ceiling() {
         r[0] = 1.0;
         r
     });
-    let at_ceiling = Tail::Finite(Samples(STEP + 512 - 1));
+    let at_ceiling = Tail::Finite(Samples(512 - 1));
 
     let mut node = HrtfBinauralNode::new(&bytes, SampleRate(2.0 * f64::from(MAX_PREPARED_RATE)))
         .expect("builds");
@@ -545,7 +600,7 @@ fn the_prepared_rate_is_held_to_its_ceiling() {
     assert_eq!(node2.shape().tail, at_ceiling, "built at 1e10 Hz");
 
     node.prepare(&Prepare::new(SampleRate(f64::from(RATE)), Samples(64)));
-    assert_eq!(node.shape().tail, Tail::Finite(Samples(STEP + 32 - 1)));
+    assert_eq!(node.shape().tail, Tail::Finite(Samples(32 - 1)));
     node.prepare(&Prepare::new(SampleRate(1e10), Samples(64)));
     assert_eq!(node.shape().tail, at_ceiling, "prepared at 1e10 Hz");
 

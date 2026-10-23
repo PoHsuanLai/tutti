@@ -452,7 +452,8 @@ impl Node for ConvolverNode {
     /// `N` in, `N` out; one FFT block of latency for the whole output (the
     /// dry half is delayed by the same block inside the node), and the
     /// longest IR's ring-out as its tail — exact rather than estimated, a
-    /// convolution being linear and finite.
+    /// convolution being linear and finite. The tail excludes the FFT block
+    /// latency, which is declared on its own and compensated.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from(self.width());
         Shape::audio(width, width)

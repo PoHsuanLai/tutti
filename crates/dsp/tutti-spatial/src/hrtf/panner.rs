@@ -214,11 +214,12 @@ impl HrtfBinaural {
         }
     }
 
-    /// Frames that outlive a silent input: a sample leaves [`LATENCY`]
-    /// frames after it enters and the response spreads it `ir_len - 1`
-    /// further. Both are fixed sizes, so this is exact.
+    /// Frames that outlive a silent input once the [`LATENCY`] is
+    /// compensated: the response spreads a sample `ir_len - 1` frames past
+    /// the frame it leaves at. A tail excludes latency, so the step's delay
+    /// is not counted here. The length is fixed at a rate, so this is exact.
     pub(crate) fn ring_out(&self) -> usize {
-        LATENCY + self.set.ir_len - 1
+        self.set.ir_len - 1
     }
 
     /// Prepares the sphere at a new rate and clears the streaming state,

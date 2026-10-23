@@ -170,13 +170,11 @@ impl TestNode {
             Kind::Smooth => Shape::audio(ch(1), ch(1))
                 .with_tail(Tail::Finite(Samples(1)))
                 .with_in_place(),
+            // A pure delay declared as latency: its tail, which excludes
+            // latency, is none.
             Kind::Lag { latency } => Shape::audio(ch(1), ch(1))
                 .with_latency(lat(latency))
-                .with_tail(if latency == 0 {
-                    Tail::None
-                } else {
-                    Tail::Finite(Samples(latency))
-                }),
+                .with_tail(Tail::None),
             Kind::Emitter { .. } => Shape::audio(ch(0), ch(1)).with_events(0, 1),
             Kind::Burst { cap, .. } => Shape::audio(ch(0), ch(1))
                 .with_events(0, 1)
@@ -187,7 +185,7 @@ impl TestNode {
             Kind::EventLag { latency } => Shape::audio(ch(0), ch(0))
                 .with_events(1, 1)
                 .with_latency(lat(latency))
-                .with_tail(Tail::Finite(Samples(latency))),
+                .with_tail(Tail::None),
             Kind::EnvProbe => Shape::audio(ch(0), ch(1)),
             Kind::Thru { width } => Shape::audio(ch(width), ch(width)),
             Kind::ThruInPlace { width } => Shape::audio(ch(width), ch(width)).with_in_place(),

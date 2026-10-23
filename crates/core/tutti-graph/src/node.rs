@@ -95,8 +95,15 @@ pub struct Shape {
     /// late. The type makes the mistake a compile
     /// error: a delay time is a `Samples` or a `Seconds`, not a [`Latency`].
     pub latency: Latency,
-    /// Ring-out after the input stops. Also what the executor's silence skip
-    /// trusts: a node reporting [`Tail::None`] is not called on a silent block.
+    /// How long the node keeps sounding after its input stops, **counted
+    /// once its [`latency`](Self::latency) is compensated**: the tail excludes
+    /// latency.
+    ///
+    /// A pure delay of `D` frames declared as latency (a lookahead) has
+    /// `Tail::None`; a convolver with an `L`-tap response and latency `D`
+    /// has `L - 1`, whatever `D` is. Export trims the latency and then extends
+    /// the render by the tail, and the executor's silence skip waits for
+    /// latency plus tail quiet frames before it trusts the node is silent.
     pub tail: Tail,
     /// Whether this node accepts **in-place** channels (see
     /// [`Io::in_place`](crate::Io::in_place)).
@@ -255,11 +262,19 @@ impl Shape {
         self
     }
 
-    /// This shape with the given ring-out.
+    /// This shape with the given ring-out, which excludes latency: the
+    /// frames the node keeps sounding after its input stops, counted once its
+    /// [`latency`](Self::latency) is compensated (see [`tail`](Self::tail)).
     #[must_use]
     pub const fn with_tail(mut self, tail: Tail) -> Self {
         self.tail = tail;
         self
+    }
+
+    /// Frames of quiet input after which the node is silent for good: its
+    /// latency, then its tail. The executor's silence skip waits this long.
+    pub(crate) fn park_after(&self) -> Tail {
+        Tail::Finite(self.latency.samples()).then(self.tail)
     }
 
     /// This shape, accepting in-place channels.

@@ -64,6 +64,13 @@ pub struct RenderConfig {
     /// graph produces after the requested span, so the written file is longer
     /// than `duration_seconds` by exactly this much.
     ///
+    /// A node's tail excludes its latency, so a render that trims less than
+    /// the graph's latency must count the untrimmed rest here too, or the
+    /// programme's last frames are cut: the frames to keep past the span are
+    /// the untrimmed latency plus the graph's tail. The session's
+    /// `with_reported_tail` does that sum; a caller setting this by hand does
+    /// it itself.
+    ///
     /// A plain count, for the same reason `latency` is one. The graph's own
     /// figure comes from [`RenderGraph::reported_tail`](crate::RenderGraph::reported_tail), which returns
     /// something a caller must resolve into a number rather than a number

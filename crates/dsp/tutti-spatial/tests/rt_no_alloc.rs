@@ -257,7 +257,7 @@ fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
     node.prepare(&Prepare::new(SampleRate(44_100.0), Samples(100)));
     // 64 taps at 48 kHz are ceil(64 * 44 100 / 48 000) = 59 at 44.1 kHz:
     // the set was resampled, not reused.
-    assert_eq!(node.shape().tail, Tail::Finite(Samples(128 + 59 - 1)));
+    assert_eq!(node.shape().tail, Tail::Finite(Samples(59 - 1)));
 
     let (mut rig, _controls) = BlockRig::new(node, SampleRate(44_100.0), 100);
     for c in rig.inputs_mut() {

@@ -315,13 +315,10 @@ fn every_non_linear_curve_kinks_a_bipolar_sine() {
             .beat
     };
     assert_eq!(corner(CurveType::Linear), None);
-    for c in [
-        CurveType::QuadIn,
-        CurveType::CubicOut,
-        CurveType::QuintInOut,
-        CurveType::Circular,
-        CurveType::Stepped,
-    ] {
+    for c in crate::shape::every_curve()
+        .into_iter()
+        .filter(|c| *c != CurveType::Linear)
+    {
         assert_eq!(corner(c), Some(Beat(2.0)), "{c:?}");
     }
 }

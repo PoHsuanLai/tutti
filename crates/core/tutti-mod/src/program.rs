@@ -145,9 +145,18 @@ impl Amount {
         f64::from(shape(raw, self.depth, self.polarity, self.curve)) * span
     }
 
-    /// Whether the offset's slope breaks where the raw value crosses zero:
-    /// a bipolar amount with any curve but `Linear` (`shape` curves `|x|`),
-    /// so each zero crossing is a corner (doc 014 §5.3).
+    /// Whether the offset bends where the raw value crosses zero: a
+    /// bipolar amount with any curve but `Linear` (`shape` curves `|x|`),
+    /// so each zero crossing is a corner (doc 014 §5.3). Every curve has
+    /// `f(0) = 0`, so the offset `sign(x)·f(|x|)` is continuous there with
+    /// the same slope `f'(0)` either side; its curvature flips sign
+    /// (`±f''(0)`), so the offset is not smooth across it and a piece ends
+    /// there.
+    ///
+    /// Not reported: `Stepped`'s jump at `|x| = 1` (at `raw = 1` when
+    /// unipolar), a single point no piece can carry, and `Bounce`'s three
+    /// slope breaks inside the range. Doc 014 §5.3 lists both among the
+    /// curves with no error bound.
     #[inline]
     pub fn kinks_at_zero(&self) -> bool {
         self.polarity == Polarity::Bipolar && self.curve != CurveType::Linear
@@ -178,6 +187,9 @@ pub struct Layer {
 /// `[-1, 1]` onto `[0, 1]`, computed as `(raw + 1) / 2` in `f64`; any other
 /// amount goes through [`shape`]. A curved bipolar amount kinks at the
 /// wave's zero crossings, which are corners as a layer's are (doc 014 §5.3).
+/// Under `Back` or `Elastic` the scale dips below 0 (to about −0.10 and
+/// −0.373 of depth) for small inputs, so there it inverts the offset
+/// rather than shrinking it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DepthBy {
     /// The clock the scaling wave runs on.

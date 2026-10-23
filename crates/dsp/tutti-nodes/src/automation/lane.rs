@@ -28,8 +28,8 @@ use super::Curve;
 /// | `CubicInOut` … `QuintInOut` | `PowerInOut(3 … 5)` |
 /// | `Circular`, `Back`, `Elastic`, `Bounce`, `Bezier` | none |
 ///
-/// `Back`, `Elastic` and `Bounce` overshoot their endpoints and `Bezier`'s
-/// two control values would not fit an event; `Circular` is a quarter
+/// `Back` and `Elastic` dip below their start, `Bounce` is not monotone,
+/// and `Bezier`'s two control values would not fit an event; `Circular` is a quarter
 /// circle no power matches. A lane sends those pieces as linear pieces on
 /// the play-clock grid (see [`ControlLaneNode`](super::ControlLaneNode)).
 pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
@@ -280,20 +280,12 @@ mod tests {
         Transport::new(false, Bpm(120.0), Beat(beat), None)
     }
 
-    /// Every [`SegmentShape`] `segment_shape` maps a curve to is that
-    /// curve as `audio-automation`'s `interpolate` evaluates it, on a grid
-    /// of 1025 points; the five it does not map are the ones no shape
-    /// carries. A param port evaluates the shape, which cannot name
-    /// `audio-automation` (`tutti-graph` depends on `tutti-types` alone),
-    /// so this mapping is the one place the two must agree.
-    ///
-    /// Mutations (run), each fails: `SCurve` mapped to `PowerIn(2)`,
-    /// `QuadOut` to `PowerOut(3)`, or `Circular` to `PowerIn(2)` → the
-    /// shape leaves the curve inside the segment.
-    #[test]
-    fn every_mapped_shape_is_the_curve_interpolate_evaluates() {
+    /// Every [`CurveType`], one control-point pair standing in for
+    /// `Bezier`. The `match` names each variant, so a new one is a compile
+    /// error here until it joins the list (and gets its own slot).
+    fn every_curve() -> [CurveType; 22] {
         use CurveType as C;
-        let all = [
+        const ALL: [CurveType; 22] = [
             C::Linear,
             C::Exponential,
             C::Logarithmic,
@@ -317,6 +309,50 @@ mod tests {
             C::QuintOut,
             C::QuintInOut,
         ];
+        let slot = |c: CurveType| match c {
+            C::Linear => 0,
+            C::Exponential => 1,
+            C::Logarithmic => 2,
+            C::SCurve => 3,
+            C::Stepped => 4,
+            C::Bezier(..) => 5,
+            C::Elastic => 6,
+            C::Bounce => 7,
+            C::Back => 8,
+            C::Circular => 9,
+            C::QuadIn => 10,
+            C::QuadOut => 11,
+            C::QuadInOut => 12,
+            C::CubicIn => 13,
+            C::CubicOut => 14,
+            C::CubicInOut => 15,
+            C::QuartIn => 16,
+            C::QuartOut => 17,
+            C::QuartInOut => 18,
+            C::QuintIn => 19,
+            C::QuintOut => 20,
+            C::QuintInOut => 21,
+        };
+        for (i, c) in ALL.into_iter().enumerate() {
+            assert_eq!(slot(c), i, "{c:?} is out of place in the list");
+        }
+        ALL
+    }
+
+    /// Every [`SegmentShape`] `segment_shape` maps a curve to is that
+    /// curve as `audio-automation`'s `interpolate` evaluates it, on a grid
+    /// of 1025 points; the five it does not map are the ones no shape
+    /// carries. A param port evaluates the shape, which cannot name
+    /// `audio-automation` (`tutti-graph` depends on `tutti-types` alone),
+    /// so this mapping is the one place the two must agree.
+    ///
+    /// Mutations (run), each fails: `SCurve` mapped to `PowerIn(2)`,
+    /// `QuadOut` to `PowerOut(3)`, or `Circular` to `PowerIn(2)` → the
+    /// shape leaves the curve inside the segment.
+    #[test]
+    fn every_mapped_shape_is_the_curve_interpolate_evaluates() {
+        use CurveType as C;
+        let all = every_curve();
         let mut unmapped = Vec::new();
         for c in all {
             let Some(s) = segment_shape(c) else {

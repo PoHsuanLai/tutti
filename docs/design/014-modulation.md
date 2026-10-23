@@ -1326,9 +1326,9 @@ points of parameters past it are dropped, counted.
 The in-process VST2 node reserves through the same `ParameterChanges` and
 so gets the pool, though it applies only each queue's last point.
 
-A plugin **ignores a ramp's duration**: a `ParamRamp` reaches it as one
-point at its target value on its last frame, as today. Only lane pieces
-(segments) carry their shape, as points.
+A `ParamRamp` with a duration reaches a plugin as the segment it makes
+from the parameter's current host value, along its shape, as points (doc
+013, "Shaped ramps"); a step is one point at its target on its frame.
 
 ## 10. What gets deleted
 

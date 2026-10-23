@@ -38,6 +38,19 @@ the machine in `DeclickToLocate`, and the next seek that keeps the motion
 transport; a scrub's `EndScrub` returned to stopped the same way. The
 machine now settles into the motion its fade was heading for when the fade
 completes. No migration.
+### Added — a `ParamRamp` can follow a curve shape
+
+A `ParamRamp` is the relative move, from wherever the param stands; it
+was linear only. `ParamRamp::with_shape(SegmentShape)` makes it follow any
+of the segment shapes (`Hold`, `PowerIn`/`Out`/`InOut`, `Exp`), evaluated
+per frame by the same `SegmentShape::eval` a `ParamSegment` uses. The
+default is `Linear`, which renders the same bits as before.
+
+| Was | Now |
+|---|---|
+| `ParamRamp` was linear only | `ParamRamp::with_shape(shape)` and `ParamRamp::shape()`; `new` and `foreign` build a `Linear` ramp, as before. `Event` stays 32 bytes |
+| `SegmentShape` had no `Default` | `SegmentShape::default()` is `Linear` |
+| a hosted plugin took a `ParamRamp` as one point, its target on its frame, whatever its duration | a ramp with a duration moves from the parameter's host value at the end of the frame before it, as a param port's does (the segment in flight there, else the value the node last gave it; an event earlier on the ramp's frame does not move it) to its target along its shape, sent as a segment's points, in every plugin node (CLAP, VST3, VST2, in-process VST2). A step, or a ramp on a parameter the node has given no value yet, is still its target on its frame. **Migration:** a producer that relied on a plugin jumping straight to a ramp's target sends `Samples(0)` |
 ### Fixed — a plugin is told a per-note pitch bend's real tuning
 
 `tutti-vst3-host` turned a MIDI 2 per-note pitch bend into a tuning note

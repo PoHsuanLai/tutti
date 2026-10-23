@@ -5297,7 +5297,8 @@ under both.
     segments"); the value starts at 0 and is an offset like an audio source's.
   **Superseded by doc 014 §5.6:** an event source's value now
   *replaces* the base from its first event on (a first ramp starts from
-  the base on its frame), audio sources stay offsets on whichever holds,
+  the base on its frame, also when it replaces a segment sent first on
+  that frame), audio sources stay offsets on whichever holds,
   and a port takes at most one event source, unshaped
   (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
   The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state
@@ -5548,7 +5549,8 @@ the source stands ("Shaped ramps" below).
 - **Shaped ramps.** `ParamRamp::with_shape(SegmentShape)` (default
   `Linear`) makes the relative move follow a shape: frame `j` after the
   event reads `from + (target - from) · shape.eval((j + 1) / duration)`,
-  `from` being the source's value on the frame before the event, and
+  `from` being the source's value on the frame before the event (for a
+  source not yet started, the base at the event's own frame), and
   `target` from frame `duration - 1` on: a segment in the ramp convention
   whose start is read at the port. The port (`Ramp::step`) and the
   reference interpreter both call `SegmentShape::eval`, so there is one
@@ -5569,7 +5571,9 @@ the source stands ("Shaped ramps" below).
   flight there, else the value the node last gave it,
   `ParamDelivery::current`; read at the parameter's first event on the
   frame, `ParamDelivery::frame_start`, so a step or segment earlier on the
-  ramp's frame does not move it, as in a param port) and is sent as that
+  ramp's frame does not move it, as in a param port once its source has
+  started; a port's first ramp starts from the base at its own frame) and
+  is sent as that
   segment's points; a step,
   or a ramp on a parameter the node has given no value yet, is its target
   on its frame. The start is the host's value, not the plugin's: an edit

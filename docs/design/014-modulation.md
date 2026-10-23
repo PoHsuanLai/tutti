@@ -105,7 +105,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | `Curve`, `CurveSegment` | `tutti-mod`, moved out of `routing` into the floor | Automation needs them without routing |
 | The compiler (`tutti_mod::compile`) | `tutti-mod`, ungated | Pure: no Bevy, no runtime |
 | `PlayReading` | `tutti-types` (re-exported as `tutti_graph::PlayReading`) | A value type: the compiler takes one (§7) and names no graph |
-| `Lfo`, `SampleHold`, `RandomState`, `Modulator` | **`tutti-nodes`** (`ModulatorNode`/`LfoNode` use them; `tutti-mod` keeps no copy) | Stateful per-sample sources are a runtime, and `tutti-mod` has none |
+| `Modulator` (implemented for `Wave`) | **`tutti-nodes`** (`ModulatorNode`, and `LfoNode` = `ModulatorNode<Wave>`) | The per-sample adapter is a runtime, and `tutti-mod` has none. The wave is `tutti-mod`'s: the node and the control lane evaluate one `Wave::raw_at`, a pure function of the unwrapped cycle position, so a random LFO is one sequence at either rate, seekable and fork-safe. (The node's former copies, `Lfo`, `SampleHold` and the sequential `RandomState`, are deleted.) |
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |

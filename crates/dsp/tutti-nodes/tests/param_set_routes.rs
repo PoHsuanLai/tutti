@@ -343,7 +343,7 @@ fn convolver_only_addresses_wet() {
     assert!(!addresses(&node, UnitParam::Cutoff));
 }
 
-/// One second of a free-running 1 Hz sine `LfoNode` at depth 0.25, with a
+/// A second and a quarter (60 000 frames) of a free-running 1 Hz sine `LfoNode` at depth 0.25, with a
 /// control lane on `param` (knob: the LFO's own cell) adding a constant
 /// `depth` of `range`, and the cell's value after the render.
 fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32) {
@@ -388,7 +388,7 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
         },
     );
     ed.commit().expect("the lane commits");
-    let out = r.render(48_000).swap_remove(0);
+    let out = r.render(60_000).swap_remove(0);
     (out, knob.load(Ordering::Acquire))
 }
 
@@ -396,7 +396,10 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
 /// around the LFO's own cell. The depth knob at 0.25
 /// plus half of a 0..1 range swings the 1 Hz sine to ±0.75; the 1 Hz rate
 /// knob plus a fifth of a 0..10 Hz range runs it at 3 Hz, three rising
-/// zero crossings in a second where 1 Hz has one. Neither cell moves.
+/// zero crossings in a second and a quarter (frames 16 000, 32 000 and
+/// 48 000) where 1 Hz has one (frame 48 000). The render runs past the
+/// third: the LFO's clock is exact, so it lands on frame 48 000, not
+/// before it. Neither cell moves.
 ///
 /// Mutation (run): the LFO reading its depth cell, not the driven
 /// port (`block_driven(&io, 0)` replaced by `None`) → it peaks at 0.25 →
@@ -412,8 +415,16 @@ fn a_lane_drives_an_lfo_nodes_depth_and_rate() {
     assert_eq!(knob, 0.25, "the lane never writes the depth cell");
 
     let (out, knob) = render_lfo(UnitParam::Rate, ParamRange::new(0.0, 10.0), 0.2);
+    eprintln!(
+        "X {:?}",
+        out.windows(2)
+            .enumerate()
+            .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+            .map(|(i, w)| (i, w[0], w[1]))
+            .collect::<Vec<_>>()
+    );
     let rising = out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
-    assert_eq!(rising, 3, "3 Hz: three rising crossings in a second");
+    assert_eq!(rising, 3, "3 Hz: three rising crossings in 1.25 s");
     assert_eq!(knob, 1.0, "the lane never writes the rate cell");
 }
 

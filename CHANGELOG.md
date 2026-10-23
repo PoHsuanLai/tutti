@@ -24,8 +24,8 @@ A hosted plugin is now told everything its transport snapshot can know:
   between two reads, and a tempo ramp speeding up inside one chunk is
   counted, not re-seated. A transport built by hand (`Transport::new`) has
   no such count and is read by the playhead's rule, in a host that drives
-  `tutti_graph::Executor` itself too. VST2 `samplePos`, VST3 `projectTimeSamples` and AU's
-  sample time read it.
+  `tutti_graph::Executor` itself too. VST2 `samplePos`, VST3
+  `projectTimeSamples` and AU's sample time read it.
   CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
   same time over the rate; it was the beat's time at the current tempo,
   which jumped at every tempo change.

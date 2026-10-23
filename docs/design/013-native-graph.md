@@ -6521,7 +6521,11 @@ fills three fields the ABIs ask for beyond the beat and the tempo:
   that count, which can pass the gap (beat 100, 120 → 130 BPM at frame 16
   → 140 at frame 32: 17 frames counted for 16), so the count is capped at
   the room the gap leaves whenever the beats moved fit it at the faster
-  of the two tempos; only beats that do not fit even then re-seat. A seek
+  of the two tempos; only beats that do not fit even then re-seat. The
+  faster of the two is the fastest only for a ramp that moves one way: a
+  tempo that rises above both reads' tempos and falls again inside one
+  chunk can play the beats in fewer frames than that, and re-seats, as a
+  tempo that changes and comes back does. A non-finite beat re-seats. A seek
   and a tempo change inside one chunk cannot be told from a tempo change
   alone, and the cap widens that: a seek forward whose beats fit the gap
   at the faster tempo is counted as played. A wrap or a seek that lands back on a
@@ -6595,7 +6599,8 @@ counted exactly across a tempo change between two reads, and re-seated at
 a seek (stopped or playing, inside one chunk too, and forward with a
 tempo change), a loop wrap, a rate change and a start elsewhere, each on
 the engine's own `FrameClock`; a tempo ramp that speeds up inside one
-chunk counted, not re-seated; a hand-built transport read by the
+chunk counted, not re-seated; a NaN beat at a tempo change re-seated;
+a hand-built transport read by the
 playhead's rule through `Cx::transport_at`, and `tutti-graph`'s
 `a_bare_beats_walk_has_no_origin`; the host clock at a chunk's frame, and on the OS clock),
 `Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,

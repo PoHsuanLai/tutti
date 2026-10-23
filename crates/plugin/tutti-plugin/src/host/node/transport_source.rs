@@ -165,6 +165,10 @@ impl SteadyTime {
 ///   The cost is a wider seek-plus-tempo ambiguity (below): a seek forward
 ///   and a tempo change inside one chunk are counted as played whenever the
 ///   beats moved fit the gap at the faster tempo.
+///   The faster of the two is the fastest only for a ramp that moves one
+///   way: a tempo that rises above both reads' tempos and falls again
+///   inside one chunk can play the beats in fewer frames than that count,
+///   and re-seats. A non-finite beat re-seats.
 /// - **A new segment at the same tempo**: a seek or a wrap, a re-seat. So is
 ///   a tempo that changes and comes back inside one chunk.
 ///
@@ -250,12 +254,17 @@ fn played_between(
         // at the faster of the two; a speeding-up ramp's count at `from`'s
         // tempo can pass the room the gap leaves, and is capped there.
         let beats = b.beat.get() - from.beat().get();
+        // `min` and `max` below drop a NaN, so a non-finite count must
+        // leave here.
+        if !beats.is_finite() {
+            return None;
+        }
         let frames_at = |tempo: Bpm| (beats * 60.0 / tempo.get() * rate.get()).round();
         let least = frames_at(Bpm(from.tempo.get().max(to.tempo.get())));
         let room = gap.saturating_sub(usize::try_from(b.frame.get()).ok()?) as f64;
         // More than the fewest is not capped, so the check below re-seats it.
         let before = frames_at(from.tempo).min(least.max(room));
-        if before.is_nan() || before < 0.0 {
+        if before < 0.0 {
             return None;
         }
         (before as u64).checked_add(b.frame.get())?
@@ -1097,8 +1106,10 @@ mod tests {
     /// Mutation (run): drop the cap on the count (`filter(|&n| n <= gap)`
     /// in `played_between`) → the seek is counted, 2 488 743 → fails (and
     /// so does the seek at 90 BPM in
-    /// `a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time`). Mutation (run): cap the count before the new segment at the
-    /// room the gap leaves whatever the fewest frames those beats take
+    /// `a_seek_a_loop_wrap_and_a_start_elsewhere_re_seat_project_time`).
+    ///
+    /// Mutation (run): cap the count before the new segment at the room the
+    /// gap leaves whatever the fewest frames those beats take
     /// (`frames_at(from.tempo).min(room)`) → the seek is counted as the
     /// 64-frame gap, 2 400 128 → fails.
     #[test]
@@ -1111,6 +1122,29 @@ mod tests {
             read_firsts(&[first, seek, h.block(64, &[])]),
             [Some(2_400_000), Some(2_400_064), reseat(end, 130.0)]
         );
+    }
+
+    /// **A NaN beat at a tempo change re-seats**: 120 BPM at beat 100, then
+    /// 130 BPM on a segment whose beat is NaN, 64 frames on. No count of
+    /// frames played comes from a NaN beat, and its own time is NaN, so
+    /// the read is `None`.
+    ///
+    /// Mutation (run): drop the `!beats.is_finite()` return in
+    /// `played_between` → `min` and `max` drop the NaN and the count is the
+    /// room the gap leaves, `Some(2_400_064.0)` → fails.
+    #[test]
+    fn a_nan_beat_at_a_tempo_change_re_seats() {
+        let counted = |bpm: f64, beat: f64, frame: u64| {
+            let origin = SegmentOrigin {
+                beat: Beat(beat),
+                frame: Frame(frame),
+                sample_rate: SR,
+            };
+            Transport::counted(true, Bpm(bpm), origin, None)
+        };
+        let mut p = ProjectTime::default();
+        assert_eq!(p.at(&counted(120.0, 100.0, 0), SR, 0), Some(2_400_000.0));
+        assert_eq!(p.at(&counted(130.0, f64::NAN, 16), SR, 64), None);
     }
 
     /// **A seek inside one chunk re-seats, however short.** After 120 →

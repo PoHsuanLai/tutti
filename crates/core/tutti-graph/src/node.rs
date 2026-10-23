@@ -561,9 +561,9 @@ pub struct Transport {
     /// transport is only ever built through its constructors.
     recording: bool,
     /// Where the block's first frame is: a bare beat, a frame count on the
-    /// host's segment, or one walked on from a bare beat. Private, so the beat and the frame count it is derived
-    /// from cannot disagree: [`beat`](Self::beat) *computes* the beat of a
-    /// counted position.
+    /// host's segment, or one walked on from a bare beat. Private, so the
+    /// beat and the frame count it is derived from cannot disagree:
+    /// [`beat`](Self::beat) *computes* the beat of a counted position.
     position: Position,
 }
 
@@ -668,8 +668,8 @@ impl Transport {
         }
     }
 
-    /// This transport with its clock moved to `origin` (`clock` advanced):
-    /// counted if it was, else walked from its beat.
+    /// This transport with its clock moved to `origin`: counted if it was,
+    /// else walked from its beat.
     pub(crate) const fn walked_to(self, origin: SegmentOrigin) -> Self {
         let position = match self.position {
             Position::Counted(_) => Position::Counted(origin),

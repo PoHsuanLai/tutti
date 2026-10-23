@@ -120,8 +120,10 @@ struct RefRamp {
     target: f32,
     /// The absolute frame of its event.
     at: u64,
-    /// A linear ramp's length, in frames.
+    /// A ramp's length, in frames.
     len: u64,
+    /// A ramp's shape.
+    shape: crate::event::SegmentShape,
     /// A curve segment's `(position, length, shape)`; `None`: linear.
     curve: Option<(f32, f32, crate::event::SegmentShape)>,
     /// Its value on the last frame evaluated.
@@ -1305,6 +1307,7 @@ impl Reference {
                                 target: r.raw_target(),
                                 at: now,
                                 len: r.duration().get() as u64,
+                                shape: r.shape(),
                                 curve: None,
                                 value: cur,
                                 started: true,
@@ -1325,6 +1328,7 @@ impl Reference {
                                 target: to,
                                 at: now,
                                 len: 0,
+                                shape: crate::event::SegmentShape::Linear,
                                 curve: Some((position, length, s.shape())),
                                 value: cur,
                                 started: true,
@@ -1353,7 +1357,8 @@ impl Reference {
                     if into >= r.len {
                         r.target
                     } else {
-                        r.from + (r.target - r.from) * (into as f32 / r.len as f32)
+                        let t = into as f32 / r.len as f32;
+                        r.from + (r.target - r.from) * r.shape.eval(t)
                     }
                 };
                 st.ramp.value = value;

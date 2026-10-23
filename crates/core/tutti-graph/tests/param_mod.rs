@@ -13,7 +13,9 @@
 //! - a base move under a source that has not spoken ramps across the block;
 //! - connecting and disconnecting a source at runtime crossfades instead of
 //!   stepping;
-//! - a step or a `ParamRamp` lands on its frame;
+//! - a step or a `ParamRamp` lands on its frame; a shaped ramp hits its
+//!   analytic value at every frame and hands over on its frame when
+//!   interrupted;
 //! - a node that cannot say its base is never driven;
 //! - a unit's first block (an insert, a replace, a fork) is not declicked;
 //! - an event source's held value survives an edit to its node's other
@@ -26,8 +28,9 @@
 //! - a NaN range is refused; removing a driven node leaves the graph
 //!   committable;
 //! - the executor and the reference interpreter agree bit for bit on random
-//!   driven graphs (steps, ramps and curve segments among their sources),
-//!   across recompiles, base moves, latency changes and regenerations.
+//!   driven graphs (steps, ramps, shaped ramps and curve segments among
+//!   their sources), across recompiles, base moves, latency changes and
+//!   regenerations.
 //!
 //! Audio-rate param sources, several sources summed on one port and their
 //! shaping LUTs are gone (doc 014 §10, §11): a lane sums and shapes before it
@@ -260,6 +263,9 @@ struct Ramps {
     /// Curve segments, each on its absolute frame (after the frame's
     /// ramps).
     segs: Vec<(u64, ParamSegment)>,
+    /// Ramps built whole (a shaped one), each on its absolute frame (after
+    /// the frame's `plan` ramps, before its segments).
+    shaped: Vec<(u64, ParamRamp)>,
 }
 
 impl Ramps {
@@ -268,6 +274,7 @@ impl Ramps {
         Self {
             plan: steps.iter().map(|&(at, p, v)| (at, p, v, 0)).collect(),
             segs: Vec::new(),
+            shaped: Vec::new(),
         }
     }
 }
@@ -293,6 +300,12 @@ impl Node for Ramps {
             };
             let offset = io.offset((at - start) as usize).expect("inside");
             events.push(Event::ramp(offset, ramp));
+        }
+        for &(at, ramp) in &self.shaped {
+            if inside(at) {
+                let offset = io.offset((at - start) as usize).expect("inside");
+                events.push(Event::ramp(offset, ramp));
+            }
         }
         for &(at, seg) in &self.segs {
             if inside(at) {
@@ -520,6 +533,7 @@ fn a_modulation_step_lands_on_its_frame() {
                         (k + 20, UnitParam::Q, 5.0, 8),
                     ],
                     segs: Vec::new(),
+                    shaped: Vec::new(),
                 }),
             );
             {
@@ -799,6 +813,7 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
                 (20, UnitParam::Q, 1000.0, 100),
             ],
             segs: Vec::new(),
+            shaped: Vec::new(),
         }),
     );
     for p in [UnitParam::Cutoff, UnitParam::Q] {
@@ -1212,9 +1227,23 @@ fn render_segments(
     segs: Vec<(u64, ParamSegment)>,
     blocks: &[usize],
 ) -> Vec<f32> {
+    render_moves(plan, Vec::new(), segs, blocks)
+}
+
+/// [`render_segments`], with whole ramps (`shaped`) sent too.
+fn render_moves(
+    plan: Vec<(u64, UnitParam, f32, usize)>,
+    shaped: Vec<(u64, ParamRamp)>,
+    segs: Vec<(u64, ParamSegment)>,
+    blocks: &[usize],
+) -> Vec<f32> {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(128, &cutoff, &q);
-    ed.insert(NodeKey(1), "ramps", Unforkable(Ramps { plan, segs }));
+    ed.insert(
+        NodeKey(1),
+        "ramps",
+        Unforkable(Ramps { plan, segs, shaped }),
+    );
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         EventOut {
@@ -1376,6 +1405,120 @@ fn an_interrupted_segment_hands_over_on_the_frame() {
     }
 }
 
+/// A shaped `ParamRamp` moves from the value it starts from along its shape,
+/// `from + (target - from) · shape.eval((j + 1) / len)` at frame `j` after
+/// its event, and lands on its target on its last frame, under every block
+/// schedule. A `PowerIn(2)` ramp from 0 to 1 over 4 frames reads exactly
+/// 0.0625, 0.25, 0.5625 and 1 (IEEE-exact); a long `Exp` ramp (libm: a
+/// tolerance) spans blocks; a `Hold` ramp holds its start and steps on its
+/// last frame.
+///
+/// Mutations (run), each fails: in `render_ramps`, start every ramp
+/// `SegmentShape::Linear` (`r.shape()` ignored) → frame 100 reads 0.25. In
+/// `Ramp::step`, evaluate the shape one frame behind (`(done - 1) / len`) →
+/// frame 100 reads 0.
+#[test]
+fn a_shaped_ramp_hits_its_analytic_values_per_frame() {
+    const TOL: f64 = 1e-5;
+    let key = ParamKey::<Hz>::CUTOFF;
+    let ramp = |target: f32, len: usize, shape| {
+        ParamRamp::new(key, Hz(target), Samples(len)).with_shape(shape)
+    };
+    let shaped = vec![
+        (100, ramp(1.0, 4, SegmentShape::PowerIn(2.0))),
+        (200, ramp(3.0, 300, SegmentShape::Exp(3.0))),
+        (600, ramp(-1.0, 150, SegmentShape::PowerOut(3.0))),
+        (900, ramp(5.0, 10, SegmentShape::Hold)),
+    ];
+    let want = |f: u64| -> f64 {
+        match f {
+            0..100 => 0.0,
+            100..200 => analytic(0.0, 1.0, SegmentShape::PowerIn(2.0), 1.0, 4.0, f - 100),
+            200..600 => analytic(1.0, 3.0, SegmentShape::Exp(3.0), 1.0, 300.0, f - 200),
+            600..900 => analytic(3.0, -1.0, SegmentShape::PowerOut(3.0), 1.0, 150.0, f - 600),
+            _ => analytic(-1.0, 5.0, SegmentShape::Hold, 1.0, 10.0, f - 900),
+        }
+    };
+    for blocks in segment_schedules(1_000) {
+        let out = render_moves(Vec::new(), shaped.clone(), Vec::new(), &blocks);
+        let ctx = format!("blocks {:?}…", &blocks[..blocks.len().min(4)]);
+        assert_eq!(&out[100..104], &[0.0625, 0.25, 0.5625, 1.0], "{ctx}");
+        for (f, &v) in out.iter().enumerate() {
+            let w = want(f as u64);
+            assert!(
+                (f64::from(v) - w).abs() <= TOL,
+                "{ctx}: frame {f}: {v} vs analytic {w}"
+            );
+        }
+        assert_eq!(out[499], 3.0, "{ctx}: the `Exp` ramp lands on its target");
+        assert_eq!(out[908], -1.0, "{ctx}: `Hold` holds its start");
+        assert_eq!(out[909], 5.0, "{ctx}: and steps on its last frame");
+    }
+}
+
+/// A shaped ramp is interrupted as a linear one is: a later ramp moves on
+/// from the value the shaped ramp had reached (and along its own shape), a
+/// later segment jumps to its own value, and a shaped ramp after a segment
+/// starts from the value the segment reached — on its frame, under every
+/// block schedule.
+///
+/// Mutations (run), each fails: in `Ramp::start`, start from the
+/// interrupted move's target (`self.from = self.target`) → frame 150 reads
+/// near 1. In `Ramp::start`, keep the interrupted ramp's shape (`self.shape`
+/// not set) → the linear ramp at 150 follows `PowerIn(2)`.
+#[test]
+fn an_interrupted_shaped_ramp_hands_over_on_the_frame() {
+    const TOL: f64 = 1e-5;
+    let key = ParamKey::<Hz>::CUTOFF;
+    let shaped = vec![
+        (
+            100,
+            ParamRamp::new(key, Hz(1.0), Samples(100)).with_shape(SegmentShape::PowerIn(2.0)),
+        ),
+        (150, ParamRamp::new(key, Hz(0.0), Samples(10))),
+        (
+            300,
+            ParamRamp::new(key, Hz(2.0), Samples(100)).with_shape(SegmentShape::PowerOut(2.0)),
+        ),
+        (
+            500,
+            ParamRamp::new(key, Hz(0.0), Samples(20)).with_shape(SegmentShape::PowerInOut(2.0)),
+        ),
+    ];
+    let segs = vec![(
+        340,
+        ParamSegment::new(key, Hz(4.0), Hz(6.0), Samples(1000), SegmentShape::Linear),
+    )];
+    for blocks in segment_schedules(600) {
+        let out = render_moves(Vec::new(), shaped.clone(), segs.clone(), &blocks);
+        let ctx = format!("blocks {:?}…", &blocks[..blocks.len().min(4)]);
+        let near = |f: usize, w: f64| {
+            assert!(
+                (f64::from(out[f]) - w).abs() <= TOL,
+                "{ctx}: frame {f}: {} vs {w}",
+                out[f]
+            );
+        };
+        // Frame 149 is 50 of 100 steps along `PowerIn(2)`: 0.25.
+        near(149, 0.25);
+        // The linear ramp at 150 takes a tenth of the way to 0 per frame.
+        near(150, 0.25 * 0.9);
+        near(154, 0.25 * 0.5);
+        assert_eq!(out[159], 0.0, "{ctx}: the linear ramp lands");
+        // `PowerOut(2)` from 0, 40 of 100 steps in at 339, then the segment
+        // jumps to its own value on its frame.
+        near(339, 2.0 * (1.0 - 0.6f64.powi(2)));
+        near(340, 4.0 + 2.0 / 1000.0);
+        // The shaped ramp at 500 starts where the segment stood (frame 499:
+        // 160 of 1000 along 4 → 6), an S-curve to 0.
+        let from = 4.0 + 2.0 * 160.0 / 1000.0;
+        near(499, from);
+        near(500, from + (0.0 - from) * 2.0 * (1.0f64 / 20.0).powi(2));
+        near(509, from * 0.5);
+        assert_eq!(out[519], 0.0, "{ctx}: the S-curve lands");
+    }
+}
+
 /// A param's range clamps a segment's value when the port reads it, and
 /// never rewrites the segment: narrowed mid-segment, the port sits inside
 /// the range; widened again, it is back on the curve where the segment has
@@ -1404,6 +1547,7 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
         Unforkable(Ramps {
             plan: Vec::new(),
             segs: vec![(0, seg)],
+            shaped: Vec::new(),
         }),
     );
     let at = param(PROBE, UnitParam::Cutoff);
@@ -1590,6 +1734,7 @@ fn a_segment_replaces_the_base() {
         Unforkable(Ramps {
             plan: Vec::new(),
             segs: vec![(10, seg)],
+            shaped: Vec::new(),
         }),
     );
     ed.spec_mut()
@@ -1882,6 +2027,7 @@ fn a_shrinking_range_rewrites_neither_the_base_nor_a_ramp() {
         Unforkable(Ramps {
             plan: vec![(0, UnitParam::Cutoff, TARGET, LEN)],
             segs: Vec::new(),
+            shaped: Vec::new(),
         }),
     );
     let at = param(PROBE, UnitParam::Cutoff);
@@ -1956,6 +2102,8 @@ struct Gen {
     /// Per ramp source: the curve segments it sends as well (every shape,
     /// some resumed part-way), interleaved with its ramps.
     segs: Vec<Vec<(u64, ParamSegment)>>,
+    /// Per ramp source: shaped ramps it sends as well (every shape).
+    shaped: Vec<Vec<(u64, ParamRamp)>>,
     /// Per probe: the latency of the sibling on its audio input (0: none).
     probes: Vec<usize>,
     /// `(probe, param, source, range)` connections, applied at step `when`
@@ -2039,6 +2187,19 @@ fn gen_segment() -> impl Strategy<Value = (u64, ParamSegment)> {
         })
 }
 
+/// One generated shaped ramp: its frame and the ramp (every shape).
+fn gen_shaped_ramp() -> impl Strategy<Value = (u64, ParamRamp)> {
+    (0u64..500, 0usize..2, -3.0f32..3.0, 0usize..60, any::<u8>()).prop_map(
+        |(at, p, target, len, k)| {
+            let ramp = match PARAMS[p] {
+                UnitParam::Q => ParamRamp::new(ParamKey::<Q>::Q, Q(target), Samples(len)),
+                _ => ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(target), Samples(len)),
+            };
+            (at, ramp.with_shape(gen_shape(k)))
+        },
+    )
+}
+
 fn gen() -> impl Strategy<Value = Gen> {
     (1usize..=3, 0usize..=2, 1usize..=3, 1usize..=6).prop_flat_map(|(ns, nr, np, steps)| {
         let signals = prop::collection::vec(1u64..10_000, ns);
@@ -2051,6 +2212,7 @@ fn gen() -> impl Strategy<Value = Gen> {
             nr,
         );
         let segs = prop::collection::vec(prop::collection::vec(gen_segment(), 0..4), nr);
+        let shaped = prop::collection::vec(prop::collection::vec(gen_shaped_ramp(), 0..4), nr);
         let probes = prop::collection::vec(prop_oneof![Just(0usize), 1usize..200], np);
         let edge = (
             0..np,
@@ -2073,7 +2235,7 @@ fn gen() -> impl Strategy<Value = Gen> {
             });
         (
             signals,
-            (ramps, segs),
+            (ramps, segs, shaped),
             probes,
             prop::collection::vec(edge, 0..8),
             prop::collection::vec((0..steps, 0..np, 0usize..2, -1.0f32..1.0), 0..4),
@@ -2094,11 +2256,22 @@ fn gen() -> impl Strategy<Value = Gen> {
             ),
         )
             .prop_map(
-                |(signals, (ramps, segs), probes, edges, moves, regens, lags, blocks, ranges)| {
+                |(
+                    signals,
+                    (ramps, segs, shaped),
+                    probes,
+                    edges,
+                    moves,
+                    regens,
+                    lags,
+                    blocks,
+                    ranges,
+                )| {
                     Gen {
                         signals,
                         ramps,
                         segs,
+                        shaped,
                         probes,
                         edges,
                         moves,
@@ -2141,12 +2314,14 @@ fn run_differential(g: &Gen) {
     for (i, plan) in g.ramps.iter().enumerate() {
         let k = NodeKey(200 + i as u64);
         let segs = g.segs[i].clone();
+        let shaped = g.shaped[i].clone();
         ed.insert(
             k,
             "ramps",
             Unforkable(Ramps {
                 plan: plan.clone(),
                 segs: segs.clone(),
+                shaped: shaped.clone(),
             }),
         );
         fresh.insert(
@@ -2154,6 +2329,7 @@ fn run_differential(g: &Gen) {
             Box::new(Ramps {
                 plan: plan.clone(),
                 segs,
+                shaped,
             }),
         );
     }
@@ -2278,8 +2454,9 @@ proptest! {
 
     /// The executor's fused param step and the reference's own derivation
     /// agree bit for bit on random driven graphs — per-frame step sources,
-    /// ramp sources and curve segments (every shape, some resumed part-way,
-    /// interrupting each other and ramps; one source per port, replacing
+    /// ramp sources, shaped ramps and curve segments (every shape, some
+    /// segments resumed part-way, interrupting each other and ramps; one
+    /// source per port, replacing
     /// its base, and replaced by the next one connected there), ranges,
     /// PDC-delayed sources, connections made and broken mid-stream
     /// (declicks), base moves, latency changes (param delays appearing,
@@ -2292,7 +2469,8 @@ proptest! {
     /// regenerated probe's param state; in the reference, declick a port's
     /// first block; in the executor, ignore the live range (clamp to the
     /// unbounded range); in the reference, read the base before an event
-    /// source's first event as 0. Leaving a param source out of the node's
+    /// source's first event as 0; in the reference, evaluate every ramp as
+    /// `Linear`. Leaving a param source out of the node's
     /// arrival does not diverge (the reference reads the compiler's
     /// arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins it.
     #[test]

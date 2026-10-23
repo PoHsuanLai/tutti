@@ -51,6 +51,32 @@ workspace's `[workspace.dependencies]` rev), where `CurveType::Bezier` runs
 from its start value: two revs are two disjoint `CurveType`s, and a
 mismatch surfaces as `expected CurveType, found CurveType`.
 
+### Changed — one random LFO: `LfoNode` runs `tutti-mod`'s `Wave`, and its random sequence changes
+
+The random LFO existed twice and the two produced different sequences:
+`tutti-nodes`' `LfoNode` stepped a sequential xorshift (`RandomState`) on
+each phase wrap it saw, while a control lane's `Wave::raw_at` hashed the
+cycle index. `LfoNode` is now `ModulatorNode<tutti_mod::Wave>` and evaluates
+`Wave::raw_at`, so the value at a clock position is a pure function of that
+position: a beat-synced random LFO replays after a seek, a fork replays it,
+and a beat-synced node and a control lane of the same shape, seed and span
+give one sequence. A free-running (Hz) node evaluates the same wave at the
+same frequency, but on its own clock: it runs from its insert and does not
+restart at play, where a lane's `Hz` clock is the graph's play clock.
+
+**`LfoNode`'s `Random` and `RandomSmooth` output changes.** A project or
+golden render that recorded the old xorshift sequence will differ; the
+deterministic shapes are unchanged (to float rounding: the free-running
+clock now accumulates in `f64`, unwrapped, so it no longer drifts by
+`f32` rounding over a long run).
+
+| Removed / changed | Migration |
+|---|---|
+| `tutti_nodes::RandomState` | gone: nothing threads state. The random step at cycle `n` is `Wave::Shape { shape: LfoShape::Random, seed }.raw_at(n, false)` |
+| `tutti_nodes::SampleHold` | `LfoNode::new(LfoShape::Random)` (or `Wave::Shape { shape: LfoShape::Random, seed }` as the modulator) |
+| `tutti_nodes::Lfo` (shape and a second, baked depth) | `tutti_nodes::Wave` (re-exported `tutti_mod::Wave`); `LfoNode`'s depth is its one depth (`with_depth`, `set_depth`, the `Depth` port) |
+| `LfoNode = ModulatorNode<Lfo>` | `LfoNode = ModulatorNode<Wave>`; `LfoNode::with_seed(u64)` sets a random shape's seed, and `LfoNode::from(tutti_mod::Lfo)` builds the node for a control-rate LFO's declaration (shape, seed, rate, phase) |
+| `Modulator { type State; fn value(&self, State, Phase) -> (State, f32); fn fill(.., State, Phase, ..) -> State }` | `Modulator { fn value(&self, cycles: f64) -> f32; fn fill(&self, cycles: f64, PhaseIncrement, &mut [f32]) -> f64 }`: the position is unwrapped cycles, the integer part the cycle index |
 ### Changed — the binaural panner convolves with its own code, 2.4–5x faster
 
 `HrtfBinauralNode` no longer uses the `hrtf` crate. Its replacement in

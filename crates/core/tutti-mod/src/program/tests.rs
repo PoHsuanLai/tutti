@@ -465,6 +465,38 @@ fn random_waves_replay_by_cycle() {
     assert!((0..20).any(|n| s.raw_at(f64::from(n), false) != w.raw_at(f64::from(n), false)));
 }
 
+/// The random steps cover `[-1, 1]` evenly: over 4 096 cycles, under two
+/// seeds and on both sides of cycle zero, every value is in range, both ends
+/// are reached to within 1%, and each eighth of the range holds at least
+/// three quarters of its fair share (512).
+///
+/// Mutation (run): the hash scaled to `[0, 1)` (`* 2.0 - 1.0` dropped) →
+/// nothing below zero → fails. Mutation (run): the index ignored (`n`
+/// replaced by 0 in `hash_cycle`) → one value → fails.
+#[test]
+fn random_steps_cover_the_range() {
+    for seed in [0, 7] {
+        let w = Wave::Shape {
+            shape: LfoShape::Random,
+            seed,
+        };
+        let mut buckets = [0u32; 8];
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for n in -2048..2048 {
+            let v = w.raw_at(f64::from(n) + 0.5, false);
+            assert!((-1.0..=1.0).contains(&v), "seed {seed} cycle {n}: {v}");
+            lo = lo.min(v);
+            hi = hi.max(v);
+            buckets[(((v + 1.0) * 4.0) as usize).min(7)] += 1;
+        }
+        assert!(lo < -0.99 && hi > 0.99, "seed {seed}: [{lo}, {hi}]");
+        assert!(
+            buckets.iter().all(|&b| b >= 384),
+            "seed {seed}: {buckets:?}"
+        );
+    }
+}
+
 /// A drawn period: its points' values on their positions, its pieces along
 /// their curves, the last piece wrapping to the next period's first point,
 /// and a curved bipolar layer's zero crossings as corners.

@@ -1,7 +1,7 @@
 //! Direct tests of HRIR selection and interpolation in the binaural panner.
 //!
-//! `src/hrtf/panner.rs` has no unit tests of its own: the node tests in
-//! `src/hrtf/node.rs` only prove the frame bridge emits audio. This file
+//! The node tests in `src/hrtf/node.rs` pin latency, blend and reset; the
+//! analytic render properties are in `tests/hrtf_render.rs`. This file
 //! drives [`HrtfBinauralNode`] with a synthetic HRIR sphere whose left/right
 //! impulse responses encode a **known** interaural time difference and level
 //! difference as a function of azimuth, then recovers the interpolated IR by
@@ -25,13 +25,11 @@
 //!
 //! # How the IR is read
 //!
-//! Output lags one HRTF frame (`INTERPOLATION_STEPS * BLOCK_LEN` in
-//! `panner.rs`). `reset` seats the de-zipper on the commanded bearing but
-//! rewinds `prev_dir` to front, so the first processed frame still cross-fades
-//! from centre; two silent frames are drained before the impulse. The node
-//! averages its stereo input; `[1, 1]` is the conventional impulse and, with
-//! this sphere, recovers the encoded IR at unity gain (FFT normalisation
-//! cancels the ½-fold).
+//! `reset` seats the de-zipper and the filter on the commanded bearing, so
+//! the first step already renders there. The impulse goes in after one
+//! silent step, and the IR is read from the output at the node's declared
+//! latency after it. The node averages its stereo input; `[1, 1]` is the
+//! conventional impulse and recovers the encoded IR at unity gain.
 
 use approx::assert_abs_diff_eq;
 use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
@@ -41,8 +39,9 @@ use tutti_spatial::HrtfBinauralNode;
 
 const SAMPLE_RATE: u32 = 44_100;
 const IR_LEN: usize = 64;
-/// `INTERPOLATION_STEPS * BLOCK_LEN` in `panner.rs`. Output lags by one frame.
-const FRAME_LEN: usize = 4 * 128;
+/// The panner's convolution step (`STEP` in `panner.rs`): silence fed
+/// before the impulse, so it lands mid-stream rather than on frame 0.
+const STEP: usize = 128;
 /// Max |ITD| in samples, at azimuth ±90°.
 const ITD_K: f32 = 6.0;
 const ILD: f32 = 0.5;
@@ -160,42 +159,42 @@ fn make_node() -> HrtfBinauralNode {
     prepared(node, RATE, 64)
 }
 
-/// One block of one frame, written to `out`.
-fn tick(node: &mut HrtfBinauralNode, input: [f32; 2], out: &mut [f32; 2]) {
-    let rendered = drive(node, RATE, &[&input[..1], &input[1..]], &[]);
-    *out = [rendered[0][0], rendered[1][0]];
+/// Recover the stereo IR at a settled bearing: render `lead` silent frames,
+/// a `[1, 1]` impulse, then silence, and read `len` frames from the declared
+/// latency after the impulse. Reuses `node` so a sweep does not rebuild the
+/// sphere on every step. Blocks of 64 frames, the hot path.
+fn ir_of(
+    node: &mut HrtfBinauralNode,
+    azimuth: Azimuth,
+    elevation: Elevation,
+    len: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    node.set_position(azimuth, elevation);
+    Node::reset(node);
+    let latency = node.shape().latency.samples().get();
+    let lead = STEP + 17;
+    let total = lead + latency + len;
+    let mut input = vec![0.0f32; total];
+    input[lead] = 1.0;
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for chunk in input.chunks(64) {
+        let out = drive(node, RATE, &[chunk, chunk], &[]);
+        left.extend_from_slice(&out[0]);
+        right.extend_from_slice(&out[1]);
+    }
+    let from = lead + latency;
+    (
+        left[from..from + len].to_vec(),
+        right[from..from + len].to_vec(),
+    )
 }
 
-/// Recover the stereo IR at a settled bearing. Reuses `node` so a sweep does
-/// not rebuild the sphere on every step.
 fn ir_at(
     node: &mut HrtfBinauralNode,
     azimuth: Azimuth,
     elevation: Elevation,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.set_position(azimuth, elevation);
-    Node::reset(node);
-    let mut out = [0.0f32; 2];
-    // Two silent frames: the first still cross-fades from front (`prev_dir`
-    // resets to forward); the second is the settled direction.
-    for _ in 0..(FRAME_LEN * 2) {
-        tick(node, [0.0, 0.0], &mut out);
-    }
-    tick(node, [1.0, 1.0], &mut out);
-    for _ in 1..FRAME_LEN {
-        tick(node, [0.0, 0.0], &mut out);
-    }
-    // Last tick rendered the impulse frame and returned IR[0].
-    let mut left = Vec::with_capacity(IR_LEN);
-    let mut right = Vec::with_capacity(IR_LEN);
-    left.push(out[0]);
-    right.push(out[1]);
-    for _ in 1..IR_LEN {
-        tick(node, [0.0, 0.0], &mut out);
-        left.push(out[0]);
-        right.push(out[1]);
-    }
-    (left, right)
+    ir_of(node, azimuth, elevation, IR_LEN)
 }
 
 fn peak_index(ir: &[f32]) -> Samples {
@@ -477,5 +476,88 @@ fn azimuth_sweep_is_continuous_and_energy_bounded() {
         "worst 1deg jump: {worst_jump:.4} at {worst_jump_at}deg \
          (bound {jump_bound:.4}, neighbour {neighbour_diff:.4}); \
          energy [{min_energy:.3}, {max_energy:.3}]"
+    );
+}
+
+/// A direction change crossfades: the output moves from one filter to the
+/// next with no sample-to-sample jump.
+///
+/// With a constant input of 1 and a full input history, each filter's output
+/// is a constant, the sum of its taps (`S`), and a step that changes filter
+/// ramps linearly from the old sum to the new over its `STEP` frames. Any
+/// filter's sum is a convex blend of the vertices' sums, so one frame can
+/// move by at most `(max S - min S) / STEP` for that ear, whatever path the
+/// de-zipper takes. Switching filters at a step boundary instead would jump
+/// by the whole change of a step (a few hundredths here).
+///
+/// The test also checks the source got where it was sent, so a renderer
+/// that never moved cannot pass.
+///
+/// Mutation (run): `t = 1.0` in `render_step`'s crossfade (a hard switch at
+/// each step) → the left ear jumps by 0.092 against a bound of 0.017.
+#[test]
+fn a_direction_change_crossfades_without_a_jump() {
+    let mut node = make_node();
+    node.set_position(Azimuth::FRONT, Elevation::LEVEL);
+    Node::reset(&mut node);
+    let ones = vec![1.0f32; 64];
+    // Fill the history with the constant.
+    for _ in 0..8 {
+        drive(&mut node, RATE, &[&ones, &ones], &[]);
+    }
+
+    let sums: Vec<(f32, f32)> = equator_azimuths()
+        .into_iter()
+        .map(Some)
+        .chain([None])
+        .map(|az| {
+            let (l, r) = encode_hrir(az);
+            (l.iter().sum(), r.iter().sum())
+        })
+        .collect();
+    let range = |ear: fn(&(f32, f32)) -> f32| {
+        let (lo, hi) = sums
+            .iter()
+            .map(ear)
+            .fold((f32::MAX, f32::MIN), |(lo, hi), s| (lo.min(s), hi.max(s)));
+        hi - lo
+    };
+    // Round-off allowance: the FFT pair's error on a unit constant.
+    let bound = [range(|s| s.0), range(|s| s.1)].map(|r| r / STEP as f32 + 1e-5);
+
+    let target = Azimuth(170.0);
+    node.set_position(target, Elevation::LEVEL);
+    let (mut l, mut r) = (Vec::new(), Vec::new());
+    // Half a second: ten time constants of the 50 ms glide.
+    for _ in 0..(SAMPLE_RATE as usize / 2 / 64) {
+        let out = drive(&mut node, RATE, &[&ones, &ones], &[]);
+        l.extend_from_slice(&out[0]);
+        r.extend_from_slice(&out[1]);
+    }
+    for (ear, out) in [(0, &l), (1, &r)] {
+        let jump = out
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            jump <= bound[ear],
+            "ear {ear}: a frame moved by {jump}, more than the crossfade's bound {}",
+            bound[ear]
+        );
+    }
+    // It arrived: the last frame is the settled filter's constant, which an
+    // impulse at the target reads as the IR's sum.
+    let (il, ir) = ir_at(&mut node, target, Elevation::LEVEL);
+    let (sl, sr): (f32, f32) = (il.iter().sum(), ir.iter().sum());
+    let (end_l, end_r) = (l[l.len() - 1], r[r.len() - 1]);
+    assert!(
+        (end_l - sl).abs() < 1e-3 && (end_r - sr).abs() < 1e-3,
+        "the source did not arrive: ends at ({end_l}, {end_r}), the target renders ({sl}, {sr})"
+    );
+    // The left ear carries the front/back marker, so it moves the most.
+    let front_l = sums[0].0;
+    assert!(
+        (end_l - front_l).abs() > 1.0,
+        "the left ear never left straight ahead's {front_l}"
     );
 }

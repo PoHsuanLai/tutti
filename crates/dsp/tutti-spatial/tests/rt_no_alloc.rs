@@ -144,7 +144,43 @@ fn hrtf_binaural_process_is_allocation_free() {
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
     node.set_position(30.0, 0.0);
-    // Warm up past a full HRTF frame so the FFT-convolution path fires and any
-    // lazy buffer growth has already happened before the assertion window.
-    gate(node, 64);
+    // Three blocks: past the first step's latency, so the gate sees signal.
+    // Nothing grows lazily, so nothing needs to warm before the window.
+    gate(node, 3);
+}
+
+/// The moving path: a new bearing every block keeps the de-zipper in flight,
+/// so every step renders through two filters and crossfades, and the face
+/// lookup misses its hint and scans. Allocation-free from the first block
+/// after insertion.
+///
+/// Mutation (run): collecting the crossfade's old-filter product into a
+/// fresh `Vec` in `render_step` → fails on the first moving step.
+#[cfg(feature = "hrtf")]
+#[test]
+fn hrtf_binaural_moving_source_is_allocation_free() {
+    use tutti_spatial::HrtfBinauralNode;
+
+    let bytes = synthetic_hrir_sphere(48_000, 64);
+    let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
+    let (mut rig, controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    for c in rig.inputs_mut() {
+        c.fill(0.5);
+    }
+    let mut bearing = 0.0f32;
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            bearing = if bearing > 170.0 {
+                -170.0
+            } else {
+                bearing + 37.0
+            };
+            controls.set_position(bearing, 20.0);
+            rig.block();
+        }
+    });
+    assert!(
+        rig.output(0).iter().any(|s| s.abs() > 1e-6),
+        "the node rendered silence; the gate walked no DSP"
+    );
 }

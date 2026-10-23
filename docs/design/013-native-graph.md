@@ -705,7 +705,7 @@ that the running plan holds the edit.
   undelayed dry half fails every path) and `DelayLineNode` (a 500 ms
   echo declares no latency and its dry half leaves on the excitation's
   frame) in `tutti-nodes`; `HrtfBinauralNode` on each ear
-  (`FRAME_LEN - 1` = 511) in `tutti-spatial`. None of those rows failed
+  (one convolution step, 128 frames) in `tutti-spatial`. None of those rows failed
   (they first ran through the deleted `Legacy` adapter): the
   three misreported latencies were already fixed on main, and the rows now
   hold them.
@@ -3485,7 +3485,7 @@ Decisions:
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
    | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |
    | `PolySynth`, saw, every voice held | 18–21 at 8 lanes, 65 at 8 × 4 unison, 74 at 32 | `Moderate` to 16 lanes, `Heavy` past |
-   | `HrtfBinauralNode` (a four-vertex sphere of 128-tap HRIRs; real ones are longer) | 32 on average, in bursts each 512 frames | `Heavy` (the exception below) |
+   | `HrtfBinauralNode` (a 162-vertex sphere; the `hrtf_binaural` bench, on a 4-core container, not against the references) | 3.6 still and 6.5 moving with 128-tap HRIRs, 14 and 23 with 512 taps, in bursts each 128 frames | `Heavy` (the exception below) |
    | `SoundFontUnit` | 76 at one note, 140 at eight | `Heavy` |
    | `VoicePool` | 13 per plain voice (82 at eight); a stretched voice alone 288 | `Heavy` |
    | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
@@ -3505,13 +3505,13 @@ Decisions:
    frame-major kernel it replaced measured 2.5–4.7 the same way. Each
    block also pays about 120 ns fixed, against a gain's 100.
 
-   **One exception to the nearest-class rule: HRTF.** Its 32 ns average
-   is under the 45 boundary, but the frame bridge does all of a 512-frame
-   frame's FFT work in the one block that completes it. At 64-frame blocks
-   that block carries about 8 × 32 ns per frame and channel, and the
-   schedule decides per plan, for every block, so it must price the worst
-   block rather than the mean. With real (longer) HRIRs the burst grows
-   again.
+   **One exception to the nearest-class rule: HRTF.** Its average is
+   under the 45 boundary, but the renderer does all of a 128-frame
+   step's FFT work in the one block that completes it. At 64-frame blocks
+   that block carries twice the mean, about 46 ns per frame and channel
+   for a moving source with 512-tap HRIRs, and the schedule decides per
+   plan, for every block, so it must price the worst block rather than
+   the mean. Longer HRIRs, or smaller blocks, raise the burst again.
 
    Two classes are derived from the node, not fixed per type: a
    `VoiceNode` is `Heavy` when it holds a stretch filter (built with the

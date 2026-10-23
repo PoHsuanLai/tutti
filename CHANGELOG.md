@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the binaural panner convolves with its own code, 2.4–5x faster
+
+`HrtfBinauralNode` no longer uses the `hrtf` crate. Its replacement in
+`tutti-spatial` reads the same HRIR sphere bytes and keeps the same
+behaviour (barycentric blending across the sphere face a direction crosses,
+the 50 ms de-zipper), and fixes what the crate could not:
+
+- **Two FFTs a step where it did four**, at a power-of-two length. Both
+  ears' responses are packed into one complex spectrum per vertex, so one
+  forward FFT of the input and one inverse FFT render both ears. A moving
+  source adds one inverse FFT (the crossfade below). The `hrtf_binaural`
+  bench (64-frame blocks, a 162-vertex sphere, 4-core container): 1.9 →
+  0.46 µs a block still and 2.1 → 0.83 µs moving with 128-tap HRIRs, 9.0
+  → 1.75 µs and 9.3 → 2.9 µs with 512 taps.
+- **A direction change crossfades.** Each 128-frame step whose filter
+  differs from the last renders through both and crossfades linearly
+  across the step; the crate switched filters at each 128-frame boundary,
+  which clicked on fast motion.
+- **Nothing on the audio thread can panic.** The crate's face lookup
+  `unwrap`ped on the audio thread, so a sphere that does not enclose the
+  listener panicked there. A direction no face covers now takes the nearest
+  vertex. Every index, length and value is checked when the node is built.
+- **Clones and forks share the parsed sphere** and its prepared spectra
+  (`Arc`), instead of copying the dataset bytes and reparsing them.
+- **Rendering allocates nothing from the first block.** The crate grew its
+  overlap buffers on the first frame for any HRIR length other than 129.
+- **The commanded position is stored once**, in the controls' cells, and
+  read once a block; the renderer kept a second copy synced each block.
+
+**Bits change** for every render through the node, and these change too:
+
+| Was | Now |
+|---|---|
+| latency 511 frames (one 512-frame frame less one) | 128 frames (one convolution step). PDC picks the new figure up from the shape; nothing to migrate unless you hard-coded 511 |
+| tail `FRAME_LEN + 128` = 640 frames | the latency plus the response length less one, at the prepared rate |
+| a sphere resampled to another rate kept its taps' scale, so its level changed with the rate (+0.7 dB at 48 kHz from a 44.1 kHz set) | resampled by a windowed sinc with taps scaled by `from / to`, which keeps the frequency response |
+| after `reset`, the first frame crossfaded in from straight ahead | `reset` seats the filter on the commanded position |
+| `HrtfBinauralError::Sphere(String)` | structured variants: `NotASphere`, `Truncated { needed, found }`, `Header(&str)`, `FaceIndex { face, vertex, vertices }`, `Vertex { vertex }`. **Migration:** a `match` on `Sphere(_)` matches the error as a whole instead |
+| the magic check accepted any bytes whose first four were not all wrong | the bytes must start with `HRIR` |
+| `tutti-spatial`'s `hrtf` feature pulled `hrtf` (and through it `rubato` 0.14 and `byteorder`) | it pulls `rustfft` |
+
 ### Fixed — a SysEx longer than one UMP packet reaches plugins whole
 
 A SysEx7 message spanning several UMP packets (any message over six bytes)

@@ -23,14 +23,16 @@ channel-order conventions in `layout`.
 [vbap](https://crates.io/crates/vbap), with presets for 2/4/6/8/12 channels
 (stereo, quad, 5.1, 7.1, 7.1.4). It takes **two inputs**, not one: a mono source
 presents the same sample on both ports. `HrtfBinauralNode` renders to headphones
-by FFT convolution against a measured HRIR sphere, using the
-[hrtf](https://crates.io/crates/hrtf) crate; the dataset is supplied by the caller
-as bytes. `build_vbap_mix` assembles the whole `sources → panners → sum` graph in
+by FFT convolution against a measured HRIR sphere (the format
+`hrir_sphere_builder` writes), blending the responses across the sphere face
+the source's direction crosses; the dataset is supplied by the caller as bytes.
+Its output lags its input by one 128-frame convolution step, declared to PDC. `build_vbap_mix` assembles the whole `sources → panners → sum` graph in
 one call, including LFE bass management; `vbap_mix_parts` returns the same mix
 as owned nodes and edges for a graph built another way.
 
 Position changes are de-zippered by a one-pole smoother (50 ms), so a moving
-source does not click. Controls are lock-free and may be changed while the
+source does not click; the binaural panner also crossfades each step of the
+glide from one filter to the next. Controls are lock-free and may be changed while the
 node renders.
 
 ## Scope
@@ -119,7 +121,7 @@ bearing wraps, the height clamps.
 ## `reset` clears time, not placement
 
 Both panners' `Node::reset` drops the de-zipper ramp (and, for the binaural
-one, the frame bridge and convolution tails) and **keeps** position, spread,
+one, the input history and the step in flight) and **keeps** position, spread,
 width and blend: those are caller-set configuration. It also seats the ramp on
 the commanded position, so the first block after a reset already renders there
 rather than gliding in from front-centre. A fork (an offline export) is reset
@@ -136,7 +138,7 @@ changes and loading an HRIR dataset allocate and belong on the control thread.
 `default = []`.
 
 - `hrtf` — real HRTF binaural rendering (`HrtfBinauralNode`), by FFT convolution
-  against a measured HRIR sphere. Pulls the `hrtf` crate.
+  against a measured HRIR sphere. Pulls `rustfft`.
 
 `tutti-spatial` depends on `tutti-nodes` for its mixing primitives. The
 `tutti` crate re-exports it as `tutti::spatial` behind its `spatial` feature,

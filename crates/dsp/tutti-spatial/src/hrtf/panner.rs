@@ -1,492 +1,422 @@
-//! Real HRTF binaural rendering backed by the `hrtf` crate.
+//! The binaural convolver: overlap-save FFT convolution against the HRIR
+//! blended for the source's direction.
 //!
-//! FFT convolution against a measured HRIR sphere: real spectral cues, with
-//! front/back and elevation disambiguation a bare Woodworth ITD/ILD
-//! approximation cannot give.
+//! ## Steps
 //!
-//! ## The block-size bridge
+//! Input accumulates into steps of [`STEP`] frames. When a step is full it is
+//! rendered in one go and its output drains over the next step, so output
+//! lags input by exactly [`LATENCY`] = `STEP` frames whatever the block size.
+//! A step costs one forward FFT of the input history and one inverse FFT of
+//! the product with the blended spectrum (both ears at once: see
+//! [`HrtfSet`]), plus a second inverse FFT while the direction moves.
 //!
-//! `hrtf::HrtfProcessor` is *block-based* — it consumes exactly
-//! `interpolation_steps * block_len` mono samples per call and accumulates a
-//! stereo result. tutti drives nodes at arbitrary `process` sizes (down to
-//! one frame), so [`FrameBridge`] owns a pre-allocated input accumulator
-//! and a stereo output queue. Input samples fill the accumulator; once a full
-//! HRTF frame is buffered it is processed in one shot and the stereo result is
-//! drained sample-by-sample. All buffers are allocated up front and only
-//! indexed on the audio path, so processing stays allocation-free.
+//! ## Direction changes
 //!
-//! The tradeoff is **latency**: output lags input by [`LATENCY`] samples —
-//! one HRTF frame (`interpolation_steps * block_len`) *less one*, because the
-//! frame is rendered on the push that completes it and its first sample drains
-//! on that same call. The frame is kept small so the delay is a few ms at
-//! typical rates.
-//!
-//! ## Composition
-//!
-//! [`HrtfBinaural`] is a thin orchestrator over four single-purpose parts:
-//! [`HrirSource`] (the dataset + how to build a processor from it),
-//! [`FrameBridge`] (the accumulate-then-drain ring), [`OverlapTails`] (the
-//! per-frame convolution carry-over), and [`PositionSmoother`] (target → a
-//! de-zippered direction vector).
+//! The commanded position is de-zippered by an [`AngleSmoother`] stepped
+//! once per step. Each step's direction is blended across the sphere face it
+//! crosses (barycentric weights over the face's three vertices). When the
+//! blend differs from the previous step's, the step is rendered through both
+//! filters and crossfaded linearly across it, so the output moves from one
+//! filter to the next with no jump. Overlap-save keeps no filter state
+//! between steps (each step's output is computed from the input history
+//! alone), so both renders are exact and the crossfade is all there is to a
+//! change.
 
-use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
-use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
+use std::sync::Arc;
 
+use rustfft::num_complex::Complex32;
+use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, Mix, Radians, SampleRate, Samples};
+
+use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::AngleSmoother;
 
-/// Samples per `hrtf` convolution block. Small: latency is
-/// [`LATENCY`] ≈ `INTERPOLATION_STEPS * BLOCK_LEN` samples (~10ms at 48kHz).
-const BLOCK_LEN: usize = 128;
-/// Cross-fade sub-steps the processor uses to de-click fast source motion.
-const INTERPOLATION_STEPS: usize = 4;
-/// Full mono frame the processor requires per `process_samples` call.
-pub(crate) const FRAME_LEN: usize = INTERPOLATION_STEPS * BLOCK_LEN;
+/// Frames per convolution step, and the crossfade length of a direction
+/// change.
+pub(crate) const STEP: usize = 128;
 
-/// How many samples output lags input — what the node reports to PDC.
+/// How many frames output lags input: what the node reports to PDC.
 ///
-/// `FRAME_LEN - 1`, not `FRAME_LEN`: [`HrtfBinaural::process_sample`] pushes
-/// before it drains, so the push that fills the frame renders it and returns
-/// its sample 0 in the same call. Input sample `k` of a frame therefore leaves
-/// at `frame_start + FRAME_LEN - 1 + k`. Measured, not derived from the doc: the
-/// node's `reported_latency_is_the_measured_impulse_delay` test pins it against
-/// an impulse at several in-frame offsets.
-///
-/// This is the bridge's delay only. The HRIR's own onset (the ear-to-ear delay
-/// that *is* the spatial cue) is signal, like a convolution reverb's pre-delay,
-/// and is not latency.
-pub(crate) const LATENCY: usize = FRAME_LEN - 1;
+/// A sample written at position `k` of a step leaves when position `k` of the
+/// next step is read, `STEP` frames later. The HRIR's own onset (the
+/// ear-to-ear delay that *is* the spatial cue) is signal, like a convolution
+/// reverb's pre-delay, and is not latency.
+pub(crate) const LATENCY: usize = STEP;
 
 /// The error returned when an [`HrtfBinauralNode`](crate::HrtfBinauralNode)
 /// cannot be built from its HRIR data.
 #[derive(Debug, thiserror::Error)]
 pub enum HrtfBinauralError {
-    /// The HRIR bytes could not be parsed as a sphere, or the dataset could not
-    /// be resampled to the requested rate. Carries the underlying crate's
-    /// message, which is not a structured error.
-    #[error("failed to load HRIR sphere: {0}")]
-    Sphere(String),
+    /// The bytes do not start with the `HRIR` magic.
+    #[error("not an HRIR sphere: the bytes do not start with `HRIR`")]
+    NotASphere,
+    /// The bytes end before the sphere their header describes.
+    #[error("HRIR sphere truncated: {needed} bytes needed, {found} present")]
+    Truncated {
+        /// Bytes the header implies (saturating at `usize::MAX`).
+        needed: usize,
+        /// Bytes given.
+        found: usize,
+    },
+    /// The header describes no usable sphere: a zero rate, length or vertex
+    /// count, or an index count that is not a whole number of triangles.
+    #[error("bad HRIR sphere header: {0}")]
+    Header(&'static str),
+    /// A face names a vertex the sphere does not have.
+    #[error("face {face} names vertex {vertex}, but the sphere has {vertices} vertices")]
+    FaceIndex {
+        /// The face's index.
+        face: usize,
+        /// The vertex index it names.
+        vertex: u32,
+        /// How many vertices the sphere has.
+        vertices: usize,
+    },
+    /// A vertex sits at the origin, or holds a non-finite coordinate or
+    /// response sample.
+    #[error("vertex {vertex} is at the origin or holds a non-finite value")]
+    Vertex {
+        /// The vertex's index.
+        vertex: usize,
+    },
 }
 
-/// The HRIR dataset plus the sample rate it is resampled to. Owns the one job
-/// of turning bytes into an [`HrtfProcessor`] (which is itself not `Clone`),
-/// so both construction and a sample-rate change go through [`Self::build`].
-#[derive(Clone)]
-struct HrirSource {
-    bytes: Vec<u8>,
-    /// Stored as `u32` because that is what `HrirSphere::new` takes, and it is
-    /// also the identity this type compares on to decide whether a rate change
-    /// needs a rebuild — an integer equality, not a float one. The typed rate
-    /// is the constructor's argument; this is the ABI form it lands in.
-    sample_rate: u32,
+/// The sphere's rate vocabulary: an integral Hz, as the file stores it. It is
+/// also the identity a rebuild compares on (an integer equality, not a float
+/// one); no HRIR dataset ships at a fractional rate. At least 1 Hz, so a
+/// degenerate rate still prepares a (useless but well-formed) set.
+fn rate_key(sample_rate: SampleRate) -> u32 {
+    sample_rate.get().round().max(1.0) as u32
 }
 
-impl HrirSource {
-    fn new(bytes: &[u8], sample_rate: SampleRate) -> Self {
-        Self {
-            bytes: bytes.to_vec(),
-            sample_rate: Self::rate_key(sample_rate),
-        }
-    }
-
-    /// The rate in the sphere's own vocabulary — also the identity a rebuild
-    /// decision compares on.
-    ///
-    /// The sphere is resampled to an integral device rate; fractional rates are
-    /// not something any HRIR dataset ships at.
-    fn rate_key(sample_rate: SampleRate) -> u32 {
-        sample_rate.get().round() as u32
-    }
-
-    /// The rate this sphere is resampled to, back in the engine's vocabulary.
-    fn sample_rate(&self) -> SampleRate {
-        SampleRate::from(self.sample_rate)
-    }
-
-    fn build(&self) -> Result<HrtfProcessor, HrtfBinauralError> {
-        let sphere = HrirSphere::new(&self.bytes[..], self.sample_rate)
-            .map_err(|e| HrtfBinauralError::Sphere(format!("{e:?}")))?;
-        Ok(HrtfProcessor::new(sphere, INTERPOLATION_STEPS, BLOCK_LEN))
-    }
-}
-
-/// Bridges tutti's arbitrary-size / per-sample calls to `hrtf`'s fixed
-/// [`FRAME_LEN`] blocks: accumulate a full mono frame in, drain the stereo
-/// frame out. Buffers are allocated once; the audio path only indexes them.
-///
-/// Invariants: `in_fill <= FRAME_LEN` and `out_cursor <= out.len()`.
-struct FrameBridge {
-    /// Mono input accumulated toward the next full frame.
-    input: Vec<f32>,
-    in_fill: usize,
-    /// Stereo output of the last processed frame, drained per sample.
-    output: Vec<(f32, f32)>,
-    /// The mono input the frame in `output` was rendered from, drained beside
-    /// it. This is the node's dry path: blending against *this* rather than the
-    /// sample just pushed is what keeps dry and wet aligned, so [`LATENCY`] is
-    /// true of the whole output and not only of its wet half.
-    dry: Vec<f32>,
-    out_cursor: usize,
-}
-
-impl FrameBridge {
-    fn new() -> Self {
-        Self {
-            input: vec![0.0; FRAME_LEN],
-            in_fill: 0,
-            // Pre-fill one frame of silent output so early reads return 0.0
-            // rather than starving; keeps the node causal from sample 0.
-            output: vec![(0.0, 0.0); FRAME_LEN],
-            dry: vec![0.0; FRAME_LEN],
-            out_cursor: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.input.iter_mut().for_each(|s| *s = 0.0);
-        self.in_fill = 0;
-        self.output.iter_mut().for_each(|s| *s = (0.0, 0.0));
-        self.dry.iter_mut().for_each(|s| *s = 0.0);
-        self.out_cursor = 0;
-    }
-
-    /// Push one mono sample; returns `true` when a full frame is ready to
-    /// render (the caller then fills [`Self::output`] and calls [`Self::rewind`]).
-    #[inline]
-    fn push(&mut self, mono: f32) -> bool {
-        self.input[self.in_fill] = mono;
-        self.in_fill += 1;
-        self.in_fill >= FRAME_LEN
-    }
-
-    /// Reset the fill/drain cursors after a frame has been rendered, and make
-    /// the frame just rendered the dry frame. A swap, not a copy: the previous
-    /// dry frame is fully drained by now and the input side is about to be
-    /// overwritten from index 0 anyway.
-    #[inline]
-    fn rewind(&mut self) {
-        core::mem::swap(&mut self.input, &mut self.dry);
-        self.in_fill = 0;
-        self.out_cursor = 0;
-    }
-
-    /// Borrow the full input frame and a freshly-zeroed output frame together
-    /// (a split borrow, so both are live at once). Output is zeroed because
-    /// `hrtf` *accumulates* into it and must start clean.
-    #[inline]
-    fn frames(&mut self) -> (&[f32], &mut [(f32, f32)]) {
-        self.output.iter_mut().for_each(|s| *s = (0.0, 0.0));
-        (&self.input, &mut self.output)
-    }
-
-    /// Drain the next output sample — the dry mono and the wet stereo pair it
-    /// was rendered into — or silence once the frame is spent.
-    #[inline]
-    fn drain(&mut self) -> BridgeSample {
-        let i = self.out_cursor;
-        let out = match (self.dry.get(i), self.output.get(i)) {
-            (Some(&dry), Some(&wet)) => BridgeSample { dry, wet },
-            _ => BridgeSample::SILENT,
-        };
-        if self.out_cursor < self.output.len() {
-            self.out_cursor += 1;
-        }
-        out
-    }
-}
-
-/// One sample out of the [`FrameBridge`]: the wet binaural pair and the dry
-/// mono input it came from, both [`LATENCY`] samples old.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct BridgeSample {
-    pub(crate) dry: f32,
-    pub(crate) wet: (f32, f32),
-}
-
-impl BridgeSample {
-    const SILENT: Self = Self {
-        dry: 0.0,
-        wet: (0.0, 0.0),
-    };
-}
-
-/// The overlap-add carry-over `hrtf` threads between consecutive frames: the
-/// left/right convolution tails plus the direction of the previous frame (so
-/// the processor can cross-fade motion).
-struct OverlapTails {
-    left: Vec<f32>,
-    right: Vec<f32>,
-    prev_dir: Vec3,
-}
-
-impl OverlapTails {
-    fn new() -> Self {
-        Self {
-            left: vec![0.0; BLOCK_LEN],
-            right: vec![0.0; BLOCK_LEN],
-            prev_dir: forward(),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.left.iter_mut().for_each(|s| *s = 0.0);
-        self.right.iter_mut().for_each(|s| *s = 0.0);
-        self.prev_dir = forward();
-    }
-}
-
-/// Turns a target azimuth/elevation (degrees) into a de-zippered direction
-/// vector: one-pole smoothers on each angle, stepped once per rendered frame.
-///
-/// The smoothers are stepped once per frame, so they are built with a
-/// stride of `FRAME_LEN` samples and the 50 ms time constant is 50 ms of
-/// audio. With a stride of one, each step would move the fraction meant for
-/// one sample, and the glide would take `FRAME_LEN` times as long.
-struct PositionSmoother {
-    smoother: AngleSmoother,
-    target_azimuth: Azimuth,
-    target_elevation: Elevation,
-}
-
-impl PositionSmoother {
-    fn new(sample_rate: SampleRate) -> Self {
-        Self {
-            smoother: AngleSmoother::new(sample_rate, Samples(FRAME_LEN)),
-            target_azimuth: Azimuth(0.0),
-            target_elevation: Elevation(0.0),
-        }
-    }
-
-    #[inline]
-    fn aim_at(&mut self, azimuth: Azimuth, elevation: Elevation) {
-        // Normalize on the way in, each coordinate by its own rule: the
-        // bearing wraps onto the circle, the height saturates at the poles.
-        self.target_azimuth = azimuth.wrap();
-        self.target_elevation = Elevation::new_clamped(elevation.get());
-    }
-
-    fn retune(&mut self, sample_rate: SampleRate) {
-        self.smoother.set_sample_rate(sample_rate);
-    }
-
-    /// Drop the in-flight ramp onto the current target, leaving the target —
-    /// which is caller-set — where it is.
-    fn reset_state(&mut self) {
-        self.smoother
-            .reset_to_target(self.target_azimuth, self.target_elevation);
-    }
-
-    /// Advance both smoothers one frame and return the smoothed direction.
-    #[inline]
-    fn step(&mut self) -> Vec3 {
-        let (az, el) = self
-            .smoother
-            .step(self.target_azimuth, self.target_elevation);
-        direction_from_degrees(az, el)
-    }
-}
-
-/// FFT-convolution binaural renderer: a thin orchestrator over the four parts
-/// above. `set_position`/`process_sample` are the audio-path surface.
+/// The streaming convolver for one source.
 pub(crate) struct HrtfBinaural {
-    processor: HrtfProcessor,
-    source: HrirSource,
-    bridge: FrameBridge,
-    tails: OverlapTails,
-    aim: PositionSmoother,
+    sphere: Arc<HrirSphere>,
+    set: Arc<HrtfSet>,
+    /// The input history, `fft_len` frames: the last `fft_len - STEP` frames
+    /// already rendered, then the step being filled.
+    history: Vec<f32>,
+    /// Frames of the current step filled so far, `0..STEP`.
+    fill: usize,
+    /// The last rendered step, drained while the next one fills: the wet
+    /// pair and the mono input it was rendered from (the dry path, equally
+    /// late).
+    wet_left: Vec<f32>,
+    wet_right: Vec<f32>,
+    dry: Vec<f32>,
+    spectrum: Vec<Complex32>,
+    /// The previous filter's product while a direction change crossfades.
+    spectrum_prev: Vec<Complex32>,
+    scratch: Vec<Complex32>,
+    /// The blend the last step ended on.
+    current: Weights,
+    face_hint: usize,
+    aim: AngleSmoother,
 }
 
 impl HrtfBinaural {
+    /// Parses `hrir_bytes` and prepares the sphere at `sample_rate`. Control
+    /// thread.
     pub(crate) fn new(
         hrir_bytes: &[u8],
-        sample_rate: impl Into<SampleRate>,
+        sample_rate: SampleRate,
     ) -> Result<Self, HrtfBinauralError> {
-        let source = HrirSource::new(hrir_bytes, sample_rate.into());
-        let processor = source.build()?;
-        Ok(Self {
-            aim: PositionSmoother::new(source.sample_rate()),
-            processor,
-            source,
-            bridge: FrameBridge::new(),
-            tails: OverlapTails::new(),
-        })
+        let sphere = Arc::new(HrirSphere::parse(hrir_bytes)?);
+        let set = Arc::new(HrtfSet::build(&sphere, rate_key(sample_rate), STEP));
+        Ok(Self::over(
+            sphere,
+            set,
+            AngleSmoother::new(sample_rate, Samples(STEP)),
+        ))
     }
 
-    /// Frames that outlive a silent input.
-    ///
-    /// Two stages hold audio, and both are fixed sizes rather than estimates:
-    /// the [`FrameBridge`] accumulates a whole `FRAME_LEN` frame before it can
-    /// process, and [`OverlapTails`] carries `BLOCK_LEN` samples of convolution
-    /// tail into the next frame. HRTF rendering is FIR convolution against a
-    /// measured HRIR, so as with any FIR the ring-out is exact.
+    /// A renderer over a prepared set, with cleared streaming state, aimed
+    /// wherever `aim` is.
+    fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: AngleSmoother) -> Self {
+        let n = set.fft_len;
+        let zero = Complex32::new(0.0, 0.0);
+        let mut face_hint = 0;
+        let (az, el) = aim.current();
+        let current = set.weights(direction_from_degrees(az, el), &mut face_hint);
+        Self {
+            history: vec![0.0; n],
+            fill: 0,
+            wet_left: vec![0.0; STEP],
+            wet_right: vec![0.0; STEP],
+            dry: vec![0.0; STEP],
+            spectrum: vec![zero; n],
+            spectrum_prev: vec![zero; n],
+            scratch: vec![zero; set.scratch_len],
+            current,
+            face_hint,
+            aim,
+            sphere,
+            set,
+        }
+    }
+
+    /// Frames that outlive a silent input: a sample leaves [`LATENCY`]
+    /// frames after it enters and the response spreads it `ir_len - 1`
+    /// further. Both are fixed sizes, so this is exact.
     pub(crate) fn ring_out(&self) -> usize {
-        FRAME_LEN + BLOCK_LEN
+        LATENCY + self.set.ir_len - 1
     }
 
-    /// Lock-free-ish position update (called from the audio path via the node).
-    #[inline]
-    pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {
-        self.aim.aim_at(azimuth, elevation);
-    }
-
-    /// Rebuilds the HRIR sphere at the new rate and **discards** the streaming
-    /// state: the frame bridge and the overlap tails are zeroed, so a change
-    /// mid-stream drops the convolution tail in flight. It resamples and
-    /// reallocates the whole dataset, which is why it is guarded by the
-    /// unchanged-rate early return above and must never be called on the audio
-    /// path.
-    ///
-    /// The node calls this from `Node::prepare`, which a graph calls again
-    /// whenever the rate *or the maximum block* changes: the unchanged-rate
-    /// early return is what keeps a block-size change from dropping the tail.
-    /// A real rate change rebuilds the processor and resets the streaming
-    /// state; it does not keep the tail.
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        // Resolve to the sphere's own integral vocabulary and compare *before*
-        // building a candidate: `HrirSource::new` copies the HRIR bytes, so
-        // doing it first would clone the dataset on every no-op call.
-        let sample_rate = HrirSource::rate_key(sample_rate.into());
-        if sample_rate == self.source.sample_rate {
+    /// Prepares the sphere at a new rate and clears the streaming state,
+    /// seating the de-zipper on `target`. A no-op at the current rate, so a
+    /// re-prepare for a new block size keeps the tail in flight. Allocates:
+    /// control thread only.
+    pub(crate) fn set_sample_rate(
+        &mut self,
+        sample_rate: SampleRate,
+        target: (Azimuth, Elevation),
+    ) {
+        let rate = rate_key(sample_rate);
+        if rate == self.set.rate {
             return;
         }
-        // Rebuilding is a non-RT reconfigure; resampling the sphere here
-        // rather than on the audio path keeps the callback clean.
-        let candidate = HrirSource::new(&self.source.bytes, SampleRate::from(sample_rate));
-        if let Ok(processor) = candidate.build() {
-            self.aim.retune(candidate.sample_rate());
-            self.processor = processor;
-            self.source = candidate;
-            self.reset_state();
+        let set = HrtfSet::build(&self.sphere, rate, STEP);
+        let mut aim = self.aim.clone();
+        aim.set_sample_rate(sample_rate);
+        aim.reset_to_target(target.0, target.1);
+        *self = Self::over(self.sphere.clone(), Arc::new(set), aim);
+    }
+
+    /// Zero the streaming buffers and seat the de-zipper on `target`, so the
+    /// next step renders there with no crossfade in from elsewhere.
+    pub(crate) fn reset_state(&mut self, target: (Azimuth, Elevation)) {
+        self.history.fill(0.0);
+        self.fill = 0;
+        self.wet_left.fill(0.0);
+        self.wet_right.fill(0.0);
+        self.dry.fill(0.0);
+        self.aim.reset_to_target(target.0, target.1);
+        let (az, el) = self.aim.current();
+        self.current = self
+            .set
+            .weights(direction_from_degrees(az, el), &mut self.face_hint);
+    }
+
+    /// Renders a block: the input pair is folded to mono, and each output is
+    /// `blend` between the delayed dry mono and the binaural pair.
+    /// `target` is the commanded position, read once per block.
+    /// Allocation-free.
+    pub(crate) fn process(
+        &mut self,
+        target: (Azimuth, Elevation),
+        blend: Mix,
+        input: (&[f32], &[f32]),
+        output: (&mut [f32], &mut [f32]),
+    ) {
+        let frames = output.0.len();
+        let start = self.history.len() - STEP;
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(STEP - self.fill);
+            let at = self.fill;
+            let ins = (&input.0[done..done + n], &input.1[done..done + n]);
+            let outs = (&mut output.0[done..done + n], &mut output.1[done..done + n]);
+            let wet = (&self.wet_left[at..at + n], &self.wet_right[at..at + n]);
+            let dry = &self.dry[at..at + n];
+            let fresh = &mut self.history[start + at..start + at + n];
+            for i in 0..n {
+                outs.0[i] = blend.blend(dry[i], wet.0[i]);
+                outs.1[i] = blend.blend(dry[i], wet.1[i]);
+                fresh[i] = fold_frame_to_mono(&[ins.0[i], ins.1[i]]);
+            }
+            self.fill += n;
+            done += n;
+            if self.fill == STEP {
+                self.render_step(target);
+                self.fill = 0;
+            }
         }
     }
 
-    /// Zero the streaming buffers and drop the de-zipper ramp, without
-    /// rebuilding the processor or moving the commanded direction.
-    pub(crate) fn reset_state(&mut self) {
-        self.bridge.reset();
-        self.tails.reset();
-        self.aim.reset_state();
-    }
+    /// Convolve the full step into the wet buffers and slide the history.
+    fn render_step(&mut self, target: (Azimuth, Elevation)) {
+        let (az, el) = self.aim.step(target.0, target.1);
+        let next = self
+            .set
+            .weights(direction_from_degrees(az, el), &mut self.face_hint);
+        let set = &*self.set;
+        let start = set.fft_len - STEP;
+        self.dry.copy_from_slice(&self.history[start..]);
 
-    /// Push one mono input sample, return the output [`LATENCY`] samples behind
-    /// it: the wet stereo pair and the dry mono it was rendered from.
-    #[inline]
-    pub(crate) fn process_sample(&mut self, mono: f32) -> BridgeSample {
-        if self.bridge.push(mono) {
-            self.render_frame();
-            self.bridge.rewind();
+        for (s, &x) in self.spectrum.iter_mut().zip(&self.history) {
+            *s = Complex32::new(x, 0.0);
         }
-        self.bridge.drain()
-    }
+        set.forward
+            .process_with_scratch(&mut self.spectrum, &mut self.scratch);
 
-    /// Convolve the accumulated frame; result lands in the bridge's output.
-    fn render_frame(&mut self) {
-        // One direction per frame from the smoothed position — `hrtf` takes a
-        // single (prev, new) direction pair per `process_samples` call.
-        let new_dir = self.aim.step();
-        let (source, output) = self.bridge.frames();
-
-        let context = HrtfContext {
-            source,
-            output,
-            new_sample_vector: new_dir,
-            prev_sample_vector: self.tails.prev_dir,
-            prev_left_samples: &mut self.tails.left,
-            prev_right_samples: &mut self.tails.right,
-            new_distance_gain: 1.0,
-            prev_distance_gain: 1.0,
-        };
-        self.processor.process_samples(context);
-        self.tails.prev_dir = new_dir;
+        let [a, b, c] = next.verts.map(|v| set.spectrum(v));
+        let [wa, wb, wc] = next.w;
+        if next == self.current {
+            for (k, s) in self.spectrum.iter_mut().enumerate() {
+                *s *= a[k] * wa + b[k] * wb + c[k] * wc;
+            }
+            set.inverse
+                .process_with_scratch(&mut self.spectrum, &mut self.scratch);
+            let out = &self.spectrum[start..];
+            for ((l, r), y) in self.wet_left.iter_mut().zip(&mut self.wet_right).zip(out) {
+                *l = y.re;
+                *r = y.im;
+            }
+        } else {
+            let [pa, pb, pc] = self.current.verts.map(|v| set.spectrum(v));
+            let [qa, qb, qc] = self.current.w;
+            for (k, (s, p)) in self
+                .spectrum
+                .iter_mut()
+                .zip(&mut self.spectrum_prev)
+                .enumerate()
+            {
+                let x = *s;
+                *p = x * (pa[k] * qa + pb[k] * qb + pc[k] * qc);
+                *s = x * (a[k] * wa + b[k] * wb + c[k] * wc);
+            }
+            set.inverse
+                .process_with_scratch(&mut self.spectrum, &mut self.scratch);
+            set.inverse
+                .process_with_scratch(&mut self.spectrum_prev, &mut self.scratch);
+            let new = &self.spectrum[start..];
+            let old = &self.spectrum_prev[start..];
+            let step = 1.0 / STEP as f32;
+            for (i, ((l, r), (y, z))) in self
+                .wet_left
+                .iter_mut()
+                .zip(&mut self.wet_right)
+                .zip(new.iter().zip(old))
+                .enumerate()
+            {
+                // Reaches the new filter on the step's last frame, so the
+                // next step continues from it.
+                let t = (i + 1) as f32 * step;
+                *l = z.re + (y.re - z.re) * t;
+                *r = z.im + (y.im - z.im) * t;
+            }
+            self.current = next;
+        }
+        self.history.copy_within(STEP.., 0);
     }
 }
 
 impl Clone for HrtfBinaural {
+    /// Shares the parsed sphere and its prepared set (nothing is reparsed or
+    /// re-planned), with cleared streaming state and the same de-zipper
+    /// position. Allocates the streaming buffers: control thread.
     fn clone(&self) -> Self {
-        // Rebuild from the retained source; a fresh renderer with cleared
-        // streaming state is the correct clone (state is per-voice, not shared).
-        Self::new(&self.source.bytes, self.source.sample_rate())
-            .expect("HRIR bytes validated at first construction")
+        Self::over(self.sphere.clone(), self.set.clone(), self.aim.clone())
     }
 }
 
-/// Unit vector straight ahead (listener forward), in the sphere's right-handed
-/// frame: +x right, +y up, +z toward the listener's back.
-#[inline]
-fn forward() -> Vec3 {
-    Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: -1.0,
-    }
-}
-
-/// Map azimuth/elevation in degrees to a unit direction `Vec3`.
+/// Map azimuth/elevation in degrees to a unit direction, in the sphere's
+/// right-handed frame: +x right, +y up, +z toward the listener's back.
 ///
 /// Convention (matching the rest of `spatial`): azimuth 0 = front, +90 = left;
-/// elevation 0 = ear level, +90 = up. Right-handed output frame.
-///
-/// Takes the typed angles rather than two bare `f32`s: they were adjacent and
-/// same-typed, so transposing them compiled and put the source somewhere else
-/// on the sphere. `From<Azimuth>`/`From<Elevation> for Radians` are the
-/// sanctioned converters, which is what `f32::to_radians` was duplicating here.
+/// elevation 0 = ear level, +90 = up. Takes the typed angles rather than two
+/// bare `f32`s: transposed, they would compile and put the source somewhere
+/// else on the sphere.
 #[inline]
-fn direction_from_degrees(azimuth: Azimuth, elevation: Elevation) -> Vec3 {
+fn direction_from_degrees(azimuth: Azimuth, elevation: Elevation) -> [f32; 3] {
     let az = Radians::from(azimuth);
     let el = Radians::from(elevation);
     let cos_el = el.cos();
-    Vec3 {
-        // +90° azimuth (left) → -x; front (0°) → -z.
-        x: -az.sin() * cos_el,
-        y: el.sin(),
-        z: -az.cos() * cos_el,
-    }
+    // +90° azimuth (left) → -x; front (0°) → -z.
+    [-az.sin() * cos_el, el.sin(), -az.cos() * cos_el]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Remaining fraction of a step from 0 to 90 degrees of height after
-    /// `frames` rendered frames.
-    fn remaining_after(smoother: &mut PositionSmoother, frames: usize) -> f32 {
-        smoother.aim_at(Azimuth::FRONT, Elevation(0.0));
-        smoother.reset_state();
-        smoother.aim_at(Azimuth::FRONT, Elevation(90.0));
-        for _ in 0..frames {
-            smoother.step();
+    /// A tetrahedron with delta responses: the smallest sphere that parses.
+    fn tetrahedron(rate: u32) -> Vec<u8> {
+        let mut b = b"HRIR".to_vec();
+        for word in [rate, 4, 4, 12] {
+            b.extend_from_slice(&word.to_le_bytes());
         }
-        let (_, el) = smoother.smoother.current();
+        for idx in [0u32, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2] {
+            b.extend_from_slice(&idx.to_le_bytes());
+        }
+        for v in [
+            [1.0f32, 1.0, 1.0],
+            [-1.0, -1.0, 1.0],
+            [-1.0, 1.0, -1.0],
+            [1.0, -1.0, -1.0],
+        ] {
+            for x in v
+                .into_iter()
+                .chain([1.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0])
+            {
+                b.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// A clone (the fork's template, and every fork) shares the parsed
+    /// sphere and its prepared spectra; only a new rate prepares a new set,
+    /// and a re-prepare at the same rate keeps the one it has.
+    ///
+    /// Mutations (run): `Clone` preparing its own set from the shared sphere
+    /// → the first set `ptr_eq` fails; dropping `set_sample_rate`'s
+    /// same-rate early return → the same-rate assertion fails.
+    #[test]
+    fn a_clone_shares_the_sphere_and_its_spectra() {
+        let rate = SampleRate(48_000.0);
+        let front = (Azimuth::FRONT, Elevation::LEVEL);
+        let mut a = HrtfBinaural::new(&tetrahedron(48_000), rate).expect("parses");
+        let b = a.clone();
+        assert!(Arc::ptr_eq(&a.sphere, &b.sphere));
+        assert!(Arc::ptr_eq(&a.set, &b.set));
+
+        a.set_sample_rate(rate, front);
+        assert!(Arc::ptr_eq(&a.set, &b.set), "a same-rate prepare rebuilt");
+        a.set_sample_rate(SampleRate(96_000.0), front);
+        assert!(Arc::ptr_eq(&a.sphere, &b.sphere));
+        assert!(!Arc::ptr_eq(&a.set, &b.set));
+        assert_eq!(a.set.rate, 96_000);
+    }
+
+    /// Remaining fraction of a step from 0 to 90 degrees of height after
+    /// `steps` rendered steps.
+    fn remaining_after(aim: &mut AngleSmoother, steps: usize) -> f32 {
+        aim.reset_to_target(Azimuth::FRONT, Elevation(0.0));
+        for _ in 0..steps {
+            aim.step(Azimuth::FRONT, Elevation(90.0));
+        }
+        let (_, el) = aim.current();
         (90.0 - el.get()) / 90.0
     }
 
     /// The de-zipper's time constant is 50 ms of audio: after 50 ms of
-    /// frames a step has `e^-1` of its distance left. At 51.2 kHz, 50 ms is
-    /// 2560 samples, exactly five 512-sample frames; at 102.4 kHz (after a
-    /// retune) it is ten.
+    /// steps a move has `e^-1` of its distance left. At 51.2 kHz, 50 ms is
+    /// 2560 samples, exactly twenty 128-sample steps; at 102.4 kHz (after a
+    /// retune) it is forty.
     ///
     /// Mutations (run):
     /// - build with a stride of one (`AngleSmoother::new(sample_rate,
-    ///   Samples(1))`) → after five frames almost all of the step is left
-    ///   (`e^-(5/2560)`, about 0.998) and the assertion fails.
+    ///   Samples(1))`) → after twenty steps almost all of the move is left
+    ///   and the assertion fails.
     /// - drop `self.stride` from `ExponentialSmoother::set_sample_rate`
     ///   (retune with a stride of one) → the 102.4 kHz half fails.
     #[test]
     fn the_glide_has_a_50_ms_time_constant_in_audio_time() {
-        assert_eq!(FRAME_LEN, 512, "the rates below assume 512-sample frames");
+        assert_eq!(STEP, 128, "the rates below assume 128-sample steps");
         let e_inv = (-1.0f32).exp();
 
-        let mut s = PositionSmoother::new(SampleRate(51_200.0));
-        let left = remaining_after(&mut s, 5);
+        let mut aim = AngleSmoother::new(SampleRate(51_200.0), Samples(STEP));
+        let left = remaining_after(&mut aim, 20);
         assert!(
             (left - e_inv).abs() < 1e-4,
-            "after 50 ms at 51.2 kHz {left} of the step is left, expected e^-1 = {e_inv}"
+            "after 50 ms at 51.2 kHz {left} of the move is left, expected e^-1 = {e_inv}"
         );
 
-        s.retune(SampleRate(102_400.0));
-        let left = remaining_after(&mut s, 10);
+        aim.set_sample_rate(SampleRate(102_400.0));
+        let left = remaining_after(&mut aim, 40);
         assert!(
             (left - e_inv).abs() < 1e-4,
-            "after 50 ms at 102.4 kHz {left} of the step is left, expected e^-1 = {e_inv}"
+            "after 50 ms at 102.4 kHz {left} of the move is left, expected e^-1 = {e_inv}"
         );
     }
 }

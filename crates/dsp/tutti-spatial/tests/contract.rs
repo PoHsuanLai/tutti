@@ -1,28 +1,27 @@
 //! The graph's sample-accuracy contract for the binaural
 //! renderer, a graph node, on the audio-impulse path: an impulse at
-//! frame `F` leaves at exactly `F + arrival + FRAME_LEN - 1` on every path
+//! frame `F` leaves at exactly `F + arrival + STEP` on every path
 //! (direct, behind PDC, across a recompile, across ragged blocks — see
 //! `tutti_graph::contract`).
 //!
 //! A node that declared no latency while every sample left a frame late would
 //! leave PDC blind to the delay, and binaural tracks would arrive late against
 //! the mix. The row pins
-//! the declared figure (511 at the panner's 4 × 128 frame) *and* that the
-//! output leaves on it, wherever in the HRTF frame and in the graph's block
-//! the impulse falls.
+//! the declared figure (128, the panner's convolution step) *and* that the
+//! output leaves on it, wherever in the step and in the graph's block the
+//! impulse falls.
 //!
 //! Mutations (run): declare `Latency::ZERO` in `shape` → every
-//! path fails (declared 0, output 511 late). Set `LATENCY` to `FRAME_LEN` →
-//! every path fails (declared one frame late).
+//! path fails (declared 0, output 128 late). Set `LATENCY` to `STEP - 1` →
+//! every path fails (declared one frame early).
 
 use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::contract_tests;
 use tutti_spatial::HrtfBinauralNode;
 
-/// The panner's frame (`INTERPOLATION_STEPS * BLOCK_LEN` in `panner.rs`),
-/// less the one sample its push-then-drain saves.
-const LATENCY: usize = 4 * 128 - 1;
+/// The panner's convolution step (`STEP` in `panner.rs`).
+const LATENCY: usize = 128;
 
 /// A minimal, format-valid HRIR sphere: a tetrahedron of 4 vertices with
 /// unit-delta HRIRs (left an identity delta, right scaled per vertex), at

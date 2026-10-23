@@ -7,9 +7,10 @@
 //! modulator itself knows nothing of transport or audio.
 //!
 //! [`LfoNode`] is `ModulatorNode<Wave>` — the concrete, monomorphized LFO node
-//! the graph builds, over the same [`Wave`] a control lane evaluates, so the
-//! two tiers produce one sequence (a random wave included). Because `M` is a
-//! concrete type param (not `Box<dyn>`), `value()` inlines.
+//! the graph builds, over the same [`Wave`] a control lane evaluates, so a
+//! beat-synced node and lane produce one sequence (a random wave included).
+//! A free-running node runs from its insert and does not restart at play.
+//! Because `M` is a concrete type param (not `Box<dyn>`), `value()` inlines.
 //!
 //! `LfoShape` and `Wave` are re-exported so `use tutti_nodes::LfoShape`
 //! resolves here.
@@ -162,8 +163,10 @@ impl ModulatorNode<Wave> {
 }
 
 /// The node for a control-rate LFO's declaration: the same shape, seed,
-/// clock and phase, so it produces the values a control lane evaluates
-/// from that [`tutti_mod::Lfo`], at audio rate.
+/// rate and phase. Beat-synced, it produces the values a control lane
+/// evaluates from that [`tutti_mod::Lfo`], at audio rate. Free-running
+/// (`Hz`), it runs at that frequency from its insert and does not restart
+/// at play, where the lane's `Hz` clock is the graph's play clock.
 impl From<tutti_mod::Lfo> for LfoNode {
     fn from(lfo: tutti_mod::Lfo) -> Self {
         let node = Self::new(lfo.shape)
@@ -407,7 +410,10 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
         match self.mode {
             LfoMode::FreeRunning => {
                 let freq = driven_rate.unwrap_or_else(|| self.frequency.load().get());
-                let step = f64::from(PhaseIncrement::per_sample(Hz(freq), self.sample_rate).get());
+                // In f64, not `PhaseIncrement::per_sample` (f32): the step
+                // is accumulated for as long as the node runs, and an
+                // f32-rounded step drifts the cycle index off the frame.
+                let step = f64::from(freq) / self.sample_rate.get();
 
                 for o in &mut out[..size] {
                     *o = self.evaluate(self.position, phase_offset, depth);
@@ -873,10 +879,14 @@ mod tests {
     }
 
     /// The node built from a control-rate [`tutti_mod::Lfo`] evaluates the
-    /// same wave on the same clock: seed, span and phase carried over.
+    /// same wave: seed, phase and rate carried over. Beat-synced, on the same
+    /// clock (the beat); free-running, at the same frequency on the node's
+    /// own clock, which counts from its insert (frame 0 here).
     ///
     /// Mutation (run): `From` dropping `with_phase_offset` → reads the wave
     /// a quarter cycle early → fails. Dropping `with_seed` → fails.
+    /// Dropping `with_frequency` in the `Hz` arm → runs at the default 1 Hz
+    /// → the free-running case fails.
     #[test]
     fn a_node_from_a_control_lfo_reads_its_wave() {
         let lfo = tutti_mod::Lfo::new(LfoShape::RandomSmooth)
@@ -891,6 +901,13 @@ mod tests {
             let got = render_at(LfoNode::from(lfo), stopped_at(beat), 1)[0];
             let want = wave.raw_at(beat / 2.0 + 0.25, false);
             assert!((got - want).abs() < 1e-6, "beat {beat}: {got} vs {want}");
+        }
+        // 187.5 Hz at 48 kHz: 256 frames a cycle.
+        let free = render(LfoNode::from(lfo.hz(Hz(187.5))), 48_000.0, 2048);
+        for i in [0, 100, 256, 777, 2047] {
+            let want = wave.raw_at(i as f64 / 256.0 + 0.25, false);
+            let got = free[i];
+            assert!((got - want).abs() < 1e-6, "frame {i}: {got} vs {want}");
         }
     }
 

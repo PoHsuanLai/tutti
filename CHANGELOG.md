@@ -15,8 +15,10 @@ each phase wrap it saw, while a control lane's `Wave::raw_at` hashed the
 cycle index. `LfoNode` is now `ModulatorNode<tutti_mod::Wave>` and evaluates
 `Wave::raw_at`, so the value at a clock position is a pure function of that
 position: a beat-synced random LFO replays after a seek, a fork replays it,
-and the audio-rate node and a control lane of the same shape and seed give
-one sequence.
+and a beat-synced node and a control lane of the same shape, seed and span
+give one sequence. A free-running (Hz) node evaluates the same wave at the
+same frequency, but on its own clock: it runs from its insert and does not
+restart at play, where a lane's `Hz` clock is the graph's play clock.
 
 **`LfoNode`'s `Random` and `RandomSmooth` output changes.** A project or
 golden render that recorded the old xorshift sequence will differ; the

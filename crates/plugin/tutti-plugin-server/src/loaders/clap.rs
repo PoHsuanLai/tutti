@@ -2,10 +2,10 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized,
-    NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
-    PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
+    BusChannels, ClapFeature, ContentScale, EditorPresence, EditorSize, Features, LoadedPlugin,
+    Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio,
+    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
+    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -654,10 +654,14 @@ impl PluginParams for ClapInstance {
 }
 
 impl PluginEditorHost for ClapInstance {
-    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
+    fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
-        clap_dispatch_mut!(self, i => i.open_editor(handle))
+        clap_dispatch_mut!(self, i => i.open_editor(handle, scale))
             .map(|s| EditorSize {
                 width: s.width,
                 height: s.height,
@@ -758,10 +762,9 @@ fn convert_transport(
         44100.0
     };
     // CLAP's `song_pos_seconds`. Prefer the wire's own seconds field (the
-    // producer derives it from beats + tempo); only fall back to a sample-count
-    // division when the host actually reports a project-time sample clock,
-    // which none currently does — dividing an unconditional `samples` by the
-    // rate would yield a constant 0.
+    // plugin node's project time, `transport_source::ProjectTime`); fall back
+    // to the project-time sample position for a producer that reports only
+    // that.
     let seconds = if transport.position.seconds != 0.0 {
         transport.position.seconds
     } else {
@@ -2006,7 +2009,7 @@ mod tests {
         assert!(!parent.is_null(), "Failed to create NSView");
 
         let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(handle);
+        let result = instance.open_editor(handle, ContentScale::IDENTITY);
         assert!(
             result.is_ok(),
             "open_editor should succeed: {:?}",
@@ -2042,7 +2045,7 @@ mod tests {
         assert!(!parent.is_null());
 
         let handle = unsafe { tutti_plugin::server::WindowHandle::from_u64(parent as u64) };
-        let result = instance.open_editor(handle);
+        let result = instance.open_editor(handle, ContentScale::IDENTITY);
         assert!(
             result.is_ok(),
             "Surge XT open_editor should succeed: {:?}",

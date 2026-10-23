@@ -23,7 +23,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{ClapLoaded, EditorSize, WindowHandle};
+use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, WindowHandle};
 use tutti_clap_test_plugin::{
     GuiCapture, GuiMode, GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE,
     GUI_CALL_CREATE, GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
@@ -245,7 +245,9 @@ fn has_editor_false_for_floating_only_plugin() {
     );
 
     assert!(
-        loaded.open_editor(fake_parent()).is_err(),
+        loaded
+            .open_editor(fake_parent(), ContentScale::IDENTITY)
+            .is_err(),
         "and open_editor confirms it — the two must not disagree"
     );
 
@@ -367,7 +369,7 @@ fn open_editor_runs_the_spec_embed_sequence() {
     let mut loaded = probe.load();
 
     let size = loaded
-        .open_editor(fake_parent())
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
         .expect("embeddable plugin opens");
 
     assert_eq!(
@@ -407,11 +409,13 @@ fn open_editor_runs_the_spec_embed_sequence() {
 /// backing-scale factor into every coordinate, so a host that sets it too
 /// applies the factor twice and a Retina editor opens at 2×.
 ///
-/// The host passes a hardcoded 1.0 today, which is why this never showed as a
-/// visible bug — 1.0 is the identity. That makes the *call* the thing to
-/// assert, not the size it produced: pinning the size would pass against the
-/// bug and only start failing once real DPI is wired, which is the moment this
-/// test exists to protect.
+/// On a physical-pixel api the factor the host passes to `open_editor` is
+/// the one the plugin is sent: 2.0 here, so a placeholder 1.0 (the identity,
+/// which hid both bugs) cannot pass.
+///
+/// Mutation: pass `1.0` to `embed_editor_sequence` instead of
+/// `scale.get()` → the probe reads 1.0 on x11/win32 → fails. Mutation: drop
+/// the `api_uses_logical_pixels` gate → macOS reads 2.0 (run on macOS only).
 ///
 /// Read `last_scale` alongside the call log, because they answer different
 /// questions: `last_scale` is 0.0 both when the host correctly skipped the call
@@ -423,7 +427,7 @@ fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
     let mut loaded = probe.load();
 
     loaded
-        .open_editor(fake_parent())
+        .open_editor(fake_parent(), ContentScale::new(2.0).expect("a scale"))
         .expect("embeddable plugin opens");
 
     let cap = probe.capture();
@@ -453,9 +457,8 @@ fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
              display"
         );
         assert_eq!(
-            cap.last_scale, 1.0,
-            "the host passes a scale; 1.0 is today's placeholder until the \
-             frontend carries a real backing-scale factor"
+            cap.last_scale, 2.0,
+            "the plugin is sent the scale the host opened the editor at"
         );
     }
 }
@@ -470,7 +473,7 @@ fn open_editor_refuses_floating_only_before_create() {
     let mut loaded = probe.load();
 
     let err = loaded
-        .open_editor(fake_parent())
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
         .expect_err("floating-only plugin cannot be embedded");
     let msg = format!("{err}");
     assert!(
@@ -498,7 +501,9 @@ fn close_editor_destroys_exactly_once() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
     assert_eq!(probe.capture().create_balance, 1, "one live editor");
 
     loaded.close_editor();
@@ -544,7 +549,9 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
 
     // Driven out-of-band — *between* the host's calls. The during-`show` case
     // is its own test below.
@@ -601,7 +608,9 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
     // Latched, not run by hand: the probe fires it from `show`, the last call
     // of the host's embed sequence.
     probe.command(GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW);
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
 
     assert!(
         loaded.poll_gui_closed(),
@@ -647,7 +656,9 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
     let mut loaded = probe.load();
 
     probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
 
     assert!(loaded.poll_gui_closed(), "the host records the callback");
     let after_open = probe.capture();
@@ -684,7 +695,9 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
 fn editor_capabilities_reports_plugin_hints() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
     gui_reset();
 
     let caps = loaded.editor_capabilities();
@@ -744,7 +757,9 @@ fn editor_capabilities_touches_nothing_before_create() {
 fn resize_editor_forwards_the_adjusted_size() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
     gui_reset();
 
     // Deliberately off-grid in both axes.
@@ -796,7 +811,9 @@ fn resize_editor_forwards_the_adjusted_size() {
 fn resize_editor_fails_when_plugin_cannot_adjust() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
     gui_reset();
 
     let err = loaded
@@ -835,7 +852,9 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
 fn editor_capabilities_reports_fixed_size_as_not_resizable() {
     let probe = Probe::acquire(GuiMode::FixedSize);
     let mut loaded = probe.load();
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
 
     let caps = loaded.editor_capabilities();
 
@@ -869,7 +888,9 @@ fn poll_editor_resize_request_delivers_once() {
     // The probe calls host.gui.request_resize from inside `show`, i.e. while
     // the host still considers the editor live.
     probe.command(GUI_CMD_REQUEST_RESIZE);
-    loaded.open_editor(fake_parent()).expect("opens");
+    loaded
+        .open_editor(fake_parent(), ContentScale::IDENTITY)
+        .expect("opens");
 
     assert_eq!(
         loaded.poll_editor_resize_request(),
@@ -901,7 +922,9 @@ fn drop_destroys_a_live_editor() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     {
         let mut loaded = probe.load();
-        loaded.open_editor(fake_parent()).expect("opens");
+        loaded
+            .open_editor(fake_parent(), ContentScale::IDENTITY)
+            .expect("opens");
         assert_eq!(probe.capture().create_balance, 1, "one live editor");
     }
 

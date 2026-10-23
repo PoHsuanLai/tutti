@@ -10,10 +10,10 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
-    PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
-    WindowHandle,
+    ContentScale, EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps,
+    ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets,
+    PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
+    RenderMode, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -937,12 +937,19 @@ impl PluginParams for AuInstance {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginEditorHost for AuInstance {
-    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
+    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
+    /// logical pixels and reads its backing scale itself.
+    fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        _scale: ContentScale,
+    ) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
-        // No size to offer: `PluginEditorHost::open_editor` carries only a
-        // parent handle, so the host has not told this layer how big the
-        // window is. 800×600 is the request; the plugin is free to ignore it,
-        // and `AuInstance::open_editor` returns the size the view actually made.
+        // No size to offer: `PluginEditorHost::open_editor` carries a parent
+        // handle and a scale but no size, so the host has not told this layer
+        // how big the window is. 800×600 is the request; the plugin is free to
+        // ignore it, and `AuInstance::open_editor` returns the size the view
+        // actually made.
         let preferred = EditorSize {
             width: 800,
             height: 600,

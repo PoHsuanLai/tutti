@@ -606,7 +606,9 @@ place that loses precision to be written out explicitly:
      `Transport`'s position is private: `Transport::new(.., beat, ..)` (a
      bare beat, the block start its own origin, for a transport built by
      hand) or `Transport::counted(.., SegmentOrigin, ..)` (the host's
-     origin beat, the frames rolled since, and **their rate**). `beat()`
+     origin beat, the frames rolled since, and **their rate**). A bare
+     beat walked on to a frame stays bare to `Transport::origin`: its
+     frame count is the walk's, not the host's. `beat()`
      derives a counted position's beat, so the beat and its frame count are
      one value, and the origin's rate travels with it (`Transport::clock`
      debug-asserts it matches the block's). `EnvClock` and
@@ -4515,7 +4517,9 @@ vocoder retirement channel for voices the pool removes.
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
   an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
   `recording` flag (additive; tutti-core's engine sets it) because the ABIs
-  carry it. The continuous-sample counter is `Env`'s frame.
+  carry it. The continuous-sample counter is the node's own `SteadyTime`
+  (frames rendered; `Env`'s frame restarts at a re-prepare). Project-time
+  samples, the host clock and the MIDI clock: [below](#plugin-transport-project-time-host-clock-midi-clock-editor-scale).
 - **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
   `f64` conversion stays in the batcher. The chunk (and so the declared
   pipeline latency) is the device's callback (`Prepare::quantum`, which
@@ -6492,6 +6496,127 @@ counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
 meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
+
+#### Plugin transport: project time, host clock, MIDI clock; editor scale
+
+The snapshot a plugin chunk is handed (`transport_source::from_cx`)
+fills three fields the ABIs ask for beyond the beat and the tempo:
+
+- **Project time** (`TransportPosition::samples`: VST2 `samplePos`, VST3
+  `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
+  the same time over the rate) is node state, `ProjectTime`, in `Bound` and
+  in the VST2 `TransportFeed`. Each chunk's read rolls it by the frames
+  the transport played since the last read, holds it while stopped, and
+  re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
+  only at a jump: the first read, a seek (stopped or playing), a loop
+  wrap, a rate change. A tempo change, a stop, a start where the
+  transport stood and a loop edit are not jumps. Several of these can
+  land between two chunk reads; the engine's transport tells them apart
+  by its segment (`Transport::origin`, `SegmentOrigin`): the host's
+  `FrameClock` starts a new segment at a seek, a tempo or rate change
+  and a loop wrap, never at a stop or a start (a stopped clock only stops
+  counting) or a loop edit. `played_between` reads it: the same origin
+  beat and tempo means the transport only played, and the frame counts'
+  difference is the frames played, exactly; a new segment at another
+  tempo is a tempo change, counted as the frames from the earlier read up
+  to the new segment's first beat at the earlier tempo plus the new
+  segment's own; a new segment at the same tempo is a seek or a wrap, a
+  re-seat. Either count must fit the frames between the reads. This is
+  exact for one tempo change between two reads; with more (a ramp's steps
+  inside one chunk) the frames at the tempos between are counted at the
+  earlier one, and a tempo that changes and comes back inside one chunk
+  re-seats. A ramp that speeds up plays those beats in fewer frames than
+  that count, which can pass the gap (beat 100, 120 → 130 BPM at frame 16
+  → 140 at frame 32: 17 frames counted for 16), so the count is capped at
+  the room the gap leaves whenever the beats moved fit it at the faster
+  of the two tempos; only beats that do not fit even then re-seat. The
+  faster of the two is the fastest only for a ramp that moves one way: a
+  tempo that rises above both reads' tempos and falls again inside one
+  chunk can play the beats in fewer frames than that, and re-seats, as a
+  tempo that changes and comes back does. A non-finite beat re-seats. A seek
+  and a tempo change inside one chunk cannot be told from a tempo change
+  alone, and the cap widens that: a seek forward whose beats fit the gap
+  at the faster tempo is counted as played. A wrap or a seek that lands back on a
+  segment's first beat starts a segment with the same origin; counting
+  it reads what a re-seat would, since project time has been the beat's
+  time from that segment's own wrap or seek on, except for a segment
+  begun at a tempo change and sought back to within one chunk.
+  A transport built by hand (`Transport::new`, which no engine block
+  carries) has no segment, and neither has its walk to a frame
+  (`Env::transport_at`, the transport history): a frame count from a
+  bare beat is not the host's, so `Transport::origin` is `None` for it.
+  It is read by the playhead's rule instead
+  (`continued_without_origin`): `tutti_graph::Transport::continuity`
+  judged against the earlier read's loop, a stop or a start between the
+  reads counted by `played_across` as the beats moved forward at a tempo
+  the transport played at, no more than the gap, and a move out past an
+  unchanged loop's end without wrapping re-seated, whichever way the
+  rule reads it. Counting frames played at one tempo at another there is
+  off by `n · |1 − r|`, `r` the ratio of the two, up to the whole gap at
+  a 2 : 1 change. A start where the
+  transport stopped continues the time the plugin was told there, as a
+  tempo map would: after a tempo change the beat's time at the tempo in
+  force is not the time played, so a re-seat at a stop, or at every
+  chunk, would make `samplePos` jump back. The free-running counter is
+  `SteadyTime`.
+- **Host clock** (`TransportInfo::system_time_ns`: VST2 `nanoSeconds`, VST3
+  `systemTime`) is a `HostClock` reading of the OS's monotonic clock, the
+  one plugins compare it against: `CLOCK_MONOTONIC`; on macOS
+  `CLOCK_UPTIME_RAW`, which is `mach_absolute_time` in nanoseconds, Core
+  Audio's host time; on Windows QPC scaled to nanoseconds. It is read once
+  per block in `process` and placed at each chunk's frame
+  (`block_ns + frames · 1e9 / rate`). The OS's epoch needs no origin handed
+  around, so plugins in the host and in every plugin server agree. An
+  offline fork has no host clock (`Bound::host_clock` and the VST2
+  `TransportFeed`'s are `None` in it), so an export is not told a wall time
+  it does not run in.
+- **MIDI clock** (VST2 `samplesToNextClock`, VST3 `samplesToNextClock`) is
+  `TransportInfo::samples_to_nearest_clock`: the signed distance to the
+  nearest 24-ppq clock, as both SDKs define it ("can be negative"), at the
+  snapshot's own rate in both formats.
+
+Each format sets a field's validity flag (`kVstNanosValid`,
+`kVstClockValid`; `kSystemTimeValid`, `kClockValid`) only when the value is
+present. The out-of-process snapshot crosses the wire with
+`system_time_ns`, so `ProcessAudioData`'s encoding grew by that field.
+
+**Editor scale.** `open_editor` takes a `ContentScale` (finite, positive)
+at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
+and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
+window system (Win32, X11); a macOS view is in points, so neither is sent
+there. bevy-tutti passes the editor window's `scale_factor` and sizes that
+window to the editor. Its sizes stay in the plugin's units
+(`PluginEditorOpen::last_applied`); a `WindowResized` (logical) is
+converted to them before it is compared, exactly, against the host's own
+echo or sent. Every size written back to the window is written in the
+plugin's units: as the physical size off macOS, in points on macOS. Bevy's
+logical setter truncates `w · scale` to whole pixels, so at a fractional
+scale (1.75: 227, 234, 241, … in 200..3000) a logical write landed a
+pixel short, the echo no longer matched `last_applied`, and the window
+and the plugin could trade resizes every frame. The physical write makes
+the echo exact, so the comparison needs no ±1 px allowance, which would
+only swallow a real one-pixel drag.
+The scale is sent once, at open: a window moved to a display of another
+scale keeps the editor at the scale it opened at until it is reopened
+(nothing carries a scale to an open editor).
+
+Pinned analytically: `transport_source`'s unit tests (project time
+rolling through a tempo change, held through a stop and a start where it
+stood, through a stop and a start inside one chunk and a loop edit,
+counted exactly across a tempo change between two reads, and re-seated at
+a seek (stopped or playing, inside one chunk too, and forward with a
+tempo change), a loop wrap, a rate change and a start elsewhere, each on
+the engine's own `FrameClock`; a tempo ramp that speeds up inside one
+chunk counted, not re-seated; a NaN beat at a tempo change re-seated;
+a hand-built transport read by the
+playhead's rule through `Cx::transport_at`, and `tutti-graph`'s
+`a_bare_beats_walk_has_no_origin`; the host clock at a chunk's frame, and on the OS clock),
+`Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
+bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
+`the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,
+the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a
+fork, which is told project time and the clock but no host time
+(`vst2_in_process_fork.rs`), and `clap_gui_lifecycle.rs`'s scale.
 
 #### VST3 note expression from MIDI 2
 

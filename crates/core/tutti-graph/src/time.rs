@@ -29,7 +29,9 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{first_frame_at_or_after, At, Frame, Latency, Samples, FRAME_TOLERANCE};
+use tutti_types::{
+    first_frame_at_or_after, At, Frame, Latency, SampleRate, Samples, FRAME_TOLERANCE,
+};
 
 use crate::node::{Env, Transport, TransportChanges};
 
@@ -211,6 +213,56 @@ impl Playhead {
         match env.transport.looping {
             Some(l) if self.wrapped => beat >= anchor.min(l.start.get()) && beat < now,
             _ => beat >= anchor && beat < now,
+        }
+    }
+}
+
+/// How a transport read some frames after another got there; see
+/// [`Transport::continuity`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Continuity {
+    /// By continuous playback, without wrapping the loop: the earlier
+    /// transport was playing.
+    Rolled,
+    /// By continuous playback, wrapping the loop at least once.
+    Wrapped,
+    /// Without moving: the earlier transport was stopped, and the later one
+    /// is at its beat (stopped still, or started where it stood).
+    Held,
+    /// Some other way: a seek, a loop edit.
+    Jumped,
+}
+
+impl Transport {
+    /// How `next`, read `frames` after this transport at `rate`, got there.
+    /// It continues this one when the loop is the same and its beat is one
+    /// this one reaches by rolling `frames` at a tempo between its own and
+    /// `next`'s, ± one frame, wrapped by the loop (unmoved when stopped):
+    /// the rule [`Playhead`] tells a run from a jump by, so a tempo change
+    /// (a step or a ramp) rolls on, and a seek or a loop edit jumps.
+    ///
+    /// A stopped transport does not roll: `next` at its beat is
+    /// [`Held`](Continuity::Held), whether `next` is stopped or started
+    /// there, and anywhere else is a jump.
+    pub fn continuity(&self, frames: Samples, rate: SampleRate, next: &Transport) -> Continuity {
+        if self.looping != next.looping {
+            return Continuity::Jumped;
+        }
+        let span = Env {
+            frame: Frame(0),
+            sample_rate: rate,
+            block_len: frames,
+            transport: *self,
+            changes: TransportChanges::NONE,
+            play: crate::play::PlayClock::ZERO,
+        };
+        match span.arrives_at(next.beat().get(), next.tempo.get()) {
+            // Stopped, `arrives_at` reaches only the beat it holds (a loop
+            // narrower than its slack "wraps" there too).
+            Some(_) if !self.playing => Continuity::Held,
+            Some(false) => Continuity::Rolled,
+            Some(true) => Continuity::Wrapped,
+            None => Continuity::Jumped,
         }
     }
 }
@@ -902,6 +954,91 @@ mod tests {
         // A real seek still is one.
         ph.observe(&e(after + 0.5, 240.0));
         assert!(!ph.crossed(1.01) && !ph.crossed(after + 0.2));
+    }
+
+    /// `Transport::continuity` is the playhead's rule between two point
+    /// reads: a tempo step between them rolls, a loop wrap wraps, a seek, a
+    /// loop edit and a jump inside the loop jump. 256 frames at 48 kHz:
+    /// 0.010 666 beat at 120 BPM, 0.013 333 at 150.
+    ///
+    /// Mutation: drop the loop comparison in `continuity` → the loop edit
+    /// (a beat the old loop wraps to, a new loop) reads as wrapped → fails.
+    /// Mutation: map `Some(true)` to `Rolled` → the wrap reads as rolled →
+    /// fails.
+    #[test]
+    fn continuity_tells_a_tempo_change_and_a_wrap_from_a_seek() {
+        let rate = SampleRate(48_000.0);
+        let n = Samples(256);
+        let from = Transport::new(true, Bpm(120.0), Beat(100.0), None);
+        // Stepped to 150 BPM at frame 128: 128 frames at each tempo.
+        let stepped = Transport::new(
+            true,
+            Bpm(150.0),
+            Beat(100.0 + 128.0 / 24_000.0 + 128.0 / 19_200.0),
+            None,
+        );
+        assert_eq!(from.continuity(n, rate, &stepped), Continuity::Rolled);
+        assert_eq!(
+            from.continuity(n, rate, &stepped.at_beat(Beat(64.0))),
+            Continuity::Jumped
+        );
+
+        let l = Some(LoopRange {
+            start: Beat(4.0),
+            end: Beat(4.5),
+        });
+        let near_end = Transport::new(true, Bpm(120.0), Beat(4.495), l);
+        // 0.010 666 beat on from 4.495, wrapped: 4.0 + 0.005 666.
+        let wrapped = near_end.at_beat(Beat(4.0 + 256.0 / 24_000.0 - 0.005));
+        assert_eq!(near_end.continuity(n, rate, &wrapped), Continuity::Wrapped);
+        assert_eq!(
+            near_end.continuity(n, rate, &wrapped.at_beat(Beat(4.25))),
+            Continuity::Jumped
+        );
+        let other_loop = Transport::new(
+            true,
+            Bpm(120.0),
+            wrapped.beat(),
+            Some(LoopRange {
+                start: Beat(4.0),
+                end: Beat(8.0),
+            }),
+        );
+        assert_eq!(
+            near_end.continuity(n, rate, &other_loop),
+            Continuity::Jumped
+        );
+    }
+
+    /// A stopped transport is held, not rolled: unmoved it is `Held`,
+    /// stopped or started where it stood, and anywhere else (a seek while
+    /// stopped, a start elsewhere) a jump. A playing one that stops at the
+    /// read rolled there.
+    ///
+    /// Mutation: drop the `!self.playing` arm in `continuity` → the stopped
+    /// reads are `Rolled` → fails.
+    #[test]
+    fn a_stopped_transport_is_held() {
+        let rate = SampleRate(48_000.0);
+        let n = Samples(256);
+        let stopped = Transport::new(false, Bpm(120.0), Beat(8.0), None);
+        assert_eq!(stopped.continuity(n, rate, &stopped), Continuity::Held);
+        let started = Transport::new(true, Bpm(90.0), Beat(8.0), None);
+        assert_eq!(stopped.continuity(n, rate, &started), Continuity::Held);
+        assert_eq!(
+            stopped.continuity(n, rate, &stopped.at_beat(Beat(8.5))),
+            Continuity::Jumped
+        );
+        // 256 frames at 120 BPM is 0.010 666 beat: a start then would be
+        // there by now, but a stopped transport never rolled.
+        let rolled_on = Transport::new(true, Bpm(120.0), Beat(8.0 + 256.0 / 24_000.0), None);
+        assert_eq!(stopped.continuity(n, rate, &rolled_on), Continuity::Jumped);
+        let playing = Transport::new(true, Bpm(120.0), Beat(8.0), None);
+        let stopped_there = Transport::new(false, Bpm(120.0), rolled_on.beat(), None);
+        assert_eq!(
+            playing.continuity(n, rate, &stopped_there),
+            Continuity::Rolled
+        );
     }
 
     /// A seek out of a loop is a seek, even when the distances line up with

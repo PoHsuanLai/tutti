@@ -267,7 +267,9 @@ impl TransportHistory {
 
 /// `t` rolled `frames` on at `rate` while it plays, wrapping at its loop:
 /// the host's clock ([`Transport::clock`]) advanced and read back. The one
-/// walk [`Env::transport_at`] and the history share.
+/// walk [`Env::transport_at`] and the history share. A counted position
+/// stays counted; a bare beat's walk has no [`Transport::origin`], since
+/// its frame count is the walk's, not the host's.
 pub(crate) fn roll(t: Transport, rate: SampleRate, frames: Samples) -> Transport {
     let (tempo, r) = (t.tempo.get(), rate.get());
     // `is_finite` and `> 0.0` together also refuse a NaN.
@@ -280,7 +282,7 @@ pub(crate) fn roll(t: Transport, rate: SampleRate, frames: Samples) -> Transport
         .looping
         .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
     clock.advance(frames, region);
-    Transport::counted(t.playing, t.tempo, clock.origin(), t.looping).with_recording(t.recording())
+    t.walked_to(clock.origin())
 }
 
 impl Env {
@@ -424,6 +426,28 @@ mod tests {
             let e = &self.blocks[i];
             e.transport_at(e.offset_of(Frame(f)).expect("inside"))
         }
+    }
+
+    /// A walk keeps whose frame count it is: a counted transport walked on
+    /// is the host's count, advanced; a bare beat walked on (even by no
+    /// frames) reaches the same beat as a clock from it, but has no origin,
+    /// so a reader that tells the host's segments apart by origin does not
+    /// take each hand-built block for a new one.
+    ///
+    /// Mutation (run): `Transport::walked_to` keeps `Position::Counted` for
+    /// every position → the bare beat's walk has an origin → fails.
+    #[test]
+    fn a_bare_beats_walk_has_no_origin() {
+        let bare = env(0, 64, rolling(2.0), TransportChanges::NONE);
+        for k in [0, 1, 40] {
+            let t = bare.transport_at(off(k));
+            assert_eq!(t.origin(), None, "offset {k}");
+            assert_eq!(t.beat(), Beat(2.0 + k as f64 / FPB), "offset {k}");
+        }
+        let host = env(0, 64, counted(2.0, None), TransportChanges::NONE);
+        let t = host.transport_at(off(40));
+        let origin = t.origin().expect("still the host's count");
+        assert_eq!((origin.beat, origin.frame), (Beat(2.0), Frame(40)));
     }
 
     /// Inside the block, `transport_before` is `transport_at` of the earlier

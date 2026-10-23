@@ -168,6 +168,13 @@ pub struct Bound {
     /// The free-running sample counter the plugin's transport carries:
     /// frames this node has rendered, monotonic across a re-prepare.
     steady: transport_source::SteadyTime,
+    /// Project time the plugin's transport carries: rolls with playback,
+    /// holds while stopped, re-seated at a jump.
+    project: transport_source::ProjectTime,
+    /// The host's monotonic clock the plugin's transport carries
+    /// (`systemTime`), read once per block. `None` on an offline fork: no
+    /// clock relates to a render that runs at its own speed.
+    host_clock: Option<transport_source::HostClock>,
     /// A reader of the node's meter cell (its controls'
     /// [`PluginMeter::reader`]), registered at bind: the one cell the node reads the project meter from, once per
     /// block. Installing or clearing a meter publishes into it; nothing
@@ -500,6 +507,8 @@ impl PluginClient<Unbound> {
                 pending: BlockPayload::default(),
                 out_events: MidiEventVec::new(),
                 steady: transport_source::SteadyTime::default(),
+                project: transport_source::ProjectTime::default(),
+                host_clock: Some(transport_source::HostClock),
                 meter,
                 default_meter: MeterMap::default(),
                 segments: segment_points::SegmentPoints::default(),

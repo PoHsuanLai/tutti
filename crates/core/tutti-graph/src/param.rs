@@ -269,16 +269,18 @@ pub(crate) struct Curve {
     pub(crate) shape: SegmentShape,
 }
 
-/// One event source's ramp: its value, and the move it is on — a linear
-/// [`ParamRamp`](crate::ParamRamp) from the value it had, or a curve
-/// segment between its own endpoints.
+/// One event source's ramp: its value, and the move it is on — a
+/// [`ParamRamp`](crate::ParamRamp) along its shape from the value it had, or
+/// a curve segment between its own endpoints.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Ramp {
     value: f32,
     from: f32,
     target: f32,
-    /// A linear ramp's length, in frames.
+    /// A ramp's length, in frames.
     len: u32,
+    /// A ramp's shape.
+    shape: SegmentShape,
     /// Frames done: a ramp's steps taken, a segment's frames since its
     /// event's.
     done: u32,
@@ -291,13 +293,14 @@ pub(crate) struct Ramp {
 }
 
 impl Ramp {
-    /// Start a ramp to `target` over `len` frames from this frame on, from
-    /// the value the last frame had. A second ramp on the same frame
-    /// replaces the first, from the same value.
-    fn start(&mut self, target: f32, len: usize) {
+    /// Start a ramp to `target` along `shape` over `len` frames from this
+    /// frame on, from the value the last frame had. A second ramp on the
+    /// same frame replaces the first, from the same value.
+    fn start(&mut self, target: f32, len: usize, shape: SegmentShape) {
         self.from = self.value;
         self.target = target;
         self.len = u32::try_from(len).unwrap_or(u32::MAX);
+        self.shape = shape;
         self.done = 0;
         self.active = true;
         self.curve = None;
@@ -318,8 +321,8 @@ impl Ramp {
     }
 
     /// The value at this frame, after any move started on it. A ramp: its
-    /// `done`-th of `len` steps, the target from its last one (a zero-length
-    /// ramp reaches it on its first frame). A segment: its shape at its
+    /// shape at `done / len` (`done` counting this frame), the target from
+    /// its last step (a zero-length ramp reaches it on its first frame). A segment: its shape at its
     /// progress this frame, the target once it has arrived.
     #[inline]
     fn step(&mut self) -> f32 {
@@ -343,7 +346,10 @@ impl Ramp {
                     self.active = false;
                     self.target
                 } else {
-                    self.from + (self.target - self.from) * (self.done as f32 / self.len as f32)
+                    // `done < len`, so `t` is in `(0, 1)`, where
+                    // `Linear` evaluates to `t` itself.
+                    let t = self.done as f32 / self.len as f32;
+                    self.from + (self.target - self.from) * self.shape.eval(t)
                 };
             }
         }
@@ -371,7 +377,7 @@ pub(crate) fn render_ramps(
                     if !ramp.started {
                         ramp.value = base(i);
                     }
-                    ramp.start(r.raw_target(), r.duration().get());
+                    ramp.start(r.raw_target(), r.duration().get(), r.shape());
                 }
                 EventKind::Segment(s) if s.is_for(want) => {
                     let (from, to, position, length) = s.raw();
@@ -748,6 +754,38 @@ mod tests {
         let mut r = Ramp::default();
         render_ramps(&mut r, &events, UnitParam::Q, &mut out, |_| 0.0);
         assert!(out.iter().all(|&x| x == 0.0));
+    }
+
+    /// A linear ramp renders what the port rendered before ramps had a
+    /// shape, bit for bit: `from + (target - from) · (done / len)`, written
+    /// out here, at every frame of ramps of many lengths and spans.
+    ///
+    /// Mutation (run): `step` taking `t` as `done · (1 / len)` (a reciprocal
+    /// multiply, a different rounding) → some frame differs in its last bit
+    /// → fails.
+    #[test]
+    fn a_linear_ramp_renders_the_unshaped_bits() {
+        for len in [1usize, 2, 3, 7, 10, 64, 97, 1000] {
+            for (from, target) in [(0.0f32, 1.0f32), (0.3, -7.9), (440.0, 1234.5)] {
+                let frames = len + 4;
+                let events = [Event::ramp(
+                    Offset::new(1, Samples(frames)).expect("in block"),
+                    ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(target), Samples(len)),
+                )];
+                let mut r = Ramp::default();
+                let mut out = vec![0.0f32; frames];
+                render_ramps(&mut r, &events, UnitParam::Cutoff, &mut out, |_| from);
+                for (j, &v) in out[1..].iter().enumerate() {
+                    let done = j + 1;
+                    let want = if done >= len {
+                        target
+                    } else {
+                        from + (target - from) * (done as f32 / len as f32)
+                    };
+                    assert_eq!(v.to_bits(), want.to_bits(), "len {len}, frame {j}");
+                }
+            }
+        }
     }
 
     /// A list a node cannot declare is a named error, not a panic.

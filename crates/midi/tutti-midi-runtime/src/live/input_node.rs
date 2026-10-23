@@ -15,6 +15,7 @@
 //!
 //! Its fork is silent: an offline render reads no wire.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_core::{ArcLend, ChannelLayout, Reader};
@@ -24,10 +25,10 @@ use tutti_graph::{
 };
 use tutti_midi_types::mpe::MpeMode;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{Midi1ToMidi2Translator, MidiChannel, MidiIn};
+use tutti_midi_types::{Midi1ToMidi2Translator, MidiChannel, MidiGroup, MidiIn};
 
 use super::order::{in_offset_order, offset_of};
-use crate::outbound::mpe_ingest::MpeIngest;
+use crate::outbound::mpe_ingest::{MpeIngest, Translated};
 
 /// The port that carries events with no channel: after the sixteen channel
 /// ports.
@@ -75,12 +76,19 @@ pub struct MidiInputNode {
     /// The edge this node polls, owned: whatever state a poll keeps (a
     /// hardware drain's scratch, its read of the port set) is the node's.
     input: Option<Box<dyn MidiIn>>,
+    /// What the wire's poll fills.
     scratch: Box<[MidiEvent]>,
+    /// What the block sends: the translated events, which may outnumber the
+    /// polled ones (a member channel's bend range fans out over its zone).
+    out: Box<[MidiEvent]>,
     translator: Midi1ToMidi2Translator,
     mpe: MpeIngest,
     request: Arc<MpeRequest>,
     /// A reader of `request.cell`, registered in [`new`](Self::new).
     mpe_request: Reader<Option<MpeMode>>,
+    /// Translated events a block had no room for in `out`
+    /// ([`MidiInputControls::dropped_events`]).
+    dropped: Arc<AtomicU64>,
 }
 
 /// The MPE mode a host asked for: what the node reads, and the control
@@ -108,9 +116,11 @@ impl MidiInputNode {
             mpe_request: request.cell.reader(),
             input,
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
+            out: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
             request,
+            dropped: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -121,19 +131,22 @@ impl MidiInputNode {
         self
     }
 
-    /// Adopt a requested MPE mode that differs from the one in force.
+    /// Adopt a requested MPE mode that differs from the one in force, and
+    /// return the new zones' default bend ranges for the block to send first
+    /// ([`MpeIngest::zone_defaults`]: what an MPE Configuration Message
+    /// resets a receiver to, as this node sends an MCM's).
     ///
     /// **The comparison is load-bearing**: the request latches (the audio
     /// thread cannot clear it without publishing), and `set_mode` rebuilds
     /// the ingest, so re-adopting it every block would drop every sounding
-    /// note's voice mapping every block.
-    fn adopt_mpe_request(&mut self) {
-        let pending = *self.mpe_request.lend();
-        if let Some(mode) = pending {
-            if *self.mpe.mode() != mode {
-                self.mpe.set_mode(mode);
-            }
+    /// note's voice mapping, and re-send the ranges, every block.
+    fn adopt_mpe_request(&mut self) -> Option<Translated> {
+        let mode = (*self.mpe_request.lend())?;
+        if *self.mpe.mode() == mode {
+            return None;
         }
+        self.mpe.set_mode(mode);
+        Some(self.mpe.zone_defaults(MidiGroup::FIRST, 0))
     }
 }
 
@@ -141,6 +154,7 @@ impl MidiInputNode {
 #[derive(Clone)]
 pub struct MidiInputControls {
     request: Arc<MpeRequest>,
+    dropped: Arc<AtomicU64>,
 }
 
 impl MidiInputControls {
@@ -162,6 +176,15 @@ impl MidiInputControls {
     /// retired it is a lock and a length check.
     pub fn reclaim(&self) -> usize {
         self.request.cell.reclaim()
+    }
+
+    /// How many translated events the node has dropped since it was built:
+    /// past [`MIDI_INPUT_EVENT_CAPACITY`] in one block, an event's
+    /// translation (a bend range or an MPE reset fans out over a zone) is
+    /// dropped whole rather than cut partway. A poll past the capacity is
+    /// the wire's own truncation, not counted here.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// The mode last asked for through [`set_mpe_mode`](Self::set_mpe_mode),
@@ -200,24 +223,43 @@ impl Node for MidiInputNode {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         // Before any event is translated, stated or not.
-        self.adopt_mpe_request();
+        let reset = self.adopt_mpe_request();
         let Some(input) = self.input.as_mut() else {
             return Status::Modified;
         };
         let block_len = cx.env.block_len;
-        let n = input.poll_block(block_len.get(), &mut self.scratch);
         let mut kept = 0;
-        for i in 0..n.min(self.scratch.len()) {
-            let raw = self.scratch[i];
-            let Some(ev) = self.translator.translate(&raw) else {
+        let mut dropped = 0;
+        // An event's translation goes in whole or not at all: a fan-out cut
+        // partway would leave some of a zone's channels at another range.
+        let mut stage = |events: Translated| {
+            let n = events.len();
+            match self.out.get_mut(kept..kept + n) {
+                Some(slots) => {
+                    for (slot, ev) in slots.iter_mut().zip(events) {
+                        *slot = ev;
+                    }
+                    kept += n;
+                }
+                None => dropped += n as u64,
+            }
+        };
+        // A host-set mode's ranges, at frame 0, ahead of the block's events
+        // (the sort below is stable).
+        if let Some(reset) = reset {
+            stage(reset);
+        }
+        let n = input.poll_block(block_len.get(), &mut self.scratch);
+        for raw in &self.scratch[..n.min(self.scratch.len())] {
+            let Some(ev) = self.translator.translate(raw) else {
                 continue;
             };
-            if let Some(ev) = self.mpe.translate(&ev) {
-                self.scratch[kept] = ev;
-                kept += 1;
-            }
+            stage(self.mpe.translate(&ev));
         }
-        let events = &mut self.scratch[..kept];
+        if dropped > 0 {
+            self.dropped.fetch_add(dropped, Ordering::Relaxed);
+        }
+        let events = &mut self.out[..kept];
         in_offset_order(events);
         for ev in events.iter() {
             // Refused past the capacity: counted by the executor.
@@ -246,6 +288,7 @@ impl IntoNode for MidiInputNode {
     fn into_parts(self) -> NodeParts<MidiInputControls> {
         let controls = MidiInputControls {
             request: Arc::clone(&self.request),
+            dropped: Arc::clone(&self.dropped),
         };
         NodeParts {
             node: Box::new(self),
@@ -301,6 +344,7 @@ mod tests {
         let mut node = MidiInputNode::new(None);
         let controls = MidiInputControls {
             request: Arc::clone(&node.request),
+            dropped: Arc::clone(&node.dropped),
         };
         {
             // A block in progress across the request.

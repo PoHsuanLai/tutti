@@ -37,7 +37,7 @@ pub mod events {
     //!
     //! Re-exported here so downstream crates that need to construct
     //! `NoteOnEvent`/`NoteOffEvent`/etc. literally (rather than going through the
-    //! [`Vst3Event::to_midi`] / [`Vst3Event::from_midi`] helpers) can do so
+    //! plugin's event list, or [`Vst3Event::to_midi`]) can do so
     //! without depending on the raw `vst3` crate.
 
     pub use crate::types::{

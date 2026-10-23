@@ -48,7 +48,8 @@ const MAX_CHANNELS: usize = 16;
 impl Node for InProcessVst2Client {
     /// The plugin's channels, one event input (MIDI and parameter events),
     /// and a MIDI event output for a plugin that declared MIDI out; its
-    /// latency and tail as loaded.
+    /// latency and tail as loaded. The plugin reports its tail apart from
+    /// its latency, so the tail excludes latency as [`Shape::tail`] asks.
     fn shape(&self) -> Shape {
         let midi_out = u16::from(self.features.contains(Features::MIDI_OUT));
         let latency = Latency::new(self.metadata.latency_samples);

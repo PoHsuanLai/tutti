@@ -4,7 +4,9 @@
 //! An offline render stops pulling when the last clip ends. A reverb does not
 //! stop with it — a bounce that ends at the same moment truncates the decay.
 //! This module answers "how many frames past the end must the render keep
-//! pulling?", so a caller can extend the render by that much.
+//! pulling?", so a caller can extend the render by that much. Latency is not
+//! part of the answer: a node's [`Tail`] excludes it, and a render trims the
+//! graph's latency separately ([`latency`]).
 //!
 //! Pure graph math over [`TailGraph`] — no audio, no DSP — so it can be driven
 //! by a real audio graph or a three-line test fixture, exactly as [`latency`]

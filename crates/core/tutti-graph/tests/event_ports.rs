@@ -30,9 +30,7 @@ use tutti_graph::{
     ValidGraph,
 };
 use tutti_types::graph::NodeSpec;
-use tutti_types::{
-    At, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, Topology,
-};
+use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Topology};
 
 /// What a sink saw: `(block start frame, offset, port, tag)`.
 type Seen = Arc<Mutex<Vec<(u64, u32, u16, u32)>>>;
@@ -109,7 +107,6 @@ impl Node for Late {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
             .with_latency(Latency::new(Samples(self.latency)))
-            .with_tail(Tail::Finite(Samples(self.latency)))
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {

@@ -60,9 +60,9 @@
 //! block** and its sorted events.
 //!
 //! **A node op is one record.** The compiler lowers each `Op::Node` into a
-//! `NodeRec` (`plan.rs`): store index, generation, arrival, tail, the port
-//! slots, the buffer borrow requests **already sorted**, and a `Form` that
-//! picks the borrow. The verifier checks each record against its op, so a
+//! `NodeRec` (`plan.rs`): store index, generation, arrival, latency plus
+//! tail, the port slots, the buffer borrow requests **already sorted**, and
+//! a `Form` that picks the borrow. The verifier checks each record against its op, so a
 //! call does one indexed load and never sorts. The commonest shapes — at most one audio input and one
 //! audio output, or the stereo shapes 0→2, 1→2, 2→1 and 2→2, all with no
 //! event ports — borrow their slots directly, and their whole call path is
@@ -89,8 +89,11 @@
 //!   called every block.
 //! - **for a node without event inputs**, its previous call left every audio
 //!   output flagged silent (it returned `Silent`, `Idle`, or masks covering
-//!   every channel), and its declared tail has elapsed since its inputs went
-//!   quiet. A node never called yet is not quiet. Two shapes are never
+//!   every channel), and its declared latency **plus** its declared tail have
+//!   elapsed since its inputs went quiet. A tail excludes latency
+//!   ([`Shape::tail`](crate::Shape::tail)), so a lookahead still holding its
+//!   last frames is called until they are out, even while its output reads
+//!   silent. A node never called yet is not quiet. Two shapes are never
 //!   parked this way: a node with **no audio inputs** (a source — silent
 //!   inputs say nothing about it) and a node with **no outputs at all** (a
 //!   sink, which runs only for its side effects — a meter, a tap — and whose
@@ -683,8 +686,10 @@ fn par_for(
     }
 }
 
-fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
-    match tail {
+/// Whether `quiet` frames of quiet input cover `park_after`, a node's
+/// latency then its tail (`NodeRec::park_after`).
+fn tail_elapsed(park_after: Tail, quiet: u64) -> bool {
+    match park_after {
         Tail::None => true,
         Tail::Finite(n) => quiet >= n.get() as u64,
         Tail::Unknown | Tail::Unbounded => false,
@@ -2049,10 +2054,10 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
 
     // See the module docs: a node with event inputs parks only on its own
     // say-so (`Status::Idle`); one without parks when its inputs, its last
-    // output and its tail agree.
+    // output and its latency plus tail agree.
     let skip = quiet_inputs
         && if ein.is_empty() {
-            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.tail, u.quiet)
+            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.park_after, u.quiet)
         } else {
             u.last_idle
         };

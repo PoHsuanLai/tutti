@@ -424,7 +424,7 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             || rec.store != pu.idx.0
             || rec.gen != pu.gen
             || rec.arrival != pu.arrival
-            || rec.tail != pu.shape.tail
+            || rec.park_after != pu.shape.park_after()
             || rec.event_capacity != pu.shape.event_capacity
             || rec.in_place != in_place
             || rec.params != params

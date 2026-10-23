@@ -1,9 +1,10 @@
 //! Value vocabulary + the pure shaping math.
 //!
 //! [`Polarity`] and [`LfoShape`] are the small enums a route needs;
-//! [`curve_apply`] and [`shape`] are the pure functions a
-//! [`ControlProgram`](crate::ControlProgram) shapes every offset with — one
-//! copy each.
+//! [`shape`] is the pure function a [`ControlProgram`](crate::ControlProgram)
+//! shapes every offset with. Its response curve is `audio-automation`'s
+//! [`CurveType::interpolate`], the one evaluation of a [`CurveType`] the
+//! engine and the editor share.
 
 pub use audio_automation::CurveType;
 
@@ -146,27 +147,15 @@ impl core::fmt::Display for LfoShape {
 // Pure shaping / folding math — ONE copy, shared by every adapter.
 // =========================================================================
 
-/// Response curve on a normalized `x ∈ [0, 1] → [0, 1]`. Only the four
-/// parametric [`CurveType`] variants are shaped; every other variant
-/// (`Stepped`, `Bezier`, easing family) falls back to linear — matching the
-/// edge-curve bridge, which already degrades those to `Linear` on write.
-#[inline]
-pub fn curve_apply(curve: CurveType, x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    match curve {
-        CurveType::Exponential => x * x,
-        CurveType::Logarithmic => x.sqrt(),
-        // Smoothstep 3x² − 2x³.
-        CurveType::SCurve => x * x * (3.0 - 2.0 * x),
-        // Linear + everything not bakeable into the shaper LUT.
-        _ => x,
-    }
-}
-
 /// Map a raw modulation signal `x ∈ [-1, 1]` to a shaped additive offset via
 /// `depth · polarity · curve`. `Bipolar` keeps the sign and curves the
 /// magnitude; `Unipolar` remaps `[-1, 1] → [0, 1]` (the source only pushes one
 /// direction from base) then curves. `depth` scales the result.
+///
+/// The curve is `curve.interpolate(0.0, 1.0, u)` on the normalized `u`, so
+/// every [`CurveType`] shapes exactly as the editor draws it, the easing
+/// family, `Stepped` and `Bezier` included. `Back` and `Elastic` overshoot
+/// `[0, 1]`, and so does the offset they shape.
 ///
 /// The return is a bare `f32`, not a [`Depth`]: it is an offset in the
 /// *target's* units — Hz for a cutoff, linear gain for a fader — which the
@@ -178,13 +167,13 @@ pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 
     match polarity {
         // Bipolar: preserve sign, curve the magnitude, restore sign.
         Polarity::Bipolar => {
-            let mag = curve_apply(curve, x.abs());
+            let mag = curve.interpolate(0.0, 1.0, x.abs());
             depth * mag * x.signum()
         }
         // Unipolar: remap [-1, 1] → [0, 1], then curve.
         Polarity::Unipolar => {
             let u = (x.clamp(-1.0, 1.0) + 1.0) * 0.5;
-            depth * curve_apply(curve, u)
+            depth * curve.interpolate(0.0, 1.0, u)
         }
     }
 }
@@ -227,7 +216,7 @@ mod tests {
         assert!((val_end - (-1.0)).abs() < 0.01);
     }
 
-    // ── shape() / curve_apply() (ported from param_mod shaper tests) ──
+    // ── shape() ──
 
     #[test]
     fn shape_linear_bipolar_is_depth_scaled_identity() {
@@ -262,6 +251,161 @@ mod tests {
         assert!(
             (shape(1.0, Depth::FULL, Polarity::Unipolar, CurveType::Linear) - 1.0).abs() < 1e-2
         );
+    }
+
+    /// Every [`CurveType`] but `Bezier` (one control-point pair stands in
+    /// for it where a test needs one).
+    const CURVES: [CurveType; 21] = [
+        CurveType::Linear,
+        CurveType::Exponential,
+        CurveType::Logarithmic,
+        CurveType::SCurve,
+        CurveType::Stepped,
+        CurveType::Elastic,
+        CurveType::Bounce,
+        CurveType::Back,
+        CurveType::Circular,
+        CurveType::QuadIn,
+        CurveType::QuadOut,
+        CurveType::QuadInOut,
+        CurveType::CubicIn,
+        CurveType::CubicOut,
+        CurveType::CubicInOut,
+        CurveType::QuartIn,
+        CurveType::QuartOut,
+        CurveType::QuartInOut,
+        CurveType::QuintIn,
+        CurveType::QuintOut,
+        CurveType::QuintInOut,
+    ];
+
+    /// The response curve `shape` applies to a magnitude `x ∈ [0, 1]`.
+    fn curve(c: CurveType, x: f32) -> f32 {
+        shape(x, Depth::FULL, Polarity::Bipolar, c)
+    }
+
+    /// Every curve runs from 0 at no input to 1 at full input.
+    ///
+    /// `Bezier` is left out: `audio-automation`'s `cubic_bezier` (at the
+    /// pinned rev) takes its first point at 1, not 0, so a `Bezier` curve
+    /// starts at its end value. `shape` reads it as the editor does; this
+    /// test does not assert that as a property.
+    ///
+    /// Mutation (run): `shape`'s bipolar arm curving `1 - |x|` → `Linear`
+    /// at 0 is 1.
+    #[test]
+    fn every_curve_runs_from_zero_to_one() {
+        for c in CURVES {
+            assert!(curve(c, 0.0).abs() < 1e-6, "{c:?} at 0: {}", curve(c, 0.0));
+            assert!(
+                (curve(c, 1.0) - 1.0).abs() < 1e-6,
+                "{c:?} at 1: {}",
+                curve(c, 1.0)
+            );
+        }
+    }
+
+    /// Each curve's value at a quarter and a half, from its closed form:
+    /// `t^k` for an in, `1 - (1 - t)^k` for an out, `2^(k-1)·t^k` on an
+    /// in-out's first half (the quadratic `SCurve` among them), `√t`,
+    /// `1 - √(1 - t²)`, `t²((s + 1)t - s)` with `s = 1.70158`, and a step
+    /// only at the end.
+    ///
+    /// Mutations (run), each fails: the smoothstep `SCurve`
+    /// (`x²(3 - 2x)`) → 0.15625 at a quarter, not 0.125; the easing family
+    /// read as linear (`_ => x`) → `QuadIn` at a half is 0.5, not 0.25;
+    /// `Stepped` linear → 0.5 at a half, not 0.
+    #[test]
+    fn each_curve_matches_its_closed_form() {
+        let s = 1.701_58_f32;
+        let cases: [(CurveType, f32, f32); 26] = [
+            (CurveType::Linear, 0.5, 0.5),
+            (CurveType::Exponential, 0.5, 0.25),
+            (CurveType::Logarithmic, 0.25, 0.5),
+            (
+                CurveType::Logarithmic,
+                0.5,
+                core::f32::consts::FRAC_1_SQRT_2,
+            ),
+            (CurveType::SCurve, 0.25, 0.125),
+            (CurveType::SCurve, 0.75, 0.875),
+            (CurveType::Stepped, 0.5, 0.0),
+            (CurveType::Stepped, 0.999, 0.0),
+            (CurveType::Circular, 0.5, 1.0 - 0.75_f32.sqrt()),
+            (CurveType::Back, 0.5, 0.25 * ((s + 1.0) * 0.5 - s)),
+            (CurveType::QuadIn, 0.5, 0.25),
+            (CurveType::QuadOut, 0.5, 0.75),
+            (CurveType::QuadInOut, 0.25, 0.125),
+            (CurveType::QuadInOut, 0.75, 0.875),
+            (CurveType::CubicIn, 0.5, 0.125),
+            (CurveType::CubicOut, 0.5, 0.875),
+            (CurveType::CubicInOut, 0.25, 0.0625),
+            (CurveType::CubicInOut, 0.75, 0.9375),
+            (CurveType::QuartIn, 0.5, 0.0625),
+            (CurveType::QuartOut, 0.5, 0.9375),
+            (CurveType::QuartInOut, 0.25, 0.03125),
+            (CurveType::QuintIn, 0.5, 0.03125),
+            (CurveType::QuintOut, 0.5, 0.96875),
+            (CurveType::QuintInOut, 0.25, 0.015625),
+            // A Bezier with control values 0 and 1 at the midpoint:
+            // 1/8 + 3·(1/4)(1/2)·0 + 3·(1/2)(1/4)·1 + 1/8 = 5/8.
+            (CurveType::Bezier(0.0, 1.0), 0.5, 0.625),
+            (CurveType::Bezier(0.0, 1.0), 1.0, 1.0),
+        ];
+        for (c, x, want) in cases {
+            let got = curve(c, x);
+            assert!(
+                (got - want).abs() < 1e-6,
+                "{c:?} at {x}: {got}, want {want}"
+            );
+        }
+    }
+
+    /// The curves that do not overshoot never fall as the input rises.
+    ///
+    /// Mutations (run), each fails: `shape` evaluating `QuadOut` as
+    /// `Bounce` → `QuadOut` falls; `shape` curving `1 - |x|` → every curve
+    /// falls.
+    #[test]
+    fn the_non_overshooting_curves_are_monotone() {
+        let overshoots = [CurveType::Elastic, CurveType::Bounce, CurveType::Back];
+        for c in CURVES.into_iter().filter(|c| !overshoots.contains(c)) {
+            let mut last = curve(c, 0.0);
+            for i in 1..=1024 {
+                let v = curve(c, i as f32 / 1024.0);
+                assert!(
+                    v >= last,
+                    "{c:?} falls at {}: {last} → {v}",
+                    i as f32 / 1024.0
+                );
+                last = v;
+            }
+        }
+    }
+
+    /// `Quad` and `Cubic` shape the offset: they are not linear, and a
+    /// bipolar amount keeps the sign while curving the magnitude.
+    ///
+    /// Mutations (run), each fails: `shape` reading every easing variant as
+    /// linear (`_ => x`) → `QuadIn` at 0.5 is 0.5; the unipolar arm
+    /// uncurved → `CubicIn` at 0 is 0.5.
+    #[test]
+    fn quad_and_cubic_are_not_linear() {
+        for (c, want) in [
+            (CurveType::QuadIn, 0.25),
+            (CurveType::QuadOut, 0.75),
+            (CurveType::CubicIn, 0.125),
+            (CurveType::CubicOut, 0.875),
+        ] {
+            let up = shape(0.5, Depth::FULL, Polarity::Bipolar, c);
+            let down = shape(-0.5, Depth::FULL, Polarity::Bipolar, c);
+            assert!((up - want).abs() < 1e-6, "{c:?}: {up}, want {want}");
+            assert!((down + want).abs() < 1e-6, "{c:?}: {down}, want {}", -want);
+            assert!((up - 0.5).abs() > 0.1, "{c:?} is linear");
+        }
+        // Unipolar: x = 0 is the middle of the curve.
+        let mid = shape(0.0, Depth::FULL, Polarity::Unipolar, CurveType::CubicIn);
+        assert!((mid - 0.125).abs() < 1e-6, "CubicIn unipolar at 0: {mid}");
     }
 
     #[test]

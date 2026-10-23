@@ -18,5 +18,5 @@ pub use program::{
     Amount, Clock, ControlProgram, Corners, DepthBy, InputLayer, Layer, LayerId, PeriodPoint,
     ProgramError, ProgramTime, RateAnchor, SourceId, Wave, MAX_LANE_INPUTS, MAX_LANE_LAYERS,
 };
-pub use shape::{curve_apply, shape, LfoShape, Polarity};
+pub use shape::{shape, LfoShape, Polarity};
 pub use sources::{Follower, Lfo, LfoRate, Macro, NoteEnvelope};

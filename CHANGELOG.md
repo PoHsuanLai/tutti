@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — modulation curves evaluate as the editor draws them; renders change
+
+A modulation route's response curve (`Amount::curve`, `ModRange`'s curve in
+`bevy-tutti`) was evaluated by its own copy, `tutti_mod::curve_apply`, which
+disagreed with `audio-automation`'s `CurveType::interpolate`, the evaluation
+the editor draws and an automation envelope renders with:
+
+- `SCurve` was the smoothstep `3x² − 2x³`; it is now the quadratic in-out
+  (`2x²` to the half, mirrored after), as everywhere else. At a quarter the
+  shaped magnitude is 0.125, not 0.15625.
+- `Stepped`, `Bezier`, `Circular`, `Back`, `Elastic`, `Bounce` and every
+  `Quad`/`Cubic`/`Quart`/`Quint` variant were silently linear. They now shape
+  the offset by their own curve (`QuadIn` at a half is 0.25, not 0.5).
+  `Back` and `Elastic` overshoot `[0, 1]`, so their offsets do too.
+
+**Renders change** for any route whose curve is not `Linear`,
+`Exponential` or `Logarithmic` (those three were already equal). That is
+intended: a curve now sounds as it is drawn. A bipolar route with any curve
+but `Linear` now takes corners at its wave's zero crossings
+(`Amount::kinks_at_zero`), as doc 014 §5.3 states, so the lane's
+piecewise-linear pieces stay on the curve there.
+
+`audio-automation`'s `CurveType::Bezier` (at the pinned rev) starts at its
+end value, not its start (`cubic_bezier` takes its first point at 1). A
+`Bezier` route now shows that too, as the editor does.
+
+The automation lane's segment mapping (`tutti_nodes::automation::segment_shape`)
+was already equal to `interpolate` on every curve it maps; a test now pins
+that over every `CurveType`.
+
+**Migration:** `tutti_mod::curve_apply` is removed. Call
+`curve.interpolate(0.0, 1.0, x)` (or `tutti_mod::shape`, which applies it).
+
 ### Changed — the binaural panner convolves with its own code, 2.4–5x faster
 
 `HrtfBinauralNode` no longer uses the `hrtf` crate. Its replacement in

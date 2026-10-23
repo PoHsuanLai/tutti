@@ -498,7 +498,7 @@ the play clock plus every corner.
 **Corners** (exact, whatever the step): an automation breakpoint; a
 square's edge, a saw's wrap, a random step; a triangle's peak; a drawn
 point; and **every zero crossing of a bipolar layer with a non-Linear
-curve**, because `shape()` curves `|x|` (`crates/core/tutti-mod/src/shape.rs:175-189`),
+curve**, because `shape()` curves `|x|` (`shape` in `crates/core/tutti-mod/src/shape.rs`),
 which breaks the slope at each crossing. Closed-form waves give crossings
 analytically; a drawn piece's crossing is solved once per piece.
 
@@ -896,7 +896,7 @@ open:
 
 | Module (`crates/core/tutti-mod/src`) | Fate |
 |---|---|
-| `shape.rs` (`shape`, `curve_apply`, `LfoShape`, `Polarity`) | kept; `fold` deleted |
+| `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `audio-automation`'s `CurveType::interpolate`, the editor's evaluation |
 | `curve.rs` | kept, moved into the floor |
 | `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
 | `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-mod` with `routing`. `tutti-mod` keeps no runtime. |

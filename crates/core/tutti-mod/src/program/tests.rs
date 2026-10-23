@@ -297,6 +297,35 @@ fn each_wave_has_its_corners() {
     assert_eq!(corner(LfoShape::Sine, uni, 1.0), None, "unipolar: no kink");
 }
 
+/// Every curve but `Linear` bends a bipolar sine at its zero crossings,
+/// the easing family included, since `shape` evaluates each one as
+/// `audio-automation` does; `Linear` does not.
+///
+/// Mutation (run): `kinks_at_zero` matching only `Exponential`,
+/// `Logarithmic` and `SCurve` → `QuadIn`'s sine has no corner.
+#[test]
+fn every_non_linear_curve_kinks_a_bipolar_sine() {
+    let corner = |curve| {
+        let a = Amount {
+            curve,
+            ..amount(1.0)
+        };
+        program(vec![layer(1, beats(4.0), LfoShape::Sine, a)])
+            .next_corner(&at_beat(1.0))
+            .beat
+    };
+    assert_eq!(corner(CurveType::Linear), None);
+    for c in [
+        CurveType::QuadIn,
+        CurveType::CubicOut,
+        CurveType::QuintInOut,
+        CurveType::Circular,
+        CurveType::Stepped,
+    ] {
+        assert_eq!(corner(c), Some(Beat(2.0)), "{c:?}");
+    }
+}
+
 /// The automation's next breakpoint is a corner, and a seconds layer's
 /// corner is on the play clock: `Corners` keeps the two apart.
 ///

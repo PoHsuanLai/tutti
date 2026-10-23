@@ -146,15 +146,11 @@ impl Amount {
     }
 
     /// Whether the offset's slope breaks where the raw value crosses zero:
-    /// a bipolar amount whose curve `curve_apply` bends (`shape` curves
-    /// `|x|`), so each zero crossing is a corner (doc 014 §5.3).
+    /// a bipolar amount with any curve but `Linear` (`shape` curves `|x|`),
+    /// so each zero crossing is a corner (doc 014 §5.3).
     #[inline]
     pub fn kinks_at_zero(&self) -> bool {
-        self.polarity == Polarity::Bipolar
-            && matches!(
-                self.curve,
-                CurveType::Exponential | CurveType::Logarithmic | CurveType::SCurve
-            )
+        self.polarity == Polarity::Bipolar && self.curve != CurveType::Linear
     }
 }
 

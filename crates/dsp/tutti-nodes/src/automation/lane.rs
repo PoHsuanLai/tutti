@@ -280,6 +280,70 @@ mod tests {
         Transport::new(false, Bpm(120.0), Beat(beat), None)
     }
 
+    /// Every [`SegmentShape`] `segment_shape` maps a curve to is that
+    /// curve as `audio-automation`'s `interpolate` evaluates it, on a grid
+    /// of 1025 points; the five it does not map are the ones no shape
+    /// carries. A param port evaluates the shape, which cannot name
+    /// `audio-automation` (`tutti-graph` depends on `tutti-types` alone),
+    /// so this mapping is the one place the two must agree.
+    ///
+    /// Mutations (run), each fails: `SCurve` mapped to `PowerIn(2)`,
+    /// `QuadOut` to `PowerOut(3)`, or `Circular` to `PowerIn(2)` → the
+    /// shape leaves the curve inside the segment.
+    #[test]
+    fn every_mapped_shape_is_the_curve_interpolate_evaluates() {
+        use CurveType as C;
+        let all = [
+            C::Linear,
+            C::Exponential,
+            C::Logarithmic,
+            C::SCurve,
+            C::Stepped,
+            C::Bezier(0.2, 0.8),
+            C::Elastic,
+            C::Bounce,
+            C::Back,
+            C::Circular,
+            C::QuadIn,
+            C::QuadOut,
+            C::QuadInOut,
+            C::CubicIn,
+            C::CubicOut,
+            C::CubicInOut,
+            C::QuartIn,
+            C::QuartOut,
+            C::QuartInOut,
+            C::QuintIn,
+            C::QuintOut,
+            C::QuintInOut,
+        ];
+        let mut unmapped = Vec::new();
+        for c in all {
+            let Some(s) = segment_shape(c) else {
+                unmapped.push(c);
+                continue;
+            };
+            for i in 0..=1024 {
+                let t = i as f32 / 1024.0;
+                let (got, want) = (s.eval(t), c.interpolate(0.0, 1.0, t));
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "{c:?} as {s:?} at {t}: {got}, interpolate {want}"
+                );
+            }
+        }
+        assert_eq!(
+            unmapped,
+            [
+                C::Bezier(0.2, 0.8),
+                C::Elastic,
+                C::Bounce,
+                C::Back,
+                C::Circular
+            ]
+        );
+    }
+
     #[test]
     fn declares_no_inputs_and_one_output() {
         let shape = AutomationLaneNode::new(ramp_envelope()).shape();

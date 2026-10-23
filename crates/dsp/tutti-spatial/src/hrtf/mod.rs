@@ -1,4 +1,6 @@
 //! Binaural rendering by FFT convolution against a measured HRIR sphere.
+//! The convolver is the crate's own (`panner.rs`); the sphere's parsing,
+//! resampling and face lookup are in `sphere.rs`.
 //! Always 2 channels out; no speaker layout involved.
 //!
 //! There is no `build_binaural_mix` counterpart to
@@ -8,6 +10,7 @@
 
 mod node;
 pub(crate) mod panner;
+mod sphere;
 
 pub use node::{HrtfBinauralControls, HrtfBinauralNode};
-pub use panner::HrtfBinauralError;
+pub use panner::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};

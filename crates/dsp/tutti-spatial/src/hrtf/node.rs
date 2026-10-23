@@ -4,11 +4,11 @@
 //! takes the dataset bytes.
 
 use tutti_core::ChannelLayout;
-use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
+use tutti_core::{Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::Latency;
 
-use super::panner::{BridgeSample, HrtfBinaural, HrtfBinauralError, LATENCY};
+use super::panner::{HrtfBinaural, HrtfBinauralError, LATENCY};
 use crate::fork::{fresh_fork_parts, FreshFork};
 use crate::SpatialTarget;
 
@@ -20,13 +20,15 @@ use crate::SpatialTarget;
 /// against the (equally delayed) dry mono by [`set_blend`](Self::set_blend).
 /// It is a graph node (`tutti_graph::Node`); inserting it hands back its
 /// [`HrtfBinauralControls`], which move the source lock-free while it renders.
-/// Position changes are de-zippered over 50 ms.
+/// Position changes are de-zippered over 50 ms, and each step of the glide
+/// crossfades between the filters on either side of it. The filter for a
+/// direction is blended across the sphere face that direction crosses.
 ///
-/// Output lags input by 511 samples (one 512-sample HRTF frame less one), on
-/// both the wet and the dry half. The node declares this as latency, so the
-/// graph's delay compensation lines the other paths up with it. Rendering a
-/// block allocates nothing; preparing at a new rate resamples the dataset and
-/// allocates.
+/// Output lags input by 128 samples (one convolution step), on both the wet
+/// and the dry half. The node declares this as latency, so the graph's delay
+/// compensation lines the other paths up with it. Rendering a block
+/// allocates nothing, takes no lock and cannot panic on any sphere `new`
+/// accepted; preparing at a new rate resamples the dataset and allocates.
 ///
 /// Available with the `hrtf` feature.
 pub struct HrtfBinauralNode {
@@ -98,8 +100,8 @@ impl HrtfBinauralControls {
 
 impl Clone for HrtfBinauralNode {
     /// Shares the controls (a clone is the fork's template, which must read
-    /// the cells as they are when the fork is taken); the renderer is rebuilt
-    /// with cleared streaming state.
+    /// the cells as they are when the fork is taken) and the parsed sphere;
+    /// the renderer gets its own, cleared, streaming state.
     fn clone(&self) -> Self {
         Self {
             panner: self.panner.clone(),
@@ -111,18 +113,21 @@ impl Clone for HrtfBinauralNode {
 
 impl HrtfBinauralNode {
     /// Creates a renderer from HRIR sphere bytes (for example an embedded
-    /// IRCAM `.bin`, in the format the `hrtf` crate reads), aimed straight
+    /// IRCAM `.bin`, in the format `hrir_sphere_builder` writes), aimed straight
     /// ahead at full HRTF blend.
     ///
-    /// The sphere is resampled to `sample_rate` on load. The graph prepares
-    /// the node at the device rate before its first block, resampling again if
-    /// that differs. The bytes are copied. Allocates; call it on the control
-    /// thread.
+    /// The sphere is parsed once and resampled to `sample_rate`. The graph
+    /// prepares the node at the device rate before its first block,
+    /// resampling again if that differs. Either rate is held to at most
+    /// [`MAX_PREPARED_RATE`](crate::MAX_PREPARED_RATE) for the sphere.
+    /// Clones and forks share the parsed sphere. Allocates; call it on the
+    /// control thread.
     ///
     /// # Errors
     ///
-    /// Returns [`HrtfBinauralError::Sphere`] if the bytes cannot be parsed as
-    /// an HRIR sphere or cannot be resampled to `sample_rate`.
+    /// Returns an [`HrtfBinauralError`] if the bytes are not a well-formed
+    /// HRIR sphere. Every index, length and value is checked here, so nothing
+    /// malformed reaches the audio thread.
     pub fn new(
         hrir_bytes: &[u8],
         sample_rate: impl Into<SampleRate>,
@@ -173,46 +178,21 @@ impl HrtfBinauralNode {
     pub fn blend(&self) -> Mix {
         self.controls.blend()
     }
-
-    #[inline]
-    fn sync_position(&mut self) {
-        let (azimuth, elevation) = self.controls.target.load();
-        self.panner.set_position(azimuth, elevation);
-    }
-
-    /// Render one input sample pair to a binaural output pair.
-    #[inline]
-    fn render(&mut self, left: f32, right: f32, width: Mix) -> (f32, f32) {
-        // The engine's one fold, not a local `* 0.5`. Identical at width 2, but
-        // HRTF rendering genuinely needs a single mono sample, so the coefficient
-        // belongs to `downmix.rs` rather than to this node.
-        let mono = fold_frame_to_mono(&[left, right]);
-        // The dry mono comes back out of the frame bridge beside the wet pair,
-        // equally late. Blending against `mono` itself would lead the wet
-        // signal by a whole frame, so at any `blend < 1` the dry half would
-        // arrive early.
-        let BridgeSample {
-            dry,
-            wet: (wet_l, wet_r),
-        } = self.panner.process_sample(mono);
-        // width blends the HRTF-rendered signal against the dry mono center.
-        (width.blend(dry, wet_l), width.blend(dry, wet_r))
-    }
 }
 
 /// A graph node: stereo in, stereo out.
 ///
 /// # Latency and tail
 ///
-/// The frame bridge's delay, 511 samples (one 512-sample frame less one), is
-/// declared as the node's processing latency, true of both outputs at every
-/// blend, so the graph's delay compensation lines the rest of the mix up with
-/// it. The tail is the frame bridge plus the convolution overlap, both fixed
-/// sizes, so it is exact rather than an estimate.
+/// The step's delay, 128 samples, is declared as the node's processing
+/// latency, true of both outputs at every blend, so the graph's delay
+/// compensation lines the rest of the mix up with it. The tail is that delay
+/// plus the response length less one, both fixed sizes at a rate, so it is
+/// exact rather than an estimate.
 ///
 /// # Reset clears time, not placement
 ///
-/// [`reset`](Node::reset) clears the frame bridge, the convolution tails and
+/// [`reset`](Node::reset) clears the input history, the step in flight and
 /// the de-zipper ramp. Position and blend are caller-set configuration and
 /// survive, and the ramp is seated on the commanded position, so the first
 /// block after a reset already renders there.
@@ -222,43 +202,44 @@ impl Node for HrtfBinauralNode {
             .with_latency(Latency::new(Samples(LATENCY)))
             .with_tail(Tail::Finite(Samples(self.panner.ring_out())))
             // An exception to the nearest-class rule (doc 013, "The cost
-            // model and coarsening"). The average, 32 ns per frame and channel with a
-            // four-vertex sphere of 128-tap HRIRs, is under the 45 ns
-            // boundary, but the FFT work lands all at once in the block
-            // that completes a 512-frame frame: at 64-frame blocks that
-            // block carries about 8 × 32 ns per frame, and the schedule
-            // must price the worst block, not the mean. Real spheres'
-            // HRIRs are longer still.
+            // model and coarsening"). The FFT work lands all at once in the
+            // block that completes a 128-frame step: at 64-frame blocks that
+            // block carries twice the mean, about the Heavy boundary for a
+            // moving source with 512-tap HRIRs, and the schedule must price
+            // the worst block, not the mean. Longer HRIRs cost more.
             .with_cost(tutti_graph::Cost::Heavy)
     }
 
     /// Resamples the sphere to the graph's rate (allocates; control thread).
     fn prepare(&mut self, p: &Prepare) {
         self.sample_rate = p.sample_rate();
-        self.panner.set_sample_rate(self.sample_rate);
+        self.panner
+            .set_sample_rate(self.sample_rate, self.controls.target.load());
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        self.sync_position();
-        let width = self.controls.blend.load();
+        // The controls' cells are the one copy of the commanded position and
+        // blend; the renderer reads them here, once per block.
+        let target = self.controls.target.load();
+        let blend = self.controls.blend.load();
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
         let (left, right) = (&inputs.get(0)[..size], &inputs.get(1)[..size]);
-        for i in 0..size {
-            let (out_left, out_right) = self.render(left[i], right[i], width);
-            outputs.get(0)[i] = out_left;
-            outputs.get(1)[i] = out_right;
+        let mut outs = outputs.iter_mut();
+        // The shape declares two outputs, so both are always present.
+        if let (Some(out_left), Some(out_right)) = (outs.next(), outs.next()) {
+            self.panner.process(
+                target,
+                blend,
+                (left, right),
+                (&mut out_left[..size], &mut out_right[..size]),
+            );
         }
         Status::Modified
     }
 
     fn reset(&mut self) {
-        // `sync_position` first: the commanded direction lives in
-        // `controls.target` and in the inner panner's own copy, joined only by
-        // this call. Without it `set_position` → `reset` would seed the ramp
-        // at the panner's stale direction.
-        self.sync_position();
-        self.panner.reset_state();
+        self.panner.reset_state(self.controls.target.load());
     }
 }
 
@@ -300,8 +281,8 @@ mod tests {
 
     /// Serialize a minimal but format-valid HRIR sphere: a tetrahedron of 4
     /// vertices with unit-impulse HRIRs (left = identity delta, right scaled).
-    /// Enough for the crate to parse, triangulate, and convolve — no dataset
-    /// file needed to exercise the bridge.
+    /// Enough to parse, triangulate, and convolve — no dataset file needed to
+    /// exercise the renderer.
     fn synthetic_hrir_sphere(sample_rate: u32, ir_len: usize) -> Vec<u8> {
         fn push_u32(b: &mut Vec<u8>, v: u32) {
             b.extend_from_slice(&v.to_le_bytes());
@@ -362,10 +343,10 @@ mod tests {
         let mut node = make_node();
         node.set_position(90.0, 0.0);
 
-        // Drive a steady tone through more than one HRTF frame and confirm the
-        // renderer eventually emits non-silence (output lags by one frame).
+        // Drive a steady tone through more than one step and confirm the
+        // renderer eventually emits non-silence (output lags by one step).
         let mut produced_nonzero = false;
-        for n in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
+        for n in 0..(crate::hrtf::panner::STEP * 2) {
             let s = ((n as f32) * 0.05).sin();
             let out = tick(&mut node, [s, s]);
             if out[0].abs() > 1e-6 || out[1].abs() > 1e-6 {
@@ -412,30 +393,28 @@ mod tests {
     /// The declared latency must be the delay the output really has, on both
     /// outputs, or PDC would not compensate a binaural track.
     ///
-    /// The figure is **measured**: "one HRTF frame" (512) is the intuitive
-    /// answer, and an impulse says 511 — the bridge renders
-    /// on the push that completes a frame and drains that frame's first sample
-    /// in the same call. The synthetic sphere's HRIRs are deltas at t = 0, so
-    /// every frame of delay seen here is the bridge's.
+    /// The figure is **measured**: one step (128). The synthetic sphere's
+    /// HRIRs are deltas at t = 0, so every frame of delay seen here is the
+    /// step's.
     ///
-    /// Impulses land at several offsets within a frame (first, second, last,
-    /// and across a frame boundary), because a bridge whose delay depended on
-    /// the in-frame phase would have no single latency to report.
+    /// Impulses land at several offsets within a step (first, second, last,
+    /// and across a step boundary), because a renderer whose delay depended on
+    /// the in-step phase would have no single latency to report.
     ///
     /// Mutation (run): declaring `Latency::ZERO` in `shape` fails the
-    /// declaration assertion (reports 0). Mutation: `LATENCY = FRAME_LEN`
-    /// fails every impulse (the doc's figure is one frame too late).
+    /// declaration assertion (reports 0). Mutation: `LATENCY = STEP - 1`
+    /// fails every impulse (declared one frame early).
     #[test]
     fn reported_latency_is_the_measured_impulse_delay() {
-        use crate::hrtf::panner::{FRAME_LEN, LATENCY};
+        use crate::hrtf::panner::{LATENCY, STEP};
         let node = make_node();
-        assert_eq!(node.shape().latency, Latency::new(Samples(FRAME_LEN - 1)));
+        assert_eq!(node.shape().latency, Latency::new(Samples(STEP)));
 
-        for at in [0, 1, FRAME_LEN - 1, FRAME_LEN, 2 * FRAME_LEN + 37] {
+        for at in [0, 1, STEP - 1, STEP, 2 * STEP + 37] {
             let mut node = make_node();
             node.set_position(Azimuth(90.0), Elevation::LEVEL);
             Node::reset(&mut node);
-            let (l, r) = impulse_response(&mut node, at, at + 3 * FRAME_LEN);
+            let (l, r) = impulse_response(&mut node, at, at + 3 * STEP);
             assert_eq!(onsets(&l), vec![at + LATENCY], "left, impulse at {at}");
             assert_eq!(onsets(&r), vec![at + LATENCY], "right, impulse at {at}");
         }
@@ -478,22 +457,23 @@ mod tests {
 
     /// The dry half of the blend leaves with the wet half, so the reported
     /// latency is true of the whole output at any blend. Blending the undelayed
-    /// `mono` against a wet signal a frame late would break that.
+    /// mono against a wet signal a step late would break that.
     ///
-    /// Mutation: blending against `mono` instead of the bridge's `dry` fails
-    /// blend 0.0 and 0.5 (an onset at the impulse itself). Mutation: dropping
-    /// the swap in `FrameBridge::rewind` fails them too (the dry frame is
-    /// never refreshed, so the dry half never arrives).
+    /// Mutation: blending against the incoming mono instead of the delayed
+    /// `dry` fails blend 0.0 and 0.5 (an onset at the impulse itself).
+    /// Mutation: dropping the `dry.copy_from_slice` in `render_step` fails
+    /// them too (the dry step is never refreshed, so the dry half never
+    /// arrives).
     #[test]
     fn dry_and_wet_leave_together_at_every_blend() {
-        use crate::hrtf::panner::{FRAME_LEN, LATENCY};
+        use crate::hrtf::panner::{LATENCY, STEP};
         for blend in [0.0_f32, 0.5, 1.0] {
             let mut node = make_node();
             node.set_position(Azimuth(90.0), Elevation::LEVEL);
             node.set_blend(Mix(blend));
             Node::reset(&mut node);
             let at = 100;
-            let (l, r) = impulse_response(&mut node, at, at + 2 * FRAME_LEN);
+            let (l, r) = impulse_response(&mut node, at, at + 2 * STEP);
             assert_eq!(onsets(&l), vec![at + LATENCY], "left, blend {blend}");
             assert_eq!(onsets(&r), vec![at + LATENCY], "right, blend {blend}");
             if blend == 0.0 {
@@ -533,8 +513,8 @@ mod tests {
         let mut node = make_node();
         node.set_position(Azimuth(90.0), Elevation::LEVEL);
 
-        // Fill the bridge and the overlap tails with a loud take.
-        for n in 0..(crate::hrtf::panner::FRAME_LEN * 3) {
+        // Fill the step and the input history with a loud take.
+        for n in 0..(crate::hrtf::panner::STEP * 3) {
             let s = ((n as f32) * 0.05).sin();
             tick(&mut node, [s, s]);
         }
@@ -544,7 +524,7 @@ mod tests {
         // Silence in. With the tail dropped the frames that follow are silent
         // too; a retained tail would ring out through them.
         let mut peak = 0.0f32;
-        for _ in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
+        for _ in 0..(crate::hrtf::panner::STEP * 2) {
             let out = tick(&mut node, [0.0, 0.0]);
             peak = peak.max(out[0].abs()).max(out[1].abs());
         }

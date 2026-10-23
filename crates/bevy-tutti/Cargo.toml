@@ -123,7 +123,7 @@ full = [
 # Spatial audio: the VBAP / binaural panner units, in their own crate.
 # Names exactly one thing — the dependency on `tutti-spatial`.
 spatial = ["dep:tutti-spatial", "tutti-session/spatial"]
-# The binaural panner (`tutti-spatial/hrtf`, which pulls the `hrtf` crate), so
+# The binaural panner (`tutti-spatial/hrtf`, which pulls `rustfft`), so
 # `HrtfBinauralNode` can be spawned as a graph node.
 hrtf = ["spatial", "tutti-spatial/hrtf", "tutti-session/hrtf"]
 

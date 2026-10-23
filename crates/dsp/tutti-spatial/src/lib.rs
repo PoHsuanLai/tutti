@@ -11,7 +11,9 @@
 //! - [`VbapError`]: what building a VBAP panner or mix can fail with; the
 //!   [`vbap`] module also holds its `Result` alias.
 //! - `HrtfBinauralNode`, `HrtfBinauralControls` and `HrtfBinauralError`: the
-//!   binaural renderer, behind the `hrtf` feature.
+//!   binaural renderer, behind the `hrtf` feature, with `MIN_SPHERE_RATE` and
+//!   `MAX_SPHERE_RATE`, the sphere rates it accepts, and `MAX_PREPARED_RATE`,
+//!   the highest rate it prepares the sphere at.
 
 mod fork;
 mod layout;
@@ -32,4 +34,7 @@ pub use vbap::{
 };
 
 #[cfg(feature = "hrtf")]
-pub use hrtf::{HrtfBinauralControls, HrtfBinauralError, HrtfBinauralNode};
+pub use hrtf::{
+    HrtfBinauralControls, HrtfBinauralError, HrtfBinauralNode, MAX_PREPARED_RATE, MAX_SPHERE_RATE,
+    MIN_SPHERE_RATE,
+};

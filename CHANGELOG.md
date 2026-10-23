@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the binaural panner convolves with its own code, 2.4–5x faster
+
+`HrtfBinauralNode` no longer uses the `hrtf` crate. Its replacement in
+`tutti-spatial` reads the same HRIR sphere bytes and keeps the same
+behaviour (barycentric blending across the sphere face a direction crosses,
+the 50 ms de-zipper), and fixes what the crate could not:
+
+- **Two FFTs a step where it did four**, at a power-of-two length. Both
+  ears' responses are packed into one complex spectrum per vertex, so one
+  forward FFT of the input and one inverse FFT render both ears. A moving
+  source adds one inverse FFT (the crossfade below). The `hrtf_binaural`
+  bench (64-frame blocks, a 162-vertex sphere, 4-core container): 1.9 →
+  0.46 µs a block still and 2.1 → 0.83 µs moving with 128-tap HRIRs, 9.0
+  → 1.75 µs and 9.3 → 2.9 µs with 512 taps.
+- **A direction change crossfades.** Each 128-frame step whose filter
+  differs from the last renders through both and crossfades linearly
+  across the step; the crate switched filters at each 128-frame boundary,
+  which clicked on fast motion.
+- **Nothing on the audio thread can panic.** The crate's face lookup
+  `unwrap`ped on the audio thread, so a sphere that does not enclose the
+  listener panicked there. A direction no face covers now takes the nearest
+  vertex. Every index, length and value is checked when the node is built.
+- **Clones and forks share the parsed sphere** and its prepared spectra
+  (`Arc`), instead of copying the dataset bytes and reparsing them.
+- **Rendering allocates nothing from the first block.** The crate grew its
+  overlap buffers on the first frame for any HRIR length other than 129.
+- **The commanded position is stored once**, in the controls' cells, and
+  read once a block; the renderer kept a second copy synced each block.
+
+**Bits change** for every render through the node, and these change too:
+
+| Was | Now |
+|---|---|
+| latency 511 frames (one 512-frame frame less one) | 128 frames (one convolution step). PDC picks the new figure up from the shape; nothing to migrate unless you hard-coded 511 |
+| tail `FRAME_LEN + 128` = 640 frames | the latency plus the response length less one, at the prepared rate |
+| a sphere resampled to another rate was time-compressed and cut short (the crate passed its resampler the inverse ratio), about −0.7 dB at DC at 48 kHz from a 44.1 kHz set | resampled by a windowed sinc with taps scaled by `from / to`, which keeps the frequency response and the response's duration: from a 44.1 kHz set at 48 kHz, output is about 0.7 dB louder than before, and the responses longer and correctly timed |
+| after `reset`, the first frame crossfaded in from straight ahead | `reset` seats the filter on the commanded position |
+| `HrtfBinauralError::Sphere(String)` | structured variants: `NotASphere`, `Truncated { needed, found }`, `Trailing { size, found }`, `Header(&str)`, `Rate { rate }`, `ResponseTooLong { len, max }`, `FaceIndex { face, vertex, vertices }`, `Vertex { vertex }`, `NoFace`. **Migration:** a `match` on `Sphere(_)` matches the error as a whole instead |
+| any nonzero sphere rate was accepted, so a 1 Hz file with 32-tap responses prepared a 1.5M-tap response at 48 kHz (and a longer one could exhaust memory) | the rate must be in `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` (8–384 kHz) and the responses at most 50 ms at it (`rate / 20` frames; measured HRIRs last a few ms), so a prepared response is at most 50 ms of frames at the prepared rate, rounded up. **Migration:** none for a measured HRIR set; a file with longer responses is refused with `ResponseTooLong` |
+| the sphere was prepared at any rate the node was built or prepared at, so a rate like `1e10` asked for responses millions of taps long | the prepared rate is held to `MAX_PREPARED_RATE` (768 kHz, a new constant); above it the node renders with the set prepared there, so the HRIR is applied time-compressed by `rate / 768 kHz`, which shifts its spectral cues up by that factor (the position glide still runs in the graph's time). Preparing costs time and memory in proportion to the file's size times the ratio of the prepared rate to the sphere's, and nothing bounds the vertex count but the file's size. Resampling evaluates the windowed-sinc kernel once per output tap for every batch of responses, so preparing the worst case the bounds allow, an 8 kHz sphere with 50 ms responses, at 384 kHz takes 0.47 s for a 1 MB file and 6.3 s for a 10 MB one (release, 4-core container). Preparing's peak memory is the prepared spectra themselves, `vertices × fft_len × 8` bytes, plus at most 4 MB of resampling scratch: the resampler writes each tap straight into them. A 1 MB 8 kHz sphere (326 vertices, 400-tap responses) prepared at 768 kHz peaks at 175 MB, all of it held afterwards; it peaked at 274 MB while the resampled set and a tap-major copy of the sphere were held beside the spectra. **Migration:** none |
+| trailing bytes after the sphere, a vertex at a near-zero distance or with samples near `f32::MAX`, and a sphere whose faces are all degenerate were accepted | refused with `Trailing`, `Vertex` and `NoFace` |
+| the magic check accepted any bytes whose first four were not all wrong | the bytes must start with `HRIR` |
+| `tutti-spatial`'s `hrtf` feature pulled `hrtf` (and through it `rubato` 0.14 and `byteorder`) | it pulls `rustfft` |
+
 ### Fixed — a 64-bit-capable CLAP plugin runs in an f32 session
 
 The plugin server activated a CLAP plugin at 64-bit whenever it could do

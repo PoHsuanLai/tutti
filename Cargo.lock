@@ -2027,17 +2027,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
-name = "hrtf"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f4de47a84fd55fa33aa5ef337016814fdc869fdad23e7898b5322fa290248e6"
-dependencies = [
- "byteorder",
- "rubato 0.14.1",
- "rustfft",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3473,18 +3462,6 @@ dependencies = [
 
 [[package]]
 name = "rubato"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6dd52e80cfc21894deadf554a5673002938ae4625f7a283e536f9cf7c17b0d5"
-dependencies = [
- "num-complex",
- "num-integer",
- "num-traits",
- "realfft",
-]
-
-[[package]]
-name = "rubato"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5258099699851cfd0082aeb645feb9c084d9a5e1f1b8d5372086b989fc5e56a1"
@@ -4380,7 +4357,7 @@ dependencies = [
  "criterion",
  "flacenc",
  "hound",
- "rubato 0.16.2",
+ "rubato",
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
@@ -4706,7 +4683,7 @@ dependencies = [
  "approx",
  "assert_no_alloc",
  "criterion",
- "hrtf",
+ "rustfft",
  "thiserror 2.0.21",
  "tutti-core",
  "tutti-graph",

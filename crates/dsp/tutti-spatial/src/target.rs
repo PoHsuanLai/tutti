@@ -74,6 +74,7 @@ impl Default for SpatialTarget {
 /// Shared because that asymmetry is easy to get wrong twice. Give the bearing
 /// the linear form and a source crossing behind the listener (170° → -170°, a
 /// 20° move) sweeps 340° the wrong way around the head.
+#[derive(Clone)]
 pub(crate) struct AngleSmoother {
     azimuth: ExponentialSmoother,
     elevation: ExponentialSmoother,

@@ -13,7 +13,7 @@ use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
     NoteExpressionType, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
 };
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
 
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──
 //
@@ -27,7 +27,8 @@ fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
     let event =
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000).with_frame_offset(10);
-    let clap = ClapEvent::from_midi(&event).expect("NoteOn should convert");
+    let clap =
+        ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.frame_offset, 10);
@@ -40,7 +41,8 @@ fn test_note_on_roundtrip() {
 fn test_note_off_roundtrip() {
     let event = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(5), 72, 0x4000)
         .with_frame_offset(20);
-    let clap = ClapEvent::from_midi(&event).expect("NoteOff should convert");
+    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
+        .expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.frame_offset, 20);
@@ -59,7 +61,8 @@ fn test_control_change_roundtrip() {
         midi1_cc_to_midi2(100),
     )
     .with_frame_offset(5);
-    let clap = ClapEvent::from_midi(&event).expect("CC should convert");
+    let clap =
+        ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("CC should convert");
     // CC goes through the generic Midi event
     match clap {
         ClapEvent::Midi(e) => {
@@ -82,7 +85,8 @@ fn test_pitch_bend_roundtrip() {
         MidiChannel::FIRST,
         midi1_pitch_bend_to_midi2(8192),
     );
-    let clap = ClapEvent::from_midi(&event).expect("PitchBend should convert");
+    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
+        .expect("PitchBend should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0] & 0xF0, 0xE0, "PitchBend status nibble");
@@ -99,7 +103,8 @@ fn test_pitch_bend_roundtrip() {
 fn test_program_change_roundtrip() {
     let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(9), 42, None)
         .with_frame_offset(100);
-    let clap = ClapEvent::from_midi(&event).expect("ProgramChange should convert");
+    let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
+        .expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0], 0xC0 | 9, "ProgramChange status byte");

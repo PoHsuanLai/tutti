@@ -4998,8 +4998,10 @@ under both.
   nothing (no lane storage exists), so it, its slot, its setters and
   `NoteExpressionView` are removed; the payload's note expression is empty
   as before. Note expression belongs in the MIDI stream as MIDI 2 per-note
-  messages; turning those into VST3 note-expression events on the plugin
-  side is a follow-up. With these three inputs gone, the plugin node's
+  messages, and each format host turns those into its own note expression
+  (VST3: `tutti-vst3-host`'s event list, from the MIDI it stages; see
+  ["VST3 note expression from MIDI 2"](#vst3-note-expression-from-midi-2)).
+  With these three inputs gone, the plugin node's
   `InputSlot`s are gone; the in-process VST2 node's polled transport was the
   last user of the slot type (both deleted: ["In-process VST2 live
   transport from `Cx`"](#in-process-vst2-live-transport-from-cx)).
@@ -6482,6 +6484,72 @@ counter and the empty block; `vst2_in_process_no_alloc.rs` renders with a
 meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
+
+#### VST3 note expression from MIDI 2
+
+A plugin's note expression comes from its MIDI input: the plugin node
+forwards MIDI 2 per-note messages on its event input untouched, and the
+VST3 event list (`EventList::update_from_sources`) turns them into
+note-expression value events bound to the note-on's `noteId`
+(`note_id_for(channel, note)`):
+
+- **Per-note pitch bend** becomes `kTuningTypeID`: the bend over its
+  channel's per-note bend range, in semitones, on VST3's ±120-semitone
+  scale (`0.5 + semitones / 240`). The range starts at the MPE default, ±48
+  (what the engine's own synth assumes), and follows the stream's
+  "Sensitivity of Per-Note Pitch Bend" (RPN #00/07) per channel
+  (`tutti_midi_types::PerNoteBendRanges`, kept by the list across blocks;
+  the message itself is consumed). The range is keyed by channel alone,
+  ignoring the UMP group, as the note id is; a fork (an export) starts
+  every channel at ±48, since it does not carry the live MIDI that set
+  them. Before this, a full-scale bend was mapped to ±120
+  semitones, so a VST3 plugin was bent 2.5 times as far as a CLAP plugin or
+  the engine's synth by the same MIDI.
+- **Per-note controllers** (registered and assignable, indices 7, 10 and
+  74) become volume, pan and brightness; others have no VST3 dimension and
+  are dropped.
+
+The CLAP host reads the same stream the same way: its `InputEventList`
+keeps a `PerNoteBendRanges` across blocks, consumes RPN #00/07, and tells
+the plugin `CLAP_NOTE_EXPRESSION_TUNING` as the bend over its channel's
+range, in semitones. A tuning a CLAP plugin emits goes back on the wire
+over the ±48 default, since the host sends no sensitivity with it.
+
+A classic MPE controller sets the bend range with RPN #00/00 on a member
+channel, which in MPE (RP-053) sets every member channel's range. The
+input node's `MpeIngest`, which has already made those channels' bends
+per-note bends, turns it into RPN #00/07 on each of the zone's member
+channels (its `translate` yields an allocation-free iterator, since one
+event can become up to fifteen); RPN #00/00 on the master channel sets the
+master's own channel bend range and passes through.
+
+An MPE Configuration Message resets the zone it configures (MPE, RP-053 /
+M1-100-UM, "Pitch Bend Sensitivity": a receiver of an MCM sets the master
+channel to ±2 semitones and every member to ±48). `MpeIngest` absorbs the
+MCM, so it sends the reset in its place: RPN #00/00 = 2 on the master and
+RPN #00/07 = 48 on each member, at the MCM's offset, for the configured
+zone only (the other zone of a dual setup keeps its ranges; a disabling
+MCM sends nothing). A mode the host sets (`MidiInputControls::set_mpe_mode`)
+sends the same for every zone of the new mode, at frame 0 of the block that
+adopts it (`MpeIngest::zone_defaults`), so a receiver that followed the old
+ranges starts the new zones at MPE's defaults either way.
+
+The input node stages each event's translation whole: one that does not fit
+in the block's 512 slots is dropped, all of it, and counted
+(`MidiInputControls::dropped_events`), so a zone's fan-out is never cut
+partway, leaving some members at another range.
+
+Pinned by `an_mcm_resets_its_zones_bend_ranges`,
+`a_requested_mpe_mode_is_adopted_once` (the reset goes out once),
+`a_fan_out_with_no_room_is_dropped_whole_and_counted`,
+`the_input_list_follows_the_per_note_bend_range` (CLAP), `a_per_note_bend_is_tuned_over_its_channels_range`,
+`a_per_note_bend_range_outlives_its_block`,
+`vst3_and_clap_bend_one_stream_by_the_same_semitones` (one stream into
+both formats' lists, across two blocks),
+`a_member_channels_bend_range_becomes_every_members_per_note_range`,
+`a_member_bend_range_fans_out_over_the_zones_ports`,
+`the_mpe_bend_range_fan_out_processes_without_allocating` and, through the
+SDK-built probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`.
 
 ## Decisions for the owner
 

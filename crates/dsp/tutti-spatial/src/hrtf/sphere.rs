@@ -12,7 +12,16 @@ use std::sync::Arc;
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 
-use super::panner::HrtfBinauralError;
+use super::panner::{HrtfBinauralError, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+
+/// The range a vertex's distance from the origin must fall in. Closer, its
+/// direction does not survive normalization in `f32`.
+const MIN_DISTANCE: f64 = 1e-6;
+const MAX_DISTANCE: f64 = 1e6;
+
+/// The largest response sample magnitude accepted. A spectrum sums up to
+/// `fft_len` of them, so a sample near `f32::MAX` would overflow it.
+const MAX_SAMPLE: f32 = 1e6;
 
 /// The parsed dataset, at the rate it was measured at. Immutable once
 /// parsed: every renderer, clone and fork built from the same bytes shares
@@ -72,11 +81,18 @@ impl HrirSphere {
         let len = cur.u32()? as usize;
         let vertices = cur.u32()? as usize;
         let indices = cur.u32()? as usize;
-        if rate == 0 {
-            return Err(HrtfBinauralError::Header("the sample rate is zero"));
+        if !(MIN_SPHERE_RATE..=MAX_SPHERE_RATE).contains(&rate) {
+            return Err(HrtfBinauralError::Rate { rate });
         }
         if len == 0 {
             return Err(HrtfBinauralError::Header("the response length is zero"));
+        }
+        // Half a second at the sphere's rate. Resampling keeps a response's
+        // duration, so at any prepared rate it is at most half a second of
+        // frames there: the bound on what `HrtfSet::build` allocates.
+        let max = rate as usize / 2;
+        if len > max {
+            return Err(HrtfBinauralError::ResponseTooLong { len, max });
         }
         if vertices == 0 {
             return Err(HrtfBinauralError::Header("the sphere has no vertices"));
@@ -99,6 +115,12 @@ impl HrirSphere {
         if needed > bytes.len() {
             return Err(HrtfBinauralError::Truncated {
                 needed,
+                found: bytes.len(),
+            });
+        }
+        if needed < bytes.len() {
+            return Err(HrtfBinauralError::Trailing {
+                size: needed,
                 found: bytes.len(),
             });
         }
@@ -127,13 +149,22 @@ impl HrirSphere {
             for _ in 0..2 * len {
                 responses.push(cur.f32()?);
             }
-            let finite = pos.iter().all(|c| c.is_finite())
-                && responses[start..].iter().all(|s| s.is_finite());
-            let at_origin = pos.iter().all(|&c| c == 0.0);
-            if !finite || at_origin {
+            // NaN fails both comparisons, so a non-finite value is refused
+            // too.
+            let distance = pos
+                .iter()
+                .map(|&c| f64::from(c).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let placed = (MIN_DISTANCE..=MAX_DISTANCE).contains(&distance);
+            let bounded = responses[start..].iter().all(|s| s.abs() <= MAX_SAMPLE);
+            if !placed || !bounded {
                 return Err(HrtfBinauralError::Vertex { vertex });
             }
             positions.push(pos);
+        }
+        if !faces.iter().any(|&f| Face::new(f, &positions).is_some()) {
+            return Err(HrtfBinauralError::NoFace);
         }
 
         Ok(Self {
@@ -161,6 +192,10 @@ impl HrirSphere {
 /// under it). The kernel is centred, so nothing is delayed. The taps are then
 /// scaled by `from / to`: a response's taps are its continuous form times the
 /// sample period, so at twice the rate each tap carries half the weight.
+///
+/// The kernel is truncated at the response's ends (taps outside it count as
+/// zero), so the first and last few output taps of a response that has not
+/// decayed there carry the cut's ripple.
 fn resample(response: &[f32], from: u32, to: u32, out_len: usize) -> Vec<f32> {
     /// Kernel half-width, in zero crossings.
     const HALF_WIDTH: f64 = 32.0;

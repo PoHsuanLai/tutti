@@ -57,10 +57,40 @@ pub enum HrtfBinauralError {
         /// Bytes given.
         found: usize,
     },
-    /// The header describes no usable sphere: a zero rate, length or vertex
-    /// count, or an index count that is not a whole number of triangles.
+    /// The bytes run past the sphere their header describes.
+    #[error("HRIR sphere has trailing bytes: {size} bytes describe it, {found} present")]
+    Trailing {
+        /// Bytes the header implies.
+        size: usize,
+        /// Bytes given.
+        found: usize,
+    },
+    /// The header describes no usable sphere: a zero length or vertex count,
+    /// or an index count that is not a whole number of triangles.
     #[error("bad HRIR sphere header: {0}")]
     Header(&'static str),
+    /// The sphere's sample rate is outside [`MIN_SPHERE_RATE`] to
+    /// [`MAX_SPHERE_RATE`] Hz. Resampling scales the response length by the
+    /// ratio of the rates, so the bound keeps a file from asking for a
+    /// response thousands of times its own size.
+    #[error("HRIR sphere rate {rate} Hz is outside {MIN_SPHERE_RATE}..={MAX_SPHERE_RATE} Hz")]
+    Rate {
+        /// The rate the header gives, in Hz.
+        rate: u32,
+    },
+    /// The responses last longer than half a second at the sphere's rate
+    /// (`len > rate / 2`), so a response prepared at any rate is at most
+    /// half a second of frames there. Measured HRIRs last a few
+    /// milliseconds.
+    #[error(
+        "HRIR responses are {len} frames, past the {max} (half a second) the sphere's rate allows"
+    )]
+    ResponseTooLong {
+        /// The response length the header gives, in frames.
+        len: usize,
+        /// The longest the sphere's rate allows, in frames.
+        max: usize,
+    },
     /// A face names a vertex the sphere does not have.
     #[error("face {face} names vertex {vertex}, but the sphere has {vertices} vertices")]
     FaceIndex {
@@ -71,14 +101,28 @@ pub enum HrtfBinauralError {
         /// How many vertices the sphere has.
         vertices: usize,
     },
-    /// A vertex sits at the origin, or holds a non-finite coordinate or
-    /// response sample.
-    #[error("vertex {vertex} is at the origin or holds a non-finite value")]
+    /// A vertex's distance from the origin is outside `1e-6..=1e6`, or one
+    /// of its response samples is non-finite or larger in magnitude than
+    /// `1e6`. (A position too close to the origin normalizes to NaN; a
+    /// sample near `f32::MAX` overflows the FFT.)
+    #[error("vertex {vertex} is too near or far from the origin, or holds an out-of-range value")]
     Vertex {
         /// The vertex's index.
         vertex: usize,
     },
+    /// No face is a usable triangle: there are none, or each one's plane
+    /// passes through the origin, so no direction can be blended.
+    #[error("the HRIR sphere has no usable face")]
+    NoFace,
 }
+
+/// The lowest sphere rate [`HrtfBinauralNode::new`](crate::HrtfBinauralNode::new)
+/// accepts, in Hz.
+pub const MIN_SPHERE_RATE: u32 = 8_000;
+
+/// The highest sphere rate [`HrtfBinauralNode::new`](crate::HrtfBinauralNode::new)
+/// accepts, in Hz.
+pub const MAX_SPHERE_RATE: u32 = 384_000;
 
 /// The sphere's rate vocabulary: an integral Hz, as the file stores it. It is
 /// also the identity a rebuild compares on (an integer equality, not a float

@@ -112,6 +112,17 @@ fn synthetic_hrir_sphere(sample_rate: u32, ir_len: usize) -> Vec<u8> {
         [1.0, -1.0, -1.0],
     ];
     let faces: [[u32; 3]; 4] = [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
+    sphere_bytes(sample_rate, ir_len, &verts, &faces)
+}
+
+/// A sphere in the HRIR byte format whose every response is a unit delta.
+#[cfg(feature = "hrtf")]
+fn sphere_bytes(
+    sample_rate: u32,
+    ir_len: usize,
+    verts: &[[f32; 3]],
+    faces: &[[u32; 3]],
+) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(b"HRIR");
     b.extend_from_slice(&sample_rate.to_le_bytes());
@@ -119,12 +130,12 @@ fn synthetic_hrir_sphere(sample_rate: u32, ir_len: usize) -> Vec<u8> {
     b.extend_from_slice(&(verts.len() as u32).to_le_bytes());
     b.extend_from_slice(&((faces.len() * 3) as u32).to_le_bytes());
     for f in faces {
-        for idx in f {
+        for &idx in f {
             b.extend_from_slice(&idx.to_le_bytes());
         }
     }
     for v in verts {
-        for comp in v {
+        for &comp in v {
             b.extend_from_slice(&comp.to_le_bytes());
         }
         for _ in 0..2 {
@@ -183,4 +194,45 @@ fn hrtf_binaural_moving_source_is_allocation_free() {
         rig.output(0).iter().any(|s| s.abs() > 1e-6),
         "the node rendered silence; the gate walked no DSP"
     );
+}
+
+/// The nearest-vertex fallback: one face covering only a patch in front, so
+/// a source behind the listener misses the hint and every face, and each
+/// step scans the vertices for the nearest.
+///
+/// Mutation (run): collecting the vertices' dot products into a `Vec` and
+/// taking its maximum in `HrtfSet::weights`'s fallback → fails on the first
+/// step.
+#[cfg(feature = "hrtf")]
+#[test]
+fn hrtf_binaural_nearest_vertex_fallback_is_allocation_free() {
+    use tutti_spatial::HrtfBinauralNode;
+
+    let verts = [
+        [0.0, 0.0, -1.0],
+        [-0.5, 0.0, -0.866],
+        [0.0, 0.5, -0.866],
+        [0.0, 0.0, 1.0],
+    ];
+    let bytes = sphere_bytes(48_000, 64, &verts, &[[0, 1, 2]]);
+    let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("the sphere parses");
+    node.set_position(180.0, 0.0);
+    gate(node, 3);
+}
+
+/// A re-prepare at the rate the node already has (a new block size) keeps
+/// the prepared sphere, so it allocates nothing.
+///
+/// Mutation (run): removing the same-rate early return in
+/// `HrtfBinaural::set_sample_rate` → the rebuild allocates and fails.
+#[cfg(feature = "hrtf")]
+#[test]
+fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
+    use tutti_graph::Prepare;
+    use tutti_spatial::HrtfBinauralNode;
+
+    let bytes = synthetic_hrir_sphere(48_000, 64);
+    let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
+    let prepare = Prepare::new(SampleRate(48_000.0), tutti_core::Samples(256));
+    assert_no_alloc::assert_no_alloc(|| node.prepare(&prepare));
 }

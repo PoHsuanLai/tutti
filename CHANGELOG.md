@@ -42,9 +42,11 @@ the 50 ms de-zipper), and fixes what the crate could not:
 |---|---|
 | latency 511 frames (one 512-frame frame less one) | 128 frames (one convolution step). PDC picks the new figure up from the shape; nothing to migrate unless you hard-coded 511 |
 | tail `FRAME_LEN + 128` = 640 frames | the latency plus the response length less one, at the prepared rate |
-| a sphere resampled to another rate kept its taps' scale, so its level changed with the rate (+0.7 dB at 48 kHz from a 44.1 kHz set) | resampled by a windowed sinc with taps scaled by `from / to`, which keeps the frequency response |
+| a sphere resampled to another rate was time-compressed and cut short (the crate passed its resampler the inverse ratio), about −0.7 dB at DC at 48 kHz from a 44.1 kHz set | resampled by a windowed sinc with taps scaled by `from / to`, which keeps the frequency response and the response's duration: from a 44.1 kHz set at 48 kHz, output is about 0.7 dB louder than before, and the responses longer and correctly timed |
 | after `reset`, the first frame crossfaded in from straight ahead | `reset` seats the filter on the commanded position |
-| `HrtfBinauralError::Sphere(String)` | structured variants: `NotASphere`, `Truncated { needed, found }`, `Header(&str)`, `FaceIndex { face, vertex, vertices }`, `Vertex { vertex }`. **Migration:** a `match` on `Sphere(_)` matches the error as a whole instead |
+| `HrtfBinauralError::Sphere(String)` | structured variants: `NotASphere`, `Truncated { needed, found }`, `Trailing { size, found }`, `Header(&str)`, `Rate { rate }`, `ResponseTooLong { len, max }`, `FaceIndex { face, vertex, vertices }`, `Vertex { vertex }`, `NoFace`. **Migration:** a `match` on `Sphere(_)` matches the error as a whole instead |
+| any nonzero sphere rate was accepted, so a 1 Hz file with 32-tap responses prepared a 1.5M-tap response at 48 kHz (and a longer one could exhaust memory) | the rate must be in `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` (8–384 kHz) and the responses at most half a second at it, so a prepared response is at most half a second of frames at the prepared rate. **Migration:** none for a measured HRIR set |
+| trailing bytes after the sphere, a vertex at a near-zero distance or with samples near `f32::MAX`, and a sphere whose faces are all degenerate were accepted | refused with `Trailing`, `Vertex` and `NoFace` |
 | the magic check accepted any bytes whose first four were not all wrong | the bytes must start with `HRIR` |
 | `tutti-spatial`'s `hrtf` feature pulled `hrtf` (and through it `rubato` 0.14 and `byteorder`) | it pulls `rustfft` |
 

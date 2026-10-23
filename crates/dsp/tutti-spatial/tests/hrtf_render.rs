@@ -6,13 +6,15 @@
 //! - a mirror-symmetric sphere renders a source straight ahead with equal
 //!   ears, and one hard left with the left ear louder;
 //! - a direction no face covers takes the nearest vertex instead of failing;
-//! - resampling the sphere keeps its DC gain;
-//! - a malformed sphere is refused when the node is built.
+//! - resampling the sphere keeps its DC gain, and downsampling low-passes
+//!   below the new Nyquist;
+//! - a malformed sphere is refused when the node is built, and so is one
+//!   whose rate or response length would make preparing it unbounded.
 
-use tutti_core::{Azimuth, Elevation, SampleRate};
+use tutti_core::{Azimuth, Elevation, SampleRate, Samples, Tail};
 use tutti_graph::contract::{drive, prepared};
-use tutti_graph::Node;
-use tutti_spatial::{HrtfBinauralError, HrtfBinauralNode};
+use tutti_graph::{Node, Prepare};
+use tutti_spatial::{HrtfBinauralError, HrtfBinauralNode, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`STEP` in `panner.rs`).
@@ -383,11 +385,143 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
     }
 }
 
+/// Downsampling low-passes below the new Nyquist rate. A sphere measured
+/// at 96 kHz with a delta of gain `g` at source tap 48, rendered at 48 kHz:
+/// the kernel's cutoff is `0.95 × to / from` = 0.475 of the source rate, so
+/// the delta peaks at output tap 24 at the kernel's centre, `cutoff × from /
+/// to` = `0.475 × 2` of the gain, and the DC gain (the sum of the taps)
+/// stays `g`. Tolerances as in the upsampling test above.
+///
+/// Mutation (run): a cutoff of a constant `0.95` (no low-pass when
+/// `from > to`: the source's whole band aliases into the output's) fails
+/// the DC check; with that check disabled it keeps the peak's tap but
+/// doubles its value (1.71 against 0.855) and fails there too.
+#[test]
+fn downsampling_low_passes_below_the_new_nyquist() {
+    const LEN: usize = 128;
+    const FROM: u32 = 96_000;
+    const TO: u32 = 48_000;
+    let (verts, faces) = icosahedron();
+    let gain = |v: usize, ear: usize| 0.5 + 0.05 * v as f32 + 0.25 * ear as f32;
+    let bytes = sphere_bytes(FROM, LEN, &verts, &faces, |v, ear| {
+        let mut r = vec![0.0f32; LEN];
+        r[48] = gain(v, ear);
+        r
+    });
+    let mut node = node(&bytes, TO);
+    let v = 8;
+    node.set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
+    Node::reset(&mut node);
+    let ones = vec![1.0f32; 64];
+    let mut last = [0.0f32; 2];
+    for _ in 0..64 {
+        let out = drive(&mut node, SampleRate(f64::from(TO)), &[&ones, &ones], &[]);
+        last = [out[0][63], out[1][63]];
+    }
+    for (ear, dc) in last.into_iter().enumerate() {
+        let want = gain(v, ear);
+        assert!(
+            (dc - want).abs() <= 0.02 * want,
+            "ear {ear}: DC gain {dc} at {TO} Hz, {want} at {FROM} Hz"
+        );
+    }
+
+    let (l, r) = ir_of(&mut node, bearing_of(verts[v]), TO, LEN / 2);
+    for (ear, ir) in [(0, &l), (1, &r)] {
+        let (at, peak) = ir
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .map(|(i, p)| (i, *p))
+            .expect("non-empty");
+        let want = 0.475 * 2.0 * gain(v, ear);
+        assert_eq!(at, 24, "ear {ear}: the resampled delta peaks at tap {at}");
+        assert!(
+            (peak - want).abs() <= 1e-3 * want,
+            "ear {ear}: the resampled delta's peak is {peak}, the kernel's centre {want}"
+        );
+    }
+}
+
+/// A regular tetrahedron: the smallest sphere that encloses the listener.
+fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+    let verts = vec![
+        [1.0, 1.0, 1.0],
+        [-1.0, -1.0, 1.0],
+        [-1.0, 1.0, -1.0],
+        [1.0, -1.0, -1.0],
+    ];
+    let faces = vec![[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
+    (verts, faces)
+}
+
+/// Preparing a sphere resamples it, which scales its response length by
+/// the ratio of the rates. The file's rate is held to
+/// `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` and its responses to half a second
+/// there, so what preparing allocates is bounded by the prepared rate and
+/// not by the file: a 1 Hz sphere with 32-tap responses (32 s) once
+/// prepared a 1.5M-tap response at 48 kHz.
+///
+/// The bound is pinned at both edges, and at the longest response allowed
+/// the tail at a new rate is the latency plus exactly half a second of
+/// frames there, less one.
+///
+/// Mutations (run): no lower rate bound → the 1 Hz sphere is refused for
+/// its length instead and the `Rate` match fails; `rate > MAX_SPHERE_RATE`
+/// dropped → 384 001 Hz builds and fails; no length bound → the 4 001-tap
+/// sphere builds and fails; `len >= max` → the 4 000-tap sphere is refused
+/// and fails.
+#[test]
+fn the_spheres_rate_and_response_length_are_bounded() {
+    let (verts, faces) = tetrahedron();
+    let sphere = |rate: u32, len: usize| {
+        sphere_bytes(rate, len, &verts, &faces, |_, _| {
+            let mut r = vec![0.0f32; len];
+            r[0] = 1.0;
+            r
+        })
+    };
+    let build = |bytes: &[u8]| HrtfBinauralNode::new(bytes, SampleRate(48_000.0));
+
+    for rate in [1, MIN_SPHERE_RATE - 1, MAX_SPHERE_RATE + 1] {
+        assert!(
+            matches!(build(&sphere(rate, 32)).err(), Some(HrtfBinauralError::Rate { rate: r }) if r == rate),
+            "a {rate} Hz sphere must be refused for its rate"
+        );
+    }
+    for rate in [MIN_SPHERE_RATE, MAX_SPHERE_RATE] {
+        assert!(build(&sphere(rate, 32)).is_ok(), "{rate} Hz is in range");
+    }
+
+    let max = MIN_SPHERE_RATE as usize / 2;
+    assert!(matches!(
+        build(&sphere(MIN_SPHERE_RATE, max + 1)).err(),
+        Some(HrtfBinauralError::ResponseTooLong { len, max: m }) if len == max + 1 && m == max
+    ));
+    let longest = sphere(MIN_SPHERE_RATE, max);
+    let mut node = HrtfBinauralNode::new(&longest, SampleRate(f64::from(MIN_SPHERE_RATE)))
+        .expect("the longest response allowed builds");
+    let to = 2 * MIN_SPHERE_RATE;
+    node.prepare(&Prepare::new(SampleRate(f64::from(to)), Samples(64)));
+    let half_second = to as usize / 2;
+    assert_eq!(
+        node.shape().tail,
+        Tail::Finite(Samples(STEP + half_second - 1)),
+        "half a second at {to} Hz is {half_second} frames"
+    );
+}
+
 /// A malformed sphere fails at `new`, on the control thread, with an error
 /// naming what is wrong, instead of reaching the audio thread.
 ///
-/// Mutation (run): dropping the face-index check in `HrirSphere::parse` →
-/// the out-of-range sphere builds and the test fails.
+/// Mutations (run), each in `HrirSphere::parse`: dropping the face-index
+/// check → the out-of-range sphere builds and fails; dropping the sample
+/// bound → the 1e38 sphere builds and fails; dropping the distance bound
+/// (keeping the finiteness check) → the 1e-30 vertex builds and fails;
+/// dropping the pre-allocation size check → the claimed header fails on
+/// its first face word instead (`needed: 24`) and the size match fails;
+/// dropping the trailing-bytes check → the long sphere builds and fails;
+/// dropping the usable-face check → the degenerate sphere builds and fails.
 #[test]
 fn a_malformed_sphere_is_refused_at_construction() {
     let (verts, faces) = icosahedron();
@@ -436,4 +570,60 @@ fn a_malformed_sphere_is_refused_at_construction() {
         build(&nan),
         Some(HrtfBinauralError::Vertex { vertex: 5 })
     ));
+
+    // A sample that would overflow the spectrum, and a position too close
+    // to the origin to normalize (it became NaN).
+    let huge = sphere_bytes(RATE, 8, &verts, &faces, |v, _| {
+        vec![if v == 2 { 1e38 } else { 0.0 }; 8]
+    });
+    assert!(matches!(
+        build(&huge),
+        Some(HrtfBinauralError::Vertex { vertex: 2 })
+    ));
+    let mut tiny_verts = verts.clone();
+    tiny_verts[4] = [1e-30, 0.0, 0.0];
+    let tiny = sphere_bytes(RATE, 8, &tiny_verts, &faces, delta);
+    assert!(matches!(
+        build(&tiny),
+        Some(HrtfBinauralError::Vertex { vertex: 4 })
+    ));
+
+    // A header claiming three million indices over a 20-byte file is sized
+    // before anything is allocated, and the error carries the size.
+    let mut header = b"HRIR".to_vec();
+    for word in [RATE, 8, 4, 3_000_000] {
+        header.extend_from_slice(&word.to_le_bytes());
+    }
+    let claimed = (4 * 8 * 2 + 4 * 3 + 3_000_000) * 4 + 20;
+    assert!(
+        matches!(
+            build(&header),
+            Some(HrtfBinauralError::Truncated { needed, found: 20 }) if needed == claimed
+        ),
+        "a header claiming more than the bytes hold is refused for its size"
+    );
+
+    let mut long = good.clone();
+    long.push(0);
+    assert!(matches!(
+        build(&long),
+        Some(HrtfBinauralError::Trailing { size, found })
+            if size == good.len() && found == good.len() + 1
+    ));
+
+    // Every face's plane through the origin (each holds an antipodal pair),
+    // and no face at all: no direction can be blended.
+    let flat = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let degenerate = sphere_bytes(RATE, 8, &flat, &[[0, 1, 2], [0, 1, 3]], delta);
+    assert!(matches!(
+        build(&degenerate),
+        Some(HrtfBinauralError::NoFace)
+    ));
+    let faceless = sphere_bytes(RATE, 8, &flat, &[], delta);
+    assert!(matches!(build(&faceless), Some(HrtfBinauralError::NoFace)));
 }

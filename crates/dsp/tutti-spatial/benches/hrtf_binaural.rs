@@ -20,6 +20,7 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tutti_core::{Azimuth, Elevation, SampleRate};
 use tutti_graph::contract::Direct;
+use tutti_graph::Node;
 use tutti_spatial::HrtfBinauralNode;
 
 const BLOCK: usize = 64;
@@ -142,6 +143,9 @@ fn bench(c: &mut Criterion) {
                 .expect("the sphere parses");
             node.set_position(Azimuth(20.0), Elevation(10.0));
             let mut d = Direct::new(node, SampleRate(f64::from(RATE)), BLOCK);
+            // Seat the de-zipper on the position, so the static case renders
+            // one filter from its first block.
+            Node::reset(&mut d.node);
             let mut rng = Lcg(0x2545_f491);
             for ch in d.inputs_mut() {
                 for x in ch.iter_mut() {

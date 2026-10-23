@@ -4,7 +4,7 @@
 //! than in any one processor, so a compressor and a gate measure a signal the
 //! same way and pin silence at the same floor.
 
-use tutti_core::{Amplitude, CompressionRatio, Db, SampleRate, Seconds};
+use tutti_core::{Amplitude, CompressionRatio, Db};
 use tutti_graph::{Inputs, Outputs};
 
 /// Max-abs sidechain detector level for sample `i` of a block.
@@ -96,17 +96,6 @@ pub(crate) fn db_to_amplitude(db: impl Into<Db>) -> Amplitude {
     db.into().to_amplitude()
 }
 
-#[inline]
-pub(crate) fn time_to_coeff(time: impl Into<Seconds>, sample_rate: impl Into<SampleRate>) -> f32 {
-    let time = time.into().get();
-    let sample_rate = sample_rate.into().get();
-    if time <= 0.0 {
-        1.0
-    } else {
-        (-1.0 / (time * sample_rate as f32)).exp()
-    }
-}
-
 /// Pure compressor gain reduction (hard/soft knee).
 #[inline]
 pub(crate) fn compute_compressor_gain_reduction(
@@ -140,10 +129,12 @@ pub(crate) fn compute_compressor_gain_reduction(
     }
 }
 
-/// One-pole IIR envelope smoothing.
+/// One-pole IIR envelope smoothing: `coeff` is the fraction of the gap
+/// closed ([`tutti_core::Seconds::one_pole_coeff`];
+/// 1 is instant, 0 holds).
 #[inline]
 pub(crate) fn smooth_envelope(current: f32, target: f32, coeff: f32) -> f32 {
-    coeff * current + (1.0 - coeff) * target
+    current + coeff * (target - current)
 }
 
 /// Gate gain from gate level (unitless 0..1) and range in dB.
@@ -252,14 +243,15 @@ mod tests {
 
     #[test]
     fn test_smooth_envelope() {
-        // Attack: target > current
-        let result = smooth_envelope(0.0, 1.0, 0.9);
+        // Attack: target > current, a tenth of the gap closed
+        let result = smooth_envelope(0.0, 1.0, 0.1);
         assert!((result - 0.1).abs() < 0.001);
         // Release: target < current
-        let result = smooth_envelope(1.0, 0.0, 0.9);
+        let result = smooth_envelope(1.0, 0.0, 0.1);
         assert!((result - 0.9).abs() < 0.001);
-        // Full attack (coeff=0): instant
-        assert!((smooth_envelope(0.0, 1.0, 0.0) - 1.0).abs() < 0.001);
+        // coeff=1: instant; coeff=0: holds
+        assert_eq!(smooth_envelope(0.0, 1.0, 1.0), 1.0);
+        assert_eq!(smooth_envelope(0.25, 1.0, 0.0), 0.25);
     }
 
     #[test]

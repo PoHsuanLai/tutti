@@ -142,7 +142,7 @@ impl LoadMeter {
         } else {
             // Exact exponential smoothing over audio time, so the mean's
             // response does not depend on the block size.
-            let a = 1.0 - (-(budget / LOAD_MEAN_TIME_CONSTANT)).exp();
+            let a = LOAD_MEAN_TIME_CONSTANT.one_pole_coeff_over(budget);
             let m = self.mean.load(Ordering::Relaxed);
             m + a * (load - m)
         };

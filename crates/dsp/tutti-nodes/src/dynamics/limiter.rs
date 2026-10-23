@@ -322,9 +322,8 @@ impl LimiterNode {
     }
 
     /// A release time as the setters store it: floored at 1 ms. Shared by
-    /// the setters and a driven port's value. Below it the follower's
-    /// coefficient reaches 1.0 (`time_to_coeff` at `<= 0`), the envelope
-    /// freezes and the gain reduction it holds never releases.
+    /// the setters and a driven port's value, so a driven negative release
+    /// releases at the floor rather than instantly.
     #[inline]
     fn clamp_release(secs: f32) -> f32 {
         secs.max(0.001)

@@ -484,10 +484,13 @@ fn peak(x: &[f32]) -> f32 {
 /// quiet tone comes back at its own level (the gain reduction released),
 /// not held down at the burst's.
 ///
-/// Mutation (run): `update_coefficients` without
-/// `clamp_release` (the driven value as is) → the follower's coefficient
-/// is 1.0 (`time_to_coeff` at `<= 0`), the envelope freezes at the burst's
-/// reduction and the tone stays about 12 dB down → fails.
+/// Two things keep it releasing: `clamp_release` floors the driven value at
+/// 1 ms, and `Seconds::one_pole_coeff` makes a time that is not above zero
+/// instant rather than a freeze. Mutations (run): `update_coefficients`
+/// without `clamp_release` alone → the release is instant and the tone
+/// still comes back → passes; that and `one_pole_coeff` returning 0 (a
+/// hold) for a non-positive time → the envelope freezes at the burst's
+/// reduction and the tone stays silent → fails.
 #[test]
 fn a_limiter_driven_below_its_release_floor_still_releases() {
     const SR: f32 = 48_000.0;

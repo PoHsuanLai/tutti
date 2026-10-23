@@ -482,15 +482,17 @@ fn peak(x: &[f32]) -> f32 {
 /// 1 ms `set_release` floors at. A full-scale burst into a −12 dB limiter,
 /// then a quiet tone under the threshold: the output is finite, and the
 /// quiet tone comes back at its own level (the gain reduction released),
-/// not held down at the burst's.
+/// not held down at the burst's, and it comes back at the 1 ms floor's
+/// pace, not instantly.
 ///
 /// Two things keep it releasing: `clamp_release` floors the driven value at
 /// 1 ms, and `Seconds::one_pole_coeff` makes a time that is not above zero
-/// instant rather than a freeze. Mutations (run): `update_coefficients`
-/// without `clamp_release` alone → the release is instant and the tone
-/// still comes back → passes; that and `one_pole_coeff` returning 0 (a
-/// hold) for a non-positive time → the envelope freezes at the burst's
-/// reduction and the tone stays silent → fails.
+/// instant rather than a freeze. Mutations (run): `clamp_release`
+/// returning `secs` unfloored → the release is instant, the first
+/// millisecond of the quiet tone passes at 0.99 of its input → fails;
+/// that and `one_pole_coeff` returning 0 (a hold) for a non-positive time
+/// → the envelope freezes at the burst's reduction and the tone stays
+/// silent → fails.
 #[test]
 fn a_limiter_driven_below_its_release_floor_still_releases() {
     const SR: f32 = 48_000.0;
@@ -499,7 +501,11 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
             .map(|i| amp * (std::f32::consts::TAU * 440.0 * i as f32 / SR).sin())
             .collect()
     };
-    let mut input = tone(1.0, 12_000);
+    // The burst's length, and the limiter's latency: its 5 ms lookahead is
+    // 240 frames at 48 kHz, and the ring delays by one less.
+    const BURST: usize = 12_000;
+    const LATENCY: usize = 239;
+    let mut input = tone(1.0, BURST);
     input.extend(tone(0.05, 36_000));
     let out = render_driven(
         LimiterNode::with_channels(ChannelLayout::MONO, -12.0, -12.0),
@@ -509,6 +515,18 @@ fn a_limiter_driven_below_its_release_floor_still_releases() {
         &input,
     );
     assert!(out.iter().all(|v| v.is_finite()), "finite throughout");
+    // The first millisecond of the quiet tone out of the lookahead: at the
+    // 1 ms floor the gain is still recovering from the burst's 0.25
+    // (about 0.63 of the input over the window); an instant release
+    // would pass it whole (about 0.99).
+    let quiet = BURST + LATENCY;
+    let ms = 48;
+    let gain = |x: &[f32]| x.iter().map(|v| v.abs()).sum::<f32>();
+    let early = gain(&out[quiet + 1..quiet + 1 + ms]) / gain(&input[BURST + 1..BURST + 1 + ms]);
+    assert!(
+        early < 0.8,
+        "a driven negative release is the 1 ms floor, not instant: {early}"
+    );
     let tail = peak(&out[out.len() - 12_000..]);
     assert!(
         (tail - 0.05).abs() < 0.005,

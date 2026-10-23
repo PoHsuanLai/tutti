@@ -1232,3 +1232,42 @@ fn a_zero_attack_and_release_follow_exactly() {
     assert_eq!(all[3][512], 0.25, "fell to 0.25 without lag");
     assert_eq!(all[3][1_024], 0.0, "fell to silence without lag");
 }
+
+/// **An infinite release holds the peak.** 0.6 for 500 frames (attack 0:
+/// followed exactly), then silence into a release of `∞`: every grid piece
+/// after the burst ends at 0.6, and so does the value a lane reads at the
+/// end.
+///
+/// Mutation (run): `Seconds::one_pole` treating an infinite decay length
+/// as instant (its guard `n > 0.0 && n.is_finite()`) → the envelope drops
+/// to 0 with the burst → fails.
+#[test]
+fn an_infinite_release_holds_the_peak() {
+    let (mut ed, mut exec) = editor(128);
+    ed.insert(
+        NodeKey(1),
+        "pulse",
+        ForkByClone(Pulse {
+            width: ChannelLayout::MONO,
+            on: vec![(0, 500, 0.6)],
+        }),
+    );
+    ed.insert(
+        NodeKey(2),
+        "follower",
+        ForkByClone(follower(1, 0.0, f32::INFINITY, ChannelLayout::MONO)),
+    );
+    wire_audio(&mut ed, 1, 2, 1);
+    tap(&mut ed, 2, 3);
+    ed.commit().expect("commits");
+    let all = render_stopped(&mut ed, &mut exec, &[128], 1_200);
+    let mut pieces = 0;
+    for g in (512..1_200).step_by(STEP) {
+        if all[1][g] != 0.0 {
+            pieces += 1;
+            assert_eq!(all[3][g], 0.6, "frame {g}");
+        }
+    }
+    assert!(pieces > 0, "it keeps sending the held level");
+    assert_eq!(all[0][1_199], 0.6, "a lane reads the peak at the end");
+}

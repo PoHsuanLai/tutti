@@ -37,7 +37,8 @@ const FLOOR: f64 = 1e-7;
 ///   `env ← (1 − c) · env + c · level`, `c = 1 − exp(−1 / (τ · rate))`
 ///   ([`Seconds::one_pole_coeff`]), the envelope in `f64`, with `τ` the
 ///   attack while the level is above the envelope and the release
-///   otherwise. A `τ` of zero (or below) follows the level exactly. Below
+///   otherwise. A `τ` of zero (or below) follows the level exactly, and
+///   an infinite one holds (the envelope never moves that way). Below
 ///   `1e-7` the envelope is 0, so a release reaches silence in finite
 ///   time. The pieces it sends are `f32`.
 /// - **On the grid, one step late.** On every frame `g` whose play count is
@@ -131,8 +132,6 @@ impl EnvelopeFollowerNode {
         } else {
             self.release_coeff
         });
-        // Not `env + c · (level − env)`: at `c = 1` this form is `level`
-        // exactly, so a zero time constant follows exactly.
         let env = (1.0 - c) * self.env + c * level;
         self.env = if env < FLOOR { 0.0 } else { env };
     }

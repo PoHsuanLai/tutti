@@ -11,7 +11,8 @@
 //! is the per-frame solve by construction, so they pin no chord); the
 //! in-block entries are the reference solver's, whose coefficient was within
 //! an `f32` rounding of that one (edges then differed by at most 4e-6), far
-//! inside `RAMP_TOL`.
+//! inside `RAMP_TOL`. The edges agree with a frame-at-a-time render to
+//! ≤ 5e-9.
 //!
 //! Two tolerances, and why they differ:
 //!

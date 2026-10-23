@@ -698,8 +698,8 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     mono. The peak reads the same at any width, as a compressor's linked
     sidechain does. Time smoothing is the one-pole's job.
   - **The one-pole** is `env ← (1 − c) · env + c · level`, with
-    `c = 1 − exp(−1 / (τ · rate))` (`Seconds::one_pole_coeff`, the
-    engine's one converter), and the envelope is kept in `f64` (in
+    `c = 1 − exp(−1 / (τ · rate))` in `f64` through `libm`
+    (`Seconds::one_pole_coeff`, the engine's one converter), and the envelope is kept in `f64` (in
     `f32`, `1 − c` rounds to 1 past about 640 s at 48 kHz and the
     envelope never decays), `τ` the attack
     while the level is above the envelope and the release otherwise; a `τ`

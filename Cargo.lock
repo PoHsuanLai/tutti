@@ -4704,6 +4704,7 @@ dependencies = [
  "bevy_reflect",
  "bytemuck",
  "libc",
+ "libm",
  "loom",
  "serde",
  "serde_json",

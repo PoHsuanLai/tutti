@@ -132,6 +132,12 @@ pub(crate) fn compute_compressor_gain_reduction(
 /// One-pole IIR envelope smoothing: `coeff` is the fraction of the gap
 /// closed ([`tutti_core::Seconds::one_pole_coeff`];
 /// 1 is instant, 0 holds).
+///
+/// At `coeff = 1` the result is `target` only to within half an ulp of the
+/// larger of the two (exactly when they are within 2× of each other). The
+/// follower's `(1 − c) · current + c · target` would be exact there, but in
+/// `f32` its `1 − c` rounds to 1 for a long time constant and the envelope
+/// then stops approaching a lower target.
 #[inline]
 pub(crate) fn smooth_envelope(current: f32, target: f32, coeff: f32) -> f32 {
     current + coeff * (target - current)

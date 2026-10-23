@@ -417,11 +417,13 @@ impl Seconds {
     }
 
     /// `1 − exp(−1 / n)` for a decay length of `n` steps: 1 for an `n`
-    /// that is not above zero (or NaN), 0 for an infinite one.
+    /// that is not above zero (or NaN), 0 for an infinite one. The
+    /// exponential is `libm`'s, so the coefficient is the same on every
+    /// target.
     #[inline]
     fn one_pole(n: f64) -> f32 {
         if n > 0.0 {
-            (1.0 - (-1.0 / n).exp()) as f32
+            (1.0 - libm::exp(-1.0 / n)) as f32
         } else {
             1.0
         }

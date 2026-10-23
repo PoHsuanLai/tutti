@@ -22,7 +22,8 @@ conventions and two zero-time behaviours. It is now one converter in
 - A time constant that is zero, negative or NaN is **instant** (1); an
   infinite one holds (0). The step form's empty or NaN step moves nothing.
 - The formula is the gap-fraction form four of the six copies used, in
-  `f64`, rounded once to `f32`.
+  `f64` with `libm`'s `exp` (so the coefficient does not depend on the
+  platform's C math library), rounded once to `f32`.
 
 Where the bits moved:
 
@@ -49,12 +50,10 @@ Where the bits moved:
   last places (`bevy-tutti`'s compensated-scene digest, a limiter render,
   is re-pinned). The limiter keeps its 1 ms release floor.
 - **`EnvelopeFollowerNode`:** the coefficient is the converter's `f32`
-  instead of an `f64` retention through `libm`, and the step is
+  instead of an `f64` retention (both through `libm`), and the step is
   `(1 − c) · env + c · level` in `f64` (still exact at a zero time). Sent
   pieces move in the last bits. An infinite time constant now holds (it
-  was instant). The `f64` exponential is no longer `libm`'s, so its
-  rounding to `f32` can differ between targets only where the `f64` result
-  sits within an ulp of an `f32` rounding boundary.
+  was instant).
 
 Migration: no public signature changed. Replace a hand-written
 `exp(−1 / (τ · sr))` retention with `1.0 − tau.one_pole_coeff(sr)`, or

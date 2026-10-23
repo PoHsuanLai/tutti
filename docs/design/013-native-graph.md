@@ -3875,7 +3875,15 @@ gets the 4–5× above without touching the compiler.
 - The polysynth's voice bank is SoA (`bank.rs`, `kernel.rs`: `f32x8`
   lanes per sub-voice, one group per eight lanes).
 - The sampler renders each voice a block at a time into planar lanes,
-  vectorised along time (`lanes.rs`).
+  vectorised along time (`lanes.rs`). A placed read whose frames step one
+  file frame each (unity rate, unwrapped, no fade under its taps) runs the
+  Hermite kernel straight over the wave's slices; any other read gathers
+  its taps into `Gather` first, and a looped one takes its taps from the
+  wave wherever `LoopSpan::plain` says the loop does not touch them. A live
+  disk read in steady state does the same from its ring claim
+  (`live_read::steady_lanes`). A voice the gate places nowhere in a range
+  is not read at all (`slot::Piece::Silent`): adding its ±0.0 to the mix
+  changes no bit.
 - The sampler has no cross-voice SoA, on purpose. Each voice
   reads a different wave at a different fractional position, so lanes
   across voices would gather. A sampler voice has no recursive filter (its

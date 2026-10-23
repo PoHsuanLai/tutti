@@ -120,6 +120,21 @@ Memory sources only; no disk, no butler.
 
 Linear at ~1.27 µs per voice.
 
+The block read has since been reworked, bit for bit the same samples. These
+are medians of interleaved runs of the old and new binaries on one machine,
+64 voices, 64-frame blocks:
+
+| case | before | after |
+|---|---|---|
+| `pool64/memory/64` (unity rate) | 81 µs | 50 µs |
+| `pool64/memory-loop/64` | 210 µs | 64 µs |
+| `pool64/memory-loop-varispeed/64` | 222 µs | 104 µs |
+| `pool64/memory-silent/64` (every clip out of window) | 40 µs | 6.3 µs |
+| `sources/memory-source/64` (64 `MemorySource` nodes) | 124 µs | 65 µs |
+| `pool64/disk/64` | 191 µs | 174 µs |
+
+`memory-varispeed` is unchanged: its taps are gathered as before.
+
 **The phase vocoder is the expensive thing in this crate**, and by a long way.
 At 8 voices:
 

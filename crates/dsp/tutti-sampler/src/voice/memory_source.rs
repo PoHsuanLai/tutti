@@ -20,9 +20,9 @@ use tutti_io::Wave;
 
 use super::clock::{BlockClock, Clock};
 use super::interp::{hermite_lanes, place, read_looped_frame, split_position, tap, Gate};
-use super::loop_span::LoopSpan;
+use super::loop_span::{blend, LoopSpan};
 use super::types::Direction;
-use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
+use crate::lanes::{Gather, UNPREPARED_FRAMES};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -316,6 +316,10 @@ pub struct MemorySource {
     /// and in a clone: a source that only plays in a pool or a `VoiceNode`,
     /// which read through their own scratch, carries none).
     positions: Vec<Option<SamplePosition>>,
+
+    /// The block read's gather ([`read_placed_lanes`](Self::read_placed_lanes)),
+    /// sized beside [`positions`](Self::positions) and empty where they are.
+    gather: Gather,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>`. Print the wave length +
@@ -358,6 +362,7 @@ impl Clone for MemorySource {
             // Unsized, so a clone stays allocation-free: a copy inserted as
             // a node is prepared, which sizes it.
             positions: Vec::new(),
+            gather: Gather::empty(),
         }
     }
 }
@@ -385,6 +390,7 @@ impl MemorySource {
             clock: Clock::new(),
             channels: ChannelLayout::STEREO,
             positions: Vec::new(),
+            gather: Gather::empty(),
         }
     }
 
@@ -876,6 +882,9 @@ impl MemorySource {
     /// the one model the offline disk reader seats by too, so the tiers read
     /// the same positions, frame for frame. Pass [`ReadRate::UNITY`] when
     /// nothing stretches.
+    ///
+    /// Returns whether any frame has a position (`false`: the read is
+    /// silent over the whole range).
     #[inline]
     pub(crate) fn placed_positions(
         &self,
@@ -883,48 +892,56 @@ impl MemorySource {
         range: Range<usize>,
         stretch_rate: ReadRate,
         out: &mut [Option<SamplePosition>],
-    ) {
+    ) -> bool {
         if !self.placed {
             out.fill(None);
-            return;
+            return false;
         }
         let step = self.read_rate().then(stretch_rate);
-        place(clock, range, self.gate(stretch_rate), step, out);
+        place(clock, range, self.gate(stretch_rate), step, out)
     }
 
     /// [`read_placed_into`](Self::read_placed_into) for a block: frame `i`
     /// read at `positions[i]` (`None`: silence) into frame `i` of the first
     /// `n` lanes, every frame written. Un-gained, as `read_placed_into` is.
     ///
-    /// An unlooped read (forward, or reversed) of a wave that is mono or as
-    /// wide as the lanes runs the kernel **along time**: each frame's four
-    /// taps are gathered into four lanes (a scattered read, one per voice
-    /// position — the gather is the cost that stays scalar), then the cubic
-    /// runs over the lanes, where the compiler vectorises it. Same taps, same
-    /// fraction, same arithmetic per frame as [`read_frame`], so the same
-    /// samples bit for bit; a frame with no sample (no position, or at or past
-    /// the end) is read from four zero taps at `t` = 0, which the cubic
-    /// returns as exactly `0.0`, as `read_frame`'s callers fill it. A loop
-    /// (its fade blends taps) or a wave folded to another width reads a frame
-    /// at a time through `read_placed_into`.
+    /// A read of a wave that is mono or as wide as the lanes runs the kernel
+    /// **along time**: each frame's four taps are gathered into four lanes
+    /// (a scattered read, one per voice position — the gather is the cost
+    /// that stays scalar), then the cubic runs over the lanes, where the
+    /// compiler vectorises it. Same taps, same fraction, same arithmetic per
+    /// frame as [`read_frame`] (unlooped) and `read_looped_frame` (a forward
+    /// read on a loop, its taps blended inside the fade), so the same
+    /// samples bit for bit; a frame with no sample (no position, or at or
+    /// past the end) is read from four zero taps at `t` = 0, which the cubic
+    /// returns as exactly `0.0`, as `read_frame`'s callers fill it.
+    ///
+    /// Where every frame's taps are consecutive frames of the wave, unclamped
+    /// (an unlooped read at unity rate, away from the wave's ends), the four
+    /// tap lanes *are* the wave, shifted by a frame each: the cubic reads
+    /// them in place, and nothing is gathered.
+    ///
+    /// A wave folded to another width reads a frame at a time through
+    /// `read_placed_into`.
     ///
     /// [`read_frame`]: super::interp::read_frame
-    pub(crate) fn read_placed_lanes(
+    pub(crate) fn read_placed_lanes<L: AsMut<[f32]>>(
         &self,
         positions: &[Option<SamplePosition>],
         direction: Direction,
-        lanes: &mut Lanes,
+        lanes: &mut [L],
         n: usize,
         gather: &mut Gather,
     ) {
         let frames = positions.len();
+        if frames == 0 {
+            return;
+        }
         let len = self.wave.len();
         let src_ch = self.wave.channels();
-        let looped = direction == Direction::Forward && self.loop_mode.span(len).is_some();
         // (A wave past `u32::MAX` frames, 24 hours at 48 kHz, reads a frame
         // at a time: the gather keeps each frame's whole index as a `u32`.)
-        let along_time =
-            !looped && len > 0 && len <= u32::MAX as usize && (src_ch == 1 || src_ch == n);
+        let along_time = len > 0 && len <= u32::MAX as usize && (src_ch == 1 || src_ch == n);
         if !along_time {
             let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
             for (i, pos) in positions.iter().enumerate() {
@@ -932,32 +949,50 @@ impl MemorySource {
                     Some(pos) => self.read_placed_into(*pos, direction, &mut frame[..n]),
                     None => frame[..n].fill(0.0),
                 }
-                lanes.put(i, &frame[..n]);
+                for (lane, &s) in lanes.iter_mut().zip(&frame[..n]) {
+                    lane.as_mut()[i] = s;
+                }
             }
             return;
         }
-        // Each frame's whole index and fraction, as `read_placed_into` →
-        // `get_sample_raw_into` → `read_frame` derive them (`tap_indices`:
-        // the taps are derived from the index per channel with its `tap`),
-        // written for every frame: one with no sample gathers zeros at
-        // `t` = 0, which the cubic returns as `0.0`.
+        let span = match direction {
+            Direction::Forward => self.loop_mode.span(len),
+            Direction::Reverse => None,
+        };
         let Gather {
             index,
             frac,
             live,
             y,
         } = gather;
+        let (index, frac, live) = (
+            &mut index[..frames],
+            &mut frac[..frames],
+            &mut live[..frames],
+        );
         let last = len - 1;
         let flen = len as f64;
+        // Each frame's whole index and fraction, as `read_placed_into` →
+        // `get_sample_raw_into` → `read_frame` (or, on a loop,
+        // `read_looped_raw_into` → `LoopSpan::taps`) derive them, written for
+        // every frame: one with no sample gathers zeros at `t` = 0, which the
+        // cubic returns as `0.0`. The taps are derived from the index per
+        // channel (`tap`, `LoopSpan::frame_taps`).
         for (i, pos) in positions.iter().enumerate() {
             let at = pos.and_then(|pos| {
                 let p = pos.get();
-                // The reversed mirror, and the forward end: `read_placed_into`.
-                match direction {
-                    Direction::Reverse if p >= flen => None,
-                    Direction::Reverse => Some((flen - 1.0 - p).max(0.0)),
-                    Direction::Forward if p >= flen => None,
-                    Direction::Forward => Some(p),
+                // The reversed mirror, the loop's placement, and the end:
+                // `read_placed_into`.
+                let p = match (direction, &span) {
+                    (Direction::Reverse, _) if p >= flen => return None,
+                    (Direction::Reverse, _) => (flen - 1.0 - p).max(0.0),
+                    (Direction::Forward, Some(span)) => span.place(p).0,
+                    (Direction::Forward, None) => p,
+                };
+                if p >= flen {
+                    None
+                } else {
+                    Some(p)
                 }
             });
             (index[i], frac[i], live[i]) = match at {
@@ -970,22 +1005,83 @@ impl MemorySource {
                 None => (0, 0.0, false),
             };
         }
-        let (index, frac, live) = (&index[..frames], &frac[..frames], &live[..frames]);
+        let (index, frac, live) = (&*index, &*frac, &*live);
+        // Whether every frame reads consecutive frames of the wave, its
+        // taps unclamped (and, on a loop, plain: `LoopSpan::plain`). Its own
+        // pass, which a varispeed read leaves at its first frames.
+        let run = live.iter().all(|&on| on)
+            && index.windows(2).all(|w| w[1] == w[0].wrapping_add(1))
+            && span.as_ref().is_none_or(|span| {
+                positions.iter().zip(index).all(|(pos, &idx)| {
+                    pos.is_some_and(|pos| span.plain(idx as usize, span.wrapped(pos.get())))
+                })
+            });
+        // Consecutive taps, clamped nowhere: frames `first - 1` through
+        // `first + frames + 1`, all inside the wave.
+        let first = index[0] as usize;
+        let in_place = run && first >= 1 && first + frames + 2 <= len;
         // Mono fans one interpolated lane to every channel.
         let reads = if src_ch == 1 { 1 } else { n };
-        for c in 0..reads {
+        for (c, lane) in lanes.iter_mut().enumerate().take(reads) {
             let wave = self.wave.channel(c);
-            for (t, lane) in y.iter_mut().enumerate() {
-                for ((s, &idx), &on) in lane.iter_mut().zip(index).zip(live) {
-                    *s = if on {
-                        wave[tap(idx as usize, last, t)]
-                    } else {
-                        0.0
-                    };
+            let out = &mut lane.as_mut()[..frames];
+            if in_place {
+                let from = first - 1;
+                hermite_lanes(
+                    out,
+                    [
+                        &wave[from..],
+                        &wave[from + 1..],
+                        &wave[from + 2..],
+                        &wave[from + 3..],
+                    ],
+                    frac,
+                );
+                continue;
+            }
+            match &span {
+                None => {
+                    for (t, lane) in y.iter_mut().enumerate() {
+                        for ((s, &idx), &on) in lane.iter_mut().zip(index).zip(live) {
+                            *s = if on {
+                                wave[tap(idx as usize, last, t)]
+                            } else {
+                                0.0
+                            };
+                        }
+                    }
+                }
+                Some(span) => {
+                    // A loop's taps wrap through it and blend inside its
+                    // fade, as `read_looped_frame` reads them.
+                    let [y0, y1, y2, y3] = &mut *y;
+                    for (i, pos) in positions.iter().enumerate() {
+                        let (idx, looped) = match pos {
+                            Some(pos) if live[i] => (index[i] as usize, span.wrapped(pos.get())),
+                            _ => {
+                                (y0[i], y1[i], y2[i], y3[i]) = (0.0, 0.0, 0.0, 0.0);
+                                continue;
+                            }
+                        };
+                        if span.plain(idx, looped) {
+                            (y0[i], y1[i], y2[i], y3[i]) =
+                                (wave[idx - 1], wave[idx], wave[idx + 1], wave[idx + 2]);
+                            continue;
+                        }
+                        let taps = span.frame_taps(len, idx, looped);
+                        let sample = |t: usize| {
+                            let tap = taps[t];
+                            let tail = wave[tap.frame];
+                            match tap.fade {
+                                Some((lead, w)) => blend(tail, wave[lead], w),
+                                None => tail,
+                            }
+                        };
+                        (y0[i], y1[i], y2[i], y3[i]) = (sample(0), sample(1), sample(2), sample(3));
+                    }
                 }
             }
             let [y0, y1, y2, y3] = &*y;
-            let out = &mut lanes.lanes_mut()[c][..frames];
             hermite_lanes(
                 out,
                 [&y0[..frames], &y1[..frames], &y2[..frames], &y3[..frames]],
@@ -993,9 +1089,10 @@ impl MemorySource {
             );
         }
         if src_ch == 1 {
-            let (first, rest) = lanes.lanes_mut().split_at_mut(1);
+            let (first, rest) = lanes.split_at_mut(1);
+            let first = &first[0].as_mut()[..frames];
             for lane in rest.iter_mut().take(n.saturating_sub(1)) {
-                lane[..frames].copy_from_slice(&first[0][..frames]);
+                lane.as_mut()[..frames].copy_from_slice(first);
             }
         }
     }
@@ -1156,21 +1253,62 @@ impl MemorySource {
     /// **One algorithm per position model.** Placed: the positions
     /// [`placed_positions`](Self::placed_positions) gives, each read forward
     /// ([`read_placed_into`](Self::read_placed_into)) and gained, silence
-    /// outside the window. Free-running: [`free_frame_into`](Self::free_frame_into)
-    /// per frame.
+    /// outside the window; a block at a time
+    /// ([`read_placed_lanes`](Self::read_placed_lanes)) through `gather`
+    /// when it is sized for the range, else a frame at a time (a source
+    /// driven by hand, unprepared). Free-running:
+    /// [`free_frame_into`](Self::free_frame_into) per frame.
     fn render_range(
         &mut self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
         positions: &mut [Option<SamplePosition>],
+        gather: &mut Gather,
         out: &mut [&mut [f32]],
     ) {
         let n = out.len().min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         let base = range.start;
         if self.placed {
-            let positions = &mut positions[..range.len()];
-            self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
+            let frames = range.len();
+            let positions = &mut positions[..frames];
+            let sounds = self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
+            if !sounds {
+                // Every frame is outside the window: silence, ungained.
+                for lane in out.iter_mut().take(n) {
+                    lane[range.clone()].fill(0.0);
+                }
+                return;
+            }
+            if gather.frames() >= frames {
+                let mut lanes: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+                    std::array::from_fn(|_| Default::default());
+                for (lane, ch) in lanes.iter_mut().zip(out.iter_mut()) {
+                    *lane = &mut ch[range.clone()];
+                }
+                let lanes = &mut lanes[..n];
+                self.read_placed_lanes(positions, Direction::Forward, lanes, n, gather);
+                // The gain on each frame with a position, as `apply_gain`
+                // gains a read frame; the frames without stay 0.0.
+                let gain = self.block_gain();
+                let mut i = 0;
+                while i < frames {
+                    let inside = positions[i].is_some();
+                    let mut j = i + 1;
+                    while j < frames && positions[j].is_some() == inside {
+                        j += 1;
+                    }
+                    if inside {
+                        for lane in lanes.iter_mut() {
+                            for s in &mut lane[i..j] {
+                                *s *= gain;
+                            }
+                        }
+                    }
+                    i = j;
+                }
+                return;
+            }
             for (k, pos) in positions.iter().enumerate() {
                 match pos {
                     None => frame[..n].fill(0.0),
@@ -1245,10 +1383,12 @@ impl MemorySource {
     #[inline(never)]
     fn render_unprepared(&mut self, clock: &BlockClock<'_>, frames: usize, out: &mut [&mut [f32]]) {
         let mut positions = [None; UNPREPARED_FRAMES];
+        // Unsized: the frame-at-a-time read.
+        let mut gather = Gather::empty();
         let mut from = 0;
         while from < frames {
             let to = (from + UNPREPARED_FRAMES).min(frames);
-            self.render_range(clock, from..to, &mut positions, out);
+            self.render_range(clock, from..to, &mut positions, &mut gather, out);
             from = to;
         }
     }
@@ -1257,7 +1397,7 @@ impl MemorySource {
     /// prepared).
     #[cfg(test)]
     pub(crate) fn scratch_frames(&self) -> usize {
-        self.positions.len()
+        self.positions.len().min(self.gather.frames())
     }
 
     /// Rewind the free-running cursor to the start and stop it; forget the
@@ -1296,6 +1436,7 @@ impl Node for MemorySource {
         self.positions.clear();
         self.positions.resize(frames, None);
         self.positions.shrink_to_fit();
+        self.gather.resize(frames);
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1322,8 +1463,16 @@ impl Node for MemorySource {
         // block.
         if frames <= self.positions.len() {
             let mut positions = std::mem::take(&mut self.positions);
-            self.render_range(&clock, 0..frames, &mut positions, &mut refs[..n]);
+            let mut gather = std::mem::replace(&mut self.gather, Gather::empty());
+            self.render_range(
+                &clock,
+                0..frames,
+                &mut positions,
+                &mut gather,
+                &mut refs[..n],
+            );
             self.positions = positions;
+            self.gather = gather;
         } else {
             self.render_unprepared(&clock, frames, &mut refs[..n]);
         }

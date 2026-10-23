@@ -67,9 +67,12 @@ pub(crate) struct PlaybackSlot {
     /// rather than being dropped on the audio thread.
     /// After that, stretch and pitch changes only set the unit's atomics.
     ///
-    /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
-    /// drift from the processor's atomics — every mutation goes through
-    /// [`PlaybackSlot::set_stretch`], which writes both in one step.
+    /// `voice.play.stretch` / `voice.play.pitch` and the unit's atomics are
+    /// kept in step by their writers: a unit is built from the voice's own
+    /// values (`VoicePoolHandle::send`, `VoiceNode`'s constructor) and
+    /// installed with it, and a later change goes through
+    /// [`PlaybackSlot::set_stretch`], which writes both. The unit stores
+    /// them clamped to its range.
     pub(crate) stretch: Option<stretch::Unit>,
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
@@ -270,14 +273,17 @@ impl PlaybackSlot {
             "a piece longer than the scratch"
         );
         let mut from = range.start;
-        for run in clock.runs_in(range.clone()) {
-            if run.jump {
-                if run.start > from {
-                    self.render_piece(clock, from..run.start, n, scratch, out);
-                    from = run.start;
+        // Most blocks hold no jump, and then no range of them does.
+        if clock.jumps() {
+            for run in clock.runs_in(range.clone()) {
+                if run.jump {
+                    if run.start > from {
+                        self.render_piece(clock, from..run.start, n, scratch, out);
+                        from = run.start;
+                    }
+                    self.flush_playhead_state();
+                    self.prime_stretch(clock, run.start, n, scratch);
                 }
-                self.flush_playhead_state();
-                self.prime_stretch(clock, run.start, n, scratch);
             }
         }
         self.render_piece(clock, from..range.end, n, scratch, out);
@@ -344,7 +350,7 @@ impl PlaybackSlot {
                 let pos = origin.get() - back * step;
                 *slot = (pos >= 0.0).then_some(SamplePosition(pos));
             }
-            sampler.read_placed_lanes(&positions[..frames], direction, raw, n, gather);
+            sampler.read_placed_lanes(&positions[..frames], direction, raw.lanes_mut(), n, gather);
             for lane in raw.lanes_mut().iter_mut().take(n) {
                 scale(&mut lane[..frames], gain);
             }
@@ -378,16 +384,21 @@ impl PlaybackSlot {
             return;
         }
         let frames = range.len();
-        self.render_lanes(clock, range.clone(), n, scratch);
-        for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
-            accumulate(&mut out[c][range.clone()], &lane[..frames]);
+        match self.render_lanes(clock, range.clone(), n, scratch) {
+            Piece::Silent => {}
+            Piece::Ready => {
+                for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
+                    accumulate(&mut out[c][range.clone()], &lane[..frames]);
+                }
+            }
         }
     }
 
     /// Render block frames `range` (at most [`BlockScratch::frames`]) of this voice,
     /// `n` channels wide, into frames `0..range.len()` of `scratch.out`:
-    /// every frame of each of the `n` lanes is written, silence as zero.
-    /// `scratch.raw` is the filter's input, when the voice stretches.
+    /// every frame of each of the `n` lanes is written, silence as zero,
+    /// unless the piece is [`Piece::Silent`]. `scratch.raw` is the filter's
+    /// input, when the voice stretches.
     ///
     /// Forks on the tier and the stretch, and reads what each tier reads:
     /// see the comments at each arm for the rule each keeps.
@@ -397,7 +408,7 @@ impl PlaybackSlot {
         range: Range<usize>,
         n: usize,
         scratch: &mut BlockScratch,
-    ) {
+    ) -> Piece {
         let frames = range.len();
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain.get();
@@ -434,9 +445,12 @@ impl PlaybackSlot {
                 // `window_rate`: a file at another rate than the session's
                 // moves `src_ratio` file frames per output frame.)
                 let stretch_rate = unit.input_rate();
-                sampler.placed_positions(clock, range, stretch_rate, positions);
+                if !sampler.placed_positions(clock, range, stretch_rate, positions) {
+                    // No frame feeds the filter, and every frame is +0.0.
+                    return Piece::Silent;
+                }
                 // Gain before the filter, as the frame read fed it.
-                sampler.read_placed_lanes(positions, direction, raw, n, gather);
+                sampler.read_placed_lanes(positions, direction, raw.lanes_mut(), n, gather);
                 for lane in raw.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }
@@ -461,6 +475,7 @@ impl PlaybackSlot {
                     }
                     i = j;
                 }
+                Piece::Ready
             }
             (VoiceSource::Disk(reader), Some(unit)) if stretching => {
                 // The disk tier has no cursor to scale: the stretch rate is
@@ -471,8 +486,9 @@ impl PlaybackSlot {
                 // publish unity again — a set-once would leave the stream
                 // reading at the old factor.
                 reader.set_stretch_rate(unit.input_rate());
-                reader.render_lanes(clock, range, raw, n, positions);
+                reader.render_lanes(clock, range, raw, n, positions, gather);
                 unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
+                Piece::Ready
             }
             (VoiceSource::Memory(sampler), _) => {
                 // Seated at the gate's origin (`window_rate`, varispeed
@@ -481,11 +497,18 @@ impl PlaybackSlot {
                 // `MemorySource::placed_positions`. Stepping by the gate's
                 // rate read a 24 kHz file on a 48 kHz clock one file frame per
                 // output frame, then jumped back at every block.
-                sampler.placed_positions(clock, range, ReadRate::UNITY, positions);
-                sampler.read_placed_lanes(positions, direction, out, n, gather);
+                let sounds = sampler.placed_positions(clock, range, ReadRate::UNITY, positions);
+                // With no position, every frame reads +0.0, gained to ±0.0
+                // by a finite gain (an infinite or NaN one makes NaNs, which
+                // are read).
+                if !sounds && gain.is_finite() {
+                    return Piece::Silent;
+                }
+                sampler.read_placed_lanes(positions, direction, out.lanes_mut(), n, gather);
                 for lane in out.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }
+                Piece::Ready
             }
             (VoiceSource::Disk(reader), _) => {
                 // Unity, every block: the stretch rate belongs to the filter
@@ -496,10 +519,26 @@ impl PlaybackSlot {
                 // is reachable through ordinary use, not just teardown. The
                 // reader applies its own gain (the stream's control cell).
                 reader.set_stretch_rate(ReadRate::UNITY);
-                reader.render_lanes(clock, range, out, n, positions);
+                reader.render_lanes(clock, range, out, n, positions, gather);
+                Piece::Ready
             }
         }
     }
+}
+
+/// What [`PlaybackSlot::render_lanes`] left for its piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Piece {
+    /// Every frame of the piece is a zero the mix would add (±0.0), so it
+    /// adds nothing: the lanes were not written, and the read was not done.
+    ///
+    /// **Skipping the add is exact.** The owner's mix starts at +0.0 and
+    /// only adds, and under round-to-nearest a sum is -0.0 only when both
+    /// operands are, so no mixed sample is ever -0.0; `x + ±0.0` is `x` for
+    /// every other `x`, and a NaN there stays the quiet NaN arithmetic made.
+    Silent,
+    /// The piece's frames are in the lanes, ready to add.
+    Ready,
 }
 
 /// Whether a [`Playback`] record asks for stretching. Shared by the sender (to

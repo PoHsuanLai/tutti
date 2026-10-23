@@ -59,8 +59,9 @@ use tutti_core::{PosClaim, PosReader, Reader, SamplePosition};
 use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 use crate::MAX_SAMPLER_CHANNELS;
 
-use super::interp::interpolate_taps;
+use super::interp::{hermite_lanes, interpolate_taps};
 use super::loop_span::blend;
+use crate::lanes::{Gather, Lane};
 
 /// Output frames of continuation rendered at a discontinuity: the refill gap
 /// plus the fade, with room to spare.
@@ -230,17 +231,27 @@ impl LiveRead {
     /// Render a block: frame `i` plays straight position `positions[i]`
     /// (`None`: silence), in `segment` (a new one is a jump wherever it
     /// lands), read at `rate` file frames per output frame, scaled by `gain`,
-    /// handed to `emit(i, frame)` (`width` samples). Frames the ring cannot
-    /// supply are counted as underruns on `state`.
+    /// put to `out` as its frame `at + i` (`width` samples). Frames the ring
+    /// cannot supply are counted as underruns on `state`.
+    ///
+    /// **Steady blocks read along time.** Into lanes ([`Out::Lanes`]), a
+    /// block with nothing in flight (no jump, no fade, no ramp, no switch to
+    /// cross) whose every frame reads four consecutive positions the ring
+    /// holds is read a channel at a time: the taps gathered into lanes and
+    /// the cubic run over them, as the memory tier reads a block. Same taps,
+    /// fraction and arithmetic per frame as the frame-at-a-time read (which
+    /// plays such a frame as `read_ring` reads it, gained), so the same
+    /// samples bit for bit; anything else reads a frame at a time.
     #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
-    pub(crate) fn render(
+    pub(crate) fn render<F: FnMut(usize, &[f32])>(
         &mut self,
         positions: &[Option<SamplePosition>],
         segment: u64,
         rate: f64,
         gain: f32,
         state: &RtState,
-        mut emit: impl FnMut(usize, &[f32]),
+        at: usize,
+        out: &mut Out<'_, F>,
     ) {
         let ring = &self.ring;
         let st = &mut self.st;
@@ -249,7 +260,7 @@ impl LiveRead {
         let (Some(reader), Some(map)) = (self.reader.as_mut(), self.map.as_mut()) else {
             // Severed, or a clone: nothing to read (not an underrun).
             for i in 0..positions.len() {
-                emit(i, &silent[..w]);
+                out.put(at + i, &silent[..w]);
             }
             return;
         };
@@ -261,7 +272,7 @@ impl LiveRead {
         }
         let Some(first) = positions.iter().flatten().next().map(|p| p.get()) else {
             for i in 0..positions.len() {
-                emit(i, &silent[..w]);
+                out.put(at + i, &silent[..w]);
             }
             st.last = None;
             st.fade = None;
@@ -292,10 +303,36 @@ impl LiveRead {
             });
         }
 
+        if let Out::Lanes { lanes, gather } = out {
+            if jump.is_none()
+                && st.fade.is_none()
+                && st.recover.is_none()
+                && steady_lanes(
+                    &claim,
+                    &map,
+                    st,
+                    positions,
+                    gain,
+                    &mut lanes[..w],
+                    at,
+                    gather,
+                )
+            {
+                st.last = positions.last().copied().flatten().map(SamplePosition::get);
+                #[cfg(test)]
+                {
+                    for p in positions.iter().flatten() {
+                        st.read_to = st.read_to.max(p.get());
+                    }
+                }
+                return;
+            }
+        }
+
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         for (i, pos) in positions.iter().enumerate() {
             let Some(pos) = pos.map(SamplePosition::get) else {
-                emit(i, &silent[..w]);
+                out.put(at + i, &silent[..w]);
                 st.last = None;
                 st.fade = None;
                 continue;
@@ -317,7 +354,7 @@ impl LiveRead {
             for s in frame[..w].iter_mut() {
                 *s *= gain;
             }
-            emit(i, &frame[..w]);
+            out.put(at + i, &frame[..w]);
             st.last = Some(pos);
             #[cfg(test)]
             {
@@ -325,6 +362,111 @@ impl LiveRead {
             }
         }
     }
+}
+
+/// Where [`LiveRead::render`] puts its frames.
+pub(crate) enum Out<'a, F> {
+    /// Frame `i` handed to the closure.
+    Frames(F),
+    /// Frame `i` into frame `i` of the first `width` lanes, and `gather` for
+    /// a steady block's read along time.
+    Lanes {
+        lanes: &'a mut [Lane],
+        gather: &'a mut Gather,
+    },
+}
+
+impl<F: FnMut(usize, &[f32])> Out<'_, F> {
+    /// Put frame `i`: one sample per channel of `frame`.
+    #[inline]
+    fn put(&mut self, i: usize, frame: &[f32]) {
+        match self {
+            Out::Frames(emit) => emit(i, frame),
+            Out::Lanes { lanes, .. } => {
+                for (lane, &s) in lanes.iter_mut().zip(frame) {
+                    lane[i] = s;
+                }
+            }
+        }
+    }
+}
+
+/// A steady block's read along time (see [`LiveRead::render`]): frame `i`
+/// into frame `at + i` of `lanes` (the reader's width), gained, when every
+/// frame has a position whose four taps are consecutive positions `claim`
+/// holds, no switch is crossed, and the ring is mono or as wide as the
+/// lanes. `false`, with nothing written, otherwise.
+#[allow(clippy::too_many_arguments)] // one block's read, and where it goes
+fn steady_lanes(
+    claim: &PosClaim<'_>,
+    map: &RingMap,
+    st: &State,
+    positions: &[Option<SamplePosition>],
+    gain: f32,
+    lanes: &mut [Lane],
+    at: usize,
+    gather: &mut Gather,
+) -> bool {
+    let frames = positions.len();
+    let (w, src) = (lanes.len(), st.src);
+    if frames == 0 || frames > gather.frames() || !(src == 1 || src == w) {
+        return false;
+    }
+    // A switch to cross: `State::cross_switch` acts at some frame.
+    let switch = map.fade.is_some() && map.epoch != st.applied_epoch;
+    let Gather { index, frac, y, .. } = gather;
+    let mut base = 0u64;
+    for (i, pos) in positions.iter().enumerate() {
+        let Some(pos) = pos.map(SamplePosition::get) else {
+            return false;
+        };
+        let short_of_switch = matches!(
+            pos.partial_cmp(&(map.at.saturating_sub(2) as f64)),
+            Some(std::cmp::Ordering::Less)
+        );
+        if switch && !short_of_switch {
+            return false;
+        }
+        let Some((taps, f)) = map.arrangement(pos).taps(pos) else {
+            return false;
+        };
+        if i == 0 {
+            base = taps[0];
+        }
+        let consecutive = (0..4).all(|t| taps[t] == taps[0].wrapping_add(t as u64));
+        let off = taps[0].wrapping_sub(base);
+        if !consecutive || off > u32::MAX as u64 || !claim.holds(taps[0]) || !claim.holds(taps[3]) {
+            return false;
+        }
+        index[i] = off as u32;
+        frac[i] = f;
+    }
+    let (index, frac) = (&index[..frames], &frac[..frames]);
+    let reads = if src == 1 { 1 } else { w };
+    for (c, lane_out) in lanes.iter_mut().enumerate().take(reads) {
+        for (t, lane) in y.iter_mut().enumerate() {
+            for (s, &k) in lane.iter_mut().zip(index) {
+                *s = claim.frame(base + k as u64 + t as u64).get(c);
+            }
+        }
+        let [y0, y1, y2, y3] = &*y;
+        let out = &mut lane_out[at..at + frames];
+        hermite_lanes(
+            out,
+            [&y0[..frames], &y1[..frames], &y2[..frames], &y3[..frames]],
+            frac,
+        );
+        for s in out.iter_mut() {
+            *s *= gain;
+        }
+    }
+    if src == 1 {
+        let (first, rest) = lanes.split_at_mut(1);
+        for lane in rest {
+            lane[at..at + frames].copy_from_slice(&first[0][at..at + frames]);
+        }
+    }
+    true
 }
 
 impl State {

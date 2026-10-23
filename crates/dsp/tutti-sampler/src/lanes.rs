@@ -148,12 +148,7 @@ impl BlockScratch {
             out: Lanes::empty(),
             raw: Lanes::empty(),
             positions: Vec::new(),
-            gather: Gather {
-                index: Vec::new(),
-                frac: Vec::new(),
-                live: Vec::new(),
-                y: std::array::from_fn(|_| Vec::new()),
-            },
+            gather: Gather::empty(),
         }
     }
 
@@ -186,13 +181,7 @@ impl BlockScratch {
         self.out.resize(frames, width);
         self.raw.resize(frames, width);
         fit(&mut self.positions, frames, None);
-        let g = &mut self.gather;
-        fit(&mut g.index, frames, 0);
-        fit(&mut g.frac, frames, 0.0);
-        fit(&mut g.live, frames, false);
-        for lane in &mut g.y {
-            fit(lane, frames, 0.0);
-        }
+        self.gather.resize(frames);
     }
 }
 
@@ -215,6 +204,35 @@ pub(crate) struct Gather {
     /// Whether frame `i` has a sample (a position inside the file).
     pub(crate) live: Vec<bool>,
     pub(crate) y: [Lane; 4],
+}
+
+impl Gather {
+    /// No frames. Allocation-free.
+    pub(crate) fn empty() -> Self {
+        Self {
+            index: Vec::new(),
+            frac: Vec::new(),
+            live: Vec::new(),
+            y: std::array::from_fn(|_| Vec::new()),
+        }
+    }
+
+    /// The frames a read through it may be (0 before it is sized).
+    #[inline]
+    pub(crate) fn frames(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Every buffer exactly `frames` long, zeroed. Allocates: control
+    /// thread.
+    pub(crate) fn resize(&mut self, frames: usize) {
+        fit(&mut self.index, frames, 0);
+        fit(&mut self.frac, frames, 0.0);
+        fit(&mut self.live, frames, false);
+        for lane in &mut self.y {
+            fit(lane, frames, 0.0);
+        }
+    }
 }
 
 /// `dst[i] += src[i]` over the shorter of the two: the one mix a block read

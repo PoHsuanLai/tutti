@@ -32,13 +32,13 @@ use tutti_graph::{
 use super::clock::{BlockClock, Clock};
 use super::fault::FaultLatch;
 use super::interp::{past_window, place, Gate};
-use super::live_read::LiveRead;
+use super::live_read::{LiveRead, Out};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RegionId, RtState, SharedReader};
-use crate::lanes::{Lanes, UNPREPARED_FRAMES};
+use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions
@@ -190,12 +190,14 @@ impl DiskSource {
 
     /// Render `size` frames free-running, frame `i` handed to `emit`.
     fn render(&mut self, size: usize, mut emit: impl FnMut(usize, &[f32])) {
-        let Some(state) = self.shared_state.clone() else {
+        // Borrowed, not cloned (a clone's drop could free here), beside
+        // the reader.
+        let Some(state) = self.shared_state.as_deref() else {
             let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
             (0..size).for_each(|i| emit(i, &silent[..self.stride]));
             return;
         };
-        let ring = Arc::clone(self.read.ring());
+        let ring = self.read.ring();
         let (epoch, target) = ring.seek_request();
         if epoch != self.applied_seek {
             self.applied_seek = epoch;
@@ -220,8 +222,9 @@ impl DiskSource {
                 self.applied_seek,
                 rate,
                 gain,
-                &state,
-                |i, f| emit(done + i, f),
+                state,
+                done,
+                &mut Out::Frames(&mut emit),
             );
             position += rate * n as f64;
             done += n;
@@ -699,6 +702,7 @@ impl DiskVoice {
         lanes: &mut Lanes,
         n: usize,
         positions: &mut [Option<SamplePosition>],
+        gather: &mut Gather,
     ) {
         let w = self.width().min(n);
         let frames = range.len();
@@ -707,7 +711,11 @@ impl DiskVoice {
             self.offline_render(clock, range, positions, |i, f| lanes.put(i, &f[..w]));
             return;
         }
-        self.live_render(clock, range, positions, |i, f| lanes.put(i, &f[..w]));
+        let mut out: Out<'_, fn(usize, &[f32])> = Out::Lanes {
+            lanes: &mut lanes.lanes_mut()[..w],
+            gather,
+        };
+        self.live_render(clock, range, positions, &mut out);
     }
 
     /// Render live frames `range`, frame `i - range.start` handed to `emit`:
@@ -715,17 +723,19 @@ impl DiskVoice {
     /// one ring read per run (its generation the read's segment, so a jump
     /// is crossfaded). `positions` is scratch, at least `range.len()` long:
     /// each run's placed positions, rewritten in place to the ring's.
-    fn live_render(
+    fn live_render<F: FnMut(usize, &[f32])>(
         &mut self,
         clock: &BlockClock<'_>,
         range: Range<usize>,
         positions: &mut [Option<SamplePosition>],
-        mut emit: impl FnMut(usize, &[f32]),
+        out: &mut Out<'_, F>,
     ) {
         let rate = self.step_rate();
         let preroll = self.inner.read.ring().preroll() as f64;
         let gain = self.shared_state.gain().get();
-        let state = Arc::clone(&self.shared_state);
+        // Borrowed beside `inner`, not cloned: a clone's drop could be the
+        // last, and free the control cell here.
+        let state = &*self.shared_state;
         let gate = self.gate();
         let base = range.start;
         for run in clock.runs_in(range) {
@@ -741,8 +751,9 @@ impl DiskVoice {
                 run.generation,
                 rate.get(),
                 gain,
-                &state,
-                |i, f| emit(a - base + i, f),
+                state,
+                a - base,
+                out,
             );
         }
     }
@@ -834,7 +845,7 @@ impl DiskVoice {
         if self.offline.is_some() {
             self.offline_render(clock, range, positions, emit);
         } else {
-            self.live_render(clock, range, positions, emit);
+            self.live_render(clock, range, positions, &mut Out::Frames(emit));
         }
     }
 

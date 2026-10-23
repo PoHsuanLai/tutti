@@ -234,7 +234,8 @@ impl GraphSpec {
     ///   [`ParamRamp`](crate::ParamRamp)s and
     ///   [`ParamSegment`](crate::ParamSegment)s addressed to the param are
     ///   the param's own value, sample-accurate, from the source's first
-    ///   event on (a first ramp starts from the base at its frame); before
+    ///   event on (a first ramp starts from the base at its frame, also
+    ///   when it replaces a segment sent first on that frame); before
     ///   it, the port reads its base. Automation replaces the knob, as in
     ///   every DAW. Other events are ignored.
     /// - **An undriven param resolves to its base, never to 0.** A port with

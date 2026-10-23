@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(b.settings.tempo().get(), 140.0);
 
         let _ = a.motion.try_send(MotionEvent::Play);
-        b.motion.drain();
+        b.motion.audio().expect("no engine holds it").drain();
         assert!(a.motion.is_playing(), "the FSM is shared, not copied");
     }
 
@@ -212,7 +212,7 @@ mod tests {
         t.settings.set_beat(8.0);
         t.settings.set_tempo(90.0);
         let _ = t.motion.try_send(MotionEvent::Play);
-        t.motion.drain();
+        t.motion.audio().expect("no engine holds it").drain();
 
         // beat/tempo come from settings, is_playing from the FSM — the reason
         // this type exists.
@@ -234,7 +234,7 @@ mod tests {
         );
 
         let _ = t.motion.try_send(MotionEvent::locate(Beat(4.0)));
-        t.motion.drain();
+        t.motion.audio().expect("no engine holds it").drain();
         assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }
 

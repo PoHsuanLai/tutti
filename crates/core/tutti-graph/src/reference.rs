@@ -1296,7 +1296,7 @@ impl Reference {
                 while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                     match e.kind {
                         EventKind::Ramp(r) if r.addr() == want => {
-                            // A first ramp starts from the base.
+                            // A first ramp starts from the base at this frame.
                             let cur = if st.ramp.started {
                                 st.ramp.value
                             } else {
@@ -1315,6 +1315,14 @@ impl Reference {
                         }
                         EventKind::Segment(s) if s.addr() == want => {
                             let (from, to, position, length) = s.raw();
+                            // What a ramp replacing it on this frame starts
+                            // from: the held value, or (a first event) the
+                            // base at this frame, as for a first ramp.
+                            let cur = if st.ramp.started {
+                                st.ramp.value
+                            } else {
+                                base(i)
+                            };
                             st.ramp = RefRamp {
                                 from,
                                 target: to,
@@ -1322,7 +1330,7 @@ impl Reference {
                                 len: 0,
                                 shape: crate::event::SegmentShape::Linear,
                                 curve: Some((position, length, s.shape())),
-                                value: st.ramp.value,
+                                value: cur,
                                 started: true,
                             };
                         }

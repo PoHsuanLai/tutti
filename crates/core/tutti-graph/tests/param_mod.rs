@@ -1592,6 +1592,182 @@ fn a_range_clamps_a_segment_without_rewriting_it() {
     check(&out[0], unbounded, "widened");
 }
 
+/// Sends, on absolute frame `at`, a curve segment and then a ramp on
+/// `Cutoff`, both on that frame and in that order: what a PDC delay that
+/// shrinks under pending events delivers when it hands them all over at
+/// offset 0. With `step_at`, a step to 7 on that earlier frame first, so the
+/// source has started by `at`.
+struct SegmentThenRamp {
+    at: u64,
+    step_at: Option<u64>,
+}
+
+impl Node for SegmentThenRamp {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(4)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let start = cx.env.frame.get();
+        let block = start..start + io.frames() as u64;
+        if let Some(at) = self.step_at.filter(|at| block.contains(at)) {
+            let o = io.offset((at - start) as usize).expect("inside");
+            let step = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(7.0), Samples(0));
+            let _ = io.event_out(0).push(Event::ramp(o, step));
+        }
+        if block.contains(&self.at) {
+            let o = io.offset((self.at - start) as usize).expect("inside");
+            let seg = ParamSegment::new(
+                ParamKey::<Hz>::CUTOFF,
+                Hz(5.0),
+                Hz(9.0),
+                Samples(20),
+                SegmentShape::Linear,
+            );
+            let ramp = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(0.0), Samples(4));
+            let _ = io.event_out(0).push(Event::segment(o, seg));
+            let _ = io.event_out(0).push(Event::ramp(o, ramp));
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// The base of [`segment_then_ramp`]'s second block, frame by frame: moved
+/// 1 → 3 at the block's start, so it ramps across the block
+/// (`1 + 2 (i + 1) / 16`).
+fn moving_base(i: usize) -> f32 {
+    1.0 + (3.0f32 - 1.0) * ((i + 1) as f32 / 16.0)
+}
+
+/// `Cutoff` as the executor and as the reference render it (named), for a
+/// [`SegmentThenRamp`] driving the probe's port: block 1, frames 0..8, at a
+/// still base of 1; block 2, frames 8..24, under [`moving_base`].
+fn segment_then_ramp(at: u64, step_at: Option<u64>) -> Vec<(&'static str, Vec<f32>, Vec<f32>)> {
+    let prep = prepare(64);
+    let (cutoff, q) = (Cell::new(1.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    let mut reference = Reference::new(prep);
+    ed.insert(
+        NodeKey(1),
+        "src",
+        Unforkable(SegmentThenRamp { at, step_at }),
+    );
+    ed.spec_mut()
+        .connect_param(param(PROBE, UnitParam::Cutoff), ev(1));
+    ed.commit().expect("commits");
+    let mut units: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
+    units.insert(NodeKey(PROBE), Box::new(Probe::new(&cutoff, &q)));
+    units.insert(NodeKey(1), Box::new(SegmentThenRamp { at, step_at }));
+    reference.set_graph(&ed.spec().validate().expect("valid"), units);
+
+    let mut rendered = Vec::new();
+    for (side, name) in [(0, "executor"), (1, "reference")] {
+        cutoff.set(1.0);
+        let mut run = |n: usize| -> Vec<f32> {
+            let mut out = [vec![0.0; n], vec![0.0; n], vec![0.0; n]];
+            let [a, c, d] = &mut out;
+            let mut bufs = [&mut a[..], &mut c[..], &mut d[..]];
+            if side == 0 {
+                exec.process(n, &Transport::default(), &[], &mut bufs);
+                ed.collect();
+            } else {
+                reference.process(n, &Transport::default(), &[], &mut bufs);
+            }
+            let [cut, _, _] = out;
+            cut
+        };
+        let first = run(8);
+        cutoff.set(3.0);
+        let second = run(16);
+        rendered.push((name, first, second));
+    }
+    rendered
+}
+
+/// `want`, bit for bit, frame by frame from absolute frame `from`.
+fn assert_bits(name: &str, got: &[f32], want: &[f32], from: usize) {
+    assert_eq!(got.len(), want.len(), "{name}");
+    for (j, (g, w)) in got.iter().zip(want).enumerate() {
+        assert_eq!(
+            g.to_bits(),
+            w.to_bits(),
+            "{name}, frame {}: {g} vs {w}",
+            from + j
+        );
+    }
+}
+
+/// The second block of [`segment_then_ramp`] with its ramp at frame `at`,
+/// 4 frames to 0 from `held`, and `moving_base` before it.
+fn ramp_from(at: u64, held: impl Fn(usize) -> f32) -> Vec<f32> {
+    let k = (at - 8) as usize;
+    let b = held(k);
+    (0..16)
+        .map(|j| {
+            if j < k {
+                held(j)
+            } else {
+                let done = (j - k + 1) as f32;
+                if done >= 4.0 {
+                    0.0
+                } else {
+                    b + (0.0 - b) * (done / 4.0)
+                }
+            }
+        })
+        .collect()
+}
+
+/// A ramp that replaces a segment on the segment's own frame, as the
+/// source's first events, starts from the base at that frame, exactly as
+/// it would with no segment before it (a first ramp starts from the base
+/// at its frame; a second event on a frame replaces the first from the same
+/// value). Pinned under a base that is ramping across the block, in the
+/// executor and in the reference alike, so neither can start it from the
+/// previous frame's base or from a value nothing wrote.
+///
+/// Mutations (run): in `render_ramps`, drop the base seed from the segment
+/// arm → the executor's ramp starts from its never-written value 0 (frame
+/// 10 reads 0 for 1.03125) → fails. In the reference's `run_params`, seed
+/// the segment with the value the last frame held (`st.ramp.value`) →
+/// the reference's ramp starts from 1.25 (frame 10 reads 0.9375) → fails.
+#[test]
+fn a_ramp_replacing_a_first_segment_on_its_frame_starts_from_the_base() {
+    let want = ramp_from(10, moving_base);
+    assert_eq!(want[2], 1.03125, "the ramp's first frame, from the base");
+    for (name, first, second) in segment_then_ramp(10, None) {
+        assert_eq!(first, vec![1.0; 8], "{name}: the base, before any event");
+        assert_bits(name, &second, &want, 8);
+    }
+}
+
+/// Once the source has started, a ramp that replaces a segment on the
+/// segment's own frame starts from the value the source held on the frame
+/// before (here a step to 7), not from the base, even as the base moves
+/// under it: the base seed is for a source's first event only.
+///
+/// Mutations (run): in `render_ramps`, seed the base on the segment arm
+/// unconditionally (drop `if !ramp.started`) → the executor's ramp starts
+/// from the base 1.375 (frame 10 reads 1.03125 for 5.25) → fails. In the
+/// reference's `run_params`, seed the segment with `base(i)` unconditionally
+/// → the reference's ramp does the same → fails.
+#[test]
+fn a_started_sources_ramp_replacing_a_segment_on_its_frame_starts_from_its_held_value() {
+    let want = ramp_from(10, |_| 7.0);
+    assert_eq!(want[2], 5.25, "the ramp's first frame, from the held 7");
+    for (name, first, second) in segment_then_ramp(10, Some(2)) {
+        assert_eq!(
+            first,
+            [1.0, 1.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0],
+            "{name}: the base, then the step"
+        );
+        assert_bits(name, &second, &want, 8);
+    }
+}
+
 /// A segment replaces the base, frame by frame: before the segment's first
 /// event the port is the base, from it on the segment, never both.
 ///

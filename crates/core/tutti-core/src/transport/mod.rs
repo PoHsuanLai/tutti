@@ -28,6 +28,7 @@ pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub(crate) use clock::Control;
 pub use clock::TransportClock;
 pub use handle::Transport;
+pub(crate) use motion::MotionAudio;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};

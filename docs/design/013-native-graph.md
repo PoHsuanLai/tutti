@@ -360,12 +360,16 @@ the race. Every type below exists because the audit found the bug it prevents.
   clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input
   ring". `reset_owner`, a no-op, is deleted with `Engine::reset_owners` and
   `MotionFsm::reset_owner`. `AudioThreadCell` stays where `&self` is the
-  shape — the VST3 COM objects, the MIDI port drain, the engine's render
-  state and `MotionFsm`'s FSM behind a `Clone` handle — and now checks its
-  one-borrow contract in release builds too, so safe code sharing one can
-  no longer alias it. Splitting `MotionFsm` into a control handle and an
-  engine-owned audio half, which would make that FSM a plain field, is
-  still to do.) Units owned once by the audio thread only need `&mut self`.
+  shape — the VST3 COM objects, the MIDI port drain and the engine's render
+  state — and checks its one-borrow contract in every build, so safe code
+  sharing one cannot alias it. The transport's motion machine is not one of
+  them: `MotionFsm` is its `Clone` control handle (send and schedule
+  commands, read the published motion), and the FSM is a plain field of
+  its audio half, `MotionAudio`, which the engine owns in its render state
+  and drives through `&mut`. The FSM waits in a capacity-one
+  `ArrayQueue` on the handle while no engine holds it; an engine takes it
+  under its playhead claim and its drop hands it back, so a later engine
+  resumes the same state.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -5293,7 +5297,8 @@ under both.
     segments"); the value starts at 0 and is an offset like an audio source's.
   **Superseded by doc 014 §5.6:** an event source's value now
   *replaces* the base from its first event on (a first ramp starts from
-  the base on its frame), audio sources stay offsets on whichever holds,
+  the base on its frame, also when it replaces a segment sent first on
+  that frame), audio sources stay offsets on whichever holds,
   and a port takes at most one event source, unshaped
   (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
   The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state
@@ -5544,7 +5549,8 @@ the source stands ("Shaped ramps" below).
 - **Shaped ramps.** `ParamRamp::with_shape(SegmentShape)` (default
   `Linear`) makes the relative move follow a shape: frame `j` after the
   event reads `from + (target - from) · shape.eval((j + 1) / duration)`,
-  `from` being the source's value on the frame before the event, and
+  `from` being the source's value on the frame before the event (for a
+  source not yet started, the base at the event's own frame), and
   `target` from frame `duration - 1` on: a segment in the ramp convention
   whose start is read at the port. The port (`Ramp::step`) and the
   reference interpreter both call `SegmentShape::eval`, so there is one
@@ -5565,7 +5571,9 @@ the source stands ("Shaped ramps" below).
   flight there, else the value the node last gave it,
   `ParamDelivery::current`; read at the parameter's first event on the
   frame, `ParamDelivery::frame_start`, so a step or segment earlier on the
-  ramp's frame does not move it, as in a param port) and is sent as that
+  ramp's frame does not move it, as in a param port once its source has
+  started; a port's first ramp starts from the base at its own frame) and
+  is sent as that
   segment's points; a step,
   or a ramp on a parameter the node has given no value yet, is its target
   on its frame. The start is the host's value, not the plugin's: an edit

@@ -376,8 +376,8 @@ impl VbapPanner {
     }
 
     /// The gains at the smoother's **current** position, without advancing
-    /// it — the starting point of the first ramp after a construction, clone
-    /// or reset.
+    /// it — the starting point of the first ramp after a construction or a
+    /// reset.
     pub(crate) fn gains_now(&mut self, width: StereoWidth, spread: Spread) -> BlockGains {
         let (azimuth, elevation) = self.smoother.current();
         self.frame_gains(azimuth, elevation, width, spread)

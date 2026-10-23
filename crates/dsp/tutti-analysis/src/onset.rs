@@ -702,12 +702,6 @@ mod tests {
         assert_eq!(single.len(), 1);
     }
 
-    /// Unsorted input must not underflow.
-    ///
-    /// `pick_peaks` emits ascending positions, but the function is public and
-    /// takes a plain `Vec`. Subtracting `usize` positions would panic in debug
-    /// and wrap to a huge value in release, where the pair would silently never
-    /// be suppressed.
     /// Each onset is compared with the last one *kept*, not with its
     /// neighbour in the input: a falling run 600 apart under a 1000 gap keeps
     /// 0 (600 is too close to it), then 1200 (1200 from 0), then drops 1800.
@@ -751,6 +745,12 @@ mod tests {
         assert_ne!(state.window, hann.geometry().window_coefficients());
     }
 
+    /// Unsorted input must not underflow.
+    ///
+    /// `pick_peaks` emits ascending positions, but the function is public and
+    /// takes a plain `Vec`. Subtracting `usize` positions would panic in debug
+    /// and wrap to a huge value in release, where the pair would silently never
+    /// be suppressed.
     #[test]
     fn suppression_handles_unsorted_input() {
         let onset = |pos: usize, strength: f32| Onset {

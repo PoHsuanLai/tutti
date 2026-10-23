@@ -114,8 +114,8 @@ pub struct VbapPannerNode {
     /// the render can run channel-outer over each output's planar slice.
     speaker_of_channel: Vec<Option<usize>>,
     /// The gains the previous block ended on, which this block ramps away
-    /// from. `None` until the first block after construction, a clone or a
-    /// [`reset`](Node::reset): the ramp then starts from the smoother's
+    /// from. `None` until the first block after construction or a
+    /// [`reset`](Node::reset) (which a fork runs): the ramp then starts from the smoother's
     /// current position instead, so there is no stale vector to glide from.
     ramp_from: Option<BlockGains>,
     /// The last finite azimuth, elevation, spread and width the cells held. The

@@ -13,4 +13,4 @@ pub(crate) mod panner;
 mod sphere;
 
 pub use node::{HrtfBinauralControls, HrtfBinauralNode};
-pub use panner::{HrtfBinauralError, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+pub use panner::{HrtfBinauralError, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE};

@@ -236,3 +236,40 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
     let prepare = Prepare::new(SampleRate(48_000.0), tutti_core::Samples(256));
     assert_no_alloc::assert_no_alloc(|| node.prepare(&prepare));
 }
+
+/// A set resampled at prepare (a 48 kHz sphere at 44.1 kHz) renders
+/// allocation-free in 100-frame blocks, which do not divide the 128-frame
+/// step: most blocks finish one step and start the next, so the render runs
+/// with frames of the block still to copy on both sides of it.
+///
+/// Mutation (run): allocating in `HrtfBinaural::process` when a step
+/// completes with frames of the block left → fails on the second block.
+#[cfg(feature = "hrtf")]
+#[test]
+fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
+    use tutti_core::{Samples, Tail};
+    use tutti_graph::Prepare;
+    use tutti_spatial::HrtfBinauralNode;
+
+    let bytes = synthetic_hrir_sphere(48_000, 64);
+    let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
+    node.set_position(30.0, 0.0);
+    node.prepare(&Prepare::new(SampleRate(44_100.0), Samples(100)));
+    // 64 taps at 48 kHz are ceil(64 * 44 100 / 48 000) = 59 at 44.1 kHz:
+    // the set was resampled, not reused.
+    assert_eq!(node.shape().tail, Tail::Finite(Samples(128 + 59 - 1)));
+
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate(44_100.0), 100);
+    for c in rig.inputs_mut() {
+        c.fill(0.5);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            rig.block();
+        }
+    });
+    assert!(
+        rig.output(0).iter().any(|s| s.abs() > 1e-6),
+        "the node rendered silence; the gate walked no DSP"
+    );
+}

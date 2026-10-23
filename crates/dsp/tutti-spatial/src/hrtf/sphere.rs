@@ -87,10 +87,7 @@ impl HrirSphere {
         if len == 0 {
             return Err(HrtfBinauralError::Header("the response length is zero"));
         }
-        // Half a second at the sphere's rate. Resampling keeps a response's
-        // duration, so at any prepared rate it is at most half a second of
-        // frames there: the bound on what `HrtfSet::build` allocates.
-        let max = rate as usize / 2;
+        let max = max_response(rate);
         if len > max {
             return Err(HrtfBinauralError::ResponseTooLong { len, max });
         }
@@ -175,16 +172,21 @@ impl HrirSphere {
             responses,
         })
     }
-
-    /// Vertex `v`'s response for one ear (`0` left, `1` right).
-    fn response(&self, v: usize, ear: usize) -> &[f32] {
-        let at = (2 * v + ear) * self.len;
-        &self.responses[at..at + self.len]
-    }
 }
 
-/// Resamples one response from `from` to `to` Hz by band-limited
-/// interpolation, keeping its frequency response.
+/// The longest response a sphere at `rate` may carry: 50 ms of frames,
+/// rounded down. Measured HRIRs last a few milliseconds (IRCAM's 512 taps at
+/// 44.1 kHz are 11.6 ms); 50 ms leaves room for a set with its onset delay
+/// kept and its tail undecayed. Resampling keeps a response's duration, so
+/// a set prepared at any rate holds at most 50 ms of frames there, rounded
+/// up: the bound on what `HrtfSet::build` allocates and computes per vertex.
+pub(crate) fn max_response(rate: u32) -> usize {
+    rate as usize / 20
+}
+
+/// Resamples every response in `responses` (back to back, `len` frames
+/// each) from `from` to `to` Hz by band-limited interpolation, keeping its
+/// frequency response, into `out_len` frames each, back to back.
 ///
 /// Each output tap is the response evaluated between its source taps
 /// through a Blackman-windowed sinc, low-passed below the lower of the two
@@ -193,10 +195,15 @@ impl HrirSphere {
 /// scaled by `from / to`: a response's taps are its continuous form times the
 /// sample period, so at twice the rate each tap carries half the weight.
 ///
+/// The kernel's weights depend only on the output tap, not on the response,
+/// so each tap's are evaluated once and applied to every response: the
+/// `sin` and `cos` calls cost `out_len` kernel widths per sphere, and each
+/// response costs only its multiply-adds.
+///
 /// The kernel is truncated at the response's ends (taps outside it count as
 /// zero), so the first and last few output taps of a response that has not
 /// decayed there carry the cut's ripple.
-fn resample(response: &[f32], from: u32, to: u32, out_len: usize) -> Vec<f32> {
+fn resample(responses: &[f32], len: usize, from: u32, to: u32, out_len: usize) -> Vec<f32> {
     /// Kernel half-width, in zero crossings.
     const HALF_WIDTH: f64 = 32.0;
     let step = f64::from(from) / f64::from(to);
@@ -209,17 +216,39 @@ fn resample(response: &[f32], from: u32, to: u32, out_len: usize) -> Vec<f32> {
         let window = 0.42 + 0.5 * u.cos() + 0.08 * (2.0 * u).cos();
         cutoff * sinc * window
     };
-    (0..out_len)
-        .map(|n| {
-            let t = n as f64 * step;
-            let lo = (t - half).ceil().max(0.0) as usize;
-            let hi = ((t + half).floor() as usize).min(response.len().saturating_sub(1));
-            let sum: f64 = (lo..=hi)
-                .map(|m| f64::from(response[m]) * kernel(t - m as f64))
-                .sum();
-            (sum * step) as f32
-        })
-        .collect()
+    let count = responses.len() / len;
+    // Tap-major: tap `m` of every response at `m * count..(m + 1) * count`,
+    // so a weight is applied to all the responses in one contiguous pass.
+    let mut taps = vec![0.0f32; responses.len()];
+    for (r, response) in responses.chunks_exact(len).enumerate() {
+        for (m, &s) in response.iter().enumerate() {
+            taps[m * count + r] = s;
+        }
+    }
+    let mut out = vec![0.0f32; count * out_len];
+    let mut weights = Vec::new();
+    let mut sums = vec![0.0f64; count];
+    for n in 0..out_len {
+        let t = n as f64 * step;
+        let end = ((t + half).floor() as usize).saturating_add(1).min(len);
+        let lo = ((t - half).ceil().max(0.0) as usize).min(end);
+        weights.clear();
+        weights.extend((lo..end).map(|m| kernel(t - m as f64)));
+        // Each response's sum still runs in tap order.
+        sums.fill(0.0);
+        for (row, &w) in taps[lo * count..end * count]
+            .chunks_exact(count)
+            .zip(&weights)
+        {
+            for (sum, &s) in sums.iter_mut().zip(row) {
+                *sum += f64::from(s) * w;
+            }
+        }
+        for (r, &sum) in sums.iter().enumerate() {
+            out[r * out_len + n] = (sum * step) as f32;
+        }
+    }
+    out
 }
 
 /// One face prepared for lookup: its vertices and the inverse of the matrix
@@ -331,22 +360,22 @@ impl HrtfSet {
             .max(inverse.get_inplace_scratch_len());
 
         let vertices = sphere.positions.len();
+        let resampled;
+        let responses = if rate == sphere.rate {
+            &sphere.responses
+        } else {
+            resampled = resample(&sphere.responses, sphere.len, sphere.rate, rate, ir_len);
+            &resampled
+        };
         let mut spectra = vec![Complex32::new(0.0, 0.0); vertices * fft_len];
         let mut scratch = vec![Complex32::new(0.0, 0.0); scratch_len];
         let norm = 1.0 / fft_len as f32;
-        for (v, spectrum) in spectra.chunks_exact_mut(fft_len).enumerate() {
-            let (left, right) = if rate == sphere.rate {
-                (
-                    sphere.response(v, 0).to_vec(),
-                    sphere.response(v, 1).to_vec(),
-                )
-            } else {
-                (
-                    resample(sphere.response(v, 0), sphere.rate, rate, ir_len),
-                    resample(sphere.response(v, 1), sphere.rate, rate, ir_len),
-                )
-            };
-            for ((s, l), r) in spectrum.iter_mut().zip(&left).zip(&right) {
+        for (spectrum, pair) in spectra
+            .chunks_exact_mut(fft_len)
+            .zip(responses.chunks_exact(2 * ir_len))
+        {
+            let (left, right) = pair.split_at(ir_len);
+            for ((s, l), r) in spectrum.iter_mut().zip(left).zip(right) {
                 *s = Complex32::new(*l, *r);
             }
             forward.process_with_scratch(spectrum, &mut scratch);

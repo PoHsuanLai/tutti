@@ -78,13 +78,12 @@ pub enum HrtfBinauralError {
         /// The rate the header gives, in Hz.
         rate: u32,
     },
-    /// The responses last longer than half a second at the sphere's rate
-    /// (`len > rate / 2`), so a response prepared at any rate is at most
-    /// half a second of frames there. Measured HRIRs last a few
-    /// milliseconds.
-    #[error(
-        "HRIR responses are {len} frames, past the {max} (half a second) the sphere's rate allows"
-    )]
+    /// The responses last longer than 50 ms at the sphere's rate
+    /// (`len > rate / 20`). Measured HRIRs last a few milliseconds. The
+    /// bound keeps what preparing the sphere allocates and computes per
+    /// vertex in proportion to an HRIR: a set prepared at any rate holds at
+    /// most 50 ms of frames there, rounded up.
+    #[error("HRIR responses are {len} frames, past the {max} (50 ms) the sphere's rate allows")]
     ResponseTooLong {
         /// The response length the header gives, in frames.
         len: usize,
@@ -124,12 +123,26 @@ pub const MIN_SPHERE_RATE: u32 = 8_000;
 /// accepts, in Hz.
 pub const MAX_SPHERE_RATE: u32 = 384_000;
 
+/// The highest rate the sphere is prepared at, in Hz. A node built or
+/// prepared above it renders with the set prepared at this rate, so a
+/// prepared response is at most `MAX_PREPARED_RATE / 20` frames (50 ms
+/// here) whatever rate the graph asks for: an unbounded one (`1e10`) once
+/// sized each vertex's spectrum at 2^26 values and aborted on allocation.
+/// 768 kHz is twice the highest rate audio hardware runs at.
+pub const MAX_PREPARED_RATE: u32 = 768_000;
+
 /// The sphere's rate vocabulary: an integral Hz, as the file stores it. It is
 /// also the identity a rebuild compares on (an integer equality, not a float
 /// one); no HRIR dataset ships at a fractional rate. At least 1 Hz, so a
-/// degenerate rate still prepares a (useless but well-formed) set.
+/// degenerate rate still prepares a (useless but well-formed) set, and at
+/// most [`MAX_PREPARED_RATE`]. A NaN rate prepares at 1 Hz.
 fn rate_key(sample_rate: SampleRate) -> u32 {
-    sample_rate.get().round().max(1.0) as u32
+    // `max` before `min`, not `clamp`: `max` takes 1 over a NaN.
+    sample_rate
+        .get()
+        .round()
+        .max(1.0)
+        .min(f64::from(MAX_PREPARED_RATE)) as u32
 }
 
 /// The streaming convolver for one source.

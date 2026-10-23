@@ -9,12 +9,15 @@
 //! - resampling the sphere keeps its DC gain, and downsampling low-passes
 //!   below the new Nyquist;
 //! - a malformed sphere is refused when the node is built, and so is one
-//!   whose rate or response length would make preparing it unbounded.
+//!   whose rate or response length would make preparing it unbounded; the
+//!   rate it is prepared at is held to a ceiling.
 
 use tutti_core::{Azimuth, Elevation, SampleRate, Samples, Tail};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
-use tutti_spatial::{HrtfBinauralError, HrtfBinauralNode, MAX_SPHERE_RATE, MIN_SPHERE_RATE};
+use tutti_spatial::{
+    HrtfBinauralError, HrtfBinauralNode, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE,
+};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`STEP` in `panner.rs`).
@@ -457,20 +460,22 @@ fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 
 /// Preparing a sphere resamples it, which scales its response length by
 /// the ratio of the rates. The file's rate is held to
-/// `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` and its responses to half a second
-/// there, so what preparing allocates is bounded by the prepared rate and
-/// not by the file: a 1 Hz sphere with 32-tap responses (32 s) once
-/// prepared a 1.5M-tap response at 48 kHz.
+/// `MIN_SPHERE_RATE..=MAX_SPHERE_RATE` and its responses to 50 ms there
+/// (`rate / 20` frames), so what preparing allocates and computes per
+/// vertex is bounded by the prepared rate and not by the file: a 1 Hz
+/// sphere with 32-tap responses (32 s) once prepared a 1.5M-tap response at
+/// 48 kHz.
 ///
 /// The bound is pinned at both edges, and at the longest response allowed
-/// the tail at a new rate is the latency plus exactly half a second of
-/// frames there, less one.
+/// the tail at a new rate is the latency plus exactly 50 ms of frames
+/// there, less one.
 ///
 /// Mutations (run): no lower rate bound → the 1 Hz sphere is refused for
 /// its length instead and the `Rate` match fails; `rate > MAX_SPHERE_RATE`
-/// dropped → 384 001 Hz builds and fails; no length bound → the 4 001-tap
-/// sphere builds and fails; `len >= max` → the 4 000-tap sphere is refused
-/// and fails.
+/// dropped → 384 001 Hz builds and fails; no length bound → the 401-tap
+/// sphere builds and fails; `len >= max` → the 400-tap sphere is refused
+/// and fails; a half-second bound (`rate / 2`) → the 401-tap sphere
+/// builds and fails.
 #[test]
 fn the_spheres_rate_and_response_length_are_bounded() {
     let (verts, faces) = tetrahedron();
@@ -493,7 +498,8 @@ fn the_spheres_rate_and_response_length_are_bounded() {
         assert!(build(&sphere(rate, 32)).is_ok(), "{rate} Hz is in range");
     }
 
-    let max = MIN_SPHERE_RATE as usize / 2;
+    let max = MIN_SPHERE_RATE as usize / 20;
+    assert_eq!(max, 400, "50 ms at 8 kHz");
     assert!(matches!(
         build(&sphere(MIN_SPHERE_RATE, max + 1)).err(),
         Some(HrtfBinauralError::ResponseTooLong { len, max: m }) if len == max + 1 && m == max
@@ -503,11 +509,55 @@ fn the_spheres_rate_and_response_length_are_bounded() {
         .expect("the longest response allowed builds");
     let to = 2 * MIN_SPHERE_RATE;
     node.prepare(&Prepare::new(SampleRate(f64::from(to)), Samples(64)));
-    let half_second = to as usize / 2;
+    let fifty_ms = to as usize / 20;
     assert_eq!(
         node.shape().tail,
-        Tail::Finite(Samples(STEP + half_second - 1)),
-        "half a second at {to} Hz is {half_second} frames"
+        Tail::Finite(Samples(STEP + fifty_ms - 1)),
+        "50 ms at {to} Hz is {fifty_ms} frames"
+    );
+}
+
+/// The rate the sphere is prepared at is held to `MAX_PREPARED_RATE`,
+/// whether it comes from `new` or from `prepare`: a node asked for more
+/// prepares the set at the ceiling. Unbounded, `1e10` sized each vertex's
+/// spectrum at 2^26 values and aborted on allocation.
+///
+/// The set's rate shows in the tail: a 48 kHz sphere's 32 taps are
+/// `32 * rate / 48 000` frames at `rate`, 512 at the ceiling.
+///
+/// Mutation (run): dropping the ceiling in `rate_key` → twice the ceiling
+/// prepares 1 024-tap responses and the first tail assertion fails.
+#[test]
+fn the_prepared_rate_is_held_to_its_ceiling() {
+    let (verts, faces) = tetrahedron();
+    let bytes = sphere_bytes(RATE, 32, &verts, &faces, |_, _| {
+        let mut r = vec![0.0f32; 32];
+        r[0] = 1.0;
+        r
+    });
+    let at_ceiling = Tail::Finite(Samples(STEP + 512 - 1));
+
+    let mut node = HrtfBinauralNode::new(&bytes, SampleRate(2.0 * f64::from(MAX_PREPARED_RATE)))
+        .expect("builds");
+    assert_eq!(node.shape().tail, at_ceiling, "built above the ceiling");
+
+    let mut node2 = HrtfBinauralNode::new(&bytes, SampleRate(1e10)).expect("builds");
+    assert_eq!(node2.shape().tail, at_ceiling, "built at 1e10 Hz");
+
+    node.prepare(&Prepare::new(SampleRate(f64::from(RATE)), Samples(64)));
+    assert_eq!(node.shape().tail, Tail::Finite(Samples(STEP + 32 - 1)));
+    node.prepare(&Prepare::new(SampleRate(1e10), Samples(64)));
+    assert_eq!(node.shape().tail, at_ceiling, "prepared at 1e10 Hz");
+
+    // The set prepared at the ceiling renders: an impulse comes out.
+    node2.prepare(&Prepare::new(SampleRate(1e10), Samples(1024)));
+    let mut impulse = vec![0.0f32; 1024];
+    impulse[0] = 1.0;
+    let out = drive(&mut node2, SampleRate(1e10), &[&impulse, &impulse], &[]);
+    assert!(out[0].iter().all(|s| s.is_finite()));
+    assert!(
+        out[0].iter().any(|s| s.abs() > 1e-3),
+        "the impulse came out"
     );
 }
 
@@ -521,7 +571,10 @@ fn the_spheres_rate_and_response_length_are_bounded() {
 /// dropping the pre-allocation size check → the claimed header fails on
 /// its first face word instead (`needed: 24`) and the size match fails;
 /// dropping the trailing-bytes check → the long sphere builds and fails;
-/// dropping the usable-face check → the degenerate sphere builds and fails.
+/// dropping the usable-face check → the degenerate sphere builds and fails;
+/// dropping the vertex-count check → the empty sphere is refused as
+/// `NoFace` and fails; dropping the whole-triangles check → the four-index
+/// header is refused as `Truncated` and fails.
 #[test]
 fn a_malformed_sphere_is_refused_at_construction() {
     let (verts, faces) = icosahedron();
@@ -563,6 +616,21 @@ fn a_malformed_sphere_is_refused_at_construction() {
         build(&zero_len),
         Some(HrtfBinauralError::Header(_))
     ));
+    let empty = sphere_bytes(RATE, 8, &[], &[], delta);
+    assert!(
+        matches!(build(&empty), Some(HrtfBinauralError::Header(m)) if m.contains("no vertices")),
+        "a sphere with no vertices must be refused for it"
+    );
+    // Four indices: a triangle and one stray. Refused from the header,
+    // before the file's size is checked.
+    let mut header = b"HRIR".to_vec();
+    for word in [RATE, 8, 4, 4] {
+        header.extend_from_slice(&word.to_le_bytes());
+    }
+    assert!(
+        matches!(build(&header), Some(HrtfBinauralError::Header(m)) if m.contains("whole number of triangles")),
+        "an index count that is not a multiple of three must be refused for it"
+    );
     let nan = sphere_bytes(RATE, 8, &verts, &faces, |v, _| {
         vec![if v == 5 { f32::NAN } else { 0.0 }; 8]
     });

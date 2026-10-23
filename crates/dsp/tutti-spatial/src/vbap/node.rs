@@ -7,6 +7,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use super::panner::{BlockGains, VbapPanner};
 use crate::fork::{fresh_fork_parts, FreshFork};
 use crate::layout::speaker_channel_map;
+use crate::target::hold_finite;
 use crate::SpatialTarget;
 
 /// A VBAP loudspeaker panner: stereo in, one output per speaker of a fixed
@@ -210,15 +211,6 @@ impl VbapPannerControls {
         self.spread.detach();
         self.width.detach();
     }
-}
-
-/// `value` if finite (and remembered in `slot`), else what `slot` last held.
-#[inline]
-fn hold_finite(slot: &mut f32, value: f32) -> f32 {
-    if value.is_finite() {
-        *slot = value;
-    }
-    *slot
 }
 
 impl VbapPannerNode {

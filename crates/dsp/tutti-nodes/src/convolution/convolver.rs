@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use realfft::num_complex::Complex;
-use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use realfft::{ComplexToReal, FftError, RealFftPlanner, RealToComplex};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.
@@ -216,9 +216,9 @@ impl Partitioned {
         }
         copy_and_pad(&mut self.buffer, input);
         // The transforms cannot fail on buffers sized for their plan. On the
-        // audio thread a failure still degrades to silence rather than a
-        // panic across the callback; `debug_assert` catches a sizing
-        // regression in tests.
+        // audio thread a sizing failure still degrades to silence rather
+        // than a panic across the callback; `debug_assert` catches a sizing
+        // regression in tests. Data never fails the forward transform.
         let forward = spectra.forward.process_with_scratch(
             &mut self.buffer,
             &mut self.history[self.current],
@@ -250,10 +250,19 @@ impl Partitioned {
             &mut self.buffer,
             &mut self.inverse_scratch,
         );
-        debug_assert!(inverse.is_ok(), "inverse FFT on pre-sized buffers");
-        if inverse.is_err() {
-            output.fill(0.0);
-            return;
+        // `InputValues` is about data, not sizing: a non-zero imaginary part
+        // at DC or Nyquist, which the spectrum of a real input has only when
+        // the input held NaN or ±∞. `realfft` zeroes those parts and still
+        // completes the transform, so the block is used as computed: a
+        // non-finite input propagates as through any linear filter, the same
+        // in debug and release, and leaves with the partition that carried it.
+        match inverse {
+            Ok(()) | Err(FftError::InputValues(..)) => {}
+            Err(_) => {
+                debug_assert!(false, "inverse FFT on pre-sized buffers");
+                output.fill(0.0);
+                return;
+            }
         }
         // The inverse is unnormalised.
         let len = self.buffer.len() as f32;
@@ -601,6 +610,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A NaN input propagates and then leaves: it does not panic (in debug
+    /// builds either), it reaches the output as through any linear filter,
+    /// and once its partition has left the spectra history and the overlap,
+    /// silence in is exactly silence out again.
+    ///
+    /// The NaN's spectrum is NaN in every bin, so `realfft`'s inverse
+    /// reports `InputValues` for the DC and Nyquist imaginary parts. With an
+    /// 8-tap IR at block 4 (two partitions), a NaN fed at sample 0 is in the
+    /// history for two FFT cycles and in the overlap for one more; past the
+    /// latency plus four blocks the output is pure convolution of zeros.
+    ///
+    /// Mutation (run): `debug_assert!(inverse.is_ok(), ..)` restored before
+    /// the match → panics on the first drain after the NaN → fails.
+    #[test]
+    fn a_nan_input_propagates_and_then_leaves() {
+        let ir: Vec<f32> = vec![0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
+        let block = 4;
+        let mut c = Convolver::new(&ir, block);
+        let out: Vec<f32> = std::iter::once(f32::NAN)
+            .chain(std::iter::repeat_n(0.0, 64))
+            .map(|x| c.process_sample(x))
+            .collect();
+        assert!(
+            out.iter().any(|y| y.is_nan()),
+            "the NaN never reached the output"
+        );
+        let clean = c.latency() + 4 * block;
+        assert!(
+            out[clean..].iter().all(|&y| y == 0.0),
+            "the NaN stayed past its partition: {:?}",
+            &out[clean..]
+        );
     }
 
     /// `reset` must clear the tail, not just the input buffer.

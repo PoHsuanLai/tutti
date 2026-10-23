@@ -336,7 +336,7 @@ impl Plugin {
                 // decay the user just dialled in.
                 if clap.poll_tail_changed() {
                     out.push(AsyncEvent::TailChanged {
-                        tail: PluginTail::from_samples(clap.get_tail()),
+                        tail: PluginTail::from_clap_samples(clap.get_tail()),
                     });
                 }
             }

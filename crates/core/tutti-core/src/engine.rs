@@ -203,6 +203,9 @@ struct GraphRender {
     scratch: Vec<f32>,
     stride: usize,
     playhead: Playhead,
+    /// The executor's [`dropped_events`](Executor::dropped_events) already
+    /// forwarded to the load meter.
+    dropped_seen: u64,
 }
 
 impl Engine {
@@ -306,6 +309,7 @@ impl Engine {
             })
             .map_err(GraphEngineError::Limits)?;
         let rate = executor.prepare().sample_rate();
+        let dropped_seen = executor.dropped_events();
         Ok(Self {
             settings: transport.settings.clone(),
             timed: transport.motion.timed().clone(),
@@ -316,6 +320,7 @@ impl Engine {
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
                 stride,
                 playhead: Playhead::new(),
+                dropped_seen,
             }),
             fader: AudioThreadCell::new(Fader::new()),
             capacity: Samples(stride),
@@ -341,7 +346,9 @@ impl Engine {
     /// summed, so a call that straddles a re-prepare's rate change is held
     /// to the rate in effect for each piece. A block refused the graph
     /// (rendered silent, an audible dropout) is not timed; it is counted in
-    /// [`LoadReading::silenced`](crate::LoadReading::silenced).
+    /// [`LoadReading::silenced`](crate::LoadReading::silenced). Events the
+    /// graph dropped (an event port past its capacity) are counted in
+    /// [`LoadReading::dropped_events`](crate::LoadReading::dropped_events).
     pub fn load_meter(&self) -> &Arc<LoadMeter> {
         &self.load
     }
@@ -411,6 +418,7 @@ impl Engine {
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
             done += len;
         }
+        self.load.record_dropped_events(g.take_dropped_events());
         self.load
             .record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -479,6 +487,7 @@ impl Engine {
                 .apply(&walk.gain, frame0, output, out_ch, done, len);
             done += len;
         }
+        self.load.record_dropped_events(g.take_dropped_events());
         self.load
             .record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -948,6 +957,15 @@ impl GraphRender {
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
         (bound.min(self.stride), rate)
+    }
+
+    /// The events the executor dropped since the last call: a port past its
+    /// capacity, or a full delay or feedback FIFO.
+    fn take_dropped_events(&mut self) -> u64 {
+        let total = self.exec.dropped_events();
+        let new = total.wrapping_sub(self.dropped_seen);
+        self.dropped_seen = total;
+        new
     }
 
     /// Render one graph block of `len` frames into frames

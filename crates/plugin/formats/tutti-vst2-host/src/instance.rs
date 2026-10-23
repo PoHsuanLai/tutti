@@ -51,7 +51,7 @@ use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category}
 /// | `1` | no tail at all                       | `None`             |
 /// | `n` | `n` samples of ring-out              | `Finite(n)`        |
 ///
-/// which is why this cannot go through [`PluginTail::from_samples`]: that maps
+/// which is why this cannot go through [`PluginTail::from_vst3_samples`]: that maps
 /// `0 => None` for CLAP and VST3, so a VST2 answer fed through it reports
 /// "unknown" as "silent". A bounce sizing its render from that adds no decay
 /// and truncates the reverb — the failure this decode exists to prevent.
@@ -321,7 +321,7 @@ impl Vst2Instance {
             // compensated nothing for them.
             latency_samples: Samples(instance.read_initial_delay().max(0) as usize),
             // Read live for the same reason as the latency above, and decoded
-            // here rather than through `PluginTail::from_samples` because VST2
+            // here rather than through `PluginTail::from_vst3_samples` because VST2
             // inverts the convention — see `decode_tail`.
             tail: decode_tail(instance.read_tail_size()),
             supports_f64: info.f64_precision,

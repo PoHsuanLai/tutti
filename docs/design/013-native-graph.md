@@ -3135,8 +3135,8 @@ block's budget (`frames / sample_rate`) into a `tutti_core::LoadMeter`,
 read through `Engine::load_meter`, `Session::load_meter` and
 `AudioGraphRes::load_meter`: the last block's load, a mean smoothed over
 0.3 s, the peak since the last `take` (`peek` reads without taking), the
-blocks over budget, and the blocks rendered silent because the graph was
-held (`silenced`). Render-ahead helps only when blocks miss because of
+blocks over budget, the blocks rendered silent because the graph was
+held (`silenced`), and the events the graph dropped (`dropped_events`). Render-ahead helps only when blocks miss because of
 spikes (max/mean high, mean well under 1.0), not because the mean is too
 high; build it only if the meter shows that on real sessions on a device.
 
@@ -4884,7 +4884,9 @@ the one place that says what a ported node can rely on:
 - **Overflow: drop the newest, and count it.** A writer past its declared
   capacity refuses the event (`EventRejected::Full`, returned to the node
   at the push) and the executor counts it (`Executor::dropped_events`;
-  `Reference::dropped_events` for the oracle). Refusing at compile time is
+  `Reference::dropped_events` for the oracle). An `Engine` forwards the
+  count to its load meter after each call (`LoadReading::dropped_events`),
+  so a host running the graph on a device sees it. Refusing at compile time is
   not possible: how many events a node emits is data. What the compiler
   guarantees instead is that the writer is the **only** place an event is
   refused: merges hold the sum of their inputs, and delay FIFOs hold the

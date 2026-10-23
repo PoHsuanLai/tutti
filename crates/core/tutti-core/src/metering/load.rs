@@ -33,6 +33,13 @@ pub struct LoadReading {
     /// side when the callback came (an audible dropout, not timed), since
     /// the start or the last reset.
     pub silenced: u64,
+    /// Events the graph dropped since the start or the last reset: an event
+    /// output port past its capacity
+    /// ([`DEFAULT_EVENT_CAPACITY`](tutti_graph::DEFAULT_EVENT_CAPACITY) per
+    /// block unless the node declares its own), or a full delay or feedback
+    /// FIFO. Nonzero means a node emitted more events than it declared and
+    /// lost the newest; what reached the graph is otherwise intact.
+    pub dropped_events: u64,
 }
 
 impl LoadReading {
@@ -68,6 +75,7 @@ pub struct LoadMeter {
     over_budget: AtomicU64,
     blocks: AtomicU64,
     silenced: AtomicU64,
+    dropped_events: AtomicU64,
 }
 
 impl LoadMeter {
@@ -102,17 +110,27 @@ impl LoadMeter {
             over_budget: self.over_budget.load(Ordering::Relaxed),
             blocks: self.blocks.load(Ordering::Relaxed),
             silenced: self.silenced.load(Ordering::Relaxed),
+            dropped_events: self.dropped_events.load(Ordering::Relaxed),
         }
     }
 
-    /// Zero the over-budget, block and silenced counts and the peak; the
+    /// Zero the over-budget, block, silenced and dropped-event counts and
+    /// the peak; the
     /// mean is seeded afresh by the next block. A block measured during the
     /// reset may count on either side of it.
     pub fn reset(&self) {
         self.over_budget.store(0, Ordering::Relaxed);
         self.blocks.store(0, Ordering::Relaxed);
         self.silenced.store(0, Ordering::Relaxed);
+        self.dropped_events.store(0, Ordering::Relaxed);
         self.peak.store(0, Ordering::Relaxed);
+    }
+
+    /// Count `n` events the graph dropped. Audio thread.
+    pub(crate) fn record_dropped_events(&self, n: u64) {
+        if n > 0 {
+            self.dropped_events.fetch_add(n, Ordering::Relaxed);
+        }
     }
 
     /// Count one block rendered silent, refused the graph. Audio thread.

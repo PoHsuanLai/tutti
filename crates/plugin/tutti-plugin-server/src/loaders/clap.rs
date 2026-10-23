@@ -375,7 +375,7 @@ impl ClapInstance {
             // reported as `None` rather than `Unknown`. Distinguishing them
             // needs an extension-presence check the host crate does not expose;
             // noted rather than guessed.
-            loaded_meta.tail = PluginTail::from_samples(match &inner {
+            loaded_meta.tail = PluginTail::from_clap_samples(match &inner {
                 ClapInner::F32(i) => i.get_tail(),
                 ClapInner::F64(i) => i.get_tail(),
             });
@@ -420,7 +420,9 @@ impl ClapInstance {
         clap_dispatch_mut!(self, i => i.poll_tail_changed())
     }
 
-    /// Current tail length in samples, as reported by the plugin.
+    /// The plugin's raw tail answer in samples, undecoded: CLAP reads any
+    /// value at or above `INT32_MAX` as infinite, so decode it with
+    /// [`PluginTail::from_clap_samples`], never as a plain count.
     #[cfg(feature = "clap")]
     pub fn get_tail(&self) -> u32 {
         clap_dispatch!(self, i => i.get_tail())

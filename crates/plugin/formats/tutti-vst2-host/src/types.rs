@@ -52,9 +52,9 @@ pub struct PluginInfo {
     /// Ring-out after input stops, decoded from `effGetTailSize`.
     ///
     /// **VST2 encodes this inversely to every other format**, which is why the
-    /// decode lives here rather than in [`PluginTail::from_samples`]: on the
+    /// decode lives here rather than in [`PluginTail::from_vst3_samples`]: on the
     /// wire `0` means "no tail *information*, host decides" and `1` means "no
-    /// tail at all". `from_samples` maps `0 => None`, so feeding it a VST2
+    /// tail at all". `from_vst3_samples` maps `0 => None`, so feeding it a VST2
     /// answer reads "unknown" as "silent" — and a bounce sizing its render from
     /// that adds no decay, truncating every reverb.
     pub tail: PluginTail,

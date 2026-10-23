@@ -1,6 +1,6 @@
 //! [`Tail`] — how long a node keeps producing after its input stops.
 
-use crate::value::Samples;
+use crate::value::{SampleRate, Samples, Seconds};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -40,15 +40,21 @@ use serde::{Deserialize, Serialize};
 /// - **AU** reports `kAudioUnitProperty_TailTime` in *seconds*, and rejects the
 ///   property outright on units that have no tail concept — every Apple
 ///   instrument, mixer and generator does (measured, macOS 15.6).
-/// - **CLAP** reports `clap_plugin_tail.get` in *samples*.
+/// - **CLAP** reports `clap_plugin_tail.get` in *samples*, where any value at
+///   or above `INT32_MAX` means infinite (`clap/ext/tail.h`).
 /// - **VST3** exposes `getTailSamples`, also in samples, where `0` means no
-///   tail.
+///   tail and only `kInfiniteTail` (`u32::MAX`) means infinite.
+/// - **VST2** answers `effGetTailSize` inverted: `0` is "no information" and
+///   `1` is "no tail" (decoded by `tutti-vst2-host`).
 ///
-/// Both sample-based formats saturate at `u32::MAX`, which their specs read as
-/// an effectively unbounded tail; `clap-sys` does not bind a named constant for
-/// it, so [`from_samples`](Self::from_samples) names the sentinel once here
+/// The two sample-based formats disagree on the infinite sentinel, so each has
+/// its own decode: [`from_clap_samples`](Self::from_clap_samples) and
+/// [`from_vst3_samples`](Self::from_vst3_samples). A CLAP plugin answering
+/// `INT32_MAX` through the VST3 decode would read as a 12-hour finite tail,
+/// and a bounce would try to render it. AU's seconds go through
+/// [`from_seconds`](Self::from_seconds). `clap-sys` and the VST3 bindings bind
+/// no named constant for either sentinel, so the decodes name them once here
 /// rather than each loader spelling the literal.
-/// - **VST2** has no tail concept the vendored bindings surface.
 ///
 /// All three report latency through a separate query, and none folds it into
 /// the tail (VST3's own example: a 2-second reverb answers 2 seconds), so a
@@ -80,7 +86,8 @@ use serde::{Deserialize, Serialize};
 /// let reverb = Tail::Finite(Samples(96_000));
 /// assert_eq!(delay.then(reverb), Tail::Finite(Samples(120_000))); // cascade
 /// assert_eq!(delay.beside(reverb), reverb); // parallel
-/// assert_eq!(Tail::from_samples(u32::MAX), Tail::Unbounded);
+/// assert_eq!(Tail::from_vst3_samples(u32::MAX), Tail::Unbounded);
+/// assert_eq!(Tail::from_clap_samples(i32::MAX as u32), Tail::Unbounded);
 /// assert_eq!(Tail::Unknown.samples(), None);
 /// ```
 // `Hash` and not `Ord`: hashing needs only that equal values hash equally, which
@@ -119,17 +126,51 @@ impl Tail {
         }
     }
 
-    /// Converts a plugin format's raw sample count, mapping `0` to
-    /// [`None`](Self::None) and the `u32::MAX` sentinel CLAP and VST3 both use
-    /// for "unbounded" to [`Unbounded`](Self::Unbounded).
-    ///
-    /// The sentinel is the formats' own, so decoding it belongs here rather
-    /// than being repeated at each loader.
-    pub fn from_samples(raw: u32) -> Self {
+    /// Decodes VST3's `IAudioProcessor::getTailSamples`: `0` is
+    /// [`None`](Self::None) and `kInfiniteTail` (`u32::MAX`) is
+    /// [`Unbounded`](Self::Unbounded). Every other count is finite, including
+    /// those at or above `INT32_MAX`, which only CLAP reads as infinite.
+    pub fn from_vst3_samples(raw: u32) -> Self {
         match raw {
             0 => Self::None,
             u32::MAX => Self::Unbounded,
             n => Self::Finite(Samples(n as usize)),
+        }
+    }
+
+    /// Decodes CLAP's `clap_plugin_tail.get`: `0` is [`None`](Self::None),
+    /// and any value at or above `INT32_MAX` is [`Unbounded`](Self::Unbounded)
+    /// (`clap/ext/tail.h`: "any value greater or equal to INT32_MAX implies
+    /// infinite tail").
+    pub fn from_clap_samples(raw: u32) -> Self {
+        match raw {
+            0 => Self::None,
+            n if n >= i32::MAX as u32 => Self::Unbounded,
+            n => Self::Finite(Samples(n as usize)),
+        }
+    }
+
+    /// Decodes a tail given in seconds (AU's `kAudioUnitProperty_TailTime`)
+    /// at `sample_rate`, rounding up so a render does not clip its last
+    /// partial frame.
+    ///
+    /// `+∞` is [`Unbounded`](Self::Unbounded) (TAL Reverb 4 answers it); a
+    /// span that rounds to zero frames is [`None`](Self::None). NaN, a
+    /// negative span and `-∞` are not a tail at all, so they are
+    /// [`Unknown`](Self::Unknown): read as "unbounded" (the `!is_finite`
+    /// test alone) a bounce would ring out forever, and read as zero it would
+    /// truncate.
+    pub fn from_seconds(seconds: Seconds, sample_rate: impl Into<SampleRate>) -> Self {
+        let s = seconds.get();
+        if s.is_nan() || s < 0.0 {
+            return Self::Unknown;
+        }
+        if s.is_infinite() {
+            return Self::Unbounded;
+        }
+        match seconds.to_samples_ceil(sample_rate) {
+            n if n.is_zero() => Self::None,
+            n => Self::Finite(n),
         }
     }
 
@@ -208,13 +249,77 @@ mod tests {
         assert_eq!(Tail::Finite(Samples(512)).samples(), Some(Samples(512)));
     }
 
-    /// The `u32::MAX` sentinel CLAP and VST3 share decodes to `Unbounded`, and
-    /// zero to `None` — the two ends a raw count cannot tell apart.
+    /// VST3's `kInfiniteTail` (`u32::MAX`) decodes to `Unbounded` and zero to
+    /// `None`; a count at `INT32_MAX`, CLAP's sentinel, stays finite.
     #[test]
-    fn from_samples_decodes_the_format_sentinel() {
-        assert_eq!(Tail::from_samples(0), Tail::None);
-        assert_eq!(Tail::from_samples(u32::MAX), Tail::Unbounded);
-        assert_eq!(Tail::from_samples(44_100), Tail::Finite(Samples(44_100)));
+    fn from_vst3_samples_decodes_the_vst3_sentinel() {
+        assert_eq!(Tail::from_vst3_samples(0), Tail::None);
+        assert_eq!(Tail::from_vst3_samples(u32::MAX), Tail::Unbounded);
+        assert_eq!(
+            Tail::from_vst3_samples(44_100),
+            Tail::Finite(Samples(44_100))
+        );
+        let int32_max = i32::MAX as u32;
+        assert_eq!(
+            Tail::from_vst3_samples(int32_max),
+            Tail::Finite(Samples(int32_max as usize))
+        );
+    }
+
+    /// CLAP reads every value at or above `INT32_MAX` as infinite, so
+    /// `INT32_MAX` itself and everything up to `u32::MAX` decode to
+    /// `Unbounded`, while one below stays finite.
+    ///
+    /// Mutation (run): `n if n == u32::MAX` as the unbounded arm (the shared
+    /// decode this replaced) → `INT32_MAX` reads as a finite 12-hour tail
+    /// → fails; `n > i32::MAX as u32` → `INT32_MAX` itself is finite → fails.
+    #[test]
+    fn from_clap_samples_reads_int32_max_and_above_as_infinite() {
+        let int32_max = i32::MAX as u32;
+        assert_eq!(Tail::from_clap_samples(0), Tail::None);
+        assert_eq!(Tail::from_clap_samples(int32_max), Tail::Unbounded);
+        assert_eq!(Tail::from_clap_samples(int32_max + 1), Tail::Unbounded);
+        assert_eq!(Tail::from_clap_samples(u32::MAX), Tail::Unbounded);
+        assert_eq!(
+            Tail::from_clap_samples(int32_max - 1),
+            Tail::Finite(Samples(int32_max as usize - 1))
+        );
+        assert_eq!(
+            Tail::from_clap_samples(44_100),
+            Tail::Finite(Samples(44_100))
+        );
+    }
+
+    /// Seconds: `+∞` is unbounded, zero is none, a finite span rounds up, and
+    /// NaN, negatives and `-∞` are unknown rather than unbounded or none.
+    ///
+    /// Mutation (run): the old AU decode (`!is_finite()` → `Unbounded`, then
+    /// `to_samples_ceil`) → NaN and `-∞` read as `Unbounded` and a negative
+    /// span as `None` → fails.
+    #[test]
+    fn from_seconds_reads_only_plus_infinity_as_unbounded() {
+        let rate = SampleRate(48_000.0);
+        assert_eq!(
+            Tail::from_seconds(Seconds(f32::INFINITY), rate),
+            Tail::Unbounded
+        );
+        assert_eq!(Tail::from_seconds(Seconds(0.0), rate), Tail::None);
+        assert_eq!(
+            Tail::from_seconds(Seconds(0.5), rate),
+            Tail::Finite(Samples(24_000))
+        );
+        // A part of a frame still needs that frame.
+        assert_eq!(
+            Tail::from_seconds(Seconds(1.0 / 96_000.0), rate),
+            Tail::Finite(Samples(1))
+        );
+        for junk in [f32::NAN, f32::NEG_INFINITY, -1.0] {
+            assert_eq!(
+                Tail::from_seconds(Seconds(junk), rate),
+                Tail::Unknown,
+                "{junk}"
+            );
+        }
     }
 
     /// A node that has said nothing is not a node that said "no tail".

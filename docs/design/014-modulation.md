@@ -500,8 +500,10 @@ square's edge, a saw's wrap, a random step; a triangle's peak; a drawn
 point; and **every zero crossing of a bipolar layer with a non-Linear
 curve**, because `shape()` curves `|x|` (`shape` in `crates/core/tutti-mod/src/shape.rs`):
 the offset `sign(x)·f(|x|)` is continuous at a crossing (every curve has
-`f(0) = 0`) with the same slope either side, but its curvature flips sign
-there, so it is not smooth across it. Closed-form waves give crossings
+`f(0) = 0`; `Elastic` by a special case, its formula's limit being about
+−5e-4) with the same slope either side, but where `f''(0) ≠ 0` its
+curvature flips sign there, so it is not smooth across it. A curve smooth
+through zero (`CubicIn`, `x³`) only gains a harmless extra corner. Closed-form waves give crossings
 analytically; a drawn piece's crossing is solved once per piece.
 `Stepped`'s jump at full magnitude and `Bounce`'s slope breaks inside the
 range are not corners: they fall under the last row of the table below.

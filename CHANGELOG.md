@@ -25,8 +25,9 @@ the editor draws and an automation envelope renders with:
   `Elastic` dip below 0 on the way (minima about −0.10 and −0.373; neither
   exceeds 1), so a small input pushes the other way: a bipolar offset
   opposite its sign, a unipolar one below base, and a `DepthBy` scale
-  inverts the offset instead of shrinking it. `Bounce` stays in `[0, 1]`
-  but is not monotone. These curves are accepted, not refused.
+  inverts the offset instead of shrinking it. A `Bezier` with control
+  values outside `[0, 1]` can leave `[0, 1]` either way. `Bounce` stays in
+  `[0, 1]` but is not monotone. These curves are accepted, not refused.
 
 **Renders change** for any route whose curve is not `Linear`,
 `Exponential` or `Logarithmic` (those three were already equal). That is

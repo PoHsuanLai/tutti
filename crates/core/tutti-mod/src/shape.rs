@@ -23,7 +23,7 @@ use tutti_types::{Depth, Phase};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Polarity {
     /// Preserve sign, curve the magnitude: `x ∈ [-1, 1] → [-1, 1]` for a
-    /// curve inside `[0, 1]`. `Back` and `Elastic` dip below 0 (to about
+    /// curve inside `[0, 1]` (see [`shape`]). `Back` and `Elastic` dip below 0 (to about
     /// −0.10 and −0.373), so there a small `|x|` pushes the other way from
     /// its sign.
     #[default]
@@ -163,8 +163,9 @@ impl core::fmt::Display for LfoShape {
 /// input to 1 at full input. `Back` and `Elastic` dip below 0 on the way
 /// (minima about −0.10 at 0.42 and −0.373 at 0.865; neither exceeds 1), so
 /// a small input pushes the offset the other way: opposite its sign when
-/// bipolar, below base when unipolar. `Bounce` stays in `[0, 1]` but is not
-/// monotone. `Stepped` is 0 until the input is exactly full.
+/// bipolar, below base when unipolar. A `Bezier` whose control values leave
+/// `[0, 1]` can dip below 0 or exceed 1; its control points are not
+/// checked. `Bounce` stays in `[0, 1]` but is not monotone. `Stepped` is 0 until the input is exactly full.
 ///
 /// The return is a bare `f32`, not a [`Depth`]: it is an offset in the
 /// *target's* units — Hz for a cutoff, linear gain for a fader — which the
@@ -190,7 +191,8 @@ pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 
 /// Every [`CurveType`], one control-point pair standing in for `Bezier`.
 ///
 /// The `match` names each variant, so a new one is a compile error here
-/// until it joins the list (and gets its own slot).
+/// until it joins the list (and gets its own slot). tutti-nodes' lane tests
+/// keep their own copy (`automation/lane.rs`).
 #[cfg(test)]
 pub(crate) fn every_curve() -> [CurveType; 22] {
     use CurveType as C;

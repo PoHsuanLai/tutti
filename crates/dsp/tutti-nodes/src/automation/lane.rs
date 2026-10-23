@@ -282,7 +282,8 @@ mod tests {
 
     /// Every [`CurveType`], one control-point pair standing in for
     /// `Bezier`. The `match` names each variant, so a new one is a compile
-    /// error here until it joins the list (and gets its own slot).
+    /// error here until it joins the list (and gets its own slot). tutti-mod
+    /// keeps its own copy (`shape.rs`); it is test-only there.
     fn every_curve() -> [CurveType; 22] {
         use CurveType as C;
         const ALL: [CurveType; 22] = [

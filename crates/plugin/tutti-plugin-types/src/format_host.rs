@@ -72,9 +72,9 @@
 //! docs compare all four and give the rule for choosing between them.
 
 use crate::{
-    AudioBufferMut, EditorSize, LoadedPlugin, Normalized, ParamAddress, ParameterInfo,
-    PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, WindowHandle,
+    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamAddress,
+    ParameterInfo, PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext,
+    ProcessOutput, RenderMode, WindowHandle,
 };
 
 /// A plugin's catalog identity and load-time wiring snapshot.
@@ -381,7 +381,11 @@ pub trait PluginPresets: Send {
 /// not part of this trait: editors are pumped through `tutti-plugin`'s
 /// host-side editor surface.
 pub trait PluginEditorHost {
-    /// Embeds the plugin's editor into `parent`, returning the size it asks for.
+    /// Embeds the plugin's editor into `parent`, whose backing-store scale is
+    /// `scale`, returning the size it asks for.
+    ///
+    /// A format whose ABI takes the scale forwards it (see [`ContentScale`]
+    /// for where); one without such a call ignores it.
     ///
     /// Runs on the platform GUI toolkit's run loop inside the plugin-server
     /// subprocess, never on the audio thread.
@@ -390,7 +394,7 @@ pub trait PluginEditorHost {
     ///
     /// Returns [`PluginError::Editor`](crate::PluginError::Editor) when the
     /// plugin has no editor or fails to open it.
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
+    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize>;
 
     /// Tears the editor down.
     ///

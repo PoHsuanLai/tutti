@@ -480,5 +480,7 @@ fn handle_open_editor_errors_for_missing_plugin() {
     }
 
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|_| None);
-    assert!(handle.open_editor(FakeWindow).is_err());
+    assert!(handle
+        .open_editor(FakeWindow, crate::handles::ContentScale::IDENTITY)
+        .is_err());
 }

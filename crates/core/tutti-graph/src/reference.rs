@@ -120,8 +120,10 @@ struct RefRamp {
     target: f32,
     /// The absolute frame of its event.
     at: u64,
-    /// A linear ramp's length, in frames.
+    /// A ramp's length, in frames.
     len: u64,
+    /// A ramp's shape.
+    shape: crate::event::SegmentShape,
     /// A curve segment's `(position, length, shape)`; `None`: linear.
     curve: Option<(f32, f32, crate::event::SegmentShape)>,
     /// Its value on the last frame evaluated.
@@ -1294,7 +1296,7 @@ impl Reference {
                 while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                     match e.kind {
                         EventKind::Ramp(r) if r.addr() == want => {
-                            // A first ramp starts from the base.
+                            // A first ramp starts from the base at this frame.
                             let cur = if st.ramp.started {
                                 st.ramp.value
                             } else {
@@ -1305,6 +1307,7 @@ impl Reference {
                                 target: r.raw_target(),
                                 at: now,
                                 len: r.duration().get() as u64,
+                                shape: r.shape(),
                                 curve: None,
                                 value: cur,
                                 started: true,
@@ -1312,13 +1315,22 @@ impl Reference {
                         }
                         EventKind::Segment(s) if s.addr() == want => {
                             let (from, to, position, length) = s.raw();
+                            // What a ramp replacing it on this frame starts
+                            // from: the held value, or (a first event) the
+                            // base at this frame, as for a first ramp.
+                            let cur = if st.ramp.started {
+                                st.ramp.value
+                            } else {
+                                base(i)
+                            };
                             st.ramp = RefRamp {
                                 from,
                                 target: to,
                                 at: now,
                                 len: 0,
+                                shape: crate::event::SegmentShape::Linear,
                                 curve: Some((position, length, s.shape())),
-                                value: st.ramp.value,
+                                value: cur,
                                 started: true,
                             };
                         }
@@ -1345,7 +1357,8 @@ impl Reference {
                     if into >= r.len {
                         r.target
                     } else {
-                        r.from + (r.target - r.from) * (into as f32 / r.len as f32)
+                        let t = into as f32 / r.len as f32;
+                        r.from + (r.target - r.from) * r.shape.eval(t)
                     }
                 };
                 st.ramp.value = value;

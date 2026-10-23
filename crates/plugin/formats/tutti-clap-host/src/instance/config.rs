@@ -240,7 +240,14 @@ impl PortLayout {
     /// because it is what the overwhelming majority of plugins present — the same
     /// rule, and the same reason, as the subprocess host's `default_if_empty`.
     ///
-    /// Call this **before** reading the channel totals. Putting a `.max(2)`
+    /// For the layout the host **reports** (`PluginInfo`'s channel totals,
+    /// which the plugin server turns into the node's graph-facing buses) only,
+    /// never for the one handed to the plugin: `process` must carry exactly
+    /// `clap_plugin_audio_ports::count()` buffers on each side, so
+    /// `ClapLoaded::ports` keeps the declared layout, empty sides included,
+    /// and the load applies this to a copy.
+    ///
+    /// Call this **before** reading the reported totals. Putting a `.max(2)`
     /// floor on the totals instead makes a genuine mono plugin report
     /// 2-in/2-out while `self` still holds the true `[Mono]` — two sources of
     /// truth about one width, disagreeing.

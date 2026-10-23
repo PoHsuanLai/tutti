@@ -86,6 +86,139 @@ fn the_border_nodes_process_without_allocating() {
     assert_eq!(out.dropped(), 0);
 }
 
+/// A wire with a bend range on MPE member channel 2 every poll.
+struct BendRange;
+
+impl MidiIn for BendRange {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        buffer[0] = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
+            tutti_midi_types::PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+        );
+        1
+    }
+}
+
+/// The input node fans a member channel's bend range out over its zone
+/// without allocating, and every member's port carries it.
+///
+/// Mutation (run): collect the fan-out into a `Vec` before writing it → the
+/// gate panics.
+#[test]
+fn the_mpe_bend_range_fan_out_processes_without_allocating() {
+    use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "in",
+        MidiInputNode::new(Some(Box::new(BendRange)))
+            .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(15))),
+    );
+    let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(4),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 15,
+        }),
+    );
+    ed.commit().unwrap();
+    let t = Transport::default();
+    let mut drain = [MidiEvent::noop(); 256];
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let mut reached = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..50 {
+            exec.process(512, &t, &[], &mut []);
+            reached += out.poll_into(&mut drain);
+        }
+    });
+    assert_eq!(reached, 50, "the last member's port carries one per block");
+}
+
+/// A wire alternating an upper-zone and a lower-zone MPE Configuration
+/// Message, one per poll.
+struct Mcms(bool);
+
+impl MidiIn for Mcms {
+    fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        use tutti_midi_types::mpe::MpeZoneConfig;
+        self.0 = !self.0;
+        buffer[0] = if self.0 {
+            MpeZoneConfig::upper(3).to_mcm()
+        } else {
+            MpeZoneConfig::lower(3).to_mcm()
+        };
+        1
+    }
+}
+
+/// The input node adopts a host-set MPE mode, sends its zones' reset ranges
+/// and applies an MCM from the wire (rebuilding the ingest and sending that
+/// zone's reset) without allocating: before each gated block the host asks
+/// for a dual zone other than the one in force (outside the gate: a publish
+/// is control-side), and the wire alternates upper and lower MCMs.
+///
+/// Mutation (run): collect `zone_defaults` into a `Vec` in
+/// `adopt_mpe_request` → the gate panics.
+#[test]
+fn an_mpe_mode_change_and_an_mcm_process_without_allocating() {
+    use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let controls = ed.insert(
+        NodeKey(1),
+        "in",
+        MidiInputNode::new(Some(Box::new(Mcms(false)))),
+    );
+    let out = ed.insert(NodeKey(4), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(4),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 15,
+        }),
+    );
+    ed.commit().unwrap();
+    let t = Transport::default();
+    let mut drain = [MidiEvent::noop(); 256];
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let modes = [
+        MpeMode::DualZone {
+            lower: MpeZoneConfig::lower(3),
+            upper: MpeZoneConfig::upper(3),
+        },
+        MpeMode::DualZone {
+            lower: MpeZoneConfig::lower(5),
+            upper: MpeZoneConfig::upper(4),
+        },
+    ];
+    let mut reached = 0;
+    for i in 0..50 {
+        controls.set_mpe_mode(modes[i % 2]);
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(512, &t, &[], &mut []);
+            reached += out.poll_into(&mut drain);
+        });
+        controls.reclaim();
+    }
+    // Each block's adoption resets the upper master (channel 15), and every
+    // other block's upper MCM resets it again.
+    assert_eq!(reached, 75);
+}
+
 /// A loop of 64 frames walked in 512-frame blocks: each block is eight loop
 /// passes of a clip (a note on and off in each, the held note ended at each
 /// wrap) and of a harmony node (a chord change in each, the chord re-stated

@@ -44,7 +44,7 @@ pub use crate::protocol::{
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
-pub use crate::util::window::{EditorSize, WindowHandle};
+pub use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 // Per-format `probed` masks, shared by every loader in this crate and in
 // `tutti-plugin-server`.
 pub use tutti_plugin_types::features::probed;

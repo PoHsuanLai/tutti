@@ -34,8 +34,10 @@ metadata read at load) and [`Vst3Error`] (with [`LoadStage`] for load failures).
 a caller can stay format-agnostic, but does not define them. MIDI is the
 workspace-wide UMP [`tutti_midi_types::MidiEvent`], re-exported here as
 [`MidiEvent`]; there is **no VST3-specific MIDI event trait to implement**. To
-send something that is not already a `MidiEvent`, convert it — [`events`] exposes
-the typed VST3 event structs and [`Vst3Event::from_midi`] the conversion.
+send something that is not already a `MidiEvent`, convert it. [`events`] exposes
+the typed VST3 event structs; the plugin's event list encodes a `MidiEvent`
+stream into them, following each channel's per-note bend range (RPN #00/07)
+across blocks, and [`Vst3Event::to_midi`] decodes one back.
 
 **Subprocess isolation.** This crate hosts in-process.
 [`tutti-plugin-server`](../../tutti-plugin-server) wraps it in a subprocess, and
@@ -146,13 +148,13 @@ println!("{edits} param edits; latency changed: {}", restart.latency_changed);
 
 ```rust,no_run
 # use std::path::Path;
-# use tutti_vst3_host::{Vst3Loaded, WindowHandle};
+# use tutti_vst3_host::{ContentScale, Vst3Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst3_host::Result<()> {
 # let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"))?;
 if plugin.has_editor() {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
-    let size = plugin.open_editor(handle)?;
+    let size = plugin.open_editor(handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
 }
 plugin.close_editor();
@@ -267,4 +269,4 @@ MIT OR Apache-2.0
 [`EditorSize`]: crate::EditorSize
 [`MidiEvent`]: crate::MidiEvent
 [`events`]: crate::events
-[`Vst3Event::from_midi`]: crate::events::Vst3Event::from_midi
+[`Vst3Event::to_midi`]: crate::events::Vst3Event::to_midi

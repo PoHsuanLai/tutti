@@ -21,13 +21,15 @@ pub enum MpeZone {
     SingleChannel(u8),
 }
 
-/// MPE's two default pitch-bend ranges (RP-053): the Master channel bends the
-/// whole zone by ±48 semitones, a Member channel bends its one note by ±2.
+/// MPE's two default pitch-bend ranges (RP-053 / M1-100-UM, "Pitch Bend
+/// Sensitivity"): the Master channel bends the whole zone by ±2 semitones, a
+/// Member channel bends its one note by ±48. A receiver of an MPE
+/// Configuration Message resets both to these.
 ///
 /// They are separate state, not one value seen from two angles — RPN 0 arrives
 /// per channel, so a controller can legitimately set them independently.
-const MASTER_PITCH_BEND_SEMITONES: u8 = 48;
-const MEMBER_PITCH_BEND_SEMITONES: u8 = 2;
+const MASTER_PITCH_BEND_SEMITONES: u8 = 2;
+const MEMBER_PITCH_BEND_SEMITONES: u8 = 48;
 
 /// One zone's layout and bend ranges — the whole description of how an MPE
 /// instrument occupies the sixteen channels.
@@ -48,11 +50,11 @@ pub struct MpeZoneConfig {
     /// incoming MCM means "disable the zone" and is not stored here.
     pub member_count: u8,
     /// Bend range for the zone's **master** channel — applies to every note in
-    /// the zone at once. RP-053 default ±48 semitones.
+    /// the zone at once. RP-053 default ±2 semitones.
     pub master_pitch_bend_range: PitchBendSensitivity,
     /// Bend range for a **member** channel — applies to that channel's single
-    /// note. RP-053 default ±2 semitones; using the master's ±48 here bends a
-    /// per-note gesture 24× too far.
+    /// note. RP-053 default ±48 semitones; using the master's ±2 here bends a
+    /// per-note gesture a 24th as far.
     pub member_pitch_bend_range: PitchBendSensitivity,
     /// Whether the zone is active. A disabled zone keeps its layout so a host can
     /// restore it without re-deriving the channel assignment.
@@ -95,7 +97,8 @@ impl MpeZoneConfig {
     /// Non-MPE mode: one channel, standard ±2 bend. There are no member
     /// channels, so both ranges are the same ±2.
     pub fn single_channel(channel: u8) -> Self {
-        let range = PitchBendSensitivity::from_semitones(MEMBER_PITCH_BEND_SEMITONES);
+        // The standard MIDI 1.0 channel default, which is the MPE master's.
+        let range = PitchBendSensitivity::from_semitones(MASTER_PITCH_BEND_SEMITONES);
         Self {
             zone: MpeZone::SingleChannel(channel.min(15)),
             master_channel: channel.min(15),
@@ -412,7 +415,7 @@ mod tests {
         );
         assert_eq!(
             config.member_pitch_bend_range,
-            PitchBendSensitivity::from_semitones(2),
+            PitchBendSensitivity::from_semitones(48),
             "member range untouched"
         );
         assert_eq!(config.member_count, 5); // Other fields unchanged
@@ -424,23 +427,28 @@ mod tests {
         );
         assert_eq!(
             config.master_pitch_bend_range,
-            PitchBendSensitivity::from_semitones(48),
+            PitchBendSensitivity::from_semitones(2),
             "master range untouched"
         );
     }
 
+    /// **A zone starts at MPE's default ranges per role** (RP-053 /
+    /// M1-100-UM, "Pitch Bend Sensitivity": the master channel ±2 semitones,
+    /// every member ±48, what a receiver of an MCM resets to). A member at
+    /// the master's ±2 bends a per-note gesture a 24th as far.
+    ///
+    /// Mutation (run): swap `MASTER_PITCH_BEND_SEMITONES` and
+    /// `MEMBER_PITCH_BEND_SEMITONES` back (48 and 2) → fails.
     #[test]
     fn zones_default_to_rp053_ranges_per_role() {
-        // RP-053: ±48 on the master channel, ±2 on member channels. Using the
-        // master's range on a member bends a per-note gesture 24x too far.
         for config in [MpeZoneConfig::lower(7), MpeZoneConfig::upper(7)] {
             assert_eq!(
                 config.master_pitch_bend_range,
-                PitchBendSensitivity::from_semitones(48)
+                PitchBendSensitivity::from_semitones(2)
             );
             assert_eq!(
                 config.member_pitch_bend_range,
-                PitchBendSensitivity::from_semitones(2)
+                PitchBendSensitivity::from_semitones(48)
             );
 
             // …and resolving by channel picks the right one.
@@ -569,9 +577,9 @@ mod serde_tests {
 
     /// The master and member ranges stay distinct.
     ///
-    /// RP-053 gives them different defaults (±48 and ±2) and a controller can set
+    /// RP-053 gives them different defaults (±2 and ±48) and a controller can set
     /// them independently, so a round trip that collapsed them into one value
-    /// would bend a per-note gesture 24× too far — audible, but only on hardware.
+    /// would bend a per-note gesture 24× off — audible, but only on hardware.
     #[test]
     fn the_two_bend_ranges_do_not_collapse_into_one() {
         let cfg = MpeZoneConfig::lower(10);

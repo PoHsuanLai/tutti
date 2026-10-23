@@ -37,7 +37,7 @@ pub use crate::host::node::TransportView;
 pub use crate::protocol::{
     ChordValue, Normalized, ParamAddress, ParamId, Preset, PresetId, ScaleValue,
 };
-pub use crate::util::window::{EditorCapabilities, EditorSize};
+pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 
 /// In-process VST2 graph node, and the controls inserting it hands back. Used

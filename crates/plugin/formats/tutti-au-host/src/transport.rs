@@ -249,11 +249,9 @@ impl TransportState {
         // a different quantity: an AU would be handed a timeline that never
         // loops, with no way to tell which clock it got.
         //
-        // `TransportPosition::samples` is an `Option` because no producer in
-        // this engine fills it, and the AU callback has no validity bit — same
-        // wall VST2's `samplePos` and VST3's `projectTimeSamples` hit. So it
-        // degrades to 0, matching them, and the remedy is shared: give the
-        // transport a real project-time sample clock (see the field doc on
+        // The AU callback has no validity bit for it, as VST2's `samplePos`
+        // and VST3's `projectTimeSamples` have none, so a snapshot without a
+        // project-time position sends 0, matching them (see the field doc on
         // `TransportPosition::samples`).
         let sample_time = info.position.samples.unwrap_or(0) as f64;
         self.sample_time_bits

@@ -2,7 +2,7 @@
 //!
 //! [`MotionState`] is the published vocabulary; `TransportFsm` is the private
 //! machine that decides transitions, and `TransitionResult` is what it hands
-//! back for [`MotionFsm`](super::MotionFsm) to publish.
+//! back for the engine's `MotionAudio` to publish.
 
 use super::motion::{FadeOut, MotionEvent, Then};
 use crate::Beat;
@@ -44,7 +44,7 @@ impl From<MotionState> for u8 {
 /// Decode from the published mirror.
 ///
 /// Total rather than fallible: the only writer is
-/// [`MotionFsm`](super::MotionFsm), which encodes
+/// the engine's `MotionAudio`, which encodes
 /// via the `From` above, so an out-of-range byte cannot occur through the
 /// public API. A torn or corrupt read degrades to `Stopped` — the safe
 /// interpretation for a transport — rather than panicking on the audio thread.
@@ -92,9 +92,8 @@ pub(crate) enum DeclickOutcome {
 
 /// What a transition changed.
 ///
-/// Self-describing: [`MotionFsm::publish`](super::MotionFsm) applies it without
-/// reading the FSM back, which is what keeps the audio thread down to one cell
-/// borrow per event. Every variant carries the motion the FSM *already stored*,
+/// Self-describing: `MotionAudio::publish` applies it without reading the
+/// FSM back. Every variant carries the motion the FSM *already stored*,
 /// never something the caller re-derives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum TransitionResult {
@@ -116,8 +115,8 @@ pub(crate) enum TransitionResult {
 /// as a fade.
 pub(crate) const DEFAULT_DECLICK_FRAMES: Samples = Samples(480);
 
-/// The machine itself. Audio-thread-only — [`MotionFsm`](super::MotionFsm)
-/// keeps it behind an `AudioThreadCell` and publishes its results.
+/// The machine itself. The engine owns it, as a plain field of its
+/// `MotionAudio`, which publishes its results.
 pub(crate) struct TransportFsm {
     motion: MotionState,
     /// The motion to restore when a scrub ends. Never a declick state.
@@ -137,10 +136,28 @@ impl TransportFsm {
         }
     }
 
-    /// Takes the outcome of a completed fade. One-shot: a second call after the
-    /// same fade yields `None`.
+    /// The motion the machine is in.
+    pub fn motion(&self) -> MotionState {
+        self.motion
+    }
+
+    /// Takes the outcome of a completed fade without settling the motion.
+    /// One-shot: a second call after the same fade yields `None`.
+    #[cfg(test)]
     pub fn take_declick_outcome(&mut self) -> Option<DeclickOutcome> {
         self.pending.take()
+    }
+
+    /// The fade reached zero: settle into the motion it was heading for,
+    /// and return its outcome. One-shot: a second call after the same fade
+    /// yields `None`.
+    pub fn complete_declick(&mut self) -> Option<DeclickOutcome> {
+        let outcome = self.pending.take()?;
+        self.motion = match outcome {
+            DeclickOutcome::Stop => MotionState::Stopped,
+            DeclickOutcome::Locate { motion, .. } => motion,
+        };
+        Some(outcome)
     }
 
     /// The outcome the fade in flight completes into, without taking it.

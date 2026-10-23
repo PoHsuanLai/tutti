@@ -8,7 +8,9 @@ use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
-use crate::types::{AudioPortsRescan, EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
+use crate::types::{
+    AudioPortsRescan, ContentScale, EditorCapabilities, EditorSize, ParamRescan, WindowHandle,
+};
 #[cfg(feature = "clap-extras")]
 use crate::types::{
     ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
@@ -375,12 +377,13 @@ impl ClapLoaded {
     }
 
     /// Creates the plugin editor and embed it into the given native `parent`
-    /// window, returning the editor's initial size.
+    /// window, whose backing-store scale is `scale`, returning the editor's
+    /// initial size.
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
-    /// `set_scale` → `get_size` → `set_parent` → `show`. See
+    /// `set_scale(scale)` → `get_size` → `set_parent` → `show`. See
     /// `embed_editor_sequence` for the ordering rationale and for which
-    /// window apis take the `set_scale` step.
+    /// window apis take the `set_scale` step (win32 and x11; never cocoa).
     ///
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin does not expose a GUI, if the
@@ -390,7 +393,7 @@ impl ClapLoaded {
     ///
     /// In debug builds, panics if called from a thread other than the one that
     /// loaded the plugin.
-    pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         self.assert_main_thread();
         if self.extensions.gui.gui.is_null() {
             return Err(ClapError::EditorError("No GUI extension".to_string()));
@@ -398,12 +401,6 @@ impl ClapLoaded {
         let gui = unsafe { &*self.extensions.gui.gui };
 
         let (api, window_handle) = platform_window_handle(parent.as_ptr());
-
-        // TODO: backing-scale from the frontend — the host `WindowHandle`
-        // carries no DPI today, so we pass 1.0. Ignored outright on the
-        // logical-pixel apis; on win32/x11 it is the identity until this is
-        // wired.
-        let scale = 1.0_f64;
 
         // Clear the previous editor's window-destroyed latch *before* the embed
         // sequence: the plugin may call `clap.gui.closed` from inside
@@ -415,7 +412,8 @@ impl ClapLoaded {
             .window_destroyed
             .store(false, std::sync::atomic::Ordering::Release);
 
-        let outcome = embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
+        let outcome =
+            embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale.get())?;
 
         if outcome.did_create {
             self.flags.gui_created = true;

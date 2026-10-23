@@ -122,13 +122,13 @@ println!("{} bytes of preset state", preset.len());
 ### Editor
 
 ```rust,no_run
-# use tutti_clap_host::{ClapLoaded, WindowHandle};
+# use tutti_clap_host::{ClapLoaded, ContentScale, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_clap_host::Result<()> {
 # let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
 if plugin.has_editor() {
     // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
-    let size = plugin.open_editor(handle)?;
+    let size = plugin.open_editor(handle, ContentScale::IDENTITY)?;
     println!("editor is {}x{}", size.width, size.height);
 }
 plugin.close_editor();

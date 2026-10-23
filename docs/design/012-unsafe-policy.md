@@ -40,8 +40,8 @@ be checked against the tree.
   `try_borrow_mut`); a conflicting borrow panics, or its `try_` form returns
   `None`, instead of aliasing. The word is what makes the `Sync` true; until
   the change that made it unconditional it was `#[cfg(debug_assertions)]`,
-  and safe code sharing a cell (`tutti_core::MotionFsm::drain` on two
-  threads) could make two `&mut T` in release. The audio thread and the
+  and safe code sharing a cell (`tutti_core::Engine::settle_graph` racing
+  a callback's `Engine::process`) could make two `&mut T` in release. The audio thread and the
   VST3 COM entry points take the `try_` forms, so a conflict there is a
   skipped step or a failure code, never a panic. The RT-safe alternative to
   a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,

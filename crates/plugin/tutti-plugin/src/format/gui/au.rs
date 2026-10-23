@@ -17,7 +17,7 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
         .ok()
         .map(|i| table[i].1)
 }
-use crate::util::window::{EditorSize, WindowHandle};
+use crate::util::window::{ContentScale, EditorSize, WindowHandle};
 use std::path::Path;
 
 pub(crate) struct AuGuiInstance {
@@ -87,10 +87,12 @@ impl AuGuiInstance {
 }
 
 impl PluginEditor for AuGuiInstance {
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    /// `_scale` is unused: an AU view is an `NSView`, which lays out in
+    /// logical pixels and reads its backing scale itself.
+    fn open_editor(&mut self, parent: WindowHandle, _scale: ContentScale) -> Result<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         // No size to offer here either: this entry point receives a
-        // parent handle and nothing else. See the sibling in
+        // parent handle and a scale, no size. See the sibling in
         // `tutti-plugin-server`.
         let size = unsafe {
             self.inner.open_editor(

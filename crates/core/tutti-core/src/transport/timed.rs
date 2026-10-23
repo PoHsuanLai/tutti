@@ -27,8 +27,8 @@
 //! the engine cuts the block's *transport* there (see the engine docs). Late
 //! commands (a frame already past, a beat continuous playback already
 //! crossed) land at the start of the next block and are counted, never
-//! dropped. Nothing but an engine drains this queue: `MotionFsm::drain`
-//! applies only the untimed queue.
+//! dropped. Nothing but an engine drains this queue; the motion machine's
+//! own drain applies only the untimed queue.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;

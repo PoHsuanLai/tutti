@@ -277,6 +277,8 @@ impl ProbePlugin {
                 cap.time_sig_numerator = t.time_sig_numerator;
                 cap.time_sig_denominator = t.time_sig_denominator;
                 cap.time_flags = t.flags;
+                cap.time_nanoseconds = t.nanoseconds;
+                cap.time_samples_to_next_clock = t.samples_to_next_clock;
             }
             None => cap.time_info_present = false,
         });

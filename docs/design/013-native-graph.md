@@ -360,12 +360,16 @@ the race. Every type below exists because the audit found the bug it prevents.
   clone-on-commit. (`RtEventBuf` is deleted: see "Hardware MIDI input
   ring". `reset_owner`, a no-op, is deleted with `Engine::reset_owners` and
   `MotionFsm::reset_owner`. `AudioThreadCell` stays where `&self` is the
-  shape — the VST3 COM objects, the MIDI port drain, the engine's render
-  state and `MotionFsm`'s FSM behind a `Clone` handle — and now checks its
-  one-borrow contract in release builds too, so safe code sharing one can
-  no longer alias it. Splitting `MotionFsm` into a control handle and an
-  engine-owned audio half, which would make that FSM a plain field, is
-  still to do.) Units owned once by the audio thread only need `&mut self`.
+  shape — the VST3 COM objects, the MIDI port drain and the engine's render
+  state — and checks its one-borrow contract in every build, so safe code
+  sharing one cannot alias it. The transport's motion machine is not one of
+  them: `MotionFsm` is its `Clone` control handle (send and schedule
+  commands, read the published motion), and the FSM is a plain field of
+  its audio half, `MotionAudio`, which the engine owns in its render state
+  and drives through `&mut`. The FSM waits in a capacity-one
+  `ArrayQueue` on the handle while no engine holds it; an engine takes it
+  under its playhead claim and its drop hands it back, so a later engine
+  resumes the same state.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -393,7 +397,7 @@ means:
 |---|---|---|
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
-| Automation | `ParamRamp` events (linear) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
+| Automation | `ParamRamp` events (relative: from where the param stands, linear or along a `SegmentShape`) and `ParamSegment` events (a closed set of curve shapes, evaluated by the param port per frame) at an offset, starting on their exact frame (decision 7, "Curve segments") | A curve shape outside the closed set (`audio-automation`'s `Back`, `Elastic`, `Bounce`, `Bezier`, `Circular`): an automation lane sends it as linear pieces, exact at block edges |
 | Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (point 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction (a declick moves the transport on its frame; the fade is audio only). The sampler reads `Env::transport_at` like every other clip reader; the `Legacy` adapter, whose clip readers polled a timeline once per 64-frame chunk, is deleted ([below](#legacy-deleted)) |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
@@ -602,7 +606,9 @@ place that loses precision to be written out explicitly:
      `Transport`'s position is private: `Transport::new(.., beat, ..)` (a
      bare beat, the block start its own origin, for a transport built by
      hand) or `Transport::counted(.., SegmentOrigin, ..)` (the host's
-     origin beat, the frames rolled since, and **their rate**). `beat()`
+     origin beat, the frames rolled since, and **their rate**). A bare
+     beat walked on to a frame stays bare to `Transport::origin`: its
+     frame count is the walk's, not the host's. `beat()`
      derives a counted position's beat, so the beat and its frame count are
      one value, and the origin's rate travels with it (`Transport::clock`
      debug-asserts it matches the block's). `EnvClock` and
@@ -4511,7 +4517,9 @@ vocoder retirement channel for voices the pool removes.
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
   an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
   `recording` flag (additive; tutti-core's engine sets it) because the ABIs
-  carry it. The continuous-sample counter is `Env`'s frame.
+  carry it. The continuous-sample counter is the node's own `SteadyTime`
+  (frames rendered; `Env`'s frame restarts at a re-prepare). Project-time
+  samples, the host clock and the MIDI clock: [below](#plugin-transport-project-time-host-clock-midi-clock-editor-scale).
 - **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
   `f64` conversion stays in the batcher. The chunk (and so the declared
   pipeline latency) is the device's callback (`Prepare::quantum`, which
@@ -4998,8 +5006,10 @@ under both.
   nothing (no lane storage exists), so it, its slot, its setters and
   `NoteExpressionView` are removed; the payload's note expression is empty
   as before. Note expression belongs in the MIDI stream as MIDI 2 per-note
-  messages; turning those into VST3 note-expression events on the plugin
-  side is a follow-up. With these three inputs gone, the plugin node's
+  messages, and each format host turns those into its own note expression
+  (VST3: `tutti-vst3-host`'s event list, from the MIDI it stages; see
+  ["VST3 note expression from MIDI 2"](#vst3-note-expression-from-midi-2)).
+  With these three inputs gone, the plugin node's
   `InputSlot`s are gone; the in-process VST2 node's polled transport was the
   last user of the slot type (both deleted: ["In-process VST2 live
   transport from `Cx`"](#in-process-vst2-live-transport-from-cx)).
@@ -5284,13 +5294,15 @@ under both.
     is not a change: it starts at its modulated value, so an export matches
     the live graph from frame 0.
   - **Event sources**: each `ParamRamp` addressed to the port's param
-    starts a linear ramp of that source's value on its frame, landing on
+    starts a ramp of that source's value on its frame (linear, or along
+    the ramp's shape: "Curve segments"), landing on
     the target on its last frame (a zero-length ramp is a step; a
     `ParamSegment` moves it along its shape instead, see "Curve
     segments"); the value starts at 0 and is an offset like an audio source's.
   **Superseded by doc 014 §5.6:** an event source's value now
   *replaces* the base from its first event on (a first ramp starts from
-  the base on its frame), audio sources stay offsets on whichever holds,
+  the base on its frame, also when it replaces a segment sent first on
+  that frame), audio sources stay offsets on whichever holds,
   and a port takes at most one event source, unshaped
   (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
   The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state
@@ -5396,8 +5408,8 @@ fail on, by name.
 - A re-prepare resumes each unit with fresh param state: event sources'
   held ramps restart at 0 (a sample-rate change would make their frame
   counts wrong anyway), as the reference does.
-- Event sources are not limited to unshaped ramps of the target value:
-  the curve-segment `EventKind::Segment` (decision 7) sits beside `Ramp`
+- Event sources are not limited to ramps of the target value: the
+  curve-segment `EventKind::Segment` (decision 7) sits beside `Ramp`
   (see "Curve segments" below).
 - Param edges are direct only: no feedback modulation (a node modulating
   something upstream of itself is a `CompileError::Cycle`).
@@ -5475,9 +5487,10 @@ pool. bevy-tutti: `a_range_move_sends_no_plan`; the existing
 
 Decision 7, resolved: automation is carried as linear ramps **and** curve
 segments. A param port evaluates a non-linear shape per frame inside the
-block, sample-accurate, with no sub-chunking at breakpoints; the linear
-`ParamRamp` stays, unchanged to the bit, for the moves it already
-carried.
+block, sample-accurate, with no sub-chunking at breakpoints; the
+`ParamRamp` stays, linear by default and unchanged to the bit, for the
+moves it already carried, and can follow the same shapes from wherever
+the source stands ("Shaped ramps" below).
 
 - **The event.** `EventKind::Segment(ParamSegment)` beside `Ramp`. A
   segment is **absolute**: its start and end values, a `SegmentShape`, and
@@ -5492,8 +5505,8 @@ carried.
   one a producer is on is idempotent: a producer can be a pure function of
   the transport, a seek or loop wrap is just another send, and a segment
   entered mid-way renders what one started at its beginning would have.
-  (A relative form, "from wherever the source is, along a shape", would
-  need the source's value at the send and could not be re-sent; the linear
+  (A relative form, "from wherever the source is, along a shape", needs
+  the source's value at the send and cannot be re-sent idempotently; the
   ramp is that form.)
 - **The shapes: a closed set, `Copy`.** `SegmentShape::{Linear, Hold,
   PowerIn(p), PowerOut(p), PowerInOut(p), Exp(k)}`, each monotone between
@@ -5537,6 +5550,41 @@ carried.
   it. The reference interpreter evaluates segments from their start frame,
   sharing only `segment_value` (the shape's definition), as it shares the
   LUT.
+- **Shaped ramps.** `ParamRamp::with_shape(SegmentShape)` (default
+  `Linear`) makes the relative move follow a shape: frame `j` after the
+  event reads `from + (target - from) · shape.eval((j + 1) / duration)`,
+  `from` being the source's value on the frame before the event (for a
+  source not yet started, the base at the event's own frame), and
+  `target` from frame `duration - 1` on: a segment in the ramp convention
+  whose start is read at the port. The port (`Ramp::step`) and the
+  reference interpreter both call `SegmentShape::eval`, so there is one
+  definition of each shape. `Linear` evaluates `t` to itself inside the
+  ramp (`t` is in `(0, 1)` there), so a linear ramp renders the bits it
+  did before ramps had a shape (`a_linear_ramp_renders_the_unshaped_bits`).
+  The ramp packs its shape as a segment does (a tag byte and an `f32`):
+  24 bytes, inside the segment's 28, so `Event` stays 32. Interruption is
+  a ramp's: a later ramp moves on from the value it reached, a later
+  segment jumps to its own. **No geometric variant:** `Exp(ln(to /
+  from))` needs `from`, which a ramp does not know when it is built, and
+  a shape is a function of progress alone (it is what `eval` takes); a
+  producer that wants a move linear in pitch names its start, with a
+  `ParamSegment`. **On a hosted plugin** (`param_input::take`, one walk
+  for the out-of-process CLAP, VST3 and VST2 nodes and the in-process
+  VST2 one) a ramp with a duration becomes the `ParamSegment::foreign`
+  from where the parameter stands on the frame before it (the segment in
+  flight there, else the value the node last gave it,
+  `ParamDelivery::current`; read at the parameter's first event on the
+  frame, `ParamDelivery::frame_start`, so a step or segment earlier on the
+  ramp's frame does not move it, as in a param port once its source has
+  started; a port's first ramp starts from the base at its own frame) and
+  is sent as that
+  segment's points; a step,
+  or a ramp on a parameter the node has given no value yet, is its target
+  on its frame. The start is the host's value, not the plugin's: an edit
+  in the plugin's editor is not in it. Pinned by
+  `a_ramp_reaches_a_plugin_along_its_shape` and
+  `a_ramp_starts_from_the_value_before_its_frame` (unit) and
+  `a_shaped_ramp_drives_a_plugin_parameter_along_its_shape` (CLAP).
 - **Ranges and modulation.** A segment is a source's raw value like a
   ramp's: through the source's shaping, summed with the base and the other
   sources, clamped to the port's live range when the port reads it. The
@@ -5572,9 +5620,9 @@ carried.
 - **A hosted plugin** takes parameter points (CLAP and VST3 parameter
   changes are point values), so its node follows a segment that reaches
   its event input itself (`SegmentPoints`, `host/node/segment_points.rs`):
-  the segment's value on its event frame, then points along it in every
-  chunk (at `stride_for(chunk)` and on the chunk's last frame, as
-  `PluginAutomation` spaces them, at most 10 a chunk) and its end value on
+  the segment's value on its event frame, then points along it on every
+  frame whose play-clock count is a multiple of 32 (doc 014 §5.3) and on
+  each chunk's last frame, and its end value on
   the frame it arrives (`ParamSegment::arrives_after`), after which the
   plugin holds it. A later ramp or segment on the parameter stops it on
   its frame. **Bounds:** one slot per parameter address, as many as the
@@ -5584,9 +5632,8 @@ carried.
   once on its event frame. Cleared on a reset or re-prepare; nothing is
   allocated on the audio thread (`clap_node_no_alloc` drives a lane into
   the plugin under the
-  gate). A ramp is still its target at its frame. `PluginAutomation` (the plugin's
-  automation source) is unchanged: it samples its curves into
-  `ParamRamp::foreign` points at a stride, which is what its target takes.
+  gate). A ramp with a duration is followed as the segment it makes
+  (see "Shaped ramps"); a step is its target at its frame.
 - **Plugin parameter delivery (doc 014 §9).** The 16-queue
   chunk is gone. The plugin's parameter list is read once at
   `PluginClient::new` (which already blocks on the server; no protocol
@@ -5648,8 +5695,8 @@ carried.
   the live state and seeds the fork's delivery with it, as
   `PluginForkSource::capture` does. Counters are on the node's controls,
   now `InProcessVst2Controls` (its meter cell, as before, and
-  `param_delivery()`), and `Plugin::automation` builds a VST2 node's
-  `PluginAutomation` (index addresses). `Vst2Instance::{get_parameter,
+  `param_delivery()`); a foreign control lane reaches its parameters by
+  index (`ParamAddr::Id` read as `ParamAddress::Index`). `Vst2Instance::{get_parameter,
   set_parameter}` bound-checked through `get_info()`, which clones the
   plugin's `Info` strings: they read the count from the load-time
   snapshot now, so the audio thread can call them (this also reached the
@@ -5727,9 +5774,7 @@ same along its envelope.
 
 **Deferred.** `LayeredCurve` and the automation `Recorder` answer
 `segment_at` with `None` (the fallback): a sum of layers has no single
-shape, and a take in progress changes under the lane. A relative curved
-move ("from where it is, exponentially to X") has no event; the linear
-`ParamRamp` is the only relative form.
+shape, and a take in progress changes under the lane.
 
 #### Sampler block render and ownership
 
@@ -6452,13 +6497,202 @@ meter installed. bevy-tutti's `plugin_vst2_meter.rs` loads the probe through
 the request pipeline and reads 7/8 from its `audioMasterGetTime` once the
 metronome's meter is 7/8.
 
+#### Plugin transport: project time, host clock, MIDI clock; editor scale
+
+The snapshot a plugin chunk is handed (`transport_source::from_cx`)
+fills three fields the ABIs ask for beyond the beat and the tempo:
+
+- **Project time** (`TransportPosition::samples`: VST2 `samplePos`, VST3
+  `projectTimeSamples`, AU's sample time; and CLAP's `song_pos_seconds`,
+  the same time over the rate) is node state, `ProjectTime`, in `Bound` and
+  in the VST2 `TransportFeed`. Each chunk's read rolls it by the frames
+  the transport played since the last read, holds it while stopped, and
+  re-seats it from the beat at the tempo (`beats · 60 / tempo · rate`)
+  only at a jump: the first read, a seek (stopped or playing), a loop
+  wrap, a rate change. A tempo change, a stop, a start where the
+  transport stood and a loop edit are not jumps. Several of these can
+  land between two chunk reads; the engine's transport tells them apart
+  by its segment (`Transport::origin`, `SegmentOrigin`): the host's
+  `FrameClock` starts a new segment at a seek, a tempo or rate change
+  and a loop wrap, never at a stop or a start (a stopped clock only stops
+  counting) or a loop edit. `played_between` reads it: the same origin
+  beat and tempo means the transport only played, and the frame counts'
+  difference is the frames played, exactly; a new segment at another
+  tempo is a tempo change, counted as the frames from the earlier read up
+  to the new segment's first beat at the earlier tempo plus the new
+  segment's own; a new segment at the same tempo is a seek or a wrap, a
+  re-seat. Either count must fit the frames between the reads. This is
+  exact for one tempo change between two reads; with more (a ramp's steps
+  inside one chunk) the frames at the tempos between are counted at the
+  earlier one, and a tempo that changes and comes back inside one chunk
+  re-seats. A ramp that speeds up plays those beats in fewer frames than
+  that count, which can pass the gap (beat 100, 120 → 130 BPM at frame 16
+  → 140 at frame 32: 17 frames counted for 16), so the count is capped at
+  the room the gap leaves whenever the beats moved fit it at the faster
+  of the two tempos; only beats that do not fit even then re-seat. The
+  faster of the two is the fastest only for a ramp that moves one way: a
+  tempo that rises above both reads' tempos and falls again inside one
+  chunk can play the beats in fewer frames than that, and re-seats, as a
+  tempo that changes and comes back does. A non-finite beat re-seats. A seek
+  and a tempo change inside one chunk cannot be told from a tempo change
+  alone, and the cap widens that: a seek forward whose beats fit the gap
+  at the faster tempo is counted as played. A wrap or a seek that lands back on a
+  segment's first beat starts a segment with the same origin; counting
+  it reads what a re-seat would, since project time has been the beat's
+  time from that segment's own wrap or seek on, except for a segment
+  begun at a tempo change and sought back to within one chunk.
+  A transport built by hand (`Transport::new`, which no engine block
+  carries) has no segment, and neither has its walk to a frame
+  (`Env::transport_at`, the transport history): a frame count from a
+  bare beat is not the host's, so `Transport::origin` is `None` for it.
+  It is read by the playhead's rule instead
+  (`continued_without_origin`): `tutti_graph::Transport::continuity`
+  judged against the earlier read's loop, a stop or a start between the
+  reads counted by `played_across` as the beats moved forward at a tempo
+  the transport played at, no more than the gap, and a move out past an
+  unchanged loop's end without wrapping re-seated, whichever way the
+  rule reads it. Counting frames played at one tempo at another there is
+  off by `n · |1 − r|`, `r` the ratio of the two, up to the whole gap at
+  a 2 : 1 change. A start where the
+  transport stopped continues the time the plugin was told there, as a
+  tempo map would: after a tempo change the beat's time at the tempo in
+  force is not the time played, so a re-seat at a stop, or at every
+  chunk, would make `samplePos` jump back. The free-running counter is
+  `SteadyTime`.
+- **Host clock** (`TransportInfo::system_time_ns`: VST2 `nanoSeconds`, VST3
+  `systemTime`) is a `HostClock` reading of the OS's monotonic clock, the
+  one plugins compare it against: `CLOCK_MONOTONIC`; on macOS
+  `CLOCK_UPTIME_RAW`, which is `mach_absolute_time` in nanoseconds, Core
+  Audio's host time; on Windows QPC scaled to nanoseconds. It is read once
+  per block in `process` and placed at each chunk's frame
+  (`block_ns + frames · 1e9 / rate`). The OS's epoch needs no origin handed
+  around, so plugins in the host and in every plugin server agree. An
+  offline fork has no host clock (`Bound::host_clock` and the VST2
+  `TransportFeed`'s are `None` in it), so an export is not told a wall time
+  it does not run in.
+- **MIDI clock** (VST2 `samplesToNextClock`, VST3 `samplesToNextClock`) is
+  `TransportInfo::samples_to_nearest_clock`: the signed distance to the
+  nearest 24-ppq clock, as both SDKs define it ("can be negative"), at the
+  snapshot's own rate in both formats.
+
+Each format sets a field's validity flag (`kVstNanosValid`,
+`kVstClockValid`; `kSystemTimeValid`, `kClockValid`) only when the value is
+present. The out-of-process snapshot crosses the wire with
+`system_time_ns`, so `ProcessAudioData`'s encoding grew by that field.
+
+**Editor scale.** `open_editor` takes a `ContentScale` (finite, positive)
+at every layer, down to `HostMessage::OpenEditor`. CLAP's `gui.set_scale`
+and VST3's `setContentScaleFactor` are sent it only on a physical-pixel
+window system (Win32, X11); a macOS view is in points, so neither is sent
+there. bevy-tutti passes the editor window's `scale_factor` and sizes that
+window to the editor. Its sizes stay in the plugin's units
+(`PluginEditorOpen::last_applied`); a `WindowResized` (logical) is
+converted to them before it is compared, exactly, against the host's own
+echo or sent. Every size written back to the window is written in the
+plugin's units: as the physical size off macOS, in points on macOS. Bevy's
+logical setter truncates `w · scale` to whole pixels, so at a fractional
+scale (1.75: 227, 234, 241, … in 200..3000) a logical write landed a
+pixel short, the echo no longer matched `last_applied`, and the window
+and the plugin could trade resizes every frame. The physical write makes
+the echo exact, so the comparison needs no ±1 px allowance, which would
+only swallow a real one-pixel drag.
+The scale is sent once, at open: a window moved to a display of another
+scale keeps the editor at the scale it opened at until it is reopened
+(nothing carries a scale to an open editor).
+
+Pinned analytically: `transport_source`'s unit tests (project time
+rolling through a tempo change, held through a stop and a start where it
+stood, through a stop and a start inside one chunk and a loop edit,
+counted exactly across a tempo change between two reads, and re-seated at
+a seek (stopped or playing, inside one chunk too, and forward with a
+tempo change), a loop wrap, a rate change and a start elsewhere, each on
+the engine's own `FrameClock`; a tempo ramp that speeds up inside one
+chunk counted, not re-seated; a NaN beat at a tempo change re-seated;
+a hand-built transport read by the
+playhead's rule through `Cx::transport_at`, and `tutti-graph`'s
+`a_bare_beats_walk_has_no_origin`; the host clock at a chunk's frame, and on the OS clock),
+`Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
+bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
+`the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,
+the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a
+fork, which is told project time and the clock but no host time
+(`vst2_in_process_fork.rs`), and `clap_gui_lifecycle.rs`'s scale.
+
+#### VST3 note expression from MIDI 2
+
+A plugin's note expression comes from its MIDI input: the plugin node
+forwards MIDI 2 per-note messages on its event input untouched, and the
+VST3 event list (`EventList::update_from_sources`) turns them into
+note-expression value events bound to the note-on's `noteId`
+(`note_id_for(channel, note)`):
+
+- **Per-note pitch bend** becomes `kTuningTypeID`: the bend over its
+  channel's per-note bend range, in semitones, on VST3's ±120-semitone
+  scale (`0.5 + semitones / 240`). The range starts at the MPE default, ±48
+  (what the engine's own synth assumes), and follows the stream's
+  "Sensitivity of Per-Note Pitch Bend" (RPN #00/07) per channel
+  (`tutti_midi_types::PerNoteBendRanges`, kept by the list across blocks;
+  the message itself is consumed). The range is keyed by channel alone,
+  ignoring the UMP group, as the note id is; a fork (an export) starts
+  every channel at ±48, since it does not carry the live MIDI that set
+  them. Before this, a full-scale bend was mapped to ±120
+  semitones, so a VST3 plugin was bent 2.5 times as far as a CLAP plugin or
+  the engine's synth by the same MIDI.
+- **Per-note controllers** (registered and assignable, indices 7, 10 and
+  74) become volume, pan and brightness; others have no VST3 dimension and
+  are dropped.
+
+The CLAP host reads the same stream the same way: its `InputEventList`
+keeps a `PerNoteBendRanges` across blocks, consumes RPN #00/07, and tells
+the plugin `CLAP_NOTE_EXPRESSION_TUNING` as the bend over its channel's
+range, in semitones. A tuning a CLAP plugin emits goes back on the wire
+over the ±48 default, since the host sends no sensitivity with it.
+
+A classic MPE controller sets the bend range with RPN #00/00 on a member
+channel, which in MPE (RP-053) sets every member channel's range. The
+input node's `MpeIngest`, which has already made those channels' bends
+per-note bends, turns it into RPN #00/07 on each of the zone's member
+channels (its `translate` yields an allocation-free iterator, since one
+event can become up to fifteen); RPN #00/00 on the master channel sets the
+master's own channel bend range and passes through.
+
+An MPE Configuration Message resets the zone it configures (MPE, RP-053 /
+M1-100-UM, "Pitch Bend Sensitivity": a receiver of an MCM sets the master
+channel to ±2 semitones and every member to ±48). `MpeIngest` absorbs the
+MCM, so it sends the reset in its place: RPN #00/00 = 2 on the master and
+RPN #00/07 = 48 on each member, at the MCM's offset, for the configured
+zone only (the other zone of a dual setup keeps its ranges; a disabling
+MCM sends nothing). A mode the host sets (`MidiInputControls::set_mpe_mode`)
+sends the same for every zone of the new mode, at frame 0 of the block that
+adopts it (`MpeIngest::zone_defaults`), so a receiver that followed the old
+ranges starts the new zones at MPE's defaults either way.
+
+The input node stages each event's translation whole: one that does not fit
+in the block's 512 slots is dropped, all of it, and counted
+(`MidiInputControls::dropped_events`), so a zone's fan-out is never cut
+partway, leaving some members at another range.
+
+Pinned by `an_mcm_resets_its_zones_bend_ranges`,
+`a_requested_mpe_mode_is_adopted_once` (the reset goes out once),
+`a_fan_out_with_no_room_is_dropped_whole_and_counted`,
+`the_input_list_follows_the_per_note_bend_range` (CLAP), `a_per_note_bend_is_tuned_over_its_channels_range`,
+`a_per_note_bend_range_outlives_its_block`,
+`vst3_and_clap_bend_one_stream_by_the_same_semitones` (one stream into
+both formats' lists, across two blocks),
+`a_member_channels_bend_range_becomes_every_members_per_note_range`,
+`a_member_bend_range_fans_out_over_the_zones_ports`,
+`the_mpe_bend_range_fan_out_processes_without_allocating` and, through the
+SDK-built probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`.
+
 ## A 64-bit audio path
 
-Not built. This is the design for it, written so it can be implemented
-from, and a measurement of what it costs. The owner's rule: if tutti does
-64-bit audio, it does it all the way, not only 64-bit summing. So the
-graph gets a sample format, and every built-in node either runs in it or
-says why it does not (decision 2 below records the current f32 state).
+This is the design for a 64-bit path, written so it can be implemented
+from, and a measurement of what it costs. CLAP's f64 activation is fixed;
+the rest is built when a consumer needs it ([Decisions](#decisions)).
+The owner's rule: if tutti does 64-bit audio, it does it all the way, not
+only 64-bit summing. So the graph gets a sample format, and every built-in
+node either runs in it or says why it does not (decision 2 of "Decisions
+for the owner" records the current f32 state).
 
 ### Summary
 
@@ -6582,16 +6816,16 @@ converts at its edges in an f64 graph.
 | node | crate | format | reason |
 |---|---|---|---|
 | `BusStripNode` | tutti-nodes | Both | a gain multiply; trivial to make generic. f64 costs 1.5–2.5× on its kernel, measured below, which on a `Light` node is still `Light` |
-| `ChannelSumNode` | tutti-nodes | Both, and accumulate in f64 in both formats | the bus sum is where f32 error compounds. It accumulates in f32 today, which decision 2 below claimed it did not; f64 accumulation costs nothing measurable (the sum is load-bound) |
+| `ChannelSumNode` | tutti-nodes | Both, and accumulate in f64 in both formats | the bus sum is where f32 error compounds. It accumulates in f32 today, which decision 2 of "Decisions for the owner" claimed it did not; f64 accumulation costs nothing measurable (the sum is load-bound) |
 | `SvfFilterNode<F>`, `EqBandNode<F>`, `LadderFilterNode<F>` | tutti-nodes | Both; `F` stays the state precision | already generic over their state type (`Real`). With f64 buffers the per-sample conversion inside the node disappears; measured no slower than the shipped f64-state, f32-I/O filter |
 | `DelayLineNode`, `ModDelayNode` | tutti-nodes | Both | the ring holds the format; its memory doubles (8 bytes per frame and channel), allocated in `prepare` as today |
 | `CompressorNode`, `GateNode`, `LimiterNode`, `BrickwallLimiterNode` | tutti-nodes | Both | the gain computer is control maths and may stay f32; the gain multiply and the lookahead ring are on the signal and take the format |
 | `DistortionNode` | tutti-nodes | Both | a waveshaper; the f64 path calls `libm`'s f64 functions, which cost more than the f32 ones, so measure before declaring its cost class |
 | `PhaserNode`, `DownmixNode` | tutti-nodes | Both | an allpass chain and a mixing matrix |
 | `ModulatorNode<M>` (LFO), `AutomationLaneNode` | tutti-nodes | Both | they write a control signal on an audio port; writing it in the graph's format saves a conversion on every edge it feeds |
-| `ConvolverNode` | tutti-nodes | Both for I/O; convolution precision a type parameter, f32 by default | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |
+| `ConvolverNode` | tutti-nodes | f32, converted at its edges; an f64 convolution is a type parameter | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |
 | `VbapPannerNode` | tutti-spatial | Both | a gain matrix |
-| `HrtfBinauralNode` | tutti-spatial | Both for I/O, f32 convolution | as the convolver |
+| `HrtfBinauralNode` | tutti-spatial | f32, converted at its edges | as the convolver |
 | `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (realfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
 | `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
@@ -6621,19 +6855,17 @@ The graph's f32 is converted in the node's batcher today. The changes:
   `canProcessSampleSize(kSample64)`; already wired
   (`activate_with_mode::<f64>`).
 - **CLAP:** 64-bit is per port (`CLAP_AUDIO_PORT_SUPPORTS_64BITS`,
-  `PREFERS_64BITS`, `REQUIRES_COMMON_SAMPLE_SIZE`). Two defects to fix
-  first, found reading the code for this design:
-  - `check_f64_support` answers true if **any output** port supports
-    64-bit. It must ask every port the host passes, inputs included,
-    and run f64 only if all of them do (or, if they are mixed, give each
-    port its own width when the plugin does not require a common size).
-  - The server activates a CLAP plugin in f64 whenever that check says
-    so (`loaders/clap.rs`), whatever the host asked for, while the
-    negotiated wire format is `Float32` unless the host asked for
-    `Float64`. A plugin that supports 64-bit loaded with the default
-    preference would get an f32 buffer and an f64 instance, which
-    `process` refuses on every block. The activation must follow the
-    negotiated format.
+  `PREFERS_64BITS`, `REQUIRES_COMMON_SAMPLE_SIZE`). Reading the code for
+  this design found two defects, both fixed in #153:
+  - `check_f64_support` answered true if **any output** port supported
+    64-bit. It now asks every port the plugin declares, inputs included,
+    and runs f64 only if all of them do. A plugin with mixed ports runs
+    in f32; giving each port its own width, when the plugin does not
+    require a common size, is an addition.
+  - The server activated a CLAP plugin in f64 whenever that check said
+    so (`loaders/clap.rs`), whatever the host asked for, so a 64-bit
+    plugin in an f32 session got an f32 buffer and an f64 instance. The
+    activation now follows the negotiated format.
 - **VST2:** `processDoubleReplacing` when `effFlagsCanDoubleReplacing`
   (`supports_f64`), out of process (already wired) and in process
   (`InProcessVst` drives the host's `process_f32` only today; its
@@ -6677,9 +6909,10 @@ The graph's f32 is converted in the node's batcher today. The changes:
   `SessionBuilder::sample_format`, default `F32`. Changing it is a
   `reprepare`: a full recompile with the new format, rings converted on
   the control thread with their history, plugins re-activated.
-- **Per node:** not proposed for now (an open decision below). The
-  per-node choice already exists where it matters, inside a node (a
-  filter's `F`, the convolver's precision).
+- **No per-node pin.** A node that cannot run in the graph's format runs
+  in its own, by its `Formats`, not by a host's choice. The per-node
+  choice already exists where it matters, inside a node (a filter's `F`,
+  the convolver's precision).
 - **PDC and latency:** conversion is zero-latency, so the latency solve
   is unchanged. Delay rings double their memory in f64.
 - **Parallel executor:** a conversion op is `Light` and single-in,
@@ -6687,9 +6920,9 @@ The graph's f32 is converted in the node's batcher today. The changes:
   becomes a dispatch of its own. The cost classes were measured in f32;
   the ratios below keep every measured node in its class, so classes stay
   per node, not per format, until a measurement says otherwise.
-- **Export forks:** `Editor::fork` could take a format, so a live f32
-  session exports in f64. That makes the export differ from what was
-  heard by f32 rounding; an open decision below.
+- **Export forks:** `Editor::fork` takes a format, so a live f32
+  session can export in f64. That export differs from what was heard by
+  f32 rounding.
 
 ### Testing
 
@@ -6709,14 +6942,13 @@ The graph's f32 is converted in the node's batcher today. The changes:
   generic rewrite changed nothing).
 - **The no-alloc gate** covers conversion ops and the f64 arena like the
   rest (`rt_no_alloc.rs`, `TestPool::no_alloc`).
-- Plugins: the CLAP test plugin gains a 64-bit port flag, so both CLAP
-  defects above get a failing test before their fix.
+- Plugins: the CLAP test plugin has a 64-bit port switch and an
+  instrument layout (#153), which pin both CLAP fixes above.
 
 ### Order of work
 
-1. **Plugin defects** (small, about 200 lines with tests): the CLAP port
-   check and activation follow the negotiated format. Independent of the
-   rest.
+1. **Plugin defects:** the CLAP port check and activation follow the
+   negotiated format, fixed in #153.
 2. **Graph core** (the large one, about 2 000–3 000 lines with tests):
    `SampleFormat`, `Sample`, `Formats` on `Shape`, the generic arena,
    per-format colouring and verify, `Op::Convert`, `Io::split_as`,
@@ -6750,31 +6982,30 @@ The graph's f32 is converted in the node's batcher today. The changes:
 - **A format change mid-session** re-activates every plugin; some
   plugins take seconds to re-activate.
 - **The measured benefit is small:** a 24-bit mantissa is already past
-  any converter (decision 2). What f64 buys is headroom against
-  accumulated rounding in long chains, deep feedback and big sums, and
-  parity with hosts that advertise a 64-bit engine. Nothing in tutti's
-  own tests shows an audible f32 defect today.
+  any converter (decision 2 of "Decisions for the owner"). What f64 buys
+  is headroom against accumulated rounding in long chains, deep feedback
+  and big sums, and parity with hosts that advertise a 64-bit engine.
+  Nothing in tutti's own tests shows an audible f32 defect today.
 
-### Open decisions
+### Decisions
 
-1. **Build it now, or keep it designed?** The measurement shows it fits;
-   nothing shows an audible need. Proposed: build the plugin defects'
-   fix now (they are bugs in f32 too), and the rest when a user asks for
-   a 64-bit engine.
-2. **Graph-wide format only, or a per-node pin too?** Proposed:
-   graph-wide only. A pin (`NodeSpec` naming a format) is an addition
-   later.
-3. **Can an export fork run in f64 while the live graph runs in f32?**
-   Proposed: yes, as an export option, said to differ from playback by
-   f32 rounding.
-4. **The convolver's default precision in an f64 graph:** f32
-   (proposed: 3× cheaper, half the memory) or f64 (all the way, by the
-   letter).
-5. **`ChannelSumNode`'s accumulator:** f64 in both formats (proposed;
-   moves f32 renders by rounding) or only in an f64 graph (keeps f32
-   renders bit-identical).
-6. **Format change while running:** a `reprepare` that re-activates
-   plugins (proposed), or fixed when the session is built.
+1. **Build on demand.** CLAP's f64 activation is fixed (#153). The rest of
+   the path is built when a consumer needs it.
+2. **Graph-wide format.** One format per graph. A node that cannot run in
+   it (a 32-bit-only plugin, the convolver) runs in its own, converted at
+   its edges by its `Formats`, never by a per-node pin.
+3. **An export may render in f64.** The export forks at f64 while live
+   playback stays f32; the file differs from playback by f32 rounding.
+4. **The convolver stays f32** inside an f64 graph, converted at its
+   edges. An f64 convolution stays a type parameter.
+5. **`ChannelSumNode` accumulates in f64 in both formats.** f32 renders
+   change by rounding once, when it is built (said in the CHANGELOG).
+6. **A format change is a `reprepare`,** like a sample-rate change: a
+   recompile, rings converted, plugins re-activated.
+
+This matches the hosts surveyed. Cubase, Nuendo and Studio One set one
+processing precision per project; Reaper runs a 64-bit engine with each
+plugin at the width it supports. None offers a per-node pin.
 
 ### What it costs, measured
 
@@ -6873,10 +7104,10 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
      - the plugin-boundary conversion (inside the plugin node).
 
      Summing does not yet: `ChannelSumNode` accumulates in f32.
-   - **Kept open for later:** `Io` exposes audio through methods, not public
-     slices, so an f64 buffer path is additive. The owner's rule for it: if
-     tutti does 64-bit audio, it does it all the way. The design and its
-     measured cost are in ["A 64-bit audio path"](#a-64-bit-audio-path).
+   - **An f64 path is additive:** `Io` exposes audio through methods, not
+     public slices. The owner's rule for it: if tutti does 64-bit audio, it
+     does it all the way. The design, its decisions and its measured cost
+     are in ["A 64-bit audio path"](#a-64-bit-audio-path).
 3. **Keep a typed static-combinator layer?** Proposed no (one production
    user). If wanted later, it compiles *into* one `Node`, never into the graph.
 4. **Events as graph ports** (proposed) vs a side channel. Ports make PDC of
@@ -6909,7 +7140,8 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
    curve-segment events. Curve segments are needed for sample-accurate
    non-linear shapes without sub-chunking at breakpoints.
 
-   **Decided: both.** Linear `ParamRamp`s stay;
+   **Decided: both.** `ParamRamp`s stay (linear by default, or along a
+   `SegmentShape` from where the param stands);
    `EventKind::Segment(ParamSegment)` carries an absolute move along a
    closed, `Copy` set of shapes (`SegmentShape`) that the param port
    evaluates per frame. See "Curve segments".

@@ -15,7 +15,7 @@ mod vst3;
 
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamAddress};
-use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
 /// The host-side, in-process plugin editor.
@@ -31,7 +31,9 @@ use std::path::Path;
 /// ([`composite`](crate::host::ipc_client::composite)); promote to `pub` if a
 /// cross-crate consumer ever appears.
 pub(crate) trait PluginEditor: Send {
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
+    /// Embed into `parent`, whose backing-store scale is `scale` (forwarded
+    /// where the format takes it; see [`ContentScale`]).
+    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize>;
 
     /// Open as a plugin-owned floating window. No parent in, no size out.
     ///

@@ -13,7 +13,7 @@ use crate::error::EditorError;
 use raw_window_handle::RawWindowHandle;
 use std::ffi::c_void;
 
-pub use tutti_plugin_types::{EditorCapabilities, EditorSize, WindowHandle};
+pub use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 
 /// Reduce a [`RawWindowHandle`] to the platform-native child-window
 /// pointer plugin formats expect:

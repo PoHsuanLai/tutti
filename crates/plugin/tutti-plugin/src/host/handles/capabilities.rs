@@ -30,7 +30,7 @@ use crate::error::{EditorError, StateError};
 use crate::protocol::{
     AutomationMode, Normalized, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode,
 };
-use crate::util::window::{EditorCapabilities, EditorSize};
+use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value reads and writes, and the backend's liveness.
 ///
@@ -179,14 +179,19 @@ pub trait HostState: Send + Sync {
 /// the trait stays object-safe; the ergonomic `HasWindowHandle` entry lives on
 /// [`PluginHandle::open_editor`](super::control_handle::PluginHandle::open_editor).
 pub trait HostEditor: Send + Sync {
-    /// Embeds the plugin's editor as a child of `parent`, returning the size it
-    /// asked for.
+    /// Embeds the plugin's editor as a child of `parent`, whose backing-store
+    /// scale is `scale`, returning the size it asked for. The scale reaches
+    /// the plugin where its format takes one (see [`ContentScale`]).
     ///
     /// # Errors
     ///
     /// Returns an [`EditorError`] if the plugin has no editor or failed to
     /// create or attach it, or if the backend is gone.
-    fn open_editor(&self, parent: *mut c_void) -> Result<EditorSize, EditorError>;
+    fn open_editor(
+        &self,
+        parent: *mut c_void,
+        scale: ContentScale,
+    ) -> Result<EditorSize, EditorError>;
 
     /// Opens the editor as a **floating** window the plugin creates and owns.
     ///

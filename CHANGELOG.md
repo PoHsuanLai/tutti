@@ -7,6 +7,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a 64-bit-capable CLAP plugin runs in an f32 session
+
+The plugin server activated a CLAP plugin at 64-bit whenever it could do
+64-bit, while the session's wire format follows the host's preference (f32
+by default). In an f32 session such a plugin refused every block as a format
+mismatch, so it rendered silence. It is now activated in the format the
+session will process, as VST3 is: f64 only when the session asked for it and
+the plugin can do it, and `Features::F64_AUDIO` reports the format activated
+rather than the capability.
+
+`ClapLoaded::supports_f64` was `true` when any **output** port advertised
+`CLAP_AUDIO_PORT_SUPPORTS_64BITS`. It now requires every input and output
+port to advertise it. That is this host's conservative rule, not a CLAP
+requirement (CLAP flags 64-bit per port): the host hands one sample width for
+every buffer, so it picks 64-bit only when every port takes it. A
+plugin with no audio ports at all is f32 (the width every CLAP plugin must
+accept), and a side with no ports does not veto the other (an instrument
+whose outputs are all 64-bit can run at 64-bit).
+
+The host now hands a CLAP plugin exactly its declared port count on each
+side, as `process.h` requires: none on a side with no ports. It used to hand
+a stereo bus there that the plugin never declared, which at 64-bit carries a
+null `data32`. The node's graph-facing shape is unchanged: an empty side is
+still reported as one stereo bus.
+
+The change is internal to the plugin server: no public signature moved. The
+reference CLAP plugin can advertise 64-bit ports
+(`tutti_test_plugin_set_ports_64bit`, per side) and renders in whichever width
+the host hands it.
+### Changed — plugin transport: project-time samples, host clock and MIDI clock; editors open at the window's scale
+
+A hosted plugin is now told everything its transport snapshot can know:
+
+- **Project-time sample position.** `TransportPosition::samples` is filled
+  from the plugin node's own project time: it rolls by the frames rendered
+  while the transport plays, through tempo changes, holds while it is
+  stopped (a stop, a start where it stopped and a loop edit continue it,
+  inside one chunk too), and is re-seated from the beat at the tempo only
+  at a jump: the first block, a seek (stopped or playing, however short),
+  a loop wrap, or a sample-rate change. The frames played between two
+  chunk reads come from the engine's frame count on its timeline segment
+  (`Transport::origin`), which a seek, a tempo or rate change and a wrap
+  restart and a stop or start does not: exact for one tempo change
+  between two reads, and a tempo ramp speeding up inside one chunk is
+  counted, not re-seated. A transport built by hand (`Transport::new`) has
+  no such count and is read by the playhead's rule, in a host that drives
+  `tutti_graph::Executor` itself too. VST2 `samplePos`, VST3
+  `projectTimeSamples` and AU's sample time read it.
+  CLAP's `song_pos_seconds` (`TransportPosition::seconds`) is the
+  same time over the rate; it was the beat's time at the current tempo,
+  which jumped at every tempo change.
+- **Host clock.** New `TransportInfo::system_time_ns`: nanoseconds on the
+  OS's monotonic clock (`CLOCK_MONOTONIC`; macOS `CLOCK_UPTIME_RAW`, Core
+  Audio's host time; Windows QPC), read once per block and placed at the
+  chunk's frame. VST2 sets `kVstNanosValid` and VST3 `kSystemTimeValid` only when it
+  is present. An offline fork (export) leaves it `None`: its render does not
+  run in wall time.
+- **MIDI clock.** New `TransportInfo::samples_to_nearest_clock()`: the signed
+  distance in samples to the nearest 24-ppq clock, `None` without a finite
+  position, a positive tempo and a positive sample rate. VST2 sets
+  `kVstClockValid` and VST3 `kClockValid` from it.
+
+A plugin editor is opened at its window's backing scale. `ContentScale`
+(finite and positive; `ContentScale::IDENTITY` is 1.0) enters at the
+editor-open call. CLAP's `gui.set_scale` and VST3's
+`IPlugViewContentScaleSupport::setContentScaleFactor` receive it on
+physical-pixel window systems (Win32, X11); macOS views are in points, so
+neither is sent there, as before. VST2 and AU ignore it. `bevy-tutti`
+passes the editor window's `scale_factor` and sizes that window to the
+plugin's size: as its physical size off macOS (exactly, so a fractional
+scale such as 1.75 cannot truncate it a pixel short and set the window and
+the plugin trading resizes), in points on macOS; a window resize is
+multiplied back by the scale before it reaches the plugin. The scale is sent at open
+only: an editor whose window moves to a display of another scale keeps its
+scale until it is reopened.
+
+The out-of-process wire format changes: `ProcessAudioData`'s transport
+carries `system_time_ns`, and `HostMessage::OpenEditor` carries the scale.
+The plugin server and the host must be built from the same revision, as
+before.
+
+| Was | Now |
+|---|---|
+| `PluginHandle::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostEditor::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `PluginEditorHost::open_editor(&mut self, parent)` | `open_editor(&mut self, parent, scale: ContentScale)` (an implementor that cannot scale takes `_scale`) |
+| `ClapLoaded::open_editor(parent)`, `Vst3Loaded::open_editor(parent)` | `open_editor(parent, scale: ContentScale)` |
+| `HostMessage::OpenEditor { parent_handle }` | `HostMessage::OpenEditor { parent_handle, scale }` |
+| `TransportInfo { .. }` literal | add `system_time_ns: None` (or build it with `TransportInfo::new` / `Default` and `with_system_time_ns`) |
+| VST2 `samplePos` / VST3 `projectTimeSamples` were 0 | the node's project time: rolls with playback, re-seated at a jump |
+| CLAP `song_pos_seconds` was `beats · 60 / tempo` | the same project time, in seconds |
+| VST2 `kVstClockValid` / VST3 `kClockValid` and `kSystemTimeValid` never set | set when the value is known |
+| `Env::transport_at` / `Cx::transport_at` of a transport built at a beat (`Transport::new`, `at_beat`) had `Transport::origin()` `Some`, a frame count from that beat | `None`: the walk's frame count is not the host's (its beat and clock are unchanged, to the bit); a counted transport's walk is still counted |
+| `bevy-tutti`'s editor window sized at the plugin's pixel size as logical units | sized at it as physical pixels off macOS (logical size: pixel size over the scale), points on macOS |
+| `PluginEditorOpen::{width, height, last_applied}` documented as logical pixels | the plugin's units (`EditorSize`: physical pixels off macOS, points on macOS), as they always held |
+
+New: `tutti_plugin_types::{ContentScale, InvalidContentScale}` (re-exported
+by `tutti-clap-host`, `tutti-vst3-host` and `tutti_plugin::handles`),
+`TransportInfo::with_system_time_ns`, and `tutti_graph::Continuity` with
+`Transport::continuity` (how a transport read some frames after another got
+there: rolled, wrapped, held (a stopped transport at its beat, stopped
+still or started there) or jumped; `Playhead`'s rule).
+
+Migration: pass `ContentScale::new(window_scale).unwrap_or_default()`, or
+`ContentScale::IDENTITY` where the window's scale is not known, to
+`open_editor`.
+
+### Changed — the motion machine's FSM is the engine's
+
+`MotionFsm` is now only the transport's control handle: send and schedule
+commands, read the published motion, the seek slot and the declick. The
+state machine itself is a plain field of an engine-owned audio half, which
+`Engine` keeps in its render state and drives through `&mut`; it is no
+longer behind an `AudioThreadCell`, so no other thread can be inside it
+while a block runs, and nothing on the audio path can be refused it. The
+engine takes the FSM when it is built (under the playhead claim it already
+held) and hands it back when it is dropped, so an engine built later over
+the same transport resumes the same motion state.
+
+With no engine, a command sent through `MotionFsm` stays queued: nothing
+applies it until an engine renders a block (`Engine::process` drains the
+queue at the start of every block, as before).
+
+| Was | Now |
+|---|---|
+| `MotionFsm::drain(&self) -> bool` (tutti-core) | removed. `Engine::process` drains at each block's start; delete the call before rendering. A test of the machine without an engine renders a block through an `Engine` instead |
+| `MotionFsm::complete_declick(&self) -> bool` (tutti-core) | removed: the engine completes its own fades |
+| — | `GraphEngineError::MotionHeld`: the transport's motion machine is held by an engine over another transport that shares its `motion` handle (`t.motion = other.motion.clone()`). A `match` on `GraphEngineError` needs the arm |
+
+### Fixed — a seek after a declicked seek no longer stops the transport
+
+A completed fade settled only the published motion; the state machine
+stayed in its declick state. A declicked seek while rolling therefore left
+the machine in `DeclickToLocate`, and the next seek that keeps the motion
+(`MotionEvent::locate`, `Then::Keep`) resolved it as stopped, stopping the
+transport; a scrub's `EndScrub` returned to stopped the same way. The
+machine now settles into the motion its fade was heading for when the fade
+completes. No migration.
+
+### Added — a `ParamRamp` can follow a curve shape
+
+A `ParamRamp` is the relative move, from wherever the param stands; it
+was linear only. `ParamRamp::with_shape(SegmentShape)` makes it follow any
+of the segment shapes (`Hold`, `PowerIn`/`Out`/`InOut`, `Exp`), evaluated
+per frame by the same `SegmentShape::eval` a `ParamSegment` uses. The
+default is `Linear`, which renders the same bits as before.
+
+| Was | Now |
+|---|---|
+| `ParamRamp` was linear only | `ParamRamp::with_shape(shape)` and `ParamRamp::shape()`; `new` and `foreign` build a `Linear` ramp, as before. `Event` stays 32 bytes |
+| `SegmentShape` had no `Default` | `SegmentShape::default()` is `Linear` |
+| a hosted plugin took a `ParamRamp` as one point, its target on its frame, whatever its duration | a ramp with a duration moves from the parameter's host value at the end of the frame before it (the segment in flight there, else the value the node last gave it; an event earlier on the ramp's frame does not move it), as a param port's does once its source has started (a port's first ramp starts from the base at its own frame), to its target along its shape, sent as a segment's points, in every plugin node (CLAP, VST3, VST2, in-process VST2). A step, or a ramp on a parameter the node has given no value yet, is still its target on its frame. **Migration:** a producer that relied on a plugin jumping straight to a ramp's target sends `Samples(0)` |
+### Fixed — a plugin is told a per-note pitch bend's real tuning
+
+`tutti-vst3-host` turned a MIDI 2 per-note pitch bend into a tuning note
+expression by mapping the bend's full scale onto VST3's whole ±120-semitone
+tuning range, so the same MIDI bent a VST3 plugin 2.5 times as far as a
+CLAP plugin or the engine's own synth (both ±48, the MPE default). Both
+hosts now read the bend over its channel's per-note bend range: ±48 until
+the stream sends "Sensitivity of Per-Note Pitch Bend" (RPN #00/07), which
+each plugin's event list follows per channel, across blocks, and consumes
+(neither format has an event for it). The range is keyed by channel, not
+group; a fork (an export) starts at ±48.
+
+The MIDI input node's MPE ingest turns a pitch-bend sensitivity (RPN
+#00/00) on a member channel, which in MPE sets every member's range, into
+RPN #00/07 on each of the zone's member channels. On the master channel it
+passes through as before. An MPE Configuration Message, which it absorbs,
+now resets the zone it configures to MPE's default ranges (RP-053 /
+M1-100-UM: master ±2, members ±48): RPN #00/00 = 2 on the master and RPN
+#00/07 = 48 on each member go out in its place. A mode set with
+`MidiInputControls::set_mpe_mode` sends the same for each of the new mode's
+zones (new `MpeIngest::zone_defaults`) in the block that adopts it.
+
+The input node stages each event's translation whole: past its 512 slots
+in a block, a translation is dropped in full rather than cut partway, and
+counted by the new `MidiInputControls::dropped_events()`.
+
+`MpeZoneConfig`'s default bend ranges were the wrong way round: a zone now
+starts with its master channel at ±2 semitones and its members at ±48, as
+MPE specifies (they were ±48 and ±2). `MpeZoneConfig::single_channel` keeps
+±2 for both. Migration: a caller that relied on the old defaults sets them
+with `with_master_pitch_bend_range` / `with_member_pitch_bend_range`.
+
+| Was | Now |
+|---|---|
+| `Vst3Event::from_midi(&MidiEvent)` | removed: it converted one event with no stream state. The plugin's event list (`EventList::update_from_sources`) encodes MIDI at the stream's bend ranges |
+| `ClapEvent::from_midi(&MidiEvent)` | `ClapEvent::from_midi(&MidiEvent, &PerNoteBendRanges)`; `InputEventList::add_midi` keeps the ranges and passes them |
+| — | `tutti_midi_types::PerNoteBendRanges` (`Default` ±48 per channel, `observe`, `get`, `semitones`) |
+| `MpeIngest::translate(&MidiEvent) -> Option<MidiEvent>` | `-> tutti_midi_runtime::Translated`, an allocation-free `ExactSizeIterator` of zero, one or (a member channel's bend range, an MPE Configuration Message's reset) one event per channel of the zone |
+| an MPE Configuration Message yielded nothing | it yields the configured zone's reset ranges (RPN #00/00 = 2 on the master, RPN #00/07 = 48 on each member) |
+
+Migration: a caller of `ClapEvent::from_midi` passes
+`&PerNoteBendRanges::default()` for one event on a fresh stream, or keeps a
+`PerNoteBendRanges` and calls `observe` on each event first. A caller of
+`Vst3Event::from_midi` stages its MIDI through the plugin's `EventList`. A
+caller of `MpeIngest::translate` iterates the result (`.next()` is the old
+`Option` for every event but a member channel's bend range and an MPE
+Configuration Message).
+
 ### Fixed — a SysEx longer than one UMP packet reaches plugins whole
 
 A SysEx7 message spanning several UMP packets (any message over six bytes)
@@ -46,7 +246,7 @@ with nothing else in the chunk); see doc 004, A-4.
 | — | `tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY}`: the reassembler the hosts share |
 | — | `tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD`: the engine's SysEx payload cap, which the hardware input now reads instead of a private copy |
 | `tutti_vst3_host::events::Vst3Event` | new variant `SysEx(SysExEvent)` (a reassembled message whose bytes live in the event list; input only). An exhaustive `match` on `Vst3Event` needs an arm for it; `to_midi` returns `None` for it |
-| `Vst3Event::from_midi` on a `START` packet | returns `None` (it returned the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it |
+| a `START` packet staged into a VST3 plugin's event list | staged as nothing until its message completes (it was staged alone as the opening bytes, unterminated): a fragment cannot stand alone, and the event list reassembles it. (`Vst3Event::from_midi` is removed; see the per-note pitch bend entry above) |
 | — | `Vst3Active::sysex_dropped`, `ClapActive::sysex_dropped`, `Vst2Instance::dropped_sysex` |
 | `PluginControls::dropped_midi_in`, `InProcessVst2Controls::dropped_midi_in` counted past a chunk's cap only (the entry below) | MIDI events the node did not deliver: past a chunk's cap, every event of a chunk not sent, skipped as stale or still queued at a crash, the events taken towards a chunk at a reset or re-prepare, and the rest of a SysEx cut by any of these |
 | VST2 staging grew its event lists on the audio thread past 64 events a block | reserved for `MIDI_STACK_CAPACITY`, never grown; past it an event is refused and counted by the new `Vst2Instance::dropped_midi_in` |

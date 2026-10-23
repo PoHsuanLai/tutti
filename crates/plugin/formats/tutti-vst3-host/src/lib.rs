@@ -12,12 +12,12 @@ pub use types::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
     prefetchable_support, process_context_flags, to_process_context, unit_ids, vst3_to_chord,
     vst3_to_note_expression, vst3_to_note_expression_int, vst3_to_note_expression_text,
-    vst3_to_scale, AudioBuffer, BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize,
-    MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessMode, ProcessOutput,
-    ProcessOutputRef, Sample, ScaleValue, TransportInfo, Vst3InputEvents, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
-    WindowHandle,
+    vst3_to_scale, AudioBuffer, BufferPtrs, BusInfo, ChordValue, ContentScale, EditorCapabilities,
+    EditorSize, MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType,
+    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessMode,
+    ProcessOutput, ProcessOutputRef, Sample, ScaleValue, TransportInfo, Vst3InputEvents,
+    Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample,
+    Vst3UnitInfo, WindowHandle,
 };
 
 pub use com::{
@@ -37,7 +37,7 @@ pub mod events {
     //!
     //! Re-exported here so downstream crates that need to construct
     //! `NoteOnEvent`/`NoteOffEvent`/etc. literally (rather than going through the
-    //! [`Vst3Event::to_midi`] / [`Vst3Event::from_midi`] helpers) can do so
+    //! plugin's event list, or [`Vst3Event::to_midi`]) can do so
     //! without depending on the raw `vst3` crate.
 
     pub use crate::types::{

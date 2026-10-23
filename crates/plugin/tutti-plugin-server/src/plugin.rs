@@ -194,7 +194,12 @@ impl Plugin {
             }
 
             #[cfg(feature = "clap")]
-            "clap" => Plugin::Clap(ClapInstance::load(path, sample_rate, block_size)?),
+            "clap" => Plugin::Clap(ClapInstance::load(
+                path,
+                sample_rate,
+                block_size,
+                preferred_format == SampleFormat::Float64,
+            )?),
 
             #[cfg(all(feature = "au", target_os = "macos"))]
             "component" => Plugin::Au(AuInstance::load(path, sample_rate, block_size)?),
@@ -456,7 +461,7 @@ mod tests {
         fn clap_plugin() -> &'static str {
             crate::test_utils::clap_probe_path()
         }
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("failed to load the CLAP test plugin");
         let mut plugin = Plugin::Clap(instance);
 

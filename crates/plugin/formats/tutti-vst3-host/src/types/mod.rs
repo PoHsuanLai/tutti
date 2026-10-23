@@ -13,7 +13,7 @@ pub(crate) use audio::K_SAMPLE_64_INT;
 pub use audio::{ProcessMode, Vst3Sample};
 #[cfg(test)]
 pub(crate) use events::K_DATA_TYPE_MIDI_SYSEX;
-pub(crate) use events::{from_c_event, to_c_event, TextArena};
+pub(crate) use events::{from_c_event, to_c_event, vst3_event_from_midi, TextArena};
 pub use events::{
     note_expression_to_vst3, note_expression_type_from_id, note_expression_type_to_id,
     vst3_to_chord, vst3_to_note_expression, vst3_to_note_expression_int,
@@ -35,9 +35,9 @@ pub use transport::{process_context_flags, to_process_context};
 // Re-exports of the cross-format vocabulary, including the note-expression
 // enum + value (the ABI conversion to VST3's `typeId` lives in `events`).
 pub use tutti_plugin_types::{
-    AudioBuffer, BufferPtrs, EditorCapabilities, EditorSize, MidiEvent, NoteExpressionType,
-    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, Sample, TransportInfo,
-    WindowHandle,
+    AudioBuffer, BufferPtrs, ContentScale, EditorCapabilities, EditorSize, MidiEvent,
+    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue,
+    Sample, TransportInfo, WindowHandle,
 };
 
 /// Events and parameter changes emitted by the plugin during one call to

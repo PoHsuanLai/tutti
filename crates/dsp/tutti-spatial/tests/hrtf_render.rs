@@ -460,8 +460,10 @@ fn tetrahedron() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
 
 /// The declared tail is the ring-out once the latency is compensated: an
 /// impulse through a response whose last tap is non-zero sounds for the
-/// last time exactly latency + tail frames after it, and never after. Every
-/// vertex has the same response, so the blend cannot move the last tap.
+/// last time exactly latency + tail frames after it, and never after,
+/// wherever in the 128-frame step it lands (first, second, a middle and the
+/// last frame). Every vertex has the same response, so the blend cannot
+/// move the last tap.
 ///
 /// Mutation (run): `ring_out` counting the latency again (`LATENCY +
 /// ir_len - 1`, the old figure) → the declared tail is 327 against the
@@ -476,37 +478,39 @@ fn the_tail_is_the_ring_out_after_the_latency() {
         r[LEN - 1] = 0.5;
         r
     });
-    let mut node = node(&bytes, RATE);
-    let (azimuth, elevation) = bearing_of(verts[0]);
-    node.set_position(azimuth, elevation);
-    Node::reset(&mut node);
-    let shape = node.shape();
-    let latency = shape.latency.samples().get();
-    let lead = STEP + 100;
-    let mut input = vec![0.0f32; lead + 4 * (latency + LEN)];
-    input[lead] = 1.0;
-    let mut last = None;
-    let mut at = 0;
-    for chunk in input.chunks(64) {
-        let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
-        for (i, (l, r)) in out[0].iter().zip(&out[1]).enumerate() {
-            if l.abs() > 1e-4 || r.abs() > 1e-4 {
-                last = Some(at + i);
+    for offset in [0, 1, 100, STEP - 1] {
+        let mut node = node(&bytes, RATE);
+        let (azimuth, elevation) = bearing_of(verts[0]);
+        node.set_position(azimuth, elevation);
+        Node::reset(&mut node);
+        let shape = node.shape();
+        let latency = shape.latency.samples().get();
+        let lead = STEP + offset;
+        let mut input = vec![0.0f32; lead + 4 * (latency + LEN)];
+        input[lead] = 1.0;
+        let mut last = None;
+        let mut at = 0;
+        for chunk in input.chunks(64) {
+            let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
+            for (i, (l, r)) in out[0].iter().zip(&out[1]).enumerate() {
+                if l.abs() > 1e-4 || r.abs() > 1e-4 {
+                    last = Some(at + i);
+                }
             }
+            at += chunk.len();
         }
-        at += chunk.len();
+        let rings = last.expect("the impulse sounds") - (lead + latency);
+        assert_eq!(
+            shape.tail,
+            Tail::Finite(Samples(rings)),
+            "offset {offset}: the tail is what sounds after the compensated latency"
+        );
+        assert_eq!(
+            rings,
+            LEN - 1,
+            "offset {offset}: the response spreads the impulse LEN - 1 frames"
+        );
     }
-    let rings = last.expect("the impulse sounds") - (lead + latency);
-    assert_eq!(
-        shape.tail,
-        Tail::Finite(Samples(rings)),
-        "the tail is what sounds after the compensated latency"
-    );
-    assert_eq!(
-        rings,
-        LEN - 1,
-        "the response spreads the impulse LEN - 1 frames"
-    );
 }
 
 /// Preparing a sphere resamples it, which scales its response length by

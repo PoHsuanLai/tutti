@@ -288,7 +288,7 @@ the interpreter.
   latency; the HRTF panner has its response length less one beside its
   128-frame step. Export trims the graph's latency and then extends the
   render by `graph_tail`, and the silence skip waits for latency plus tail
-  (`NodeRec::settle`), because a node whose output reads silent can still
+  (`NodeRec::park_after`), because a node whose output reads silent can still
   hold its last latency's worth of input. CLAP, VST3 and AU all report a
   tail apart from latency, so a plugin's figure is taken as reported. Pinned
   by `tests/executor.rs` `the_skip_waits_for_latency_plus_tail`, the
@@ -967,11 +967,11 @@ bench (criterion medians, Ryzen 9 7950X) and callgrind; `perf` is not
 available on the build box.
 
 **What changed.** The compiler lowers each node op into one record
-(`NodeRec`): store index, generation, arrival, latency plus tail, the port slots, and the
-buffer borrow requests **sorted at compile time**. The verifier checks the
-record is exactly the lowering of its op (rule 7), so the executor runs
-what was verified, still with no `unsafe`. A call now does one lookup where
-it did six, and never sorts. The common shape (at most one audio input, one
+(`NodeRec`): store index, generation, arrival, latency plus tail, the
+port slots, and the buffer borrow requests **sorted at compile time**. The
+verifier checks the record is exactly the lowering of its op (rule 7), so
+the executor runs what was verified, still with no `unsafe`. A call now
+does one lookup where it did six, and never sorts. The common shape (at most one audio input, one
 audio output, no event ports) borrows its slots directly, and its whole call
 path is specialised so the per-port loops fold away. An event-free node of
 any width skips the event tables, so a 64-in sum no longer initialises 128
@@ -1841,9 +1841,11 @@ clones). The pieces:
   spec's tail fold, probed at the render's rate), on `Net` the net's
   answers (at the live rate). The tail resolves by `GraphTail::resolve`
   (unbounded → the cap; otherwise what was reported, at most the cap: a
-  node that never said counts as none). A request-side switch, because the
-  caller cannot know the fork's figures when it spawns the request. Default
-  off, as the export always was.
+  node that never said counts as none). A tail excludes latency, so the
+  part of the reported latency the render does not trim is rendered on top
+  of the tail: an untrimmed export keeps the programme's last frames. A
+  request-side switch, because the caller cannot know the fork's figures
+  when it spawns the request. Default off, as the export always was.
 - **Plugins are inserted forkable.** `plugin_load_promote` takes the
   concrete `PluginClient` out of the `Plugin` (`Plugin::into_client`, new;
   `into_parts`/`into_unit` still box it) and inserts it through

@@ -156,7 +156,7 @@ fn silent_inputs_skip_nodes_whose_tail_has_elapsed() {
 /// The second case is a pure delay (`Tail::None`): still called for `D`
 /// frames, because its line holds `D` frames of input when the input stops.
 ///
-/// Mutation (run): `Shape::settle` returning `self.tail` (dropping the
+/// Mutation (run): `Shape::park_after` returning `self.tail` (dropping the
 /// latency) → the first case fails with 23 calls against 60 (the second
 /// would see 1 against 37).
 #[test]

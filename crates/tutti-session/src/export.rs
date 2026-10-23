@@ -175,6 +175,13 @@ impl ExportRequest {
     /// nodes reported, at most `cap` (a node that said nothing counts as
     /// none). Asked like
     /// [`trim_reported_latency`](Self::trim_reported_latency).
+    ///
+    /// A tail excludes latency, so whatever of the graph's reported latency
+    /// the render does not trim is rendered on top of the tail (not counted
+    /// against `cap`): untrimmed, the file is `duration_seconds` plus the
+    /// latency plus the tail long, and keeps the programme's last frames;
+    /// with [`trim_reported_latency`](Self::trim_reported_latency) it is
+    /// `duration_seconds` plus the tail.
     pub fn with_reported_tail(mut self, cap: Samples) -> Self {
         self.tail_from_graph = Some(cap);
         self
@@ -540,7 +547,14 @@ impl ExportJob {
             // `resolve`, not `samples().unwrap_or(cap)`: a node that never
             // said (`Tail::Unknown`) is spent at what the others reported,
             // not at the cap, which would append silence.
-            config.render.tail = graph.reported_tail().resolve(cap);
+            let tail = graph.reported_tail().resolve(cap);
+            // A tail excludes latency: the programme leaves the graph its
+            // reported latency late, so the part of that latency the render
+            // does not trim is rendered too, or the programme's end is cut.
+            let kept = graph
+                .reported_latency()
+                .remaining_after(config.render.latency);
+            config.render.tail = tail + kept;
         }
         let result = match target {
             ExportTarget::File {
@@ -818,6 +832,68 @@ mod tests {
             RenderMode::Realtime,
             "the headless finish announces"
         );
+    }
+
+    /// **An untrimmed export with the graph's tail keeps the programme's
+    /// end.** A tail excludes latency, so a constant through a lookahead
+    /// limiter (240 frames at 48 kHz, no tail) leaves the graph 240 frames
+    /// late: rendered untrimmed, the buffers are 480 + 240 frames, the
+    /// first 240 silent and every one after them programme. Trimmed, they
+    /// are the 480 frames of programme alone.
+    ///
+    /// Mutation (run, failed): `config.render.tail = tail` (no untrimmed
+    /// latency) → the untrimmed render is 480 frames and loses the
+    /// programme's last 240.
+    #[test]
+    fn an_untrimmed_export_renders_the_latency_past_the_programme() {
+        use tutti_types::{ChannelLayout, Db, Samples};
+        const DURATION: usize = 480;
+        const LATENCY: usize = 240;
+        let mut session = session();
+        let (dc, _) = session
+            .graph()
+            .insert(tutti_nodes::testing::Const::mono(0.25));
+        let (lim, _) = session
+            .graph()
+            .insert(tutti_nodes::LimiterNode::with_channels(
+                ChannelLayout::MONO,
+                Db(-6.0),
+                Db(-1.0),
+            ));
+        session
+            .graph()
+            .set_source(lim, 0, crate::GraphSource::node(dc, 0));
+        session.graph().set_outputs_from(lim);
+        assert_eq!(session.graph_ref().node_latency(lim), Samples(LATENCY));
+
+        let mut config = ExportConfig::default();
+        config.render.sample_rate = SampleRate(48_000.0);
+        config.render.duration_seconds = DURATION as f64 / 48_000.0;
+        let request = || {
+            ExportRequest::new(
+                ExportSource::Mix,
+                ExportTarget::Buffers,
+                config,
+                ExportClock::frozen(),
+            )
+            .with_reported_tail(Samples(48_000))
+        };
+        let planes = |out: crate::Result<ExportOutput>| match out.expect("renders") {
+            ExportOutput::Buffers(r) => r.planes,
+            ExportOutput::File(_) => unreachable!("buffers were asked for"),
+        };
+
+        let untrimmed = planes(session.export_blocking(request()));
+        assert_eq!(untrimmed[0].len(), DURATION + LATENCY, "duration + latency");
+        assert!(untrimmed[0][..LATENCY].iter().all(|&s| s == 0.0));
+        assert!(
+            untrimmed[0][LATENCY..].iter().all(|&s| s != 0.0),
+            "every programme frame is kept"
+        );
+
+        let trimmed = planes(session.export_blocking(request().trim_reported_latency()));
+        assert_eq!(trimmed[0].len(), DURATION);
+        assert!(trimmed[0].iter().all(|&s| s != 0.0));
     }
 
     /// **A frozen export's timeline is stopped at beat 0**: what its

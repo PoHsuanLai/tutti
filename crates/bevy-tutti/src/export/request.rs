@@ -184,6 +184,11 @@ impl ExportRequest {
     /// cap. Asked like
     /// [`trim_reported_latency`](Self::trim_reported_latency), of the graph
     /// that is rendered.
+    ///
+    /// A tail excludes latency, so whatever of the graph's reported latency
+    /// is not trimmed is rendered on top of the tail (not counted against
+    /// `cap`): untrimmed, the file keeps the programme's last frames and is
+    /// `duration_seconds` plus the latency plus the tail long.
     pub fn with_reported_tail(mut self, cap: Samples) -> Self {
         self.tail_from_graph = Some(cap);
         self

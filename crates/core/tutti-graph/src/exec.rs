@@ -60,9 +60,9 @@
 //! block** and its sorted events.
 //!
 //! **A node op is one record.** The compiler lowers each `Op::Node` into a
-//! `NodeRec` (`plan.rs`): store index, generation, arrival, latency plus tail, the port
-//! slots, the buffer borrow requests **already sorted**, and a `Form` that
-//! picks the borrow. The verifier checks each record against its op, so a
+//! `NodeRec` (`plan.rs`): store index, generation, arrival, latency plus
+//! tail, the port slots, the buffer borrow requests **already sorted**, and
+//! a `Form` that picks the borrow. The verifier checks each record against its op, so a
 //! call does one indexed load and never sorts. The commonest shapes — at most one audio input and one
 //! audio output, or the stereo shapes 0→2, 1→2, 2→1 and 2→2, all with no
 //! event ports — borrow their slots directly, and their whole call path is
@@ -686,10 +686,10 @@ fn par_for(
     }
 }
 
-/// Whether `quiet` frames of quiet input cover `settle`, a node's latency
-/// then its tail (`NodeRec::settle`).
-fn tail_elapsed(settle: Tail, quiet: u64) -> bool {
-    match settle {
+/// Whether `quiet` frames of quiet input cover `park_after`, a node's
+/// latency then its tail (`NodeRec::park_after`).
+fn tail_elapsed(park_after: Tail, quiet: u64) -> bool {
+    match park_after {
         Tail::None => true,
         Tail::Finite(n) => quiet >= n.get() as u64,
         Tail::Unknown | Tail::Unbounded => false,
@@ -2057,7 +2057,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     // output and its latency plus tail agree.
     let skip = quiet_inputs
         && if ein.is_empty() {
-            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.settle, u.quiet)
+            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.park_after, u.quiet)
         } else {
             u.last_idle
         };

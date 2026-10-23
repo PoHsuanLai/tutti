@@ -273,7 +273,7 @@ impl Shape {
 
     /// Frames of quiet input after which the node is silent for good: its
     /// latency, then its tail. The executor's silence skip waits this long.
-    pub(crate) fn settle(&self) -> Tail {
+    pub(crate) fn park_after(&self) -> Tail {
         Tail::Finite(self.latency.samples()).then(self.tail)
     }
 

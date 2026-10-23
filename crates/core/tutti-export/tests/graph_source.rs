@@ -556,20 +556,29 @@ fn the_latency_trim_drops_the_lookahead() {
 }
 
 /// A lookahead limiter reports no tail: a tail excludes latency, and its
-/// lookahead is a pure delay the trim already removes. So a render trimmed
-/// by its latency and extended by its tail is exactly the requested
-/// duration, `FRAMES`, and not the 239 frames longer the lookahead less one
-/// used to add.
+/// lookahead is a pure delay. So a render trimmed by its latency and
+/// extended by its tail is exactly the requested duration, `FRAMES`, and not
+/// the 239 frames longer the lookahead less one used to add.
 ///
-/// Mutation (run): `LimiterNode::shape` declaring its old
-/// `lookahead_samples - 1` tail → `Some(239)` against `Some(0)`; the first
-/// assertion fails.
+/// The declared latency must also be the whole of the delay, or a tail of
+/// none would cut what is still in the ring. Rendered untrimmed over the
+/// latency plus the tail (what the session's `with_reported_tail` renders
+/// when nothing is trimmed), the sine (exactly 0 at its frame 0) leaves the
+/// limiter exactly the latency late: frames `0..=240` are exactly zero and
+/// frame 241 is not.
+///
+/// Mutations (run): `LimiterNode::shape` declaring its old
+/// `lookahead_samples - 1` tail → `Some(239)` against `Some(0)`, and the
+/// first assertion fails; each channel's ring 1000 frames longer than the
+/// declared latency (`CircularBuffer::new(n + 1000)`) → frame 241 is still
+/// in the ring, zero, and the onset assertion fails.
 #[test]
 fn a_limiter_adds_no_tail_to_the_render() {
     let graph = built(limited());
     assert_eq!(graph.reported_tail().samples(), Some(Samples::ZERO));
+    let latency = graph.reported_latency();
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
-    cfg.render.latency = graph.reported_latency();
+    cfg.render.latency = latency;
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     let planes = buffers(built(limited()), &cfg).planes;
     assert_eq!(
@@ -577,6 +586,19 @@ fn a_limiter_adds_no_tail_to_the_render() {
         FRAMES,
         "the duration, and nothing after it"
     );
+
+    let mut whole = config(BitDepth::Float32, ChannelLayout::STEREO);
+    whole.render.tail = latency + graph.reported_tail().samples().unwrap();
+    let planes = buffers(built(limited()), &whole).planes;
+    let n = latency.get();
+    assert_eq!(planes[0].len(), FRAMES + n, "the duration plus the latency");
+    for p in &planes {
+        assert!(
+            p[..=n].iter().all(|&s| s == 0.0),
+            "nothing leaves before the latency"
+        );
+        assert_ne!(p[n + 1], 0.0, "the programme leaves at the latency");
+    }
 }
 
 /// The graph reports a convolver's tail analytically (a 3 000-tap IR rings

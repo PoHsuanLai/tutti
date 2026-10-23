@@ -85,19 +85,7 @@ impl AudioIn for TapIn {
     /// is half its filled length, never the sample count. A short or zero count
     /// is normal for a live source; the pump parks and retries.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
-        let mut n = 0;
-        while n < frames {
-            match self.cons.try_pop() {
-                Some((l, r)) => {
-                    out[n * 2] = l;
-                    out[n * 2 + 1] = r;
-                    n += 1;
-                }
-                None => break,
-            }
-        }
-        Samples(n)
+        self.cons.pop_interleaved(out)
     }
 }
 

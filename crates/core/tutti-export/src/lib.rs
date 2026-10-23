@@ -112,13 +112,11 @@ impl Rendered {
     /// than once.
     pub fn interleaved_into(&self, out: &mut Vec<f32>) {
         out.clear();
-        let frames = self.frames().get();
-        out.reserve(frames * self.channels());
-        for i in 0..frames {
-            for plane in &self.planes {
-                out.push(plane[i]);
-            }
+        if self.planes.is_empty() {
+            return;
         }
+        out.resize(self.frames().interleaved_len(self.layout()), 0.0);
+        tutti_types::InterleavedMut::new(out, self.layout()).interleave_from(&self.planes, 0);
     }
 }
 
@@ -242,12 +240,8 @@ pub fn render_to_buffers(
         config.render.sample_rate,
         clock,
         |src| {
-            render::drive(src, ch, &plan, |block| {
-                for f in block.iter() {
-                    for (plane, &s) in planes.iter_mut().zip(f.iter()) {
-                        plane.push(s);
-                    }
-                }
+            render::drive(src, config.encode.channels, &plan, |block| {
+                block.append_to_planes(&mut planes);
                 Ok(())
             })
         },

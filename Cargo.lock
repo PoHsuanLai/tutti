@@ -1729,14 +1729,11 @@ checksum = "fb6da14d3c6605689b5c9ed5187a5218a6d3888e14b747bc18fd4e4bafd452bd"
 dependencies = [
  "built",
  "crc",
- "crossbeam-channel",
  "heapless 0.8.0",
- "log",
  "md-5",
  "num-traits",
  "rustversion",
  "seq-macro",
- "serde",
 ]
 
 [[package]]
@@ -1999,7 +1996,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
  "hash32",
- "serde",
  "stable_deref_trait",
 ]
 
@@ -4356,6 +4352,7 @@ dependencies = [
  "criterion",
  "flacenc",
  "hound",
+ "md-5",
  "rubato",
  "symphonia",
  "tempfile",

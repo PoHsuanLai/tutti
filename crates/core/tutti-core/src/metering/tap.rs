@@ -27,7 +27,7 @@ const CAPACITY: usize = 131_072;
 /// The producer end, swapped in on `open` and out on `close`. `Mutex` rather
 /// than an atomic swap because only the cold path ever writes it; the audio
 /// thread `try_lock`s and skips the buffer on contention.
-type TapProducer = Arc<Mutex<Option<HeapProd<(f32, f32)>>>>;
+type TapProducer = Arc<Mutex<Option<HeapProd<[f32; 2]>>>>;
 
 /// The consumer end of an opened [`AudioTap`] — stereo frames, in the order the
 /// audio thread pushed them.
@@ -39,7 +39,11 @@ type TapProducer = Arc<Mutex<Option<HeapProd<(f32, f32)>>>>;
 // implementation detail: a caller can name this type without adding `ringbuf`
 // to their manifest at a matching version. `tutti-io`'s `MicRing` is the same
 // decision for the mic capture ring.
-pub struct TapCons(HeapCons<(f32, f32)>);
+//
+// The element is `[f32; 2]`, not a tuple: it is laid out as one interleaved
+// frame, so a block moves in and out of the ring as one slice copy
+// (`push_slice`, `pop_slice`) rather than one atomic index update per frame.
+pub struct TapCons(HeapCons<[f32; 2]>);
 
 impl TapCons {
     /// Pops one stereo frame, or `None` when the ring is empty.
@@ -50,7 +54,20 @@ impl TapCons {
     #[inline]
     pub fn try_pop(&mut self) -> Option<(f32, f32)> {
         use ringbuf::traits::Consumer;
-        self.0.try_pop()
+        self.0.try_pop().map(|[l, r]| (l, r))
+    }
+
+    /// Pops up to `out.len() / 2` stereo frames into `out`, interleaved L
+    /// then R, returning the **frame** count. A trailing odd sample is left
+    /// as it was.
+    ///
+    /// One copy and one read-index update for the whole run, where
+    /// [`try_pop`](Self::try_pop) pays both per frame. Zero means the same as
+    /// an empty `try_pop`: nothing pushed since the last poll.
+    #[inline]
+    pub fn pop_interleaved(&mut self, out: &mut [f32]) -> crate::Samples {
+        use ringbuf::traits::Consumer;
+        crate::Samples(self.0.pop_slice(out.as_chunks_mut::<2>().0))
     }
 
     /// Frames readable right now.
@@ -166,7 +183,7 @@ impl AudioTap {
             return Err(TapBusy);
         }
 
-        let (prod, cons) = HeapRb::<(f32, f32)>::new(CAPACITY).split();
+        let (prod, cons) = HeapRb::<[f32; 2]>::new(CAPACITY).split();
         *slot = Some(prod);
         // Release *after* the producer is in place: the audio thread checks
         // `on` first and only then tries the lock, so flipping this earlier
@@ -216,14 +233,10 @@ impl AudioTap {
         // try_lock: skip this callback if the producer is being swapped.
         if let Some(ref mut guard) = self.producer.try_lock() {
             if let Some(ref mut prod) = **guard {
-                output
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .take(frames)
-                    .for_each(|ch| {
-                        let _ = prod.try_push((ch[0], ch[1]));
-                    });
+                // One copy and one write-index update for the block; what
+                // does not fit is dropped, as a full ring always has been.
+                let pairs = output.as_chunks::<2>().0;
+                let _ = prod.push_slice(&pairs[..frames.min(pairs.len())]);
             }
         }
     }

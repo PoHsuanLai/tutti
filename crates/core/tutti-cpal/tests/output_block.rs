@@ -149,6 +149,36 @@ fn a_wide_device_meters_a_fold_not_the_first_two_channels() {
     );
 }
 
+/// **The metering fold runs when only the meter reads it.** The callback
+/// skips the fold while the meter is disabled and the tap closed, since
+/// `meter_output` then does nothing; an enabled meter with the tap closed
+/// must still read the block. Both a stereo device (the memcpy branch) and a
+/// wide one (the fold) are checked, with the meter off first, then on.
+///
+/// Mutation (run): gate the fold on the tap alone (`if
+/// self.state.tap.is_open()`) → the enabled meter reads 0 → fails.
+#[test]
+fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
+    for width in [2usize, 6] {
+        let meter = tutti_core::MasterMeter::new();
+        let state = support::dc_state_metered(0.5, width, meter.clone());
+        let mut block = OutputBlock::new(state, ChannelLayout::from(width));
+        let mut out = vec![0.0f32; 64 * width];
+
+        block.render(&mut out);
+        assert_eq!(
+            meter.get().peak_left.get(),
+            0.0,
+            "width {width}: disabled reads nothing"
+        );
+
+        meter.enable();
+        block.render(&mut out);
+        let peak = meter.get().peak_left.get();
+        assert!(peak > 0.0, "width {width}: the enabled meter read {peak}");
+    }
+}
+
 /// **The stereo memcpy shortcut is bit-equal to the general fold.**
 ///
 /// `block.rs` claims the `layout == STEREO` branch "is a deliberate

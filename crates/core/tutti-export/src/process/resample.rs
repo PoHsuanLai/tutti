@@ -138,6 +138,10 @@ mod streaming {
         emitted: usize,
         /// Reusable scratch so the per-block path does not allocate.
         in_scratch: Vec<Vec<f32>>,
+        /// rubato's output, `output_frames_max()` per channel, written by
+        /// `process_into_buffer` (which is what `process` calls after
+        /// allocating a fresh buffer per chunk).
+        out_scratch: Vec<Vec<f32>>,
     }
 
     impl Resampler {
@@ -165,6 +169,7 @@ mod streaming {
                 channels,
             )?;
             let skip = inner.output_delay();
+            let out_scratch = vec![vec![0.0; inner.output_frames_max()]; channels];
             Ok(Self {
                 inner,
                 channels,
@@ -175,6 +180,7 @@ mod streaming {
                 fed: 0,
                 emitted: 0,
                 in_scratch: vec![Vec::new(); channels],
+                out_scratch,
             })
         }
 
@@ -280,11 +286,15 @@ mod streaming {
                     scratch.clear();
                     scratch.extend_from_slice(&self.carry[c][chunk.clone()]);
                 }
-                let produced = self.inner.process(&self.in_scratch, None)?;
+                let (_, produced_len) = self.inner.process_into_buffer(
+                    &self.in_scratch,
+                    &mut self.out_scratch,
+                    None,
+                )?;
+                let produced = &self.out_scratch;
                 self.head += need;
 
                 // Drop warm-up frames at the head before anything is kept.
-                let produced_len = produced.first().map_or(0, |p| p.len());
                 let drop = self.skip.min(produced_len);
                 self.skip -= drop;
                 // Emit at most what is still owed, so the flush padding that

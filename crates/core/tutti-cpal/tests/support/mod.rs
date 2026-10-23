@@ -97,6 +97,16 @@ pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
     ))
 }
 
+/// [`dc_state`] with `meter` as the master meter and the tap left closed:
+/// the caller keeps a clone of `meter` to enable it and read it back.
+pub fn dc_state_metered(level: f32, outputs: usize, meter: MasterMeter) -> Arc<AudioCallbackState> {
+    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
+        ed.insert(NodeKey(1), "dc", Const::mono(level));
+        fan(ed, NodeKey(1), outputs);
+    });
+    Arc::new(AudioCallbackState::new(engine, meter, AudioTap::new()))
+}
+
 /// A graph emitting `level` on exactly one output channel, silence on the
 /// rest, with the master tap already open.
 ///

@@ -21,7 +21,8 @@ padding (a verifying decoder reported a mismatch), and for mono the padding
 was stale samples rather than zeros. The last block is now encoded at its
 own length, the file decodes to exactly the rendered frames, and the MD5
 verifies. A length that is a multiple of 4 096 writes the same bytes as
-before. `tutti-export`'s `flac` feature now also pulls in `md-5`.
+before. An empty export's STREAMINFO states valid block sizes. A panic
+in an encoder worker ends the export with `Error::Encoding` naming it. `tutti-export`'s `flac` feature now also pulls in `md-5`.
 
 **The rest of export is byte-identical**, and allocates less: the
 interleave and deinterleave copies go through two new helpers,

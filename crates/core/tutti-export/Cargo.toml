@@ -32,7 +32,9 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
 rubato = "0.16"
 hound = { version = "3.5", optional = true }
-flacenc = { version = "0.4", optional = true }
+# No default features: the encoder drives flacenc's frame encoder on its own
+# workers, so flacenc's `par` (and its `serde`/`log`) are unused.
+flacenc = { version = "0.4", optional = true, default-features = false }
 # The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
 # only inside its own encode loop, which pads the last block; the FLAC encoder
 # drives flacenc's frame encoder itself, so it hashes the samples here. The

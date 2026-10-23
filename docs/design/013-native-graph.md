@@ -5292,7 +5292,8 @@ under both.
     segments"); the value starts at 0 and is an offset like an audio source's.
   **Superseded by doc 014 §5.6:** an event source's value now
   *replaces* the base from its first event on (a first ramp starts from
-  the base on its frame), audio sources stay offsets on whichever holds,
+  the base on its frame, also when it replaces a segment sent first on
+  that frame), audio sources stay offsets on whichever holds,
   and a port takes at most one event source, unshaped
   (`GraphInvalid::TooManyEventParamSources`, `ShapedEventParamSource`).
   The step is `clamp(held[i] + Σ shape_j(audio_j[i]))`. A source's state

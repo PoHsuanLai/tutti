@@ -1312,13 +1312,21 @@ impl Reference {
                         }
                         EventKind::Segment(s) if s.addr() == want => {
                             let (from, to, position, length) = s.raw();
+                            // What a ramp replacing it on this frame starts
+                            // from: the held value, or (a first event) the
+                            // base at this frame, as for a first ramp.
+                            let cur = if st.ramp.started {
+                                st.ramp.value
+                            } else {
+                                base(i)
+                            };
                             st.ramp = RefRamp {
                                 from,
                                 target: to,
                                 at: now,
                                 len: 0,
                                 curve: Some((position, length, s.shape())),
-                                value: st.ramp.value,
+                                value: cur,
                                 started: true,
                             };
                         }

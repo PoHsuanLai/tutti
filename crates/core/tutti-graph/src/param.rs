@@ -354,7 +354,8 @@ impl Ramp {
 /// Render one event source's values for a block into `out`: the ramps and
 /// curve segments its events for `param` start, frame by frame, and
 /// `base(i)` on each frame before its first event ever. A first ramp starts
-/// from `base` at its own frame.
+/// from `base` at its own frame, whether or not a segment came before it
+/// on that frame.
 pub(crate) fn render_ramps(
     ramp: &mut Ramp,
     events: &[Event],
@@ -374,6 +375,12 @@ pub(crate) fn render_ramps(
                     ramp.start(r.raw_target(), r.duration().get());
                 }
                 EventKind::Segment(s) if s.is_for(want) => {
+                    // A segment never reads the value it interrupts, but a
+                    // ramp that replaces it on this frame does: a first one
+                    // starts from the base, as it would alone.
+                    if !ramp.started {
+                        ramp.value = base(i);
+                    }
                     let (from, to, position, length) = s.raw();
                     let shape = s.shape();
                     ramp.start_segment(
@@ -748,6 +755,48 @@ mod tests {
         let mut r = Ramp::default();
         render_ramps(&mut r, &events, UnitParam::Q, &mut out, |_| 0.0);
         assert!(out.iter().all(|&x| x == 0.0));
+    }
+
+    /// A segment and then a ramp on one frame, as a source's first events:
+    /// the ramp replaces the segment from the base at that frame, as it
+    /// would alone, under a base that moves every frame.
+    ///
+    /// Mutation (run): drop the base seed from `render_ramps`' segment arm
+    /// → the ramp starts from the never-written value 0 (frame 4 reads 0
+    /// for 2.5) → fails.
+    #[test]
+    fn a_ramp_after_a_first_segment_on_its_frame_starts_from_the_base() {
+        use crate::event::ParamSegment;
+        let at = Offset::new(4, Samples(8)).expect("in block");
+        let seg = ParamSegment::new(
+            ParamKey::<Hz>::CUTOFF,
+            Hz(5.0),
+            Hz(9.0),
+            Samples(20),
+            SegmentShape::Linear,
+        );
+        let ramp = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(0.0), Samples(2));
+        let base = |i: usize| 1.0 + i as f32;
+        let mut after_segment = [0.0f32; 8];
+        let events = [Event::segment(at, seg), Event::ramp(at, ramp)];
+        render_ramps(
+            &mut Ramp::default(),
+            &events,
+            UnitParam::Cutoff,
+            &mut after_segment,
+            base,
+        );
+        let mut alone = [0.0f32; 8];
+        let events = [Event::ramp(at, ramp)];
+        render_ramps(
+            &mut Ramp::default(),
+            &events,
+            UnitParam::Cutoff,
+            &mut alone,
+            base,
+        );
+        assert_eq!(after_segment, [1.0, 2.0, 3.0, 4.0, 2.5, 0.0, 0.0, 0.0]);
+        assert_eq!(after_segment, alone, "as the ramp alone");
     }
 
     /// A list a node cannot declare is a named error, not a panic.

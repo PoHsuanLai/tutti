@@ -3837,6 +3837,28 @@ What they show:
   sample, and running it channel-outer measured 1.3–2× slower than the
   sample-outer loop, which keeps one chain per channel in flight at once.
 
+  The dynamics nodes get the same treatment where the bits allow it
+  (`benches/node_kernels.rs`, 4 shared cores, the fastest of three
+  interleaved runs, 64 / 1024 frames; `release` bench profile): the
+  sidechain max is taken a channel at a time into the gain lane (`max` is
+  exact); the limiter runs its peak, its recurrence (envelope and sliding
+  minimum) and its lookahead ring and gain apply as three passes, reads its
+  gain-reduction meter once per block (only the last frame is observable)
+  and, with threshold and ceiling unfed, computes the sub-threshold gain
+  once per block; the gate converts its range to linear once per block
+  rather than per frame unless the range is ramping. `LimiterNode` stereo
+  3.5 → 1.8 µs / 57 → 29, `GateNode` stereo 1.7 → 0.80 / 26 → 12,
+  `CompressorNode` stereo 1.9 → 1.5 / 29 → 23 (six channels 2.9 → 1.6 /
+  43 → 24). Every render is the same bits as before (2 880 renders over
+  sines, bursts, silence, NaN / inf / denormal frames, params set between
+  blocks and fed per frame, 1 / 64 / 512-frame blocks, 1 / 2 / 6 channels:
+  no difference). What stays per frame is each frame's `log10` and `powf`:
+  the gate's open decision compares in dB, and replacing it with a
+  comparison against a linear threshold cannot be shown to decide the same
+  way at the boundary (it rests on the platform's `log10` rounding), so
+  that and the limiter's linear-domain gain are bit-changing and left
+  out.
+
 Why the biquad ceiling does not carry over to tutti's graphs:
 
 - **No recursive siblings.** The same-kind sets that occur are:

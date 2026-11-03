@@ -7,7 +7,10 @@ use tutti_types::{ChannelLayout, UnitParam};
 
 use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
-use super::utils::{amplitude_to_db, apply_gain_lane, compute_gate_gain, ramp_db, sidechain_level};
+use super::utils::{
+    amplitude_to_db, apply_gain_lane, compute_gate_gain, db_to_amplitude, gate_gain_at, ramp_db,
+    ramp_is_at_end, sidechain_levels,
+};
 use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::{block_driven, LastGood};
@@ -45,6 +48,8 @@ pub(super) struct GateBlock {
     threshold: Db,
     range_from: Db,
     range_to: Db,
+    /// `range_to` as a linear gain, converted once for the block.
+    range_to_linear: f32,
 }
 
 impl GateCore {
@@ -144,6 +149,7 @@ impl GateCore {
             threshold: Db(self.good[0].read(self.threshold_db.load().get())),
             range_from,
             range_to,
+            range_to_linear: db_to_amplitude(range_to).get(),
         }
     }
 
@@ -167,8 +173,14 @@ impl GateCore {
             .unwrap_or(block.threshold);
         self.envelope = sc_level;
         self.follower.step(input_db >= threshold);
-        let range = ramp_db(block.range_from, block.range_to, i, n);
-        compute_gate_gain(self.follower.value(), range).get()
+        // At the end of the ramp (a held range is always there) the range is
+        // the block's, converted once.
+        if ramp_is_at_end(block.range_from, block.range_to, i, n) {
+            gate_gain_at(self.follower.value(), block.range_to_linear).get()
+        } else {
+            let range = ramp_db(block.range_from, block.range_to, i, n);
+            compute_gate_gain(self.follower.value(), range).get()
+        }
     }
 }
 
@@ -409,8 +421,9 @@ impl Node for GateNode {
         // Detector sample-outer (a recursive envelope with a hold counter),
         // apply channel-outer over planar slices — see `CompressorNode::process`.
         let gains = &mut self.gains[..size];
+        sidechain_levels(&inputs, ch, gains);
         for (i, g) in gains.iter_mut().enumerate() {
-            let sc = sidechain_level(&inputs, ch, i);
+            let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
             *g = self.core.compute_gain(&block, i, size, sc, threshold);
         }

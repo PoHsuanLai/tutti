@@ -7,18 +7,31 @@
 use tutti_core::{Amplitude, CompressionRatio, Db};
 use tutti_graph::{Inputs, Outputs};
 
-/// Max-abs sidechain detector level for sample `i` of a block.
+/// Max-abs sidechain detector level for each frame of a block, written to
+/// `levels`, one channel at a time.
 ///
 /// `input.get(0..ch)` are audio channels, `input.get(ch..2*ch)` sidechain
 /// channels. A graph node declares all `2 * ch` inputs, and the graph feeds
 /// an unconnected one silence, so every sidechain channel is there to read.
+/// `levels.len()` is the block's frame count. Each frame folds its channels
+/// in ascending order from 0, as a per-frame loop does, so the lane holds
+/// the same values (`max` ignores a NaN either way).
 #[inline]
-pub(crate) fn sidechain_level(input: &Inputs<'_>, ch: usize, i: usize) -> f32 {
-    let mut level = 0.0f32;
+pub(crate) fn sidechain_levels(input: &Inputs<'_>, ch: usize, levels: &mut [f32]) {
+    let n = levels.len();
+    levels.fill(0.0);
     for c in 0..ch {
-        level = level.max(input.get(ch + c)[i].abs());
+        for (level, &x) in levels.iter_mut().zip(&input.get(ch + c)[..n]) {
+            *level = level.max(x.abs());
+        }
     }
-    level
+}
+
+/// Whether [`ramp_db`] returns `to` itself at frame `i`: a held value, or the
+/// block's last frame.
+#[inline]
+pub(crate) fn ramp_is_at_end(from: Db, to: Db, i: usize, n: usize) -> bool {
+    from == to || i + 1 >= n
 }
 
 /// The value at frame `i` of an `n`-frame linear ramp from `from` to `to`, in
@@ -33,7 +46,7 @@ pub(crate) fn sidechain_level(input: &Inputs<'_>, ch: usize, i: usize) -> f32 {
 /// value at once.
 #[inline]
 pub(crate) fn ramp_db(from: Db, to: Db, i: usize, n: usize) -> Db {
-    if from == to || i + 1 >= n {
+    if ramp_is_at_end(from, to, i, n) {
         to
     } else {
         let t = (i + 1) as f32 / n as f32;
@@ -146,8 +159,21 @@ pub(crate) fn smooth_envelope(current: f32, target: f32, coeff: f32) -> f32 {
 /// Gate gain from gate level (unitless 0..1) and range in dB.
 #[inline]
 pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
-    let range_linear = db_to_amplitude(range_db).get();
+    gate_gain_at(gate_level, db_to_amplitude(range_db).get())
+}
+
+/// [`compute_gate_gain`] with the range already converted to linear.
+#[inline]
+pub(crate) fn gate_gain_at(gate_level: f32, range_linear: f32) -> Amplitude {
     Amplitude(range_linear + gate_level * (1.0 - range_linear))
+}
+
+/// The limiter's gain when `peak_db` is over the threshold. `cap` is
+/// `(ceiling - threshold).min(0.0)`.
+#[inline]
+fn limiter_over_gain(peak_db: f32, threshold: f32, cap: f32) -> Amplitude {
+    let reduction = peak_db - threshold;
+    db_to_amplitude(Db(-reduction + cap))
 }
 
 /// Pure limiter gain computation.
@@ -162,10 +188,41 @@ pub(crate) fn compute_limiter_gain(
     let threshold = threshold.into().get();
     let ceiling = ceiling.into().get();
     if peak_db > threshold {
-        let reduction = peak_db - threshold;
-        db_to_amplitude(Db(-reduction + (ceiling - threshold).min(0.0)))
+        limiter_over_gain(peak_db, threshold, (ceiling - threshold).min(0.0))
     } else {
         db_to_amplitude(Db(ceiling - threshold))
+    }
+}
+
+/// [`compute_limiter_gain`] for a threshold and ceiling that hold across a
+/// block: what depends on only those two is computed once, and each frame
+/// takes the same branch and expression as the per-frame form.
+pub(crate) struct LimiterCurve {
+    threshold: f32,
+    /// `(ceiling - threshold).min(0.0)`.
+    cap: f32,
+    /// The gain at or under the threshold.
+    below: f32,
+}
+
+impl LimiterCurve {
+    pub(crate) fn new(threshold: Db, ceiling: Db) -> Self {
+        let (threshold, ceiling) = (threshold.get(), ceiling.get());
+        Self {
+            threshold,
+            cap: (ceiling - threshold).min(0.0),
+            below: db_to_amplitude(Db(ceiling - threshold)).get(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn gain(&self, peak_db: Db) -> f32 {
+        let peak_db = peak_db.get();
+        if peak_db > self.threshold {
+            limiter_over_gain(peak_db, self.threshold, self.cap).get()
+        } else {
+            self.below
+        }
     }
 }
 

@@ -260,7 +260,9 @@ impl ClapLoaded {
     }
 
     /// Plugin-reported tail length in samples (audio continues after input
-    /// stops — reverbs, delays). 0 when unsupported.
+    /// stops — reverbs, delays). 0 when unsupported. Raw: any value at or
+    /// above `INT32_MAX` means an infinite tail (`clap/ext/tail.h`), which
+    /// `Tail::from_clap_samples` decodes.
     pub fn get_tail(&self) -> u32 {
         if self.extensions.system.tail.is_null() {
             return 0;

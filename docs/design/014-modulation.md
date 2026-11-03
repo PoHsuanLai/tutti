@@ -1033,6 +1033,26 @@ unresolved until they land). The old driver is in
 `modulation::legacy`, unscheduled (`LegacyModulationPlugin`), and
 `plugin_bind_params` is no longer scheduled.
 
+**A steady frame costs a comparison.** The host applies every frame, and
+most frames change nothing. `Modulation::apply` keeps every input of its
+last kept apply (`Memo`, in `reconcile.rs`, which lists them): the
+declarations by value (an automation curve by identity), what the host
+resolves for each target with a program and each source (node, native
+knob cell, foreign node and port, feed), the editor's `Editor::revision`
+(a count every editing call moves: spec, shapes and generations, the plan
+sent, param ranges and cells, the `Prepare`) and the play clock's epoch
+(a rate edit's anchor lives only within one). An apply over equal inputs
+returns at once, counted by `Modulation::skipped`, with no compile, cycle
+check or diff. Nothing is kept while a target or source is unresolved, so
+the re-apply after a commit still runs. The session keeps its own
+declarations built (`OwnMods`) until an edit through `Session::mods`;
+`bevy-tutti` keeps the declarations it collected (`modulation::Kept`) and
+collects again only when `note_declaration_changes`, which runs every
+frame whether or not the engine is ready, saw a declaring component
+change or go, or when an entity they name is gone. On a 256-filter chain
+with an LFO per cutoff, a steady `Session::update` went from 729 µs to
+13–20 µs (mean over two runs; `tutti-session`'s `mod_update` bench).
+
 The rules, as designed:
 
 - **A new target** gets a `ControlLaneNode` through `AudioGraphRes`. A
@@ -1056,6 +1076,7 @@ The rules, as designed:
 | Range (`Changed<ModRange>`) | a store: `Editor::set_param_range` (native) or `set_range` (plugin) |
 | Knob (`AudioParam`, `write_param`) | one store into the node's `Param` cell; a plugin lane's `set_knob` |
 | Automation curve | republish |
+| Nothing (a steady frame) | a comparison of the inputs (`Modulation::skipped`) |
 
 **One writer per knob**: `write_param` loses its modulated
 branch and `set_param_snapshot`; `ParamSet` loses `set_authored` and

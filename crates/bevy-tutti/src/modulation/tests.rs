@@ -272,3 +272,197 @@ fn a_depth_slider_keeps_phase() {
         );
     }
 }
+
+/// The cutoff lane's program, as last published.
+fn program(app: &App, filter: Entity) -> Arc<tutti_mod::ControlProgram> {
+    let state = app.world().resource::<AudioGraphRes>().modulation();
+    state
+        .lane(ParamRef::unit(filter, UnitParam::Cutoff))
+        .expect("a lane")
+        .1
+        .program()
+}
+
+/// A frozen constant: an automation curve.
+struct Flat(f32);
+
+impl tutti_mod::Curve for Flat {
+    fn value_at(&self, _: Beat) -> Option<f32> {
+        Some(self.0)
+    }
+}
+
+fn skipped(app: &App) -> u64 {
+    app.world()
+        .resource::<AudioGraphRes>()
+        .modulation()
+        .skipped_applies()
+}
+
+/// Frames until one's apply is skipped: nothing left to follow.
+fn settle_until_skipped(app: &mut App, side: &mut AudioSide) {
+    for _ in 0..3 {
+        frame(app, side);
+    }
+    let before = skipped(app);
+    frame(app, side);
+    assert_eq!(
+        skipped(app),
+        before + 1,
+        "a steady frame's apply is skipped"
+    );
+}
+
+/// `lfo_scene`, then frames until the session skips its apply.
+fn steady_scene(app: &mut App, side: &mut AudioSide) -> [Entity; 3] {
+    let scene = lfo_scene(app, side, 0.5, 0.3);
+    settle_until_skipped(app, side);
+    scene
+}
+
+/// **Each declaring component's edit after a steady state is applied.**
+/// The reconcile collects the declarations again only on a change Bevy
+/// reports (`DeclChanges`); a route, a range, a source, an automation and
+/// a take, each edited, added or removed alone, reach the lane on the next
+/// frame.
+///
+/// Mutations (run), each fails: `Changed<ModRoute>` out of `DeclChanges`
+/// ("depth"); `Changed<ModRange>` ("range"); `Changed<ModSource>`
+/// ("source"); `Changed<Automation>` ("automation"); `Changed<AutomationTake>`
+/// ("take opened"); the removed `AutomationTake`s not read ("take
+/// removed"); the removed `ModRoute`s ("route despawned"); the removed
+/// `ModSource`s ("source removed").
+#[test]
+fn every_declaring_edit_after_a_steady_state_applies() {
+    use super::{Automation, AutomationTake, ModSource};
+    use tutti_nodes::automation::RecordMode;
+
+    let (mut app, mut side) = app();
+    let [filter, range, route] = steady_scene(&mut app, &mut side);
+    let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
+    let changed = |app: &mut App, side: &mut AudioSide, before| {
+        frame(app, side);
+        !Arc::ptr_eq(&before, &program(app, filter))
+    };
+
+    let before = program(&app, filter);
+    app.world_mut().get_mut::<ModRoute>(route).unwrap().depth = Depth(0.1);
+    assert!(changed(&mut app, &mut side, before), "depth");
+
+    {
+        let mut r = app.world_mut().get_mut::<ModRange>(range).unwrap();
+        r.min = 600.0;
+        r.max = 700.0;
+    }
+    frame(&mut app, &mut side);
+    let v = render(&mut side, BLOCK);
+    assert!(v.iter().all(|&x| x == 600.0), "range: {v:?}");
+
+    let source = app.world().get::<ModRoute>(route).unwrap().source;
+    let before = program(&app, filter);
+    app.world_mut()
+        .entity_mut(source)
+        .insert(ModSource::new(Lfo::sine().hz(Hz(3.0))));
+    assert!(changed(&mut app, &mut side, before), "source");
+
+    let before = program(&app, filter);
+    let automation = app
+        .world_mut()
+        .spawn(Automation::new(cutoff, Arc::new(Flat(650.0))))
+        .id();
+    assert!(changed(&mut app, &mut side, before), "automation");
+    for _ in 0..3 {
+        frame(&mut app, &mut side);
+    }
+
+    let before = program(&app, filter);
+    app.world_mut()
+        .entity_mut(automation)
+        .insert(AutomationTake::record(RecordMode::Latch, 600.0, 700.0));
+    assert!(changed(&mut app, &mut side, before), "take opened");
+    for _ in 0..3 {
+        frame(&mut app, &mut side);
+    }
+    let before = program(&app, filter);
+    app.world_mut()
+        .entity_mut(automation)
+        .remove::<AutomationTake>();
+    assert!(changed(&mut app, &mut side, before), "take removed");
+    for _ in 0..3 {
+        frame(&mut app, &mut side);
+    }
+
+    let before = program(&app, filter);
+    app.world_mut().despawn(route);
+    assert!(changed(&mut app, &mut side, before), "route despawned");
+    for _ in 0..3 {
+        frame(&mut app, &mut side);
+    }
+
+    // A second route from the source, then the source taken away.
+    let route = app
+        .world_mut()
+        .spawn(ModRoute::new(source, cutoff).with_depth(Depth(0.2)))
+        .id();
+    for _ in 0..3 {
+        frame(&mut app, &mut side);
+    }
+    let before = program(&app, filter);
+    app.world_mut().entity_mut(source).remove::<ModSource>();
+    assert!(changed(&mut app, &mut side, before), "source removed");
+    let _ = route;
+    settle_until_skipped(&mut app, &mut side);
+}
+
+/// **A target whose node entity is despawned leaves nothing unresolved.**
+/// The despawned entity held none of the declaring components, so Bevy
+/// reports no change the reconcile watches; the kept collect is checked
+/// for dead entities and collected again, leaving the route and range on
+/// the dead entity out.
+///
+/// (Without that, the kept collect would declare the dead target every
+/// frame: unresolved in `Modulation`, resolved again by `AfterCommit`'s own
+/// collect, and never steady.)
+///
+/// Mutation (run): `Collected::alive` always `true` → no frame's apply is
+/// skipped again → "a steady frame's apply is skipped" fails.
+#[test]
+fn a_despawned_target_after_a_steady_state_leaves_nothing_unresolved() {
+    let (mut app, mut side) = app();
+    let [filter, ..] = steady_scene(&mut app, &mut side);
+    app.world_mut().despawn(filter);
+    frame(&mut app, &mut side);
+    let state = app.world().resource::<AudioGraphRes>().modulation();
+    assert_eq!(state.refusal(), None);
+    assert_eq!(state.unresolved_targets().count(), 0, "nothing unresolved");
+    settle_until_skipped(&mut app, &mut side);
+}
+
+/// **A declaration removed while the engine is not ready is followed once
+/// it is.** Bevy keeps a removal for two frames; the reconcile skips frames
+/// while the engine is not ready, so the change is noted by a system that
+/// runs every frame (`note_declaration_changes`).
+///
+/// Mutation (run): `note_declaration_changes` gated on `engine_ready` too
+/// → the route's removal is gone when the reconcile next runs, its kept
+/// collect still routes the LFO → "the route's removal" fails.
+#[test]
+fn a_removal_while_the_engine_is_not_ready_is_followed() {
+    let (mut app, mut side) = app();
+    let [filter, _, route] = steady_scene(&mut app, &mut side);
+    let before = program(&app, filter);
+    app.insert_resource(AudioEngineState::Disabled);
+    app.world_mut().despawn(route);
+    for _ in 0..4 {
+        app.update();
+    }
+    app.insert_resource(AudioEngineState::Running);
+    frame(&mut app, &mut side);
+    let state = app.world().resource::<AudioGraphRes>().modulation();
+    assert!(
+        state
+            .lane(ParamRef::unit(filter, UnitParam::Cutoff))
+            .is_none_or(|(_, l)| !Arc::ptr_eq(&l.program(), &before)),
+        "the route's removal"
+    );
+}

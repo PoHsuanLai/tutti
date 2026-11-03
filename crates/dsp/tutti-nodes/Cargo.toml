@@ -103,6 +103,10 @@ harness = false
 name = "node_kernels"
 harness = false
 
+[[bench]]
+name = "convolver_blocks"
+harness = false
+
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the
 # feature-gated half of the public API missing.

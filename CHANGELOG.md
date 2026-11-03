@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the convolver spreads its work across a partition's blocks, renders unchanged
+
+**`Convolver::process_block` (so `ConvolverNode`) sums the older partitions'
+products a few at a time in the blocks between two partition boundaries,
+instead of all at the boundary.** At a 64-frame host block and a 512-frame
+partition one block in eight did all the FFT and accumulation work, so the
+peak block cost about eight times the average. The boundary block now does
+the newest partition, the two transforms and the overlap-add; the rest is
+spread over the blocks before it. Latency is unchanged (one partition) and
+the output is bit-identical: each bin adds its partitions in the same order
+(checked by rendering 30 IR/partition combinations with ragged call lengths
+on main and on the branch and comparing the files with `diff -rq`). Per-block
+cost with a 2 s IR at 48 kHz, p99 over three interleaved runs pinned to
+one core, main to branch: 57 to 7 us (512-frame partition, 32-frame blocks),
+79 to 15 us (64-frame), 71 to 33 us (128-frame); at a 2048 partition 63 to 13,
+63 to 13, 75 to 14 and 82 to 21 us for 32, 64, 128 and 256-frame blocks. The
+mean is unchanged. The gain is for a steady host block well below half the
+partition. At or above half the partition, or for a bimodal mix of call
+lengths, there is nothing to spread and p99 is as before. A call that
+crosses a boundary does no spread work for the next cycle, so no call does
+more than main's boundary call. `cargo bench -p tutti-nodes --bench convolver_blocks --features
+convolution` prints mean, p99 and max per call. No API change.
+
 ### Changed — a steady frame skips the modulation and sequencing reconcile, renders unchanged
 
 **`Modulation::apply` returns at once when nothing it reads changed.** It

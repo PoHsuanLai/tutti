@@ -2,9 +2,10 @@
 //! frames?**
 //!
 //! The nodes here are the summing bus, the waveshaper, the brickwall clip,
-//! the width adapter and the ring-buffer family (the feedback delay, the
-//! lookahead limiter's ring and, with `--features convolution`, the
-//! convolver's dry alignment). Each case
+//! the width adapter, the dynamics (the lookahead limiter, the gate and the
+//! compressor) and the ring-buffer family (the feedback delay, the lookahead
+//! limiter's ring and, with `--features convolution`, the convolver's dry
+//! alignment). Each case
 //! drives one node through `process` with whole blocks
 //! (`tutti_graph::contract::Direct`) over broadband noise, after a few
 //! warm-up blocks. A `fed` case feeds the node's first param port per frame,
@@ -25,8 +26,8 @@ use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_graph::Node;
 use tutti_nodes::{
-    BrickwallLimiterNode, ChannelSumNode, DelayLineNode, DistortionNode, DownmixNode, LimiterNode,
-    ShapeKind,
+    BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
+    DownmixNode, GateNode, LimiterNode, ShapeKind,
 };
 
 const BLOCKS: [usize; 2] = [64, 1024];
@@ -214,6 +215,73 @@ fn delay(c: &mut Criterion) {
 
 fn limiter(c: &mut Criterion) {
     run(c, "limiter", "2", || LimiterNode::new(-6.0, -0.3), None);
+    run(
+        c,
+        "limiter",
+        "6",
+        || LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+        None,
+    );
+    // Over the threshold on every frame, and not at all: the two branches of
+    // the gain curve.
+    run(c, "limiter", "2_quiet", || LimiterNode::new(6.0, 6.0), None);
+    run(
+        c,
+        "limiter",
+        "2_fed",
+        || LimiterNode::new(-6.0, -0.3),
+        Some(ceiling_sweep),
+    );
+}
+
+/// A threshold that moves every frame, between -30 and -10 dB.
+fn threshold_sweep(n: usize) -> Vec<f32> {
+    (0..n).map(|i| -30.0 + 20.0 * i as f32 / n as f32).collect()
+}
+
+fn dynamics(c: &mut Criterion) {
+    run(
+        c,
+        "gate",
+        "2",
+        || GateNode::stereo(-12.0, 0.001, 0.01, 0.1),
+        None,
+    );
+    run(
+        c,
+        "gate",
+        "6",
+        || GateNode::with_channels(-12.0, 0.001, 0.01, 0.1, 6),
+        None,
+    );
+    run(
+        c,
+        "gate",
+        "2_fed",
+        || GateNode::stereo(-12.0, 0.001, 0.01, 0.1),
+        Some(threshold_sweep),
+    );
+    run(
+        c,
+        "compressor",
+        "2",
+        || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1),
+        None,
+    );
+    run(
+        c,
+        "compressor",
+        "6",
+        || CompressorNode::with_channels(-20.0, 4.0, 0.001, 0.1, 6),
+        None,
+    );
+    run(
+        c,
+        "compressor",
+        "2_fed",
+        || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1),
+        Some(threshold_sweep),
+    );
 }
 
 #[cfg(feature = "convolution")]
@@ -231,7 +299,8 @@ criterion_group!(
     brickwall,
     downmix,
     delay,
-    limiter
+    limiter,
+    dynamics
 );
 #[cfg(feature = "convolution")]
 criterion_group!(
@@ -242,6 +311,7 @@ criterion_group!(
     downmix,
     delay,
     limiter,
+    dynamics,
     convolver
 );
 criterion_main!(benches);

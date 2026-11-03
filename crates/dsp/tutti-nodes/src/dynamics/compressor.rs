@@ -9,7 +9,7 @@ use super::envelope::EnvelopeFollower;
 use super::params::{AttackRelease, ThresholdParams};
 use super::utils::{
     amplitude_to_db, apply_gain_lane, compute_compressor_gain_reduction, db_to_amplitude, ramp_db,
-    sidechain_level,
+    sidechain_levels,
 };
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
@@ -487,8 +487,9 @@ impl Node for CompressorNode {
         // planar slices, a memoryless multiply the compiler can vectorize.
         // The lane is sized to the prepared `MaxBlock`.
         let gains = &mut self.gains[..size];
+        sidechain_levels(&inputs, ch, gains);
         for (i, g) in gains.iter_mut().enumerate() {
-            let sc = sidechain_level(&inputs, ch, i);
+            let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
             *g = self.core.compute_gain(&block, i, size, sc, threshold);
         }

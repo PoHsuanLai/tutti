@@ -206,6 +206,45 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     });
 }
 
+/// The lookahead limiter with its ceiling and threshold ports fed per frame
+/// (the path that reads both per sample instead of through the block's
+/// curve), 6 channels, 1 000 blocks under `assert_no_alloc`, the first
+/// measured after a warm-up that has the limiter reducing.
+///
+/// Mutation (run): a `black_box(vec![0.0f32; size])` inside the per-frame
+/// loop of `LimiterNode::process` -> fails.
+#[test]
+fn limiter_node_fed_ceiling_and_threshold_process_is_allocation_free() {
+    use tutti_graph::contract::Direct;
+
+    let mut node = Direct::new(
+        LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+        SampleRate(48_000.0),
+        64,
+    );
+    for c in node.inputs_mut() {
+        for (i, x) in c.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 1.5 } else { -1.5 };
+        }
+    }
+    let ceiling: Vec<f32> = (0..64).map(|i| -6.0 + 0.0625 * i as f32).collect();
+    let threshold: Vec<f32> = (0..64).map(|i| -12.0 + 0.1 * i as f32).collect();
+    node.feed(0, Some(&ceiling));
+    node.feed(1, Some(&threshold));
+    for _ in 0..32 {
+        node.block();
+    }
+    assert!(
+        node.node.gain_reduction_db().get() > 1.0,
+        "the limiter was not reducing; the gate would walk no gain curve"
+    );
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            node.block();
+        }
+    });
+}
+
 /// A lookahead limiter cloned mid-release, and the clone processed on
 /// through the rest of the release under `assert_no_alloc`, with no
 /// `prepare` between (which would rebuild the deque at full capacity and

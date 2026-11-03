@@ -13,12 +13,17 @@ use tutti_core::ChannelLayout;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 
 use super::envelope::EnvelopeFollower;
-use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
+use super::utils::{
+    amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope, LimiterCurve,
+};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
 use crate::ramp::LastGood;
 use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
 use tutti_types::Latency;
 use tutti_types::UnitParam;
+
+/// The lane's length before the graph prepares the node.
+const DEFAULT_LANE: usize = 512;
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
@@ -58,24 +63,27 @@ impl LookaheadRing {
         self.sample_counter = 0;
     }
 
-    /// Read the lookahead-delayed sample for each channel into `delayed`, push
-    /// the current `frame` into the rings, feed `gain` to the sliding minimum,
-    /// and return the window-min gain (the linked gain reduction all channels
-    /// share). `delayed` and `frame` are both `width` long.
+    /// Feeds `gain` to the sliding minimum and returns the window-min gain
+    /// (the linked gain reduction all channels share). The window is the
+    /// lookahead: the push drops the gain leaving it before adding this one.
     #[inline]
-    fn step(&mut self, frame: &[f32], gain: f32, delayed: &mut [f32]) -> f32 {
-        // Each ring holds `lookahead_samples`, so its oldest slot is the
-        // sample `lookahead_samples` pushes back.
-        for (c, b) in self.buffers.iter_mut().enumerate() {
-            delayed[c] = b.replace_oldest(frame[c]);
-        }
-
-        // The deque's window is the lookahead: the push drops the gain
-        // leaving it before adding this one.
+    fn push_gain(&mut self, gain: f32) -> f32 {
         self.min_deque.push(self.sample_counter, gain);
         self.sample_counter = self.sample_counter.wrapping_add(1);
-
         self.min_deque.min().unwrap_or(gain)
+    }
+
+    /// Delays `input` by the lookahead through channel `c`'s ring and writes
+    /// it to `out` scaled by the matching frame of `gains`. Each ring holds
+    /// `lookahead_samples`, so its oldest slot is the sample that many pushes
+    /// back. The channels' rings are independent, so a block runs one
+    /// channel at a time.
+    #[inline]
+    fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
+        let ring = &mut self.buffers[c];
+        for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
+            *o = ring.replace_oldest(x) * g;
+        }
     }
 }
 
@@ -93,8 +101,8 @@ impl LookaheadRing {
 ///
 /// The minimum gain over the lookahead window is tracked with a
 /// [`MonotonicMinDeque`], so each sample costs O(1) amortized regardless of
-/// lookahead length. Nothing in the RT path allocates: the rings and scratch
-/// frames are sized at construction, the ring when the graph prepares it.
+/// lookahead length. Nothing in the RT path allocates: the rings and the gain
+/// lane are sized at construction, and again when the graph prepares it.
 ///
 /// # Modulated params
 ///
@@ -140,21 +148,17 @@ pub struct LimiterNode {
     /// Audio channel width. Gain reduction is linked across all channels (peak
     /// = max-abs over the frame), matching the stereo-linked design.
     layout: ChannelLayout,
-    /// [`layout`](Self::layout)'s count, cached as the interleave/iteration
-    /// stride.
+    /// [`layout`](Self::layout)'s count, cached as the iteration stride.
     ///
     /// The layout is the *declaration*; this is the arithmetic derived from it.
-    /// They are kept as separate fields because `process_frame_with` reads the
-    /// width per sample (`frame[..n]`, `for c in 0..n`), and deriving it there
-    /// would put a `match` in the inner loop. Set once at construction, so the
-    /// two can never disagree.
+    /// They are kept as separate fields because `process` loops over the
+    /// channels, and deriving the count there would put a `match` in the loop.
+    /// Set once at construction, so the two can never disagree.
     channels: usize,
-    /// Per-channel scratch frames, sized to `channels` at construction so the
-    /// RT path builds an input frame + limited output without allocating.
-    in_frame: Vec<f32>,
-    out_frame: Vec<f32>,
-    /// Per-channel lookahead-delayed scratch (filled by the ring each sample).
-    delayed: Vec<f32>,
+    /// The per-frame lane a block works in (peak level, then window-min
+    /// gain), sized to the prepared `MaxBlock`; a longer block runs in
+    /// lane-sized chunks.
+    lane: Vec<f32>,
     envelope: f32,
     gain_reduction_db: Db,
     sample_rate: SampleRate,
@@ -205,7 +209,7 @@ impl LimiterNode {
         ceiling_db: impl Into<Db>,
     ) -> Self {
         let layout = channels.into();
-        // An empty layout would leave every scratch `Vec` zero-length and make
+        // An empty layout would leave the rings empty and make
         // the shape report no channels, so clamp to at least mono.
         let n = (layout.count() as usize).max(1);
         let layout = ChannelLayout::from(n);
@@ -224,9 +228,7 @@ impl LimiterNode {
             lookahead: lookahead_secs,
             layout,
             channels: n,
-            in_frame: vec![0.0; n],
-            out_frame: vec![0.0; n],
-            delayed: vec![0.0; n],
+            lane: vec![0.0; DEFAULT_LANE],
             envelope: 0.0,
             gain_reduction_db: Db::UNITY,
             sample_rate: SampleRate::DEFAULT,
@@ -345,61 +347,6 @@ impl LimiterNode {
         self.follower
             .update_coefficients(Seconds(0.0), Seconds(release));
     }
-
-    #[inline]
-    fn compute_gain(
-        &self,
-        peak_db: tutti_core::Db,
-        threshold: tutti_core::Db,
-        ceiling: tutti_core::Db,
-    ) -> f32 {
-        compute_limiter_gain(peak_db, threshold, ceiling).get()
-    }
-
-    /// Process one sample-frame with explicit threshold/ceiling (the modulated
-    /// path; the fast path passes the atomics). `frame` holds the `channels`
-    /// audio inputs; the limited, lookahead-delayed output for each channel is
-    /// written into `out` (also `channels` long). Gain reduction is linked: the
-    /// peak is the max-abs across the frame, and one min-gain scales every
-    /// channel.
-    #[inline]
-    fn process_frame_with(
-        &mut self,
-        frame: &[f32],
-        threshold: tutti_core::Db,
-        ceiling: tutti_core::Db,
-        out: &mut [f32],
-    ) {
-        let peak = frame[..self.channels]
-            .iter()
-            .fold(0.0f32, |m, s| m.max(s.abs()));
-        let peak_db = amplitude_to_db(peak);
-
-        let target_gain = self.compute_gain(peak_db, threshold, ceiling);
-
-        if target_gain < self.envelope {
-            self.envelope = target_gain;
-        } else {
-            self.envelope =
-                smooth_envelope(self.envelope, target_gain, self.follower.release_coeff());
-        }
-
-        // `delayed` is a per-instance scratch sized at construction — no alloc.
-        let mut delayed = core::mem::take(&mut self.delayed);
-        let min_gain = self.ring.step(frame, self.envelope, &mut delayed);
-        for c in 0..self.channels {
-            out[c] = delayed[c] * min_gain;
-        }
-        self.delayed = delayed;
-
-        // Metering only, and reported as a positive magnitude — the sign
-        // convention `CompressorNode::gain_reduction_db` also follows.
-        //
-        // `from_amplitude` owns the `log10(0)` guard, so silence pins at
-        // `Db::FLOOR` rather than `-inf`, the same floor the detector path
-        // above uses.
-        self.gain_reduction_db = -amplitude_to_db(min_gain);
-    }
 }
 
 impl Node for LimiterNode {
@@ -431,6 +378,7 @@ impl Node for LimiterNode {
             .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
         let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
+        self.lane = vec![0.0; p.max_block().get().max(1)];
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -440,24 +388,74 @@ impl Node for LimiterNode {
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
         let (inputs, mut outputs) = io.split();
+        let release_coeff = self.follower.release_coeff();
+        // Unfed, the curve is constant across the block: its sub-threshold
+        // gain is one `powf` here rather than one per quiet frame.
+        let curve = (threshold_fed.is_none() && ceiling_fed.is_none())
+            .then(|| LimiterCurve::new(base_threshold, base_ceiling));
 
-        // Reuse the two fixed scratch frames (sized at construction). Taken so
-        // `process_frame_with` can borrow `self` without aliasing them.
-        let mut in_frame = core::mem::take(&mut self.in_frame);
-        let mut out_frame = core::mem::take(&mut self.out_frame);
-        for i in 0..size {
-            for (c, slot) in in_frame.iter_mut().enumerate() {
-                *slot = inputs.get(c)[i];
+        let mut lane = core::mem::take(&mut self.lane);
+        let mut envelope = self.envelope;
+        let mut last_gain = None;
+        let mut start = 0;
+        while start < size {
+            let end = (start + lane.len()).min(size);
+            let gains = &mut lane[..end - start];
+
+            // Linked peak: the max-abs over the frame, taken a channel at a
+            // time (`max` is exact, so the order does not matter).
+            gains.fill(0.0);
+            for c in 0..self.channels {
+                for (p, &x) in gains.iter_mut().zip(&inputs.get(c)[start..end]) {
+                    *p = p.max(x.abs());
+                }
             }
-            let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[i]));
-            let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[i]));
-            self.process_frame_with(&in_frame, threshold, ceiling, &mut out_frame);
-            for (c, &y) in out_frame.iter().enumerate() {
-                outputs.get(c)[i] = y;
+
+            // The recursive half: the envelope and the sliding minimum, one
+            // frame at a time; each frame's peak becomes its window-min gain.
+            for (k, p) in gains.iter_mut().enumerate() {
+                let peak_db = amplitude_to_db(*p);
+                let target_gain = match &curve {
+                    Some(curve) => curve.gain(peak_db),
+                    None => {
+                        let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[start + k]));
+                        let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[start + k]));
+                        compute_limiter_gain(peak_db, threshold, ceiling).get()
+                    }
+                };
+                if target_gain < envelope {
+                    envelope = target_gain;
+                } else {
+                    envelope = smooth_envelope(envelope, target_gain, release_coeff);
+                }
+                *p = self.ring.push_gain(envelope);
             }
+            last_gain = gains.last().copied();
+
+            for c in 0..self.channels {
+                self.ring.delay_scaled(
+                    c,
+                    &inputs.get(c)[start..end],
+                    gains,
+                    &mut outputs.get(c)[start..end],
+                );
+            }
+            start = end;
         }
-        self.in_frame = in_frame;
-        self.out_frame = out_frame;
+        self.lane = lane;
+        self.envelope = envelope;
+
+        // Metering only, read after the block, so the block's last frame is
+        // the only one that is converted. Reported as a positive magnitude,
+        // the sign convention `CompressorNode::gain_reduction_db` also
+        // follows.
+        //
+        // `amplitude_to_db` owns the `log10(0)` guard, so silence pins at
+        // `Db::FLOOR` rather than `-inf`, the same floor the detector path
+        // above uses.
+        if let Some(min_gain) = last_gain {
+            self.gain_reduction_db = -amplitude_to_db(min_gain);
+        }
         Status::Modified
     }
 
@@ -525,9 +523,7 @@ impl Clone for LimiterNode {
             lookahead: self.lookahead,
             layout: self.layout,
             channels: self.channels,
-            in_frame: self.in_frame.clone(),
-            out_frame: self.out_frame.clone(),
-            delayed: self.delayed.clone(),
+            lane: self.lane.clone(),
             envelope: self.envelope,
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
@@ -763,7 +759,7 @@ impl Clone for BrickwallLimiterNode {
 mod tests {
     use super::*;
     use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
-    use tutti_graph::contract::assert_param_fork;
+    use tutti_graph::contract::{assert_param_fork, drive};
 
     /// A fork starts from the values last set through the node's
     /// `ParamSet` and shares no cell with it.
@@ -1350,5 +1346,39 @@ mod tests {
             "After long quiet, gain reduction should release: {}",
             lim.gain_reduction_db()
         );
+    }
+
+    /// The gain-reduction meter reports the block's last frame, and a block
+    /// longer than the lane runs in lane-sized chunks with the same result.
+    ///
+    /// The input steps from 0.2 to 0.8 at frame 600 of 1024, so the window
+    /// minimum differs between the block's first and last frame. The output
+    /// is the lookahead-delayed input times the window-min gain, so the last
+    /// frame's gain is `out / delayed input`, and the meter is that gain in
+    /// dB.
+    ///
+    /// Mutation (run): report `gains.first()` in `process` -> the meter is the
+    /// first frame's reduction -> fails. Read each chunk's input from
+    /// `[..end - start]` -> a chunk past the first sees the block's start ->
+    /// fails with the lane at 100.
+    #[test]
+    fn the_meter_reports_the_blocks_last_frame_whatever_the_lane() {
+        for lane in [None, Some(100)] {
+            let mut lim = prepared_at(LimiterNode::new(-12.0, -0.3), RATE_44K);
+            if let Some(n) = lane {
+                lim.lane.truncate(n);
+            }
+            let latency = lim.ring.lookahead_samples;
+            let input: Vec<f32> = (0..1024).map(|i| if i < 600 { 0.2 } else { 0.8 }).collect();
+            let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
+            let gain = out[1023] / input[1023 - latency];
+            let expected = -amplitude_to_db(gain).get();
+            assert!(expected > 1.0, "the loud half is being reduced: {expected}");
+            assert!(
+                (lim.gain_reduction_db().get() - expected).abs() < 1e-3,
+                "lane {lane:?}: meter {} against the last frame's {expected}",
+                lim.gain_reduction_db().get()
+            );
+        }
     }
 }

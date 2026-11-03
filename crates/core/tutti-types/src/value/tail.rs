@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// pull?" — so a node that passes its input through unchanged answers zero
 /// rather than one.
 ///
-/// # A sum type rather than a number, because three answers are not one
+/// # A sum type rather than a number, because four answers are not one
 ///
 /// Hosted plugins are where the disagreement is sharpest, and each format's is
 /// real:
@@ -56,7 +56,7 @@ use serde::{Deserialize, Serialize};
 /// no named constant for either sentinel, so the decodes name them once here
 /// rather than each loader spelling the literal.
 ///
-/// All three report latency through a separate query, and none folds it into
+/// All four report latency through a separate query, and none folds it into
 /// the tail (VST3's own example: a 2-second reverb answers 2 seconds), so a
 /// plugin's figure already excludes latency and is taken as reported.
 ///

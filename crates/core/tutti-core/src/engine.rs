@@ -309,6 +309,8 @@ impl Engine {
             })
             .map_err(GraphEngineError::Limits)?;
         let rate = executor.prepare().sample_rate();
+        // Seeded from the executor; no test here can cover it, since the
+        // executor is always fresh at `Engine::new`.
         let dropped_seen = executor.dropped_events();
         Ok(Self {
             settings: transport.settings.clone(),

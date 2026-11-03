@@ -3136,9 +3136,10 @@ read through `Engine::load_meter`, `Session::load_meter` and
 `AudioGraphRes::load_meter`: the last block's load, a mean smoothed over
 0.3 s, the peak since the last `take` (`peek` reads without taking), the
 blocks over budget, the blocks rendered silent because the graph was
-held (`silenced`), and the events the graph dropped (`dropped_events`). Render-ahead helps only when blocks miss because of
-spikes (max/mean high, mean well under 1.0), not because the mean is too
-high; build it only if the meter shows that on real sessions on a device.
+held (`silenced`), and the events the graph dropped (`dropped_events`).
+Render-ahead helps only when blocks miss because of spikes (max/mean
+high, mean well under 1.0), not because the mean is too high; build it
+only if the meter shows that on real sessions on a device.
 
 Offline, on `tutti-session`'s `render_load` scene (8 polysynths × 16 held
 notes, 4 sampler tracks × 8 voices transposed by varispeed, strips, sends
@@ -4886,12 +4887,12 @@ the one place that says what a ported node can rely on:
   at the push) and the executor counts it (`Executor::dropped_events`;
   `Reference::dropped_events` for the oracle). An `Engine` forwards the
   count to its load meter after each call (`LoadReading::dropped_events`),
-  so a host running the graph on a device sees it. Refusing at compile time is
-  not possible: how many events a node emits is data. What the compiler
-  guarantees instead is that the writer is the **only** place an event is
-  refused: merges hold the sum of their inputs, and delay FIFOs hold the
-  declared rate over their length plus a note-off reserve, so a node that
-  keeps to its declaration loses nothing downstream. The rate is per
+  so a host running the graph on a device sees it. Refusing at compile
+  time is not possible: how many events a node emits is data. What the
+  compiler guarantees instead is that the writer is the **only** place an
+  event is refused: merges hold the sum of their inputs, and delay FIFOs
+  hold the declared rate over their length plus a note-off reserve, so a
+  node that keeps to its declaration loses nothing downstream. The rate is per
   `MaxBlock` frames; a node that emits its full capacity in every one of
   many short blocks can exceed it, and then a delay FIFO drops non-note-off
   events first (counted). A FIFO carried across a recompile that shrank

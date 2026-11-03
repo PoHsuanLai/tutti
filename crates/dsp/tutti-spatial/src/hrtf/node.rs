@@ -417,6 +417,34 @@ mod tests {
                 node.panner.aim()
             );
         }
+        // `set_position` normalizes, so ±∞ reaches the cell only by a raw
+        // store; `hold_finite` must still refuse it there.
+        //
+        // Mutation (run): `hold_finite`'s `is_finite` → `!is_nan` → the aim
+        // goes to ∞ and does not recover → fails.
+        for (az, el) in [
+            (f32::INFINITY, 30.0),
+            (f32::NEG_INFINITY, 30.0),
+            (-45.0, f32::INFINITY),
+            (-45.0, f32::NEG_INFINITY),
+        ] {
+            let target = &node.controls.target;
+            target.azimuth.store(Azimuth(az));
+            target.elevation.store(Elevation(el));
+            settle(&mut node);
+            assert!(
+                near(node.panner.aim(), (-45.0, 30.0)),
+                "raw ({az}, {el}): aimed at {:?}",
+                node.panner.aim()
+            );
+            node.set_position(-45.0, 30.0);
+            settle(&mut node);
+            assert!(
+                near(node.panner.aim(), (-45.0, 30.0)),
+                "did not recover from raw ({az}, {el}): {:?}",
+                node.panner.aim()
+            );
+        }
         // A reset (and a fork's) seats on the held position, not on a NaN.
         node.set_position(f32::NAN, f32::NAN);
         Node::reset(&mut node);

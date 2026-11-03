@@ -621,10 +621,14 @@ mod tests {
     /// reports `InputValues` for the DC and Nyquist imaginary parts. With an
     /// 8-tap IR at block 4 (two partitions), a NaN fed at sample 0 is in the
     /// history for two FFT cycles and in the overlap for one more; past the
-    /// latency plus four blocks the output is pure convolution of zeros.
+    /// latency plus three blocks the output is pure convolution of zeros.
     ///
     /// Mutation (run): `debug_assert!(inverse.is_ok(), ..)` restored before
     /// the match → panics on the first drain after the NaN → fails.
+    /// Mutation (run): the overlap keeps a NaN it already holds → the NaN
+    /// outlasts its partition → fails.
+    /// Mutation (run): `*o = y + v` without the overlap `v` → the NaN is
+    /// gone from the third block → fails the early-exit check.
     #[test]
     fn a_nan_input_propagates_and_then_leaves() {
         let ir: Vec<f32> = vec![0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2];
@@ -638,7 +642,17 @@ mod tests {
             out.iter().any(|y| y.is_nan()),
             "the NaN never reached the output"
         );
-        let clean = c.latency() + 4 * block;
+        let latency = c.latency();
+        // The NaN is still in the output through the third block after the
+        // latency and gone from the fourth on.
+        assert!(
+            out[latency + 2 * block..latency + 3 * block]
+                .iter()
+                .any(|y| y.is_nan()),
+            "the NaN left early: {:?}",
+            &out[latency + 2 * block..latency + 3 * block]
+        );
+        let clean = latency + 3 * block;
         assert!(
             out[clean..].iter().all(|&y| y == 0.0),
             "the NaN stayed past its partition: {:?}",

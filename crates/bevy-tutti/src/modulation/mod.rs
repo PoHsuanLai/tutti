@@ -94,7 +94,10 @@ pub use declare::{
     close_takes, Automation, AutomationTake, Follower, ModFeed, ModRange, ModRoute, ModSource,
     ModSourceKind, Mods, NoteEnvelope, ParamRef,
 };
-pub use reconcile::{after_commit, reconcile, Declared, ModulationRefused, ModulationState};
+pub use reconcile::{
+    after_commit, note_declaration_changes, reconcile, DeclChanges, Declared, Kept,
+    ModulationRefused, ModulationState,
+};
 // The time-function builders are `tutti-mod`'s, declared as they are.
 pub use tutti_mod::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
 
@@ -108,7 +111,8 @@ use crate::graph::{engine_ready, GraphReconcileSystems, SessionPhaseSystems};
 /// Where the modulation systems run, for a host's own to order against.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ModulationSystems {
-    /// [`close_takes`] then [`reconcile`]: after
+    /// [`close_takes`], [`note_declaration_changes`] then [`reconcile`]:
+    /// after
     /// [`GraphReconcileSystems::Spawn`], before
     /// [`GraphReconcileSystems::Params`], in the session's `Modulation`
     /// phase ([`SessionPhaseSystems`]).
@@ -131,6 +135,7 @@ pub struct TuttiModulationPlugin;
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ModulationRefused>();
+        app.init_resource::<reconcile::Pending>();
         app.configure_sets(
             Update,
             (
@@ -146,12 +151,19 @@ impl Plugin for TuttiModulationPlugin {
         app.add_systems(
             Update,
             (
-                (close_takes, reconcile)
+                // Every frame, ready or not: a removal it skipped would be
+                // gone by the next.
+                (
+                    close_takes.run_if(engine_ready),
+                    note_declaration_changes,
+                    reconcile.run_if(engine_ready),
+                )
                     .chain()
                     .in_set(ModulationSystems::Apply),
-                after_commit.in_set(ModulationSystems::AfterCommit),
-            )
-                .run_if(engine_ready),
+                after_commit
+                    .in_set(ModulationSystems::AfterCommit)
+                    .run_if(engine_ready),
+            ),
         );
     }
 }

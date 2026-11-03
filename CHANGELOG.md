@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a steady frame skips the modulation and sequencing reconcile, renders unchanged
+
+**`Modulation::apply` returns at once when nothing it reads changed.** It
+compared nothing before: every update compiled the declarations, rebuilt
+the whole graph's adjacency for the cycle check and diffed every target.
+It now keeps every input of its last apply (the declarations, what the
+host resolves, the editor's revision, the play clock's epoch) and skips an
+apply over equal ones. Nothing is kept while a target or source is
+unresolved. A steady `Session::update` on a chain of 256 filters, each
+cutoff on an LFO, went from 729 µs to 13–20 µs mean over two runs (2.6 ms to
+30 µs p99); 16 filters from 21 µs to 1 µs (`cargo bench -p tutti-session --features
+modulation --bench mod_update`). An update that changes something (one range
+edit per update) is not slower: 256 filters, mean 695–723 µs on this branch over
+three runs against 701 µs on main over three; 16 filters 21–26 µs against 20–28 µs.
+Each figure moves by 10–20 % between runs on a shared machine. What renders is
+unchanged.
+
+- **`tutti_graph::Editor::revision`** (new): a count every editing call
+  moves (spec, shapes, the plan sent, param ranges, the `Prepare`).
+- **`tutti_nodes::Modulation::skipped`**, **`tutti_session::ModState::skipped_applies`**
+  and **`bevy_tutti::modulation::ModulationState::skipped_applies`** (new):
+  how many applies were skipped.
+- **The session keeps its own declarations built** between edits through
+  `Session::mods`, instead of rebuilding them every update.
+- **`bevy-tutti` collects the declarations only after a change.**
+  `modulation::reconcile` now takes a `Kept` (the last collection) where
+  it collected every frame, and a new system, `note_declaration_changes`
+  (with its `DeclChanges` param), runs every frame in
+  `ModulationSystems::Apply`, before it, whether or not the engine is
+  ready. *Migration:* an app that adds `TuttiModulationPlugin` needs
+  nothing. One that schedules `reconcile` without the plugin collects
+  every frame, as before.
+- **`bevy-tutti`'s sequencer rebuilds only the targets an edit reaches.**
+  `midi::rebuild` merged, sorted and re-sent every clip on any install
+  change or any `Changed<AudioNode>` anywhere in the world (a spawned
+  effect included). It now redoes the targets of the installs added,
+  changed (old and new target) or removed and the targets (re)bound or
+  left without a node. `SequencedClips` now has named private fields;
+  `SequencedClips::node` is unchanged. *Migration:* none for a reader of
+  `node`; nothing outside the crate could reach the old field.
 ### Changed — owners read what they published from the cell, not from a copy
 
 **Every control-side copy of a published value is gone.** Owners of an

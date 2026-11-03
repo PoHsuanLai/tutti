@@ -363,6 +363,9 @@ pub struct Editor {
     /// state. Written from the spec by every commit, and by
     /// [`set_param_range`](Self::set_param_range) at once.
     param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
+    /// [`revision`](Self::revision): moved by every call that can change
+    /// what a reader of the editor sees.
+    revision: u64,
 }
 
 /// A panic payload as text.
@@ -429,6 +432,7 @@ impl Editor {
             event_capacity: cap,
             fork_health: Vec::new(),
             param_ranges: BTreeMap::new(),
+            revision: 0,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -506,8 +510,28 @@ impl Editor {
 
     /// The graph value, for wiring. Nodes are added with
     /// [`insert`](Self::insert), not here, so every node has a unit.
+    /// Moves the [`revision`](Self::revision), whether or not the borrow
+    /// writes.
     pub fn spec_mut(&mut self) -> &mut GraphSpec {
+        self.touch();
         &mut self.spec
+    }
+
+    /// A count that moves whenever anything the editor shows a reader may
+    /// have changed: the spec ([`spec_mut`](Self::spec_mut) included), the
+    /// shapes and generations, the plan sent last ([`base`](Self::base)),
+    /// a param range or its cells, the [`Prepare`]. Equal revisions mean
+    /// none of those changed in between, so a control-side pass that is a
+    /// function of them (the modulation reconcile) may skip its work. It
+    /// may move with nothing changed, never the other way round. It does
+    /// not cover [`play_reading`](Self::play_reading), which the audio
+    /// thread moves.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// The shapes the units declared.
@@ -757,6 +781,7 @@ impl Editor {
         shape: Shape,
         fork: Option<Box<dyn ForkSource>>,
     ) {
+        self.touch();
         // A later placement at a key takes an earlier fade back: the fade
         // was for the unit this one supersedes.
         self.fades.remove(&key);
@@ -856,6 +881,7 @@ impl Editor {
         };
         node.latency = latency.samples();
         shape.latency = latency;
+        self.touch();
         // A hard edit for a crossfade: its two units must share the latency
         // the plan compensates, so a fade running or waiting here is cut by
         // the next commit, and a replace not yet committed lands as a swap.
@@ -912,6 +938,7 @@ impl Editor {
                 missing: at.node,
             });
         }
+        self.touch();
         self.spec.set_param_range(at, range);
         if let Some(cells) = self.param_ranges.get(&at.node) {
             cells.store(at.param, range);
@@ -958,6 +985,7 @@ impl Editor {
     /// Removes `key` and every edge that touches it. Output channels it fed
     /// become [`Source::Zero`].
     pub fn remove(&mut self, key: NodeKey) {
+        self.touch();
         let t = &mut self.spec.topology;
         t.nodes.remove(&key);
         t.edges.retain(|at, e| {
@@ -1161,6 +1189,7 @@ impl Editor {
         // Checked: from here on it goes through — unless a node panics in
         // `prepare`, which poisons the editor (the uncommitted units are lost
         // with it; nothing has been sent, so the executor keeps running).
+        self.touch();
         let mut pending = std::mem::take(&mut self.pending);
         // The re-prepare restarts every unit from silence, so there is
         // nothing to fade from: a pending replace lands as a plain swap.
@@ -1202,6 +1231,7 @@ impl Editor {
     /// no longer compile, poison the editor instead (see
     /// [`CommitError::Poisoned`]).
     fn resume(&mut self, mut done: Box<Commit>) {
+        self.touch();
         let returned = done.take_retired();
         drop(done);
         let rep = self
@@ -1554,6 +1584,7 @@ impl Editor {
     /// Its crossfades take their slots on the fade-return ring here
     /// (checked by `fade_room`).
     fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
+        self.touch();
         self.fades_out += starting(&delta);
         debug_assert!(self.fades_out <= FADE_CAPACITY);
         let plan = Arc::new(plan);

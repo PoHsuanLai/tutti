@@ -42,7 +42,7 @@ impl PitchResult {
 
 use std::sync::Arc;
 
-use rustfft::{num_complex::Complex, Fft, FftPlanner};
+use realfft::{num_complex::Complex, ComplexToReal, RealFftPlanner, RealToComplex};
 use tutti_types::{Confidence, Hz};
 
 use crate::yin::YinConfig;
@@ -57,12 +57,16 @@ pub(crate) struct PitchDetector {
     cfg: YinConfig,
     difference: Vec<f32>,
     cumulative_mean: Vec<f32>,
-    fft_forward: Arc<dyn Fft<f32>>,
-    fft_inverse: Arc<dyn Fft<f32>>,
-    /// The FFT of the analysis window `x[0..W]`, zero-padded.
+    fft_forward: Arc<dyn RealToComplex<f32>>,
+    fft_inverse: Arc<dyn ComplexToReal<f32>>,
+    /// The zero-padded real analysis window `x[0..W]`.
+    time_a: Vec<f32>,
+    /// The zero-padded real signal `x[0..W+max_period]`; then, after the
+    /// inverse transform, the cross-correlation.
+    time_b: Vec<f32>,
+    /// The `fft_size / 2 + 1` bins of `time_a`.
     fft_a: Vec<Complex<f32>>,
-    /// The FFT of `x[0..W+max_period]`, zero-padded; then the cross-power
-    /// spectrum; then the cross-correlation.
+    /// The bins of `time_b`; then the cross-power spectrum.
     fft_buffer: Vec<Complex<f32>>,
     fft_scratch: Vec<Complex<f32>>,
     /// Prefix sums of the squared input, for the windowed energies.
@@ -73,17 +77,25 @@ impl PitchDetector {
     pub fn new(cfg: YinConfig) -> Self {
         let max_period = cfg.max_period().get();
         let fft_size = (max_period * 2).next_power_of_two();
-        let mut planner = FftPlanner::new();
+        let mut planner = RealFftPlanner::new();
+        let fft_forward = planner.plan_fft_forward(fft_size);
+        let fft_inverse = planner.plan_fft_inverse(fft_size);
+        let bins = fft_size / 2 + 1;
+        let scratch_len = fft_forward
+            .get_scratch_len()
+            .max(fft_inverse.get_scratch_len());
 
         Self {
             cfg,
             difference: vec![0.0; max_period + 1],
             cumulative_mean: vec![0.0; max_period + 1],
-            fft_forward: planner.plan_fft_forward(fft_size),
-            fft_inverse: planner.plan_fft_inverse(fft_size),
-            fft_a: vec![Complex::new(0.0, 0.0); fft_size],
-            fft_buffer: vec![Complex::new(0.0, 0.0); fft_size],
-            fft_scratch: vec![Complex::new(0.0, 0.0); fft_size],
+            fft_forward,
+            fft_inverse,
+            time_a: vec![0.0; fft_size],
+            time_b: vec![0.0; fft_size],
+            fft_a: vec![Complex::new(0.0, 0.0); bins],
+            fft_buffer: vec![Complex::new(0.0, 0.0); bins],
+            fft_scratch: vec![Complex::new(0.0, 0.0); scratch_len],
             // `usable` is at most `2 * max_period` (see `compute_difference`).
             cum_sq: vec![0.0; 2 * max_period + 1],
         }
@@ -140,7 +152,7 @@ impl PitchDetector {
     /// 3. `r = IFFT(conj(FFT_a) * FFT_b)`
     fn compute_difference(&mut self, samples: &[f32], max_period: usize) {
         let window = max_period;
-        let fft_size = self.fft_buffer.len();
+        let fft_size = self.time_b.len();
         let usable = samples.len().min(window + max_period);
 
         // Cumulative squared energy for running window sums
@@ -160,45 +172,51 @@ impl PitchDetector {
             }
         };
 
-        // FFT of signal a = x[0..W] zero-padded
+        // Signal a = x[0..W] zero-padded.
         let a_len = window.min(usable);
-        let (head, tail) = self.fft_a.split_at_mut(a_len);
-        for (a, &x) in head.iter_mut().zip(samples) {
-            *a = Complex::new(x, 0.0);
-        }
-        tail.fill(Complex::new(0.0, 0.0));
+        let (head, tail) = self.time_a.split_at_mut(a_len);
+        head.copy_from_slice(&samples[..a_len]);
+        tail.fill(0.0);
 
-        // FFT of signal b = x[0..W+max_period] zero-padded
-        let (head, tail) = self.fft_buffer.split_at_mut(usable);
-        for (b, &x) in head.iter_mut().zip(samples) {
-            *b = Complex::new(x, 0.0);
-        }
-        tail.fill(Complex::new(0.0, 0.0));
+        // Signal b = x[0..W+max_period] zero-padded.
+        let (head, tail) = self.time_b.split_at_mut(usable);
+        head.copy_from_slice(&samples[..usable]);
+        tail.fill(0.0);
 
+        // The buffers were sized from the plans at construction, so the
+        // transforms cannot report a length error.
         self.fft_forward
-            .process_with_scratch(&mut self.fft_a, &mut self.fft_scratch);
+            .process_with_scratch(&mut self.time_a, &mut self.fft_a, &mut self.fft_scratch)
+            .expect("buffers sized at construction");
         self.fft_forward
-            .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
+            .process_with_scratch(
+                &mut self.time_b,
+                &mut self.fft_buffer,
+                &mut self.fft_scratch,
+            )
+            .expect("buffers sized at construction");
 
-        // Cross-power spectrum: conj(A) * B
-        for (a, buf) in self.fft_a[..fft_size]
-            .iter()
-            .zip(self.fft_buffer[..fft_size].iter_mut())
-        {
-            let a_conj = a.conj();
-            *buf = a_conj * *buf;
+        // Cross-power spectrum: conj(A) * B, over the non-redundant bins.
+        for (a, buf) in self.fft_a.iter().zip(self.fft_buffer.iter_mut()) {
+            *buf = a.conj() * *buf;
         }
 
-        // Inverse FFT -> cross-correlation
+        // Inverse FFT -> cross-correlation. The product of two real signals'
+        // spectra has real DC and Nyquist bins, so nothing is dropped.
         self.fft_inverse
-            .process_with_scratch(&mut self.fft_buffer, &mut self.fft_scratch);
+            .process_with_scratch(
+                &mut self.fft_buffer,
+                &mut self.time_b,
+                &mut self.fft_scratch,
+            )
+            .expect("buffers sized at construction");
 
         let inv_n = 1.0 / fft_size as f64;
         self.difference[0] = 0.0;
 
         let e0 = energy(0, window);
         for tau in 1..=max_period {
-            let autocorr = (self.fft_buffer[tau].re as f64) * inv_n;
+            let autocorr = (self.time_b[tau] as f64) * inv_n;
             let e_tau = energy(tau, window);
             self.difference[tau] = (e0 + e_tau - 2.0 * autocorr).max(0.0) as f32;
         }
@@ -484,5 +502,36 @@ mod tests {
             loud.frequency.get(),
             freq.get()
         );
+    }
+
+    /// The FFT-derived difference function equals its definition
+    /// `d(tau) = sum_{j<W} (x[j] - x[j+tau])^2`, summed directly, and is zero
+    /// at a lag that is a whole number of periods.
+    ///
+    /// Mutation checked: skipping the conjugate in the cross-power product
+    /// (`*buf = *a * *buf`) fails both checks.
+    #[test]
+    fn the_difference_function_matches_its_definition() {
+        // 480 Hz at 48 kHz: exactly 100 samples per period.
+        let x = sine(Hz(480.0), 0.8);
+        let mut det = detector();
+        let (_, max_period) = det.periods(x.len());
+        det.compute_difference(&x, max_period);
+        let window = max_period;
+        for tau in [1usize, 17, 50, 100, 200, max_period] {
+            let direct: f64 = (0..window)
+                .map(|j| {
+                    let d = f64::from(x[j]) - f64::from(x[j + tau]);
+                    d * d
+                })
+                .sum();
+            let got = f64::from(det.difference[tau]);
+            assert!(
+                (got - direct).abs() < 1e-3 * direct.max(1.0),
+                "tau {tau}: {got} vs {direct}"
+            );
+        }
+        assert!(det.difference[100] < 1e-3, "{}", det.difference[100]);
+        assert!(det.difference[50] > 100.0, "{}", det.difference[50]);
     }
 }

@@ -19,7 +19,8 @@ where the results go:
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 
-FFT is [rustfft](https://crates.io/crates/rustfft)'s. That is deliberate and
+FFT is [realfft](https://crates.io/crates/realfft)'s (real-input transforms on
+[rustfft](https://crates.io/crates/rustfft)). That is deliberate and
 differs from the realtime side of the engine, where `tutti-sampler`'s vocoder
 calls [microfft](https://crates.io/crates/microfft)'s fixed sizes directly:
 analysis windows are arbitrary-size and cold-path, so rustfft's planner

@@ -1,7 +1,8 @@
 //! Reusable FFT working set.
 //!
 //! The one place this crate compromises on purity. A planner is expensive to
-//! build — measured at **82 ns cached against 8.06 µs fresh, ~98x** — so one is
+//! build — measured at **82 ns cached against 8.06 µs fresh, ~98x** (complex
+//! planner, before the move to real-input plans) — so one is
 //! threaded through the kernels rather than constructed per call.
 //!
 //! Threading it explicitly keeps the kernels honest: they stay pure *in their
@@ -9,17 +10,24 @@
 //! mutation is confined to one visible parameter rather than hidden inside each
 //! call site.
 
-use rustfft::{Fft, FftPlanner};
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
 use crate::Complex;
 
-/// Cached planner plus the buffers a forward or inverse transform needs.
+/// Cached real-input plans plus the buffers a forward or inverse transform needs.
+///
+/// Both directions run on `realfft`'s real-to-complex plans, which do about
+/// half the work of a complex transform over the same real signal.
 pub struct FftScratch {
-    planner: FftPlanner<f32>,
-    forward: Option<(usize, Arc<dyn Fft<f32>>)>,
-    inverse: Option<(usize, Arc<dyn Fft<f32>>)>,
-    buffer: Vec<Complex>,
+    planner: RealFftPlanner<f32>,
+    forward: Option<(usize, Arc<dyn RealToComplex<f32>>)>,
+    inverse: Option<(usize, Arc<dyn ComplexToReal<f32>>)>,
+    /// The windowed real input of a forward transform.
+    real: Vec<f32>,
+    /// The `size / 2 + 1` input bins of an inverse transform (the plan
+    /// consumes its input).
+    half: Vec<Complex>,
     scratch: Vec<Complex>,
 }
 
@@ -28,10 +36,11 @@ impl FftScratch {
     /// first transform of each size and reused after that.
     pub fn new() -> Self {
         Self {
-            planner: FftPlanner::new(),
+            planner: RealFftPlanner::new(),
             forward: None,
             inverse: None,
-            buffer: Vec::new(),
+            real: Vec::new(),
+            half: Vec::new(),
             scratch: Vec::new(),
         }
     }
@@ -39,66 +48,56 @@ impl FftScratch {
     /// Windowed real input → complex bins, `DC..=Nyquist`.
     ///
     /// `out` receives `size / 2 + 1` bins; the rest of the spectrum is
-    /// conjugate-symmetric and carries no extra information.
+    /// conjugate-symmetric and carries no extra information. The imaginary
+    /// parts of the DC bin (and, for an even `size`, the Nyquist bin) are
+    /// exactly zero.
     pub fn forward(&mut self, input: &[f32], window: &[f32], out: &mut [Complex]) {
         let size = input.len();
         debug_assert_eq!(window.len(), size);
         debug_assert_eq!(out.len(), size / 2 + 1);
 
         let fft = self.forward_plan(size);
-        self.buffer.clear();
-        self.buffer.extend(
-            input
-                .iter()
-                .zip(window)
-                .map(|(&s, &w)| Complex { re: s * w, im: 0.0 }),
-        );
+        self.real.clear();
+        self.real
+            .extend(input.iter().zip(window).map(|(&s, &w)| s * w));
 
-        let needed = fft.get_inplace_scratch_len();
+        let needed = fft.get_scratch_len();
         if self.scratch.len() < needed {
             self.scratch.resize(needed, Complex::default());
         }
-        fft.process_with_scratch(&mut self.buffer, &mut self.scratch[..needed]);
-
-        out.copy_from_slice(&self.buffer[..out.len()]);
+        fft.process_with_scratch(&mut self.real, out, &mut self.scratch[..needed])
+            .expect("buffer lengths were sized from the plan");
     }
 
     /// Complex bins `DC..=Nyquist` → real samples, conjugate half rebuilt.
     ///
     /// `out` receives `size` samples, scaled by `1/size` so a forward followed
-    /// by an inverse is the identity.
+    /// by an inverse is the identity. The imaginary parts of the DC bin (and,
+    /// for an even `size`, the Nyquist bin) do not contribute to a real signal
+    /// and are ignored.
     pub fn inverse(&mut self, bins: &[Complex], out: &mut [f32]) {
         let size = out.len();
         debug_assert_eq!(bins.len(), size / 2 + 1);
 
         let fft = self.inverse_plan(size);
-        self.buffer.clear();
-        self.buffer.resize(size, Complex::default());
+        self.half.clear();
+        self.half.extend_from_slice(bins);
 
-        // Rebuild the full spectrum: the upper half mirrors the lower one,
-        // conjugated. Callers only ever hold DC..=Nyquist.
-        self.buffer[..bins.len()].copy_from_slice(bins);
-        #[allow(
-            clippy::needless_range_loop,
-            reason = "the two sides run in opposite directions (`buffer[size - i]` against `bins[i]`), so `i` is the mirror axis and not a cursor into either slice"
-        )]
-        for i in 1..size.div_ceil(2) {
-            self.buffer[size - i] = bins[i].conj();
-        }
-
-        let needed = fft.get_inplace_scratch_len();
+        let needed = fft.get_scratch_len();
         if self.scratch.len() < needed {
             self.scratch.resize(needed, Complex::default());
         }
-        fft.process_with_scratch(&mut self.buffer, &mut self.scratch[..needed]);
+        // A non-zero imaginary DC or Nyquist is reported as an error after the
+        // transform has run; the output is the real part either way.
+        let _ = fft.process_with_scratch(&mut self.half, out, &mut self.scratch[..needed]);
 
         let norm = 1.0 / size as f32;
-        for (slot, bin) in out.iter_mut().zip(&self.buffer) {
-            *slot = bin.re * norm;
+        for slot in out.iter_mut() {
+            *slot *= norm;
         }
     }
 
-    fn forward_plan(&mut self, size: usize) -> Arc<dyn Fft<f32>> {
+    fn forward_plan(&mut self, size: usize) -> Arc<dyn RealToComplex<f32>> {
         match &self.forward {
             Some((cached, fft)) if *cached == size => Arc::clone(fft),
             _ => {
@@ -109,7 +108,7 @@ impl FftScratch {
         }
     }
 
-    fn inverse_plan(&mut self, size: usize) -> Arc<dyn Fft<f32>> {
+    fn inverse_plan(&mut self, size: usize) -> Arc<dyn ComplexToReal<f32>> {
         match &self.inverse {
             Some((cached, fft)) if *cached == size => Arc::clone(fft),
             _ => {
@@ -224,5 +223,124 @@ mod tests {
                 assert!((a - b).abs() < 1e-4, "round trip failed at size {size}");
             }
         }
+    }
+
+    fn tone(size: usize, bin: f32, amp: f32, phase: f32) -> Vec<f32> {
+        (0..size)
+            .map(|i| amp * (core::f32::consts::TAU * bin * i as f32 / size as f32 + phase).sin())
+            .collect()
+    }
+
+    fn spectrum(input: &[f32]) -> Vec<Complex> {
+        let size = input.len();
+        let mut out = vec![Complex::default(); size / 2 + 1];
+        FftScratch::new().forward(input, &vec![1.0; size], &mut out);
+        out
+    }
+
+    /// A rectangular-window sine of amplitude `a` on bin `k` has magnitude
+    /// `a * N / 2` there and (to f32 rounding) nothing elsewhere.
+    ///
+    /// Mutation checked: scaling the forward output by 2 fails the peak
+    /// magnitude.
+    #[test]
+    fn a_sine_has_magnitude_half_n_times_amplitude_on_its_bin() {
+        let (size, bin, amp) = (2048usize, 100usize, 0.75f32);
+        let bins = spectrum(&tone(size, bin as f32, amp, 0.3));
+        let expected = amp * size as f32 / 2.0;
+        assert!(
+            (bins[bin].norm() - expected).abs() < expected * 1e-4,
+            "peak {} vs {expected}",
+            bins[bin].norm()
+        );
+        for (k, b) in bins.iter().enumerate().filter(|(k, _)| *k != bin) {
+            assert!(b.norm() < expected * 1e-3, "leak {} at bin {k}", b.norm());
+        }
+    }
+
+    /// DC is the sum of the samples and Nyquist the alternating sum; both are
+    /// real for real input.
+    ///
+    /// Mutation checked: scaling the forward output by 2 fails both sums.
+    #[test]
+    fn dc_and_nyquist_bins_are_the_sum_and_the_alternating_sum() {
+        let size = 64usize;
+        let input: Vec<f32> = (0..size)
+            .map(|i| ((i * 7 % 13) as f32 - 6.0) / 8.0)
+            .collect();
+        let bins = spectrum(&input);
+        let dc: f32 = input.iter().sum();
+        let nyq: f32 = input
+            .iter()
+            .enumerate()
+            .map(|(i, x)| if i % 2 == 0 { *x } else { -*x })
+            .sum();
+        assert!((bins[0].re - dc).abs() < 1e-4 && bins[0].im == 0.0);
+        assert!((bins[size / 2].re - nyq).abs() < 1e-4 && bins[size / 2].im == 0.0);
+    }
+
+    /// Parseval: `sum x^2 == (|X0|^2 + |X_{N/2}|^2 + 2 sum_{0<k<N/2} |Xk|^2) / N`
+    /// for even `N`, and with no Nyquist term for odd `N`. Both parities run.
+    ///
+    /// Mutation checked: counting the mirrored bins once (no factor 2) fails.
+    #[test]
+    fn parseval_holds_for_even_and_odd_sizes() {
+        for size in [256usize, 255, 1000, 7] {
+            let input: Vec<f32> = (0..size)
+                .map(|i| (i as f32 * 0.37).sin() + 0.5 * (i as f32 * 1.9).cos())
+                .collect();
+            let bins = spectrum(&input);
+            let time: f32 = input.iter().map(|x| x * x).sum();
+            let last = bins.len() - 1;
+            let mut freq = bins[0].norm_sqr();
+            for (k, b) in bins.iter().enumerate().skip(1) {
+                let mirrored = !(size % 2 == 0 && k == last);
+                freq += b.norm_sqr() * if mirrored { 2.0 } else { 1.0 };
+            }
+            freq /= size as f32;
+            assert!(
+                (time - freq).abs() < time * 1e-4,
+                "size {size}: {time} vs {freq}"
+            );
+        }
+    }
+
+    /// An odd size round-trips and finds its tone, so the odd-length plan is
+    /// the one doing the work.
+    ///
+    /// Mutation checked: doubling the inverse scale fails the round trip.
+    #[test]
+    fn odd_sizes_round_trip_and_find_the_tone() {
+        let size = 301usize;
+        let input = tone(size, 17.0, 1.0, 0.0);
+        let bins = spectrum(&input);
+        let peak = (0..bins.len())
+            .max_by(|&a, &b| bins[a].norm().total_cmp(&bins[b].norm()))
+            .unwrap();
+        assert_eq!(peak, 17);
+        let mut back = vec![0.0f32; size];
+        FftScratch::new().inverse(&bins, &mut back);
+        for (a, b) in input.iter().zip(&back) {
+            assert!((a - b).abs() < 1e-4);
+        }
+    }
+
+    /// Spectral centroid of two equal tones at bins 40 and 120 is bin 80.
+    ///
+    /// Mutation checked: weighting by `bin + 1` instead of the bin fails.
+    #[test]
+    fn the_centroid_of_two_equal_tones_is_their_midpoint() {
+        let size = 1024usize;
+        let a = tone(size, 40.0, 1.0, 0.0);
+        let b = tone(size, 120.0, 1.0, 0.0);
+        let input: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
+        let bins = spectrum(&input);
+        let (num, den) = bins
+            .iter()
+            .enumerate()
+            .fold((0.0f32, 0.0f32), |(n, d), (k, x)| {
+                (n + k as f32 * x.norm(), d + x.norm())
+            });
+        assert!((num / den - 80.0).abs() < 0.05, "centroid {}", num / den);
     }
 }

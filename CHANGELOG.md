@@ -16,8 +16,8 @@ It now keeps every input of its last apply (the declarations, what the
 host resolves, the editor's revision, the play clock's epoch) and skips an
 apply over equal ones. Nothing is kept while a target or source is
 unresolved. A steady `Session::update` on a chain of 256 filters, each
-cutoff on an LFO, went from 729 µs to 13 µs mean (2.6 ms to 32 µs p99);
-16 filters from 21 µs to 1 µs (`cargo bench -p tutti-session --features
+cutoff on an LFO, went from 729 µs to 13–20 µs mean over two runs (2.6 ms to
+30 µs p99); 16 filters from 21 µs to 1 µs (`cargo bench -p tutti-session --features
 modulation --bench mod_update`). What renders is unchanged.
 
 - **`tutti_graph::Editor::revision`** (new): a count every editing call

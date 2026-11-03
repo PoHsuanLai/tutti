@@ -1049,7 +1049,7 @@ collects again only when `note_declaration_changes`, which runs every
 frame whether or not the engine is ready, saw a declaring component
 change or go, or when an entity they name is gone. On a 256-filter chain
 with an LFO per cutoff, a steady `Session::update` went from 729 µs to
-13 µs (mean; `tutti-session`'s `mod_update` bench).
+13–20 µs (mean over two runs; `tutti-session`'s `mod_update` bench).
 
 The rules, as designed:
 

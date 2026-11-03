@@ -171,8 +171,8 @@ pub struct Declared<'w, 's> {
     entities: &'w bevy_ecs::entity::Entities,
 }
 
-/// Whether the declarations [`Declared::collect`] reads may differ from
-/// [`reconcile`]'s last collect: a declaring component added, changed or
+/// Whether the declarations [`reconcile`] collects may differ from its
+/// last collect: a declaring component added, changed or
 /// removed since. Bevy's change detection, so it costs no walk of the
 /// declarations. Read by [`note_declaration_changes`], which runs every
 /// frame (an engine not ready included), so no removal goes unseen.

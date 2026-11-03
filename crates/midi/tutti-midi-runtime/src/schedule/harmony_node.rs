@@ -87,9 +87,11 @@ struct Shared {
     /// What the audio thread reads, once per block, through the node's
     /// reader.
     cell: Arc<ArcLend<Lanes>>,
-    /// The lanes last published, for the control side (a fork's snapshot, a
-    /// count, the unchanged-lanes check). The node never takes this lock.
-    current: Mutex<Arc<Lanes>>,
+    /// Serializes `set`'s compare, generation and publish (`ArcLend` has no
+    /// compare-and-publish), so two control threads cannot each publish
+    /// against a stale read. The value is the cell's own: the control side
+    /// reads it with `ArcLend::current`. The node never takes it.
+    publish: Mutex<()>,
     next_generation: AtomicU64,
 }
 
@@ -98,13 +100,13 @@ impl Shared {
         let first = Arc::new(lanes(0, changes));
         Arc::new(Self {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
-            current: Mutex::new(first),
+            publish: Mutex::new(()),
             next_generation: AtomicU64::new(1),
         })
     }
 
     fn current(&self) -> Arc<Lanes> {
-        Arc::clone(&self.current.lock().unwrap_or_else(PoisonError::into_inner))
+        self.cell.current()
     }
 }
 
@@ -168,11 +170,12 @@ impl HarmonyControls {
     /// beat order) change nothing. Control thread.
     pub fn set(&self, changes: impl IntoIterator<Item = TimedHarmony>) {
         let next = lanes(0, changes);
-        let mut current = self
+        let _serial = self
             .shared
-            .current
+            .publish
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let current = self.shared.current();
         if current.changes == next.changes {
             return;
         }
@@ -181,7 +184,6 @@ impl HarmonyControls {
             generation,
             changes: next.changes,
         });
-        *current = Arc::clone(&published);
         self.shared.cell.publish(published);
     }
 

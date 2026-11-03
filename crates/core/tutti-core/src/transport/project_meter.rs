@@ -51,13 +51,14 @@ struct ProjectInner {
     /// What the metronome reads once per block. Its identity is fixed for the
     /// meter's life, so a node reading it builds its reader once.
     cell: Arc<ArcLend<MeterMap>>,
-    /// The control side's view: the meter last published, and the slots it
-    /// is published to. The audio thread never takes this lock.
+    /// The slots the meter is published to, and the lock that orders every
+    /// publish into the cell and the followers. The audio thread never takes
+    /// it. The meter last published is the cell's own
+    /// ([`ArcLend::current`]), read under this lock.
     state: Mutex<ProjectState>,
 }
 
 struct ProjectState {
-    current: Arc<MeterMap>,
     /// Weak, so a slot whose node and handles are gone is dropped from the
     /// list at the next publish rather than kept alive by it.
     followers: Vec<Weak<MeterSlotCell>>,
@@ -66,19 +67,17 @@ struct ProjectState {
 impl ProjectMeter {
     /// A project meter holding `meter`, followed by nothing yet.
     pub fn new(meter: MeterMap) -> Self {
-        let current = Arc::new(meter);
         Self(Arc::new(ProjectInner {
-            cell: Arc::new(ArcLend::from_arc(Arc::clone(&current))),
+            cell: Arc::new(ArcLend::new(meter)),
             state: Mutex::new(ProjectState {
-                current,
                 followers: Vec::new(),
             }),
         }))
     }
 
     fn state(&self) -> MutexGuard<'_, ProjectState> {
-        // A poisoned lock still holds a whole state: `current` and the list
-        // are each replaced in one assignment or push.
+        // A poisoned lock still holds a whole state: the list is changed in
+        // one `retain` or push.
         self.0.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -87,7 +86,6 @@ impl ProjectMeter {
     /// replaces here.
     pub fn set_meter(&self, meter: Arc<MeterMap>) {
         let mut state = self.state();
-        state.current = Arc::clone(&meter);
         self.0.cell.publish(Arc::clone(&meter));
         state.followers.retain(|follower| match follower.upgrade() {
             Some(cell) => {
@@ -117,10 +115,10 @@ impl ProjectMeter {
         pinned
     }
 
-    /// The meter last published. Control side: a lock and an `Arc` clone,
-    /// never a read of the cell the audio thread reads.
+    /// The meter last published. Control side: the cell's own value as an
+    /// owning handle ([`ArcLend::current`]), never a lend.
     pub fn current(&self) -> Arc<MeterMap> {
-        Arc::clone(&self.state().current)
+        self.0.cell.current()
     }
 
     /// Whether `self` and `other` are the same project meter.
@@ -139,7 +137,10 @@ impl ProjectMeter {
     /// does not make each later `set_meter` publish into it twice.
     fn attach(&self, slot: &Arc<MeterSlotCell>) {
         let mut state = self.state();
-        slot.publish(Arc::new(Some(Arc::clone(&state.current))));
+        // Under the lock every `set_meter` publishes under, so the cell's
+        // value is the latest and no `set_meter` can land between this read
+        // and the slot being listed.
+        slot.publish(Some(self.0.cell.current()));
         let me = Arc::downgrade(slot);
         state
             .followers

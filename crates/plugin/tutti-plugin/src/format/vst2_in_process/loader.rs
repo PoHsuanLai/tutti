@@ -103,9 +103,9 @@ pub fn load_client(
         // `Unknown`, matching the out-of-process VST2 loader exactly — see the
         // comment there. VST2 encodes tail inversely to every other format
         // (`0` means "no tail information, host decides", `1` means "no tail at
-        // all"), so it cannot reuse `from_samples`, whose `0 => None` arm would
-        // read "unknown" as "silent" and tell a bounce to add nothing after
-        // every VST2 reverb.
+        // all"), so it cannot reuse the CLAP or VST3 sample decodes, whose `0`
+        // arm would read "unknown" as "silent" and tell a bounce to add
+        // nothing after every VST2 reverb.
         tail: PluginTail::Unknown,
         features,
         probed,

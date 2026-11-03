@@ -236,14 +236,16 @@ Rules:
   own reader, never a shared slot.
 - **Lend once per block, never per sample.** A lend is a `Release` store, a
   `SeqCst` fence, an `Acquire` load and a `Relaxed` store, all on the
-  reader's own cache line but the load. Measured at 41-42 ns p50 per block
-  at one to four readers on a shared VM with a 30 ns timer floor (arc-swap
-  51 ns) — `arc-lend`'s `BENCHMARKS.md`.
+  reader's own cache line but the load. Measured at 20-30 ns p50 per block
+  from one to 31 readers on a Ryzen 9 9950X, on a 20 ns timer floor
+  (arc-swap 30 ns; 20 ns through a `Cache`, which skips the fence while
+  the value is unchanged) — `arc-lend`'s `BENCHMARKS.md`.
 - **Never park a `Loan`** in a struct field or hold one across blocks. A
   parked loan pins one value per reader, the one it holds. A reader
   preempted mid-lend pins what is retired meanwhile, until the next scan
   after it resumes; that is not bounded by the reader count (the bench
-  measured 2902 values at peak). Poll `retired_len()` to see it. There is
+  measured 3 values at peak on dedicated hardware, and 2902 on a shared
+  VM, where readers are descheduled more often). Poll `retired_len()` to see it. There is
   no debug-build count check: a node cannot park a `Loan` across blocks,
   since that needs a self-referential borrow of its own `Reader`, and a
   `mem::forget` pins one value per reader (`arc-lend`'s
@@ -302,11 +304,11 @@ thread never touches. A reader stores a generation-tagged claim in its slot,
 fences, loads, and announces what it loaded; a publisher swaps, fences, scans
 the slots once, and frees only what no slot announces and no outstanding claim
 could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
-`docs::internal` (`crates/arc-lend/src/docs/internal.rs`). The `SeqCst` fence
+`docs::design` (`crates/arc-lend/src/docs/design.md`), §5. The `SeqCst` fence
 pair is the whole argument, and both halves are load-bearing: the loom model
-(`arc-lend/tests/loom.rs`, run against the shipped code: six models
-exhaustively, and `registering_and_dropping_readers` at a preemption bound of
-4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
+(`arc-lend/tests/loom.rs`, run against the shipped code: nine models:
+eight exhaustive, and `registering_and_dropping_readers` at a preemption bound
+of 4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 

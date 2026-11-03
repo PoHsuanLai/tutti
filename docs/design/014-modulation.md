@@ -418,11 +418,13 @@ the 32-byte event are unchanged.
 
 - **One read per block**, at the first frame, dropped before returning. The
   program holds frozen `Arc`s, not further cells, so there is no nested read.
-- **The fork's copy comes from the control side.** `RtRef` only `Deref`s
-  (`crates/core/tutti-types/src/rt/publish.rs:786`; now arc-lend's `Loan`,
-  in its `lend.rs`) and must not leave the
-  block, so `LaneControls` keeps the last published `Arc<ControlProgram>`
-  beside the cell; the fork gathers that.
+- **The fork's copy comes from the control side.** A `Loan` (arc-lend's
+  `reader.rs`) only `Deref`s and must not leave the block, so the fork (and
+  `LaneControls::program`) read the cell with `ArcLend::current`, an owning
+  `Arc<ControlProgram>` from the publisher's side. `LaneControls` keeps no
+  copy beside the cell; what it does keep is a generation counter
+  (`fetch_add`, unique per publish: the lane compares generations for
+  inequality only).
 - **No audio-thread allocation.** Per-layer and per-input state lives in
   arrays sized `MAX_LANE_LAYERS = 16` and `MAX_LANE_INPUTS = 8`; the
   compiler refuses past either, by name.
@@ -646,8 +648,8 @@ starts from the base). A lane sends on its first block, at frame 0,
 so a lane wired with its target never meets this; a hand-wired source
 that waits does. Audio sources are gone (§10). The reference interpreter and the differential proptest take the same rule.
 
-**Fork.** The lane's `ForkSource` gathers the last published program from
-`LaneControls` (§4.5), the knob and range values, and the address, and
+**Fork.** The lane's `ForkSource` gathers the last published program with
+`ArcLend::current` (§4.5), the knob and range values, and the address, and
 builds a fresh lane with its own cell, so a later live republish does not
 reach the fork. Fresh state: no piece in flight, inputs at 0
 until their (also forked) sources send. With a fresh lane sending at its

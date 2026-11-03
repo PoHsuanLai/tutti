@@ -445,6 +445,7 @@ impl Convolver {
         debug_assert_eq!(input.len(), output.len());
         let p = &mut self.partition;
         let mut done = 0;
+        let mut crossed = false;
         while done < input.len() {
             let run = (p.block_size - p.input_fill).min(input.len() - done);
             let out = &mut output[done..done + run];
@@ -459,13 +460,15 @@ impl Convolver {
             p.input_fill += run;
             if p.input_fill >= p.block_size {
                 p.drain_through(&mut self.fft);
-            } else {
+                crossed = true;
+            } else if !crossed {
                 // Spread the older partitions' sum over the block: by the
                 // time `horizon` samples are in, every partition is in. The
                 // horizon stops short of the boundary by this call's length
                 // (at most half a partition), so the call that crosses the
                 // boundary pays for the transforms and the newest partition
-                // only.
+                // only. A call that has crossed does no spread work for the
+                // next cycle: a later call or the next boundary does it.
                 let horizon = (p.block_size - input.len().min(p.block_size / 2)).max(1);
                 let older = self.fft.spectra.segments.len().saturating_sub(1);
                 self.fft.accumulate_to(older * p.input_fill / horizon);
@@ -777,8 +780,10 @@ mod tests {
     /// Linearity: `conv(a·x + b·y) = a·conv(x) + b·conv(y)` through the
     /// incremental path, within float tolerance.
     ///
-    /// Mutation (run): the `accumulated = 0` drop above breaks the sum only
-    /// when the signal changes between cycles, which this signal does.
+    /// Covers linearity only. A dropped partition or a stale sum is still
+    /// linear in the input history, so this does not catch them: the
+    /// direct-convolution and bit-identity tests do (checked: dropping the
+    /// `accumulated`/`begun` reset in `process` passes this test).
     #[test]
     fn incremental_path_is_linear() {
         let ir = long_ir(700);
@@ -799,8 +804,8 @@ mod tests {
     /// However the partitions are split across calls the result is the same bits:
     /// the block path (sum spread over the cycle) and the per-sample path
     /// (the whole sum at the boundary) agree for a many-partition IR. This
-    /// pins the split, not the partition order within a bin (a reordered
-    /// sum would reorder both paths alike).
+    /// pins the split and a loop reversal; an order both paths share is
+    /// pinned by `the_spread_sum_is_the_ascending_sum`.
     ///
     /// Mutation (run): `accumulate_to` starting its loop at
     /// `self.accumulated + 2` leaves a partition out on the block path only →
@@ -858,6 +863,83 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The sum the boundary call receives is the ascending one: partitions
+    /// `1..count` added to zero in order, with the code's own `re`/`im`
+    /// formulas. With 4-frame calls into a 16-frame partition the sum is
+    /// complete after the third call of a cycle; it is recomputed here from
+    /// the spectra and the history and compared bit for bit. It is same-run
+    /// data, so it does not depend on libm.
+    ///
+    /// Mutation (run): a descending walk shared by both paths (`let i =
+    /// count - k` for `k` in the loop range of `accumulate_to`) fails.
+    /// A literal `.rev()` of that loop fails this and
+    /// `incremental_path_is_bit_identical_to_the_boundary_sum`.
+    #[test]
+    fn the_spread_sum_is_the_ascending_sum() {
+        let part = 16;
+        let mut c = Convolver::new(&long_ir(300), part);
+        let count = c.fft.spectra.segments.len();
+        assert!(count > 8);
+        let x: Vec<f32> = (0..part * 12)
+            .map(|i| ((i as f32) * 0.29).sin() + if i % 5 == 0 { 0.4 } else { 0.0 })
+            .collect();
+        let mut out = [0.0f32; 4];
+        let mut checked = 0;
+        for (n, call) in x.chunks(4).enumerate() {
+            c.process_block(call, &mut out);
+            if n % 4 != 2 {
+                continue;
+            }
+            assert_eq!(c.fft.accumulated, count - 1, "sum complete, call {n}");
+            let mut want = vec![Complex::new(0.0f32, 0.0); part + 1];
+            for i in 1..count {
+                let seg = &c.fft.spectra.segments[i];
+                let hist = &c.fft.history[(c.fft.current + i) % count];
+                for ((w, a), b) in want.iter_mut().zip(seg).zip(hist) {
+                    w.re += a.re * b.re - a.im * b.im;
+                    w.im += a.re * b.im + a.im * b.re;
+                }
+            }
+            for (bin, (g, w)) in c.fft.pre_multiplied.iter().zip(&want).enumerate() {
+                assert!(
+                    g.re.to_bits() == w.re.to_bits() && g.im.to_bits() == w.im.to_bits(),
+                    "call {n} bin {bin}: {g:?} want {w:?}"
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 12);
+    }
+
+    /// A call that crosses a boundary leaves the next cycle's sum untouched
+    /// (`accumulated` 0, not begun), so it never costs more than the
+    /// boundary work: the transforms and the newest partition. With calls
+    /// 20, 20, 20, 50 into a 64-frame partition the 50 crosses with 46
+    /// frames left over.
+    ///
+    /// Mutation (run): dropping the `crossed` guard in `process_block` leaves
+    /// `accumulated` above 0 after the crossing call → fails.
+    #[test]
+    fn a_call_that_crosses_a_boundary_leaves_the_next_cycle_unstarted() {
+        let part = 64;
+        let mut c = Convolver::new(&long_ir(1000), part);
+        let lens = [20usize, 20, 20, 50];
+        let mut out = vec![0.0f32; 50];
+        let (mut fill, mut crossings) = (0usize, 0);
+        for k in 0..40 {
+            let n = lens[k % 4];
+            let x = vec![0.25f32; n];
+            c.process_block(&x, &mut out[..n]);
+            if fill + n > part {
+                crossings += 1;
+                assert_eq!(c.fft.accumulated, 0, "call {k} crossed");
+                assert!(!c.fft.begun, "call {k} crossed");
+            }
+            fill = (fill + n) % part;
+        }
+        assert!(crossings >= 5);
     }
 
     /// `reset` must clear the tail, not just the input buffer.

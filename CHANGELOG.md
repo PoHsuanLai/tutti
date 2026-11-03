@@ -21,10 +21,13 @@ the output is bit-identical: each bin adds its partitions in the same order
 on main and on the branch and comparing the files with `diff -rq`). Per-block
 cost with a 2 s IR at 48 kHz, p99 over three interleaved runs pinned to
 one core, main to branch: 57 to 7 us (512-frame partition, 32-frame blocks),
-79 to 15 us (64-frame), 71 to 33 us (128-frame); 63 to 13 us at a 2048
-partition for every host block size up to 256. The mean is unchanged. A
-host block at or above the partition has no blocks to spread over and is
-as before. `cargo bench -p tutti-nodes --bench convolver_blocks --features
+79 to 15 us (64-frame), 71 to 33 us (128-frame); at a 2048 partition 63 to 13,
+63 to 13, 75 to 14 and 82 to 21 us for 32, 64, 128 and 256-frame blocks. The
+mean is unchanged. The gain is for a steady host block well below half the
+partition. At or above half the partition, or for a bimodal mix of call
+lengths, there is nothing to spread and p99 is as before. A call that
+crosses a boundary does no spread work for the next cycle, so no call does
+more than main's boundary call. `cargo bench -p tutti-nodes --bench convolver_blocks --features
 convolution` prints mean, p99 and max per call. No API change.
 
 ### Changed — a steady frame skips the modulation and sequencing reconcile, renders unchanged

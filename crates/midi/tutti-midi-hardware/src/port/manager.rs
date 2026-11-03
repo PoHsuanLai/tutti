@@ -212,12 +212,10 @@ fn read_inputs(
     events.len()
 }
 
-/// What the control side last published, and the next generation to hand out.
-/// Behind [`HardwareMidiInputs::published`]'s lock.
+/// The next generation to hand out. Behind [`HardwareMidiInputs::published`]'s
+/// lock, which also orders every change; the set itself is the cell's, read
+/// with [`ArcLend::current`].
 struct Published {
-    /// The set the drain currently reads: kept here so a change starts from it
-    /// and [`collect`](HardwareMidiInputs::collect) can publish it again.
-    slots: Arc<PortSlots>,
     next_generation: u64,
 }
 
@@ -266,13 +264,9 @@ impl HardwareMidiInputs {
     /// overflow (`push` returns `false`) rather than blocking its callback.
     /// [`Default`] uses 2048.
     pub fn new(fifo_size: usize) -> Self {
-        let slots = Arc::new(PortSlots::new());
         Self {
-            input_ports: Arc::new(ArcLend::from_arc(Arc::clone(&slots))),
-            published: Mutex::new(Published {
-                slots,
-                next_generation: 0,
-            }),
+            input_ports: Arc::new(ArcLend::new(PortSlots::new())),
+            published: Mutex::new(Published { next_generation: 0 }),
             fifo_size,
             shared: DrainShared::new(),
         }
@@ -299,10 +293,9 @@ impl HardwareMidiInputs {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let published = &mut *published;
-        let mut slots = (*published.slots).clone();
+        let mut slots = (*self.input_ports.current()).clone();
         let out = change(&mut slots, &mut published.next_generation);
-        published.slots = Arc::new(slots);
-        self.input_ports.publish(Arc::clone(&published.slots));
+        self.input_ports.publish(slots);
         out
     }
 
@@ -395,8 +388,8 @@ impl HardwareMidiInputs {
     /// does, in its `Reclaim` phase).
     pub fn collect(&self) -> usize {
         // Held so a change racing this call frees in one order: `reclaim`
-        // takes the cell's publisher lock too, but the record's lock is the
-        // one every control-side change takes first.
+        // takes the cell's publisher lock too, but this lock is the one
+        // every control-side change takes first.
         let _published = self
             .published
             .lock()
@@ -412,19 +405,11 @@ impl HardwareMidiInputs {
         self.input_ports.retired_len()
     }
 
-    /// The port set last published, as the control side recorded it: what
-    /// every control-side query reads. Never the cell the drain reads: a
-    /// query takes the lock every change takes, so it sees the set as of the
-    /// last change, and it is a control-side call (it may wait on a change in
-    /// progress), from any thread but the audio thread's drain.
+    /// The port set last published: what every control-side query reads, as
+    /// an owning handle from the cell ([`ArcLend::current`]), never a lend. A
+    /// control-side call, from any thread but the audio thread's drain.
     fn published_slots(&self) -> Arc<PortSlots> {
-        Arc::clone(
-            &self
-                .published
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .slots,
-        )
+        self.input_ports.current()
     }
 
     /// The port set for `port_type`. Only [`PortType::Input`] is backed by an

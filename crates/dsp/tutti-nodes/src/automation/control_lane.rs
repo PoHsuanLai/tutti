@@ -3,7 +3,7 @@
 //! §5).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tutti_core::ChannelLayout;
 use tutti_graph::{
@@ -70,10 +70,12 @@ struct Shared {
     /// What the lane reads once per block, through the reader the node
     /// registered on it when it was built.
     program: Arc<ArcLend<Published>>,
-    /// The last program published and its generation, for the fork (an
-    /// `Loan` must not leave the block, doc 014 §4.5) and the next
-    /// publish's generation. Control thread only.
-    last: Mutex<(u64, Arc<ControlProgram>)>,
+    /// The generation of the last publish, handed out by `fetch_add` so two
+    /// racing publishes never share one (the lane compares generations for
+    /// inequality only, so their order in the cell does not matter). The
+    /// program itself is the cell's: the fork and `program()` read
+    /// `ArcLend::current` (a `Loan` must not leave the block, doc 014 §4.5).
+    generation: AtomicU64,
     /// Set by [`LaneControls::resync`]: the next block sends at frame 0.
     resync: AtomicBool,
     knob: Option<Arc<AtomicF32>>,
@@ -111,13 +113,15 @@ impl LaneControls {
 
     /// [`publish`](Self::publish) of a program already behind an `Arc`.
     pub fn publish_arc(&self, program: Arc<ControlProgram>) {
-        let mut last = self.0.last.lock().unwrap_or_else(|e| e.into_inner());
-        let generation = last.0.wrapping_add(1);
-        *last = (generation, Arc::clone(&program));
-        self.0.program.publish(Arc::new(Published {
+        let generation = self
+            .0
+            .generation
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.0.program.publish(Published {
             generation,
             program,
-        }));
+        });
     }
 
     /// Frees the programs the lane has let go of since the last publish (one
@@ -148,7 +152,7 @@ impl LaneControls {
 
     /// The program last published (or built with).
     pub fn program(&self) -> Arc<ControlProgram> {
-        Arc::clone(&self.0.last.lock().unwrap_or_else(|e| e.into_inner()).1)
+        Arc::clone(&self.0.program.current().program)
     }
 
     /// Makes the lane send its value at its next block's first frame, even
@@ -331,7 +335,7 @@ impl ControlLaneNode {
                 generation: 0,
                 program: Arc::clone(&program),
             })),
-            last: Mutex::new((0, program)),
+            generation: AtomicU64::new(0),
             resync: AtomicBool::new(false),
             knob,
             range,
@@ -425,11 +429,12 @@ impl ControlLaneNode {
     }
 
     /// [`fork_fresh`](Self::fork_fresh) from a lane's parts, for the fork
-    /// source, which keeps the parts rather than a lane: it reads only the
-    /// control side (`Shared::last`, the knob, the range), never the cell
-    /// the lane reads per block, so it needs no read state of its own.
+    /// source, which keeps the parts rather than a lane: it reads the program
+    /// with `ArcLend::current` (an owning read under the publisher's lock,
+    /// never a lend), the knob and the range, so it needs no read state of
+    /// its own.
     fn fresh_over(s: &Shared, make: &Arc<MakeSegment>, native: bool) -> Self {
-        let program = Arc::clone(&s.last.lock().unwrap_or_else(|e| e.into_inner()).1);
+        let program = Arc::clone(&s.program.current().program);
         let knob = s
             .knob
             .as_ref()

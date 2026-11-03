@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — owners read what they published from the cell, not from a copy
+
+**Every control-side copy of a published value is gone.** Owners of an
+`ArcLend` kept the value they last published beside the cell, often with a
+second lock to keep the two in step, because the cell had no control-side
+read; they now call `ArcLend::current`. Removed: the sampler voice's
+`PlacedWindow` (and the lock `set_placement` held across its publish), the
+project meter's `current`, `LaneControls`' `last` program (its generation is
+now a `fetch_add` counter: the lane compares generations for inequality
+only), `HardwareMidiInputs`' recorded port set, `MidiInputNode`'s
+`MpeRequest` record, and the clip and harmony nodes' `current` (their lock
+stays, as a plain `Mutex<()>` serializing compare-then-publish; the hardware
+port manager's lock orders its compare-then-publish the same way, since the
+cell has no compare-and-publish). A node that held both a cell and a reader
+of it now holds the reader alone and reaches the cell through
+`Reader::cell` (`VoiceNode`, `MidiInputNode`). No behaviour changes.
+
 ### Changed — `arc-lend`: a slot list that doubles, and modules
 
 **A cell with one reader allocates 448 bytes for its slots, not 2720.**

@@ -7,19 +7,19 @@
 //! [`VoicePool`](super::pool::VoicePool), so the per-voice read is the same
 //! code in both — a fix in one is a fix in both.
 
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::clock::{BlockClock, Clock};
-use super::command::{PlacedWindow, PlacementCell, VoiceNodeHandle};
+use super::command::{PlacementCell, VoiceNodeHandle};
 use super::disk_voice::VoiceHealth;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use super::VoiceWindow;
-use tutti_core::{Amplitude, ArcLend, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
+use tutti_core::{Amplitude, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -62,14 +62,11 @@ pub struct VoiceNode {
     /// Declared rather than inferred from the voice, so an edge wired against
     /// it cannot be re-arityed under a live graph.
     pub(crate) channels: ChannelLayout,
-    /// The window the handle publishes, read once per block; the fork source
-    /// reads the same cell. Empty (`None`) until a handle sets one, so a node
-    /// driven by hand keeps the window it was built with.
-    placement: PlacementCell,
-    /// A reader of `placement`, registered whenever the cell is set (here,
-    /// and in [`with_handle`](Self::with_handle)): what the block lends
-    /// through.
-    placement_reader: Reader<Option<VoiceWindow>>,
+    /// A reader of the window the handle publishes, lent once per block; the
+    /// reader owns the cell (`Reader::cell`), which the handle and the fork
+    /// source share. Empty (`None`) until a handle sets one, so a node driven
+    /// by hand keeps the window it was built with.
+    placement: Reader<Option<VoiceWindow>>,
     /// The window last applied from `placement`, so a block applies a
     /// window once, when it changes, rather than every block.
     applied: Option<VoiceWindow>,
@@ -115,12 +112,10 @@ impl VoiceNode {
         let mut slot =
             PlaybackSlot::with_channels(SlotId(0), Box::new(voice), sample_rate, channels);
         slot.stretch = stretch;
-        let placement = PlacementCell::default();
         Self {
             slot,
             channels,
-            placement_reader: placement.reader(),
-            placement,
+            placement: PlacementCell::default().reader(),
             applied: None,
             gain,
             clock: Clock::new(),
@@ -134,12 +129,10 @@ impl VoiceNode {
     /// placement set through a handle taken before no longer reaches the
     /// node (its gain still does: that cell is the node's for life).
     pub fn with_handle(mut self) -> (Self, VoiceNodeHandle) {
-        self.placement = Arc::new(ArcLend::new(None));
-        self.placement_reader = self.placement.reader();
+        self.placement = PlacementCell::default().reader();
         let params = self.param_set();
         let handle = VoiceNodeHandle {
-            placement: Arc::clone(&self.placement),
-            placed: PlacedWindow::default(),
+            placement: Arc::clone(self.placement.cell()),
             gain: self.gain.handle(),
             params,
         };
@@ -169,7 +162,7 @@ impl VoiceNode {
     /// drives it (its last frame, [`VOICE_PARAMS`]); `None` reads the cell.
     #[inline]
     fn drain_commands(&mut self, driven: Option<f32>) {
-        let published = *self.placement_reader.lend();
+        let published = *self.placement.lend();
         if published != self.applied {
             if let Some(window) = published {
                 // Placement is the source's alone: `Playback` has no
@@ -350,9 +343,9 @@ struct VoiceNodeFork {
     /// with `Voice::fork_copy`, which shares nothing.
     template: Voice,
     channels: ChannelLayout,
-    /// The window the live node's handle last published, read when a fork
-    /// is taken (the control side's record, never the node's cell).
-    placed: PlacedWindow,
+    /// The live node's placement cell, read with `current` when a fork is
+    /// taken (an owning read on the control side, never a lend).
+    placement: PlacementCell,
     /// The node's params: a fork starts from the gain cell, which holds the
     /// gain last **set** (a modulation lane sends its composite to the
     /// port and never writes the cell).
@@ -362,7 +355,7 @@ struct VoiceNodeFork {
 impl ForkSource for VoiceNodeFork {
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
         let mut voice = self.template.fork_copy(mode)?;
-        let placed = *self.placed.lock().unwrap_or_else(PoisonError::into_inner);
+        let placed = *self.placement.current();
         if let Some(window) = placed {
             voice.source.apply_placement(window.start, window.duration);
         }
@@ -390,7 +383,7 @@ impl IntoNode for VoiceNode {
         let fork = VoiceNodeFork {
             template: node.slot.voice.as_ref().clone(),
             channels: node.channels,
-            placed: Arc::clone(&handle.placed),
+            placement: Arc::clone(&handle.placement),
             params: handle.params.clone(),
         };
         NodeParts {
@@ -423,11 +416,11 @@ mod tests {
         let (mut node, handle) = VoiceNode::new(voice).with_handle();
         {
             // A block in progress across the move.
-            let _held = node.placement_reader.lend();
+            let _held = node.placement.lend();
             handle.set_placement(Beat::new(1.0), None);
         }
-        assert_eq!(node.placement.retired_len(), 1, "pinned until a scan");
+        assert_eq!(handle.placement.retired_len(), 1, "pinned until a scan");
         assert_eq!(handle.reclaim(), 0);
-        assert_eq!(node.placement.retired_len(), 0, "freed by the reclaim");
+        assert_eq!(handle.placement.retired_len(), 0, "freed by the reclaim");
     }
 }

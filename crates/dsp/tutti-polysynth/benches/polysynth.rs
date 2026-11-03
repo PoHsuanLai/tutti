@@ -40,7 +40,8 @@ use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
-    EnvelopeConfig, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
+    EnvelopeConfig, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoCurve,
+    PortamentoMode, SvfMode, SynthConfig, UnisonConfig,
 };
 
 const SR: f64 = 48_000.0;
@@ -197,11 +198,38 @@ fn bench_unison(c: &mut Criterion) {
     group.finish();
 }
 
+/// **A glide in progress.** One held note gliding for the whole
+/// measurement (a glide 10 000 s long): what the glide adds to a block.
+fn bench_portamento(c: &mut Criterion) {
+    let mut group = c.benchmark_group("voices/portamento");
+    group.throughput(Throughput::Elements(BLOCK as u64));
+    for (name, curve) in [
+        ("linear", PortamentoCurve::Linear),
+        ("logarithmic", PortamentoCurve::Logarithmic),
+    ] {
+        let mut synth = held(
+            SynthConfig {
+                portamento: Some(PortamentoConfig {
+                    mode: PortamentoMode::Always,
+                    curve,
+                    time: Seconds(10_000.0),
+                    constant_time: true,
+                }),
+                ..config()
+            },
+            1,
+        );
+        group.bench_function(name, |b| b.iter(|| drive(&mut synth)));
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_voices,
     bench_oscillator,
     bench_filter,
-    bench_unison
+    bench_unison,
+    bench_portamento
 );
 criterion_main!(benches);

@@ -704,11 +704,11 @@ impl PolySynth {
             }
         }
 
-        // Multiplicative, matching every other bend site. All four must agree,
-        // and the ratio is the only derivation all four *can* share:
-        // `handle_note_on` bends `porta.current()` and both glide sites bend
-        // `porta.tick()` — interpolated frequencies with no note number to look
-        // up in the tuning table.
+        // Multiplicative, matching every other bend site. They must all agree,
+        // and the ratio is the only derivation they all *can* share:
+        // `handle_note_on` bends `porta.current()` and the glide
+        // (`control_step`) bends `porta.advance(..)` — interpolated
+        // frequencies with no note number to look up in the tuning table.
         //
         // Adding the bend to the note number and re-entering
         // `fractional_note_to_freq` is the tempting alternative and is wrong
@@ -752,7 +752,7 @@ impl PolySynth {
     /// One control step: advance any glide by `frames`, then have every
     /// sounding voice write its lane targets.
     ///
-    /// The glide is ticked per frame and the voices are aimed at where it will
+    /// The glide advances frame by frame and the voices are aimed at where it will
     /// be at the *end* of the step; the bank ramps each lane there sample by
     /// sample. So a glide moves the pitch every frame at any block length.
     /// Rendering a whole sub-block at the glide's final pitch would instead
@@ -760,10 +760,7 @@ impl PolySynth {
     fn control_step(&mut self, frames: usize) {
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
-                let mut freq = porta.current();
-                for _ in 0..frames {
-                    freq = porta.tick();
-                }
+                let freq = porta.advance(frames);
                 // Hoisted: neither operand changes inside a step (MIDI is
                 // handled between steps).
                 let bend_multiplier =

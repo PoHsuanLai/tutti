@@ -377,7 +377,7 @@ pub struct VoicePool {
     pub(crate) clock: Clock,
 
     /// The lanes every slot's block read renders through, one voice at a
-    /// time (`PlaybackSlot::process_into`). Built with the pool and sized
+    /// time (`PlaybackSlot::render_into`). Built with the pool and sized
     /// from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
 }

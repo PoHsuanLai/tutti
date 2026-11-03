@@ -219,15 +219,19 @@ impl Clock {
         let jump = self
             .next
             .is_some_and(|n| breaks(n, &env.transport, env.sample_rate));
-        let block = BlockClock {
+        let mut block = BlockClock {
             env,
             generation: self.generation + u64::from(jump),
             jump,
+            jumps: false,
         };
         let mut last = None;
+        let mut jumps = false;
         for run in block.runs() {
+            jumps |= run.jump;
             last = Some(run);
         }
+        block.jumps = jumps;
         if let Some(last) = last {
             self.generation = last.generation;
             self.next = Some(continuation(&last, &env_transport_of(env, last.start)));
@@ -271,9 +275,19 @@ pub(crate) struct BlockClock<'e> {
     generation: u64,
     /// Whether the block's first frame is a jump.
     jump: bool,
+    /// Whether any run of the block starts with a jump.
+    jumps: bool,
 }
 
 impl<'e> BlockClock<'e> {
+    /// Whether any run of the block starts with a [jump](Run::jump): when
+    /// not, no range of it holds one, and a reader that cuts its read at
+    /// jumps need not walk the runs to find none.
+    #[inline]
+    pub(crate) fn jumps(&self) -> bool {
+        self.jumps
+    }
+
     /// The block's runs, in order, covering it.
     pub(crate) fn runs(&self) -> Runs<'e> {
         let t = self.env.transport;
@@ -519,6 +533,37 @@ mod tests {
             [(0, 10, false, 0), (10, 64, true, 1)]
         );
         assert_eq!(got[1].beat_at(10), Beat(0.0), "the loop's start");
+    }
+
+    /// **`BlockClock::jumps` is whether any run of the block jumps**: the
+    /// slot walks a range's runs for a reset only when it says so, so a
+    /// `false` over a jump would leave a stretch filter or a live read
+    /// holding stale state. Over a continuation, a seek back, a seek inside
+    /// a block, a stop and a restart.
+    ///
+    /// Mutation (run): `jumps` always `false` → the seek blocks fail.
+    /// Mutation (run): `jumps` set from the first run only → the in-block
+    /// seek fails.
+    #[test]
+    fn jumps_is_whether_any_run_jumps() {
+        let mut clock = Clock::new();
+        let blocks = [
+            env(at(true, 0.0), &[]),
+            env(at(true, 64.0), &[]),
+            env(at(true, 0.0), &[]),
+            env(at(true, 64.0), &[(32, at(true, 9_000.0))]),
+            env(at(true, 9_032.0), &[]),
+            env(at(false, 9_096.0), &[]),
+            env(at(true, 9_096.0), &[]),
+        ];
+        let mut jumped = 0;
+        for (i, e) in blocks.iter().enumerate() {
+            let block = clock.observe(e);
+            let any = block.runs().any(|r| r.jump);
+            assert_eq!(block.jumps(), any, "block {i}");
+            jumped += usize::from(any);
+        }
+        assert_eq!(jumped, 2, "the seek back and the seek inside a block");
     }
 
     /// **A range cut out of a run keeps the run's jump only at its first

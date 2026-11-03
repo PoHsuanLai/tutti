@@ -120,6 +120,38 @@ Memory sources only; no disk, no butler.
 
 Linear at ~1.27 µs per voice.
 
+The block read has since been reworked, bit for bit the same samples.
+Medians of three interleaved runs of two `voice_pool` bench binaries on one
+shared machine, 64-frame blocks: "before" built from `main` at `2d6b5526`,
+"after" from the head of this branch merged with it (sampler block read,
+steady disk read and the polysynth glide). The machine's runs vary by about
+5-10%.
+
+| case | before | after |
+|---|---|---|
+| `pool64/memory/64` (unity rate) | 79.1 µs | 56.6 µs |
+| `pool64/memory-varispeed/64` | 91.6 µs | 94.3 µs |
+| `pool512/memory-varispeed/64` | 631 µs | 646 µs |
+| `pool64/disk/64` | 182 µs | 163 µs |
+
+These four are the cases `main`'s bench has, measured on the merged head.
+The next four exist only in this branch's bench, so they were not
+re-measured: they are from the earlier build ("before" `main` at `60ca290a`,
+"after" the reworked read on top of it), by the same method.
+
+| case | before | after |
+|---|---|---|
+| `pool64/memory-loop/64` | 176 µs | 65.5 µs |
+| `pool64/memory-loop-varispeed/64` | 190 µs | 99.6 µs |
+| `pool64/memory-silent/64` (every clip out of window) | 36.6 µs | 6.0 µs |
+| `sources/memory-source/64` (64 `MemorySource` nodes) | 119 µs | 63.1 µs |
+
+Varispeed is unchanged within the noise (3% slower in the table above): its
+taps are gathered as before.
+(An earlier version of the rework ran it 8% slower, from a check inside the
+per-frame position loop; the check now runs in its own pass.) The disk read's
+gain is small: 1.02-1.12× on `pool64/disk/64` across sessions.
+
 **The phase vocoder is the expensive thing in this crate**, and by a long way.
 At 8 voices:
 

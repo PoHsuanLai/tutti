@@ -30,8 +30,8 @@ use tutti_graph::contract::Direct;
 use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    Command, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId, StepOutcome, Voice,
-    VoiceCommand, VoiceNode, VoicePool, VoiceSource,
+    Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,
+    StepOutcome, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
 
 const SR: f64 = 48_000.0;
@@ -235,8 +235,48 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
     pool_blocks(tier, n, speed, stretch, BLOCK)
 }
 
+/// What a `pool64` voice plays beyond its rate: its loop, and where its
+/// window starts.
+#[derive(Clone, Copy)]
+struct Knobs {
+    loop_: LoopSetting,
+    /// Past [`WRAP_BEATS`], the window is never reached: every voice is
+    /// resident and silent.
+    start: Beat,
+}
+
+impl Default for Knobs {
+    fn default() -> Self {
+        Self {
+            loop_: LoopSetting::Off,
+            start: Beat::new(0.0),
+        }
+    }
+}
+
+/// A one-second loop with a 256-frame crossfade, inside every `pool64`
+/// file: the transport reaches its end, and wraps through it, before the
+/// rig winds back.
+const LOOP: LoopSetting = LoopSetting::On {
+    start: SamplePosition(12_000.0),
+    end: SamplePosition(60_000.0),
+    crossfade_frames: 256,
+};
+
 /// [`pool64`] driven in `block`-frame blocks (the pool prepared for them).
 fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> Pool64 {
+    pool_knobs(tier, n, speed, stretch, block, Knobs::default())
+}
+
+/// [`pool_blocks`] with `knobs`.
+fn pool_knobs(
+    tier: Tier,
+    n: usize,
+    speed: f32,
+    stretch: f32,
+    block: usize,
+    knobs: Knobs,
+) -> Pool64 {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tone.wav");
     let frames = (SR * FILE_SECS) as usize;
@@ -251,11 +291,7 @@ fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> 
             let wave = Arc::new(wave);
             (0..n)
                 .map(|_| {
-                    VoiceSource::Memory(MemorySource::placed(
-                        Arc::clone(&wave),
-                        Beat::new(0.0),
-                        None,
-                    ))
+                    VoiceSource::Memory(MemorySource::placed(Arc::clone(&wave), knobs.start, None))
                 })
                 .collect()
         }
@@ -293,7 +329,7 @@ fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> 
                 .map(|channel_index| {
                     let v = s
                         .status()
-                        .take_disk_voice(channel_index, Beat::new(0.0), None)
+                        .take_disk_voice(channel_index, knobs.start, None)
                         .expect("a primed stream gives a voice");
                     VoiceSource::Disk(v)
                 })
@@ -311,6 +347,7 @@ fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> 
                     play: Playback {
                         speed: PlaybackRate::new(speed),
                         stretch: StretchFactor::new(stretch),
+                        loop_: knobs.loop_,
                         ..Default::default()
                     },
                     channel_index: None,
@@ -335,10 +372,14 @@ fn pool_blocks(tier: Tier, n: usize, speed: f32, stretch: f32, block: usize) -> 
     for _ in 0..(256 * BLOCK).div_ceil(block) {
         heard = heard.max(drive64(&mut p));
     }
-    assert!(
-        heard > 0.01,
-        "the pool is silent after warm-up: the bench would measure nothing"
-    );
+    if knobs.start.get() < WRAP_BEATS {
+        assert!(
+            heard > 0.01,
+            "the pool is silent after warm-up: the bench would measure nothing"
+        );
+    } else {
+        assert_eq!(heard, 0.0, "a voice out of its window sounds");
+    }
     p
 }
 
@@ -365,6 +406,25 @@ fn bench_pool64(c: &mut Criterion) {
     ];
     for &(name, tier, n, speed, stretch) in cases {
         let mut p = pool64(tier, n, speed, stretch);
+        group.bench_function(name, |b| b.iter(|| black_box(drive64(&mut p))));
+    }
+    // Every voice resident and out of its window: what a pool of clips
+    // that are not playing yet costs.
+    let silent = Knobs {
+        start: Beat::new(1_000.0),
+        ..Knobs::default()
+    };
+    let looped = Knobs {
+        loop_: LOOP,
+        ..Knobs::default()
+    };
+    let knobbed: &[(&str, Tier, f32, Knobs)] = &[
+        ("memory-silent/64", Tier::Memory, 1.0, silent),
+        ("memory-loop/64", Tier::Memory, 1.0, looped),
+        ("memory-loop-varispeed/64", Tier::Memory, 1.37, looped),
+    ];
+    for &(name, tier, speed, knobs) in knobbed {
+        let mut p = pool_knobs(tier, 64, speed, 1.0, BLOCK, knobs);
         group.bench_function(name, |b| b.iter(|| black_box(drive64(&mut p))));
     }
     group.finish();
@@ -459,6 +519,46 @@ fn bench_clips(c: &mut Criterion) {
     group.finish();
 }
 
+/// **A `MemorySource` as a graph node of its own**: 64 placed stereo
+/// sources, each driven as the graph drives it, in 64-frame blocks on the
+/// moving transport. One block of every source per iteration.
+fn bench_sources(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sources");
+    group.throughput(Throughput::Elements(BLOCK as u64));
+    let mut wave = Wave::new(2, SR);
+    for i in 0..(SR * FILE_SECS) as usize {
+        wave.push_frame(&tone_frame(i));
+    }
+    let wave = Arc::new(wave);
+    let mut nodes: Vec<Direct<MemorySource>> = (0..64)
+        .map(|_| {
+            let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
+            Direct::new(source, SampleRate(SR), BLOCK)
+        })
+        .collect();
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let mut block = || {
+        let env = t.env(BLOCK, SR);
+        let mut peak = 0.0f32;
+        for d in &mut nodes {
+            d.block_in(&env);
+            peak = peak.max(d.output(0)[BLOCK - 1].abs());
+        }
+        t.advance(BLOCK as i64, SR);
+        if t.beat().get() >= WRAP_BEATS {
+            t.seek(Beat::new(0.0));
+        }
+        peak
+    };
+    let mut heard = 0.0f32;
+    for _ in 0..256 {
+        heard = heard.max(block());
+    }
+    assert!(heard > 0.01, "the sources are silent after warm-up");
+    group.bench_function("memory-source/64", |b| b.iter(|| black_box(block())));
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_voices,
@@ -467,6 +567,7 @@ criterion_group!(
     bench_idle,
     bench_pool64,
     bench_pool512,
-    bench_clips
+    bench_clips,
+    bench_sources
 );
 criterion_main!(benches);

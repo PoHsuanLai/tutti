@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    Beat, BeatDuration, Bpm, Cents, ChannelLayout, SamplePosition, SampleRate, StretchFactor,
+    Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
+    StretchFactor,
 };
 use tutti_graph::contract::Direct;
 use tutti_graph::Node;
@@ -32,8 +33,8 @@ use tutti_io::Wave;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
-    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoiceNode,
-    VoicePool, VoiceSource, VoiceWindow,
+    Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
+    VoiceCommand, VoiceNode, VoicePool, VoiceSource, VoiceWindow,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -417,14 +418,17 @@ fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
 /// **Every memory voice node, re-prepared at a 512-frame `max_block`,
 /// renders ragged blocks up to it without allocating**: a pool (two plain
 /// voices and a stretched one), a stretched `VoiceNode`, and a
-/// `MemorySource` placed and free-running — each block in one piece
+/// `MemorySource` placed and free-running, and a pool of looped voices and
+/// a silent one — each block in one piece
 /// through scratch sized in `prepare`. (The disk voice's gate is in-crate:
 /// `clip_reader_ragged_blocks_at_max_block_512_are_allocation_free`.)
 ///
 /// Mutation (run): `VoicePool::process` resizing its scratch to the block
 /// (`self.scratch.resize(frames)`) → aborts. Mutation (run):
 /// `MemorySource::process` taking a fresh `vec![None; frames]` for its
-/// positions → aborts.
+/// positions → aborts. Mutation (run): a `Vec` built per call in
+/// `MemorySource::read_placed_lanes`'s looped branch → the looped pool
+/// aborts.
 #[test]
 fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
@@ -433,6 +437,28 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
     pool.insert_voice(SlotId(1), placed_voice(&wave, 1.0));
     pool.insert_voice(SlotId(2), placed_voice(&wave, 2.0));
+    ragged_at_512(pool);
+
+    // Looped, at unit rate and varispeed (the block read's looped lanes,
+    // straight from the wave and gathered), and one placed past the
+    // transport (a silent voice the pool skips).
+    let looped = |speed: f32| {
+        let mut voice = placed_voice(&wave, 1.0);
+        voice.play.loop_ = LoopSetting::On {
+            start: SamplePosition::new(1_000.0),
+            end: SamplePosition::new(30_000.0),
+            crossfade_frames: 256,
+        };
+        voice.play.speed = PlaybackRate::new(speed);
+        voice
+    };
+    let mut pool = VoicePool::new();
+    pool.insert_voice(SlotId(0), looped(1.0));
+    pool.insert_voice(SlotId(1), looped(1.37));
+    let late = MemorySource::placed(wave.clone(), Beat::new(1_000.0), None);
+    let mut silent = placed_voice(&wave, 1.0);
+    silent.source = VoiceSource::Memory(late);
+    pool.insert_voice(SlotId(2), silent);
     ragged_at_512(pool);
 
     ragged_at_512(VoiceNode::new(placed_voice(&wave, 0.5)));

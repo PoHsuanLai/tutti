@@ -482,7 +482,7 @@ impl Unit {
     /// samples and an `n`-wide output frame cleared to zero, would write.
     ///
     /// This is the slot's block read through the filter
-    /// (`PlaybackSlot::process_into`). Bit-identical to calling `tick` once
+    /// (`PlaybackSlot::render_lanes`). Bit-identical to calling `tick` once
     /// per frame, because it does the same arithmetic on the same values in
     /// the same order per channel:
     ///

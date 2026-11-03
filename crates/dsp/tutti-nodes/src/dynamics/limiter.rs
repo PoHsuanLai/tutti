@@ -82,7 +82,11 @@ impl LookaheadRing {
     fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
         let ring = &mut self.buffers[c];
         for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
-            *o = ring.replace_oldest(x) * g;
+            let d = ring.replace_oldest(x);
+            // A NaN in both operands: x86 returns the first one's and which
+            // is first is up to the compiler, so pick the delayed sample's
+            // (as the per-frame product did) to keep the sign bit.
+            *o = if d.is_nan() { d + d } else { d * g };
         }
     }
 }
@@ -378,7 +382,10 @@ impl Node for LimiterNode {
             .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
         let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
-        self.lane = vec![0.0; p.max_block().get().max(1)];
+        let lane_len = p.max_block().get().max(1);
+        if self.lane.len() != lane_len {
+            self.lane = vec![0.0; lane_len];
+        }
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -394,7 +401,8 @@ impl Node for LimiterNode {
         let curve = (threshold_fed.is_none() && ceiling_fed.is_none())
             .then(|| LimiterCurve::new(base_threshold, base_ceiling));
 
-        let mut lane = core::mem::take(&mut self.lane);
+        // Borrowed in place, so a panic caught outside leaves the lane intact.
+        let lane = &mut self.lane;
         let mut envelope = self.envelope;
         let mut last_gain = None;
         let mut start = 0;
@@ -442,7 +450,6 @@ impl Node for LimiterNode {
             }
             start = end;
         }
-        self.lane = lane;
         self.envelope = envelope;
 
         // Metering only, read after the block, so the block's last frame is
@@ -1379,6 +1386,64 @@ mod tests {
                 "lane {lane:?}: meter {} against the last frame's {expected}",
                 lim.gain_reduction_db().get()
             );
+        }
+    }
+
+    /// Each frame of output is the input delayed by the declared latency,
+    /// times the minimum of the envelope over the lookahead window that ends
+    /// at that frame.
+    ///
+    /// The test computes the envelope itself from the documented math: it
+    /// starts at 0, a lower target is taken at once (no attack), a higher
+    /// one is approached by the one-pole release, and the target is
+    /// `compute_limiter_gain` of the frame's peak. The input is quiet, steps
+    /// above the threshold at frame 300 and falls back at 700, so the gain
+    /// changes at the step, along the window and through the release.
+    ///
+    /// Mutation (run): in `delay_scaled`, apply each frame's gain one frame
+    /// late (`gains.iter().cycle().skip(len - 1)`) -> the gain at the step and
+    /// along the release is the previous frame's -> fails, at lane 512 and 100.
+    #[test]
+    fn each_frame_is_scaled_by_its_own_window_minimum_gain() {
+        let release = 0.001;
+        let (threshold, ceiling) = (Db(-12.0), Db(-0.3));
+        for lane in [None, Some(100)] {
+            let mut lim = prepared_at(
+                LimiterNode::new(threshold, ceiling).with_release(release),
+                RATE_44K,
+            );
+            if let Some(n) = lane {
+                lim.lane.truncate(n);
+            }
+            let latency = lim.ring.lookahead_samples;
+            let input: Vec<f32> = (0..1200)
+                .map(|i| if (300..700).contains(&i) { 0.8 } else { 0.05 })
+                .collect();
+            let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
+
+            let coeff = Seconds(release).one_pole_coeff(RATE_44K);
+            let mut envelope = 0.0f32;
+            let envelopes: Vec<f32> = input
+                .iter()
+                .map(|&x| {
+                    let target = compute_limiter_gain(amplitude_to_db(x), threshold, ceiling).get();
+                    envelope = if target < envelope {
+                        target
+                    } else {
+                        envelope + coeff * (target - envelope)
+                    };
+                    envelope
+                })
+                .collect();
+            for (i, &y) in out.iter().enumerate() {
+                let delayed = if i < latency { 0.0 } else { input[i - latency] };
+                let window = &envelopes[(i + 1).saturating_sub(latency)..=i];
+                let gain = window.iter().copied().fold(f32::INFINITY, f32::min);
+                assert!(
+                    (y - delayed * gain).abs() <= 1e-6,
+                    "lane {lane:?}, frame {i}: {y} against {delayed} x {gain}"
+                );
+            }
         }
     }
 }

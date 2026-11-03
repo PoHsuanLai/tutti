@@ -1645,8 +1645,9 @@ mod tests {
     /// **A steady block read writes the caller's lanes as the frame path's
     /// `put` does**, for a reader wider than the caller (stereo into mono, 6
     /// channels into stereo), as wide, narrower, and mono: each lane is the
-    /// reader's channel and a lane past the reader is silent. Every run is read along time (`steady_lanes`),
-    /// and after the first block the read allocates nothing.
+    /// reader's channel and a lane past the reader is silent. Every run is
+    /// read along time (`steady_lanes`), and after the first block the read
+    /// allocates nothing.
     ///
     /// Mutation (run): the lanes cut to the reader's width
     /// (`&mut lanes[..w]`) → the 2-into-1 row panics, out of range.

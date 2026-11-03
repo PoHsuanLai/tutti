@@ -404,8 +404,8 @@ impl<F: FnMut(usize, &[f32])> Out<'_, F> {
 ///
 /// Writes what the frame path's [`Out::put`] would: the reader's frame is
 /// `st.width` wide and lands on as many lanes as there are, so a reader
-/// wider than the caller drops its last channels and a mono ring fans to
-/// every lane written.
+/// wider than the caller drops its last channels. A reader of width 1 never
+/// fans: it writes one lane.
 #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
 fn steady_lanes(
     claim: &PosClaim<'_>,
@@ -457,6 +457,9 @@ fn steady_lanes(
         frac[i] = f;
     }
     let (index, frac) = (&index[..frames], &frac[..frames]);
+    // `LiveRead::new` is the only constructor and takes `width` from the
+    // ring, so `src == 1` means `w == 1`, `lanes_n == 1`, and the fan below
+    // copies nothing. No reader has a mono ring and a wider width to test.
     let reads = if src == 1 { 1 } else { lanes_n };
     for (c, lane_out) in lanes.iter_mut().enumerate().take(reads) {
         for (t, lane) in y.iter_mut().enumerate() {

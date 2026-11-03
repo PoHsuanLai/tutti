@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `arc-lend`: a slot list that doubles, and modules
+
+**A cell with one reader allocates 448 bytes for its slots, not 2720.**
+The slot list grew sixteen slots (a 128-byte cache line each) at a time, so
+the common cell, read by one node, paid for fifteen it never used. It now
+starts at one slot and doubles: `n` readers registered at once hold
+`n.next_power_of_two()` slots. A publish with one reader scans one slot, not
+sixteen (42 ns p50 against 47 ns on one machine); with 17 or more readers
+it costs what it did. The reader side is unchanged, and the loom model no
+longer needs a smaller block under `--cfg loom` to cover growth.
+
+**`ArcLend::current()`: the publishing side reads what it published.** It
+takes the publisher's lock and returns an owning `Arc` of the value in
+force, so an owner no longer keeps a copy beside the cell (and a lock to
+keep the two in step) to derive the next value or start a fork. A reader
+still cannot own: `current` is a publisher-side call, and the `Arc` it
+returns frees wherever its holder drops it. `publish` now takes
+`impl Into<Arc<T>>`, so `publish(value)` works beside
+`publish(Arc::new(value))`, which still compiles. `ArcLend::reader` and
+`Reader::lend` are `#[must_use]`.
+
+The module split changes no behaviour.
+`src/lend.rs` is now `slots.rs` (the slot list and its word encoding, not
+generic over the payload), `current.rs` (the current pointer, and every
+`Arc::from_raw` the cell makes), `cell.rs` (`ArcLend` and its scan) and
+`reader.rs` (`Reader`, `Loan`), with the std/loom shim in `sync.rs`. The
+unit tests are under `src/tests/`, by subject, and no logic file holds
+test-only code. The docs now count a lend and its drop as three stores, not
+four.
+
+### Fixed — `arc-lend`: a lend writes nothing outside its slot
+
+**Readers kept side by side no longer slow each other down.** A `Reader`
+counted its lends in a field of its own, so readers stored next to each
+other (a `Vec<Reader>`) shared a cache line that every lend wrote: at four
+threads a lend took 25.7 ns, against 3.95 ns with each reader on its own
+line. The counter now lives on the reader's slot, which is on a line of its
+own, so a lend writes only that line. The loom models and miri pass
+unchanged.
+
+### Changed — `arc-lend`: docs as a paper, a wider comparison, a run on real hardware
+
+**The README is the crate's front page, and the docs are two pages.**
+`lib.rs` includes `README.md`. `docs::guide` (using it well, what to watch
+for) replaces `patterns`, `limitations` and `performance`, and
+`docs::design` (the protocol, its correctness argument, and related work)
+replaces `internal`. **The comparison adds `crossbeam-epoch`, `haphazard`,
+`triple_buffer` and `arc-swap` read through a `Cache` per reader**, and `compare/tests/claims.rs` checks its claims about
+them by running each cell. `BENCHMARKS.md` is now from a run on a Ryzen 9
+9950X (32 threads), not a 4-vCPU VM. The harness pads each reader handle's
+nesting levels, whose `RefCell` flags otherwise shared a line between reader
+threads.
+
 ### Changed — streamed FLAC export, bulk ring copies in the I/O edges, renders bit-identical
 
 **FLAC export streams and is spec-correct at the end.** It no longer holds

@@ -1,7 +1,5 @@
 //! Gate: a reader's code path (lend, drop a loan, drop the reader) neither
 //! allocates nor frees.
-//!
-//! Moved from tutti-types' `tests/rt_no_alloc.rs` with the cell.
 
 // Under `--cfg loom` the cell's atomics are loom's, which panic outside a
 // `loom::model`.
@@ -32,8 +30,8 @@ fn the_reader_side_neither_allocates_nor_frees() {
     use std::sync::Arc;
 
     let cell = Arc::new(ArcLend::new(vec![1u32; 64]));
-    // More readers than one block of slots, so a lend through a slot of a
-    // later block runs too.
+    // Readers across six blocks of the slot list, so lends through slots of
+    // later blocks run too.
     let mut readers: Vec<_> = (0..40).map(|_| cell.reader()).collect();
     let mut sum = 0;
     assert_no_alloc::assert_no_alloc(|| {

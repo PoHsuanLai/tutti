@@ -1,16 +1,21 @@
-//! **arc-lend against arc-swap, basedrop, left-right and locks: tails,
-//! allocations on the reader, publisher latency and retained memory.**
+//! **arc-lend against arc-swap, basedrop, left-right, crossbeam-epoch,
+//! haphazard, triple_buffer and locks: tails, allocations on the reader,
+//! publisher latency and retained memory.**
+//!
+//! A contender that supports a bounded number of readers
+//! ([`Contender::MAX_READERS`]: triple_buffer's one) is left out of the rows
+//! that need more.
 //!
 //! A custom harness, not criterion: criterion reports means, and a deadline
 //! thread cares about the tail. Every reader operation is timed with
 //! `Instant` and recorded in an HDR histogram, and the tables print p50, p99,
 //! p99.9, p99.99 and the max. The method, the results and what they mean are
-//! in `crates/arc-lend/BENCHMARKS.md`; the raw output of the recorded run is
-//! under `results/`.
+//! in `BENCHMARKS.md` at the crate root; the raw output of the recorded run
+//! is under `results/`.
 //!
 //! ```text
-//! just bench-compare                 # the full run, several minutes
-//! just bench-compare --test          # the smoke run CI does: tiny counts
+//! cargo bench -p arc-lend-compare --bench compare            # the full run, several minutes
+//! cargo bench -p arc-lend-compare --bench compare -- --test  # the smoke run CI does: tiny counts
 //! ```
 //!
 //! `Instant` rather than `rdtsc`: it is portable (the bench builds on Windows
@@ -247,7 +252,7 @@ fn reader_loop<C: Contender>(
     C::nest(&mut r, depth);
     let mut hist = new_histogram();
     if C::PREWARM {
-        black_box(nested::<C>(&r, 1));
+        C::prewarm(&r);
     }
     start.wait();
     begin_counting();
@@ -478,7 +483,7 @@ fn header(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
 /// of ours: allocations, and its latency.
 fn first_read<C: Contender>(r: &C::Reader, prewarm: bool) -> (Counts, u64) {
     if prewarm {
-        black_box(nested::<C>(r, 1));
+        C::prewarm(r);
     }
     begin_counting();
     let t0 = Instant::now();
@@ -563,18 +568,21 @@ fn section_fresh(plan: &Plan) {
     let mut parked = Vec::new();
     let mut writers = Vec::new();
     for_each_contender!(|C| {
-        let row = fresh_thread::<C>(plan.fresh_threads, &PARK, &mut parked, &mut writers);
-        println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
-            C::NAME,
-            row.grow.0.allocs,
-            row.grow.0.frees,
-            ns(row.grow.1),
-            row.restart.0.allocs,
-            ns(row.restart.1),
-            row.prewarmed.0.allocs,
-            ns(row.prewarmed.1),
-        );
+        // The pool and three more threads, each with a reader of its own.
+        if C::supports(plan.fresh_threads + 3) {
+            let row = fresh_thread::<C>(plan.fresh_threads, &PARK, &mut parked, &mut writers);
+            println!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                C::NAME,
+                row.grow.0.allocs,
+                row.grow.0.frees,
+                ns(row.grow.1),
+                row.restart.0.allocs,
+                ns(row.restart.1),
+                row.prewarmed.0.allocs,
+                ns(row.prewarmed.1),
+            );
+        }
     });
     PARK.store(true, Ordering::Release);
     for h in parked {
@@ -606,13 +614,15 @@ fn section_matrix(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
             ));
             // Contenders innermost, so each sees the same machine state.
             for_each_contender!(|C| {
-                let out = run_cell::<C>(readers, 1, rate, plan.run, cores);
-                rows.push(MatrixRow {
-                    name: C::NAME,
-                    readers,
-                    rate,
-                    out,
-                });
+                if C::supports(readers) {
+                    let out = run_cell::<C>(readers, 1, rate, plan.run, cores);
+                    rows.push(MatrixRow {
+                        name: C::NAME,
+                        readers,
+                        rate,
+                        out,
+                    });
+                }
             });
         }
     }
@@ -716,7 +726,7 @@ fn held_store<C: Contender>(stores: u64, cores: &Cores) -> HeldRow {
         let reader = s.spawn(move || {
             pin(cores.reader(0));
             if C::PREWARM {
-                black_box(nested::<C>(&r, 1));
+                C::prewarm(&r);
             }
             begin_counting();
             for i in 1..=stores {
@@ -1036,7 +1046,13 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for park in [Park::None, Park::One, Park::Staircase(STAIRCASE)] {
         for_each_contender!(|C| {
-            if C::NESTS || !matches!(park, Park::Staircase(_)) {
+            // Normal readers and the parked one.
+            let needs = match park {
+                Park::None => 3,
+                Park::One => 2,
+                Park::Staircase(_) => 1,
+            };
+            if (C::NESTS || !matches!(park, Park::Staircase(_))) && C::supports(needs) {
                 progress(&format!("section 6: {} {}", C::NAME, park.label()));
                 let row = retained::<C>(park, plan, cores);
                 println!(
@@ -1110,6 +1126,9 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
     println!("|---|---:|{TAIL_RULE}|");
     for_each_contender!(|C| {
         for &n in plan.registered {
+            if !C::supports(n) {
+                continue;
+            }
             let t = publish_cost::<C>(n, plan.cost_publishes, cores);
             println!("| {} | {} | {} |", C::NAME, n, t.cells());
         }
@@ -1146,7 +1165,7 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
 fn main() {
     // Criterion's convention: the full run only when `cargo bench` passes
     // `--bench`, and never with `--test` (`cargo bench -- --test`, the CI
-    // smoke run and `just bench-smoke`'s). Anything else, such as `cargo test
+    // smoke run). Anything else, such as `cargo test
     // --benches` or `--all-targets`, which pass neither, is the smoke run
     // too, not four minutes of harness. Everything else is ignored.
     let full = std::env::args().any(|a| a == "--bench") && !std::env::args().any(|a| a == "--test");

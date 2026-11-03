@@ -5,11 +5,11 @@
 //! LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p arc-lend --release --test loom
 //! ```
 //!
-//! Under `--cfg loom`, `src/lend.rs` builds its atomics, fences and mutex
-//! from `loom` (see its `sync` module), so every interleaving and weak-memory
+//! Under `--cfg loom`, the crate builds its atomics, fences and mutex from
+//! `loom` (see `src/sync.rs`), so every interleaving and weak-memory
 //! reordering loom explores below is one the real `reader`/`lend`/`publish`/
-//! `reclaim`/`drop` can take. Under the flag a block of the slot list holds
-//! two slots, so a model with three readers grows the list.
+//! `reclaim`/`drop` can take. The slot list starts at one slot and doubles,
+//! so a model with two readers grows it once and one with three twice.
 //!
 //! # What each model asserts
 //!
@@ -41,22 +41,30 @@
 //!
 //! # Mutation record
 //!
-//! Each of these was applied to `src/lend.rs` and the models run (at
-//! `LOOM_MAX_PREEMPTIONS=3`, each model on its own, because an aborting model
-//! hides the rest). The failing models are named.
+//! Each of these was applied to the shipped code (then all in `src/lend.rs`,
+//! since split into `cell.rs`, `slots.rs`, `current.rs` and `reader.rs`;
+//! each mutation names the code it changed, not the file) and the models run
+//! (at `LOOM_MAX_PREEMPTIONS=3`, each model on its own, because an aborting
+//! model hides the rest). The failing models are named.
 //!
 //! "All eight" means `one_reader_two_publishes`, `two_readers_one_publish`,
 //! `a_reader_lends_twice`, `nested_readers`, `two_publishers_and_a_reader`,
 //! `reclaim_while_a_reader_lends`, `registering_and_dropping_readers` and
 //! `reclaim_with_nothing_retired`. The last was added with `reclaim`'s early
-//! return, and every mutation below was re-run against it alone (at the same
-//! bound); the record includes its result. The `Reader::drop`-reclaims
-//! mutation was re-run for it as `self.cell.reclaim()` after the `owned`
-//! store, which `reclaim`'s early return skips while nothing is retired.
+//! return, and every mutation below but the last was re-run against it alone
+//! (at the same bound); the record includes its result. The
+//! `Reader::drop`-reclaims mutation was re-run for it as `self.cell.reclaim()`
+//! after the `owned` store, which `reclaim`'s early return skips while nothing
+//! is retired.
+//!
+//! `current_while_publishing` is not one of the eight. It was added with
+//! `ArcLend::current` and has no reader, so the reader- and scan-ordering
+//! mutations below were not re-run against it; its own mutation is the last
+//! entry.
 //!
 //! - the reader's `fence(SeqCst)` removed → all eight (a causality
 //!   violation: the scan misses the claim and frees what the reader loads);
-//! - the publisher's `fence(SeqCst)` (in `scan`) removed → all eight;
+//! - the publisher's `fence(SeqCst)` (in `Control::scan`) removed → all eight;
 //! - the lend's `current.load(Acquire)` weakened to `Relaxed` → all eight
 //!   (the reader sees the pointer before the payload's write);
 //! - the claim's `store(claim, Release)` weakened to `Relaxed` →
@@ -83,7 +91,13 @@
 //! - `Reader::drop`'s `owned.store(false, Release)` weakened to `Relaxed` →
 //!   `registering_and_dropping_readers` only: the new owner's registration
 //!   no longer happens-after the old owner's last `FREE`, and a scan that
-//!   reads that `FREE` frees the new owner's value.
+//!   reads that `FREE` frees the new owner's value;
+//! - `current` loading the pointer before it takes the lock (the load, then
+//!   `lock()`, then the strong-count increment) → `current_while_publishing`
+//!   ("read value 1 after it was freed": a publish retires and frees the
+//!   value between the load and the increment). The seven run beside it
+//!   pass, since none calls `current`; `registering_and_dropping_readers`
+//!   (which does not call it either) was not run against this mutation.
 //!
 //! The swap was `AcqRel` until a review found that weakening it to `Release`
 //! survives every model: the outgoing value was stored by a publisher holding
@@ -197,9 +211,14 @@ impl Drop for Tracked {
 }
 
 /// No preemption bound of its own: exhaustive unless `LOOM_MAX_PREEMPTIONS`
-/// is set. CI and `just loom-full` run every model unbounded but
-/// `registering_and_dropping_readers`, which they bound at 4 and 5 (at 6 it
-/// did not finish in 25 minutes).
+/// is set. CI runs every model unbounded but
+/// `registering_and_dropping_readers`, which it bounds at 4 and 5 (at 6 it
+/// did not finish in 25 minutes):
+///
+/// ```text
+/// RUSTFLAGS="--cfg loom" cargo test --release --test loom -- --skip registering_and_dropping_readers
+/// LOOM_MAX_PREEMPTIONS=5 RUSTFLAGS="--cfg loom" cargo test --release --test loom -- registering_and_dropping_readers --exact
+/// ```
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
 }
@@ -318,6 +337,40 @@ fn nested_readers() {
     });
 }
 
+/// A publisher-side read racing two publishes: `current` takes an owning
+/// handle under the lock, so the value it returns stays alive however the
+/// scans interleave, and is freed exactly once.
+///
+/// The snapshot goes back to the main thread through `join` and is dropped
+/// there. The values are `std::sync::Arc`s, whose refcount loom does not
+/// instrument: a snapshot dropped on its own thread would race the scan's
+/// drop of the cell's count, and loom, not seeing the `Arc`'s
+/// `Release`/`Acquire` decrement, would report the read before it as racing
+/// the free. Handing it back keeps the model on what it checks, the load
+/// and increment under the lock against a publish and its free; that two
+/// owners' drops are ordered is `Arc`'s own guarantee.
+#[test]
+fn current_while_publishing() {
+    model(|| {
+        let tracker = Tracker::new(3);
+        let cell = cell(&tracker);
+        let snapshot = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                let value = cell.current();
+                value.check();
+                value
+            })
+        };
+
+        cell.publish(tracker.make(1));
+        cell.publish(tracker.make(2));
+
+        drop(snapshot.join().unwrap());
+        finish(cell, &tracker, &[]);
+    });
+}
+
 /// Two publishers racing, with a reader: the control mutex must serialize
 /// them so each outgoing value is retired exactly once, and both scans must
 /// see the reader.
@@ -401,11 +454,12 @@ fn reclaim_with_nothing_retired() {
     });
 }
 
-/// Readers registered and dropped while a publisher runs, on a list of
-/// two-slot blocks: the first reader's slot is freed and handed to the third
-/// while the second holds the other slot, so the third registration reuses a
-/// slot whose previous owner was a different thread, and a fourth grows the
-/// list.
+/// Readers registered and dropped while a publisher runs, on a list that
+/// doubles: the first two readers fill the first two blocks (a slot each),
+/// and the third registration, while the second still holds its slot,
+/// reuses the first's slot if its reader has dropped by then (a slot whose
+/// previous owner was a different thread), or grows the list by a block of
+/// two.
 #[test]
 fn registering_and_dropping_readers() {
     model(|| {

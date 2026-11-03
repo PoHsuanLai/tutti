@@ -2,7 +2,8 @@
 //! justifies its configuration.
 //!
 //! Line numbers are at the versions `Cargo.toml` pins: arc-swap 1.9.3,
-//! basedrop 0.1.3, left-right 0.11.8.
+//! basedrop 0.1.3, left-right 0.11.8, crossbeam-epoch 0.9.21, haphazard
+//! 0.1.8, triple_buffer 9.0.0.
 //!
 //! Every contender publishes a fresh `Arc<Payload>` (or basedrop's
 //! `Shared<Payload>`) and reads by borrowing it for one closure call: the
@@ -19,11 +20,22 @@
 //! window. Every other contender's `nest` does nothing.
 
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::Ordering::{Acquire, SeqCst};
 use std::sync::{Arc, Mutex, RwLock};
 
 use arc_lend::ArcLend;
 use arc_lend_compare::Payload;
 use arc_swap::{ArcSwap, ArcSwapAny, IndependentStrategy};
+
+/// A nesting level of a reader handle, on a line pair of its own (x86_64
+/// and aarch64 prefetch lines in pairs). Every read writes its level's
+/// `RefCell` flag, and the handles of different reader threads are made one
+/// after another, so unpadded levels of neighbouring threads would share a
+/// line that both write: the harness's own false sharing, charged to the
+/// contender. At 31 readers it put arc-lend's p99 at 270 ns, against
+/// arc-swap's 40 ns.
+#[repr(align(128))]
+pub struct Padded<T>(T);
 
 /// One cell under test, as the harness drives it.
 pub trait Contender: 'static {
@@ -39,6 +51,9 @@ pub trait Contender: 'static {
     /// a contender's configuration, not a harness choice: it is set where the
     /// contender's documented best use asks for it.
     const PREWARM: bool = false;
+    /// How many reader handles the cell supports, if it is bounded. Rows that
+    /// need more skip the contender (see [`supports`](Self::supports)).
+    const MAX_READERS: Option<usize> = None;
 
     /// What the publishing thread owns.
     type Writer: Send + 'static;
@@ -62,6 +77,16 @@ pub trait Contender: 'static {
     }
     /// One read: borrow the current value for the duration of `f`.
     fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R;
+    /// What [`PREWARM`](Self::PREWARM) runs on the reader thread before its
+    /// measured window: one read, unless the contender's warm-up is another
+    /// call.
+    fn prewarm(r: &Self::Reader) {
+        std::hint::black_box(Self::read(r, |p| p.touch()));
+    }
+    /// Whether the cell supports `readers` reader handles at once.
+    fn supports(readers: usize) -> bool {
+        Self::MAX_READERS.is_none_or(|max| readers <= max)
+    }
     /// Writer-side cleanup at the end of a run (untimed): drop what the
     /// writer is still keeping that nobody reads.
     fn settle(w: &mut Self::Writer) {
@@ -79,7 +104,7 @@ pub trait Contender: 'static {
 /// within it. The publisher `publish`es, which frees whatever no reader
 /// holds. No discipline is configured, because the type has none to
 /// configure: the reader cannot own a value, so cannot free one
-/// (`src/lend.rs`, `Loan::drop`).
+/// (`src/reader.rs`, `Loan::drop`).
 pub struct ArcLendCell;
 
 /// One arc-lend reader handle: a registered `Reader` per nesting level, and
@@ -88,13 +113,13 @@ pub struct ArcLendCell;
 /// what `&mut` lending costs a harness whose `read` takes `&`.
 pub struct ArcLendReaders {
     cell: Arc<ArcLend<Payload>>,
-    levels: Vec<RefCell<arc_lend::Reader<Payload>>>,
+    levels: Vec<Padded<RefCell<arc_lend::Reader<Payload>>>>,
     depth: Cell<usize>,
 }
 
 impl ArcLendReaders {
     fn new(cell: Arc<ArcLend<Payload>>) -> Self {
-        let levels = vec![RefCell::new(cell.reader())];
+        let levels = vec![Padded(RefCell::new(cell.reader()))];
         Self {
             cell,
             levels,
@@ -118,7 +143,7 @@ impl Contender for ArcLendCell {
     }
     fn nest(r: &mut Self::Reader, depth: usize) {
         while r.levels.len() < depth {
-            r.levels.push(RefCell::new(r.cell.reader()));
+            r.levels.push(Padded(RefCell::new(r.cell.reader())));
         }
     }
     fn publish(w: &mut Self::Writer, value: Payload) {
@@ -127,7 +152,7 @@ impl Contender for ArcLendCell {
     #[inline]
     fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
         let level = r.depth.get();
-        let mut reader = r.levels[level].borrow_mut();
+        let mut reader = r.levels[level].0.borrow_mut();
         r.depth.set(level + 1);
         let out = f(&reader.lend());
         r.depth.set(level);
@@ -259,6 +284,94 @@ impl Contender for ArcSwapIndependent {
     fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
         let guard = r.load();
         f(&guard)
+    }
+    fn settle(w: &mut Self::Writer) {
+        w.graveyard.retain(|a| Arc::strong_count(a) > 1);
+    }
+}
+
+/// arc-swap 1.9.3 read through a `Cache` per reader: its per-holder handle,
+/// the closest it has to arc-lend's registered `Reader`.
+///
+/// - One `Cache<Arc<ArcSwap<T>>, Arc<T>>` per reader thread and per nesting
+///   level, so nested reads take no debt slot at all. `Cache::load` takes
+///   `&mut self` (`src/cache.rs:148`), so each level sits in a `RefCell`, as
+///   the crate's own example does (`src/cache.rs:95-101`).
+/// - `load` compares the cached pointer with the cell's (a Relaxed load),
+///   and only on a change calls `load_full` (`src/cache.rs:159-166`), which
+///   takes an owned count on the shared `Arc` and drops the old cached one.
+/// - That drop is on the reader, so the writer is the graveyard of
+///   [`ArcSwapBest`]: a cache's old value is never the last count while the
+///   graveyard holds it. In exchange each cache pins the last value it read
+///   until its next read.
+/// - Prewarm loads once through the cell, so the thread's debt node exists
+///   before `load_full` first needs it (`src/debt/list.rs:223-228`); a read
+///   of an unchanged cache touches no debt.
+pub struct ArcSwapCache;
+
+type SwapCache = arc_swap::Cache<Arc<ArcSwap<Payload>>, Arc<Payload>>;
+
+/// One arc-swap cache handle: a `Cache` per nesting level, and the level the
+/// next read takes, as in [`ArcLendReaders`].
+pub struct ArcSwapCaches {
+    cell: Arc<ArcSwap<Payload>>,
+    levels: Vec<Padded<RefCell<SwapCache>>>,
+    depth: Cell<usize>,
+}
+
+impl ArcSwapCaches {
+    fn new(cell: Arc<ArcSwap<Payload>>) -> Self {
+        let levels = vec![Padded(RefCell::new(SwapCache::new(cell.clone())))];
+        Self {
+            cell,
+            levels,
+            depth: Cell::new(0),
+        }
+    }
+}
+
+impl Contender for ArcSwapCache {
+    const NAME: &'static str = "arc-swap cache";
+    const CONFIG: &'static str = "DefaultStrategy; one Cache per thread and per nesting level, load() per block; reader prewarmed; writer swaps into a graveyard dropped on the writer at strong_count==1";
+    const PREWARM: bool = true;
+    type Writer = Graveyard<ArcSwap<Payload>>;
+    type Reader = ArcSwapCaches;
+
+    fn new(init: Payload) -> (Self::Writer, Self::Reader) {
+        let cell = Arc::new(ArcSwap::from_pointee(init));
+        (
+            Graveyard {
+                cell: cell.clone(),
+                graveyard: Vec::new(),
+            },
+            ArcSwapCaches::new(cell),
+        )
+    }
+    fn reader(r: &Self::Reader) -> Self::Reader {
+        ArcSwapCaches::new(r.cell.clone())
+    }
+    fn nest(r: &mut Self::Reader, depth: usize) {
+        while r.levels.len() < depth {
+            r.levels
+                .push(Padded(RefCell::new(SwapCache::new(r.cell.clone()))));
+        }
+    }
+    fn publish(w: &mut Self::Writer, value: Payload) {
+        let old = w.cell.swap(Arc::new(value));
+        w.bury(old);
+    }
+    #[inline]
+    fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
+        let level = r.depth.get();
+        let mut cache = r.levels[level].0.borrow_mut();
+        r.depth.set(level + 1);
+        let out = f(cache.load());
+        r.depth.set(level);
+        out
+    }
+    fn prewarm(r: &Self::Reader) {
+        drop(r.cell.load());
+        std::hint::black_box(Self::read(r, |p| p.touch()));
     }
     fn settle(w: &mut Self::Writer) {
         w.graveyard.retain(|a| Arc::strong_count(a) > 1);
@@ -436,6 +549,232 @@ impl Contender for LeftRight {
 }
 
 // ---------------------------------------------------------------------------
+// crossbeam-epoch
+// ---------------------------------------------------------------------------
+
+/// crossbeam-epoch 0.9.21: an `epoch::Atomic<Payload>` shared through an
+/// `Arc`. Readers `pin()` per block and load under the guard. The publisher
+/// swaps and `defer_destroy`s the old value, which runs once the global epoch
+/// has moved on, on whichever thread collects. Every 128th `pin()` on a
+/// thread collects (`src/internal.rs:450-453`), readers' included, so a
+/// reader runs other threads' deferred destructors: no configuration keeps
+/// frees off the reader. Each reader thread is prewarmed, since its first
+/// `pin()` registers it with the collector, which allocates
+/// (`src/internal.rs:334`).
+pub struct CrossbeamEpoch;
+
+/// The writer side of crossbeam-epoch: the shared `Atomic`, freed with its
+/// last value when the harness drops the writer after every reader.
+pub struct EpochWriter(Arc<crossbeam_epoch::Atomic<Payload>>);
+
+impl Drop for EpochWriter {
+    fn drop(&mut self) {
+        // Every reader handle is gone, so nothing can load the last value.
+        if let Some(atomic) = Arc::get_mut(&mut self.0) {
+            let guard = crossbeam_epoch::pin();
+            let last = atomic.swap(crossbeam_epoch::Shared::null(), SeqCst, &guard);
+            // SAFETY: no reader is left to hold `last`.
+            unsafe { guard.defer_destroy(last) };
+        }
+        CrossbeamEpoch::settle_all();
+    }
+}
+
+impl CrossbeamEpoch {
+    /// Pins and flushes until the deferred frees are done, with no reader
+    /// pinned. A collect frees only a few bags (`COLLECT_STEPS`,
+    /// `src/internal.rs:169`), and a run can leave millions of values
+    /// deferred, so this repeats until the live payload count stops falling.
+    /// Garbage left here would be freed during the next crossbeam-epoch run
+    /// and counted there, as values freed on its reader below its baseline.
+    fn settle_all() {
+        loop {
+            let before = arc_lend_compare::live_payloads();
+            for _ in 0..1024 {
+                crossbeam_epoch::pin().flush();
+            }
+            if arc_lend_compare::live_payloads() >= before {
+                break;
+            }
+        }
+    }
+}
+
+impl Contender for CrossbeamEpoch {
+    const NAME: &'static str = "crossbeam-epoch";
+    const CONFIG: &'static str = "Atomic<T>; pin() + load per block; swap + defer_destroy on the publisher; reader prewarmed";
+    const PREWARM: bool = true;
+    type Writer = EpochWriter;
+    type Reader = Arc<crossbeam_epoch::Atomic<Payload>>;
+
+    fn new(init: Payload) -> (Self::Writer, Self::Reader) {
+        let atomic = Arc::new(crossbeam_epoch::Atomic::new(init));
+        (EpochWriter(atomic.clone()), atomic)
+    }
+    fn reader(r: &Self::Reader) -> Self::Reader {
+        r.clone()
+    }
+    fn publish(w: &mut Self::Writer, value: Payload) {
+        let guard = crossbeam_epoch::pin();
+        let old = w.0.swap(crossbeam_epoch::Owned::new(value), SeqCst, &guard);
+        // SAFETY: `old` is out of the cell, and freed only after every
+        // thread pinned now has unpinned.
+        unsafe { guard.defer_destroy(old) };
+    }
+    #[inline]
+    fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
+        let guard = crossbeam_epoch::pin();
+        let p = r.load(Acquire, &guard);
+        // SAFETY: never null (only the writer's drop stores null, after every
+        // reader), and the guard keeps it from being freed.
+        f(unsafe { p.deref() })
+    }
+    fn settle(w: &mut Self::Writer) {
+        let _ = w;
+        Self::settle_all();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// haphazard
+// ---------------------------------------------------------------------------
+
+/// haphazard 0.1.8: hazard pointers, in the global domain. Each reader handle
+/// owns one `HazardPointer` per nesting level, acquired before the measured
+/// window (acquiring allocates a record when none is free,
+/// `src/domain.rs:554-560`). A read is `safe_load`, which loads, protects and
+/// re-loads until the pointer is stable (`src/hazard.rs:116-149`): lock-free,
+/// not wait-free. The publisher swaps, `retire`s the old value (which
+/// allocates a list node, `src/domain.rs:605-613`) and calls
+/// `eager_reclaim`, so the frees happen on the publisher after every
+/// publish, as for basedrop's `collect`. Only a retire (`src/domain.rs:643`)
+/// and `eager_reclaim` (`:619-622`) reclaim; a reader never does.
+pub struct Haphazard;
+
+/// One haphazard reader handle: the shared pointer, and a hazard pointer per
+/// nesting level with the level the next read takes (as [`ArcLendReaders`]).
+pub struct HazardReaders {
+    cell: Arc<haphazard::AtomicPtr<Payload>>,
+    levels: Vec<Padded<RefCell<haphazard::HazardPointer<'static>>>>,
+    depth: Cell<usize>,
+}
+
+impl HazardReaders {
+    fn new(cell: Arc<haphazard::AtomicPtr<Payload>>) -> Self {
+        Self {
+            cell,
+            levels: vec![Padded(RefCell::new(haphazard::HazardPointer::new()))],
+            depth: Cell::new(0),
+        }
+    }
+}
+
+/// The writer side of haphazard: the shared pointer, whose last value is
+/// retired when the harness drops the writer after every reader.
+pub struct HazardWriter(Option<Arc<haphazard::AtomicPtr<Payload>>>);
+
+impl Drop for HazardWriter {
+    fn drop(&mut self) {
+        if let Some(atomic) = self.0.take().and_then(|a| Arc::try_unwrap(a).ok()) {
+            // SAFETY: every reader handle is gone, so nothing loads it again.
+            unsafe { atomic.retire() };
+        }
+        haphazard::Domain::global().eager_reclaim();
+    }
+}
+
+impl Contender for Haphazard {
+    const NAME: &'static str = "haphazard";
+    const CONFIG: &'static str = "hazard pointers, global domain; one HazardPointer per thread and per nesting level, made before the measured window; safe_load per block; swap + retire + eager_reclaim on the publisher";
+    type Writer = HazardWriter;
+    type Reader = HazardReaders;
+
+    fn new(init: Payload) -> (Self::Writer, Self::Reader) {
+        let cell = Arc::new(haphazard::AtomicPtr::from(Box::new(init)));
+        (HazardWriter(Some(cell.clone())), HazardReaders::new(cell))
+    }
+    fn reader(r: &Self::Reader) -> Self::Reader {
+        HazardReaders::new(r.cell.clone())
+    }
+    fn nest(r: &mut Self::Reader, depth: usize) {
+        while r.levels.len() < depth {
+            r.levels
+                .push(Padded(RefCell::new(haphazard::HazardPointer::new())));
+        }
+    }
+    fn publish(w: &mut Self::Writer, value: Payload) {
+        let cell = w.0.as_ref().expect("taken only by drop");
+        if let Some(old) = cell.swap(Box::new(value)) {
+            // SAFETY: `old` is out of the cell, and retired once.
+            unsafe { old.retire() };
+        }
+        haphazard::Domain::global().eager_reclaim();
+    }
+    #[inline]
+    fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
+        let level = r.depth.get();
+        let mut hp = r.levels[level].0.borrow_mut();
+        r.depth.set(level + 1);
+        let out = f(r.cell.safe_load(&mut hp).expect("never null"));
+        hp.reset_protection();
+        r.depth.set(level);
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// triple_buffer
+// ---------------------------------------------------------------------------
+
+/// triple_buffer 9.0.0 over an `Arc<Payload>`: single producer, single
+/// consumer (`src/lib.rs:125`), so it is measured only in rows with one
+/// reader. The reader's `read` takes `&mut self` (`src/lib.rs:432`) and only
+/// swaps buffer indices; the writer's `write` overwrites the back buffer
+/// (`src/lib.rs:247-253`), so a replaced value is dropped on the writer.
+/// Nested reads are not possible on one consumer.
+pub struct TripleBuffer;
+
+/// The one consumer, moved out of the first handle into the one that reads.
+pub struct TripleReader {
+    spare: Arc<Mutex<Option<triple_buffer::Output<Arc<Payload>>>>>,
+    own: Option<RefCell<triple_buffer::Output<Arc<Payload>>>>,
+}
+
+impl Contender for TripleBuffer {
+    const NAME: &'static str = "triple_buffer";
+    const CONFIG: &'static str =
+        "Input/Output over Arc<T>; one reader only; read() per block; write() on the publisher";
+    const NESTS: bool = false;
+    const MAX_READERS: Option<usize> = Some(1);
+    type Writer = triple_buffer::Input<Arc<Payload>>;
+    type Reader = TripleReader;
+
+    fn new(init: Payload) -> (Self::Writer, Self::Reader) {
+        let (input, output) = triple_buffer::triple_buffer(&Arc::new(init));
+        let r0 = TripleReader {
+            spare: Arc::new(Mutex::new(Some(output))),
+            own: None,
+        };
+        (input, r0)
+    }
+    fn reader(r: &Self::Reader) -> Self::Reader {
+        let output = r.spare.lock().unwrap().take();
+        TripleReader {
+            spare: r.spare.clone(),
+            own: Some(RefCell::new(output.expect("triple_buffer has one reader"))),
+        }
+    }
+    fn publish(w: &mut Self::Writer, value: Payload) {
+        w.write(Arc::new(value));
+    }
+    #[inline]
+    fn read<R>(r: &Self::Reader, f: impl FnOnce(&Payload) -> R) -> R {
+        let mut output = r.own.as_ref().expect("a reading handle").borrow_mut();
+        f(output.read())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Locks
 // ---------------------------------------------------------------------------
 
@@ -524,6 +863,10 @@ macro_rules! for_each_contender {
             $body
         }
         {
+            type $C = $crate::contenders::ArcSwapCache;
+            $body
+        }
+        {
             type $C = $crate::contenders::ArcSwapNaive;
             $body
         }
@@ -533,6 +876,18 @@ macro_rules! for_each_contender {
         }
         {
             type $C = $crate::contenders::LeftRight;
+            $body
+        }
+        {
+            type $C = $crate::contenders::CrossbeamEpoch;
+            $body
+        }
+        {
+            type $C = $crate::contenders::Haphazard;
+            $body
+        }
+        {
+            type $C = $crate::contenders::TripleBuffer;
             $body
         }
         {

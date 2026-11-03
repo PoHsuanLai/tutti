@@ -86,7 +86,7 @@ announcement → `FREE`.
 | claim: `(generation << 1) \| 1`, odd | the reader, starting a lend (`Release`) | mid-lend: what it will load is not known yet | pins every retired value from the claim's floor on |
 | announcement: the value's address, even and nonzero | the reader, once it has loaded (`Relaxed`) | holds that value | pins that one value |
 
-Each reader counts its lends in its *generation*, so two claims by one
+Each reader counts its lends in its *generation*, kept on its slot, so two claims by one
 reader differ unless the counter has wrapped (§5.1). An `Arc`'s data
 pointer is even and nonzero, so an announcement is never mistaken for the
 other two.
@@ -129,8 +129,8 @@ is as cheap as a lend.
 
 ```rust,ignore
 fn lend(&mut self) -> Loan {
-    self.generation += 1;
-    self.slot.word.store(claim(self.generation), Release);
+    self.slot.generation += 1; // on the slot, so a lend writes only the slot
+    self.slot.word.store(claim(self.slot.generation), Release);
     fence(SeqCst);
     let value = current.load(Acquire);
     self.slot.word.store(announcement(value), Relaxed);

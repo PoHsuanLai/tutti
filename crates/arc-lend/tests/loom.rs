@@ -47,7 +47,7 @@
 //! (at `LOOM_MAX_PREEMPTIONS=3`, each model on its own, because an aborting
 //! model hides the rest). The failing models are named.
 //!
-//! "All eight" means `one_reader_two_publishes`, `two_readers_one_publish`,
+//! The file has nine models. "All eight" below means `one_reader_two_publishes`, `two_readers_one_publish`,
 //! `a_reader_lends_twice`, `nested_readers`, `two_publishers_and_a_reader`,
 //! `reclaim_while_a_reader_lends`, `registering_and_dropping_readers` and
 //! `reclaim_with_nothing_retired`. The last was added with `reclaim`'s early
@@ -57,7 +57,7 @@
 //! after the `owned` store, which `reclaim`'s early return skips while nothing
 //! is retired.
 //!
-//! `current_while_publishing` is not one of the eight. It was added with
+//! `current_while_publishing` is the ninth, and not one of the eight. It was added with
 //! `ArcLend::current` and has no reader, so the reader- and scan-ordering
 //! mutations below were not re-run against it; its own mutation is the last
 //! entry.

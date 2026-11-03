@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::slots::{Padded, Slot};
+
 /// The list doubles when every slot is owned, starting from one: a cell
 /// with one reader pays for one slot, and `n` readers registered at once
 /// hold `n.next_power_of_two()`.
@@ -92,4 +94,83 @@ fn a_forgotten_loan_pins_one_value_until_its_slot_is_reused() {
     let _next: Vec<_> = (0..slots).map(|_| cell.reader()).collect();
     assert_eq!(cell.slot_count(), slots);
     assert_eq!(cell.reclaim(), 0, "a new reader starts from a free slot");
+}
+
+/// A slot is one padded unit, a cache line or two, so a cell with one reader
+/// holds one such unit for its slots and no reader's slot shares a line with
+/// another's.
+///
+/// Mutation: remove `repr(align)` from `Padded`; its alignment falls to a
+/// word's and the first assertion fails.
+#[test]
+fn a_slot_has_its_own_cache_line() {
+    assert!(std::mem::align_of::<Padded<Slot>>() >= 64);
+    assert_eq!(
+        std::mem::size_of::<Padded<Slot>>(),
+        std::mem::align_of::<Padded<Slot>>(),
+        "a slot fits in one aligned unit"
+    );
+
+    let cell = Arc::new(ArcLend::new(0u32));
+    let _reader = cell.reader();
+    assert_eq!(cell.slot_count(), 1);
+}
+
+/// The bytes of `value`, for a type without padding.
+fn bytes_of<T>(value: &T) -> Vec<u8> {
+    // SAFETY: `value` is a live reference, so its `size_of::<T>()` bytes are
+    // readable; the caller checks the type has no padding to be uninitialized.
+    unsafe {
+        std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>())
+            .to_vec()
+    }
+}
+
+/// A slot's words, as another thread would read them.
+fn slot_state<T>(reader: &Reader<T>) -> (usize, bool, usize) {
+    let slot = reader.slot();
+    (
+        slot.word.load(Ordering::Relaxed),
+        slot.owned.load(Ordering::Relaxed),
+        slot.generation.load(StdOrdering::Relaxed),
+    )
+}
+
+/// A lend writes only its own slot: its lend counter is on the slot (which
+/// has a line to itself), so the reader's own bytes and every other slot are
+/// as they were. A counter in the `Reader` would make readers kept side by
+/// side in a `Vec` share a line that every lend writes; one on the cell would
+/// share it among all readers.
+///
+/// Mutations: give `Reader` a `generation: Cell<usize>` field that
+/// `next_claim` bumps instead of the slot's; the reader grows by a word, and
+/// its slot's counter would stay put. Make `next_claim` bump a static counter
+/// instead; the slot's counter stays put.
+#[test]
+fn a_lend_writes_only_its_own_slot() {
+    let cell = Arc::new(ArcLend::new(0u32));
+    let mut readers: Vec<Reader<u32>> = (0..4).map(|_| cell.reader()).collect();
+    // No padding, so reading the reader's bytes is sound.
+    assert_eq!(
+        std::mem::size_of::<Reader<u32>>(),
+        2 * std::mem::size_of::<usize>()
+    );
+    let bytes: Vec<_> = readers.iter().map(bytes_of).collect();
+
+    for round in 1..=3 {
+        for i in 0..readers.len() {
+            let before: Vec<_> = readers.iter().map(slot_state).collect();
+            drop(readers[i].lend());
+            let after: Vec<_> = readers.iter().map(slot_state).collect();
+            for j in 0..readers.len() {
+                if j == i {
+                    assert_eq!(after[j], (FREE, true, round), "reader {i}'s own slot");
+                } else {
+                    assert_eq!(after[j], before[j], "reader {j}'s slot, lent by {i}");
+                }
+            }
+        }
+    }
+    let after: Vec<_> = readers.iter().map(bytes_of).collect();
+    assert_eq!(after, bytes, "a lend wrote into a `Reader`");
 }

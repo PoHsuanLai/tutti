@@ -26,13 +26,14 @@ of it now holds the reader alone and reaches the cell through
 
 ### Changed — `arc-lend`: a slot list that doubles, and modules
 
-**A cell with one reader allocates 448 bytes for its slots, not 2720.**
-The slot list grew sixteen slots (a 128-byte cache line each) at a time, so
-the common cell, read by one node, paid for fifteen it never used. It now
+**A cell with one reader allocates one slot, not sixteen.**
+The slot list grew sixteen slots (a cache line each) at a time, so the
+common cell, read by one node, paid for fifteen it never used. It now
 starts at one slot and doubles: `n` readers registered at once hold
-`n.next_power_of_two()` slots. A publish with one reader scans one slot, not
-sixteen (42 ns p50 against 47 ns on one machine); with 17 or more readers
-it costs what it did. The reader side is unchanged, and the loom model no
+`n.next_power_of_two()` slots (`the_list_doubles_from_one_slot`, and
+`a_slot_has_its_own_cache_line` for a slot's size). A publish with one
+reader scans one slot, not sixteen; with 17 or more readers it costs what
+it did. The reader side is unchanged, and the loom model no
 longer needs a smaller block under `--cfg loom` to cover growth.
 
 **`ArcLend::current()`: the publishing side reads what it published.** It
@@ -58,11 +59,14 @@ four.
 
 **Readers kept side by side no longer slow each other down.** A `Reader`
 counted its lends in a field of its own, so readers stored next to each
-other (a `Vec<Reader>`) shared a cache line that every lend wrote: at four
-threads a lend took 25.7 ns, against 3.95 ns with each reader on its own
-line. The counter now lives on the reader's slot, which is on a line of its
-own, so a lend writes only that line. The loom models and miri pass
-unchanged.
+other (a `Vec<Reader>`) shared a cache line that every lend wrote, so
+concurrent lends slowed each other. The counter now lives on the reader's
+slot, which is on a line of its own, so a lend writes only that line.
+`a_lend_writes_only_its_own_slot` pins it, and section 8 of the comparison
+bench (`BENCHMARKS.md`) times concurrent lends with the readers adjacent and
+apart; the two agree now, and with the counter back in `Reader` the adjacent
+readers lend slower. The counter is a plain `std` atomic outside the
+protocol the loom models and miri check.
 
 ### Changed — `arc-lend`: docs as a paper, a wider comparison, a run on real hardware
 

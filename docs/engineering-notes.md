@@ -306,9 +306,9 @@ the slots once, and frees only what no slot announces and no outstanding claim
 could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
 `docs::design` (`crates/arc-lend/src/docs/design.md`), §5. The `SeqCst` fence
 pair is the whole argument, and both halves are load-bearing: the loom model
-(`arc-lend/tests/loom.rs`, run against the shipped code: six models
-exhaustively, and `registering_and_dropping_readers` at a preemption bound of
-4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
+(`arc-lend/tests/loom.rs`, run against the shipped code: nine models:
+eight exhaustive, and `registering_and_dropping_readers` at a preemption bound
+of 4 in CI and 5 under `just loom-full`) fails with either removed, and so does miri on the
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 

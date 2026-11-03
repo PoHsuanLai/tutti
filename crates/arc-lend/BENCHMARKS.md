@@ -9,8 +9,8 @@ parked reader keeps alive. arc-lend loses some of these, and we report the
 losses next to the wins.
 
 The harness is the `arc-lend-compare` crate beside this file
-([`compare/`](compare/)). Every table below is copied by script from one
-recorded run, whose raw output is committed as
+([`compare/`](compare/)). Every table below, except section 8's, is copied
+by script from one recorded run, whose raw output is committed as
 [`compare/results/2026-10-27-ryzen9-9950x.txt`](compare/results/2026-10-27-ryzen9-9950x.txt);
 no figure was edited by hand. Two earlier runs, on a shared 4-vCPU cloud
 VM, are kept beside it for reference.
@@ -986,6 +986,48 @@ alone. The difference is the retired list's filter.
 - The release publish costs about what freeing the same values from a
   `Vec` does: 1212.4 µs for 30000, against 1033.4 µs.
 
+## 8. Concurrent lends on one cell
+
+Not part of the Ryzen run above: this section was added later and is
+recorded on its own, in
+[`compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt`](compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt).
+Reproduce it with
+
+```bash
+cargo bench --locked -p arc-lend-compare --bench compare -- --bench --concurrent-lends-section-only
+```
+
+Each thread lends flat out from a reader of its own, with no publisher,
+for 1000 ms; the table is the mean time per lend across threads. A
+`Reader` is 16 bytes. *adjacent*: the readers sit next to each other in one
+`Vec<Reader>`, so a lend that wrote anywhere in the `Reader` would make the
+threads contend for a cache line. *apart*: each reader has a cache line to
+itself, whatever a lend writes.
+
+The machine is a shared 4-vCPU cloud container (Intel Xeon @ 2.10 GHz,
+Ubuntu 24.04, kernel 6.18.44, rustc 1.99.1, release profile, tsc
+clocksource, threads pinned to cores 0 to 3), **not** the Ryzen of the
+sections above. Its load average was 9.89 at the start, on 4 cores, so
+the absolute figures are inflated and noisy, most of all at 4 threads, where
+the benchmark's threads compete with the load for every core.
+
+| threads | adjacent | apart |
+|---:|---:|---:|
+| 1 | 10.19 ns | 11.61 ns |
+| 2 | 13.45 ns | 13.41 ns |
+| 4 | 26.28 ns | 25.89 ns |
+
+- The columns agree to within the run's noise, which is the property
+  being checked: a lend writes only its slot, which has a line of its own.
+- Lend cost rising with threads in both columns is the container's load,
+  not sharing between readers: it is the same in the *apart* column.
+- The section can tell the difference. With a per-lend counter put back in
+  `Reader` (the mutation recorded in the harness's header comment), one run
+  on this container read 42.05 ns *adjacent* against 15.77 ns *apart* at 2
+  threads, and 52.23 against 28.32 ns at 4. We have not run it on the
+  Ryzen, so no figure here says how large the effect is on a quiet
+  machine.
+
 ## How the harness was checked
 
 The measuring parts were broken on purpose, one at a time, and the output
@@ -1001,6 +1043,9 @@ checked. Each is recorded in a comment beside the code.
   section 4 row read 10 frees but 0 values freed on the reader.
 - **Timing** (`t0` taken after the read): every reader p50 fell to the
   timer-overhead row's figure.
+- **The lend counter** (section 8; a `generation` field in `Reader`
+  instead of on the slot): the *adjacent* column rose above *apart*, as
+  recorded in section 8.
 - **The instrument's own tests** (`compare/tests/instruments.rs`) check
   that a counting thread's free is counted, that another thread's
   allocations are not, that a payload counts its drop, that a promoted

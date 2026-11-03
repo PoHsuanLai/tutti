@@ -18,7 +18,7 @@ impl Default for PitchBendSensitivity {
 }
 
 impl PitchBendSensitivity {
-    const FRAC_BITS: u32 = 25;
+    const FRAC_BITS: u32 = crate::fixed::Q7_25_FRAC_BITS;
 
     /// The MPE default per-note bend range: 48 semitones (MPE spec RP-053).
     pub const MPE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
@@ -44,7 +44,7 @@ impl PitchBendSensitivity {
     /// Sensitivity in semitones as a float (integer + fractional parts).
     #[inline]
     pub fn as_semitones_f32(self) -> f32 {
-        self.0 as f32 / (1u32 << Self::FRAC_BITS) as f32
+        crate::q7_25_to_f32(self.0)
     }
 }
 

@@ -32,7 +32,7 @@
 //! sample. The envelope is the exception: its stages are sample-accurate.
 
 use crate::kernel::{self, V};
-use crate::{EnvelopeConfig, FilterType, OscillatorType, SvfMode};
+use crate::{Adsr, FilterType, OscillatorType, SvfMode};
 use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Q};
 use tutti_nodes::{compute_ladder_coeffs, compute_svf_coeffs, SvfType};
 use wide::u32x8;
@@ -80,7 +80,7 @@ struct EnvShape {
 }
 
 impl EnvShape {
-    fn new(env: &EnvelopeConfig, sample_rate: SampleRate) -> Self {
+    fn new(env: &Adsr, sample_rate: SampleRate) -> Self {
         // Where the types stop: these are per-sample slopes and a frame count
         // used as a divisor inside the SIMD loop, not quantities any unit
         // covers. `Seconds`/`Amplitude` come off here, once.
@@ -172,7 +172,7 @@ const FILTER_LADDER: u8 = 2;
 pub(crate) struct VoiceBank {
     osc: Osc,
     filter: Filter,
-    env_config: EnvelopeConfig,
+    env_config: Adsr,
     shape: EnvShape,
     /// Per-sample one-pole coefficient the output gains glide with.
     gain_glide: f32,
@@ -228,7 +228,7 @@ impl VoiceBank {
     pub(crate) fn new(
         oscillator: OscillatorType,
         filter: &FilterType,
-        envelope: &EnvelopeConfig,
+        envelope: &Adsr,
         sample_rate: SampleRate,
         voices: usize,
         stride: usize,
@@ -866,11 +866,11 @@ mod tests {
 
     /// Instant attack, full sustain: the envelope is 1.0 from the first
     /// sample, so the output is the oscillator/filter chain alone.
-    fn flat() -> EnvelopeConfig {
-        EnvelopeConfig::new(Seconds(0.0), Seconds(0.0), Amplitude(1.0), Seconds(0.1))
+    fn flat() -> Adsr {
+        Adsr::new(Seconds(0.0), Seconds(0.0), Amplitude(1.0), Seconds(0.1))
     }
 
-    fn bank(osc: OscillatorType, filter: FilterType, env: EnvelopeConfig) -> VoiceBank {
+    fn bank(osc: OscillatorType, filter: FilterType, env: Adsr) -> VoiceBank {
         VoiceBank::new(osc, &filter, &env, sr(), 16, 1)
     }
 
@@ -922,7 +922,7 @@ mod tests {
     /// there.
     #[test]
     fn adsr_stages_take_their_authored_times() {
-        let env = EnvelopeConfig::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
+        let env = Adsr::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
         let mut b = bank(OscillatorType::Sine, FilterType::None, env);
         start(&mut b, 0, Hz(440.0), Hz(20_000.0), Resonance::NONE);
 
@@ -978,7 +978,7 @@ mod tests {
     /// fails the release half.
     #[test]
     fn a_release_starts_from_the_current_level() {
-        let env = EnvelopeConfig::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
+        let env = Adsr::new(Seconds(0.01), Seconds(0.02), Amplitude(0.5), Seconds(0.03));
         let mut b = bank(OscillatorType::Sine, FilterType::None, env);
         start(&mut b, 0, Hz(440.0), Hz(20_000.0), Resonance::NONE);
 
@@ -1218,7 +1218,7 @@ mod tests {
     /// `EnvShape::new` fails this (the retrigger falls from 1.5 to 1.0).
     #[test]
     fn a_retrigger_at_a_boosted_sustain_does_not_drop() {
-        let env = EnvelopeConfig::new(Seconds(0.001), Seconds(0.001), Amplitude(1.5), Seconds(0.1));
+        let env = Adsr::new(Seconds(0.001), Seconds(0.001), Amplitude(1.5), Seconds(0.1));
         let mut b = bank(OscillatorType::Sine, FilterType::None, env);
         start(&mut b, 0, Hz(440.0), Hz(20_000.0), Resonance::NONE);
         let held = envelope_trace(&mut b, 0, 500);

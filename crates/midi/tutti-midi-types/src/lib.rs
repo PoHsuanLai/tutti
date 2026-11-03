@@ -17,6 +17,7 @@ pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, M
 // Private: everything public in these is re-exported at the root below, so the
 // module path would be a second name for a type that already has one.
 mod clip_file;
+mod fixed;
 mod message;
 mod note_id;
 mod traits;
@@ -46,6 +47,7 @@ pub use clip_file::{
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
     ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
+pub use fixed::{q7_25_to_f32, q7_9_to_f32};
 pub use message::{
     ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
 };

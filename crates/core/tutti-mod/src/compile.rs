@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use audio_automation::CurveType;
 use tutti_types::{
-    Amplitude, Beat, BeatDuration, Depth, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
+    Adsr, Beat, BeatDuration, Depth, ParamAddr, PhaseIncrement, PlayReading, SamplePosition,
     SampleRate, Samples, Seconds,
 };
 
@@ -71,52 +71,16 @@ pub struct TargetKey {
     pub param: ParamAddr,
 }
 
-/// An ADSR's stages, for a note envelope ([`Source::NoteEnvelope`]).
-///
-/// The sustain is an [`Amplitude`], the held level as a fraction of the
-/// envelope's peak (1.0): the convention `tutti-polysynth`'s
-/// `EnvelopeConfig` already uses. The compiler refuses one outside `[0, 1]`:
-/// a note envelope's raw value stays in `[0, 1]`.
-///
-/// Equality is bitwise, so it is [`Eq`].
-#[derive(Clone, Copy, Debug)]
-pub struct Adsr {
-    /// Note-on to the peak.
-    pub attack: Seconds,
-    /// The peak to the sustain level.
-    pub decay: Seconds,
-    /// The held level, `0..=1` of the peak.
-    pub sustain: Amplitude,
-    /// Note-off to zero.
-    pub release: Seconds,
+/// Whether a note envelope's stages are usable: the times finite and
+/// non-negative, the sustain in `[0, 1]` (a note envelope's raw value stays in
+/// `[0, 1]`).
+fn adsr_valid(adsr: &Adsr) -> bool {
+    let time = |s: Seconds| s.get() >= 0.0 && s.get().is_finite();
+    time(adsr.attack)
+        && time(adsr.decay)
+        && time(adsr.release)
+        && (0.0..=1.0).contains(&adsr.sustain.get())
 }
-
-impl Adsr {
-    fn bits(&self) -> [u32; 4] {
-        [
-            self.attack.get().to_bits(),
-            self.decay.get().to_bits(),
-            self.sustain.get().to_bits(),
-            self.release.get().to_bits(),
-        ]
-    }
-
-    fn valid(&self) -> bool {
-        let time = |s: Seconds| s.get() >= 0.0 && s.get().is_finite();
-        time(self.attack)
-            && time(self.decay)
-            && time(self.release)
-            && (0.0..=1.0).contains(&self.sustain.get())
-    }
-}
-
-impl PartialEq for Adsr {
-    fn eq(&self, other: &Self) -> bool {
-        self.bits() == other.bits()
-    }
-}
-
-impl Eq for Adsr {}
 
 /// What a source is.
 #[derive(Clone, Debug, PartialEq)]
@@ -728,7 +692,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
             }
         }
         Source::NoteEnvelope { adsr } => {
-            if adsr.valid() {
+            if adsr_valid(adsr) {
                 Ok(())
             } else {
                 bad

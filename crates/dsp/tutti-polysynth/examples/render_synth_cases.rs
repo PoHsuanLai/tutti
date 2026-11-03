@@ -24,7 +24,7 @@ use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
-    EnvelopeConfig, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
+    Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
 
 const SR: f64 = 48_000.0;
@@ -34,8 +34,8 @@ const BLOCKS: usize = 400;
 
 /// A flat, organ-like envelope so the spectrum is stationary — a decaying one
 /// would smear every harmonic measurement across the analysis window.
-fn flat_envelope() -> EnvelopeConfig {
-    EnvelopeConfig {
+fn flat_envelope() -> Adsr {
+    Adsr {
         attack: Seconds(0.001),
         decay: Seconds(0.0),
         sustain: Amplitude(1.0),

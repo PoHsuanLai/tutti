@@ -24,17 +24,6 @@ const BLOCK: usize = 64;
 /// The varispeed rate every voice reads at.
 const RATE: f64 = 1.37;
 
-/// The cubic `read_ring` interpolates its four taps with
-/// (`voice::interp::cubic_hermite`, which the crate does not export).
-#[inline]
-fn cubic(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c0 = y1;
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + c0
-}
-
 /// One disk voice: its ring's two ends and where it reads.
 struct Voice {
     /// Keeps the ring's writer alive (the butler's, in the sampler).
@@ -101,7 +90,13 @@ fn block(voices: &mut [Voice], out: &mut [[f32; 2]; BLOCK]) -> f32 {
                 claim.frame(taps[3]),
             ];
             for (c, o) in o.iter_mut().enumerate() {
-                *o = cubic(f[0].get(c), f[1].get(c), f[2].get(c), f[3].get(c), frac);
+                *o = tutti_types::cubic_hermite(
+                    f[0].get(c),
+                    f[1].get(c),
+                    f[2].get(c),
+                    f[3].get(c),
+                    frac,
+                );
             }
         }
         sum += out[BLOCK - 1][0];

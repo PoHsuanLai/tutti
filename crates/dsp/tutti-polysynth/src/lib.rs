@@ -4,7 +4,7 @@
 //!
 //! - [`PolySynth`]: the synth, a graph node with one MIDI event input.
 //! - [`SynthConfig`]: everything a synth is built from, with
-//!   [`OscillatorType`], [`FilterType`] and [`SvfMode`], [`EnvelopeConfig`]
+//!   [`OscillatorType`], [`FilterType`] and [`SvfMode`], [`Adsr`]
 //!   and [`FilterModConfig`].
 //! - Voice allocation: [`VoiceMode`] and [`AllocationStrategy`].
 //! - [`UnisonConfig`], [`PortamentoConfig`] (with [`PortamentoMode`] and
@@ -35,9 +35,10 @@ mod tuning;
 pub use tuning::Tuning;
 
 mod synth;
-pub use synth::{
-    EnvelopeConfig, FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig,
-};
+pub use synth::{FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
+// The amplitude envelope `SynthConfig::envelope` takes; one type with the
+// modulation sources' note envelope.
+pub use tutti_core::Adsr;
 
 mod polysynth;
 // `PolySynth::fork_instance`: the synth in a fork of the

@@ -800,8 +800,9 @@ pub enum Source {
     NoteEnvelope { adsr: Adsr },
 }
 
-/// Existing units: sustain is a level, `Amplitude` (polysynth's
-/// `EnvelopeConfig` precedent).
+/// Existing units: sustain is a level, `Amplitude`. Homed in `tutti-types`
+/// (`tutti_types::Adsr`), the one envelope type polysynth's `SynthConfig`
+/// takes too.
 pub struct Adsr { pub attack: Seconds, pub decay: Seconds,
                   pub sustain: Amplitude, pub release: Seconds }
 
@@ -1756,8 +1757,8 @@ crate builds with and without `--features bevy`.
   syntax. A curved or bipolar amount adds its zero-crossing corners.
 - `Wave::Const` for macros, not a one-point drawn wave on a 0 Hz clock
   (§7). `ProgramError::NotANumber`: a program refuses a NaN, so it is `Eq`.
-- `Adsr::sustain` is `Amplitude` (a 0..1 level, as polysynth's
-  `EnvelopeConfig`): `Mix` is a blend position, `Velocity` a strike and
+- `Adsr::sustain` is `Amplitude` (a 0..1 level; the same type is
+  polysynth's amplitude envelope): `Mix` is a blend position, `Velocity` a strike and
   `Depth` bipolar.
 - `PlayReading` moved to `tutti-types` (re-exported from `tutti_graph`), so
   the compiler names no graph. `ParamAddr` derives `Ord`.

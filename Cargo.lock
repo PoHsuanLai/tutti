@@ -4642,6 +4642,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-sampler",
+ "tutti-types",
 ]
 
 [[package]]

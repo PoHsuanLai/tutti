@@ -25,6 +25,7 @@ use tutti_core::{
     SampleRate, Samples, TimelineSegment,
 };
 use tutti_io::Wave;
+use tutti_types::cubic_hermite;
 
 use super::clock::{BlockClock, Run};
 use super::loop_span::{blend, LoopSpan};
@@ -261,20 +262,6 @@ pub(crate) fn past_window(clock: &BlockClock<'_>, range: Range<usize>, gate: Gat
     clock.runs_in(range).last().is_some_and(|run| {
         run.rolling() && gate.reached(run.beat_at(last), run.tempo(), gate.window.start + duration)
     })
-}
-
-/// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
-///
-/// `y1` is the sample at the integer position, `y0`/`y2`/`y3` its neighbours
-/// (`y0` one behind, `y2`/`y3` ahead); `t` is the fractional offset in
-/// `[0, 1)` between `y1` and `y2`.
-#[inline]
-pub fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c0 = y1;
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + c0
 }
 
 /// [`cubic_hermite`] along time: `out[i]` is the cubic through `y[0][i]` ..

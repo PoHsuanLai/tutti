@@ -20,6 +20,7 @@ pub mod value;
 mod channels;
 mod downmix;
 mod interleaved;
+mod interp;
 mod rt;
 mod topology;
 
@@ -54,12 +55,12 @@ pub use atomic_float::AtomicF32;
 
 // Value vocabulary.
 pub use value::{
-    Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, CCNumber, Cents, CompressionRatio,
-    Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz, Latency,
-    MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, Param64,
-    ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Radians,
-    ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
-    StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
+    Adsr, Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, CCNumber, Cents,
+    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz,
+    Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param,
+    Param64, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate,
+    Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread,
+    SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
@@ -132,3 +133,6 @@ pub mod prelude {
 
 // PCM quantization.
 pub use pcm::{f32_to_i16, f32_to_i24};
+
+// Interpolation.
+pub use interp::cubic_hermite;

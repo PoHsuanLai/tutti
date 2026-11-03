@@ -23,7 +23,7 @@ use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
-    AllocationStrategy, EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, VoiceMode,
+    Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 
 const SR: f64 = 48_000.0;
@@ -44,8 +44,8 @@ fn note_off(note: u8) -> MidiEvent {
 /// An organ-like envelope: instant attack, full sustain, no decay. Keeps the
 /// amplitude flat so a level assertion measures the oscillator and the voice
 /// summing rather than an envelope's position on its curve.
-fn flat_envelope() -> EnvelopeConfig {
-    EnvelopeConfig {
+fn flat_envelope() -> Adsr {
+    Adsr {
         attack: Seconds(0.001),
         decay: Seconds(0.0),
         sustain: Amplitude(1.0),
@@ -238,7 +238,7 @@ fn velocity_scales_the_output_level() {
 #[test]
 fn a_note_off_silences_the_voice_after_release() {
     let mut cfg = config(OscillatorType::Sine);
-    cfg.envelope = EnvelopeConfig {
+    cfg.envelope = Adsr {
         attack: Seconds(0.001),
         decay: Seconds(0.0),
         sustain: Amplitude(1.0),

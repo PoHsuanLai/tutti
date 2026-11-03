@@ -88,6 +88,9 @@ pub struct SequencedClips {
     /// Targets an edit reached that [`rebuild`] could not finish (no graph
     /// yet, or the session refused the clip): tried again on the next run.
     retry: HashSet<Entity>,
+    /// Targets whose last attempt failed and was logged: a repeat is not
+    /// logged again.
+    failed: HashSet<Entity>,
 }
 
 impl SequencedClips {
@@ -127,8 +130,7 @@ pub fn rebuild(
     // The targets this frame's edits reach: an install gone, added or
     // changed (its target now and before), a clip's target left with no
     // node, a target (re)bound.
-    let retried = std::mem::take(&mut clips.retry);
-    let mut reached: HashSet<Entity> = retried.clone();
+    let mut reached: HashSet<Entity> = std::mem::take(&mut clips.retry);
     clips.installs.retain(|&install, &mut target| {
         let kept = installs.contains(install);
         if !kept {
@@ -192,6 +194,8 @@ pub fn rebuild(
 
     let session = graph.session();
     let mut midi = session.midi();
+    // Targets whose clip node was removed behind the sequencer's back.
+    let mut stale: Vec<Entity> = Vec::new();
     for (target, &sink) in &playable {
         let Some(&clip) = clips.clips.get(target) else {
             continue;
@@ -200,11 +204,19 @@ pub fn rebuild(
         // `AudioNode` was removed and re-inserted lost its old node's feeds
         // with that node (`Graph::remove`), and nothing else would restore
         // them. An unchanged feed (and the edit flag) is left alone.
-        if let Err(e) = midi.retarget(clip, sink) {
-            if !retried.contains(target) {
-                tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
+        match midi.retarget(clip, sink) {
+            Ok(()) => {
+                clips.failed.remove(target);
             }
-            clips.retry.insert(*target);
+            // The clip node is gone: forget it, and play a fresh one below
+            // if installs remain.
+            Err(tutti_session::Error::NotSessionMidi(_)) => stale.push(*target),
+            Err(e) => {
+                if clips.failed.insert(*target) {
+                    tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
+                }
+                clips.retry.insert(*target);
+            }
         }
         // A clip no install names any more plays nothing from the next
         // block, ending the notes it left sounding (as new events end the
@@ -214,6 +226,10 @@ pub fn rebuild(
         }
     }
 
+    for target in stale {
+        clips.clips.remove(&target);
+    }
+
     for (target, events) in by_target {
         let Some(&sink) = playable.get(&target) else {
             continue;
@@ -221,15 +237,18 @@ pub fn rebuild(
         match midi.play_clip(sink, events) {
             Ok(clip) => {
                 clips.clips.insert(target, clip);
+                clips.failed.remove(&target);
             }
             Err(e) => {
-                if !retried.contains(&target) {
+                if clips.failed.insert(target) {
                     tracing::error!("sequencer: {target:?} takes no clip: {e}");
                 }
                 clips.retry.insert(target);
             }
         }
     }
+    let retry = &clips.retry;
+    clips.failed.retain(|t| retry.contains(t));
 }
 
 /// Compiles [`MidiSourceInstall`]s into clip nodes.

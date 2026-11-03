@@ -684,7 +684,56 @@ fn an_install_removed_with_no_graph_ends_its_notes_when_the_graph_appears() {
     assert_eq!(note_offs(&seen), vec![(100, 60)]);
 }
 
+/// **A clip node removed behind the sequencer's back is forgotten.**
+/// `retarget` on it fails with `NotSessionMidi`; the stale entry goes, so the
+/// target is not retried for good, and an edit that leaves installs plays a
+/// fresh clip.
+///
+/// Mutation (run): the `NotSessionMidi` arm left out of `rebuild` (the error
+/// takes the retry path) → `node` still names the dead clip → fails on the
+/// first assertion.
+#[test]
+fn a_clip_removed_behind_its_back_is_forgotten_and_replaced() {
+    use bevy_tutti::midi::SequencedClips;
+
+    let mut app = app();
+    let (tap, seen) = spawn_tap(&mut app);
+    let first = app
+        .world_mut()
+        .spawn(MidiSourceInstall::new(
+            tap,
+            note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+        ))
+        .id();
+    app.update();
+    let dead = app
+        .world()
+        .resource::<SequencedClips>()
+        .node(tap)
+        .expect("a clip node");
+    app.world_mut().resource_mut::<AudioGraphRes>().remove(dead);
+    // The last install goes: nothing is left to play, the dead clip is dropped.
+    app.world_mut().despawn(first);
+    app.update();
+    assert_eq!(app.world().resource::<SequencedClips>().node(tap), None);
+
+    // A new install gets a fresh clip that plays.
+    app.world_mut().spawn(MidiSourceInstall::new(
+        tap,
+        note(64, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+    let fresh = app
+        .world()
+        .resource::<SequencedClips>()
+        .node(tap)
+        .expect("a fresh clip");
+    assert_ne!(fresh, dead);
+    roll(&mut app, 0, 100);
+    assert_eq!(note_ons(&seen), vec![(0, 64)]);
+}
+
 // A `play_clip` or `retarget` that fails is kept in the same retry set and
-// tried again. Not covered here: `rebuild` only asks a target with an event
-// input, and `play_clip` fails only for one without, so no session state
-// reachable from a test makes it fail once and then succeed.
+// tried again, logged once. Not covered here: `rebuild` only asks a target
+// with an event input, and `play_clip` fails only for one without, so no
+// session state reachable from a test makes it fail once and then succeed.

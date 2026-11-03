@@ -926,7 +926,7 @@ mod tests {
         let part = 64;
         let mut c = Convolver::new(&long_ir(1000), part);
         let lens = [20usize, 20, 20, 50];
-        let mut out = vec![0.0f32; 50];
+        let mut out = [0.0f32; 50];
         let (mut fill, mut crossings) = (0usize, 0);
         for k in 0..40 {
             let n = lens[k % 4];

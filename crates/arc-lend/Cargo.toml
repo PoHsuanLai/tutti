@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Like arc-swap, but readers only ever borrow: the writer keeps ownership, so the read side never frees"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+repository = "https://github.com/PoHsuanLai/arc-lend"
 readme = "README.md"
 keywords = ["arc", "realtime", "lock-free", "wait-free", "hazard-pointer"]
 categories = ["concurrency", "data-structures", "memory-management"]
@@ -24,9 +24,9 @@ workspace = true
 loom = "0.7"
 
 [dev-dependencies]
-# The baseline in `benches/lend.rs`: the cell this one replaced in tutti was an
-# `ArcSwap`, and the bench measures a lend against the `load()` it replaced.
-# Nothing in `src/` uses it.
+# The baseline in `benches/lend.rs`: the bench measures a lend against an
+# `ArcSwap` `load()`, the read it most often stands in for. Nothing in `src/`
+# uses it.
 arc-swap = "1.7"
 # `tests/no_alloc.rs`: the reader's code path runs inside an allocation gate.
 assert_no_alloc = { version = "1", default-features = false }

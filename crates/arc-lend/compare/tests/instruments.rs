@@ -12,36 +12,16 @@
 //! were the barrier's, not the cell's.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use arc_lend_compare::{begin_counting, end_counting, live_payloads, CountingAlloc, Payload};
 
+mod common;
+use common::Step;
+
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
-
-/// A handshake that neither allocates nor frees on any platform: one thread
-/// [`reach`](Step::reach)es a step, the other [`wait`](Step::wait)s for it.
-///
-/// Mutation: make `reach` allocate (`drop(black_box(Box::new(n)))` before the
-/// store), as a lazily boxed barrier does on macOS.
-/// `an_arc_lend_loan_frees_nothing_on_the_reader` then reads
-/// `Counts { allocs: 1, frees: 1, .. }`,
-/// `a_promoted_arc_swap_guard_frees_on_the_reader` reads `allocs: 1, frees: 3`
-/// and `another_threads_allocations_are_not_counted` reads `allocs: 1`.
-#[derive(Default)]
-struct Step(AtomicU8);
-
-impl Step {
-    fn reach(&self, n: u8) {
-        self.0.store(n, Ordering::Release);
-    }
-    fn wait(&self, n: u8) {
-        while self.0.load(Ordering::Acquire) < n {
-            std::hint::spin_loop();
-        }
-    }
-}
 
 /// Mutation: delete the `COUNTING.with(|c| c.set(true))` in `begin_counting`.
 /// No thread is then ever counted, and both counts here read 0.

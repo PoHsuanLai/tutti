@@ -136,3 +136,68 @@ fn recording_the_load_is_allocation_free() {
     });
     assert_eq!(meter.take().blocks, 32);
 }
+
+/// A mono source that also writes `per_block` events to its one event
+/// output each block, at the default capacity.
+struct Burst {
+    per_block: usize,
+}
+
+impl tutti_graph::Node for Burst {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(0, 1)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        io.output(0).fill(0.0);
+        let out = io.event_out(0);
+        for _ in 0..self.per_block {
+            // A note-on; a full port refuses it, which is the point.
+            let _ = out.push(tutti_graph::Event::midi(
+                tutti_graph::Offset::ZERO,
+                [0x2090_3c7f, 0, 0, 0],
+            ));
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// Events a node writes past its port's capacity reach the load meter: a
+/// node writing 100 more than the default capacity each block reads 100
+/// dropped per device block, from `process` and `process_segment` both,
+/// and a reset zeroes the count.
+///
+/// Mutations (run): `Engine::process` not forwarding the executor's count
+/// (`record_dropped_events` dropped) → 0 after the first block → fails;
+/// `take_dropped_events` returning the executor's running total instead
+/// of the change → 300 after the second block → fails.
+#[test]
+fn events_past_a_ports_capacity_reach_the_meter() {
+    let transport = Transport::new(RATE);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(64)));
+    let per_block = tutti_graph::DEFAULT_EVENT_CAPACITY + 100;
+    ed.insert(NodeKey(1), "burst", Unforkable(Burst { per_block }));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let meter = std::sync::Arc::clone(engine.load_meter());
+    let mut out = vec![0.0f32; 64];
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    assert_eq!(meter.peek().dropped_events, 100);
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    assert_eq!(meter.peek().dropped_events, 200);
+    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    assert_eq!(meter.peek().dropped_events, 300);
+    meter.reset();
+    assert_eq!(meter.peek().dropped_events, 0);
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+    assert_eq!(meter.take().dropped_events, 100);
+}

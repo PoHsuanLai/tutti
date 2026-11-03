@@ -245,6 +245,13 @@ impl HrtfBinaural {
         *self = Self::over(self.sphere.clone(), Arc::new(set), aim);
     }
 
+    /// Where the de-zipper is aimed now: the direction the last step
+    /// rendered.
+    #[cfg(test)]
+    pub(crate) fn aim(&self) -> (Azimuth, Elevation) {
+        self.aim.current()
+    }
+
     /// Zero the streaming buffers and seat the de-zipper on `target`, so the
     /// next step renders there with no crossfade in from elsewhere.
     pub(crate) fn reset_state(&mut self, target: (Azimuth, Elevation)) {

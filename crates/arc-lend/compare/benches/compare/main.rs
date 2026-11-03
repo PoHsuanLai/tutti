@@ -1,16 +1,21 @@
-//! **arc-lend against arc-swap, basedrop, left-right and locks: tails,
-//! allocations on the reader, publisher latency and retained memory.**
+//! **arc-lend against arc-swap, basedrop, left-right, crossbeam-epoch,
+//! haphazard, triple_buffer and locks: tails, allocations on the reader,
+//! publisher latency and retained memory.**
+//!
+//! A contender that supports a bounded number of readers
+//! ([`Contender::MAX_READERS`]: triple_buffer's one) is left out of the rows
+//! that need more.
 //!
 //! A custom harness, not criterion: criterion reports means, and a deadline
 //! thread cares about the tail. Every reader operation is timed with
 //! `Instant` and recorded in an HDR histogram, and the tables print p50, p99,
 //! p99.9, p99.99 and the max. The method, the results and what they mean are
-//! in `crates/arc-lend/BENCHMARKS.md`; the raw output of the recorded run is
-//! under `results/`.
+//! in `BENCHMARKS.md` at the crate root; the raw output of the recorded run
+//! is under `results/`.
 //!
 //! ```text
-//! just bench-compare                 # the full run, several minutes
-//! just bench-compare --test          # the smoke run CI does: tiny counts
+//! cargo bench -p arc-lend-compare --bench compare            # the full run, several minutes
+//! cargo bench -p arc-lend-compare --bench compare -- --test  # the smoke run CI does: tiny counts
 //! ```
 //!
 //! `Instant` rather than `rdtsc`: it is portable (the bench builds on Windows
@@ -43,6 +48,9 @@
 //!    reads).
 //! 7. **Publish cost** against readers registered (all contenders) and
 //!    against retired values pinned (arc-lend).
+//! 8. **Concurrent lends** on one cell at 1, 2 and 4 threads (arc-lend), with
+//!    the readers adjacent in one `Vec` and each on a line of its own. They
+//!    should agree: a lend writes only its slot.
 //!
 //! # Mutation record
 //!
@@ -65,19 +73,28 @@
 //!   p50 fell to about the timer-overhead row's (29-33 ns against 29 ns),
 //!   which is what that row is for: a figure at the timer floor measured
 //!   nothing.
+//! - **The lend counter** (section 8; `Reader` given a `generation: Cell<usize>`
+//!   field that `next_claim` bumps, instead of the slot's counter): the
+//!   *adjacent* column rose well above *apart* (2 threads: 42.05 ns against
+//!   15.77 ns; 4 threads: 52.23 ns against 28.32 ns, on a loaded 4-vCPU
+//!   container; `Reader` was 24 bytes, not 16). With the counter on the slot
+//!   the two columns agree to within the run's noise.
 
 mod contenders;
 
 use std::hint::black_box;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Barrier, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
+use arc_lend::{ArcLend, Reader};
 use arc_lend_compare::{
     begin_counting, end_counting, live_payloads, machine, new_histogram, ns, CountingAlloc, Counts,
     Histogram, Payload, Tail,
 };
 use contenders::{for_each_contender, ArcLendCell, Contender};
+
+type ArcLendReader = Reader<Payload>;
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
@@ -111,6 +128,10 @@ struct Plan {
     registered: &'static [usize],
     /// Section 7: retired values pinned (arc-lend).
     pinned: &'static [usize],
+    /// Section 8: how long each concurrent-lend cell runs.
+    lend_run: Duration,
+    /// Section 8: threads lending from one cell.
+    lend_threads: &'static [usize],
 }
 
 impl Plan {
@@ -126,6 +147,8 @@ impl Plan {
             cost_publishes: 20_000,
             registered: &[1, 10, 100, 1000],
             pinned: &[0, 100, 1000, 10_000, 30_000],
+            lend_run: Duration::from_millis(1000),
+            lend_threads: &[1, 2, 4],
         }
     }
 
@@ -141,6 +164,8 @@ impl Plan {
             cost_publishes: 50,
             registered: &[1, 10],
             pinned: &[0, 100],
+            lend_run: Duration::from_millis(10),
+            lend_threads: &[1, 2],
         }
     }
 }
@@ -164,6 +189,10 @@ impl Cores {
     }
     fn reader(&self, i: usize) -> Option<core_affinity::CoreId> {
         (!self.0.is_empty()).then(|| self.0[(i + 1) % self.0.len()])
+    }
+    /// Core `i`, wrapping, for a run with no publisher.
+    fn nth(&self, i: usize) -> Option<core_affinity::CoreId> {
+        (!self.0.is_empty()).then(|| self.0[i % self.0.len()])
     }
 }
 
@@ -247,7 +276,7 @@ fn reader_loop<C: Contender>(
     C::nest(&mut r, depth);
     let mut hist = new_histogram();
     if C::PREWARM {
-        black_box(nested::<C>(&r, 1));
+        C::prewarm(&r);
     }
     start.wait();
     begin_counting();
@@ -478,7 +507,7 @@ fn header(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
 /// of ours: allocations, and its latency.
 fn first_read<C: Contender>(r: &C::Reader, prewarm: bool) -> (Counts, u64) {
     if prewarm {
-        black_box(nested::<C>(r, 1));
+        C::prewarm(r);
     }
     begin_counting();
     let t0 = Instant::now();
@@ -563,18 +592,21 @@ fn section_fresh(plan: &Plan) {
     let mut parked = Vec::new();
     let mut writers = Vec::new();
     for_each_contender!(|C| {
-        let row = fresh_thread::<C>(plan.fresh_threads, &PARK, &mut parked, &mut writers);
-        println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
-            C::NAME,
-            row.grow.0.allocs,
-            row.grow.0.frees,
-            ns(row.grow.1),
-            row.restart.0.allocs,
-            ns(row.restart.1),
-            row.prewarmed.0.allocs,
-            ns(row.prewarmed.1),
-        );
+        // The pool and three more threads, each with a reader of its own.
+        if C::supports(plan.fresh_threads + 3) {
+            let row = fresh_thread::<C>(plan.fresh_threads, &PARK, &mut parked, &mut writers);
+            println!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                C::NAME,
+                row.grow.0.allocs,
+                row.grow.0.frees,
+                ns(row.grow.1),
+                row.restart.0.allocs,
+                ns(row.restart.1),
+                row.prewarmed.0.allocs,
+                ns(row.prewarmed.1),
+            );
+        }
     });
     PARK.store(true, Ordering::Release);
     for h in parked {
@@ -606,13 +638,15 @@ fn section_matrix(plan: &Plan, cores: &Cores, reader_counts: &[usize]) {
             ));
             // Contenders innermost, so each sees the same machine state.
             for_each_contender!(|C| {
-                let out = run_cell::<C>(readers, 1, rate, plan.run, cores);
-                rows.push(MatrixRow {
-                    name: C::NAME,
-                    readers,
-                    rate,
-                    out,
-                });
+                if C::supports(readers) {
+                    let out = run_cell::<C>(readers, 1, rate, plan.run, cores);
+                    rows.push(MatrixRow {
+                        name: C::NAME,
+                        readers,
+                        rate,
+                        out,
+                    });
+                }
             });
         }
     }
@@ -716,7 +750,7 @@ fn held_store<C: Contender>(stores: u64, cores: &Cores) -> HeldRow {
         let reader = s.spawn(move || {
             pin(cores.reader(0));
             if C::PREWARM {
-                black_box(nested::<C>(&r, 1));
+                C::prewarm(&r);
             }
             begin_counting();
             for i in 1..=stores {
@@ -1036,7 +1070,13 @@ fn section_retained(plan: &Plan, cores: &Cores) {
     println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for park in [Park::None, Park::One, Park::Staircase(STAIRCASE)] {
         for_each_contender!(|C| {
-            if C::NESTS || !matches!(park, Park::Staircase(_)) {
+            // Normal readers and the parked one.
+            let needs = match park {
+                Park::None => 3,
+                Park::One => 2,
+                Park::Staircase(_) => 1,
+            };
+            if (C::NESTS || !matches!(park, Park::Staircase(_))) && C::supports(needs) {
                 progress(&format!("section 6: {} {}", C::NAME, park.label()));
                 let row = retained::<C>(park, plan, cores);
                 println!(
@@ -1110,6 +1150,9 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
     println!("|---|---:|{TAIL_RULE}|");
     for_each_contender!(|C| {
         for &n in plan.registered {
+            if !C::supports(n) {
+                continue;
+            }
             let t = publish_cost::<C>(n, plan.cost_publishes, cores);
             println!("| {} | {} | {} |", C::NAME, n, t.cells());
         }
@@ -1142,11 +1185,94 @@ fn section_publish_cost(plan: &Plan, cores: &Cores) {
 }
 
 // ---------------------------------------------------------------------------
+// Section 8: concurrent lends
+// ---------------------------------------------------------------------------
+
+/// Gives its contents a cache line (two on x86-64) of their own.
+#[repr(align(128))]
+struct Apart<T>(T);
+
+/// How the readers of a concurrent-lend run sit in memory.
+#[derive(Clone, Copy)]
+enum Layout {
+    /// In one `Vec<Reader>`, next to each other.
+    Adjacent,
+    /// In one `Vec` of `Apart<Reader>`, each on a line of its own.
+    Apart,
+}
+
+/// `threads` threads, each lending flat out from its own reader of one cell
+/// for `run`, with no publisher. Returns the mean time per lend across the
+/// threads, in ns.
+fn concurrent_lends(threads: usize, layout: Layout, run: Duration, cores: &Cores) -> f64 {
+    let cell = Arc::new(ArcLend::new(Payload::new(0)));
+    let mut adjacent: Vec<ArcLendReader> = Vec::new();
+    let mut apart: Vec<Apart<ArcLendReader>> = Vec::new();
+    let refs: Vec<&mut ArcLendReader> = match layout {
+        Layout::Adjacent => {
+            adjacent.extend((0..threads).map(|_| cell.reader()));
+            adjacent.iter_mut().collect()
+        }
+        Layout::Apart => {
+            apart.extend((0..threads).map(|_| Apart(cell.reader())));
+            apart.iter_mut().map(|a| &mut a.0).collect()
+        }
+    };
+    let start = Barrier::new(threads);
+    let total: f64 = std::thread::scope(|s| {
+        let handles: Vec<_> = refs
+            .into_iter()
+            .enumerate()
+            .map(|(i, reader)| {
+                let start = &start;
+                let core = cores.nth(i);
+                s.spawn(move || {
+                    pin(core);
+                    start.wait();
+                    let t0 = Instant::now();
+                    let mut lends = 0u64;
+                    while t0.elapsed() < run {
+                        for _ in 0..1000 {
+                            black_box(&*reader.lend());
+                        }
+                        lends += 1000;
+                    }
+                    elapsed_ns(t0) as f64 / lends as f64
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    });
+    total / threads as f64
+}
+
+fn section_concurrent_lends(plan: &Plan, cores: &Cores) {
+    heading(2, "8. Concurrent lends on one cell");
+    progress("section 8: concurrent lends");
+    println!(
+        "Each thread lends flat out from a reader of its own, with no publisher, for {} ms, and the table gives the mean time \
+         per lend across threads. A `Reader` is {} bytes. *adjacent*: the readers sit next to each other in one `Vec<Reader>`, \
+         so a lend that wrote anywhere in the `Reader` would make the threads contend for a cache line. *apart*: each reader \
+         has a cache line to itself, whatever a lend writes. A lend writes only its slot, which has a line of its own, so \
+         the two columns should agree.\n",
+        plan.lend_run.as_millis(),
+        std::mem::size_of::<ArcLendReader>()
+    );
+    println!("| threads | adjacent | apart |");
+    println!("|---:|---:|---:|");
+    for &n in plan.lend_threads {
+        let adjacent = concurrent_lends(n, Layout::Adjacent, plan.lend_run, cores);
+        let apart = concurrent_lends(n, Layout::Apart, plan.lend_run, cores);
+        println!("| {n} | {adjacent:.2} ns | {apart:.2} ns |");
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 fn main() {
     // Criterion's convention: the full run only when `cargo bench` passes
     // `--bench`, and never with `--test` (`cargo bench -- --test`, the CI
-    // smoke run and `just bench-smoke`'s). Anything else, such as `cargo test
+    // smoke run). Anything else, such as `cargo test
     // --benches` or `--all-targets`, which pass neither, is the smoke run
     // too, not four minutes of harness. Everything else is ignored.
     let full = std::env::args().any(|a| a == "--bench") && !std::env::args().any(|a| a == "--test");
@@ -1165,6 +1291,19 @@ fn main() {
         section_fresh(&plan);
         return;
     }
+    if std::env::args().any(|a| a == LENDS_ONLY) {
+        heading(1, "arc-lend concurrent lends");
+        if plan.smoke {
+            println!("**Smoke run (`--test`): tiny counts, numbers meaningless.**\n");
+        }
+        println!("| | |\n|---|---|");
+        for (k, v) in machine() {
+            println!("| {k} | {v} |");
+        }
+        println!("| load average at start | {} |", load_average());
+        section_concurrent_lends(&plan, &cores);
+        return;
+    }
 
     let began = Instant::now();
     header(&plan, &cores, &reader_counts);
@@ -1174,6 +1313,7 @@ fn main() {
     section_nested(&plan, &cores, &reader_counts);
     section_retained(&plan, &cores);
     section_publish_cost(&plan, &cores);
+    section_concurrent_lends(&plan, &cores);
     println!(
         "\n_Finished in {:.0} s. Load average at the end: {}. Live payloads at exit: {}._",
         began.elapsed().as_secs_f64(),
@@ -1181,6 +1321,10 @@ fn main() {
         live_payloads()
     );
 }
+
+/// The flag that makes this binary run section 8 only (`cargo bench -p
+/// arc-lend-compare --bench compare -- --bench --concurrent-lends-section-only`).
+const LENDS_ONLY: &str = "--concurrent-lends-section-only";
 
 /// The flag that makes this binary run section 1 only (in a child process).
 const FRESH_ONLY: &str = "--fresh-thread-section-only";

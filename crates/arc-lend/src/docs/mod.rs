@@ -1,18 +1,12 @@
-//! Guides: how to use the cell, what it does not do, what it costs, and how
-//! it works.
+//! Longer documentation, one page per module.
 //!
-//! Nothing in here is code; each module is a page.
+//! - [`guide`]: how to use the cell well, and what to watch for.
+//! - [`design`]: how it works, why we believe it is safe, and what each
+//!   operation costs.
 //!
-//! - [`patterns`]: the shapes it is meant for: registering readers, keeping
-//!   a reader's iteration short, nesting, reclaiming.
-//! - [`limitations`]: where memory can grow, what the reader cannot do, and
-//!   where a free can still happen.
-//! - [`performance`]: what each operation does, and what it measured
-//!   against the alternatives.
-//! - [`internal`]: the protocol, step by step, and the memory-ordering
-//!   argument that it is sound.
+//! Measurements against other cells are in
+//! [BENCHMARKS.md](https://docs.rs/crate/arc-lend/latest/source/BENCHMARKS.md).
 
-pub mod internal;
-pub mod limitations;
-pub mod patterns;
-pub mod performance;
+#[doc = include_str!("design.md")]
+pub mod design {}
+pub mod guide;

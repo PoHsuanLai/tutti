@@ -167,8 +167,10 @@ fn read_param_ranges(unit: tutti_au_host::types::AudioUnit) -> Vec<(u32, ParamBo
 /// non-finite input to `Samples::ZERO` — deliberately, since that is right for
 /// NaN and negatives. Converting first would make an infinite reverb
 /// indistinguishable from a plugin with no tail, and a bounce sizing its render
-/// from that number truncates the reverb entirely. So the finiteness question is
-/// asked *before* the conversion, never after.
+/// from that number truncates the reverb entirely. So
+/// [`PluginTail::from_seconds`] asks the infinity question *before* the
+/// conversion, and reads NaN, `-∞` and negatives as `Unknown` rather than as
+/// unbounded or none.
 ///
 /// A function rather than an inline block because the load path and the
 /// property-change poll both need it, and the two answering differently would
@@ -176,17 +178,12 @@ fn read_param_ranges(unit: tutti_au_host::types::AudioUnit) -> Vec<(u32, ParamBo
 /// used.
 #[cfg(all(target_os = "macos", feature = "au"))]
 fn read_tail(inner: &AuHostInstance, sample_rate: f64) -> PluginTail {
+    // A declared-but-zero tail is a real answer (`None`): the unit has a
+    // tail concept and says it has none. `from_seconds` rounds up, since a
+    // render that rounds a tail down clips its last partial block.
     match inner.get_tail_time() {
         Err(_) => PluginTail::Unknown,
-        Ok(seconds) if !seconds.get().is_finite() => PluginTail::Unbounded,
-        Ok(seconds) => match seconds.to_samples_ceil(sample_rate) {
-            // A declared-but-zero tail is a real answer: the unit has a tail
-            // concept and says it has none.
-            s if s == Samples::ZERO => PluginTail::None,
-            // `_ceil`, not `_floor`: a render that rounds a tail down clips its
-            // last partial block.
-            s => PluginTail::Finite(s),
-        },
+        Ok(seconds) => PluginTail::from_seconds(seconds, sample_rate),
     }
 }
 
@@ -1243,11 +1240,7 @@ mod tests {
         inner.initialize().expect("Should initialize");
         let tail = match inner.get_tail_time() {
             Err(_) => PluginTail::Unknown,
-            Ok(sec) if !sec.get().is_finite() => PluginTail::Unbounded,
-            Ok(sec) => match sec.to_samples_ceil(44_100.0) {
-                s if s == Samples::ZERO => PluginTail::None,
-                s => PluginTail::Finite(s),
-            },
+            Ok(sec) => PluginTail::from_seconds(sec, 44_100.0),
         };
         assert_ne!(
             tail,
@@ -1270,11 +1263,7 @@ mod tests {
             inner.initialize().expect("Should initialize");
             let mapped = match inner.get_tail_time() {
                 Err(_) => PluginTail::Unknown,
-                Ok(sec) if !sec.get().is_finite() => PluginTail::Unbounded,
-                Ok(sec) => match sec.to_samples_ceil(44_100.0) {
-                    s if s == Samples::ZERO => PluginTail::None,
-                    s => PluginTail::Finite(s),
-                },
+                Ok(sec) => PluginTail::from_seconds(sec, 44_100.0),
             };
             // Whatever this unit answers, a *refusal* must never surface as a
             // zero tail — that is the mapping this test exists for.
@@ -1314,13 +1303,7 @@ mod tests {
                     "TAL Reverb 4 is the corpus's infinite-tail unit; it reported {seconds:?}"
                 );
 
-                let mapped = match () {
-                    _ if !seconds.get().is_finite() => PluginTail::Unbounded,
-                    _ => match seconds.to_samples_ceil(44_100.0) {
-                        s if s == Samples::ZERO => PluginTail::None,
-                        s => PluginTail::Finite(s),
-                    },
-                };
+                let mapped = PluginTail::from_seconds(seconds, 44_100.0);
                 assert_eq!(mapped, PluginTail::Unbounded);
                 // The point of the whole type: converting first would have made
                 // this `None`, and a bounce would truncate the reverb entirely.

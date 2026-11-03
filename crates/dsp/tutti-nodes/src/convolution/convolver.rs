@@ -13,6 +13,19 @@
 //! clone and a fork hold one `Arc` to the spectra, which nothing writes after
 //! they are built; each keeps only its own running state (the input spectra
 //! history, the overlap, the FFT scratch).
+//!
+//! **The work is spread across the blocks of a partition.** Only the newest
+//! partition's multiply, the two transforms and the overlap-add need the
+//! input that completes a partition; the products of the older partitions with
+//! the older history do not, and they are fixed as soon as the previous
+//! partition's transform is done. [`Convolver::process_block`] therefore
+//! sums them a few partitions per call, in proportion to the samples
+//! consumed, finishing a call's length before the boundary, so a call costs
+//! about the same wherever in the cycle it falls and the peak is no longer
+//! one call in `partition / block` paying for the whole IR. Each bin still
+//! adds its partitions in ascending order from zero, so the output has the
+//! same bits as summing everything at the boundary, and the latency is
+//! unchanged (one partition).
 
 use std::sync::Arc;
 
@@ -178,8 +191,13 @@ struct Partitioned {
     buffer: Vec<f32>,
     forward_scratch: Vec<Complex<f32>>,
     inverse_scratch: Vec<Complex<f32>>,
-    /// The older partitions' products, summed once per block.
+    /// The older partitions' products, summed a few partitions at a time
+    /// between two boundaries ([`accumulate_to`](Self::accumulate_to)):
+    /// partitions `1..=accumulated` are in, and `begun` says the sum was
+    /// zeroed for this block.
     pre_multiplied: Vec<Complex<f32>>,
+    accumulated: usize,
+    begun: bool,
     conv: Vec<Complex<f32>>,
     /// The second half of the last block's product, added to the next.
     overlap: Vec<f32>,
@@ -199,15 +217,47 @@ impl Partitioned {
             forward_scratch: spectra.forward.make_scratch_vec(),
             inverse_scratch: spectra.inverse.make_scratch_vec(),
             pre_multiplied: vec![zero; bins],
+            accumulated: 0,
+            begun: false,
             conv: vec![zero; bins],
             overlap: vec![0.0; bs],
             spectra,
         }
     }
 
+    /// The older partitions' products for the next block, partitions
+    /// `1..=upto` of them summed into `pre_multiplied`. Everything they read
+    /// (the spectra, and the history slots other than `current`, which the
+    /// next block overwrites) is fixed between two blocks, and each bin sums
+    /// its partitions in ascending order from zero, as one whole-block pass
+    /// would, so any split of the partitions into calls gives the same bits.
+    fn accumulate_to(&mut self, upto: usize) {
+        let spectra = &*self.spectra;
+        let count = spectra.segments.len();
+        if !self.begun {
+            self.pre_multiplied.fill(Complex::new(0.0, 0.0));
+            self.begun = true;
+        }
+        let upto = upto.min(count.saturating_sub(1));
+        for i in self.accumulated + 1..=upto {
+            let slot = (self.current + i) % count;
+            complex_multiply_accumulate(
+                &mut self.pre_multiplied,
+                &spectra.segments[i],
+                &self.history[slot],
+            );
+        }
+        self.accumulated = self.accumulated.max(upto);
+    }
+
     /// Convolve one block: `input` and `output` are `block_size` long.
-    /// Allocation-free.
+    /// Allocation-free. Sums whatever of the older partitions' products
+    /// [`accumulate_to`](Self::accumulate_to) has not, so a caller that never
+    /// calls it pays the whole sum here.
     fn process(&mut self, input: &[f32], output: &mut [f32]) {
+        self.accumulate_to(usize::MAX);
+        self.accumulated = 0;
+        self.begun = false;
         let spectra = &*self.spectra;
         let (bs, count) = (spectra.block_size, spectra.segments.len());
         if count == 0 {
@@ -228,16 +278,6 @@ impl Partitioned {
         if forward.is_err() {
             output.fill(0.0);
             return;
-        }
-        let zero = Complex::new(0.0, 0.0);
-        self.pre_multiplied.fill(zero);
-        for i in 1..count {
-            let audio = (self.current + i) % count;
-            complex_multiply_accumulate(
-                &mut self.pre_multiplied,
-                &spectra.segments[i],
-                &self.history[audio],
-            );
         }
         self.conv.copy_from_slice(&self.pre_multiplied);
         complex_multiply_accumulate(
@@ -288,6 +328,8 @@ impl Partitioned {
             h.fill(zero);
         }
         self.pre_multiplied.fill(zero);
+        self.accumulated = 0;
+        self.begun = false;
         self.conv.fill(zero);
         self.overlap.fill(0.0);
         self.current = 0;
@@ -305,6 +347,8 @@ impl Clone for Partitioned {
             forward_scratch: self.forward_scratch.clone(),
             inverse_scratch: self.inverse_scratch.clone(),
             pre_multiplied: self.pre_multiplied.clone(),
+            accumulated: self.accumulated,
+            begun: self.begun,
             conv: self.conv.clone(),
             overlap: self.overlap.clone(),
         }
@@ -415,6 +459,16 @@ impl Convolver {
             p.input_fill += run;
             if p.input_fill >= p.block_size {
                 p.drain_through(&mut self.fft);
+            } else {
+                // Spread the older partitions' sum over the block: by the
+                // time `horizon` samples are in, every partition is in. The
+                // horizon stops short of the boundary by this call's length
+                // (at most half a partition), so the call that crosses the
+                // boundary pays for the transforms and the newest partition
+                // only.
+                let horizon = (p.block_size - input.len().min(p.block_size / 2)).max(1);
+                let older = self.fft.spectra.segments.len().saturating_sub(1);
+                self.fft.accumulate_to(older * p.input_fill / horizon);
             }
             done += run;
         }
@@ -658,6 +712,152 @@ mod tests {
             "the NaN stayed past its partition: {:?}",
             &out[clean..]
         );
+    }
+
+    /// A deterministic IR of `len` taps with decaying, sign-varying values.
+    fn long_ir(len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| ((i as f32) * 0.37).sin() * (-(i as f32) / 900.0).exp())
+            .collect()
+    }
+
+    /// Feed `x` through `process_block` in `lens`-cycled calls.
+    fn run_blocks(c: &mut Convolver, x: &[f32], lens: &[usize]) -> Vec<f32> {
+        let mut got = vec![0.0f32; x.len()];
+        let (mut at, mut k) = (0, 0);
+        while at < x.len() {
+            let n = lens[k % lens.len()].min(x.len() - at);
+            c.process_block(&x[at..at + n], &mut got[at..at + n]);
+            at += n;
+            k += 1;
+        }
+        got
+    }
+
+    /// A many-partition IR through the incremental path matches the
+    /// definition (a direct convolution computed here), delayed by exactly
+    /// `latency()`, for call lengths that divide the partition, ones that do
+    /// not, ones that straddle the boundary and ones longer than a partition.
+    ///
+    /// The tolerance is float rounding of a 2000-tap sum of terms below 1.
+    ///
+    /// Mutation (run): `accumulate_to` starting its loop at
+    /// `self.accumulated + 2` skips a partition per call → fails. Mutation (run):
+    /// dropping `self.accumulated = 0` or `self.begun = false` in
+    /// `process` leaves the next cycle with a stale or doubled sum → fails.
+    #[test]
+    fn incremental_path_matches_direct_convolution_at_any_call_length() {
+        let ir = long_ir(2000);
+        let x: Vec<f32> = (0..3000)
+            .map(|i| ((i as f32) * 0.173).sin() * 0.8 + if i % 211 == 0 { 0.5 } else { 0.0 })
+            .collect();
+        let want = direct_convolve(&x, &ir);
+        let patterns: [&[usize]; 6] = [&[1], &[7], &[64], &[33, 5, 64, 9, 200], &[100], &[300, 17]];
+        for part in [32usize, 64, 128] {
+            for lens in patterns {
+                let mut c = Convolver::new(&ir, part);
+                let lat = c.latency();
+                assert_eq!(lat, part);
+                let mut padded = x.clone();
+                padded.extend(std::iter::repeat_n(0.0, lat));
+                let got = run_blocks(&mut c, &padded, lens);
+                for i in 0..x.len() {
+                    assert!(
+                        (got[i + lat] - want[i]).abs() < 2e-3,
+                        "partition {part}, calls {lens:?}: sample {i} is {} want {}",
+                        got[i + lat],
+                        want[i]
+                    );
+                }
+                assert!(got[..lat].iter().all(|&s| s == 0.0), "fill-up is silent");
+            }
+        }
+    }
+
+    /// Linearity: `conv(a·x + b·y) = a·conv(x) + b·conv(y)` through the
+    /// incremental path, within float tolerance.
+    ///
+    /// Mutation (run): the `accumulated = 0` drop above breaks the sum only
+    /// when the signal changes between cycles, which this signal does.
+    #[test]
+    fn incremental_path_is_linear() {
+        let ir = long_ir(700);
+        let n = 1500;
+        let x: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.21).sin()).collect();
+        let y: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.05).cos() * 0.5).collect();
+        let (a, b) = (0.75f32, -1.25f32);
+        let mix: Vec<f32> = x.iter().zip(&y).map(|(&p, &q)| a * p + b * q).collect();
+        let lens = [13usize, 64, 5];
+        let cx = run_blocks(&mut Convolver::new(&ir, 64), &x, &lens);
+        let cy = run_blocks(&mut Convolver::new(&ir, 64), &y, &lens);
+        let cm = run_blocks(&mut Convolver::new(&ir, 64), &mix, &lens);
+        for i in 0..n {
+            assert!((cm[i] - (a * cx[i] + b * cy[i])).abs() < 2e-3, "sample {i}");
+        }
+    }
+
+    /// However the partitions are split across calls the result is the same bits:
+    /// the block path (sum spread over the cycle) and the per-sample path
+    /// (the whole sum at the boundary) agree for a many-partition IR. This
+    /// pins the split, not the partition order within a bin (a reordered
+    /// sum would reorder both paths alike).
+    ///
+    /// Mutation (run): `accumulate_to` starting its loop at
+    /// `self.accumulated + 2` leaves a partition out on the block path only →
+    /// fails.
+    #[test]
+    fn incremental_path_is_bit_identical_to_the_boundary_sum() {
+        let ir = long_ir(1500);
+        let x: Vec<f32> = (0..2500)
+            .map(|i| ((i as f32) * 0.31).sin() * 0.7 + if i % 53 == 0 { 0.3 } else { 0.0 })
+            .collect();
+        for part in [16usize, 64, 256] {
+            let mut per_sample = Convolver::new(&ir, part);
+            let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
+            let got = run_blocks(&mut Convolver::new(&ir, part), &x, &[9, 64, 1, 31, 128, 70]);
+            assert!(
+                got.iter()
+                    .zip(&want)
+                    .all(|(g, w)| g.to_bits() == w.to_bits()),
+                "partition {part}"
+            );
+        }
+    }
+
+    /// The sum is spread, not deferred: with 8-frame calls into a 64-frame
+    /// partition no call advances more than its share (plus rounding), and
+    /// every partition is in before the call that crosses the boundary.
+    ///
+    /// Mutation (run): scheduling `accumulate_to(older)` at the first call of
+    /// a cycle, or not at all (everything at the boundary), fails the
+    /// per-call bound or the done-before-boundary check respectively.
+    #[test]
+    fn accumulation_is_spread_across_the_calls_of_a_partition() {
+        let part = 64;
+        let mut c = Convolver::new(&long_ir(1000), part);
+        let older = c.fft.spectra.segments.len() - 1;
+        let x = vec![0.5f32; 8];
+        let mut out = vec![0.0f32; 8];
+        let share = older * 8 / (part - 8) + 1;
+        for cycle in 0..4 {
+            let mut last = 0;
+            for call in 0..8 {
+                c.process_block(&x, &mut out);
+                if call < 7 {
+                    let now = c.fft.accumulated;
+                    assert!(
+                        now - last <= share,
+                        "cycle {cycle} call {call}: {last}->{now}"
+                    );
+                    last = now;
+                    if call >= 6 {
+                        assert_eq!(now, older, "done before the boundary call");
+                    }
+                } else {
+                    assert_eq!(c.fft.accumulated, 0, "the boundary call drained");
+                }
+            }
+        }
     }
 
     /// `reset` must clear the tail, not just the input buffer.

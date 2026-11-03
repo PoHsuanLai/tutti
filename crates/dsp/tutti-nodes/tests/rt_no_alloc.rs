@@ -13,8 +13,14 @@ static A: AllocDisabler = AllocDisabler;
 /// scratch) runs when the rig is built, outside the gate.
 #[cfg(feature = "convolution")]
 fn gate<N: tutti_graph::IntoNode>(node: N) {
+    gate_at(node, 64);
+}
+
+/// [`gate`] at a host block of `block` frames.
+#[cfg(feature = "convolution")]
+fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
     let (mut rig, _controls) =
-        tutti_graph::contract::BlockRig::new(node, tutti_core::SampleRate(48_000.0), 64);
+        tutti_graph::contract::BlockRig::new(node, tutti_core::SampleRate(48_000.0), block);
     for _ in 0..16 {
         rig.block();
     }
@@ -42,6 +48,50 @@ fn stereo_convolver_process_is_allocation_free() {
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
     gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
+}
+
+/// The incremental accumulation runs in every block between two partition
+/// boundaries, so it is gated at host blocks that divide the partition, ones
+/// that do not (37, 100) and one longer than a partition (1000 against 256).
+///
+/// Mutation (run): a `vec!` inside `Partitioned::accumulate_to` fails
+/// these.
+#[cfg(feature = "convolution")]
+#[test]
+fn convolver_mid_cycle_blocks_are_allocation_free() {
+    use tutti_nodes::{generate_test_ir, ConvolverNode};
+
+    let ir = generate_test_ir(8192, 0.3, 48_000.0);
+    for block in [37usize, 100, 128, 1000] {
+        gate_at(ConvolverNode::new(&ir, 256), block);
+    }
+}
+
+/// The bare convolver with call lengths from 1 to past two partitions, in an
+/// order that lands calls mid-cycle, across the boundary and exactly on it,
+/// over a signal that is not silent.
+///
+/// Mutation (run): the same `vec!` in `accumulate_to` fails it.
+#[cfg(feature = "convolution")]
+#[test]
+fn convolver_ragged_calls_are_allocation_free() {
+    use tutti_nodes::{generate_test_ir, Convolver};
+
+    let ir = generate_test_ir(8192, 0.3, 48_000.0);
+    let mut c = Convolver::new(&ir, 128);
+    let x: Vec<f32> = (0..513).map(|i| ((i as f32) * 0.31).sin()).collect();
+    let mut y = vec![0.0f32; 513];
+    let lens = [1usize, 7, 33, 100, 127, 128, 129, 255, 513, 64];
+    for k in 0..40 {
+        let n = lens[k % lens.len()];
+        c.process_block(&x[..n], &mut y[..n]);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for k in 0..3_000 {
+            let n = lens[k % lens.len()];
+            c.process_block(&x[..n], &mut y[..n]);
+        }
+    });
 }
 
 /// The fold path is the one with scratch: a width-long frame buffer and a

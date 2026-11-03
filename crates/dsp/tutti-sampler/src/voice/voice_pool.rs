@@ -1791,6 +1791,64 @@ mod tests {
         }
     }
 
+    /// **A voice out of its window adds nothing at a finite gain and NaN at
+    /// an infinite one**, as reading it would: its frames read +0.0, which a
+    /// finite gain keeps a zero (and a zero added to the mix changes no bit)
+    /// and an infinite one turns to NaN. A pool skips the read only in the
+    /// first case.
+    ///
+    /// Exact, analytically: the sounding voice reads whole frames (44.1 kHz on
+    /// both sides, from beat 0), where the cubic returns the frame, gained by
+    /// 0.5.
+    ///
+    /// Mutation (run): the skip taken whatever the gain (the
+    /// `gain.is_finite()` condition removed) → the infinite row reads the
+    /// sounding voice alone → fails.
+    #[test]
+    fn a_voice_out_of_its_window_adds_zero_at_a_finite_gain_and_nan_at_an_infinite_one() {
+        const BLOCK: usize = 64;
+        let value = |i: usize| (i + 1) as f32 / 1024.0;
+        let mut wave = Wave::zero(2, SR, 0.1);
+        for i in 0..wave.len() {
+            wave.set(0, i, value(i));
+            wave.set(1, i, -value(i));
+        }
+        let wave = Arc::new(wave);
+        let voice = |start: f64, gain: f32| {
+            let play = Playback {
+                gain: Amplitude(gain),
+                ..Playback::default()
+            };
+            Voice {
+                source: VoiceSource::Memory(MemorySource::placed(
+                    Arc::clone(&wave),
+                    Beat::new(start),
+                    None,
+                )),
+                play,
+                channel_index: None,
+            }
+        };
+        let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        for silent_gain in [3.0f32, f32::INFINITY] {
+            let mut pool = VoicePool::with_channels(None, 2usize).expect("stereo");
+            pool.insert_voice(SlotId(0), voice(0.0, 0.5));
+            pool.insert_voice(SlotId(1), voice(1_000.0, silent_gain));
+            let mut pool = crate::testing::prepared(pool, SR, BLOCK);
+            let out = run(&mut pool, &t, SR, BLOCK);
+            for (c, sign) in [(0, 1.0f32), (1, -1.0)] {
+                for (i, &got) in out[c].iter().enumerate() {
+                    if silent_gain.is_finite() {
+                        let want = sign * value(i) * 0.5;
+                        assert_eq!(got.to_bits(), want.to_bits(), "channel {c}, frame {i}");
+                    } else {
+                        assert!(got.is_nan(), "channel {c}, frame {i}: {got}");
+                    }
+                }
+            }
+        }
+    }
+
     fn memory_voice() -> Voice {
         Voice {
             source: VoiceSource::Memory(MemorySource::new(Arc::new(Wave::zero(2, 44_100.0, 0.01)))),

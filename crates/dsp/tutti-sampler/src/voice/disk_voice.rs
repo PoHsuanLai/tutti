@@ -190,8 +190,8 @@ impl DiskSource {
 
     /// Render `size` frames free-running, frame `i` handed to `emit`.
     fn render(&mut self, size: usize, mut emit: impl FnMut(usize, &[f32])) {
-        // Borrowed, not cloned (a clone's drop could free here), beside
-        // the reader.
+        // Borrowed beside the reader, not cloned: `self` holds a strong
+        // reference, so a clone only adds two atomic refcount updates.
         let Some(state) = self.shared_state.as_deref() else {
             let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
             (0..size).for_each(|i| emit(i, &silent[..self.stride]));
@@ -733,8 +733,8 @@ impl DiskVoice {
         let rate = self.step_rate();
         let preroll = self.inner.read.ring().preroll() as f64;
         let gain = self.shared_state.gain().get();
-        // Borrowed beside `inner`, not cloned: a clone's drop could be the
-        // last, and free the control cell here.
+        // Borrowed beside `inner`, not cloned: `self` holds a strong
+        // reference, so a clone only adds two atomic refcount updates.
         let state = &*self.shared_state;
         let gate = self.gate();
         let base = range.start;
@@ -1596,6 +1596,152 @@ mod tests {
                 step(i, &mut direct);
             }
         });
+    }
+
+    /// Frame `k`, channel `c` of the [`wide_clip`] rings: distinct per channel
+    /// and per frame, and exact in `f32`.
+    fn wide_value(k: u64, c: usize) -> f32 {
+        (c + 1) as f32 + k as f32 / 1024.0
+    }
+
+    /// A voice placed at beat 0 over a `width`-channel ring holding frames
+    /// `22_000..24_000` ([`wide_value`]), at 44.1 kHz on both sides: at beat 1
+    /// (120 BPM) it reads whole frames `22_050 + i`, where the cubic at
+    /// `t` = 0 returns the frame itself.
+    fn wide_clip(width: usize) -> DiskVoice {
+        const AT: u64 = 22_000;
+        let (mut writer, reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, width);
+        writer.reset(AT);
+        writer.set_play(AT);
+        let flat: Vec<f32> = (AT..AT + 2_000)
+            .flat_map(|k| (0..width).map(move |c| wide_value(k, c)))
+            .collect();
+        writer.push_interleaved(&flat);
+        let state = Arc::new(RtState::new());
+        let inner = DiskSource::new(reader, Arc::clone(&state));
+        DiskVoice::new(
+            inner,
+            state,
+            DiskVoiceConfig {
+                window: VoiceWindow::default(),
+                file_sample_rate: SampleRate(SR),
+            },
+        )
+    }
+
+    /// What lane `c` of the caller holds at straight position `k` from a
+    /// `width`-channel ring: the frame path's `put` zips the reader's frame
+    /// (the ring's width) with the lanes, and a lane past the reader is
+    /// silent (`render_lanes` clears it).
+    fn wide_expected(width: usize, k: u64, c: usize) -> f32 {
+        if c < width {
+            wide_value(k, c)
+        } else {
+            0.0
+        }
+    }
+
+    /// **A steady block read writes the caller's lanes as the frame path's
+    /// `put` does**, for a reader wider than the caller (stereo into mono, 6
+    /// channels into stereo), as wide, narrower, and mono: each lane is the
+    /// reader's channel and a lane past the reader is silent. Every run is read along time (`steady_lanes`),
+    /// and after the first block the read allocates nothing.
+    ///
+    /// Mutation (run): the lanes cut to the reader's width
+    /// (`&mut lanes[..w]`) → the 2-into-1 row panics, out of range.
+    /// Mutation (run): `steady_lanes` answering `false` up front → no run
+    /// is steady → fails. Mutation (run): `lanes_n` taken as the reader's
+    /// width alone → the 2-into-1 row panics.
+    #[test]
+    fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
+        const BLOCK: usize = 64;
+        for (width, n) in [
+            (2usize, 1usize),
+            (6, 2),
+            (2, 2),
+            (6, 6),
+            (2, 6),
+            (1, 2),
+            (1, 1),
+        ] {
+            let mut voice = wide_clip(width);
+            let mut scratch = crate::lanes::BlockScratch::new(BLOCK, n);
+            let mut clock = crate::voice::clock::Clock::new();
+            let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+            let mut block = |voice: &mut DiskVoice| {
+                let env = t.env(BLOCK, SR);
+                let clock = clock.observe(&env);
+                let crate::lanes::BlockScratch {
+                    out,
+                    positions,
+                    gather,
+                    ..
+                } = &mut scratch;
+                voice.render_lanes(&clock, 0..BLOCK, out, n, positions, gather);
+                t.advance(BLOCK as i64, SR);
+            };
+            block(&mut voice);
+            assert_no_alloc::assert_no_alloc(|| {
+                for _ in 1..8 {
+                    block(&mut voice);
+                }
+            });
+            assert_eq!(voice.inner.read.steady_runs(), 8, "{width} into {n}");
+            // The last block: straight positions 22 050 + 7 × 64 + i.
+            let first = 22_050 + 7 * BLOCK as u64;
+            for c in 0..n {
+                for (i, &got) in scratch.out.lanes()[c][..BLOCK].iter().enumerate() {
+                    let want = wide_expected(width, first + i as u64, c);
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "{width} into {n}: lane {c}, frame {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **A streamed clip wider than its pool renders through the pool**, the
+    /// pool's channels taking the clip's first ones: a stereo clip in a mono
+    /// pool, a 6-channel clip in a stereo pool, over 8 rolling blocks.
+    ///
+    /// Mutation (run): the steady read's lanes cut to the reader's width
+    /// (`&mut lanes[..w]`) → panics on the first block ("range end index 2
+    /// out of range for slice of length 1") → fails.
+    #[test]
+    fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
+        use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
+        const BLOCK: usize = 64;
+        for (width, pool_width) in [(2usize, 1usize), (6, 2)] {
+            let mut pool = VoicePool::with_channels(None, pool_width).expect("a sampler width");
+            pool.insert_voice(
+                SlotId(0),
+                Voice {
+                    source: VoiceSource::Disk(wide_clip(width)),
+                    play: Playback::default(),
+                    channel_index: None,
+                },
+            );
+            let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
+            let mut direct = Direct::new(pool, SampleRate(SR), BLOCK);
+            let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+            for b in 0..8u64 {
+                direct.block_in(&t.env(BLOCK, SR));
+                t.advance(BLOCK as i64, SR);
+                for c in 0..pool_width {
+                    for (i, &got) in direct.output(c).iter().enumerate() {
+                        let k = 22_050 + b * BLOCK as u64 + i as u64;
+                        assert_eq!(
+                            got.to_bits(),
+                            wide_value(k, c).to_bits(),
+                            "{width} into {pool_width}: block {b}, channel {c}, frame {i}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // --- Existing tests ---

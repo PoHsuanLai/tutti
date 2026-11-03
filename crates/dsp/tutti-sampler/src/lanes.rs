@@ -129,7 +129,8 @@ pub(crate) struct BlockScratch {
     /// Where each frame of the block reads (`None`: silence). The disk tier
     /// rewrites them in place to its ring positions (less its preroll).
     pub(crate) positions: Vec<Option<SamplePosition>>,
-    /// The memory tier's along-time read (`MemorySource::read_placed_lanes`).
+    /// The along-time reads' taps (`MemorySource::read_placed_lanes`, a
+    /// steady live disk read).
     pub(crate) gather: Gather,
 }
 

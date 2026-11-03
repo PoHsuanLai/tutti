@@ -126,6 +126,9 @@ struct State {
     /// The highest straight position read (tests observe consumption).
     #[cfg(test)]
     read_to: f64,
+    /// Runs read along time by `steady_lanes` (tests observe the path).
+    #[cfg(test)]
+    steady: usize,
 }
 
 /// A live voice's reader over its stream's ring.
@@ -179,6 +182,8 @@ impl LiveRead {
                 recover: None,
                 #[cfg(test)]
                 read_to: 0.0,
+                #[cfg(test)]
+                steady: 0,
             },
         }
     }
@@ -192,6 +197,12 @@ impl LiveRead {
     #[cfg(test)]
     pub(crate) fn read_to(&self) -> f64 {
         self.st.read_to
+    }
+
+    /// How many runs were read along time by `steady_lanes` (tests).
+    #[cfg(test)]
+    pub(crate) fn steady_runs(&self) -> usize {
+        self.st.steady
     }
 
     /// Whether the reader holds no last position and no fade (tests).
@@ -307,16 +318,7 @@ impl LiveRead {
             if jump.is_none()
                 && st.fade.is_none()
                 && st.recover.is_none()
-                && steady_lanes(
-                    &claim,
-                    &map,
-                    st,
-                    positions,
-                    gain,
-                    &mut lanes[..w],
-                    at,
-                    gather,
-                )
+                && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
             {
                 st.last = positions.last().copied().flatten().map(SamplePosition::get);
                 #[cfg(test)]
@@ -324,6 +326,7 @@ impl LiveRead {
                     for p in positions.iter().flatten() {
                         st.read_to = st.read_to.max(p.get());
                     }
+                    st.steady += 1;
                 }
                 return;
             }
@@ -368,8 +371,9 @@ impl LiveRead {
 pub(crate) enum Out<'a, F> {
     /// Frame `i` handed to the closure.
     Frames(F),
-    /// Frame `i` into frame `i` of the first `width` lanes, and `gather` for
-    /// a steady block's read along time.
+    /// Frame `i` into frame `i` of the lanes (as many of the frame's
+    /// channels as there are lanes), and `gather` for a steady block's read
+    /// along time.
     Lanes {
         lanes: &'a mut [Lane],
         gather: &'a mut Gather,
@@ -392,10 +396,16 @@ impl<F: FnMut(usize, &[f32])> Out<'_, F> {
 }
 
 /// A steady block's read along time (see [`LiveRead::render`]): frame `i`
-/// into frame `at + i` of `lanes` (the reader's width), gained, when every
-/// frame has a position whose four taps are consecutive positions `claim`
-/// holds, no switch is crossed, and the ring is mono or as wide as the
-/// lanes. `false`, with nothing written, otherwise.
+/// into frame `at + i` of `lanes`, gained, when every frame has a position
+/// whose four taps are consecutive positions `claim` holds, no switch is
+/// crossed, and the ring is mono or as wide as the reader (the two widths
+/// `interpolate_taps` reads without folding). `false`, with nothing
+/// written, otherwise.
+///
+/// Writes what the frame path's [`Out::put`] would: the reader's frame is
+/// `st.width` wide and lands on as many lanes as there are, so a reader
+/// wider than the caller drops its last channels and a mono ring fans to
+/// every lane written.
 #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
 fn steady_lanes(
     claim: &PosClaim<'_>,
@@ -408,10 +418,13 @@ fn steady_lanes(
     gather: &mut Gather,
 ) -> bool {
     let frames = positions.len();
-    let (w, src) = (lanes.len(), st.src);
-    if frames == 0 || frames > gather.frames() || !(src == 1 || src == w) {
+    let (w, src) = (st.width, st.src);
+    // `put` zips the frame with the lanes: the shorter of the two.
+    let lanes_n = lanes.len().min(w);
+    if frames == 0 || lanes_n == 0 || frames > gather.frames() || !(src == 1 || src == w) {
         return false;
     }
+    let lanes = &mut lanes[..lanes_n];
     // A switch to cross: `State::cross_switch` acts at some frame.
     let switch = map.fade.is_some() && map.epoch != st.applied_epoch;
     let Gather { index, frac, y, .. } = gather;
@@ -435,6 +448,8 @@ fn steady_lanes(
         }
         let consecutive = (0..4).all(|t| taps[t] == taps[0].wrapping_add(t as u64));
         let off = taps[0].wrapping_sub(base);
+        // The claim's window is one contiguous range, so holding the first
+        // and last of four consecutive taps holds all four.
         if !consecutive || off > u32::MAX as u64 || !claim.holds(taps[0]) || !claim.holds(taps[3]) {
             return false;
         }
@@ -442,7 +457,7 @@ fn steady_lanes(
         frac[i] = f;
     }
     let (index, frac) = (&index[..frames], &frac[..frames]);
-    let reads = if src == 1 { 1 } else { w };
+    let reads = if src == 1 { 1 } else { lanes_n };
     for (c, lane_out) in lanes.iter_mut().enumerate().take(reads) {
         for (t, lane) in y.iter_mut().enumerate() {
             for (s, &k) in lane.iter_mut().zip(index) {

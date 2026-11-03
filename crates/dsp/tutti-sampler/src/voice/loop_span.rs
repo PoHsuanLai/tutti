@@ -281,8 +281,9 @@ mod tests {
     /// takes those four straight from the wave, so a `plain` frame whose
     /// taps wrap or fade would read the wrong frames, and one missed is only
     /// slower. Exhaustive over small loops in both fade modes, before and
-    /// after the first wrap, every frame from 1 (frame 0's tap behind clamps
-    /// to itself) to past the loop.
+    /// after the first wrap, in a file that ends at the loop or past it,
+    /// every frame of the loop from 1 (frame 0's tap behind clamps to
+    /// itself).
     ///
     /// Mutation (run): `idx + 2 <= end - fade` → the frame whose last tap is
     /// the fade's first is plain → fails. Mutation (run): the
@@ -293,21 +294,21 @@ mod tests {
         let mut plain = 0;
         for start in 0..6 {
             for end in start + 1..start + 12 {
-                for fade in 0..6 {
-                    let Some(span) = LoopSpan::new(start, end, fade, end) else {
+                for (fade, len) in (0..6).flat_map(|f| [end, end + 1, end + 3].map(|l| (f, l))) {
+                    let Some(span) = LoopSpan::new(start, end, fade, len) else {
                         continue;
                     };
                     for looped in [false, true] {
                         for idx in 1..end {
                             let own = span
-                                .frame_taps(end, idx, looped)
+                                .frame_taps(len, idx, looped)
                                 .iter()
                                 .enumerate()
                                 .all(|(k, tap)| tap.frame + 1 == idx + k && tap.fade.is_none());
                             assert_eq!(
                                 span.plain(idx, looped),
                                 own,
-                                "[{start}, {end}) fade {fade}, frame {idx}, looped {looped}"
+                                "[{start}, {end}) of {len}, fade {fade}, frame {idx}, looped {looped}"
                             );
                             plain += usize::from(own);
                         }

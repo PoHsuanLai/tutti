@@ -410,8 +410,10 @@ fn a_host_and_the_session_cannot_both_declare() {
 /// and the route into it go with it, so nothing is left to refuse or to
 /// warn about.
 ///
-/// Mutation (run): `Session::remove` not calling `forget_node` → the
-/// target stays declared and unresolved → fails.
+/// Mutations (run), each fails: `Session::remove` not calling
+/// `forget_node` → the target stays declared and unresolved;
+/// `forget_node` keeping the declarations built before it
+/// (`OwnMods::built` not cleared) → the same.
 #[test]
 fn removing_a_node_forgets_its_declarations() {
     let mut s = offline();
@@ -549,4 +551,51 @@ fn an_update_frees_a_program_a_block_held_across_a_route_edit() {
     }
     s.update();
     assert_eq!(lane.retired_programs(), 0, "the update freed it");
+}
+
+/// **An edit through `Session::mods` after a steady state applies.** The
+/// session keeps its own declarations built between edits, and the
+/// reconciler skips an apply whose inputs are all unchanged; a route edit,
+/// a range edit and a new route each reach the graph on the next update.
+///
+/// Mutation (run): `Session::mods` not marking the declarations edited
+/// (`OwnMods::edited` dropped) → the kept build is applied, the edit is
+/// lost → fails ("the depth edit is republished").
+#[test]
+fn an_own_edit_after_a_steady_state_applies() {
+    let mut s = offline();
+    let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let mut m = s.mods();
+    m.range(cutoff, 0.0, 1_000.0);
+    let lfo = m.lfo(Lfo::sine().hz(Hz(2.0)));
+    let route = m.route(lfo, cutoff, Depth(0.5));
+    settle(&mut s);
+    for _ in 0..4 {
+        s.update();
+    }
+    let program = |s: &Session| {
+        s.mod_state()
+            .lane(cutoff.key())
+            .expect("a lane")
+            .1
+            .program()
+    };
+    let before = program(&s);
+
+    s.mods().route_mut(route).expect("the route").depth = Depth(0.25);
+    s.update();
+    assert!(
+        !std::sync::Arc::ptr_eq(&before, &program(&s)),
+        "the depth edit is republished"
+    );
+
+    s.mods().range(cutoff, 0.0, 2_000.0);
+    s.update();
+    let range = s
+        .graph()
+        .param_mod(probe, UnitParam::Cutoff)
+        .expect("a modulated port")
+        .range;
+    assert_eq!(range.max, 2_000.0, "the range edit is stored");
 }

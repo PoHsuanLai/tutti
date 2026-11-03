@@ -394,6 +394,12 @@ impl ModState {
         self.modulation.resyncs_owed()
     }
 
+    /// Applies that found their inputs unchanged and did nothing
+    /// (`tutti_nodes::Modulation::skipped`): a steady update's count moves.
+    pub fn skipped_applies(&self) -> u64 {
+        self.modulation.skipped()
+    }
+
     /// Resyncs refused for good (a full queue), counted.
     pub fn resyncs_dropped(&self) -> u64 {
         self.modulation.resyncs_dropped()
@@ -478,9 +484,15 @@ pub(crate) struct OwnMods {
     routes: BTreeMap<RouteKey, RouteDecl>,
     ranges: BTreeMap<TargetKey, (f32, f32)>,
     automation: BTreeMap<TargetKey, OwnAutomation>,
+    /// The declarations as the reconciler takes them, built from the maps
+    /// above on the first apply after they may have changed: cleared when
+    /// [`Mods`] is handed out (whatever it then edits), when a take closes
+    /// and when a node is forgotten.
+    built: Option<OwnDeclarations>,
 }
 
-/// The session's own declarations, owned for one apply.
+/// The session's own declarations as the reconciler takes them, built
+/// from [`OwnMods`] and kept until they may change.
 pub(crate) struct OwnDeclarations {
     sources: Vec<(SourceKey, Source)>,
     routes: Vec<(RouteKey, RouteDecl)>,
@@ -517,8 +529,25 @@ impl OwnMods {
             if automation.take.as_mut().is_some_and(Take::is_done) {
                 if let Some(take) = automation.take.take() {
                     automation.curve = take.finish();
+                    // A take becomes done through `Mods` (closed, or
+                    // released), which already cleared it; cleared here
+                    // too so the build never depends on that.
+                    self.built = None;
                 }
             }
+        }
+    }
+
+    /// The declarations may change: built again on the next apply.
+    pub(crate) fn edited(&mut self) {
+        self.built = None;
+    }
+
+    /// Builds the declarations if they may have changed since the last
+    /// build ([`built`](Self::built) then holds them).
+    fn build(&mut self) {
+        if self.built.is_none() {
+            self.built = Some(self.declarations());
         }
     }
 
@@ -543,6 +572,7 @@ impl OwnMods {
     /// Forgets every declaration on `node`'s params: a removed node takes
     /// its ranges, automation and the routes into it with it.
     pub(crate) fn forget_node(&mut self, node: AudioNode) {
+        self.built = None;
         let bits = key(node).0;
         self.ranges.retain(|t, _| t.node != bits);
         self.automation.retain(|t, _| t.node != bits);
@@ -601,7 +631,8 @@ impl ModSession {
                 graph.modulate(&mut self.state.modulation, &input.declarations, input.keys)
             }
             None => {
-                let own = self.own.declarations();
+                self.own.build();
+                let own = self.own.built.as_ref().expect("built");
                 graph.modulate(
                     &mut self.state.modulation,
                     &own.borrow(),

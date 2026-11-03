@@ -239,7 +239,9 @@ fn a_re_bound_target_keeps_its_clip() {
 /// its clips (`retarget` skipped: `play_clip` finds no clip fed into the
 /// new node and makes a second, leaving the first unfed in the graph → "the
 /// same clip"); the session's `play_clip` making a fresh clip on every call
-/// (→ "the same clip"). Before the move into the session (run): the
+/// (→ "the same clip"); the rebuild not reaching a rebound target (its
+/// `Changed<AudioNode>` ignored) → the clip is never re-aimed, the new tap
+/// hears nothing. Before the move into the session (run): the
 /// rebuild setting the feed only when it created a clip → the new tap
 /// heard `[]`.
 #[test]
@@ -345,8 +347,10 @@ fn an_edit_does_not_hang_the_previous_note() {
 /// **Removing the last install naming a target ends its notes and plays
 /// nothing more**, rather than looping the old clip forever.
 ///
-/// Mutation (run): the rebuild not clearing a clip no install names
-/// (`Midi::stop_clip` skipped) → the second note plays at beat 1 → fails.
+/// Mutations (run), each fails: the rebuild not clearing a clip no install
+/// names (`Midi::stop_clip` skipped) → the second note plays at beat 1; the
+/// rebuild not reaching a removed install's target (its prune of installs
+/// it saw marking nothing) → nothing is rebuilt, same.
 #[test]
 fn removing_the_last_install_ends_its_notes() {
     let mut app = app();
@@ -551,6 +555,70 @@ fn a_clip_node_goes_when_its_target_loses_its_node() {
         .get_mut::<MidiSourceInstall>(install)
         .unwrap();
     changed.events = changed.events.clone();
+    app.update();
+    assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
+    assert!(!app.world().resource::<AudioGraphRes>().contains(clip));
+}
+
+/// **An install moved to another target leaves the old one silent**: the
+/// target it named before the edit is rebuilt too, so its clip stops (its
+/// held note ends on the edit's block) and the new target plays.
+///
+/// Mutation (run): the rebuild not reaching an install's previous target
+/// (the `installs.insert` return dropped) → the old tap's clip keeps
+/// playing, its second note sounds at frame 24 000 and the held one never
+/// ends → fails.
+#[test]
+fn an_install_moved_to_another_target_silences_the_old_one() {
+    let mut app = app();
+    let (a, heard_a) = spawn_tap(&mut app);
+    let (b, heard_b) = spawn_tap(&mut app);
+    let mut events = note(60, Beat(0.0), BeatDuration(32.0), MF).to_vec();
+    events.extend(note(62, Beat(1.0), BeatDuration(1.0), MF));
+    let install = app
+        .world_mut()
+        .spawn(MidiSourceInstall::new(a, events))
+        .id();
+    app.update();
+    roll(&mut app, 0, 100);
+    app.world_mut()
+        .entity_mut(install)
+        .insert(MidiSourceInstall::new(
+            b,
+            note(64, Beat(1.0), BeatDuration(1.0), MF).to_vec(),
+        ));
+    app.update();
+    roll(&mut app, 100, 30_000);
+    assert_eq!(note_ons(&heard_a), vec![(0, 60)], "the old target stops");
+    assert_eq!(note_offs(&heard_a), vec![(100, 60)], "its held note ends");
+    assert_eq!(note_ons(&heard_b), vec![(24_000, 64)], "the new one plays");
+}
+
+/// **A clip goes when its target loses its node with no install edit**:
+/// nothing about the install changes, so the rebuild has to find the
+/// target itself (a clip whose target has no node).
+///
+/// Mutation (run): drop the reach of clip targets with no node → nothing
+/// is reached, the clip node stays in the graph → fails.
+#[test]
+fn a_clip_goes_when_its_target_loses_its_node_with_no_install_edit() {
+    use bevy_tutti::midi::SequencedClips;
+
+    let mut app = app();
+    let synth = spawn_graph_synth(&mut app);
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+    let clip = app
+        .world()
+        .resource::<SequencedClips>()
+        .node(synth)
+        .expect("a clip node");
+    app.world_mut()
+        .entity_mut(synth)
+        .remove::<tutti_core::AudioNode>();
     app.update();
     assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
     assert!(!app.world().resource::<AudioGraphRes>().contains(clip));

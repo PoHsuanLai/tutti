@@ -80,39 +80,70 @@ impl MidiSourceInstall {
 /// last install naming its target goes (which ends its notes), removed
 /// when the target loses its node.
 #[derive(Resource, Default)]
-pub struct SequencedClips(HashMap<Entity, AudioNode>);
+pub struct SequencedClips {
+    clips: HashMap<Entity, AudioNode>,
+    /// Each install's target as [`rebuild`] last saw it: where a removed
+    /// install, or one moved to another target, played.
+    installs: HashMap<Entity, Entity>,
+}
 
 impl SequencedClips {
     /// Returns the clip node playing `target`, if it has one.
     pub fn node(&self, target: Entity) -> Option<AudioNode> {
-        self.0.get(&target).copied()
+        self.clips.get(&target).copied()
     }
 }
 
-/// Recompiles every changed install into its target's clip node, through
-/// the session's [`Midi`](tutti_session::Midi).
+/// Recompiles the clips of the targets an edit reaches, through the
+/// session's [`Midi`](tutti_session::Midi).
 ///
-/// Runs only when an install changed or went away, or a node was rebound. **Not**
-/// when the device's rate moves (a restart, `restart_device`): a clip node
-/// reads its block's `Env`, rate included.
+/// A target is reached when an install naming it (now, or before the
+/// edit) was added, changed or removed, or when its own node was bound,
+/// rebound or removed. Only those targets' installs are merged, sorted and
+/// sent; every other clip is left alone. Removals are found by looking
+/// (an install the last rebuild saw that is gone, a clip's target with no
+/// node), not from removal messages, which a frame this system skips
+/// (`engine_ready`) would lose. **Not** when the device's rate
+/// moves (a restart, `restart_device`): a clip node reads its block's
+/// `Env`, rate included.
 #[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
-    changed: Query<Entity, Changed<MidiSourceInstall>>,
-    // A target rebound to a new node (a respawn) keeps its clip: every clip
-    // is re-aimed at its target's current node below. One rebound to a
-    // node with no event input loses its clip here.
-    rebound: Query<(), Changed<AudioNode>>,
-    mut removed: RemovedComponents<MidiSourceInstall>,
+    changed: Query<(Entity, &MidiSourceInstall), Changed<MidiSourceInstall>>,
+    // A target rebound to a new node (a respawn) keeps its clip: its clip
+    // is re-aimed at its current node below. One rebound to a node with no
+    // event input loses its clip here.
+    rebound: Query<Entity, Changed<AudioNode>>,
     mut clips: ResMut<SequencedClips>,
     graph: Option<ResMut<AudioGraphRes>>,
     nodes: Query<&AudioNode>,
 ) {
-    let dirty = !changed.is_empty() || !removed.is_empty() || !rebound.is_empty();
-    // Draining is what marks this frame's removals as seen, so it happens
-    // whether or not a rebuild follows.
-    removed.clear();
-    if !dirty {
+    let clips = &mut *clips;
+    // The targets this frame's edits reach: an install gone, added or
+    // changed (its target now and before), a clip's target left with no
+    // node, a target (re)bound.
+    let mut reached: HashSet<Entity> = HashSet::new();
+    clips.installs.retain(|&install, &mut target| {
+        let kept = installs.contains(install);
+        if !kept {
+            reached.insert(target);
+        }
+        kept
+    });
+    for (install, now) in &changed {
+        reached.insert(now.target);
+        reached.extend(clips.installs.insert(install, now.target));
+    }
+    reached.extend(clips.clips.keys().filter(|&&t| !nodes.contains(t)));
+    if !rebound.is_empty() {
+        let targets: HashSet<Entity> = clips.installs.values().copied().collect();
+        reached.extend(
+            rebound
+                .iter()
+                .filter(|t| clips.clips.contains_key(t) || targets.contains(t)),
+        );
+    }
+    if reached.is_empty() {
         return;
     }
     let Some(mut graph) = graph else {
@@ -122,22 +153,18 @@ pub fn rebuild(
     // Group by target first: one clip node plays a target, so two installs
     // on one synth become one merged clip.
     let mut by_target: HashMap<Entity, Vec<TimedMidiEvent>> = HashMap::new();
-    for install in installs.iter() {
+    for install in installs.iter().filter(|i| reached.contains(&i.target)) {
         by_target
             .entry(install.target)
             .or_default()
             .extend(install.events.iter().copied());
     }
 
-    // Which targets can play a clip, and on which node: those whose node
-    // has an event input.
-    let playable: HashMap<Entity, AudioNode> = by_target
-        .keys()
-        .chain(clips.0.keys())
-        .copied()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .filter_map(|t| {
+    // Which reached targets can play a clip, and on which node: those whose
+    // node has an event input.
+    let playable: HashMap<Entity, AudioNode> = reached
+        .iter()
+        .filter_map(|&t| {
             let &node = nodes.get(t).ok()?;
             (graph.node_event_inputs(node) > 0).then_some((t, node))
         })
@@ -146,26 +173,25 @@ pub fn rebuild(
     // A clip whose target lost its event input (no node, or one without):
     // its node goes (and with it, from every feed), and there is nothing
     // left for it to silence.
-    let gone: Vec<Entity> = clips
-        .0
-        .keys()
-        .copied()
-        .filter(|t| !playable.contains_key(t))
-        .collect();
-    for target in gone {
-        if let Some(clip) = clips.0.remove(&target) {
+    for target in &reached {
+        if playable.contains_key(target) {
+            continue;
+        }
+        if let Some(clip) = clips.clips.remove(target) {
             graph.remove(clip);
         }
     }
 
     let session = graph.session();
     let mut midi = session.midi();
-    for (target, &clip) in &clips.0 {
-        let sink = playable[target];
-        // Re-aimed on every rebuild: a target whose `AudioNode` was removed
-        // and re-inserted lost its old node's feeds with that node
-        // (`Graph::remove`), and nothing else would restore them. An
-        // unchanged feed (and the edit flag) is left alone.
+    for (target, &sink) in &playable {
+        let Some(&clip) = clips.clips.get(target) else {
+            continue;
+        };
+        // Re-aimed on every rebuild of its target: a target whose
+        // `AudioNode` was removed and re-inserted lost its old node's feeds
+        // with that node (`Graph::remove`), and nothing else would restore
+        // them. An unchanged feed (and the edit flag) is left alone.
         if let Err(e) = midi.retarget(clip, sink) {
             tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
         }
@@ -183,7 +209,7 @@ pub fn rebuild(
         };
         match midi.play_clip(sink, events) {
             Ok(clip) => {
-                clips.0.insert(target, clip);
+                clips.clips.insert(target, clip);
             }
             Err(e) => tracing::error!("sequencer: {target:?} takes no clip: {e}"),
         }

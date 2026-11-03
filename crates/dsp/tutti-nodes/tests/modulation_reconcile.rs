@@ -1591,3 +1591,258 @@ fn for_param_and_for_unit_send_the_same_segments() {
     // 0 + 0.25 · 1 · 2 (the span), past the connect's declick.
     assert_eq!(got.last().expect("the pan probe")[511], 0.5);
 }
+
+// ------------------------------------------------------ unchanged inputs --
+//
+// `Modulation::apply` skips an apply whose inputs equal the last one's
+// (its `Memo`). Each test below settles the §8.1 rig until applies are
+// skipped, changes one input alone, and asserts the next apply follows it.
+// The mutation each names is that input taken out of `Memo::holds`: the
+// apply is then skipped and the edit lost.
+
+/// Applies until one is skipped: the inputs are steady.
+fn steady(r: &mut Rig) {
+    let before = r.m.skipped();
+    for _ in 0..2 {
+        let applied =
+            r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+                .expect("applies");
+        assert!(!applied.commit && applied.republished.is_empty());
+    }
+    assert!(r.m.skipped() > before, "a steady apply is skipped");
+}
+
+fn reapply(r: &mut Rig) -> tutti_nodes::Applied {
+    r.m.apply(&r.decl.get(), &mut r.ed, &r.host)
+        .expect("applies")
+}
+
+/// A frozen constant: an automation curve.
+struct Flat(f32);
+
+impl tutti_mod::Curve for Flat {
+    fn value_at(&self, _: Beat) -> Option<f32> {
+        Some(self.0)
+    }
+}
+
+/// **A steady apply is skipped and the render is the one it was.** The
+/// §8.1 rig, applied every block, renders its analytic LFO and follower,
+/// and every apply after the first two is skipped.
+///
+/// Mutation (run): `Memo::holds` returning `false` → nothing is skipped →
+/// fails ("skipped").
+#[test]
+fn a_steady_apply_is_skipped_and_renders_the_same() {
+    let mut r = rig(128);
+    let mut all = Vec::new();
+    for _ in 0..(12_000 / 128) {
+        let applied = reapply(&mut r);
+        assert!(!applied.commit && applied.republished.is_empty());
+        append(
+            &mut all,
+            block(
+                &mut r.ed,
+                &mut r.exec,
+                &stopped(),
+                &TransportChanges::NONE,
+                128,
+            ),
+        );
+    }
+    // The first apply follows the rig's commit (a new revision); the rest
+    // see nothing new.
+    assert_eq!(r.m.skipped(), 12_000 / 128 - 1, "skipped");
+    let tol = lfo_tolerance(0.3, 2.0);
+    for (f, &v) in all[0].iter().enumerate().skip(DECLICK + STEP) {
+        let want = lfo_value(0.3, 2.0, f);
+        assert!(
+            (f64::from(v) - want).abs() < tol,
+            "frame {f}: {v} vs {want}"
+        );
+    }
+    for (f, &v) in all[1].iter().enumerate() {
+        let want = ducked(f);
+        assert!(
+            (f64::from(v) - want).abs() < 1e-4,
+            "frame {f}: {v} vs {want}"
+        );
+    }
+}
+
+/// A source edit (an LFO's rate) is republished.
+///
+/// Mutation (run): `sources` out of `Memo::holds` → fails.
+#[test]
+fn a_source_edit_after_a_steady_state_is_republished() {
+    let mut r = rig(128);
+    steady(&mut r);
+    r.decl.sources[0].1 = sine(3.0);
+    assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+}
+
+/// A route edit (its depth) is republished.
+///
+/// Mutation (run): `routes` out of `Memo::holds` → fails.
+#[test]
+fn a_route_edit_after_a_steady_state_is_republished() {
+    let mut r = rig(128);
+    steady(&mut r);
+    r.decl.set_depth(r.lfo, 0.5);
+    assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+}
+
+/// A range edit is stored into the port's range.
+///
+/// Mutation (run): `targets` out of `Memo::holds` → fails.
+#[test]
+fn a_range_edit_after_a_steady_state_is_stored() {
+    let mut r = rig(128);
+    steady(&mut r);
+    r.decl.targets[0].1.max = 2_000.0;
+    reapply(&mut r);
+    let at = ParamIn {
+        node: key(1),
+        param: UnitParam::Cutoff,
+    };
+    assert_eq!(r.ed.spec().params[&at].range.max, 2_000.0);
+}
+
+/// An automation curve, compared by identity, is republished: a new curve
+/// object is a new program even where it reads the same.
+///
+/// Mutation (run): `same_target` ignoring the automation → fails.
+#[test]
+fn an_automation_edit_after_a_steady_state_is_republished() {
+    let mut r = rig(128);
+    r.decl.targets[0].1.automation = Some(Arc::new(Flat(400.0)));
+    reapply(&mut r);
+    steady(&mut r);
+    r.decl.targets[0].1.automation = Some(Arc::new(Flat(400.0)));
+    assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+}
+
+/// A target key the host rebinds to another node moves its lane there.
+///
+/// Mutation (run): `resolved` out of `Memo::holds` → fails.
+#[test]
+fn a_rebind_after_a_steady_state_moves_the_lane() {
+    let mut r = rig(128);
+    // The rig's commits land first.
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    probe(&mut r.ed, &mut r.host, 3, 500.0);
+    reapply(&mut r);
+    steady(&mut r);
+    let moved = r.host.targets[&3].clone();
+    r.host.targets.insert(1, moved);
+    assert!(reapply(&mut r).commit, "the lane is rebuilt");
+    let at = ParamIn {
+        node: key(3),
+        param: UnitParam::Cutoff,
+    };
+    let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
+    assert_eq!(
+        r.ed.spec().params[&at].source.map(|s| s.node),
+        Some(lane),
+        "the lane drives the new node's port"
+    );
+}
+
+/// A native target's knob cell the host hands anew (its node's params
+/// replaced) rebuilds the lane on it.
+///
+/// Mutation (run): `Resolved::same` ignoring the knob → fails.
+#[test]
+fn a_new_knob_cell_after_a_steady_state_rebuilds_the_lane() {
+    let mut r = rig(128);
+    steady(&mut r);
+    let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
+    r.host
+        .targets
+        .insert(1, (key(1), Arc::new(AtomicF32::new(700.0))));
+    assert!(reapply(&mut r).commit);
+    assert_ne!(r.m.lane(cutoff_of(1)).expect("a lane").0, lane);
+}
+
+/// A target the host stops resolving (a plugin whose list lost the
+/// parameter, a key unbound) loses its lane.
+///
+/// Mutation (run): `resolved` out of `Memo::holds` → fails.
+#[test]
+fn a_target_no_longer_resolved_after_a_steady_state_loses_its_lane() {
+    let mut r = rig(128);
+    steady(&mut r);
+    r.host.targets.remove(&1);
+    let applied = reapply(&mut r);
+    assert!(applied.commit);
+    assert_eq!(applied.unresolved_targets, vec![cutoff_of(1)]);
+    assert!(r.m.lane(cutoff_of(1)).is_none());
+}
+
+/// A follower whose feed the host moves to another node is rewired.
+///
+/// Mutation (run): `feeds` out of `Memo::holds` → fails.
+#[test]
+fn a_feed_moved_after_a_steady_state_is_rewired() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    r.ed.insert(
+        key(11),
+        "kick",
+        ForkByClone(Pulse {
+            from: 0,
+            to: 0,
+            level: 0.0,
+        }),
+    );
+    r.ed.commit().expect("commits");
+    reapply(&mut r);
+    steady(&mut r);
+    r.host.feeds.insert(SourceKey(2), Feed::Audio(key(11)));
+    assert!(reapply(&mut r).commit);
+    let follower = r.m.source(SourceKey(2)).expect("a follower");
+    assert_eq!(
+        r.ed.spec().topology.edges.get(&InPort {
+            node: follower,
+            port: 0
+        }),
+        Some(&Edge::Direct(Source::Node(OutPort {
+            node: key(11),
+            port: 0
+        })))
+    );
+}
+
+/// A graph edit the host makes (its target's node removed) is followed:
+/// the target is unresolved and its lane goes.
+///
+/// Mutation (run): `revision` out of `Memo::holds` → fails.
+#[test]
+fn a_graph_edit_after_a_steady_state_is_followed() {
+    let mut r = rig(128);
+    steady(&mut r);
+    r.ed.remove(key(1));
+    let applied = reapply(&mut r);
+    assert!(applied.commit);
+    assert_eq!(applied.unresolved_targets, vec![cutoff_of(1)]);
+    assert!(r.m.lane(cutoff_of(1)).is_none());
+}
+
+/// A play start (a new epoch of the play clock) drops a rate edit's
+/// anchor from the program: it is republished without it.
+///
+/// Mutation (run): `epoch` out of `Memo::holds` → fails.
+#[test]
+fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 512);
+    r.decl.sources[0].1 = sine(3.0);
+    assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+    steady(&mut r);
+    let mut ch = TransportChanges::NONE;
+    let start = Transport::new(true, TEMPO, Beat(0.0), None);
+    ch.push(Offset::new(37, Samples(128)).expect("in"), start)
+        .expect("room");
+    block(&mut r.ed, &mut r.exec, &stopped(), &ch, 128);
+    assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+}

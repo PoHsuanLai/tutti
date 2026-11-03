@@ -101,6 +101,12 @@ impl ModulationState<'_> {
         .into_iter()
     }
 
+    /// Applies that found the declarations, their entities' nodes and the
+    /// graph unchanged and did nothing: a steady frame's count moves.
+    pub fn skipped_applies(&self) -> u64 {
+        self.read(|s| s.skipped_applies())
+    }
+
     /// Note-envelope resyncs owed to the next `AfterCommit`.
     pub fn resyncs_owed(&self) -> usize {
         self.read(|s| s.resyncs_owed())
@@ -165,6 +171,65 @@ pub struct Declared<'w, 's> {
     entities: &'w bevy_ecs::entity::Entities,
 }
 
+/// Whether the declarations [`Declared::collect`] reads may differ from
+/// [`reconcile`]'s last collect: a declaring component added, changed or
+/// removed since. Bevy's change detection, so it costs no walk of the
+/// declarations. Read by [`note_declaration_changes`], which runs every
+/// frame (an engine not ready included), so no removal goes unseen.
+#[derive(SystemParam)]
+pub struct DeclChanges<'w, 's> {
+    changed: Query<
+        'w,
+        's,
+        (),
+        Or<(
+            Changed<ModSource>,
+            Changed<ModRoute>,
+            Changed<ModRange>,
+            Changed<Automation>,
+            Changed<AutomationTake>,
+        )>,
+    >,
+    sources: RemovedComponents<'w, 's, ModSource>,
+    routes: RemovedComponents<'w, 's, ModRoute>,
+    ranges: RemovedComponents<'w, 's, ModRange>,
+    automation: RemovedComponents<'w, 's, Automation>,
+    takes: RemovedComponents<'w, 's, AutomationTake>,
+    pending: Option<ResMut<'w, Pending>>,
+}
+
+/// A declaration changed since [`reconcile`] last collected.
+#[derive(Resource, Default)]
+pub(crate) struct Pending(bool);
+
+/// Notes, every frame, whether a declaring component was added, changed or
+/// removed ([`DeclChanges`]), for the next [`reconcile`] to collect again.
+/// Marks the frame's removals as seen.
+pub fn note_declaration_changes(mut changes: DeclChanges) {
+    let removed = !(changes.sources.is_empty()
+        && changes.routes.is_empty()
+        && changes.ranges.is_empty()
+        && changes.automation.is_empty()
+        && changes.takes.is_empty());
+    changes.sources.clear();
+    changes.routes.clear();
+    changes.ranges.clear();
+    changes.automation.clear();
+    changes.takes.clear();
+    if removed || !changes.changed.is_empty() {
+        if let Some(pending) = changes.pending.as_deref_mut() {
+            pending.0 = true;
+        }
+    }
+}
+
+/// [`reconcile`]'s last collect, and whether a declaration changed since.
+#[derive(SystemParam)]
+pub struct Kept<'w, 's> {
+    collected: Local<'s, Option<Collected>>,
+    pending: Option<ResMut<'w, Pending>>,
+}
+
 /// The frame's declarations, owned.
 struct Collected {
     sources: Vec<(SourceKey, Source)>,
@@ -173,6 +238,19 @@ struct Collected {
 }
 
 impl Collected {
+    /// Whether every entity a kept route or target names is still alive:
+    /// `collect` leaves out what names a despawned one, and a despawn of an
+    /// entity holding none of the declaring components (a target's node)
+    /// is no change [`DeclChanges`] sees.
+    fn alive(&self, declared: &Declared<'_, '_>) -> bool {
+        let entity = |bits| Entity::try_from_bits(bits).is_some_and(|e| declared.alive(e));
+        self.targets.iter().all(|(t, _)| entity(t.node))
+            && self.routes.iter().all(|(_, r)| match r.to {
+                RouteTarget::Param(t) => entity(t.node),
+                RouteTarget::Depth(_) => true,
+            })
+    }
+
     fn declarations(&self) -> Declarations<'_> {
         Declarations {
             sources: &self.sources,
@@ -274,15 +352,15 @@ impl tutti_session::ModKeys for Declared<'_, '_> {
     }
 }
 
-/// Runs `phase` over the frame's declarations, keyed by entities, and
-/// forwards a refusal as a [`ModulationRefused`] message.
+/// Runs `phase` over `collected`, the frame's declarations keyed by
+/// entities, and forwards a refusal as a [`ModulationRefused`] message.
 fn run(
     phase: Phase,
     declared: &Declared<'_, '_>,
+    collected: &Collected,
     graph: &mut AudioGraphRes,
     refused: &mut MessageWriter<ModulationRefused>,
 ) {
-    let collected = declared.collect();
     let mods = ModInput {
         declarations: collected.declarations(),
         keys: declared,
@@ -302,15 +380,39 @@ fn run(
 ///
 /// Every frame: a frame that changes nothing republishes nothing and commits
 /// nothing. A refusal ([`ModulationRefused`]) changes nothing in the graph.
+///
+/// The declarations are collected again only when they may have changed: a
+/// declaring component added, changed or removed (noted by
+/// [`note_declaration_changes`]), or an entity the last collect names
+/// despawned. Otherwise the last collect is handed over as it is: the
+/// session's apply resolves its keys afresh, finds them, the declarations
+/// and the graph unchanged, and skips (`tutti_nodes::Modulation::apply`).
 pub fn reconcile(
     declared: Declared,
+    mut kept: Kept,
     graph: Option<ResMut<AudioGraphRes>>,
     mut refused: MessageWriter<ModulationRefused>,
 ) {
     // `engine_ready` reads a state a host may insert without an engine. What
     // the apply stages edits the session, which the frame's commit sends.
     let Some(mut graph) = graph else { return };
-    run(Phase::Modulation, &declared, &mut graph, &mut refused);
+    // No `Pending` (the plugin not added): every frame collects.
+    let changed = kept
+        .pending
+        .as_deref_mut()
+        .is_none_or(|p| std::mem::take(&mut p.0));
+    let stale = changed || kept.collected.as_ref().is_none_or(|c| !c.alive(&declared));
+    if stale {
+        *kept.collected = Some(declared.collect());
+    }
+    let collected = kept.collected.as_ref().expect("collected");
+    run(
+        Phase::Modulation,
+        &declared,
+        collected,
+        &mut graph,
+        &mut refused,
+    );
 }
 
 /// After the frame's commit: the session's `Phase::AfterCommit` over the
@@ -348,6 +450,13 @@ pub fn after_commit(
     if idle {
         return;
     }
-    run(Phase::AfterCommit, &declared, &mut graph, &mut refused);
+    let collected = declared.collect();
+    run(
+        Phase::AfterCommit,
+        &declared,
+        &collected,
+        &mut graph,
+        &mut refused,
+    );
     crate::graph::latency::mirror(&graph, table, total);
 }

@@ -562,6 +562,9 @@ impl Session {
     /// [`ModInput`] is refused.
     #[cfg(feature = "modulation")]
     pub fn mods(&mut self) -> crate::Mods<'_> {
+        // Whatever the handle edits is built into the next apply's
+        // declarations.
+        self.mods.own.edited();
         crate::Mods {
             own: &mut self.mods.own,
         }

@@ -127,3 +127,10 @@ required-features = ["synth", "sampler", "convolution", "midi"]
 
 # The §5.1 and §5.2 examples are the umbrella's (`crates/tutti/examples`):
 # they import `tutti::prelude`, which this crate cannot name.
+
+# A steady-state update's cost with modulation declared: a percentile
+# harness, not criterion (`benches/mod_update.rs`).
+[[bench]]
+name = "mod_update"
+harness = false
+required-features = ["modulation"]

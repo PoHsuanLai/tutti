@@ -20,8 +20,9 @@ use tutti_graph::{
     ScheduleError,
 };
 use tutti_mod::{
-    compile, CompileError, Compiled, ControlProgram, Declarations, RouteKey, RouteTarget,
-    SignalKind, SourceId, SourceKey, SourceNode, TargetKey,
+    compile, CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey,
+    RouteTarget, SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl,
+    TargetKey,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{At, AtomicF32, NodeKey, ParamAddr};
@@ -317,6 +318,13 @@ struct SourcePlan {
 /// replace or a removal) is forgotten, the wiring around it undone, and
 /// built again at a fresh key.
 ///
+/// **Unchanged inputs.** An apply whose inputs all equal the last one's
+/// (the declarations, what the host resolves, the editor's
+/// [`revision`](Editor::revision), the play clock's epoch) would change
+/// nothing, so it returns at once ([`skipped`](Self::skipped)), without
+/// compiling. A host may apply every frame. While a target or source is
+/// unresolved every apply runs.
+///
 /// **Cycles.** A route from a signal source whose input is downstream of
 /// the route's own target is refused by route ([`ReconcileError::Cycle`])
 /// before anything is changed. The reconciler wires every source's input
@@ -408,6 +416,133 @@ pub struct Modulation {
     /// Resyncs the editor refused for good (no such port, a resolution
     /// too coarse, a poisoned executor) and that were dropped.
     resyncs_dropped: u64,
+    /// What the last apply was a function of, when it left nothing
+    /// unresolved: an apply over the same is skipped.
+    memo: Option<Memo>,
+    /// Applies skipped so.
+    skipped: u64,
+}
+
+/// Every input of an [`apply`](Modulation::apply) whose result was kept,
+/// as it stood then. An apply over equal inputs would compile the same
+/// programs, resolve the same binds, and so change nothing: it is skipped.
+///
+/// The inputs, each compared here:
+///
+/// - **The declarations**, by value: every source (an LFO's rate, wave and
+///   phase, a macro's value, a follower's times, an envelope's ADSR), every
+///   route (source, target, depth, polarity, curve; a route added, removed
+///   or moved), every target (its range, by bits, and its automation curve,
+///   by identity as a program holds it; a take opened or closed).
+/// - **The host's resolutions**, by value, for the targets with a program
+///   and the signal sources: which node a key names now (a node added,
+///   removed or rebound), a native target's knob cell (a replaced node
+///   hands another), a foreign target's node and port (a plugin whose
+///   values are not read, or whose list lost the parameter, resolves to
+///   nothing), and each source's feed. A foreign knob's value is not
+///   compared: it only seeds a new lane, and a standing lane keeps its own.
+/// - **The editor**, by [`Editor::revision`]: the spec, the shapes and
+///   generations (a node inserted, replaced, crossfaded or removed, by the
+///   host or over one of this reconciler's own keys), the plan sent last
+///   (a commit: what a native target resolves against), param ranges and
+///   their cells, and the `Prepare` (a sample-rate change). Recorded after
+///   the apply's own edits, which its records already hold.
+/// - **The play clock's epoch** (`Editor::play_reading`): the compile
+///   carries a rate edit's anchor only within its epoch, so a new play
+///   start drops it from the program.
+///
+/// Not kept while a target or a source is unresolved: those resolve on a
+/// later commit, and a host re-applies to find out (and times how long).
+struct Memo {
+    sources: Vec<(SourceKey, ModSource)>,
+    routes: Vec<(RouteKey, RouteDecl)>,
+    targets: Vec<(TargetKey, TargetDecl)>,
+    resolved: Vec<(TargetKey, Resolved)>,
+    feeds: Vec<(SourceKey, Option<Feed>)>,
+    revision: u64,
+    epoch: u32,
+}
+
+/// A host's [`Target`], as far as a lane built on it depends on it.
+#[derive(Clone)]
+enum Resolved {
+    None,
+    Native {
+        node: NodeKey,
+        knob: Option<Arc<AtomicF32>>,
+    },
+    Foreign {
+        node: NodeKey,
+        port: u16,
+    },
+}
+
+impl Resolved {
+    fn of(target: &Option<Target>) -> Self {
+        match target {
+            None => Self::None,
+            Some(Target::Native { node, knob }) => Self::Native {
+                node: *node,
+                knob: knob.clone(),
+            },
+            Some(Target::Foreign { node, port, .. }) => Self::Foreign {
+                node: *node,
+                port: *port,
+            },
+        }
+    }
+
+    fn same(&self, target: &Option<Target>) -> bool {
+        match (self, target) {
+            (Self::None, None) => true,
+            (Self::Native { node, knob }, Some(Target::Native { node: n2, knob: k2 })) => {
+                node == n2
+                    && match (knob, k2) {
+                        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            (
+                Self::Foreign { node, port },
+                Some(Target::Foreign {
+                    node: n2, port: p2, ..
+                }),
+            ) => node == n2 && port == p2,
+            _ => false,
+        }
+    }
+}
+
+fn same_target(a: &TargetDecl, b: &TargetDecl) -> bool {
+    a.min.to_bits() == b.min.to_bits()
+        && a.max.to_bits() == b.max.to_bits()
+        && match (&a.automation, &b.automation) {
+            (Some(x), Some(y)) => std::ptr::addr_eq(Arc::as_ptr(x), Arc::as_ptr(y)),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+impl Memo {
+    /// Whether an apply of `decl` now would see what the kept one saw.
+    fn holds(&self, decl: &Declarations<'_>, editor: &Editor, host: &dyn ModHost) -> bool {
+        self.revision == editor.revision()
+            && self.epoch == editor.play_reading().epoch
+            && self.sources.as_slice() == decl.sources
+            && self.routes.as_slice() == decl.routes
+            && self.targets.len() == decl.targets.len()
+            && self
+                .targets
+                .iter()
+                .zip(decl.targets)
+                .all(|((k, a), (k2, b))| k == k2 && same_target(a, b))
+            && self.feeds.iter().all(|(s, feed)| host.feed(*s) == *feed)
+            && self
+                .resolved
+                .iter()
+                .all(|(t, resolved)| resolved.same(&host.target(*t)))
+    }
 }
 
 impl Modulation {
@@ -451,6 +586,14 @@ impl Modulation {
         self.resync.len()
     }
 
+    /// How many applies found every input the last one kept unchanged (the
+    /// declarations, the host's resolutions, the editor's
+    /// [`revision`](Editor::revision) and the play clock's epoch) and so
+    /// did nothing at all: no compile, no diff.
+    pub fn skipped(&self) -> u64 {
+        self.skipped
+    }
+
     /// Resyncs dropped because the editor refused them for good
     /// ([`send_resyncs`](Self::send_resyncs)).
     pub fn resyncs_dropped(&self) -> u64 {
@@ -473,13 +616,28 @@ impl Modulation {
         editor: &mut Editor,
         host: &dyn ModHost,
     ) -> Result<Applied, ReconcileError> {
+        if self
+            .memo
+            .as_ref()
+            .is_some_and(|m| m.holds(decl, editor, host))
+        {
+            self.skipped += 1;
+            return Ok(Applied {
+                resync: !self.resync.is_empty(),
+                ..Applied::default()
+            });
+        }
+        self.memo = None;
+        let now = editor.play_reading();
         let compiled = compile(
             decl,
             self.prev.as_ref(),
-            editor.play_reading(),
+            now,
             editor.prepare().sample_rate(),
         )?;
         let mut applied = Applied::default();
+        let mut resolved = Vec::with_capacity(compiled.programs.len());
+        let mut feeds = Vec::with_capacity(compiled.nodes.len());
 
         // Nodes the reconciler built whose key a host has since replaced or
         // removed: their records go, and their wiring is undone.
@@ -514,7 +672,9 @@ impl Modulation {
         let mut binds = BTreeMap::new();
         let mut claimed: BTreeMap<ParamIn, TargetKey> = BTreeMap::new();
         for &target in compiled.programs.keys() {
-            match self.resolve_target(target, &own, editor, host)? {
+            let to = host.target(target);
+            resolved.push((target, Resolved::of(&to)));
+            match self.resolve_target(target, to, &own, editor)? {
                 Some(bind) => {
                     if let Bind::Native { at, .. } = bind {
                         if let Some(&first) = claimed.get(&at) {
@@ -533,7 +693,9 @@ impl Modulation {
         let mut plans = BTreeMap::new();
         for (&source, &node) in &compiled.nodes {
             let kept = !taken_sources.contains(&source);
-            match self.resolve_source(source, node, kept, editor, host)? {
+            let feed = host.feed(source);
+            feeds.push((source, feed));
+            match self.resolve_source(source, node, kept, feed, editor)? {
                 Some(plan) => {
                     plans.insert(source, plan);
                 }
@@ -790,6 +952,17 @@ impl Modulation {
         });
         self.prev = Some(compiled);
         applied.resync = !self.resync.is_empty();
+        if applied.unresolved_targets.is_empty() && applied.unresolved_sources.is_empty() {
+            self.memo = Some(Memo {
+                sources: decl.sources.to_vec(),
+                routes: decl.routes.to_vec(),
+                targets: decl.targets.to_vec(),
+                resolved,
+                feeds,
+                revision: editor.revision(),
+                epoch: now.epoch,
+            });
+        }
         Ok(applied)
     }
 
@@ -852,15 +1025,15 @@ impl Modulation {
         first
     }
 
-    /// `target` resolved through `host` and checked against `editor`.
+    /// `target`, as the host resolved it (`to`), checked against `editor`.
     fn resolve_target(
         &self,
         target: TargetKey,
+        to: Option<Target>,
         own: &BTreeSet<(ParamIn, NodeKey)>,
         editor: &Editor,
-        host: &dyn ModHost,
     ) -> Result<Option<Bind>, ReconcileError> {
-        let Some(resolved) = host.target(target) else {
+        let Some(resolved) = to else {
             return Ok(None);
         };
         let shape = |node: NodeKey| editor.shapes().get(&node).copied();
@@ -923,18 +1096,19 @@ impl Modulation {
         }
     }
 
-    /// `source`'s node resolved through `host` and checked against
-    /// `editor`: its key (kept, or fresh), its feed and a follower's width.
+    /// `source`'s node, fed by what the host resolved (`feed`), checked
+    /// against `editor`: its key (kept, or fresh), its feed and a
+    /// follower's width.
     fn resolve_source(
         &self,
         source: SourceKey,
         decl: SourceNode,
         kept: bool,
+        feed: Option<Feed>,
         editor: &Editor,
-        host: &dyn ModHost,
     ) -> Result<Option<SourcePlan>, ReconcileError> {
         // A feed naming a node not in the graph (removed since) is no feed.
-        let feed = host.feed(source).filter(|f| {
+        let feed = feed.filter(|f| {
             let node = match f {
                 Feed::Audio(n) => *n,
                 Feed::Events(out) => out.node,

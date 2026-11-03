@@ -68,6 +68,18 @@ impl Default for SpatialTarget {
     }
 }
 
+/// `value` if finite (and remembered in `slot`), else what `slot` last held.
+///
+/// A panner reads its position cells through this: its de-zipper smoother is
+/// recursive, so one NaN or ±∞ coordinate would leave it NaN for good.
+#[inline]
+pub(crate) fn hold_finite(slot: &mut f32, value: f32) -> f32 {
+    if value.is_finite() {
+        *slot = value;
+    }
+    *slot
+}
+
 /// One smoother per coordinate, each with its own arithmetic: the bearing takes
 /// the short arc, the height is a plain ramp.
 ///

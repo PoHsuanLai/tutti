@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — robustness: tail sentinels, NaN controls, dropped events
+
+**CLAP's infinite tail is decoded as CLAP defines it.** `clap.tail` says any
+value at or above `INT32_MAX` is infinite; the shared decode read only
+`u32::MAX` (VST3's `kInfiniteTail`) as infinite, so a CLAP plugin answering
+`INT32_MAX` reported a finite 12-hour tail and a bounce tried to render it.
+`Tail::from_samples` is split by format.
+*Migration:* `Tail::from_samples(raw)` → `Tail::from_vst3_samples(raw)` for
+VST3, `Tail::from_clap_samples(raw)` for CLAP.
+
+**AU's tail in seconds goes through `Tail::from_seconds`.** It read every
+non-finite answer as unbounded, so a NaN or `-∞` tail reported an infinite
+ring-out, and a negative one reported no tail. Now only `+∞` is
+`Unbounded`; NaN, `-∞` and negative spans are `Unknown`.
+
+**`BrickwallLimiterNode` no longer panics on a NaN ceiling.** `f32::clamp`
+panics on a NaN bound, so a NaN on the ceiling port, in the ceiling cell,
+or given to `new`/`set_ceiling` panicked on the audio thread. A NaN ceiling
+is now ignored: a NaN cell keeps the last ceiling clamped at, a NaN port
+frame clamps at the cell's ceiling, and a NaN at construction starts at
+0 dB. `±∞` dB remain ceilings.
+
+**`ConvolverNode` passes a NaN input through instead of panicking in debug
+builds.** A non-finite input makes `realfft`'s inverse report
+`FftError::InputValues`, which a `debug_assert` treated as a sizing bug;
+release builds rendered that block silent instead. Both now use the
+completed transform: a NaN propagates as through any linear filter and
+leaves once its partition has left the convolver's history.
+
+**`HrtfBinauralNode` recovers from a NaN position.** A NaN or infinite
+bearing (or a NaN height) in its cells made the de-zipper's state NaN for
+good, so the source never moved again. A non-finite coordinate is now
+ignored, as `VbapPannerNode` already did: the source stays at the last
+finite position.
+
+**Dropped graph events reach the load meter.** An event port past its
+capacity (`DEFAULT_EVENT_CAPACITY`, 512 per block, unless the node declares
+its own) refuses the newest event and the executor counts it, but nothing
+outside the audio thread could read that count. `Engine` now forwards it
+to its `LoadMeter`: `LoadReading::dropped_events`.
+*Migration:* `LoadReading` has a new public field; a struct literal of it
+adds `dropped_events`.
+
+**Test: a cloned `LimiterNode` processes without allocating.** The
+window-minimum deque's capacity fix already shipped; a gate now covers a
+clone taken mid-release and processed without a `prepare`.
+
 ### Changed — streamed FLAC export, bulk ring copies in the I/O edges, renders bit-identical
 
 **FLAC export streams and is spec-correct at the end.** It no longer holds

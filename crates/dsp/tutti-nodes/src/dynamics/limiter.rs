@@ -548,8 +548,18 @@ impl Clone for LimiterNode {
 ///
 /// A graph node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
 /// over the ceiling.
+///
+/// # A NaN ceiling is ignored
+///
+/// A NaN ceiling has no level to clamp to (and `f32::clamp` panics on a NaN
+/// bound), so it is ignored wherever it comes from: a NaN in the cell keeps
+/// the last ceiling the node clamped at, a NaN frame on the ceiling port
+/// clamps at the cell's ceiling, and a NaN given to
+/// [`new`](Self::new) starts the node at 0 dB. `±∞` dB are ceilings: `+∞`
+/// passes everything, `-∞` mutes.
 pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
+    /// The linear ceiling the unmodulated path clamps at: never NaN.
     ceiling_linear: f32,
     /// Audio channel width (`inputs()` audio ports == `outputs()`). The clip is
     /// stateless and per-channel, so widening is purely the port count.
@@ -581,7 +591,7 @@ impl BrickwallLimiterNode {
         let n = (channels.into().count() as usize).max(1);
         Self {
             ceiling_db: Param::new(ceiling_db),
-            ceiling_linear: db_to_amplitude(ceiling_db).get(),
+            ceiling_linear: linear_ceiling(ceiling_db).unwrap_or(1.0),
             layout: ChannelLayout::from(n),
             channels: n,
         }
@@ -603,7 +613,7 @@ impl BrickwallLimiterNode {
     }
 
     /// Sets the clamp ceiling in [`Db`], refreshing the cached linear
-    /// amplitude.
+    /// amplitude. A NaN is stored but ignored: the clip keeps its ceiling.
     ///
     /// `&mut self` because of that cache, so this cannot reach a node already
     /// live in the graph — a live ceiling change is a write through its
@@ -612,7 +622,9 @@ impl BrickwallLimiterNode {
     pub fn set_ceiling(&mut self, db: impl Into<Db>) {
         let db = db.into();
         self.ceiling_db.store(db);
-        self.ceiling_linear = db_to_amplitude(db).get();
+        if let Some(linear) = linear_ceiling(db) {
+            self.ceiling_linear = linear;
+        }
     }
 
     #[inline]
@@ -625,6 +637,13 @@ impl BrickwallLimiterNode {
     fn clip_at(sample: f32, ceiling_linear: f32) -> f32 {
         sample.clamp(-ceiling_linear, ceiling_linear)
     }
+}
+
+/// `db` as a linear clamp bound, or `None` for a NaN, which has none.
+#[inline]
+fn linear_ceiling(db: Db) -> Option<f32> {
+    let linear = db_to_amplitude(db).get();
+    (!linear.is_nan()).then_some(linear)
 }
 
 impl Node for BrickwallLimiterNode {
@@ -648,6 +667,13 @@ impl Node for BrickwallLimiterNode {
         let n = self.channels;
         let ceiling_fed = io.param(0).frames();
         let (inputs, mut outputs) = io.split();
+        // The cell's ceiling, re-derived once per block: the unmodulated
+        // clip, and a fed NaN frame's fallback. A NaN cell keeps the last.
+        if let Some(linear) = linear_ceiling(self.ceiling_db.load()) {
+            if (linear - self.ceiling_linear).abs() > 0.0001 {
+                self.ceiling_linear = linear;
+            }
+        }
         // Channel-major: the clip is memoryless, so a sample's value depends
         // only on its input and its frame's ceiling, not on the loop order.
 
@@ -661,8 +687,9 @@ impl Node for BrickwallLimiterNode {
                 return Status::Modified;
             };
             let first = &mut first[..size];
+            let fallback = self.ceiling_linear;
             for (o, &db) in first.iter_mut().zip(v) {
-                *o = db_to_amplitude(Db(db)).get();
+                *o = linear_ceiling(Db(db)).unwrap_or(fallback);
             }
             for (c, out) in outs.enumerate() {
                 let input = &inputs.get(c + 1)[..size];
@@ -674,11 +701,6 @@ impl Node for BrickwallLimiterNode {
                 *o = Self::clip_at(x, *o);
             }
             return Status::Modified;
-        }
-
-        let ceiling = self.ceiling_db.load();
-        if (db_to_amplitude(ceiling).get() - self.ceiling_linear).abs() > 0.0001 {
-            self.ceiling_linear = db_to_amplitude(ceiling).get();
         }
 
         for c in 0..n {
@@ -1115,6 +1137,55 @@ mod tests {
             high_ceiling > low_ceiling + 0.1,
             "higher fed ceiling should clip less: low={low_ceiling}, high={high_ceiling}"
         );
+    }
+
+    /// A NaN fed on the ceiling port clamps at the cell's ceiling rather
+    /// than panicking in `f32::clamp`, and the next finite frame clamps at
+    /// its own.
+    ///
+    /// Mutation (run): use the fed frame's linear ceiling unchecked (the old
+    /// `db_to_amplitude(Db(db)).get()`) → `f32::clamp` panics on the NaN
+    /// bound → fails.
+    #[test]
+    fn brickwall_a_fed_nan_ceiling_clamps_at_the_cell() {
+        let mut bw = prepared_at(BrickwallLimiterNode::new(-6.0), RATE_44K);
+        let cell = db_to_amplitude(-6.0).get();
+        let mut out = [0.0f32; 2];
+        tick_fed(&mut bw, &[1.0, -1.0], &[Some(f32::NAN)], &mut out);
+        assert_eq!(out, [cell, -cell]);
+        tick_fed(&mut bw, &[1.0, -1.0], &[Some(-12.0)], &mut out);
+        let fed = db_to_amplitude(-12.0).get();
+        assert_eq!(out, [fed, -fed]);
+    }
+
+    /// A NaN written to the ceiling cell keeps the ceiling the node last
+    /// clamped at, and a later finite write takes effect; a NaN at
+    /// construction starts at 0 dB.
+    ///
+    /// Mutations (run): re-derive the cell's ceiling unchecked
+    /// (`self.ceiling_linear = db_to_amplitude(..).get()`) → the clamp
+    /// panics → fails; build with `db_to_amplitude(ceiling_db).get()` in
+    /// `with_channels` → the NaN-built node panics → fails.
+    #[test]
+    fn brickwall_a_nan_cell_keeps_the_last_ceiling() {
+        let mut bw = prepared_at(BrickwallLimiterNode::new(-6.0), RATE_44K);
+        let set = bw.param_set();
+        let mut out = [0.0f32; 2];
+        assert!(set.set(UnitParam::Ceiling, f32::NAN));
+        tick(&mut bw, &[1.0, -1.0], &mut out);
+        let held = db_to_amplitude(-6.0).get();
+        assert_eq!(out, [held, -held]);
+        assert!(set.set(UnitParam::Ceiling, -12.0));
+        tick(&mut bw, &[1.0, -1.0], &mut out);
+        let next = db_to_amplitude(-12.0).get();
+        assert!((out[0] - next).abs() < 1e-6, "{}", out[0]);
+
+        let mut born_nan = prepared_at(BrickwallLimiterNode::new(f32::NAN), RATE_44K);
+        tick(&mut born_nan, &[2.0, -2.0], &mut out);
+        assert_eq!(out, [1.0, -1.0], "a NaN-built brickwall clamps at 0 dB");
+        born_nan.set_ceiling(f32::NAN);
+        tick(&mut born_nan, &[2.0, -2.0], &mut out);
+        assert_eq!(out, [1.0, -1.0], "set_ceiling(NaN) keeps the ceiling");
     }
 
     // ── Width-native (N-channel) ─────────────────────────────────────────────

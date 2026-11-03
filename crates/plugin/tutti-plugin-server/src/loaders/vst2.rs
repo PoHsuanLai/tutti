@@ -75,7 +75,7 @@ impl Vst2Instance {
                 latency_samples: host_meta.latency_samples,
                 // Asked and decoded. The decode is `tutti-vst2-host`'s
                 // `decode_tail` and deliberately not
-                // `PluginTail::from_samples`: VST2 inverts the
+                // `PluginTail::from_vst3_samples`: VST2 inverts the
                 // convention, so `0` is "no information" where every other
                 // format means "no tail". `Unknown` remains the answer for a
                 // plugin that declines the opcode.
@@ -640,8 +640,9 @@ mod tests {
     /// | `1` | no tail at all                      | `None`      |
     /// | `n` | `n` samples of ring-out             | `Finite(n)` |
     ///
-    /// Reading a raw `0` as `None` — which `PluginTail::from_samples` would,
-    /// since that is right for CLAP and VST3 — tells a bounce to add no decay
+    /// Reading a raw `0` as `None` — which `PluginTail::from_clap_samples`
+    /// and `from_vst3_samples` would, since that is right for CLAP and VST3 —
+    /// tells a bounce to add no decay
     /// and truncates every reverb. All three rows are asserted together
     /// because the bug is a *swap*: either zero alone still passes half a
     /// table.

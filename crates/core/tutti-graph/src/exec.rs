@@ -179,6 +179,14 @@ use tutti_types::PlayReading;
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
 /// configured otherwise ([`Editor::with_event_capacity`](crate::Editor::with_event_capacity)).
+///
+/// A hard cap, preallocated so the audio thread never grows a buffer. Past
+/// it the port refuses the newest event
+/// ([`EventRejected::Full`](crate::EventRejected::Full), returned to the
+/// node), and the executor counts it in
+/// [`dropped_events`](Executor::dropped_events); an engine forwards that
+/// count to its load meter. A node that can emit more per block declares
+/// its own capacity.
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
 /// Commits that may be out at once: sent and not yet drained back. The

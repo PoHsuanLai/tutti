@@ -439,7 +439,7 @@ impl Vst3Loaded {
     ///
     /// The raw count, so `0` (no tail) and the saturating `u32::MAX` (an
     /// effectively unbounded one) both reach the caller as the plugin stated
-    /// them. `PluginTail::from_samples` is what turns those into the shared
+    /// them. `PluginTail::from_vst3_samples` is what turns those into the shared
     /// vocabulary; this stays at the ABI's own type so nothing is decided here.
     ///
     /// # Panics

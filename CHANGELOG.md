@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — owners read what they published from the cell, not from a copy
+
+**Every control-side copy of a published value is gone.** Owners of an
+`ArcLend` kept the value they last published beside the cell, often with a
+second lock to keep the two in step, because the cell had no control-side
+read; they now call `ArcLend::current`. Removed: the sampler voice's
+`PlacedWindow` (and the lock `set_placement` held across its publish), the
+project meter's `current`, `LaneControls`' `last` program (its generation is
+now a `fetch_add` counter: the lane compares generations for inequality
+only), `HardwareMidiInputs`' recorded port set, `MidiInputNode`'s
+`MpeRequest` record, and the clip and harmony nodes' `current` (their lock
+stays, as a plain `Mutex<()>` serializing compare-then-publish; the hardware
+port manager's lock orders its compare-then-publish the same way, since the
+cell has no compare-and-publish). A node that held both a cell and a reader
+of it now holds the reader alone and reaches the cell through
+`Reader::cell` (`VoiceNode`, `MidiInputNode`). No behaviour changes.
+
+### Changed — `arc-lend`: a slot list that doubles, and modules
+
+**A cell with one reader allocates one slot, not sixteen.**
+The slot list grew sixteen slots (a cache line each) at a time, so the
+common cell, read by one node, paid for fifteen it never used. It now
+starts at one slot and doubles: `n` readers registered at once hold
+`n.next_power_of_two()` slots (`the_list_doubles_from_one_slot`, and
+`a_slot_has_its_own_cache_line` for a slot's size). A publish with one
+reader scans one slot, not sixteen; with 17 or more readers it costs what
+it did. The reader side is unchanged, and the loom model no
+longer needs a smaller block under `--cfg loom` to cover growth.
+
+**`ArcLend::current()`: the publishing side reads what it published.** It
+takes the publisher's lock and returns an owning `Arc` of the value in
+force, so an owner no longer keeps a copy beside the cell (and a lock to
+keep the two in step) to derive the next value or start a fork. A reader
+still cannot own: `current` is a publisher-side call, and the `Arc` it
+returns frees wherever its holder drops it. `publish` now takes
+`impl Into<Arc<T>>`, so `publish(value)` works beside
+`publish(Arc::new(value))`, which still compiles. `ArcLend::reader` and
+`Reader::lend` are `#[must_use]`.
+
+The module split changes no behaviour.
+`src/lend.rs` is now `slots.rs` (the slot list and its word encoding, not
+generic over the payload), `current.rs` (the current pointer, and every
+`Arc::from_raw` the cell makes), `cell.rs` (`ArcLend` and its scan) and
+`reader.rs` (`Reader`, `Loan`), with the std/loom shim in `sync.rs`. The
+unit tests are under `src/tests/`, by subject, and no logic file holds
+test-only code. The docs now count a lend and its drop as three stores, not
+four.
+
+### Fixed — `arc-lend`: a lend writes nothing outside its slot
+
+**Readers kept side by side no longer slow each other down.** A `Reader`
+counted its lends in a field of its own, so readers stored next to each
+other (a `Vec<Reader>`) shared a cache line that every lend wrote, so
+concurrent lends slowed each other. The counter now lives on the reader's
+slot, which is on a line of its own, so a lend writes only that line.
+`a_lend_writes_only_its_own_slot` pins it, and section 8 of the comparison
+bench (`BENCHMARKS.md`) times concurrent lends with the readers adjacent and
+apart; the two agree now, and with the counter back in `Reader` the adjacent
+readers lend slower. The counter is a plain `std` atomic outside the
+protocol the loom models and miri check.
+
+### Changed — `arc-lend`: docs as a paper, a wider comparison, a run on real hardware
+
+**The README is the crate's front page, and the docs are two pages.**
+`lib.rs` includes `README.md`. `docs::guide` (using it well, what to watch
+for) replaces `patterns`, `limitations` and `performance`, and
+`docs::design` (the protocol, its correctness argument, and related work)
+replaces `internal`. **The comparison adds `crossbeam-epoch`, `haphazard`,
+`triple_buffer` and `arc-swap` read through a `Cache` per reader**, and `compare/tests/claims.rs` checks its claims about
+them by running each cell. `BENCHMARKS.md` is now from a run on a Ryzen 9
+9950X (32 threads), not a 4-vCPU VM. The harness pads each reader handle's
+nesting levels, whose `RefCell` flags otherwise shared a line between reader
+threads.
 ### Fixed — robustness: tail sentinels, NaN controls, dropped events
 
 **CLAP's infinite tail is decoded as CLAP defines it.** `clap.tail` says any

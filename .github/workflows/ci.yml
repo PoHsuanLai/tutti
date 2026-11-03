@@ -611,7 +611,7 @@ jobs:
   # `registering_and_dropping_readers` runs at a preemption bound of 4
   # (about a minute), and every recorded mutation fails at a bound of 3. That
   # model at 5 (about 6 minutes) is `just loom-full`, for a change to `arc-lend`'s
-  # `src/lend.rs` itself; at 6 it did not finish in 25 minutes.
+  # protocol code itself; at 6 it did not finish in 25 minutes.
   loom:
     name: loom
     runs-on: ubuntu-24.04

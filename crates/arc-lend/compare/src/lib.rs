@@ -1,5 +1,5 @@
 //! The instrument behind `arc-lend`'s comparison benchmark
-//! (`crates/arc-lend/BENCHMARKS.md`; the harness is
+//! (`BENCHMARKS.md` at the crate root; the harness is
 //! `benches/compare/main.rs`).
 //!
 //! Nothing here names a contender. It holds what the harness measures with:

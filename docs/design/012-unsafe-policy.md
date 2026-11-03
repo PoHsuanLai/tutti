@@ -46,11 +46,11 @@ be checked against the tree.
   skipped step or a failure code, never a panic. The RT-safe alternative to
   a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
   a no-op that pinned no owner thread, is deleted.)
-- **`arc-lend/src/lend.rs`** — `ArcLend` (it was `tutti-types`'
+- **`arc-lend/src/current.rs`, `arc-lend/src/reader.rs`** — `ArcLend` (it was `tutti-types`'
   `RtPublish`, in `rt/publish.rs`, until it became its own crate): an
-  `AtomicPtr` holding an `Arc::into_raw` pointer, reclaimed with
-  `Arc::from_raw` by `publish` and `Drop`, and dereferenced by `Loan` under a
-  hazard-slot protocol. The safe
+  `AtomicPtr` holding an `Arc::into_raw` pointer (its private `Current`,
+  which holds every `Arc::from_raw`: its `swap`, `to_arc` and `Drop`), and
+  dereferenced by `Loan` under a hazard-slot protocol. The safe
   alternative (`ArcSwap`) could, rarely, free on the audio thread; this cannot,
   and that is the whole reason for it. The dereference's soundness rests on a
   `SeqCst` fence pair, which is a *concurrency* property — so it is checked by

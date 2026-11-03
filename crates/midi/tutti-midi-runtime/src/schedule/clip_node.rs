@@ -84,9 +84,11 @@ struct Shared {
     /// What the audio thread reads, once per block, through the node's
     /// reader.
     cell: Arc<ArcLend<ClipEvents>>,
-    /// The clip last published, for the control side (a fork's snapshot, a
-    /// count). Control thread only.
-    current: Mutex<Arc<ClipEvents>>,
+    /// Serializes `set`'s compare, generation and publish (`ArcLend` has no
+    /// compare-and-publish), so two control threads cannot each publish
+    /// against a stale read. The value is the cell's own: the control side
+    /// reads it with `ArcLend::current`. The node never takes it.
+    publish: Mutex<()>,
     next_generation: AtomicU64,
 }
 
@@ -98,13 +100,13 @@ impl Shared {
         });
         Arc::new(Self {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
-            current: Mutex::new(first),
+            publish: Mutex::new(()),
             next_generation: AtomicU64::new(1),
         })
     }
 
     fn current(&self) -> Arc<ClipEvents> {
-        Arc::clone(&self.current.lock().unwrap_or_else(PoisonError::into_inner))
+        self.cell.current()
     }
 }
 
@@ -195,17 +197,17 @@ impl MidiClipControls {
     /// note-on) change nothing: no note is cut.
     pub fn set_events(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
         let events = sorted(events);
-        let mut current = self
+        let _serial = self
             .shared
-            .current
+            .publish
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let current = self.shared.current();
         if current.events == events {
             return;
         }
         let generation = self.shared.next_generation.fetch_add(1, Ordering::Relaxed);
         let clip = Arc::new(ClipEvents { generation, events });
-        *current = Arc::clone(&clip);
         self.shared.cell.publish(clip);
     }
 
@@ -390,7 +392,7 @@ impl ForkSource for ClipFork {
         let clip = self.shared.current();
         let shared = Arc::new(Shared {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&clip))),
-            current: Mutex::new(clip),
+            publish: Mutex::new(()),
             next_generation: AtomicU64::new(0),
         });
         Ok(Forked::new(Box::new(MidiClipNode::over(shared))))

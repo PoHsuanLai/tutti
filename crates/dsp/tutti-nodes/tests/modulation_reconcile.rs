@@ -181,6 +181,21 @@ impl Node for Held {
     fn reset(&mut self) {}
 }
 
+/// Like [`Capture`], with two event inputs.
+#[derive(Clone)]
+struct Capture2;
+
+impl Node for Capture2 {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(2, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
 /// Records every segment on its event input, with its executor frame.
 #[derive(Clone)]
 struct Capture(Arc<Mutex<Vec<(u64, ParamSegment)>>>);
@@ -211,6 +226,10 @@ impl Node for Capture {
 struct Host {
     targets: BTreeMap<u64, (NodeKey, Arc<AtomicF32>)>,
     foreign: BTreeMap<u64, NodeKey>,
+    /// A foreign target's event input; 0 where absent.
+    foreign_port: BTreeMap<u64, u16>,
+    /// Native targets resolved without a knob cell.
+    bare: BTreeMap<u64, NodeKey>,
     feeds: BTreeMap<SourceKey, Feed>,
 }
 
@@ -219,9 +238,12 @@ impl ModHost for Host {
         if let Some(&node) = self.foreign.get(&t.node) {
             return Some(Target::Foreign {
                 node,
-                port: 0,
+                port: self.foreign_port.get(&t.node).copied().unwrap_or(0),
                 knob: Some(0.5),
             });
+        }
+        if let Some(&node) = self.bare.get(&t.node) {
+            return Some(Target::Native { node, knob: None });
         }
         let (node, knob) = self.targets.get(&t.node)?;
         Some(Target::Native {
@@ -1845,4 +1867,166 @@ fn a_play_start_after_a_steady_state_republishes_an_anchored_program() {
         .expect("room");
     block(&mut r.ed, &mut r.exec, &stopped(), &ch, 128);
     assert_eq!(reapply(&mut r).republished, vec![cutoff_of(1)]);
+}
+
+/// A foreign rig: plugin-like nodes at keys 50 and 51 (51 with two event
+/// inputs), the host resolving target node 50 to key 50 port 0, and a macro
+/// route onto it; applied, committed and steady.
+fn foreign_rig() -> (Editor, Host, Decl, Modulation, TargetKey) {
+    let (mut ed, _exec) = editor(128);
+    let mut host = Host::default();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    ed.insert(key(50), "plugin", ForkByClone(Capture(log)));
+    ed.insert(key(51), "plugin", ForkByClone(Capture2));
+    ed.commit().expect("commits");
+    host.foreign.insert(50, key(50));
+    let param = TargetKey {
+        node: 50,
+        param: ParamAddr::Id(7),
+    };
+    let mut decl = Decl::default();
+    decl.target(param, 0.0, 1.0);
+    let one = decl.source(1, ModSource::Macro { value: 1.0 });
+    decl.route(1, one, param, 0.25);
+    let mut m = Modulation::new();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    m.commit(&mut ed).expect("commits");
+    for _ in 0..2 {
+        let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+        assert!(!applied.commit);
+    }
+    let before = m.skipped();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(m.skipped() > before, "a steady apply is skipped");
+    (ed, host, decl, m, param)
+}
+
+/// Whether `lane` drives `to`.
+fn drives(ed: &Editor, lane: NodeKey, to: EventIn) -> bool {
+    ed.spec().events.get(&to).is_some_and(|edges| {
+        edges.contains(&EventEdge::Direct(EventOut {
+            node: lane,
+            port: 0,
+        }))
+    })
+}
+
+/// A foreign target the host resolves to another node, with nothing in the
+/// editor edited, moves its lane there.
+///
+/// Mutation (run): the `Foreign` arm of `Resolved::same` returning `true` →
+/// the apply is skipped → fails on the commit.
+#[test]
+fn a_foreign_target_on_another_node_after_a_steady_state_moves_the_lane() {
+    let (mut ed, mut host, decl, mut m, param) = foreign_rig();
+    host.foreign.insert(50, key(51));
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(applied.commit, "the lane is rewired");
+    let lane = m.lane(param).expect("a lane").0;
+    assert!(drives(
+        &ed,
+        lane,
+        EventIn {
+            node: key(51),
+            port: 0
+        }
+    ));
+    assert!(!drives(
+        &ed,
+        lane,
+        EventIn {
+            node: key(50),
+            port: 0
+        }
+    ));
+}
+
+/// A foreign target the host resolves to another event input of the same
+/// node moves its lane there.
+///
+/// Mutation (run): the `Foreign` arm of `Resolved::same` comparing the node
+/// only → the apply is skipped → fails on the commit.
+#[test]
+fn a_foreign_target_on_another_port_after_a_steady_state_moves_the_lane() {
+    let (mut ed, mut host, decl, mut m, param) = foreign_rig();
+    host.foreign.insert(50, key(51));
+    host.foreign_port.insert(50, 0);
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    m.commit(&mut ed).expect("commits");
+    for _ in 0..3 {
+        m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    }
+    let before = m.skipped();
+    m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(m.skipped() > before, "steady again");
+    host.foreign_port.insert(50, 1);
+    let applied = m.apply(&decl.get(), &mut ed, &host).expect("applies");
+    assert!(applied.commit, "the lane is rewired");
+    let lane = m.lane(param).expect("a lane").0;
+    assert!(drives(
+        &ed,
+        lane,
+        EventIn {
+            node: key(51),
+            port: 1
+        }
+    ));
+    assert!(!drives(
+        &ed,
+        lane,
+        EventIn {
+            node: key(51),
+            port: 0
+        }
+    ));
+}
+
+/// A native target resolved with no knob cell, to another node, moves its
+/// lane: the node alone differs.
+///
+/// Mutation (run): `node == n2` in the `Native` arm of `Resolved::same`
+/// made `true` → the apply is skipped → fails on the commit.
+#[test]
+fn a_native_target_on_another_node_without_a_knob_moves_the_lane() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    probe(&mut r.ed, &mut r.host, 3, 500.0);
+    r.host.targets.remove(&1);
+    r.host.bare.insert(1, key(1));
+    reapply(&mut r);
+    steady(&mut r);
+    r.host.bare.insert(1, key(3));
+    assert!(reapply(&mut r).commit, "the lane is rebuilt");
+    let at = ParamIn {
+        node: key(3),
+        param: UnitParam::Cutoff,
+    };
+    let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
+    assert_eq!(
+        r.ed.spec().params[&at].source.map(|s| s.node),
+        Some(lane),
+        "the lane drives the new node's port"
+    );
+}
+
+/// A sample-rate change after a steady state is not skipped: the apply
+/// runs and recompiles. Its programs come out equal (a rate enters a
+/// program only through a rate edit's anchor), so nothing is republished;
+/// what the test pins is that the apply ran, and the lane keeps its node.
+///
+/// Mutation (run): `Editor::reprepare` not touching the revision → the
+/// apply is skipped → fails on `skipped`.
+#[test]
+fn a_rate_change_after_a_steady_state_is_not_skipped() {
+    let mut r = rig(128);
+    render(&mut r.ed, &mut r.exec, 128, 128);
+    steady(&mut r);
+    let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
+    let skipped = r.m.skipped();
+    r.ed.reprepare(Prepare::new(SampleRate(RATE * 2.0), Samples(128)))
+        .expect("reprepares");
+    let applied = reapply(&mut r);
+    assert_eq!(r.m.skipped(), skipped, "the apply ran");
+    assert!(applied.republished.is_empty() && !applied.commit);
+    assert_eq!(r.m.lane(cutoff_of(1)).expect("a lane").0, lane);
 }

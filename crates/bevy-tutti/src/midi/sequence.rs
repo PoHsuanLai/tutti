@@ -85,6 +85,9 @@ pub struct SequencedClips {
     /// Each install's target as [`rebuild`] last saw it: where a removed
     /// install, or one moved to another target, played.
     installs: HashMap<Entity, Entity>,
+    /// Targets an edit reached that [`rebuild`] could not finish (no graph
+    /// yet, or the session refused the clip): tried again on the next run.
+    retry: HashSet<Entity>,
 }
 
 impl SequencedClips {
@@ -103,7 +106,9 @@ impl SequencedClips {
 /// sent; every other clip is left alone. Removals are found by looking
 /// (an install the last rebuild saw that is gone, a clip's target with no
 /// node), not from removal messages, which a frame this system skips
-/// (`engine_ready`) would lose. **Not** when the device's rate
+/// (`engine_ready`) would lose. A target it cannot finish (there is no
+/// [`AudioGraphRes`] yet, or the session refuses its clip) is kept and
+/// tried again on the next run. **Not** when the device's rate
 /// moves (a restart, `restart_device`): a clip node reads its block's
 /// `Env`, rate included.
 #[allow(clippy::too_many_arguments)]
@@ -122,7 +127,8 @@ pub fn rebuild(
     // The targets this frame's edits reach: an install gone, added or
     // changed (its target now and before), a clip's target left with no
     // node, a target (re)bound.
-    let mut reached: HashSet<Entity> = HashSet::new();
+    let retried = std::mem::take(&mut clips.retry);
+    let mut reached: HashSet<Entity> = retried.clone();
     clips.installs.retain(|&install, &mut target| {
         let kept = installs.contains(install);
         if !kept {
@@ -147,6 +153,8 @@ pub fn rebuild(
         return;
     }
     let Some(mut graph) = graph else {
+        // The edits are consumed above; keep what they reached.
+        clips.retry = reached;
         return;
     };
 
@@ -193,7 +201,10 @@ pub fn rebuild(
         // with that node (`Graph::remove`), and nothing else would restore
         // them. An unchanged feed (and the edit flag) is left alone.
         if let Err(e) = midi.retarget(clip, sink) {
-            tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
+            if !retried.contains(target) {
+                tracing::error!("sequencer: {target:?}'s clip not re-aimed: {e}");
+            }
+            clips.retry.insert(*target);
         }
         // A clip no install names any more plays nothing from the next
         // block, ending the notes it left sounding (as new events end the
@@ -211,7 +222,12 @@ pub fn rebuild(
             Ok(clip) => {
                 clips.clips.insert(target, clip);
             }
-            Err(e) => tracing::error!("sequencer: {target:?} takes no clip: {e}"),
+            Err(e) => {
+                if !retried.contains(&target) {
+                    tracing::error!("sequencer: {target:?} takes no clip: {e}");
+                }
+                clips.retry.insert(target);
+            }
         }
     }
 }

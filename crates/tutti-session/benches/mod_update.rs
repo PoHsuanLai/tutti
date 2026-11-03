@@ -8,7 +8,10 @@
 //! the reconcile's cycle check has an edge to walk). Each size settles (its
 //! lanes and the follower placed), then `UPDATES` updates are timed. The
 //! `bare` row is the same chain with nothing declared: the floor the rest
-//! of the update costs.
+//! of the update costs. The `changing` row is the modulated scene with one
+//! range edit on the first filter's cutoff before every update (the edit is
+//! outside the timing; the update that follows it is timed), so the apply is
+//! never skipped: what the memo costs when it never pays.
 //!
 //! A percentile harness, not criterion: the figure is a mean and a p99 per
 //! update, printed. Run it with
@@ -16,7 +19,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_core::{ChannelLayout, SampleRate, Samples};
+use tutti_core::{AudioNode, ChannelLayout, SampleRate, Samples};
 use tutti_mod::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{GraphSource, ParamRef, Session};
@@ -24,7 +27,7 @@ use tutti_types::{BeatDuration, Depth, Hz, UnitParam, Q};
 
 const UPDATES: usize = 2_000;
 
-fn scene(n: usize, modulated: bool) -> Session {
+fn scene(n: usize, modulated: bool) -> (Session, Vec<AudioNode>) {
     let mut s = Session::builder()
         .build_offline(SampleRate(48_000.0), ChannelLayout::STEREO, Samples(512))
         .expect("builds");
@@ -67,14 +70,18 @@ fn scene(n: usize, modulated: bool) -> Session {
             "every target resolved"
         );
     }
-    s
+    (s, filters)
 }
 
-fn measure(label: &str, n: usize, modulated: bool) {
-    let mut s = scene(n, modulated);
+fn measure(label: &str, n: usize, modulated: bool, edit: bool) {
+    let (mut s, filters) = scene(n, modulated);
     let commits = s.graph().commits_sent();
     let mut times = Vec::with_capacity(UPDATES);
-    for _ in 0..UPDATES {
+    for i in 0..UPDATES {
+        if edit {
+            let cutoff = ParamRef::unit(filters[0], UnitParam::Cutoff);
+            s.mods().range(cutoff, 20.0, 20_000.0 + (i % 2) as f32);
+        }
         let t = Instant::now();
         let events = s.update();
         times.push(t.elapsed());
@@ -97,7 +104,8 @@ fn measure(label: &str, n: usize, modulated: bool) {
 
 fn main() {
     for n in [16, 64, 256] {
-        measure("bare", n, false);
-        measure("modulated", n, true);
+        measure("bare", n, false, false);
+        measure("modulated", n, true, false);
+        measure("changing", n, true, true);
     }
 }

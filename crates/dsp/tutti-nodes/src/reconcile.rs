@@ -451,6 +451,14 @@ pub struct Modulation {
 ///   carries a rate edit's anchor only within its epoch, so a new play
 ///   start drops it from the program.
 ///
+/// Floats compare by value, except a target's range, which compares by
+/// bits. So `0.0` and `-0.0` in a source or route read as equal, and a
+/// NaN never equals itself: an apply over one is never skipped.
+///
+/// The revision belongs to one editor: a new [`Editor`] counts from 0
+/// again, so a `Modulation` must be applied to one editor for its life
+/// (a session builds one editor and a restart reuses it).
+///
 /// Not kept while a target or a source is unresolved: those resolve on a
 /// later commit, and a host re-applies to find out (and times how long).
 struct Memo {

@@ -623,3 +623,68 @@ fn a_clip_goes_when_its_target_loses_its_node_with_no_install_edit() {
     assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
     assert!(!app.world().resource::<AudioGraphRes>().contains(clip));
 }
+
+/// **An install added while there is no graph plays once the graph
+/// appears.** `engine_ready` can be true before an `AudioGraphRes` exists;
+/// the edit is consumed by that run, and the target must still be rebuilt
+/// when the graph arrives.
+///
+/// Mutation (run): `rebuild` returning at the missing graph without keeping
+/// the reached targets (`clips.retry = reached` removed) → nothing plays →
+/// fails.
+#[test]
+fn an_install_added_with_no_graph_plays_when_the_graph_appears() {
+    let mut app = app();
+    let (tap, seen) = spawn_tap(&mut app);
+    app.update();
+    let graph = app
+        .world_mut()
+        .remove_resource::<AudioGraphRes>()
+        .expect("a graph");
+    app.world_mut().spawn(MidiSourceInstall::new(
+        tap,
+        note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+    app.world_mut().insert_resource(graph);
+    app.update();
+    roll(&mut app, 0, 100);
+    assert_eq!(note_ons(&seen), vec![(0, 60)]);
+}
+
+/// **An install removed while there is no graph ends its notes once the
+/// graph appears.** The install is gone from the world and from the
+/// sequencer's record by then; only the kept target tells the rebuild to
+/// silence its clip.
+///
+/// Mutation (run): the same as above (`clips.retry = reached` removed) →
+/// the clip keeps its second note and plays it at beat 1 → fails.
+#[test]
+fn an_install_removed_with_no_graph_ends_its_notes_when_the_graph_appears() {
+    let mut app = app();
+    let (tap, seen) = spawn_tap(&mut app);
+    let mut events = note(60, Beat(0.0), BeatDuration(32.0), MF).to_vec();
+    events.extend(note(62, Beat(1.0), BeatDuration(1.0), MF));
+    let install = app
+        .world_mut()
+        .spawn(MidiSourceInstall::new(tap, events))
+        .id();
+    app.update();
+    roll(&mut app, 0, 100);
+    let graph = app
+        .world_mut()
+        .remove_resource::<AudioGraphRes>()
+        .expect("a graph");
+    app.world_mut().despawn(install);
+    app.update();
+    app.world_mut().insert_resource(graph);
+    app.update();
+    roll(&mut app, 100, 30_000);
+    assert_eq!(note_ons(&seen), vec![(0, 60)]);
+    assert_eq!(note_offs(&seen), vec![(100, 60)]);
+}
+
+// A `play_clip` or `retarget` that fails is kept in the same retry set and
+// tried again. Not covered here: `rebuild` only asks a target with an event
+// input, and `play_clip` fails only for one without, so no session state
+// reachable from a test makes it fail once and then succeed.

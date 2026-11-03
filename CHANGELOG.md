@@ -18,7 +18,11 @@ apply over equal ones. Nothing is kept while a target or source is
 unresolved. A steady `Session::update` on a chain of 256 filters, each
 cutoff on an LFO, went from 729 µs to 13–20 µs mean over two runs (2.6 ms to
 30 µs p99); 16 filters from 21 µs to 1 µs (`cargo bench -p tutti-session --features
-modulation --bench mod_update`). What renders is unchanged.
+modulation --bench mod_update`). An update that changes something (one range
+edit per update) is not slower: 256 filters, mean 695–723 µs on this branch over
+three runs against 701 µs on main over three; 16 filters 21–26 µs against 20–28 µs.
+Each figure moves by 10–20 % between runs on a shared machine. What renders is
+unchanged.
 
 - **`tutti_graph::Editor::revision`** (new): a count every editing call
   moves (spec, shapes, the plan sent, param ranges, the `Prepare`).

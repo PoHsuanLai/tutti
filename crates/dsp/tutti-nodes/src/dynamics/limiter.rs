@@ -99,7 +99,20 @@ impl LookaheadRing {
 ///
 /// A limiter is a compressor at an effectively infinite ratio: nothing is
 /// allowed past the ceiling: the output is bounded by it (a gain divide and a
-/// product can in principle round one ulp past). The **lookahead** is what makes that possible
+/// product can in principle round one ulp past).
+///
+/// # The curve
+///
+/// The threshold drives the input. With `drive = ceiling - threshold` in dB,
+/// the gain at a linked peak is `min(drive, ceiling / peak)`, so the output
+/// is `min(peak * drive, ceiling)`: under the threshold the signal is
+/// moved by the drive (boosted when the ceiling is above the threshold,
+/// attenuated when below), and a louder one settles at the ceiling. The curve
+/// is continuous and monotonic, with its knee at the threshold. With the
+/// defaults (-6 dB threshold, -0.3 dB ceiling) a quiet signal is raised by
+/// 5.7 dB and the output reaches -0.3 dB when the input reaches -6 dB. The
+/// gain is then smoothed (instant attack, `release`) and its minimum over
+/// the lookahead window applied. The **lookahead** is what makes that possible
 /// without distortion — the audio is delayed by the lookahead window while the
 /// gain decision runs ahead of it, so reduction is already in place when a peak
 /// arrives rather than chasing it.
@@ -187,10 +200,13 @@ impl LimiterNode {
     /// Builds a stereo lookahead limiter with a 5 ms lookahead and 100 ms
     /// release.
     ///
-    /// `threshold_db` is where reduction starts and `ceiling_db` the hard
-    /// output bound, both in [`Db`] and typically negative — a mastering
-    /// limiter often sits at a ceiling of `-0.3` to leave inter-sample
-    /// headroom. Adjust the window with
+    /// `ceiling_db` is the hard output bound and `threshold_db` the input
+    /// level that reaches it, both in [`Db`] and typically negative. The
+    /// threshold drives the input: signal under it is moved by
+    /// `ceiling_db - threshold_db` (a boost when the ceiling is above the
+    /// threshold, as with the usual `-6` and `-0.3`), and signal over it is
+    /// held at the ceiling. A mastering limiter often sits at a ceiling of
+    /// `-0.3` to leave inter-sample headroom. Adjust the window with
     /// [`with_lookahead`](Self::with_lookahead) and the recovery with
     /// [`with_release`](Self::with_release).
     ///
@@ -1548,8 +1564,8 @@ mod tests {
     /// `ceiling / peak` over the threshold, and the constant
     /// `ceiling / threshold` under it.
     ///
-    /// Mutation (run): in `LimiterCurve::new`, take `cap` as `0.0` -> the
-    /// loud gain is `threshold / peak` -> fails.
+    /// Mutation (run): in `LimiterCurve::new`, build `over` from a gap of
+    /// `0.0` -> the loud gain is `threshold / peak` -> fails.
     #[test]
     fn a_ceiling_under_the_threshold_scales_by_the_gap_under_it() {
         let (threshold, ceiling) = (Db(-3.0), Db(-9.0));
@@ -1573,6 +1589,93 @@ mod tests {
                 "level {level}: {} against {want}",
                 out[1023]
             );
+        }
+    }
+
+    /// The steady-state output level in dB of a constant input at `in_db`.
+    fn steady_out_db(threshold: Db, ceiling: Db, in_db: f32) -> f32 {
+        let mut lim = prepared_at(
+            LimiterNode::new(threshold, ceiling).with_release(0.001),
+            RATE_44K,
+        );
+        let level = db_to_amplitude(Db(in_db)).get();
+        let x = vec![level; 1024];
+        let mut out = Vec::new();
+        for _ in 0..16 {
+            out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
+        }
+        let ceiling_lin = db_to_amplitude(ceiling).get();
+        // The output never exceeds the ceiling (to a rounding step), in
+        // every frame, including the release that rises from zero.
+        assert!(
+            out.iter().all(|y| y.abs() <= ceiling_lin * (1.0 + 1e-6)),
+            "threshold {threshold:?}, ceiling {ceiling:?}, in {in_db}: past the ceiling"
+        );
+        amplitude_to_db(out[1023]).get()
+    }
+
+    /// Threshold, ceiling pairs covering a boost, a cut, and no drive.
+    const CURVES: [(f32, f32); 5] = [
+        (-6.0, -0.3),
+        (-12.0, -1.0),
+        (-3.0, -9.0),
+        (-6.0, -6.0),
+        (-20.0, 0.0),
+    ];
+
+    /// The threshold drives the input: under the knee the output is the
+    /// input plus `ceiling - threshold` dB, and over it the output sits at
+    /// the ceiling. This is the curve for a ceiling above the threshold as
+    /// well as below; it replaces a curve that boosted quiet signals by the
+    /// drive but held loud ones at the threshold (a jump of the drive at the
+    /// knee, and a louder input giving a quieter output).
+    ///
+    /// Mutation (run): `gap.min(0.0)` for `over` in `LimiterCurve::new` -> at
+    /// (-6, -0.3) the input -5.9 dB comes out at -6.0 -> fails the settle
+    /// assertion.
+    /// Mutation (run): `below: 1.0` -> a quiet input comes out unmoved ->
+    /// fails the drive assertion.
+    #[test]
+    fn the_threshold_drives_the_input_and_loud_signals_settle_at_the_ceiling() {
+        for (t, c) in CURVES {
+            let (threshold, ceiling) = (Db(t), Db(c));
+            let mut in_db = -80.0f32;
+            while in_db <= 12.0 {
+                let out_db = steady_out_db(threshold, ceiling, in_db);
+                let want = if in_db <= t { in_db + (c - t) } else { c };
+                assert!(
+                    (out_db - want).abs() <= 2e-3,
+                    "({t}, {c}) in {in_db}: {out_db} dB against {want}"
+                );
+                in_db += 1.0;
+            }
+        }
+    }
+
+    /// The steady-state transfer curve never decreases and never jumps: a
+    /// 1 dB step of input moves the output by between 0 and 1 dB (the
+    /// slope is the drive's unity under the knee and zero over it).
+    ///
+    /// Mutation (run): as above, `.min(0.0)` back on the gap in
+    /// `LimiterCurve::new` -> at (-6, -0.3) the output falls 5.7 dB at the
+    /// knee -> fails the monotonic assertion.
+    /// Mutation (run): `below: 1.0` -> the step into the knee is not the
+    /// drive's -> fails.
+    #[test]
+    fn the_transfer_curve_is_monotonic_and_continuous() {
+        for (t, c) in CURVES {
+            let mut prev: Option<f32> = None;
+            let mut in_db = -80.0f32;
+            while in_db <= 12.0 {
+                let out_db = steady_out_db(Db(t), Db(c), in_db);
+                if let Some(prev) = prev {
+                    let step = out_db - prev;
+                    assert!(step >= -2e-3, "({t}, {c}) at {in_db}: fell by {}", -step);
+                    assert!(step <= 1.0 + 2e-3, "({t}, {c}) at {in_db}: jumped {step}");
+                }
+                prev = Some(out_db);
+                in_db += 1.0;
+            }
         }
     }
 

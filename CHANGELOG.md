@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the lookahead limiter's threshold drives its input; with the ceiling above the threshold the output changes
+
+`LimiterNode`'s curve was discontinuous and non-monotonic when `ceiling_db >
+threshold_db` (the defaults, -6 / -0.3 dB). A quiet signal was boosted by the
+gap `ceiling - threshold`, but a loud one was held at the *threshold*, so the
+output fell 5.7 dB at the knee: input to output read -60 to -54.3, -7 to -1.3,
+-6.1 to -0.4, -5.9 to -6.0 and 0 to -6.0 dB. The ceiling was not the level
+loud signals reached, contrary to the docs.
+
+The threshold now drives the input: `drive = ceiling - threshold`, and the
+gain at a linked peak is `min(drive, ceiling / peak)`, so the output is
+`min(peak * drive, ceiling)`. It is continuous and monotonic, the signal under
+the threshold is moved by the drive, and louder signal settles at the
+ceiling. With the defaults, -60 to -54.3, -7 to -1.3, -6.1 to -0.4, -5.9 to
+-0.3 and 0 to -0.3 dB. The fed path (threshold and ceiling per frame) is the
+same curve as the block path.
+
+For `ceiling_db <= threshold_db` nothing changes and the output bits are
+identical: the old gain there was already `ceiling / peak` over the threshold
+and the drive under it. Only the removed `min(0)` on the gap differs, so a
+limiter whose ceiling is above its threshold gets louder than before for
+signal over the threshold: peaks that were held at the threshold now reach
+the ceiling. To keep the old loudness for such a limiter, lower the ceiling
+to the old effective bound (the threshold). The finite clamps (a threshold of
+-inf or under -770 dB gives no NaN) and the hard ceiling are unchanged. The
+golden digest in `bevy-tutti`'s `scene_render`, whose limiter is at -12 / -1
+dB, was re-recorded.
+
 ### Fixed — the lookahead limiter's ceiling is a hard bound, output bits change
 
 `LimiterNode`'s gain window ended one frame after the delayed sample's own

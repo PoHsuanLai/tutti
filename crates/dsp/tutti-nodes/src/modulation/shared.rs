@@ -49,6 +49,9 @@ impl LfoDrive {
     /// negative rate would run the phase down without ever meeting the
     /// `>= 1.0` test.
     ///
+    /// Returns the per-sample increment the block ran at, so a caller can
+    /// step the drive's phase further ahead than the block.
+    ///
     /// `driven` is the block's rate from the node's param port when a lane
     /// drives it (`block_driven`), floored as `set_rate` floors it
     /// ([`clamp_rate`](Self::clamp_rate)); `None` reads the cell. The cell is
@@ -61,7 +64,7 @@ impl LfoDrive {
         sample_rate: impl Into<SampleRate>,
         out: &mut [Phase],
         driven: Option<f32>,
-    ) {
+    ) -> PhaseIncrement {
         let rate = Hz(self.good_rate.read(driven.map_or_else(
             || self.rate.load().get(),
             |v| clamp_finite(v, Self::clamp_rate),
@@ -71,6 +74,7 @@ impl LfoDrive {
             *p = self.phase;
             self.phase = self.phase.advance(inc);
         }
+        inc
     }
 
     /// Step the phase by one sample at the current rate — a one-sample

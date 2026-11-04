@@ -553,10 +553,10 @@ fn host_reports_plugin_latency() {
 fn host_reports_tail_distinctly_from_latency() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let loaded = session.load();
-    assert_eq!(loaded.get_tail(), REPORTED_TAIL_SAMPLES);
+    assert_eq!(loaded.get_tail(), Some(REPORTED_TAIL_SAMPLES));
     assert_ne!(
         loaded.get_tail(),
-        loaded.get_latency(),
+        Some(loaded.get_latency()),
         "tail and latency are different extensions — the host must not read \
          one through the other's vtable"
     );

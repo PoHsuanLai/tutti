@@ -24,6 +24,31 @@ use tutti_plugin_types::BusChannels;
 use tutti_plugin_types::ChannelLayout;
 
 impl ClapLoaded {
+    /// Re-reads the plugin's audio ports: the port layout, the channel totals
+    /// in [`info`](Self::info) and [`supports_f64`](Self::supports_f64), which
+    /// were read at load and which the plugin can change (a
+    /// `clap.audio-ports` rescan, see
+    /// [`poll_audio_ports_rescan`](Self::poll_audio_ports_rescan)).
+    /// [`activate`](Self::activate) calls it, so a plugin brought back through
+    /// `deactivate` and `activate` is read afresh without asking.
+    ///
+    /// # Errors
+    /// [`ClapError::NotSupported`] while the plugin is active: CLAP lets it
+    /// change its ports only while deactivated.
+    pub fn rescan_audio_ports(&mut self) -> Result<()> {
+        self.assert_main_thread();
+        if self.flags.active {
+            return Err(ClapError::NotSupported(
+                "audio ports can be re-read only while the plugin is deactivated".to_string(),
+            ));
+        }
+        let (ports, supports_f64) =
+            read_audio_ports(&mut self.info, self.plugin.as_ptr(), &self.extensions);
+        self.ports = ports;
+        self.audio.supports_f64 = supports_f64;
+        Ok(())
+    }
+
     /// Reads the descriptor of the bundle's first plugin without creating an
     /// instance.
     ///
@@ -251,27 +276,13 @@ impl ClapLoaded {
 
         let extensions = ExtensionCache::query(plugin.as_ptr());
 
-        // The declared layout, empty sides included: `process` hands the
-        // plugin exactly these buffers, as CLAP requires (`audio_inputs_count`
-        // equals the plugin's own port count on that side).
-        let ports = PortLayout {
-            inputs: port_channels(plugin.as_ptr(), extensions.audio.ports, true),
-            outputs: port_channels(plugin.as_ptr(), extensions.audio.ports, false),
-        };
-
-        // The reported totals state an empty side as one stereo bus (the
-        // graph-facing shape). Default a copy's bus lists, then derive the
-        // totals from it, so the two cannot disagree; see
-        // `PortLayout::default_empty_buses`.
-        let mut reported = ports.clone();
-        reported.default_empty_buses();
-        plugin_info.audio_inputs = reported.input_channel_total();
-        plugin_info.audio_outputs = reported.output_channel_total();
+        let (ports, supports_f64) =
+            read_audio_ports(&mut plugin_info, plugin.as_ptr(), &extensions);
 
         let audio = AudioConfig {
             sample_rate,
             max_frames,
-            supports_f64: check_f64_support(plugin.as_ptr(), extensions.audio.ports),
+            supports_f64,
         };
 
         Ok(Self {
@@ -356,6 +367,35 @@ fn port_channels(
         channels.push(layout_from_clap_port(info.port_type, info.channel_count));
     }
     channels
+}
+
+/// Reads the plugin's declared audio ports: the layout `process` hands it,
+/// whether it can be activated for 64-bit audio, and (into `info`) the totals
+/// the host reports. Everything a `clap.audio-ports` rescan can change, in one
+/// place, so a load and a rescan cannot disagree about what they read.
+fn read_audio_ports(
+    info: &mut PluginInfo,
+    plugin: *const clap_plugin,
+    extensions: &ExtensionCache,
+) -> (PortLayout, bool) {
+    // The declared layout, empty sides included: `process` hands the
+    // plugin exactly these buffers, as CLAP requires (`audio_inputs_count`
+    // equals the plugin's own port count on that side).
+    let ports = PortLayout {
+        inputs: port_channels(plugin, extensions.audio.ports, true),
+        outputs: port_channels(plugin, extensions.audio.ports, false),
+    };
+
+    // The reported totals state an empty side as one stereo bus (the
+    // graph-facing shape). Default a copy's bus lists, then derive the
+    // totals from it, so the two cannot disagree; see
+    // `PortLayout::default_empty_buses`.
+    let mut reported = ports.clone();
+    reported.default_empty_buses();
+    info.audio_inputs = reported.input_channel_total();
+    info.audio_outputs = reported.output_channel_total();
+
+    (ports, check_f64_support(plugin, extensions.audio.ports))
 }
 
 /// Whether the plugin can be activated for 64-bit audio: every port on both

@@ -5381,6 +5381,13 @@ under both.
   `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`. The same
   counter takes every event of a chunk lost whole and the rest of a SysEx
   cut by a loss, which is never spliced (doc 004, A-4).
+- **A CLAP plugin without `clap.tail` has an unknown tail, and the host
+  re-reads its audio ports.** `ClapLoaded::get_tail` is `None` for a plugin
+  without the extension, which the server loads as `PluginTail::Unknown` (a
+  plugin that answers 0 is `None`). The CLAP host re-reads a plugin's audio
+  ports, the 64-bit flag included, at every `activate` and through
+  `ClapLoaded::rescan_audio_ports`. Pinned by `clap_ports_rescan` and
+  `a_plugin_without_the_tail_extension_has_an_unknown_tail`.
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,
   bevy-tutti's `EventSources`) own only the sources they put on a sink's

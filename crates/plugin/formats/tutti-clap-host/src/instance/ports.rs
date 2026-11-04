@@ -260,18 +260,17 @@ impl ClapLoaded {
     }
 
     /// Plugin-reported tail length in samples (audio continues after input
-    /// stops — reverbs, delays). 0 when unsupported. Raw: any value at or
-    /// above `INT32_MAX` means an infinite tail (`clap/ext/tail.h`), which
-    /// `Tail::from_clap_samples` decodes.
-    pub fn get_tail(&self) -> u32 {
+    /// stops — reverbs, delays), or `None` when the plugin does not implement
+    /// `clap.tail`: no extension means the tail is unknown, which is not the
+    /// same answer as `Some(0)`. Raw: any value at or above `INT32_MAX` means
+    /// an infinite tail (`clap/ext/tail.h`), which `Tail::from_clap_samples`
+    /// decodes.
+    pub fn get_tail(&self) -> Option<u32> {
         if self.extensions.system.tail.is_null() {
-            return 0;
+            return None;
         }
         let ext = unsafe { &*self.extensions.system.tail };
-        match ext.get {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => 0,
-        }
+        ext.get.map(|f| unsafe { f(self.plugin.as_ptr()) })
     }
 
     /// Switches between real-time (`false`) and offline (`true`) rendering

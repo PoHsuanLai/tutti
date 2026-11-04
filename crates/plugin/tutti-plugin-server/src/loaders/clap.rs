@@ -370,15 +370,13 @@ impl ClapInstance {
                 ClapInner::F32(i) => i.get_latency(),
                 ClapInner::F64(i) => i.get_latency(),
             } as usize);
-            // `get_tail` answers 0 both for "no tail" and for a plugin without
-            // the extension, so a plugin that never implements `clap.tail` is
-            // reported as `None` rather than `Unknown`. Distinguishing them
-            // needs an extension-presence check the host crate does not expose;
-            // noted rather than guessed.
-            loaded_meta.tail = PluginTail::from_clap_samples(match &inner {
+            // A plugin without `clap.tail` has not answered: its tail is
+            // unknown, which is not the `None` a plugin answering 0 gives.
+            loaded_meta.tail = match &inner {
                 ClapInner::F32(i) => i.get_tail(),
                 ClapInner::F64(i) => i.get_tail(),
-            });
+            }
+            .map_or(PluginTail::Unknown, PluginTail::from_clap_samples);
 
             Ok(Self {
                 inner,
@@ -420,11 +418,12 @@ impl ClapInstance {
         clap_dispatch_mut!(self, i => i.poll_tail_changed())
     }
 
-    /// The plugin's raw tail answer in samples, undecoded: CLAP reads any
-    /// value at or above `INT32_MAX` as infinite, so decode it with
-    /// [`PluginTail::from_clap_samples`], never as a plain count.
+    /// The plugin's raw tail answer in samples, undecoded, or `None` when it
+    /// has no `clap.tail`. CLAP reads any value at or above `INT32_MAX` as
+    /// infinite, so decode it with [`PluginTail::from_clap_samples`], never as
+    /// a plain count.
     #[cfg(feature = "clap")]
-    pub fn get_tail(&self) -> u32 {
+    pub fn get_tail(&self) -> Option<u32> {
         clap_dispatch!(self, i => i.get_tail())
     }
 
@@ -963,6 +962,32 @@ mod tests {
         // (`an_f64_session_runs_a_64bit_capable_clap_plugin_in_f64` and its
         // neighbours).
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
+    }
+
+    /// **A plugin without `clap.tail` has an unknown tail, not none.** The
+    /// extension's absence read as the `0` of "no tail", so a bounce sized
+    /// from it cut off every such plugin's decay. A plugin that does answer
+    /// keeps its figure.
+    ///
+    /// Mutation (run): in the load, map a missing extension to
+    /// `PluginTail::None` instead of `Unknown` → the first assertion sees
+    /// `None` → fails.
+    #[test]
+    fn a_plugin_without_the_tail_extension_has_an_unknown_tail() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        {
+            let _without = crate::test_utils::clap_probe_without_tail();
+            let instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+            assert_eq!(instance.loaded().tail, PluginTail::Unknown);
+        }
+        let instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        assert_eq!(
+            instance.loaded().tail,
+            PluginTail::Finite(Samples(
+                tutti_clap_test_plugin::REPORTED_TAIL_SAMPLES as usize
+            ))
+        );
     }
 
     #[test]

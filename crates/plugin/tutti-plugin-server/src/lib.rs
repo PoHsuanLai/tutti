@@ -354,6 +354,28 @@ pub(crate) mod test_utils {
         set_clap_probe_switch(b"tutti_test_plugin_set_ports_64bit\0", mask);
     }
 
+    /// Make the reference plugin withhold `clap.tail` until the returned guard
+    /// drops, which restores it. Call before loading: the host asks for the
+    /// plugin's extensions once, at load.
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin offers clap.tail again when the guard drops"]
+    pub fn clap_probe_without_tail() -> ClapProbeWithoutTail {
+        set_clap_probe_switch(b"tutti_test_plugin_set_tail_extension\0", 0);
+        ClapProbeWithoutTail
+    }
+
+    /// Restores the reference plugin's `clap.tail` on drop; see
+    /// [`clap_probe_without_tail`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeWithoutTail;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeWithoutTail {
+        fn drop(&mut self) {
+            set_clap_probe_switch(b"tutti_test_plugin_set_tail_extension\0", 1);
+        }
+    }
+
     /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the
     /// loader tests drive.
     ///

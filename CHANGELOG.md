@@ -17,6 +17,18 @@ did (last position and fade forgotten, ring claim released), so the render is
 bit-identical, the butler is not held back, and the clip resumes at the frame
 the clock names. `pool64/disk-silent/64`: 21.8 to 11.4 us. No public API
 changes. Stretched voices and offline forks still render.
+### Fixed — CLAP reports an unknown tail for a plugin without `clap.tail` and re-reads its ports on activation; `clap_live` no longer flakes
+
+- **`ClapLoaded::get_tail` returns `Option<u32>`**: `None` when the plugin has
+  no `clap.tail`, which the server loads as `PluginTail::Unknown` where it
+  loaded `None` (no tail). Migration: `get_tail()` callers match the `Option`
+  (`.map_or(Tail::Unknown, Tail::from_clap_samples)`).
+- **The CLAP host read the plugin's ports once, at load.** `ClapLoaded::activate`
+  now re-reads them (layout, channel totals, the 64-bit flag), and the new
+  `ClapLoaded::rescan_audio_ports` does it on demand while deactivated.
+- **The `clap_live` test paced its callbacks with catch-up bursts** after any
+  oversleep, so a loaded machine gave the server no period to answer and
+  rendered runs of silence. It now keeps callbacks a period apart.
 
 ### Changed — the convolver cuts a long IR into a head and larger tail partitions: about 1.8x cheaper on a 2 s IR and 3x on a 5 s one, same latency, output bits change
 

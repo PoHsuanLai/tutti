@@ -542,6 +542,9 @@ unsafe extern "C" fn plugin_get_extension(
         return &LATENCY as *const _ as *const c_void;
     }
     if id == CLAP_EXT_TAIL {
+        if !TAIL_EXTENSION.load(Ordering::SeqCst) {
+            return ptr::null();
+        }
         return &TAIL as *const _ as *const c_void;
     }
     if id == CLAP_EXT_RENDER {
@@ -1723,6 +1726,20 @@ fn current_latency() -> u32 {
         0
     };
     (REPORTED_LATENCY_SAMPLES + extra).min(MAX_DELAY_LEN as u32)
+}
+
+/// Whether the plugin offers `clap.tail` at all. On by default.
+static TAIL_EXTENSION: AtomicBool = AtomicBool::new(true);
+
+/// Offer (`1`) or withhold (`0`) the `clap.tail` extension, so a plugin
+/// that never implements it can be hosted. Call **before** the host loads the
+/// plugin: the host asks for its extensions once, during load.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_tail_extension(present: u32) {
+    TAIL_EXTENSION.store(present != 0, Ordering::SeqCst);
 }
 
 static TAIL: clap_plugin_tail = clap_plugin_tail {

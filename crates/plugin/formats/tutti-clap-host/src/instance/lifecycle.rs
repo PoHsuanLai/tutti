@@ -111,6 +111,12 @@ impl ClapLoaded {
     ) -> std::result::Result<ClapActive<T>, (Self, ClapError)> {
         self.assert_main_thread();
 
+        // The plugin may have changed its ports since it was loaded or last
+        // deactivated, and the 64-bit flag is part of them.
+        if let Err(e) = self.rescan_audio_ports() {
+            return Err((self, e));
+        }
+
         if T::requires_f64() && !self.audio.supports_f64 {
             let err = ClapError::NotSupported(format!(
                 "Plugin '{}' does not support 64-bit audio processing",

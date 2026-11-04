@@ -109,10 +109,19 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
                 wrong.push(b);
             }
         }
+        // A device's callbacks stay a period apart: one that oversleeps (a
+        // loaded machine) is not followed by a burst of catch-up calls, which
+        // would hand the server no period to answer and so read as silence.
+        // Mutation: pace by `next += period` alone, sleeping only while
+        // ahead, so an oversleep is followed by back-to-back calls → runs of
+        // ~3 silent blocks at the oversleep, failing about a third of runs
+        // on a 4-core machine busy with builds (measured).
+        let now = Instant::now();
         next += period;
-        if let Some(rest) = next.checked_duration_since(Instant::now()) {
-            std::thread::sleep(rest);
+        if next <= now {
+            next = now + period;
         }
+        std::thread::sleep(next - now);
     }
     drop(probe.handle);
     Run {

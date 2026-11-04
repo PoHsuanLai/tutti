@@ -211,11 +211,14 @@ pub struct DataEvent {
     pub bytes: [u8; 16],
 }
 
-/// A complete SysEx message, `0xF0 … 0xF7`, too long for [`DataEvent`]'s
-/// inline bytes: the event list reassembled it from SysEx7 packets, and its
-/// bytes live in the list's reassembly buffer, which [`bytes`](Self::bytes)
-/// indexes. The plugin receives it as a `kDataEvent` with the `kMidiSysEx`
-/// subtype. Input only: a plugin's output never produces one.
+/// A complete SysEx message, too long for [`DataEvent`]'s inline bytes, whose
+/// bytes live in the owning event list's buffer, which [`bytes`](Self::bytes)
+/// indexes.
+///
+/// On an input list the list reassembled it from SysEx7 packets
+/// (`0xF0 … 0xF7`), and the plugin receives it as a `kDataEvent` with the
+/// `kMidiSysEx` subtype. On an output list it is a message the plugin
+/// `addEvent`ed, copied whole.
 #[derive(Debug, Clone, Copy)]
 pub struct SysExEvent {
     /// Bus, frame offset (its `END` packet's) and the `kDataEvent` type.
@@ -1088,8 +1091,8 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             return legacy_cc_to_midi(e, frame);
         }
         // Not channel-voice MIDI messages.
-        // Input-only, and its bytes are in the event list's buffer, which
-        // this conversion has no access to.
+        // Its bytes are in the event list's buffer, which this conversion
+        // has no access to; the list drains it as SysEx7 packets.
         Vst3Event::SysEx(_) => return None,
         Vst3Event::NoteExpression(_)
         | Vst3Event::NoteExpressionText(_)

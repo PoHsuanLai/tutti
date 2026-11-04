@@ -25,7 +25,9 @@ use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport::{self, TransportState};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
-use tutti_plugin_types::{ChannelLayout, EditorSize, TransportInfo, WindowHandle};
+use tutti_plugin_types::{
+    ChannelLayout, EditorSize, SysExAssembler, TransportInfo, WindowHandle, SYSEX_MESSAGE_CAPACITY,
+};
 use tutti_types::value::units::Seconds;
 use tutti_types::Samples;
 
@@ -98,6 +100,13 @@ pub struct AuInstance {
     /// [`close_editor`](Self::close_editor) read like their VST3 and CLAP
     /// counterparts, with the Cocoa specifics staying inside [`AuEditor`].
     editor: Option<crate::editor::AuEditor>,
+    /// Reassembles the SysEx7 packets [`send_midi`](Self::send_midi) is
+    /// handed into whole messages, in a buffer reserved by
+    /// [`initialize`](Self::initialize) and never grown, so the audio thread
+    /// does not allocate for a long message. A `RefCell` because `send_midi`
+    /// takes `&self`; it is not re-entered (`MusicDeviceSysEx` does not call
+    /// back into the host) and the instance is not `Sync`.
+    sysex: std::cell::RefCell<SysExAssembler>,
 }
 
 enum State {
@@ -127,6 +136,7 @@ impl AuInstance {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
             editor: None,
+            sysex: Default::default(),
         })
     }
 
@@ -145,6 +155,7 @@ impl AuInstance {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new_with_config(component, config)?),
             editor: None,
+            sysex: Default::default(),
         })
     }
 
@@ -222,6 +233,12 @@ impl AuInstance {
             State::Loaded(l) => match l.initialize() {
                 Ok(r) => {
                     self.state = State::Active(r);
+                    // Off the audio thread: reserve the SysEx buffer now, so
+                    // `send_midi` never grows one. A re-initialize keeps it.
+                    let sysex = self.sysex.get_mut();
+                    if sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
+                        *sysex = SysExAssembler::reserved();
+                    }
                     Ok(())
                 }
                 // `None` only when the AU refused both the callback install and
@@ -572,7 +589,8 @@ impl AuInstance {
     /// 3-byte word — there is no way to express a patch dump through
     /// `MusicDeviceMIDIEvent`, which is why AU provides two calls. UMP carries
     /// SysEx7 in 6-byte packets, so a message spanning several is reassembled
-    /// here before being sent as one buffer.
+    /// here, in a buffer reserved by [`initialize`](Self::initialize), before
+    /// being sent as one buffer: the call does not allocate.
     ///
     /// Families with genuinely no AUv2 form (per-note MIDI 2.0 messages, UMP
     /// stream and utility messages) are still skipped.
@@ -581,18 +599,9 @@ impl AuInstance {
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[MidiEvent]) {
-        // Reassembly state for a SysEx7 run spanning several UMP packets.
-        // Local to the call: a message is not carried across blocks, because a
-        // run left open at a block boundary has no defined resumption point in
-        // this host's delivery model and a stale prefix would corrupt the next
-        // message.
-        let mut sysex_buf: Vec<u8> = Vec::new();
-        let mut sysex_active = false;
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
-        use tutti_midi_types::ump::{
-            SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
-        };
         use tutti_midi_types::MidiMessage;
+        use tutti_plugin_types::{unframed, SysExStep};
 
         /// Hands a complete SysEx message to the AU.
         ///
@@ -615,6 +624,14 @@ impl AuInstance {
                 MusicDeviceSysEx(unit as _, bytes.as_ptr(), bytes.len() as u32);
             }
         }
+
+        // A SysEx7 run spanning several UMP packets (at most six bytes each)
+        // is reassembled in the instance's pre-sized buffer; a message past
+        // its capacity is dropped whole and counted
+        // ([`sysex_dropped`](Self::sysex_dropped)). A run left open at the end
+        // of a block continues in the next.
+        let mut sysex = self.sysex.borrow_mut();
+        sysex.begin_block();
 
         let unit = self.raw_unit();
         for ev in events {
@@ -670,32 +687,10 @@ impl AuInstance {
                 // a UMP SysEx7 packet carries at most 6 bytes, so anything
                 // longer than that arrives as START/CONTINUE.../END.
                 MidiMessage::Other(_) => {
-                    if let Some((sysex_status, bytes, n)) = ev.sysex7_payload() {
-                        match sysex_status {
-                            SYSEX7_STATUS_SINGLE => {
-                                send_sysex(unit, &bytes[..n]);
-                            }
-                            SYSEX7_STATUS_START => {
-                                sysex_buf.clear();
-                                sysex_buf.extend_from_slice(&bytes[..n]);
-                                sysex_active = true;
-                            }
-                            SYSEX7_STATUS_CONTINUE => {
-                                // A CONTINUE with no START is a stream this
-                                // host joined mid-message. Dropping it beats
-                                // sending the AU a fragment with no 0xF0.
-                                if sysex_active {
-                                    sysex_buf.extend_from_slice(&bytes[..n]);
-                                }
-                            }
-                            SYSEX7_STATUS_END if sysex_active => {
-                                sysex_buf.extend_from_slice(&bytes[..n]);
-                                send_sysex(unit, &sysex_buf);
-                                sysex_buf.clear();
-                                sysex_active = false;
-                            }
-                            _ => {}
-                        }
+                    if let SysExStep::Complete(message) = sysex.push(ev) {
+                        // The bytes between `0xF0` and `0xF7`, as this call
+                        // has always sent them.
+                        send_sysex(unit, unframed(sysex.message(message)));
                     }
                     continue;
                 }
@@ -705,6 +700,14 @@ impl AuInstance {
                 MusicDeviceMIDIEvent(unit, status as u32, d1 as u32, d2 as u32, ev.frame_offset);
             }
         }
+    }
+
+    /// SysEx messages [`send_midi`](Self::send_midi) dropped whole since this
+    /// instance was made: longer than [`SYSEX_MESSAGE_CAPACITY`], cut by a
+    /// later `START`, or sent before [`initialize`](Self::initialize) reserved
+    /// the buffer. See [`SysExAssembler`] for the policy.
+    pub fn sysex_dropped(&self) -> u64 {
+        self.sysex.borrow().dropped()
     }
 
     /// Enumerates all parameters exposed by the AU.

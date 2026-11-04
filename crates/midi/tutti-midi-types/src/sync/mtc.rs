@@ -52,15 +52,51 @@ impl SmpteTimecode {
     /// 29.97 fps needs more mantissa than `f32` has, and this is the documented
     /// precision carve-out from the units rule.
     ///
-    /// Counts frame *labels* at face value, so under drop-frame this over-reports
-    /// by the frames the numbering skips. A caller needing wall-clock accuracy
-    /// under [`SmpteFrameRate::Fps2997Df`] must correct for
-    /// [`is_drop_frame`](SmpteFrameRate::is_drop_frame) itself.
+    /// Counts through [`frame_count`](Self::frame_count), so drop-frame labels
+    /// are mapped to the frames that elapsed. Non-drop 29.97 labels are counted
+    /// at face value, at 30000/1001 frames per second.
     pub fn to_seconds(&self) -> f64 {
-        f64::from(self.hours) * 3600.0
-            + f64::from(self.minutes) * 60.0
-            + f64::from(self.seconds)
-            + f64::from(self.frames) / self.frame_rate.fps()
+        let (num, den) = self.frame_rate.ratio();
+        self.frame_count() as f64 * den as f64 / num as f64
+    }
+
+    /// Frames elapsed since `00:00:00:00`.
+    ///
+    /// Under [`SmpteFrameRate::Fps2997Df`] this skips the labels `;00` and
+    /// `;01` that each minute not divisible by ten omits (SMPTE 12M). Labels
+    /// that cannot occur in drop-frame are counted as the next label that does.
+    pub fn frame_count(&self) -> u64 {
+        let per_sec = self.frame_rate.labels_per_second();
+        let minutes = u64::from(self.hours) * 60 + u64::from(self.minutes);
+        let labelled = (minutes * 60 + u64::from(self.seconds)) * per_sec + u64::from(self.frames);
+        if self.frame_rate.is_drop_frame() {
+            labelled.saturating_sub(2 * (minutes - minutes / 10))
+        } else {
+            labelled
+        }
+    }
+
+    /// The label of frame number `count` since `00:00:00:00` at `frame_rate`;
+    /// the inverse of [`frame_count`](Self::frame_count). Hours wrap at 24.
+    pub fn from_frame_count(count: u64, frame_rate: SmpteFrameRate) -> Self {
+        let per_sec = frame_rate.labels_per_second();
+        let labelled = if frame_rate.is_drop_frame() {
+            // 17_982 frames per ten minutes: the first minute keeps all 1800
+            // labels, the other nine drop two.
+            let (tens, rem) = (count / 17_982, count % 17_982);
+            let dropped = if rem < 2 { 0 } else { 2 * ((rem - 2) / 1798) };
+            count + 18 * tens + dropped
+        } else {
+            count
+        };
+        let secs = labelled / per_sec;
+        Self {
+            hours: ((secs / 3600) % 24) as u8,
+            minutes: ((secs / 60) % 60) as u8,
+            seconds: (secs % 60) as u8,
+            frames: (labelled % per_sec) as u8,
+            frame_rate,
+        }
     }
 
     /// Position in beats at a constant `tempo`, from `00:00:00:00`.
@@ -85,7 +121,8 @@ impl SmpteTimecode {
 pub struct MtcDecoder {
     nibbles: [u8; 8],
     count: u8,
-    last_piece: u8,
+    /// The piece accepted last; `None` before the first, so a decoder may join mid-cycle.
+    last_piece: Option<u8>,
     timecode: Option<SmpteTimecode>,
 }
 
@@ -98,7 +135,7 @@ impl MtcDecoder {
         Self {
             nibbles: [0; 8],
             count: 0,
-            last_piece: 0xFF,
+            last_piece: None,
             timecode: None,
         }
     }
@@ -119,20 +156,19 @@ impl MtcDecoder {
         let piece = (quarter_frame >> 4) & 0x07;
         let nibble = quarter_frame & 0x0F;
 
-        // Pieces must arrive strictly in order 0,1,…,7. Piece 0 starts a
-        // fresh frame; any other piece that isn't exactly one past the last
-        // is out of sequence — discard the partial frame and wait for the
-        // next piece 0. (Pieces never wrap here: piece 0 is handled above, so
-        // `last_piece + 1` stays in 1..=7 and needs no masking.)
+        // Pieces must arrive strictly in order 0,1,…,7. Piece 0 starts a fresh
+        // frame; any other piece that isn't exactly one past the last (or that
+        // is the first seen) is out of sequence: discard the partial frame and
+        // wait for the next piece 0.
         if piece == 0 {
             self.count = 0;
-        } else if piece != self.last_piece + 1 {
-            self.last_piece = piece;
+        } else if self.last_piece != Some(piece - 1) {
+            self.last_piece = Some(piece);
             self.count = 0;
             return;
         }
 
-        self.last_piece = piece;
+        self.last_piece = Some(piece);
         self.nibbles[piece as usize] = nibble;
         self.count += 1;
 
@@ -187,7 +223,7 @@ impl MtcDecoder {
     pub fn reset(&mut self) {
         self.nibbles = [0; 8];
         self.count = 0;
-        self.last_piece = 0xFF;
+        self.last_piece = None;
         self.timecode = None;
     }
 }
@@ -221,6 +257,24 @@ mod tests {
         for d in data {
             decoder.feed(d);
         }
+    }
+
+    // Joining mid-cycle: the first byte seen is piece 3, with no piece before it.
+    // Mutation: restore `last_piece: u8 = 0xFF` with `last_piece + 1` and the
+    // first feed panics on overflow.
+    #[test]
+    fn joining_mid_cycle_waits_for_the_next_piece_zero() {
+        let mut decoder = MtcDecoder::new();
+        decoder.feed(make_quarter_frame(3, 5));
+        assert_eq!(decoder.timecode(), None);
+        // Pieces 4..=7 follow the unknown start; they must not assemble.
+        for piece in 4..8 {
+            decoder.feed(make_quarter_frame(piece, 0));
+        }
+        assert_eq!(decoder.timecode(), None);
+        feed_timecode(&mut decoder, 1, 2, 3, 4, 1);
+        let tc = decoder.timecode().expect("a full cycle after piece 0");
+        assert_eq!((tc.hours, tc.minutes, tc.seconds, tc.frames), (1, 2, 3, 4));
     }
 
     /// Eight quarter-frames assemble into the timecode they spell, at each of
@@ -306,6 +360,53 @@ mod tests {
             frame_rate: SmpteFrameRate::Fps30,
         };
         assert!((tc.to_seconds() - 3600.0).abs() < 0.001);
+    }
+
+    // Mutation: drop the `2 * (minutes - minutes / 10)` term (or the `/ 10`)
+    // in `frame_count`, or the `18 * tens` term in `from_frame_count`: the
+    // labels at the minute marks fail.
+    #[test]
+    fn drop_frame_labels_skip_00_and_01_except_every_tenth_minute() {
+        let df = SmpteFrameRate::Fps2997Df;
+        let at = |n| SmpteTimecode::from_frame_count(n, df).to_string();
+        assert_eq!(at(1799), "00:00:59:29");
+        assert_eq!(at(1800), "00:01:00:02");
+        assert_eq!(at(3597), "00:01:59:29");
+        assert_eq!(at(3598), "00:02:00:02");
+        assert_eq!(at(17_981), "00:09:59:29");
+        // The tenth minute keeps frames 00 and 01.
+        assert_eq!(at(17_982), "00:10:00:00");
+        assert_eq!(at(17_983), "00:10:00:01");
+        assert_eq!(at(17_982 * 6), "01:00:00:00");
+        // Non-drop labels count every frame.
+        let ndf = SmpteFrameRate::Fps2997Ndf;
+        assert_eq!(
+            SmpteTimecode::from_frame_count(1800, ndf).to_string(),
+            "00:01:00:00"
+        );
+    }
+
+    #[test]
+    fn frame_count_inverts_from_frame_count_and_to_seconds_follows_it() {
+        for rate in [
+            SmpteFrameRate::Fps24,
+            SmpteFrameRate::Fps25,
+            SmpteFrameRate::Fps2997Df,
+            SmpteFrameRate::Fps2997Ndf,
+            SmpteFrameRate::Fps30,
+        ] {
+            for n in [0, 1, 1799, 1800, 17_981, 17_982, 107_892, 2_000_000] {
+                let tc = SmpteTimecode::from_frame_count(n, rate);
+                assert_eq!(tc.frame_count(), n, "{rate:?} {n}");
+            }
+        }
+        // 10 minutes of drop-frame is 17_982 frames: 599.999… s (SMPTE 12M).
+        let tc = SmpteTimecode::from_frame_count(17_982, SmpteFrameRate::Fps2997Df);
+        assert!(
+            (tc.to_seconds() - 600.0).abs() < 0.001,
+            "{}",
+            tc.to_seconds()
+        );
     }
 
     #[test]

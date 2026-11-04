@@ -21,13 +21,13 @@
 //! - **MTC quarter-frames** (0xF1) at frame-rate×4, cycling the 8 SMPTE nibbles
 //!   (when `send_mtc` is set).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_core::{first_frame_at_or_after, Beat, BeatDuration, SampleRate};
 use tutti_graph::Transport;
-use tutti_midi_types::sync::SmpteFrameRate;
+use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_midi_types::ump::MidiEvent;
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
@@ -94,6 +94,9 @@ pub struct ClockMaster {
     mtc_frames: AtomicU64,
     /// Where quarter-frame `mtc_base` is due in the segment, in frames.
     mtc_lead: AtomicF64,
+    /// The eight nibbles of the timecode being sent, piece `p` in bits
+    /// `4p..4p+4`. Set once at piece 0, so one cycle carries one position.
+    mtc_cycle: AtomicU32,
 }
 
 impl ClockMaster {
@@ -115,6 +118,7 @@ impl ClockMaster {
             mtc_next: AtomicU64::new(0),
             mtc_frames: AtomicU64::new(0),
             mtc_lead: AtomicF64::new(0.0),
+            mtc_cycle: AtomicU32::new(0),
         }
     }
 
@@ -401,15 +405,15 @@ impl ClockMaster {
         let at = self.mtc_frames.load(Ordering::Acquire);
         let mut next = self.mtc_next.load(Ordering::Acquire);
 
-        // Seconds-per-beat for converting beat → wall-clock SMPTE: the
-        // reciprocal of `beats_per_sample`, the rate every reader in the
-        // engine divides by, rather than `BeatDuration::to_seconds`, which
-        // returns f32 `Seconds` (SMPTE is one of the named f64 carve-outs).
-        let secs_per_beat = if beats_per_sample > BeatDuration(0.0) {
-            1.0 / (beats_per_sample.get() * rate)
+        // The sample at the block's first frame, counted from beat 0. The
+        // timecode is derived from whole samples, so a position on a frame
+        // boundary never lands a float's width short of it.
+        let block_start = if beats_per_sample > BeatDuration(0.0) {
+            (beat.get() / beats_per_sample.get()).round().max(0.0) as u64
         } else {
-            0.0
+            0
         };
+        let mut cycle = self.mtc_cycle.load(Ordering::Acquire);
 
         // Quarter-frames due inside [0, block_size), each on the frame it
         // falls in (the floor of its position, as the MTC grid always was).
@@ -419,15 +423,19 @@ impl ClockMaster {
                 break;
             }
             let sample_offset = (qf_sample as u32).min(max_offset);
-            // Wall-clock time at this quarter-frame → SMPTE, then nibble.
-            let block_beat = beat + beats_per_sample * qf_sample;
-            let seconds = block_beat.get() * secs_per_beat;
-            let tc = seconds_to_smpte(seconds, fps);
-            let nibble = mtc_nibble(&tc, (next & 0x07) as u8, fps);
+            let piece = (next & 0x07) as u8;
+            // A cycle's timecode is that of the sample piece 0 goes out on;
+            // the receiver adds the two frames the cycle takes.
+            if piece == 0 {
+                let tc = timecode_at(block_start + u64::from(sample_offset), rate, fps);
+                cycle = mtc_cycle_nibbles(&tc, fps);
+            }
+            let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
             emit(MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset));
             next += 1;
         }
 
+        self.mtc_cycle.store(cycle, Ordering::Release);
         self.mtc_next.store(next, Ordering::Release);
         self.mtc_frames
             .store(at + block_size as u64, Ordering::Release);
@@ -443,44 +451,50 @@ fn beats_to_midi_beats(beat: Beat) -> u16 {
     sixteenths.min(0x3FFF as f64) as u16
 }
 
-/// Break `seconds` into an [`SmpteTimecode`]-style H:M:S:F tuple at `fps`.
-fn seconds_to_smpte(seconds: f64, fps: SmpteFrameRate) -> (u8, u8, u8, u8) {
-    let seconds = seconds.max(0.0);
-    let total_frames = (seconds * fps.fps()).floor() as u64;
-    let fps_int = fps.fps().round() as u64;
-    let frames = (total_frames % fps_int) as u8;
-    let total_secs = total_frames / fps_int;
-    let s = (total_secs % 60) as u8;
-    let m = ((total_secs / 60) % 60) as u8;
-    let h = ((total_secs / 3600) % 24) as u8;
-    (h, m, s, frames)
+/// The timecode at sample `sample` (from transport beat 0) at `rate` Hz.
+///
+/// The frame count is integer arithmetic on the sample, so it does not
+/// depend on float rounding at a frame boundary. A cycle starts on an even
+/// frame: its eight pieces span two.
+fn timecode_at(sample: u64, rate: f64, fps: SmpteFrameRate) -> SmpteTimecode {
+    let (num, den) = fps.ratio();
+    let whole_rate = rate.round();
+    let frames = if (rate - whole_rate).abs() < 1e-6 {
+        (u128::from(sample) * u128::from(num) / (u128::from(den) * whole_rate as u128)) as u64
+    } else {
+        (sample as f64 * num as f64 / (den as f64 * rate) + 1e-9).floor() as u64
+    };
+    SmpteTimecode::from_frame_count(frames & !1, fps)
 }
 
-/// Encode one of the 8 MTC quarter-frame nibbles (piece 0-7): the piece index
-/// in the upper 3 bits, 4 bits of timecode data in the lower nibble. Mirrors
-/// the assembly in [`MtcDecoder`](tutti_midi_types::sync::MtcDecoder) in reverse.
-fn mtc_nibble(tc: &(u8, u8, u8, u8), piece: u8, fps: SmpteFrameRate) -> u8 {
-    let (h, m, s, f) = *tc;
-    // MTC encodes the frame rate in 2 bits of the last nibble (0=24, 1=25,
-    // 2=29.97-df, 3=30) — the same mapping `MtcDecoder::assemble` reads back.
+/// The eight MTC nibbles of `tc`, piece `p` in bits `4p..4p+4`: the inverse of
+/// the assembly in [`MtcDecoder`](tutti_midi_types::sync::MtcDecoder).
+///
+/// MTC has four rate codes (24, 25, 29.97 drop-frame, 30) and no 29.97
+/// non-drop one. [`SmpteFrameRate::Fps2997Ndf`] goes out with the 29.97
+/// code, so a receiver reads its non-drop labels as drop-frame.
+fn mtc_cycle_nibbles(tc: &SmpteTimecode, fps: SmpteFrameRate) -> u32 {
     let rate2 = match fps {
         SmpteFrameRate::Fps24 => 0u8,
         SmpteFrameRate::Fps25 => 1,
         SmpteFrameRate::Fps2997Df | SmpteFrameRate::Fps2997Ndf => 2,
         SmpteFrameRate::Fps30 => 3,
     };
-    let hours_high_and_rate = ((h >> 4) & 0x01) | (rate2 << 1);
-    let data = match piece {
-        0 => f & 0x0F,
-        1 => (f >> 4) & 0x0F,
-        2 => s & 0x0F,
-        3 => (s >> 4) & 0x0F,
-        4 => m & 0x0F,
-        5 => (m >> 4) & 0x0F,
-        6 => h & 0x0F,
-        _ => hours_high_and_rate & 0x0F,
-    };
-    (piece << 4) | (data & 0x0F)
+    let (h, m, s, f) = (tc.hours, tc.minutes, tc.seconds, tc.frames);
+    let nibbles = [
+        f & 0x0F,
+        f >> 4,
+        s & 0x0F,
+        s >> 4,
+        m & 0x0F,
+        m >> 4,
+        h & 0x0F,
+        ((h >> 4) & 0x01) | (rate2 << 1),
+    ];
+    nibbles
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (p, &n)| acc | (u32::from(n & 0x0F) << (4 * p)))
 }
 
 #[cfg(test)]
@@ -490,6 +504,7 @@ mod tests {
     use std::sync::Arc;
     use tutti_core::Bpm;
     use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
+    use tutti_midi_types::MidiMessage;
 
     /// Test transport: tempo + beat + playing under a switch.
     struct TestTransport {
@@ -1047,5 +1062,133 @@ mod tests {
             beat += block as f64 * beats_per_sample;
         }
         assert!(got_tc, "MTC quarter-frames should assemble into a timecode");
+    }
+
+    /// Plays 5 s of MTC from 58 s plus `offset` samples (so 1:00 is crossed) into a decoder, and
+    /// checks every assembled timecode against the clock the master read.
+    fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
+        let (cm, transport, cons) = master(Bpm(120.0), rate);
+        cm.set_send_mtc(true);
+        cm.set_mtc_fps(fps);
+        transport.set_playing(true);
+        let start = 58.0 * rate + offset;
+        let (mut beat, mut frame) = (start * 2.0 / rate, 0);
+        let events = run_at(
+            &cm,
+            &transport,
+            &cons,
+            rate,
+            (480, (rate * 5.0 / 480.0) as usize),
+            (&mut beat, &mut frame),
+        );
+        let mut decoder = MtcDecoder::new();
+        let (mut piece0_at, mut last_count, mut cycles) = (0.0, None, 0u32);
+        for (ev, at) in events.iter().filter(|(e, _)| is_status(e, 0xF1)) {
+            let MidiMessage::TimeCode { code, .. } = ev.message() else {
+                panic!("not a quarter-frame");
+            };
+            if code >> 4 == 0 {
+                piece0_at = (start + *at as f64) / rate;
+            }
+            decoder.feed(code);
+            if code >> 4 != 7 {
+                continue;
+            }
+            let tc = decoder.timecode().expect("a full cycle");
+            assert!(
+                u64::from(tc.frames) < tc.frame_rate.labels_per_second(),
+                "{rate} Hz {fps:?}: {tc}"
+            );
+            // The label is the time piece 0 went out, rounded down to an even
+            // frame: at most two frames behind it, never ahead.
+            let lag = piece0_at - tc.to_seconds();
+            assert!(
+                (-1e-6..2.0 / fps.fps() + 1e-6).contains(&lag),
+                "{rate} Hz {fps:?}: {tc} lags piece 0 by {lag} s"
+            );
+            let count = tc.frame_count();
+            if let Some(prev) = last_count {
+                assert_eq!(count, prev + 2, "{rate} Hz {fps:?}: {tc}");
+            }
+            last_count = Some(count);
+            cycles += 1;
+        }
+        assert!(
+            f64::from(cycles) > 5.0 * fps.fps() / 2.0 - 3.0,
+            "{cycles} cycles"
+        );
+        assert_eq!(
+            decoder.timecode().map(|t| t.minutes),
+            Some(1),
+            "crossed 1:00"
+        );
+    }
+
+    /// **One cycle carries one position.** Each assembled timecode is valid
+    /// (frames below the rate), monotonic, and within two frames of the
+    /// instant piece 0 went out, across the minute rollover, at every rate.
+    ///
+    /// Mutation (run): compute the timecode at every piece (`piece == 0` made
+    /// `true`, without the even-frame floor) → pieces 4-7 carry the next
+    /// frame, and a rollover between the halves assembles a torn value →
+    /// fails. Rounding the frame from float seconds instead of samples fails
+    /// the same way at exact frame boundaries.
+    #[test]
+    fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
+        for (rate, fps) in [
+            (48_000.0, SmpteFrameRate::Fps24),
+            (48_000.0, SmpteFrameRate::Fps25),
+            (48_000.0, SmpteFrameRate::Fps2997Df),
+            (48_000.0, SmpteFrameRate::Fps30),
+            (44_100.0, SmpteFrameRate::Fps2997Df),
+            (44_100.0, SmpteFrameRate::Fps24),
+        ] {
+            // Offsets that put 1:00 on, and in the middle of, a cycle.
+            for offset in [0.0, 1_000.0, 5_000.0] {
+                mtc_loopback(rate, fps, offset);
+            }
+        }
+    }
+
+    // Mutation: `frames & !1` → `frames` and the second assert fails; the
+    // float path (`sample as f64 * fps / rate`) lands 1919/1920 apart by one
+    // frame at 25 fps in a rounding-sensitive case.
+    #[test]
+    fn timecode_comes_from_integer_samples() {
+        let fps = SmpteFrameRate::Fps25;
+        assert_eq!(timecode_at(3_839, 48_000.0, fps).to_string(), "00:00:00:00");
+        assert_eq!(timecode_at(3_840, 48_000.0, fps).to_string(), "00:00:00:02");
+        assert_eq!(timecode_at(3_841, 48_000.0, fps).to_string(), "00:00:00:02");
+        // Drop-frame count 1800 starts at sample 2_882_880 (60.06 s): the
+        // sample before it is still in the first minute.
+        let df = SmpteFrameRate::Fps2997Df;
+        assert_eq!(
+            timecode_at(2_882_880, 48_000.0, df).to_string(),
+            "00:01:00:02"
+        );
+        assert_eq!(
+            timecode_at(2_882_879, 48_000.0, df).to_string(),
+            "00:00:59:28"
+        );
+        let t30 = SmpteFrameRate::Fps30;
+        assert_eq!(
+            timecode_at(2_880_000, 48_000.0, t30).to_string(),
+            "00:01:00:00"
+        );
+        assert_eq!(
+            timecode_at(2_879_999, 48_000.0, t30).to_string(),
+            "00:00:59:28"
+        );
+    }
+
+    // MTC has no non-drop 29.97 code: Ndf is sent with the drop-frame one.
+    // Mutation: give Ndf its own code (3) and the equality fails.
+    #[test]
+    fn non_drop_2997_goes_out_with_the_29_97_rate_code() {
+        let tc = SmpteTimecode::from_frame_count(5, SmpteFrameRate::Fps2997Ndf);
+        let ndf = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Ndf);
+        assert_eq!((ndf >> 28) & 0x06, 2 << 1);
+        let df = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Df);
+        assert_eq!(ndf, df);
     }
 }

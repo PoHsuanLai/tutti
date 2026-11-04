@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — MIDI against the specs: Flex Set Tempo, outbound MTC, Note Off velocity, SysEx bytes, bank select, RPN, Song Position
+
+- **Flex Data Set Tempo** was 10x too fast on the wire (`6e8` for `6e9` ten-nanosecond units a minute): 120 BPM is now `0x02FAF080`. Clip files and Flex metadata written before this carry the old field and read back 10x slow, and clips from other tools now read back right.
+- **`MtcDecoder::feed`** no longer overflows when the first quarter-frame is not piece 0.
+- **Outbound MTC** (`ClockMaster`) sends one timecode per 8-piece cycle, computed from integer samples on an even frame, so an assembled frame is always below the rate and never torn across a rollover. Drop-frame labels skip `;00` and `;01` each minute but the tenth. `Fps2997Ndf` goes out with the 29.97 rate code (MTC has no other).
+- **MIDI 1.0 Note Off velocity** survives promotion (`[0x80, 60, 64]` gives `0x8000`); it was 0.
+- **`Sysex7ByteAssembler`**: realtime bytes inside SysEx come out as their own events; any other status byte discards the run; a lone `F7` and stray data bytes are ignored.
+- **`Midi1ToMidi2Translator`**: CC 0 / CC 32 are latched and attached to the channel's next Program Change (bank valid), no longer promoted as CCs; an RPN/NRPN value is emitted once per Data Entry (the select that ends a run no longer repeats it); RPN and NRPN keep separate numbers.
+- **`MidiClockDecoder`** honours Song Position Pointer (`song_position_msg`, and `feed` on `0xF2`): Continue resumes at `SPP × 6` ticks.
+
+Migration (API changes):
+- `SmpteTimecode::to_seconds` now maps drop-frame labels to elapsed frames (it counted labels). New: `frame_count`, `from_frame_count`, `SmpteFrameRate::{ratio, labels_per_second}`.
+- New `MidiEvent::to_midi1_messages` returns the three messages (CC 0, CC 32, Program Change) of a 2.0 Program Change with a bank. `to_midi1_bytes` still returns one message, the Program Change alone; the VST2, VST3 and CLAP hosts still call it, so they still drop the bank. Move a caller that needs the bank to `to_midi1_messages`.
+- Code that read CC 0 / CC 32 out of `Midi1ToMidi2Translator::translate` now gets `None` for them and the bank on the next Program Change.
+- `MidiMessage` is documented as group-agnostic (a re-encode lands on group 0); route on `MidiEvent::group`.
+
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 
 The paced `clap_live` tests allow one contiguous silent run, no longer than

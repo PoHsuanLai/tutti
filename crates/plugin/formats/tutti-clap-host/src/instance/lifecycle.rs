@@ -200,6 +200,7 @@ impl ClapLoaded {
         // (`ClapActive::output_param_points_dropped`).
         reserve_input_events(&mut scratch, max_frames);
         reserve_output_params(&mut scratch, max_frames);
+        scratch.input_events.set_midi_notes(self.sends_midi_notes());
 
         Ok(ClapActive {
             scratch,
@@ -561,6 +562,9 @@ impl<T: super::ClapSample> ClapActive<T> {
         );
         reserve_input_events(&mut self.scratch, max_frames as usize);
         reserve_output_params(&mut self.scratch, max_frames as usize);
+        self.scratch
+            .input_events
+            .set_midi_notes(self.loaded.sends_midi_notes());
     }
 }
 

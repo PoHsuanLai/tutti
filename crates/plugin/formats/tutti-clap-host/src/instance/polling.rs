@@ -778,7 +778,9 @@ impl ClapLoaded {
         AudioPortsRescan::from_flags(requested, flags)
     }
 
-    /// Consumes and returns the `notes.ports_changed` flag.
+    /// Consumes and returns the `notes.ports_changed` flag. The note dialect
+    /// ([`ClapActive::sends_midi_notes`](crate::ClapActive::sends_midi_notes)) is
+    /// read only at activation and re-activation, so on `true` re-activate.
     pub fn poll_note_ports_changed(&self) -> bool {
         self.host_state.poll(&self.host_state.notes.ports_changed)
     }

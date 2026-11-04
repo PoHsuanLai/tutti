@@ -591,29 +591,17 @@ pub(super) static HOST_EVENT_REGISTRY: clap_host_event_registry = clap_host_even
     query: Some(host_event_registry_query),
 };
 
+/// Answers every space name "unknown": the host sends and takes core events
+/// only, so it claims no other space (`event-registry.h`).
 unsafe extern "C" fn host_event_registry_query(
-    host: *const ClapHostVtable,
-    space_name: *const c_char,
+    _host: *const ClapHostVtable,
+    _space_name: *const c_char,
     space_id: *mut u16,
 ) -> bool {
-    if space_name.is_null() || space_id.is_null() {
-        return false;
+    if !space_id.is_null() {
+        *space_id = u16::MAX;
     }
-    let Some(state) = get_host_state(host) else {
-        return false;
-    };
-    let name = CStr::from_ptr(space_name).to_string_lossy().into_owned();
-    let Ok(mut spaces) = state.resources.event_spaces.lock() else {
-        return false;
-    };
-    let id = *spaces.entry(name).or_insert_with(|| {
-        state
-            .resources
-            .next_event_space
-            .fetch_add(1, Ordering::Relaxed)
-    });
-    *space_id = id;
-    true
+    false
 }
 
 pub(super) static HOST_TRANSPORT_CONTROL: clap_host_transport_control =

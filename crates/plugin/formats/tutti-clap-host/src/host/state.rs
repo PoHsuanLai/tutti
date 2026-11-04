@@ -8,8 +8,7 @@
 //! extension a request came from.
 
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
 use std::time::Instant;
@@ -427,15 +426,13 @@ impl RemoteControlState {
     }
 }
 
-/// Host-owned resources a plugin can query: track metadata, registered event
-/// spaces, tuning tables, storage directories and watched descriptors.
+/// Host-owned resources a plugin can query: track metadata, tuning tables,
+/// storage directories and watched descriptors.
 ///
 /// Unlike the latch groups above, most of this is state the *host* publishes
 /// for the plugin to read rather than a request the plugin made.
 pub struct ResourceState {
     pub(crate) track_info: Mutex<Option<TrackInfo>>,
-    pub(crate) event_spaces: Mutex<HashMap<String, u16>>,
-    pub(crate) next_event_space: AtomicU16,
     pub(crate) tuning_infos: Mutex<Vec<TuningInfo>>,
     pub(crate) directory_shared: Mutex<Option<std::path::PathBuf>>,
     pub(crate) directory_private: Mutex<Option<std::path::PathBuf>>,
@@ -450,8 +447,6 @@ impl ResourceState {
     fn new() -> Self {
         Self {
             track_info: Mutex::new(None),
-            event_spaces: Mutex::new(HashMap::new()),
-            next_event_space: AtomicU16::new(512),
             tuning_infos: Mutex::new(Vec::new()),
             directory_shared: Mutex::new(None),
             directory_private: Mutex::new(None),

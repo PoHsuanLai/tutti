@@ -26,14 +26,19 @@
 //! that had to be rewritten, which is correct: the terminal state is a decision,
 //! and changing it should require saying so.
 //!
-//! # Why the plugin aborts rather than the mock closing a socket
+//! # Why the plugin dies rather than the mock closing a socket
 //!
-//! An `abort()` inside `process()` is the real shape. The subprocess dies
+//! A process killed inside `process()` is the real shape. The subprocess dies
 //! holding the socket, so the host learns about it as an EOF on a read it was
 //! already making — the same path a segfault takes — rather than as a tidy
 //! shutdown the server chose to perform. It also proves the failure crosses
 //! every layer between: the plugin, the loader, the server's audio loop, the
 //! socket, and the bridge thread.
+//!
+//! The probe dies of `SIGKILL`, not `SIGABRT` (`subprocess::die`): an abort
+//! dumps core, and where the kernel pipes the dump to a handler it holds the
+//! dying process's socket open until the handler is done, so the EOF this
+//! suite waits for comes after the dump, over a second late on CI.
 
 #![cfg(feature = "clap")]
 
@@ -57,7 +62,7 @@ const BLOCK: usize = 64;
 const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
 const PACE: Duration = PERIOD.saturating_mul(20);
 
-/// Which `process()` call aborts.
+/// Which `process()` call kills the plugin.
 ///
 /// Counted in the **plugin's** `process()` calls, which is not the same as the
 /// host calls this test makes: the host submits block N and collects N-1, and

@@ -231,11 +231,17 @@ pub fn new_histogram() -> Histogram<u64> {
 /// The tail of a latency distribution, in nanoseconds.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tail {
+    /// Number of samples recorded.
     pub count: u64,
+    /// Median, in nanoseconds.
     pub p50: u64,
+    /// 99th percentile, in nanoseconds.
     pub p99: u64,
+    /// 99.9th percentile, in nanoseconds.
     pub p999: u64,
+    /// 99.99th percentile, in nanoseconds.
     pub p9999: u64,
+    /// Largest sample, in nanoseconds.
     pub max: u64,
 }
 

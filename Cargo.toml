@@ -99,6 +99,7 @@ private_intra_doc_links = "deny"
 # it for itself because it cannot take the workspace table.
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+missing_docs = "warn"
 
 # A system's argument list IS its dependency declaration, and a query filter is
 # the query specification — aliasing either behind a type or a SystemParam bundle

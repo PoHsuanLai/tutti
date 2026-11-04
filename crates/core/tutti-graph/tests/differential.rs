@@ -622,79 +622,7 @@ proptest! {
     /// differs → diverges.
     #[test]
     fn transport_changes_inside_blocks_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
-        for workers in modes(seed) {
-            let desc = random_graph(seed);
-            let valid = desc.spec.validate().expect("generated graphs are valid");
-            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
-            pair.switch(&valid, &desc.kinds);
-            let ports: Vec<EventIn> = desc
-                .kinds
-                .keys()
-                .flat_map(|&k| (0..shape(&desc.kinds[&k]).event_in).map(move |port| EventIn { node: k, port }))
-                .collect();
-            let mut rng = Rng::new(seed ^ 0x7A45);
-            let mut script = Script {
-                beat: 0.0,
-                playing: false,
-                tempo: 1_200.0,
-                looping: None,
-            };
-            let mut frame = 0u64;
-            for n in schedule(which, seed, 900) {
-                // Cut the block at up to three offsets; each piece is a script
-                // step of its own, so a piece may start with a seek, a start or
-                // stop, a tempo step or a loop edit.
-                let mut cuts: Vec<usize> = (0..rng.below(4))
-                    .filter(|_| n > 1)
-                    .map(|_| 1 + rng.below(n as u64 - 1) as usize)
-                    .collect();
-                cuts.sort_unstable();
-                cuts.dedup();
-                let mut bounds = vec![0];
-                bounds.extend(&cuts);
-                bounds.push(n);
-                let start = script.block(bounds[1] - bounds[0], &mut rng);
-                let mut changes = tutti_graph::TransportChanges::NONE;
-                for w in bounds[1..].windows(2) {
-                    let to = script.block(w[1] - w[0], &mut rng);
-                    let at = tutti_graph::Offset::new(w[0], tutti_types::Samples(n)).expect("inside");
-                    changes.push(at, to).expect("ordered, distinct, few");
-                }
-                if rng.chance(30) {
-                    for _ in 0..1 + rng.below(3) {
-                        let Some(to) = rng.pick(&ports) else { break };
-                        let at = match rng.below(6) {
-                            0 => tutti_types::At::NextBlock,
-                            1 => tutti_types::At::Frame(tutti_types::Frame(frame + rng.below(2 * n as u64))),
-                            // Near a piece's start beat, before or after it.
-                            _ => {
-                                let pieces: Vec<f64> = std::iter::once(start.beat().get())
-                                    .chain(changes.as_slice().iter().map(|c| c.to.beat().get()))
-                                    .collect();
-                                let b = pieces[rng.below(pieces.len() as u64) as usize];
-                                tutti_types::At::Beat(tutti_types::Beat(
-                                    (b + (rng.below(600) as f64 - 100.0) / 10_000.0).max(0.0),
-                                ))
-                            }
-                        };
-                        let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
-                        match pair.editor.schedule(at, to, kind) {
-                            Ok(_) => {
-                                pair.reference.schedule(at, to, kind);
-                            }
-                            Err(tutti_graph::ScheduleError::Backpressure) => {}
-                            Err(e) => panic!("{e}"),
-                        }
-                    }
-                }
-                let input = input_signal(frame, n);
-                let (a, b) = pair.block_with_changes(n, &input, &start, &changes);
-                prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {}", frame);
-                prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands(), "late, frame {}", frame);
-                frame += n as u64;
-            }
-            prop_assert_eq!(pair.exec.unrouted_commands(), pair.reference.unrouted_commands());
-        }
+        transport_case(seed, which)?;
     }
 
     /// The same across a recompile: nodes, rings and feedback slots that
@@ -703,6 +631,102 @@ proptest! {
     fn recompiles_preserve_state_identically(seed in any::<u64>(), which in 0usize..5) {
         recompile_case(seed, which);
     }
+}
+
+/// [`transport_changes_inside_blocks_are_bit_identical`]'s body, for one
+/// `(seed, which)`.
+fn transport_case(seed: u64, which: usize) -> Result<(), TestCaseError> {
+    for workers in modes(seed) {
+        let desc = random_graph(seed);
+        let valid = desc.spec.validate().expect("generated graphs are valid");
+        let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+        pair.switch(&valid, &desc.kinds);
+        let ports: Vec<EventIn> = desc
+            .kinds
+            .keys()
+            .flat_map(|&k| {
+                (0..shape(&desc.kinds[&k]).event_in).map(move |port| EventIn { node: k, port })
+            })
+            .collect();
+        let mut rng = Rng::new(seed ^ 0x7A45);
+        let mut script = Script {
+            beat: 0.0,
+            playing: false,
+            tempo: 1_200.0,
+            looping: None,
+        };
+        let mut frame = 0u64;
+        for n in schedule(which, seed, 900) {
+            // Cut the block at up to three offsets; each piece is a script
+            // step of its own, so a piece may start with a seek, a start or
+            // stop, a tempo step or a loop edit.
+            let mut cuts: Vec<usize> = (0..rng.below(4))
+                .filter(|_| n > 1)
+                .map(|_| 1 + rng.below(n as u64 - 1) as usize)
+                .collect();
+            cuts.sort_unstable();
+            cuts.dedup();
+            let mut bounds = vec![0];
+            bounds.extend(&cuts);
+            bounds.push(n);
+            let start = script.block(bounds[1] - bounds[0], &mut rng);
+            let mut changes = tutti_graph::TransportChanges::NONE;
+            for w in bounds[1..].windows(2) {
+                let to = script.block(w[1] - w[0], &mut rng);
+                let at = tutti_graph::Offset::new(w[0], tutti_types::Samples(n)).expect("inside");
+                changes.push(at, to).expect("ordered, distinct, few");
+            }
+            if rng.chance(30) {
+                for _ in 0..1 + rng.below(3) {
+                    let Some(to) = rng.pick(&ports) else { break };
+                    let at = match rng.below(6) {
+                        0 => tutti_types::At::NextBlock,
+                        1 => tutti_types::At::Frame(tutti_types::Frame(
+                            frame + rng.below(2 * n as u64),
+                        )),
+                        // Near a piece's start beat, before or after it.
+                        _ => {
+                            let pieces: Vec<f64> = std::iter::once(start.beat().get())
+                                .chain(changes.as_slice().iter().map(|c| c.to.beat().get()))
+                                .collect();
+                            let b = pieces[rng.below(pieces.len() as u64) as usize];
+                            tutti_types::At::Beat(tutti_types::Beat(
+                                (b + (rng.below(600) as f64 - 100.0) / 10_000.0).max(0.0),
+                            ))
+                        }
+                    };
+                    let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([
+                        rng.below(1000) as u32,
+                        0,
+                        0,
+                        0,
+                    ]));
+                    match pair.editor.schedule(at, to, kind) {
+                        Ok(_) => {
+                            pair.reference.schedule(at, to, kind);
+                        }
+                        Err(tutti_graph::ScheduleError::Backpressure) => {}
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+            }
+            let input = input_signal(frame, n);
+            let (a, b) = pair.block_with_changes(n, &input, &start, &changes);
+            prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {}", frame);
+            prop_assert_eq!(
+                pair.exec.late_commands(),
+                pair.reference.late_commands(),
+                "late, frame {}",
+                frame
+            );
+            frame += n as u64;
+        }
+        prop_assert_eq!(
+            pair.exec.unrouted_commands(),
+            pair.reference.unrouted_commands()
+        );
+    }
+    Ok(())
 }
 
 /// [`recompiles_preserve_state_identically`]'s body, for one `(seed, which)`.
@@ -731,6 +755,22 @@ fn recompile_case(seed: u64, which: usize) {
 /// 3280887136571273968, which = 3), kept as a plain test: the regressions
 /// file persists proptest's RNG seeds, not generated values, so a case found
 /// by another run of the generator cannot be written into it by hand.
+/// A seek back by under a frame continues the run (the slack for a host's
+/// `f32` beat jitter), so a beat the run passed, which the playhead is again
+/// just short of, is ahead of it and not late. Here playback stops at beat
+/// 0.84953, the transport seeks to 0.849 (0.0005 beat, 0.7 of a frame back),
+/// then a one-frame block starts there with a command at beat 0.8493 (0.4 of
+/// a frame ahead, so it lands in the next block). The executor counts it
+/// pending; the reference once counted it late because its history still
+/// held the interval past the playhead.
+///
+/// Mutation: drop the `beat >= t.beat()` guard in `RefPlayhead::crossed` →
+/// the reference counts one late command the executor does not → fails.
+#[test]
+fn transport_regression_11926813388736633892() {
+    transport_case(11_926_813_388_736_633_892, 0).expect("agrees");
+}
+
 #[test]
 fn recompile_regression_3280887136571273968() {
     recompile_case(3_280_887_136_571_273_968, 3);

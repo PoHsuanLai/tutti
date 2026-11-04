@@ -5440,6 +5440,41 @@ under both.
   `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`. The same
   counter takes every event of a chunk lost whole and the rest of a SysEx
   cut by a loss, which is never spliced (doc 004, A-4).
+- **A CLAP plugin without `clap.tail` has an unknown tail, and the host
+  re-reads its audio ports.** `ClapLoaded::get_tail` is `None` for a plugin
+  without the extension, which the server loads as `PluginTail::Unknown` (a
+  plugin that answers 0 is `None`). The CLAP host re-reads a plugin's audio
+  ports, the 64-bit flag included, at every `activate` (the in-place
+  re-activation of a rate or block-size change too, which re-sizes its
+  buffers from them) and through `ClapLoaded::rescan_audio_ports`. The server
+  derives the buses and the sample format from the activated instance, and
+  loads as 32-bit a plugin that withdrew its 64-bit flags since it was
+  opened. Pinned by `clap_ports_rescan`,
+  `a_plugin_without_the_tail_extension_has_an_unknown_tail`,
+  `the_buses_are_those_the_plugin_has_at_activation` and
+  `a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit`.
+- **A CLAP instance a rate change cannot bring back is refused, not
+  processed, and the host is told.** `reconfigure` leaves the plugin
+  deactivated when the rollback fails or an `f64` instance's plugin dropped
+  its 64-bit flags (`ClapError::Deactivated`); `ClapActive::process` and
+  `ensure_processing` then return `ClapError::NotActive` on one flag read,
+  with no FFI call, and the port layout and the scratch agree on every path
+  out of `reconfigure`. `PluginAudio::set_sample_rate` returns a `Result`
+  now: the session moves its clock only when the plugin took the rate, and
+  the CLAP loader renders silence for a deactivated instance. It does not
+  rebuild a dropped-f64 instance as 32-bit, because the session's wire
+  format was negotiated at load and would not match. The CLAP loader
+  re-reads the bus layout after a rate change and raises `IoChanged` (as
+  VST3 does) when it differs from the metadata the host holds, or when the
+  instance can no longer run; the host answers it as it does VST3's
+  (`PluginInvalidation::Io`). Pinned by `clap_ports_rescan`'s
+  `a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags`
+  and `a_failed_reconfiguration_with_a_new_layout_refuses_blocks_of_any_width`,
+  the server's `a_rate_change_that_changes_the_layout_raises_io_changed`,
+  `a_deactivated_instance_renders_silence_and_tells_the_host` and the
+  session's `the_clock_follows_the_rate_the_plugin_accepted`. Not covered:
+  a refused rollback (the reference plugin refuses one configuration, not
+  the same one twice).
 - **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes
   UMP SysEx7 packets (`tutti_plugin_types::push_sysex`, on
   `MidiEvent::sysex7_packets`, which allocates nothing) at the plugin's

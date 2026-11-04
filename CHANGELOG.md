@@ -65,6 +65,40 @@ bit-identical, the butler is not held back, and the clip resumes at the frame
 the clock names. `pool64/disk-silent/64`: 21.8 to 11.4 us. No public API
 changes. Stretched voices and offline forks still render.
 
+### Fixed — CLAP reports an unknown tail for a plugin without `clap.tail` and re-reads its ports on activation; `clap_live` no longer flakes
+
+- **`ClapLoaded::get_tail` returns `Option<u32>`**: `None` when the plugin has
+  no `clap.tail`, which the server loads as `PluginTail::Unknown` where it
+  loaded `None` (no tail). **A plugin without the `clap.tail` extension now
+  has an unknown tail and is never parked (it runs every block), which costs
+  CPU; before, its decay could be cut off.** Migration: `get_tail()` callers
+  match the `Option` (`.map_or(Tail::Unknown, Tail::from_clap_samples)`).
+- **The CLAP host read the plugin's ports once, at load.** `ClapLoaded::activate`
+  and the in-place re-activation of a rate or block-size change now re-read
+  them (layout, channel totals, the 64-bit flag) and size their buffers from
+  the result, and the new `ClapLoaded::rescan_audio_ports` does it on demand
+  while deactivated. A 64-bit instance whose plugin drops its flags across a
+  rate change is left deactivated with `ClapError::Deactivated` (new; the
+  refused-rollback case returns it too, where it returned the activation's
+  `LoadFailed` with an empty path). `process` on such an instance returns
+  `ClapError::NotActive` without calling the plugin, and the ports and the
+  scratch stay consistent on every error path. New `ClapLoaded::is_active`.
+- **`PluginAudio::set_sample_rate` returns `Result<()>`** (was `()`), for
+  every format. Migration: an implementor returns `Ok(())` or the refusal; a
+  caller keeps its old rate on `Err`. The server's session now moves its clock
+  only when the plugin took the rate. The CLAP loader renders silence for an
+  instance a rate change left deactivated, and raises `IoChanged` (it never
+  did) when a rate change altered the bus layout or left the instance unable
+  to run. `tutti_plugin::server::BusTopologies` is exported.
+- **The server describes a CLAP plugin as activated.** Its buses and 64-bit
+  format come from the post-activation state, and a plugin that withdrew its
+  64-bit flags since it was opened loads as 32-bit rather than failing.
+- **The `clap_live` test paced its callbacks with catch-up bursts** after any
+  oversleep, so a loaded machine gave the server no period to answer and
+  rendered runs of silence. It now keeps callbacks a period apart.
+  The burst test counts silence outside its window from ten blocks after
+  warm-up.
+
 ### Fixed — a plugin's SysEx reaches the host whole; the AU SysEx path stops allocating
 
 - **A SysEx a plugin emits was dropped** unless it fitted one UMP packet (VST3,

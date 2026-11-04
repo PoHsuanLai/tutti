@@ -247,10 +247,11 @@ impl PluginAudio for Vst2Instance {
         }
     }
 
-    fn set_sample_rate(&mut self, rate: f64) {
+    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
         self.sample_rate = rate;
         #[cfg(feature = "vst2")]
         self.inner.set_sample_rate(rate);
+        Ok(())
     }
 
     /// Store the level the host reports through

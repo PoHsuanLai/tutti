@@ -652,7 +652,9 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(&mut self, _rate: f64) {}
+        fn set_sample_rate(&mut self, _rate: f64) -> PluginResult<()> {
+            Ok(())
+        }
     }
     impl PluginParams for NanPlugin {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {
@@ -731,7 +733,9 @@ mod tests {
             }
             Ok(())
         }
-        fn set_sample_rate(&mut self, _rate: f64) {}
+        fn set_sample_rate(&mut self, _rate: f64) -> PluginResult<()> {
+            Ok(())
+        }
     }
     impl PluginParams for EchoProbe {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {

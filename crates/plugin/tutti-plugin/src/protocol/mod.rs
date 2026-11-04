@@ -138,9 +138,9 @@ pub use crate::host::discovery::record::{
     Vst3SubCategories,
 };
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, ChannelTopology, ChordChanges, ChordValue,
-    ContentScale, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin, Normalized,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology, ChordChanges,
+    ChordValue, ContentScale, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin,
+    Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
     ParameterPoint, ParameterQueue, PluginTail, PointBuf, Preset, PresetId, PresetSupport,

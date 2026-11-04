@@ -138,7 +138,14 @@ pub trait PluginAudio: Send {
     /// ABI (`effSetSampleRate`, `IComponent::setupProcessing`), which is where
     /// the unit types stop. Configure-time — most formats accept it only while
     /// the plugin is deactivated.
-    fn set_sample_rate(&mut self, rate: f64);
+    ///
+    /// # Errors
+    ///
+    /// The plugin is not running at `rate`: it refused it and keeps running at
+    /// the rate it already accepted, or it could not be brought back and
+    /// renders silence until it is replaced. A caller that tracks the rate
+    /// keeps the old one.
+    fn set_sample_rate(&mut self, rate: f64) -> Result<()>;
 
     /// Tells the plugin whether it is rendering under realtime pressure.
     ///

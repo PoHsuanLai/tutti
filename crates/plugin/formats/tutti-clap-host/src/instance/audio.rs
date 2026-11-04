@@ -389,6 +389,14 @@ impl<T: ClapSample> ClapActive<T> {
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
+        // A reconfiguration that could not activate the plugin again leaves it
+        // deactivated, and CLAP allows `process` only while active. Refuse the
+        // block before anything else touches the plugin or the scratch: one
+        // flag read, no FFI, no allocation.
+        if !self.loaded.flags.active {
+            return Err(ClapError::NotActive);
+        }
+
         let num_samples = buffer.num_samples as u32;
 
         // The scratch channel buffers were sized to `max_frames` in

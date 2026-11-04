@@ -679,22 +679,18 @@ impl PluginAudio for Vst3Instance {
         }
     }
 
-    fn set_sample_rate(&mut self, rate: f64) {
+    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        // The host rolls the instance back to the rate the plugin already
+        // accepted and stays active there, so the session keeps running; the
+        // error tells the caller it is at a rate it did not ask for.
         vst_dispatch_mut!(self, inner => {
-            // `PluginAudio::set_sample_rate` is infallible, so a VST3 plugin's
-            // refusal cannot be propagated from here. It must still be *said*:
-            // the host rolls the instance back to the rate the plugin already
-            // accepted and stays active there, so the session keeps running —
-            // but at a rate the caller did not ask for, and a silent discard is
-            // how that becomes an unexplained pitch shift.
-            if let Err(e) = inner.set_sample_rate(rate) {
-                tracing::warn!(
-                    requested = rate,
-                    running_at = inner.sample_rate(),
-                    "VST3 plugin refused the sample rate: {e}"
-                );
-            }
-        });
+            inner.set_sample_rate(rate).map_err(|e| {
+                PluginError::Other(format!(
+                    "VST3 plugin refused sample rate {rate}, running at {}: {e}",
+                    inner.sample_rate()
+                ))
+            })
+        })
     }
 
     /// Re-activate the instance in the requested mode, preserving its state.

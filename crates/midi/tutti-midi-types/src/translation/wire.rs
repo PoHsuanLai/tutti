@@ -123,11 +123,52 @@ fn midi1_channel_voice_to_ump(channel: MidiChannel, msg: midly::MidiMessage) -> 
     MidiEvent::from_ump(0, &[w0])
 }
 
+/// Up to three MIDI 1.0 wire messages, each `([status, d1, d2], length)`, from
+/// [`MidiEvent::to_midi1_messages`]. Allocation-free.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Midi1Messages {
+    messages: [([u8; 3], u8); 3],
+    len: u8,
+    next: u8,
+}
+
+impl Midi1Messages {
+    fn push(&mut self, bytes: [u8; 3], len: u8) {
+        self.messages[usize::from(self.len)] = (bytes, len);
+        self.len += 1;
+    }
+}
+
+impl Iterator for Midi1Messages {
+    type Item = ([u8; 3], u8);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next < self.len {
+            self.next += 1;
+            Some(self.messages[usize::from(self.next - 1)])
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = usize::from(self.len - self.next);
+        (left, Some(left))
+    }
+}
+
+impl ExactSizeIterator for Midi1Messages {}
+
 impl MidiEvent {
     /// Emits the MIDI 1.0 wire form of this event (1-3 bytes), if the message
     /// has a 1.0 representation. Returns `None` for MIDI 2.0-only messages
     /// (per-note controllers, RPN/NRPN, utility, SysEx) and non-channel-voice
     /// UMP types that don't correspond to a 1.0 status byte.
+    ///
+    /// One message only. A MIDI 2.0 Program Change that carries a bank is one
+    /// UMP but three MIDI 1.0 messages (CC 0, CC 32, Program Change); this
+    /// returns just the Program Change. Use [`to_midi1_messages`](Self::to_midi1_messages)
+    /// to keep the bank.
     pub fn to_midi1_bytes(&self) -> Option<([u8; 3], u8)> {
         let type_nibble = ((self.data[0] >> 28) & 0x0F) as u8;
         match type_nibble {
@@ -136,6 +177,40 @@ impl MidiEvent {
             0x1 => self.system_to_midi1_bytes(),
             _ => None,
         }
+    }
+
+    /// The MIDI 1.0 wire messages this event translates to: none when it has no
+    /// 1.0 form, one for almost everything, and three for a Program Change with
+    /// a valid bank (CC 0 = bank MSB, CC 32 = bank LSB, then the Program Change,
+    /// as M2-104 Appendix D translates it).
+    pub fn to_midi1_messages(&self) -> Midi1Messages {
+        let mut out = Midi1Messages::default();
+        if let Some((channel, bank, program)) = self.program_change_bank() {
+            out.push([0xB0 | channel, 0, ((bank >> 7) & 0x7F) as u8], 3);
+            out.push([0xB0 | channel, 32, (bank & 0x7F) as u8], 3);
+            out.push([0xC0 | channel, program, 0], 2);
+        } else if let Some((bytes, len)) = self.to_midi1_bytes() {
+            out.push(bytes, len);
+        }
+        out
+    }
+
+    /// `(channel, 14-bit bank, program)` of a MIDI 2.0 Program Change whose bank
+    /// is valid.
+    fn program_change_bank(&self) -> Option<(u8, u16, u8)> {
+        use midi2::channel_voice2::ChannelVoice2;
+        use midi2::UmpMessage;
+        let Ok(UmpMessage::ChannelVoice2(ChannelVoice2::ProgramChange(m))) =
+            UmpMessage::try_from(self.data_words())
+        else {
+            return None;
+        };
+        let bank = m.bank()?;
+        Some((
+            u8::from(m.channel()),
+            u16::from(bank),
+            u8::from(m.program()),
+        ))
     }
 
     fn cv1_to_midi1_bytes(&self) -> Option<([u8; 3], u8)> {
@@ -240,6 +315,29 @@ mod tests {
         assert_eq!(ev.frame_offset, 0);
         // Garbage → the typed error.
         assert_eq!(MidiEvent::try_from(&[0x00u8][..]), Err(MidiParseError));
+    }
+
+    // Mutation: drop the bank branch in `to_midi1_messages` and the first two
+    // messages vanish.
+    #[test]
+    fn program_change_with_a_bank_is_three_midi1_messages() {
+        let ev = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(2), 5, Some(0x0123));
+        let msgs: Vec<_> = ev.to_midi1_messages().collect();
+        assert_eq!(
+            msgs,
+            vec![
+                ([0xB2, 0, 0x02], 3),
+                ([0xB2, 32, 0x23], 3),
+                ([0xC2, 5, 0], 2)
+            ]
+        );
+        // The single-message view stays the Program Change.
+        assert_eq!(ev.to_midi1_bytes(), Some(([0xC2, 5, 0], 2)));
+        // No bank: one message. No 1.0 form: none.
+        let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(2), 5, None);
+        assert_eq!(plain.to_midi1_messages().count(), 1);
+        let rpn = MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::FIRST, 0, 0, 0);
+        assert_eq!(rpn.to_midi1_messages().count(), 0);
     }
 
     #[test]

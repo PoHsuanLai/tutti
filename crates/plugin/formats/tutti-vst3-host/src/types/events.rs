@@ -936,17 +936,26 @@ pub(crate) fn vst3_event_from_midi(
     // no Data subtype for plain channel-voice bytes (only kMidiSysEx), so the
     // subtype stays 0 — these are a fallback the plugin reads as raw bytes.
     let (bytes, _len) = event.to_midi1_bytes()?;
+    Some(midi1_data_event(sample_offset, bytes))
+}
+
+/// One MIDI-1 message as the VST3 Data event that carries it (see the fallback
+/// in [`vst3_event_from_midi`]).
+pub(crate) fn midi1_data_event(sample_offset: i32, bytes: [u8; 3]) -> Vst3Event {
     let mut data = [0u8; 16];
     data[..3].copy_from_slice(&bytes);
-    Some(Vst3Event::Data(DataEvent {
+    Vst3Event::Data(DataEvent {
         header: EventHeader {
+            bus_index: 0,
+            sample_offset,
+            ppq_position: 0.0,
+            flags: 0,
             event_type: K_DATA_EVENT,
-            ..header
         },
         size: 3,
         event_type: 0,
         bytes: data,
-    }))
+    })
 }
 
 /// Maps a MIDI-2 per-note controller index to the VST3 note-expression dimension

@@ -641,6 +641,18 @@ place that loses precision to be written out explicitly:
      change restarts the segment at the next one due, rescaled to the same
      wall-clock time), where it used to carry a phase by adding a
      quarter-frame's length each time.
+   - **One MTC cycle carries one timecode.** A restarted grid puts its first
+     piece 0 on the next even frame of the timeline (`mtc_align`), and the
+     eight nibbles are computed there (`timecode_at`: the nearest frame count,
+     `position × num / (den × rate)`, on an even frame; drop-frame labels by
+     `SmpteTimecode::from_frame_count`) and cached for pieces 1 to 7. The grid
+     runs in frames from the restart, so at a steady tempo every piece 0 sits
+     on its label's frame; a tempo change moves the timeline under it and the
+     label follows within a frame.
+     Per-piece float seconds had put pieces 4 to 7 a frame later than 0 to 3, so
+     a rollover between them assembled a torn or out-of-range value
+     (`00:00:02:31`, `00:01:11:24` for 59.98 s). `Fps2997Ndf` goes out with the
+     29.97 code, as MTC has no non-drop one.
    - **One rule for "which frame".** `first_frame_at_or_after(frames_ahead)
      = ceil(frames_ahead - FRAME_TOLERANCE)`, the first frame at or after a
      beat within a millionth of a frame, is the one beat→frame conversion

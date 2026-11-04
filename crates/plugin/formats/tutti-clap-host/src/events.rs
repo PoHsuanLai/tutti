@@ -711,6 +711,12 @@ pub struct InputEventList {
     /// Parameter points not handed on whole since the list was built: see
     /// [`param_points_dropped`](Self::param_points_dropped).
     param_points_dropped: u64,
+    /// MIDI messages a banked Program Change could not stage for lack of
+    /// room: see [`midi_dropped`](Self::midi_dropped).
+    midi_dropped: u64,
+    /// Set by [`reserve`](Self::reserve): MIDI then stays within the reserved
+    /// room, where an unreserved list (a test, an off-RT build) just grows.
+    bounded: bool,
     /// Each channel's per-note pitch-bend range, as the MIDI added so far
     /// set it. Kept across blocks ([`EventList::clear`] leaves it): it is
     /// the stream's state.
@@ -734,6 +740,8 @@ impl InputEventList {
             order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
+            bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
         }
@@ -753,6 +761,8 @@ impl InputEventList {
             events,
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
+            bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
         }
@@ -762,6 +772,7 @@ impl InputEventList {
     /// once during plugin activation so steady-state `add_*` calls don't
     /// touch the allocator. `clear()` keeps the reserved capacity.
     pub fn reserve(&mut self, n: usize) {
+        self.bounded = true;
         self.events.reserve(n);
         self.order.reserve(self.events.capacity());
     }
@@ -778,6 +789,26 @@ impl InputEventList {
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
     pub fn set_param_point_room(&mut self, points: usize) {
         self.param_room = points;
+    }
+
+    /// Whether `n` more MIDI events fit without growing a reserved list: its
+    /// room less what is set aside for parameter points.
+    fn has_midi_room(&self, n: usize) -> bool {
+        if !self.bounded {
+            return true;
+        }
+        let aside = if self.param_room == usize::MAX {
+            0
+        } else {
+            self.param_room
+        };
+        self.events.len() + n <= self.events.capacity().saturating_sub(aside)
+    }
+
+    /// MIDI events refused since the list was built, for lack of reserved
+    /// room (a Program Change with a bank counts its three).
+    pub fn midi_dropped(&self) -> u64 {
+        self.midi_dropped
     }
 
     /// Parameter points [`add_param_changes`](Self::add_param_changes) could
@@ -836,7 +867,21 @@ impl InputEventList {
                 if self.bend_ranges.observe(event) {
                     return self;
                 }
-                if let Some(clap_event) = ClapEvent::from_midi(event, &self.bend_ranges) {
+                // A Program Change with a bank is three MIDI-1 messages (CC 0,
+                // CC 32, PC), each its own event at the same time. All of
+                // them or none, so a bank is not sent without its program.
+                let messages = event.to_midi1_messages();
+                let n = messages.len().max(1);
+                if !self.has_midi_room(n) {
+                    self.midi_dropped += n as u64;
+                    return self;
+                }
+                if messages.len() > 1 {
+                    for (bytes, _) in messages {
+                        self.events
+                            .push(ClapEvent::midi(event.frame_offset, 0, bytes));
+                    }
+                } else if let Some(clap_event) = ClapEvent::from_midi(event, &self.bend_ranges) {
                     self.events.push(clap_event);
                 }
             }
@@ -1748,6 +1793,68 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![(9, 600.0), (5, 2.5)]);
+    }
+
+    /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
+    /// time, in that order.
+    ///
+    /// Mutation (run): `add_midi` converting the event with `from_midi` alone
+    /// → only the PC → fails; `has_midi_room` always true → the all-or-none
+    /// and the plain-event bound fail.
+    #[test]
+    fn a_banked_program_change_is_three_midi_events() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let mut list = InputEventList::new();
+        list.reserve(8);
+        list.add_midi(&pc);
+        let got: Vec<(u32, [u8; 3])> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => (m.header.time, m.data),
+                _ => panic!("not a MIDI event"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(5, [0xB1, 0, 1]), (5, [0xB1, 32, 5]), (5, [0xC1, 9, 0])]
+        );
+        // Room for two: none of the three is staged, and all are counted.
+        let mut tight = InputEventList::new();
+        tight.reserve(2);
+        let room = tight.events.capacity();
+        for _ in 0..room.saturating_sub(1) {
+            tight.add_midi(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000,
+            ));
+        }
+        let before = tight.events().len();
+        tight.add_midi(&pc);
+        assert_eq!(tight.events().len(), before, "all or none");
+        assert_eq!(tight.midi_dropped(), 3);
+        // A plain event past the room is refused too, never grown into.
+        let cap = tight.events.capacity();
+        while tight.events().len() < cap {
+            tight.add_midi(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                61,
+                0x8000,
+            ));
+        }
+        tight.add_midi(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            62,
+            0x8000,
+        ));
+        assert_eq!(tight.events().len(), cap);
+        assert_eq!(tight.events.capacity(), cap, "did not grow");
+        assert_eq!(tight.midi_dropped(), 4);
     }
 
     /// **A dense block sorts without allocating, and ties keep their

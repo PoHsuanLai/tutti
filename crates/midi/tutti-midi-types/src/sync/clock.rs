@@ -62,8 +62,9 @@ impl MidiClockDecoder {
     /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), so you can route raw
     /// input events straight in without demultiplexing the stream yourself.
     ///
-    /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Start
-    /// (0xFA), Continue (0xFB), and Stop (0xFC). Any other event is ignored.
+    /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Song
+    /// Position Pointer (0xF2), Start (0xFA), Continue (0xFB), and Stop (0xFC).
+    /// Any other event is ignored.
     /// Returns `true` if the event was a recognised transport message.
     pub fn feed(&mut self, event: &MidiEvent, timestamp_us: u64) -> bool {
         // System Real-Time is UMP type 0x1; the status byte is in bits 16..24.
@@ -73,6 +74,8 @@ impl MidiClockDecoder {
         }
         match ((w0 >> 16) & 0xFF) as u8 {
             0xF8 => self.tick(timestamp_us),
+            // LSB first, then MSB: two 7-bit halves of the position.
+            0xF2 => self.song_position_msg((((w0 & 0x7F) as u16) << 7) | ((w0 >> 8) & 0x7F) as u16),
             0xFA => self.start_msg(),
             0xFB => self.continue_msg(),
             0xFC => self.stop_msg(),
@@ -106,6 +109,13 @@ impl MidiClockDecoder {
     pub fn start_msg(&mut self) {
         self.tick_count = 0;
         self.transport = ClockTransportState::Playing;
+    }
+
+    /// Handles Song Position Pointer (0xF2): `midi_beats` is the position in
+    /// sixteenth notes (14 bits), six clock ticks each. The next Continue
+    /// resumes there; a Start still begins at 0.
+    pub fn song_position_msg(&mut self, midi_beats: u16) {
+        self.tick_count = u64::from(midi_beats & 0x3FFF) * 6;
     }
 
     /// Handles MIDI Stop (0xFC).
@@ -210,6 +220,26 @@ mod tests {
             "96 ticks / 24 PPQN = 4 beats, got {}",
             clock.beat_position()
         );
+    }
+
+    // Mutation: ignore 0xF2 (the old behaviour) and the position stays 0;
+    // swap the two halves and 0x0123 reads as 0x2301.
+    #[test]
+    fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
+        let mut clock = MidiClockDecoder::new();
+        assert!(clock.feed(&MidiEvent::song_position(MidiGroup::FIRST, 0x0123), 0));
+        // 0x0123 sixteenths = 291 × 6 ticks.
+        assert!((clock.beat_position() - 291.0 * 6.0 / 24.0).abs() < 1e-9);
+        assert!(clock.feed(&MidiEvent::continue_msg(MidiGroup::FIRST), 0));
+        let mut ts = 0;
+        for _ in 0..24 {
+            clock.feed(&MidiEvent::timing_clock(MidiGroup::FIRST), ts);
+            ts += us_per_tick(120.0);
+        }
+        assert!((clock.beat_position() - (291.0 * 6.0 / 24.0 + 1.0)).abs() < 1e-9);
+        // A Start begins at zero whatever the pointer said.
+        clock.feed(&MidiEvent::start(MidiGroup::FIRST), ts);
+        assert_eq!(clock.beat_position(), 0.0);
     }
 
     #[test]

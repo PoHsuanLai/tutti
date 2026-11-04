@@ -330,8 +330,11 @@ impl Plugin {
                         samples: Samples(clap.get_latency() as usize),
                     });
                 }
-                // A rate change re-reads the ports, and the plugin may have
-                // changed them, or been left unable to run.
+                // Serve a rescan or restart the plugin asked for (this is
+                // between blocks, on the loading thread), then tell the host
+                // if that, or a rate change, altered the ports or left the
+                // plugin unable to run.
+                clap.service_requests();
                 if clap.take_io_changed() {
                     out.push(AsyncEvent::IoChanged);
                 }

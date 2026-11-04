@@ -378,3 +378,32 @@ fn a_successful_rate_change_exposes_the_new_layout() {
     assert_ne!(before, after, "the totals follow the plugin's new layout");
     assert!(active.is_active());
 }
+
+/// **`reactivate` re-reads the ports at the rate and block size the plugin
+/// runs at**, which is what serving a plugin's `audio-ports.rescan` or
+/// `request_restart` needs (`set_sample_rate` to the same rate does nothing).
+///
+/// Mutation (run): make `ClapActive::reactivate` return `Ok(())` without
+/// calling `reconfigure` → the cached input total stays 2 → fails.
+#[test]
+fn reactivate_rereads_the_port_layout_in_place() {
+    let probe = Probe::acquire();
+    let mut active = probe
+        .load()
+        .activate::<f32>()
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    assert_eq!(active.info().audio_inputs, 2, "fixture: one stereo input");
+
+    probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
+    active
+        .set_sample_rate(48_000.0)
+        .expect("the same rate: no-op");
+    assert_eq!(active.info().audio_inputs, 2, "nothing was re-read");
+
+    active.reactivate().expect("re-activates");
+    assert!(active.is_active());
+    assert_eq!(active.info().audio_inputs, 3, "the plugin's new layout");
+    assert_eq!(active.sample_rate(), 48_000.0);
+    assert_eq!(active.block_size(), 512);
+}

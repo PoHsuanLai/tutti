@@ -45,6 +45,15 @@ IR; one over a shorter IR, or a head of 256 frames or fewer, does not change.
 API: the new `StagedRealFft`; `Level` and `IrSpectra` are private, and nothing
 else changes.
 
+### Changed — golden digests gate on the recorded glibc, not on "Linux/glibc"
+
+The per-file `GOLDEN_HERE` constants and local `assert_golden` helpers are
+replaced by `tutti_nodes::testing::assert_golden`. It compares only on glibc
+2.39 (where the digests were recorded) and prints a skip note elsewhere;
+`TUTTI_GOLDEN=require` (set by CI's Linux jobs) fails instead of skipping, and
+`TUTTI_GOLDEN=record` prints every figure for a re-record. Migration: a test
+crate that asserted a libm-dependent digest depends on `tutti-nodes` with the
+`testing` feature and calls `assert_golden(what, got, want)`.
 ### Changed — a silent streamed sampler clip is not rendered: 64 clips out of their window cost 11 us a block instead of 22 us, output bits unchanged
 
 A live disk-streamed voice with no stretch filter whose window is closed (or

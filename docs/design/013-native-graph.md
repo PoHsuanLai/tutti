@@ -4013,7 +4013,13 @@ gets the 4–5× above without touching the compiler.
   disk read in steady state does the same from its ring claim
   (`live_read::steady_lanes`). A voice the gate places nowhere in a range
   is not read at all (`slot::Piece::Silent`): adding its ±0.0 to the mix
-  changes no bit.
+  changes no bit. That holds for a live disk voice without a stretch filter
+  too (`DiskVoice::render_lanes` answers `false`): the ring is not read, the
+  lanes are not written, and `LiveRead::silence` leaves the reader as a block
+  of silent frames does (no last position, no fade, no claim on the ring), so
+  the butler is not held back and the voice resumes where the clock puts it.
+  A stretched voice is still rendered (its filter rings on past its input),
+  and so is a fork (it reads the file).
 - The sampler has no cross-voice SoA, on purpose. Each voice
   reads a different wave at a different fractional position, so lanes
   across voices would gather. A sampler voice has no recursive filter (its

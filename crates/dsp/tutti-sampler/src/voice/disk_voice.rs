@@ -688,13 +688,19 @@ impl DiskVoice {
     }
 
     /// Render block frames `range` (at most the lanes' length) into frames
-    /// `0..range.len()` of the first `n` lanes, every frame written: the
-    /// voice's own channels, then silence on any lane past them. The live
-    /// read claims the ring once per run of the block (a transport change or
-    /// a loop wrap starts a run); a fork reads its file frame by frame. The
-    /// block read of a slot holding this voice (`PlaybackSlot::render_lanes`),
-    /// through the owner's position scratch (`positions`, at least
-    /// `range.len()` long).
+    /// `0..range.len()` of the first `n` lanes: the voice's own channels,
+    /// then silence on any lane past them. The live read claims the ring
+    /// once per run of the block (a transport change or a loop wrap starts a
+    /// run); a fork reads its file frame by frame. The block read of a slot
+    /// holding this voice (`PlaybackSlot::render_lanes`), through the
+    /// owner's position scratch (`positions`, at least `range.len()` long).
+    ///
+    /// Returns `false` when no frame of a live voice has a position (its
+    /// window is closed, or the transport stands): every frame is +0.0, the
+    /// lanes are **not** written and the ring is not read. The reader's
+    /// state is left as a block of silent frames leaves it, so the next
+    /// sounding block starts where it would have had the silence been
+    /// rendered. A fork always returns `true`.
     pub(crate) fn render_lanes(
         &mut self,
         clock: &BlockClock<'_>,
@@ -703,26 +709,32 @@ impl DiskVoice {
         n: usize,
         positions: &mut [Option<SamplePosition>],
         gather: &mut Gather,
-    ) {
+    ) -> bool {
         let w = self.width().min(n);
         let frames = range.len();
-        lanes.clear(n, frames);
         if self.offline.is_some() {
+            lanes.clear(n, frames);
             self.offline_render(clock, range, positions, |i, f| lanes.put(i, &f[..w]));
-            return;
+            return true;
         }
+        let sounds = self.live_place(clock, range.clone(), positions);
+        if !sounds && !force_no_skip() {
+            self.inner.read.silence();
+            return false;
+        }
+        lanes.clear(n, frames);
         let mut out: Out<'_, fn(usize, &[f32])> = Out::Lanes {
             lanes: &mut lanes.lanes_mut()[..w],
             gather,
         };
-        self.live_render(clock, range, positions, &mut out);
+        self.live_read(clock, range, positions, &mut out);
+        true
     }
 
     /// Render live frames `range`, frame `i - range.start` handed to `emit`:
     /// the placed positions, less the channel's preroll, read from the ring,
     /// one ring read per run (its generation the read's segment, so a jump
-    /// is crossfaded). `positions` is scratch, at least `range.len()` long:
-    /// each run's placed positions, rewritten in place to the ring's.
+    /// is crossfaded). `positions` is scratch, at least `range.len()` long.
     fn live_render<F: FnMut(usize, &[f32])>(
         &mut self,
         clock: &BlockClock<'_>,
@@ -730,24 +742,46 @@ impl DiskVoice {
         positions: &mut [Option<SamplePosition>],
         out: &mut Out<'_, F>,
     ) {
-        let rate = self.step_rate();
+        self.live_place(clock, range.clone(), positions);
+        self.live_read(clock, range, positions, out);
+    }
+
+    /// The straight positions of live frames `range` in `positions[..len]`,
+    /// less the channel's preroll (the ring's); whether any frame has one.
+    fn live_place(
+        &self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        positions: &mut [Option<SamplePosition>],
+    ) -> bool {
         let preroll = self.inner.read.ring().preroll() as f64;
+        let positions = &mut positions[..range.len()];
+        let sounds = place(clock, range, self.gate(), self.step_rate(), positions);
+        for p in positions.iter_mut() {
+            *p = p.map(|s| SamplePosition((s.get() - preroll).max(0.0)));
+        }
+        sounds
+    }
+
+    /// Read the ring at the positions [`live_place`](Self::live_place) left,
+    /// one read per run of `range`.
+    fn live_read<F: FnMut(usize, &[f32])>(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        positions: &[Option<SamplePosition>],
+        out: &mut Out<'_, F>,
+    ) {
+        let rate = self.step_rate();
         let gain = self.shared_state.gain().get();
         // Borrowed beside `inner`, not cloned: `self` holds a strong
         // reference, so a clone only adds two atomic refcount updates.
         let state = &*self.shared_state;
-        let gate = self.gate();
         let base = range.start;
         for run in clock.runs_in(range) {
             let (a, b) = (run.start, run.end);
-            let n = b - a;
-            let positions = &mut positions[..n];
-            place(clock, a..b, gate, rate, positions);
-            for p in positions.iter_mut() {
-                *p = p.map(|s| SamplePosition((s.get() - preroll).max(0.0)));
-            }
             self.inner.read.render(
-                positions,
+                &positions[a - base..b - base],
                 run.generation,
                 rate.get(),
                 gain,
@@ -995,6 +1029,25 @@ impl IntoNode for DiskVoice {
 
 #[cfg(test)]
 mod live_loop;
+
+// Whether a test has switched the silent-block skip off (see
+// `DiskVoice::render_lanes`), so it can compare against the unskipped
+// render. The audio thread's code reads a constant `false` outside tests.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static NO_SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn force_no_skip() -> bool {
+    NO_SKIP.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn force_no_skip() -> bool {
+    false
+}
 
 #[cfg(test)]
 mod tests {
@@ -2105,5 +2158,405 @@ mod tests {
             "a clone must hold no reader of the live ring, so it renders \
              silence; it rendered {cloned}"
         );
+    }
+
+    // --- The silent-block skip ---
+
+    /// Switches the skip off for the life of the guard, on this thread.
+    struct NoSkip;
+
+    impl NoSkip {
+        fn on(off: bool) -> Self {
+            NO_SKIP.with(|c| c.set(off));
+            Self
+        }
+    }
+
+    impl Drop for NoSkip {
+        fn drop(&mut self) {
+            NO_SKIP.with(|c| c.set(false));
+        }
+    }
+
+    /// Transport script for the skip tests: `(rolling, blocks)` runs, with
+    /// an optional seek (beat) taken before the run.
+    type Script = [(bool, usize, Option<f64>)];
+
+    /// Render `script` through a one-voice pool over `wide_clip(2)`, a block
+    /// of 64 at a time, returning each block's output bits (both channels).
+    /// The playhead moves only while rolling.
+    fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
+        use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
+        const BLOCK: usize = 64;
+        let _guard = NoSkip::on(no_skip);
+        let mut pool = VoicePool::with_channels(None, 2usize).expect("a sampler width");
+        pool.insert_voice(
+            SlotId(0),
+            Voice {
+                source: VoiceSource::Disk(wide_clip(2)),
+                play: Playback::default(),
+                channel_index: None,
+            },
+        );
+        let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
+        let mut direct = Direct::new(pool, SampleRate(SR), BLOCK);
+        let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut blocks = Vec::new();
+        for &(rolling, count, seek) in script {
+            if let Some(beat) = seek {
+                t.seek(Beat::new(beat));
+            }
+            t.set_rolling(rolling);
+            for _ in 0..count {
+                direct.block_in(&t.env(BLOCK, SR));
+                if rolling {
+                    t.advance(BLOCK as i64, SR);
+                }
+                blocks.push([0, 1].map(|c| direct.output(c).iter().map(|s| s.to_bits()).collect()));
+            }
+        }
+        blocks
+    }
+
+    /// **A streamed voice that is silent, then audible, then silent, then
+    /// audible renders the same bits with the skip as without it**, and
+    /// what it plays is the frame the clock names: a stopped transport holds
+    /// the playhead, so the voice resumes at the frame it stopped on, and a
+    /// seek lands on its own frame. Silent blocks are exactly +0.0.
+    ///
+    /// Mutation (run): `render_lanes` answering `false` for every block (the
+    /// skip applied to a sounding one) → the rolling blocks are silent →
+    /// fails. Mutation (run): the skip never taken (`if false`) → this test
+    /// still passes (the renders agree), which is why the other tests count
+    /// the skips.
+    #[test]
+    fn a_silent_streamed_voice_resumes_at_the_right_frame_and_matches_the_unskipped_render() {
+        const BLOCK: usize = 64;
+        let script: &Script = &[
+            (false, 3, None),
+            (true, 4, None),
+            (false, 3, None),
+            (true, 4, None),
+            (false, 2, None),
+            // Back to the clip's first audible beat.
+            (true, 4, Some(1.0)),
+        ];
+        let skipped = scripted_pool(script, false);
+        let unskipped = scripted_pool(script, true);
+        assert_eq!(skipped, unskipped, "the skip changed the render");
+
+        // Straight position of the first frame of each block, `None` while
+        // stopped.
+        let mut want: Vec<Option<u64>> = Vec::new();
+        let mut pos = 22_050u64;
+        for &(rolling, count, seek) in script {
+            if seek.is_some() {
+                pos = 22_050;
+            }
+            for _ in 0..count {
+                want.push(rolling.then_some(pos));
+                if rolling {
+                    pos += BLOCK as u64;
+                }
+            }
+        }
+        for (b, (block, first)) in skipped.iter().zip(&want).enumerate() {
+            for (c, lane) in block.iter().enumerate() {
+                for (i, &bits) in lane.iter().enumerate() {
+                    let got = f32::from_bits(bits);
+                    match first {
+                        None => assert_eq!(bits, 0, "block {b} is stopped, frame {i}"),
+                        Some(first) => {
+                            let w = wide_value(first + i as u64, c);
+                            assert!(
+                                (got - w).abs() < 1e-4,
+                                "block {b}, channel {c}, frame {i}: {got} for {w}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// **A block with no frame to play skips the lanes and the ring**, and
+    /// one with a frame does not: `render_lanes` answers `false` and leaves
+    /// the caller's lanes as they were while the transport stands, and
+    /// `true` (every lane written) once it rolls.
+    ///
+    /// Mutation (run): the skip never taken (`if false`) → the stopped block
+    /// returns `true` and clears the sentinel → fails. Mutation (run): the
+    /// skip always taken (`if true`) → the rolling block returns `false` →
+    /// fails.
+    #[test]
+    fn a_block_with_no_position_leaves_the_lanes_alone() {
+        const BLOCK: usize = 64;
+        let mut voice = wide_clip(2);
+        let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 2);
+        let mut clock = crate::voice::clock::Clock::new();
+        let t = MockTransport::stopped(Beat::new(1.0), Bpm::new(120.0));
+        let mut run = |voice: &mut DiskVoice, scratch: &mut crate::lanes::BlockScratch| {
+            for lane in scratch.out.lanes_mut() {
+                lane.fill(7.0);
+            }
+            let env = t.env(BLOCK, SR);
+            let clock = clock.observe(&env);
+            let crate::lanes::BlockScratch {
+                out,
+                positions,
+                gather,
+                ..
+            } = scratch;
+            voice.render_lanes(&clock, 0..BLOCK, out, 2, positions, gather)
+        };
+        // The skip allocates nothing.
+        assert_no_alloc::assert_no_alloc(|| {
+            assert!(
+                !run(&mut voice, &mut scratch),
+                "a stopped transport sounds nothing"
+            );
+        });
+        for lane in &scratch.out.lanes()[..2] {
+            assert!(lane[..BLOCK].iter().all(|&s| s == 7.0), "lanes written");
+        }
+        t.set_rolling(true);
+        assert!(run(&mut voice, &mut scratch), "a rolling transport sounds");
+        assert!(scratch.out.lanes()[0][..BLOCK].iter().all(|&s| s != 7.0));
+        assert!(voice.inner.read.read_to() > 22_000.0);
+    }
+
+    /// **A skipped block forgets a crossfade in progress**, as the rendered
+    /// zeros do: a jump starts a fade, a silent block ends it and the
+    /// position it continued.
+    ///
+    /// Mutation (run): `LiveRead::silence` not clearing `st.fade` → the fade
+    /// survives the silent block → fails. Mutation (run): not clearing
+    /// `st.last` → fails.
+    #[test]
+    fn a_skipped_block_forgets_the_fade_and_the_last_position() {
+        const BLOCK: usize = 64;
+        const AT: u64 = 22_000;
+        let (mut writer, reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1usize);
+        RegionBuffer::place(&mut writer, AT, 0, 0, 256);
+        let from = writer.window().0;
+        let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
+        writer.push_interleaved(&flat);
+        let state = Arc::new(RtState::new());
+        let inner = DiskSource::new(reader, Arc::clone(&state));
+        let mut voice = DiskVoice::new(
+            inner,
+            state,
+            DiskVoiceConfig {
+                window: VoiceWindow::default(),
+                file_sample_rate: SampleRate(SR),
+            },
+        );
+        let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
+        let mut clock = crate::voice::clock::Clock::new();
+        let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut run = |voice: &mut DiskVoice| {
+            let env = t.env(BLOCK, SR);
+            let clock = clock.observe(&env);
+            let crate::lanes::BlockScratch {
+                out,
+                positions,
+                gather,
+                ..
+            } = &mut scratch;
+            voice.render_lanes(&clock, 0..BLOCK, out, 1, positions, gather)
+        };
+        assert!(run(&mut voice));
+        assert!(!voice.inner.read.forgot(), "a position is held");
+        t.advance(BLOCK as i64, SR);
+        t.set_beat(Beat::new(1.03));
+        assert!(run(&mut voice));
+        assert!(voice.inner.read.fading(), "a jump fades");
+        t.set_rolling(false);
+        assert!(!run(&mut voice), "a stopped block is skipped");
+        assert!(voice.inner.read.forgot(), "a silent block forgets");
+    }
+
+    /// **A skipped block lets go of the ring**, as a rendered silent block
+    /// does: the reader's last claim is cleared and every shrink so far
+    /// acknowledged, so a butler that moved the window while the voice was
+    /// silent is not held off by the stale claim. The ring is 4 096 frames
+    /// wide; the butler restarts it where it aliases the slots the last
+    /// block read, and its write is refused until the reader has
+    /// acknowledged.
+    ///
+    /// Mutation (run): `LiveRead::silence` not calling `reader.idle()` →
+    /// the second push lands nothing → fails.
+    #[test]
+    fn a_skipped_block_releases_the_ring_to_the_writer() {
+        const BLOCK: usize = 64;
+        const AT: u64 = 22_000;
+        let (mut writer, reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1usize);
+        writer.reset(AT);
+        writer.set_play(AT);
+        let flat: Vec<f32> = (AT..AT + 2_000).map(|k| k as f32).collect();
+        writer.push_interleaved(&flat);
+        let state = Arc::new(RtState::new());
+        let inner = DiskSource::new(reader, Arc::clone(&state));
+        let mut voice = DiskVoice::new(
+            inner,
+            state,
+            DiskVoiceConfig {
+                window: VoiceWindow::default(),
+                file_sample_rate: SampleRate(SR),
+            },
+        );
+        let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
+        let mut clock = crate::voice::clock::Clock::new();
+        let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut run = |voice: &mut DiskVoice| {
+            let env = t.env(BLOCK, SR);
+            let clock = clock.observe(&env);
+            let crate::lanes::BlockScratch {
+                out,
+                positions,
+                gather,
+                ..
+            } = &mut scratch;
+            voice.render_lanes(&clock, 0..BLOCK, out, 1, positions, gather)
+        };
+        assert!(run(&mut voice), "the voice reads the ring");
+        // The butler restarts the window on slots the last block read
+        // (22 050 and 26 146 share one).
+        const AGAIN: u64 = 26_000;
+        writer.reset(AGAIN);
+        writer.set_play(AGAIN);
+        let more: Vec<f32> = (AGAIN..AGAIN + 200).map(|k| k as f32).collect();
+        let first = writer.push_interleaved(&more);
+        // Held at the first slot the last block read: 26 143 = 22 047 + 4 096.
+        assert_eq!(first.get(), 143, "the unacknowledged claim holds the write");
+        t.set_rolling(false);
+        assert!(!run(&mut voice), "a stopped block is skipped");
+        let rest = writer.push_interleaved(&more[first.get()..]);
+        assert_eq!(rest.get(), 200 - 143, "the skipped block released the ring");
+    }
+
+    /// Render `script` over a 40-second mono stream the butler refills (it
+    /// is stepped by hand once per block, so nothing is timing-dependent),
+    /// returning every block's bits and the underruns counted. A skipped
+    /// block is rendered as the zeros it stands for.
+    fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
+        use crate::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
+        const BLOCK: usize = 64;
+        let _guard = NoSkip::on(no_skip);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tone.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SR as u32,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).expect("create wav");
+        for i in 0..(SR as usize * 40) {
+            let t = i as f32 / SR as f32;
+            // Distinct at every frame: a drifting read is heard.
+            w.write_sample((std::f32::consts::TAU * (200.0 + 10.0 * t) * t).sin() * 0.5)
+                .expect("write wav");
+        }
+        w.finalize().expect("finalize wav");
+        let mut streamer =
+            DiskStreamer::manual(SR, DiskStreamerConfig::default()).expect("streamer builds");
+        streamer
+            .commands()
+            .send(Command::Stream {
+                channel_index: 0,
+                file_path: path,
+                offset: SamplePosition(0.0),
+            })
+            .expect("the butler is alive");
+        for _ in 0..4096 {
+            if streamer.step_once() != StepOutcome::Busy {
+                break;
+            }
+        }
+        let mut voice = streamer
+            .status()
+            .take_disk_voice(0, Beat::new(0.0), None)
+            .expect("a primed stream gives a voice");
+        voice.set_render_rate(SampleRate(SR));
+        let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
+        let mut clock = crate::voice::clock::Clock::new();
+        let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let (mut blocks, mut skipped) = (Vec::new(), 0);
+        for &(rolling, count, seek) in script {
+            if let Some(beat) = seek {
+                t.seek(Beat::new(beat));
+            }
+            t.set_rolling(rolling);
+            for _ in 0..count {
+                let env = t.env(BLOCK, SR);
+                let clock = clock.observe(&env);
+                let crate::lanes::BlockScratch {
+                    out,
+                    positions,
+                    gather,
+                    ..
+                } = &mut scratch;
+                let sounded = voice.render_lanes(&clock, 0..BLOCK, out, 1, positions, gather);
+                skipped += usize::from(!sounded);
+                blocks.push(if sounded {
+                    scratch.out.lanes()[0][..BLOCK]
+                        .iter()
+                        .map(|s| s.to_bits())
+                        .collect()
+                } else {
+                    vec![0; BLOCK]
+                });
+                if rolling {
+                    t.advance(BLOCK as i64, SR);
+                }
+                streamer.step_once();
+            }
+        }
+        let underruns = voice.shared_state.take_underruns();
+        (blocks, underruns, skipped)
+    }
+
+    /// **The butler's ring stays consistent across skipped blocks**: a
+    /// stream played, held silent for 300 blocks (the butler stepping all
+    /// the while), then resumed where it stopped and after a seek 20 s on,
+    /// renders the same bits and counts the same underruns with the skip as
+    /// without it. The skip tells the ring the reader holds nothing, as the
+    /// silent frames did, so the butler neither starves nor is held back.
+    /// Also pins that the skip is taken (300 + 50 blocks) and not taken with
+    /// it off.
+    ///
+    /// Mutation (run): `LiveRead::silence` not calling `reader.idle()` →
+    /// the reader's last claim holds the butler back across the seek and
+    /// the resumed blocks differ in underruns/bits → fails. Mutation (run):
+    /// `silence` leaving `st.last` set → the resume after the seek is read
+    /// as a continuation, not a jump (no crossfade) → bits differ → fails.
+    #[test]
+    fn the_butlers_ring_is_consistent_across_skipped_blocks() {
+        let script: &Script = &[
+            (true, 40, None),
+            (false, 300, None),
+            (true, 150, None),
+            (false, 50, None),
+            // 20 s at 120 BPM is beat 40.
+            (true, 200, Some(40.0)),
+        ];
+        let (on, on_underruns, on_skipped) = butler_fed(script, false);
+        let (off, off_underruns, off_skipped) = butler_fed(script, true);
+        assert_eq!(on_skipped, 350, "the stopped blocks are skipped");
+        assert_eq!(off_skipped, 0, "the switch turns the skip off");
+        assert_eq!(on_underruns, off_underruns, "the ring's underruns differ");
+        assert_eq!(on, off, "the skip changed the render");
+        let heard = |from: usize, to: usize| {
+            on[from..to]
+                .iter()
+                .flatten()
+                .any(|&b| f32::from_bits(b).abs() > 0.05)
+        };
+        assert!(heard(0, 40), "the stream plays");
+        assert!(heard(340, 490), "the stream resumes");
+        assert!(heard(540, 740), "the stream plays after the seek");
     }
 }

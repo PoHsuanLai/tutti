@@ -144,7 +144,13 @@ re-measured: they are from the earlier build ("before" `main` at `60ca290a`,
 | `pool64/memory-loop/64` | 176 µs | 65.5 µs |
 | `pool64/memory-loop-varispeed/64` | 190 µs | 99.6 µs |
 | `pool64/memory-silent/64` (every clip out of window) | 36.6 µs | 6.0 µs |
+| `pool64/disk-silent/64` (64 streamed clips out of window) | 21.8 µs | 11.4 µs |
 | `sources/memory-source/64` (64 `MemorySource` nodes) | 119 µs | 63.1 µs |
+
+The disk row is a later change on the same bench (three interleaved runs
+of each build; the audible `pool64/disk/64` and `memory/64` did not move
+outside the noise). A silent streamed voice still pays its placement and
+the release of its ring claim, which is the gap to the memory row.
 
 Varispeed is unchanged within the noise (3% slower in the table above): its
 taps are gathered as before.

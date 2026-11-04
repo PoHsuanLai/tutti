@@ -5,6 +5,8 @@
 #[cfg(all(target_os = "macos", feature = "au"))]
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(all(target_os = "macos", feature = "au"))]
+use tutti_plugin::server::PluginError;
 use tutti_plugin::server::{
     AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
@@ -771,8 +773,10 @@ impl PluginAudio for AuInstance {
         Ok(())
     }
 
-    fn set_sample_rate(&mut self, rate: f64) {
-        let _ = self.inner.set_sample_rate(rate);
+    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        self.inner
+            .set_sample_rate(rate)
+            .map_err(|e| PluginError::Other(format!("AU refused sample rate {rate}: {e}")))
     }
 
     /// Write `kAudioUnitProperty_OfflineRender`, bracketed by an

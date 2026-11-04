@@ -10,7 +10,7 @@
 //! mutation is confined to one visible parameter rather than hidden inside each
 //! call site.
 
-use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use realfft::{ComplexToReal, FftError, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
 use crate::Complex;
@@ -87,9 +87,12 @@ impl FftScratch {
         if self.scratch.len() < needed {
             self.scratch.resize(needed, Complex::default());
         }
-        // A non-zero imaginary DC or Nyquist is reported as an error after the
-        // transform has run; the output is the real part either way.
-        let _ = fft.process_with_scratch(&mut self.half, out, &mut self.scratch[..needed]);
+        // A non-zero imaginary DC or Nyquist is reported as `InputValues` after
+        // the transform has run; the output is the real part either way.
+        match fft.process_with_scratch(&mut self.half, out, &mut self.scratch[..needed]) {
+            Ok(()) | Err(FftError::InputValues(..)) => {}
+            Err(e) => unreachable!("buffer lengths were sized from the plan: {e}"),
+        }
 
         let norm = 1.0 / size as f32;
         for slot in out.iter_mut() {
@@ -178,6 +181,35 @@ mod tests {
 
         for (i, (a, b)) in input.iter().zip(&out).enumerate() {
             assert!((a - b).abs() < 1e-4, "sample {i}: {a} != {b}");
+        }
+    }
+
+    /// The imaginary parts of DC (and Nyquist, for an even size) are ignored.
+    ///
+    /// Mutation: add `half[0].im` into `half[0].re` before the transform, or
+    /// drop the `InputValues` arm so the error panics → fails.
+    #[test]
+    fn inverse_ignores_imaginary_dc_and_nyquist() {
+        for size in [64usize, 63] {
+            let input: Vec<f32> = (0..size).map(|i| (i as f32 / 5.0).sin() + 0.25).collect();
+            let window = vec![1.0f32; size];
+            let mut fft = FftScratch::new();
+            let mut bins = vec![Complex::default(); size / 2 + 1];
+            fft.forward(&input, &window, &mut bins);
+            bins[0].im = 0.0;
+            if size % 2 == 0 {
+                bins.last_mut().unwrap().im = 0.0;
+            }
+            let mut clean = vec![0.0f32; size];
+            fft.inverse(&bins, &mut clean);
+
+            bins[0].im = 3.0;
+            if size % 2 == 0 {
+                bins.last_mut().unwrap().im = -2.0;
+            }
+            let mut dirty = vec![0.0f32; size];
+            fft.inverse(&bins, &mut dirty);
+            assert_eq!(clean, dirty, "size {size}");
         }
     }
 

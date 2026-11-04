@@ -42,7 +42,7 @@ impl PitchResult {
 
 use std::sync::Arc;
 
-use realfft::{num_complex::Complex, ComplexToReal, RealFftPlanner, RealToComplex};
+use realfft::{num_complex::Complex, ComplexToReal, FftError, RealFftPlanner, RealToComplex};
 use tutti_types::{Confidence, Hz};
 
 use crate::yin::YinConfig;
@@ -202,14 +202,19 @@ impl PitchDetector {
         }
 
         // Inverse FFT -> cross-correlation. The product of two real signals'
-        // spectra has real DC and Nyquist bins, so nothing is dropped.
-        self.fft_inverse
-            .process_with_scratch(
-                &mut self.fft_buffer,
-                &mut self.time_b,
-                &mut self.fft_scratch,
-            )
-            .expect("buffers sized at construction");
+        // spectra has real DC and Nyquist bins, so nothing is dropped. A
+        // non-finite sample makes those imaginary parts NaN: realfft ignores
+        // them, still writes the output, and reports `InputValues`, which is
+        // tolerated. The estimate is then unvoiced, as the NaNs fail every
+        // threshold comparison.
+        match self.fft_inverse.process_with_scratch(
+            &mut self.fft_buffer,
+            &mut self.time_b,
+            &mut self.fft_scratch,
+        ) {
+            Ok(()) | Err(FftError::InputValues(..)) => {}
+            Err(e) => unreachable!("buffers sized at construction: {e}"),
+        }
 
         let inv_n = 1.0 / fft_size as f64;
         self.difference[0] = 0.0;

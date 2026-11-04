@@ -15,9 +15,8 @@ complex `rustfft` plans over a zero-imaginary signal.** A real transform does
 about half the work. **The output bits change**: the real-input algorithm
 rounds differently, so spectra, onset flux and YIN's difference function differ
 from the previous release in the last few ulps (f32 rounding level), and a YIN
-estimate can move in its last digits. No
-golden digest in the tree depends on them. They are checked against
-analytic figures instead: a sine of amplitude `a` on bin `k` reads `a*N/2`
+estimate can move in its last digits. No golden digest in the tree depends on
+them. They are checked against analytic figures instead: a sine of amplitude `a` on bin `k` reads `a*N/2`
 there, DC and Nyquist are the sum and alternating sum of the input, Parseval's
 identity holds for even and odd sizes, a two-tone centroid lands on the
 midpoint, and YIN's difference function equals its defining sum. Measured on

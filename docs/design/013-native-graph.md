@@ -6952,7 +6952,9 @@ snapshots into `outTransportStateChanged` (a start, a stop, or a beat that is
 not where playing would have put it). Until the first publish the procs answer
 `kAudioUnitErr_CannotDoInCurrentContext`, the header's "host cannot provide",
 so a unit keeps its own tempo rather than lock to a made-up one. A block
-without a transport leaves the last one in place.
+without a transport withdraws the last one (`TransportState::withdraw`: the
+same answer, not a frozen beat) and the next block with one is a start. A unit
+that refused the property is never published to.
 
 Pinned analytically: `transport_source`'s unit tests (project time
 rolling through a tempo change, held through a stop and a start where it

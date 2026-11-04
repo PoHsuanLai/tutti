@@ -366,6 +366,9 @@ impl TransportInfo {
     ///     .with_position_beats(2.75, 0.0);
     /// assert_eq!(t.samples_to_next_beat(), Some(6_000));
     /// ```
+    // A bare `u32`, not `Samples`: it is AU's `UInt32` ABI value, as
+    // `samples_to_nearest_clock` is the VST ABI's `i32`; the unit types stop at
+    // a C ABI.
     pub fn samples_to_next_beat(&self) -> Option<u32> {
         let (beats, tempo, rate) = (self.position.beats, self.timing.tempo, self.sample_rate);
         if !(is_usable(beats) && is_usable(tempo) && is_usable(rate)) || tempo <= 0.0 || rate <= 0.0

@@ -632,11 +632,17 @@ impl AuInstance {
     ///
     /// The distance to the next beat is stored before the snapshot, whose
     /// publication is what makes the callbacks start answering.
+    ///
+    /// Does nothing for a unit that refused the host callbacks at load (its
+    /// `Features::TRANSPORT` is clear): nothing reads what would be written.
     fn publish_transport(
         &mut self,
         transport: &tutti_plugin::server::TransportInfo,
         buffer: &tutti_plugin::server::AudioBufferMut<'_, '_>,
     ) {
+        if !self.meta.loaded.features.contains(Features::TRANSPORT) {
+            return;
+        }
         let mut snapshot = *transport;
         // A snapshot without its own rate (a hand-built one) borrows the
         // block's, so the beat distance can still be derived.
@@ -648,6 +654,15 @@ impl AuInstance {
         if let Some(state) = self.inner.transport() {
             state.set_samples_to_next_beat(snapshot.samples_to_next_beat().unwrap_or(0));
             state.set_transport(&snapshot, changed);
+        }
+    }
+
+    /// A block with no transport: the AU's callbacks answer "cannot provide"
+    /// until the next block that has one, which is then a start.
+    fn withdraw_transport(&mut self) {
+        self.playhead.reset();
+        if let Some(state) = self.inner.transport() {
+            state.withdraw();
         }
     }
 
@@ -784,11 +799,13 @@ impl PluginAudio for AuInstance {
             }
         }
 
-        // The AU pulls transport during its render, so the snapshot for this
-        // block goes in first. A block with no transport leaves the last one
-        // (or none, before the first) in place.
-        if let Some(transport) = ctx.transport {
-            self.publish_transport(transport, &buffer);
+        // The AU pulls transport during its render, so this block's snapshot
+        // goes in first. A block with no transport withdraws the last one: the
+        // AU is told the host cannot say (the header's answer) rather than
+        // handed a frozen beat, and the next block with one starts afresh.
+        match ctx.transport {
+            Some(transport) => self.publish_transport(transport, &buffer),
+            None => self.withdraw_transport(),
         }
 
         // Deliver MIDI to instrument / music-effect AUs before rendering, so
@@ -1609,6 +1626,60 @@ mod tests {
         let (status, _, _, _, _, _, changed, playing) = pull(&au);
         assert_eq!(status, 0);
         assert!(!playing && changed, "a stop is a change");
+
+        // A block with no transport takes it back, and the next one that has
+        // one is a start again even where playing would have put the playhead.
+        run(&mut au, Some(&next));
+        run(&mut au, None);
+        assert_eq!(pull(&au).0, CANNOT_DO, "no frozen beat after a gap");
+        let resumed = next.with_position_beats(next.position.beats + 0.026, 0.0);
+        run(&mut au, Some(&resumed));
+        let (status, _, _, _, _, _, changed, _) = pull(&au);
+        assert_eq!(status, 0);
+        assert!(changed, "the block after a gap starts afresh");
+    }
+
+    /// A unit that refused the host callbacks (its `TRANSPORT` bit is clear) is
+    /// not written to: no block publishes into it.
+    ///
+    /// The refusal is simulated by clearing the bit on a loaded unit, since no
+    /// installed AU refuses the property; `tutti-au-host`'s
+    /// `a_refused_host_callbacks_install_is_an_error` covers the refusal itself,
+    /// against the probe unit that refuses it.
+    ///
+    /// Mutation: drop the `contains(Features::TRANSPORT)` early return in
+    /// `publish_transport` → the pull answers 0 → fails.
+    #[test]
+    fn a_unit_that_refused_the_callbacks_is_not_published_to() {
+        use tutti_plugin::server::{
+            AudioBuffer as TuttiAudioBuffer, AudioBufferMut, TransportInfo,
+        };
+
+        let mut au = AuInstance::load(Path::new("AUDelay"), 44_100.0, 512).expect("AUDelay loads");
+        au.meta.loaded.features.remove(Features::TRANSPORT);
+
+        let input = vec![vec![0.0f32; 512]; 2];
+        let mut output = vec![vec![0.0f32; 512]; 2];
+        let inputs: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut outputs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let buffer = TuttiAudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            num_samples: 512,
+            sample_rate: 44_100.0,
+        };
+        let transport = TransportInfo::new().with_tempo(150.0).with_playing(true);
+        let mut ctx = ProcessContext::new();
+        ctx.transport = Some(&transport);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        au.process(AudioBufferMut::F32(buffer), &ctx, &mut out)
+            .expect("process");
+
+        let state = au.inner.transport().expect("state exists");
+        assert!(
+            !state.is_published(),
+            "nothing is written to a refusing unit"
+        );
     }
 
     /// The live half of the direct path: `PluginParams` is normalized for every

@@ -296,8 +296,18 @@ impl TransportState {
         self.published.store(true, Ordering::Release);
     }
 
-    /// Whether [`set_transport`](Self::set_transport) has run at least once,
-    /// which is when the procs start answering with values.
+    /// Takes the published transport back: the procs answer
+    /// `kAudioUnitErr_CannotDoInCurrentContext` again until the next
+    /// [`set_transport`](Self::set_transport). For a block the host has no
+    /// transport for, so the AU is told so instead of being handed the last
+    /// block's beat as if it were current. **Control thread only.**
+    pub fn withdraw(&self) {
+        self.published.store(false, Ordering::Release);
+    }
+
+    /// Whether a transport is published: [`set_transport`](Self::set_transport)
+    /// has run, and [`withdraw`](Self::withdraw) has not since. Only then do the
+    /// procs answer with values.
     pub fn is_published(&self) -> bool {
         self.published.load(Ordering::Acquire)
     }

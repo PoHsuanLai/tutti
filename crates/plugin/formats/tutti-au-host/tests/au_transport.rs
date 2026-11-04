@@ -756,6 +756,35 @@ fn an_au_pulls_the_published_transport_through_audiotoolbox() {
     assert_ne!(pull.beat_status, NOT_CALLED);
 }
 
+/// A unit that refuses `kAudioUnitProperty_HostCallbacks` makes the install an
+/// error, and the unit keeps rendering and never pulls.
+///
+/// The probe answers `kAudioUnitErr_InvalidProperty` to the write. The loader
+/// treats that as "no transport for this unit" (its `TRANSPORT` bit clear)
+/// rather than a failed load; this pins the host half that makes that possible:
+/// a reported error, not a panic and not a silent success.
+///
+/// Mutation: make `install_host_callbacks` discard the `set_property` result
+/// (`let _ =`) → the install returns `Ok` → fails.
+#[test]
+fn a_refused_host_callbacks_install_is_an_error() {
+    let _g = lock();
+    let mut au = Misbehaviour::RefusesHostCallbacks.open_initialized(RATE, BLOCK);
+
+    let err = au
+        .install_host_callbacks()
+        .expect_err("a refused HostCallbacks write must be reported");
+    assert!(
+        matches!(err, AuError::OsStatus { .. }),
+        "the refusal is the AU's OSStatus, got {err:?}"
+    );
+
+    let input = silence(2, BLOCK as usize);
+    let mut output = silence(2, BLOCK as usize);
+    render(&mut au, &input, &mut output, BLOCK).expect("a refusing unit still renders");
+    assert_eq!(last_host_pull(&au).pulls, 0, "it was never given procs");
+}
+
 /// The `HostCallbackInfo` layout must match Apple's declaration.
 ///
 /// AudioToolbox reads this struct by offset, so a reordered or differently-sized

@@ -535,6 +535,11 @@ pub enum Misbehaviour {
     /// `chunks` survived mutation with no input in the suite able to tell them
     /// apart.
     RaggedDependentParameters,
+    /// Refuses a write of `kAudioUnitProperty_HostCallbacks` (property 27) with
+    /// `kAudioUnitErr_InvalidProperty`, as a unit that has no transport
+    /// callbacks would. No installed AU does, so this is the only way to reach
+    /// a host's handling of the refusal.
+    RefusesHostCallbacks,
 }
 
 impl Misbehaviour {
@@ -557,6 +562,7 @@ impl Misbehaviour {
             Self::WritesFewerFrames => b"pfew",
             Self::ClampsBlockSize => b"pclm",
             Self::RaggedDependentParameters => b"prdp",
+            Self::RefusesHostCallbacks => b"prhc",
         }
     }
 
@@ -576,6 +582,7 @@ impl Misbehaviour {
             Self::WritesFewerFrames => "probe that writes fewer frames",
             Self::ClampsBlockSize => "probe that clamps the block size",
             Self::RaggedDependentParameters => "probe with a ragged dependents array",
+            Self::RefusesHostCallbacks => "probe that refuses host callbacks",
         }
     }
 
@@ -595,6 +602,7 @@ impl Misbehaviour {
         Misbehaviour::WritesFewerFrames,
         Misbehaviour::ClampsBlockSize,
         Misbehaviour::RaggedDependentParameters,
+        Misbehaviour::RefusesHostCallbacks,
     ];
 
     /// Register this probe (once per process) and return its component info.
@@ -1332,6 +1340,9 @@ unsafe extern "C" fn probe_set_property(
             return 0;
         }
         if id == tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS {
+            if p.behaviour == Misbehaviour::RefusesHostCallbacks {
+                return ERR_INVALID_PROPERTY;
+            }
             // The width is the header's: a host that wrote a short struct would
             // have the probe call whatever lay past it.
             if data.is_null() || (size as usize) != std::mem::size_of::<ProbeHostCallbacks>() {
@@ -1783,6 +1794,7 @@ probe_factories! {
     factory_fewer_frames => Misbehaviour::WritesFewerFrames,
     factory_clamps_block_size => Misbehaviour::ClampsBlockSize,
     factory_ragged_dependents => Misbehaviour::RaggedDependentParameters,
+    factory_refuses_host_callbacks => Misbehaviour::RefusesHostCallbacks,
 }
 
 extern "C" {

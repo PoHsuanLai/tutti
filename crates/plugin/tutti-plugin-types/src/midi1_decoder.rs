@@ -131,12 +131,13 @@ impl Midi1Splitter {
                 if !(0xF8..=0xFF).contains(&b) {
                     running = if b < 0xF0 { Some(b) } else { None };
                 }
-                // Its data bytes run past the packet: dropped, not read.
-                if i + 1 + n > bytes.len() {
-                    return;
+                let mut msg = [0u8; 3];
+                msg[0] = b;
+                match gather(bytes, i + 1, &mut msg, n, frame_offset, f) {
+                    Gathered::Done(next) | Gathered::Aborted(next) => i = next,
+                    // Its data bytes run past the packet: dropped, not read.
+                    Gathered::Cut => return,
                 }
-                f(frame_offset, Midi1Message::Short(&bytes[i..=i + n]));
-                i += 1 + n;
             } else {
                 // A data byte: running status, if one is in effect.
                 let Some(status) = running else {
@@ -144,16 +145,26 @@ impl Midi1Splitter {
                     continue;
                 };
                 let n = data_len(status).unwrap_or(0);
-                if n == 0 || i + n > bytes.len() {
+                if n == 0 {
                     return;
                 }
                 // `[u8; 3]` covers every message running status can carry.
                 let mut msg = [0u8; 3];
                 msg[0] = status;
-                msg[1..=n].copy_from_slice(&bytes[i..i + n]);
-                f(frame_offset, Midi1Message::Short(&msg[..=n]));
-                i += n;
+                match gather(bytes, i, &mut msg, n, frame_offset, f) {
+                    Gathered::Done(next) | Gathered::Aborted(next) => i = next,
+                    Gathered::Cut => return,
+                }
             }
+        }
+    }
+
+    /// A new list of packets begins (a new callback): an open SysEx message
+    /// now continues in a later block than the one it started in, so it is
+    /// stamped at the start of the block that completes it.
+    pub fn begin_list(&mut self) {
+        if let Capture::Collecting { frame_offset } = &mut self.capture {
+            *frame_offset = 0;
         }
     }
 
@@ -191,7 +202,10 @@ impl Midi1Splitter {
 ///   packets contiguous in one batch, at the frame offset of the packet that
 ///   held its `0xF0`.
 /// - **It may span packets, and calls.** The open message is kept until its
-///   `0xF7`.
+///   `0xF7`. One that goes on into a later call (after
+///   [`begin_list`](Self::begin_list)) is stamped at offset 0, the start of the
+///   block that completes it; its first packet's offset belongs to a block
+///   that is gone.
 /// - **Over [`SYSEX_OUT_CAPACITY`] bytes, it is dropped whole and counted**
 ///   once in [`sysex_dropped`](Self::sysex_dropped); the rest of its bytes
 ///   are skipped up to its `0xF7`.
@@ -202,7 +216,9 @@ impl Midi1Splitter {
 ///   message continues.
 /// - Other messages are as `MidiEvent::from_midi1_bytes` reads them; a
 ///   data byte with no status to attribute it to, or a status whose data
-///   bytes are cut short, is dropped.
+///   bytes are cut short, is dropped. Real-time bytes among a message's data
+///   are delivered and the message goes on; any other status byte there ends
+///   the message unfinished (dropped) and is read as the start of the next.
 #[derive(Debug)]
 pub struct Midi1Decoder {
     splitter: Midi1Splitter,
@@ -230,10 +246,13 @@ impl Midi1Decoder {
         self.splitter.sysex_dropped()
     }
 
-    /// Forgets events staged but not yet flushed, for a caller whose last
-    /// list was cut short. The open SysEx message is kept.
-    pub fn discard_staged(&mut self) {
+    /// Starts a new list of packets (a new callback): forgets events staged
+    /// but not yet flushed, for a caller whose last list was cut short, and
+    /// moves an open SysEx message to offset 0 (see
+    /// [`Midi1Splitter::begin_list`]). The open message is kept.
+    pub fn begin_list(&mut self) {
         self.batch.clear();
+        self.splitter.begin_list();
     }
 
     /// Reads one packet's `bytes`, staging the events they make. Whenever the
@@ -295,6 +314,47 @@ pub fn note_on_velocity_midi1(velocity: u16) -> u8 {
     } else {
         v.max(1)
     }
+}
+
+/// How reading a short message's data bytes ended.
+enum Gathered {
+    /// Complete and delivered; reading resumes at this index.
+    Done(usize),
+    /// A status byte other than real-time stood where data belongs: the
+    /// message is dropped (MIDI 1.0) and this byte starts the next one.
+    Aborted(usize),
+    /// The packet ended first: dropped.
+    Cut,
+}
+
+/// Reads the `n` data bytes of the short message whose status is `msg[0]`,
+/// from `bytes[j..]`, and delivers it. A real-time byte among them is
+/// delivered at once and the data goes on, as MIDI 1.0 allows.
+fn gather(
+    bytes: &[u8],
+    mut j: usize,
+    msg: &mut [u8; 3],
+    n: usize,
+    frame_offset: u32,
+    f: &mut impl FnMut(u32, Midi1Message<'_>),
+) -> Gathered {
+    let mut have = 1;
+    while have <= n {
+        let Some(&b) = bytes.get(j) else {
+            return Gathered::Cut;
+        };
+        match b {
+            0x00..=0x7F => {
+                msg[have] = b;
+                have += 1;
+            }
+            0xF8..=0xFF => f(frame_offset, Midi1Message::Short(&[b])),
+            _ => return Gathered::Aborted(j),
+        }
+        j += 1;
+    }
+    f(frame_offset, Midi1Message::Short(&msg[..=n]));
+    Gathered::Done(j)
 }
 
 /// Data-byte count for a channel-voice, system-common or real-time status,
@@ -554,6 +614,73 @@ mod tests {
             assert!(note_on_velocity_midi1(v) >= 1, "{v:#x}");
         }
         assert_eq!(note_on_velocity_midi1(u16::MAX), 127);
+    }
+
+    /// **A SysEx that goes on into a later list is stamped at offset 0**, the
+    /// start of the block that completes it, not at the earlier block's offset.
+    ///
+    /// Mutation (run): make `begin_list` a no-op on the splitter → the packets
+    /// carry offset 40 → fails.
+    #[test]
+    fn a_sysex_continued_into_a_later_list_lands_at_the_start() {
+        let mut decoder = Midi1Decoder::new();
+        let mut out = Vec::new();
+        let mut sink = |events: &[MidiEvent]| out.extend_from_slice(events);
+        decoder.begin_list();
+        decoder.decode(&[0xF0, 1, 2], 40, &mut sink);
+        decoder.flush(&mut sink);
+        decoder.begin_list();
+        decoder.decode(&[3, 0xF7], 9, &mut sink);
+        decoder.flush(&mut sink);
+        assert_eq!(reassemble(&out), vec![vec![0xF0, 1, 2, 3, 0xF7]]);
+        assert!(out.iter().all(|e| e.frame_offset == 0));
+
+        // Within one list the start's offset stands.
+        let mut out = Vec::new();
+        let mut sink = |events: &[MidiEvent]| out.extend_from_slice(events);
+        decoder.begin_list();
+        decoder.decode(&[0xF0, 1], 40, &mut sink);
+        decoder.decode(&[2, 0xF7], 41, &mut sink);
+        decoder.flush(&mut sink);
+        assert!(out.iter().all(|e| e.frame_offset == 40));
+    }
+
+    /// **A status byte among a short message's data ends it**, a real-time one
+    /// excepted: `90 3C F8 40` is a clock and a note-on, `90 3C B0 07 64` drops
+    /// the cut note-on and reads the control change.
+    ///
+    /// Mutation (run): take any byte as data in `gather` (drop the `_ =>
+    /// Aborted` arm's check) → the first message is `90 3C B0`, and the
+    /// control change is lost → fails.
+    #[test]
+    fn a_status_byte_in_a_short_messages_data_ends_it() {
+        let mut decoder = Midi1Decoder::new();
+        let flushes = run(
+            &mut decoder,
+            &[
+                (&[0x90, 0x3C, 0xF8, 0x40], 0),
+                (&[0x90, 0x3C, 0xB0, 0x07, 0x64], 1),
+            ],
+        );
+        let events = all(&flushes);
+        let bytes: Vec<_> = events
+            .iter()
+            .map(|e| e.to_midi1_bytes().map(|(b, n)| b[..n as usize].to_vec()))
+            .collect();
+        assert_eq!(
+            bytes,
+            vec![
+                Some(vec![0xF8]),
+                Some(vec![0x90, 0x3C, 0x40]),
+                Some(vec![0xB0, 0x07, 0x64]),
+            ]
+        );
+
+        // Running status: the data position holds a status.
+        let mut decoder = Midi1Decoder::new();
+        let flushes = run(&mut decoder, &[(&[0x90, 60, 100, 62, 0x80, 62, 0], 0)]);
+        let notes: Vec<_> = all(&flushes).iter().map(|e| e.is_note_on()).collect();
+        assert_eq!(notes, vec![true, false], "the cut note-on 62 is dropped");
     }
 
     /// **Decoding never allocates**, a maximal SysEx included.

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instance can no longer run. `tutti_clap_host::AudioPortsRescan` and
   `ParamRescan` are exported at the crate root. The reference plugin gained
   `tutti_test_plugin_request_ports_rescan`.
+- **A plugin left deactivated was deactivated again** by a later rate change
+  or `reactivate`, which CLAP allows only while active; the host now skips
+  the call. A SysEx that goes on into a later MIDI-output callback is stamped
+  at offset 0 (`Midi1Decoder::begin_list`, replacing `discard_staged`), and a
+  status byte among a short message's data ends that message (a real-time
+  byte is delivered and the message goes on).
 
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 

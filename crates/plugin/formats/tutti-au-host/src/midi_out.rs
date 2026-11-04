@@ -505,7 +505,7 @@ unsafe fn decode_and_dispatch(
 
     // A list cut short by a panic last time leaves events staged; they belong
     // to a block that is gone.
-    state.decoder.discard_staged();
+    state.decoder.begin_list();
     let MidiOutState { sink, decoder, .. } = &mut *state;
     let mut flush = |events: &[MidiEvent]| (*sink)(midi_out_num, events);
     for_each_packet(pktlist, |frame_offset, bytes| {

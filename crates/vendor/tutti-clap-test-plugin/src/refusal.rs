@@ -65,7 +65,8 @@ pub(crate) fn note_inactive_deactivation() {
     INACTIVE_DEACTIVATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
-/// [`INACTIVE_DEACTIVATIONS`], for the test to read across `dlopen`.
+/// How many `deactivate` calls reached an inactive instance, for the test to
+/// read across `dlopen`.
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.

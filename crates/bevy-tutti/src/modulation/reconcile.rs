@@ -29,8 +29,8 @@ use tutti_types::NodeKey;
 use super::declare::{
     Automation, AutomationTake, ModFeed, ModRange, ModRoute, ModSource, ParamRef,
 };
-use crate::graph::latency::{ChannelCompensation, GraphLatency};
 use crate::graph::AudioGraphRes;
+use crate::graph::latency::{ChannelCompensation, GraphLatency};
 
 /// The app's modulation as the session applied it, read through
 /// [`AudioGraphRes::modulation`]: the lanes, what is unresolved, the

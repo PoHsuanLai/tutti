@@ -13,7 +13,7 @@ use super::utils::{
 };
 use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::{block_driven, LastGood};
+use crate::ramp::{LastGood, block_driven};
 
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -508,7 +508,7 @@ impl Clone for GateNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
+    use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use core::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
 

@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_void};
 use std::{mem, slice};
 
 use crate::{
-    api::{self, consts::*, AEffect, Supported, TimeInfo},
+    api::{self, AEffect, Supported, TimeInfo, consts::*},
     buffer::AudioBuffer,
     editor::{Key, KeyCode, KnobMode, Rect},
     host::Host,
@@ -156,13 +156,13 @@ fn dispatch_inner(
         }
 
         Ok(OpCode::GetParameterLabel) => {
-            return copy_string(ptr, &params.get_parameter_label(index), MAX_PARAM_STR_LEN)
+            return copy_string(ptr, &params.get_parameter_label(index), MAX_PARAM_STR_LEN);
         }
         Ok(OpCode::GetParameterDisplay) => {
-            return copy_string(ptr, &params.get_parameter_text(index), MAX_PARAM_STR_LEN)
+            return copy_string(ptr, &params.get_parameter_text(index), MAX_PARAM_STR_LEN);
         }
         Ok(OpCode::GetParameterName) => {
-            return copy_string(ptr, &params.get_parameter_name(index), MAX_PARAM_STR_LEN)
+            return copy_string(ptr, &params.get_parameter_name(index), MAX_PARAM_STR_LEN);
         }
 
         Ok(OpCode::SetSampleRate) => {
@@ -292,11 +292,11 @@ fn dispatch_inner(
         }
         Ok(OpCode::CanBeAutomated) => return params.can_be_automated(index) as isize,
         Ok(OpCode::StringToParameter) => {
-            return params.string_to_parameter(index, read_string(ptr)) as isize
+            return params.string_to_parameter(index, read_string(ptr)) as isize;
         }
 
         Ok(OpCode::GetPresetName) => {
-            return copy_string(ptr, &params.get_preset_name(index), MAX_PRESET_NAME_LEN)
+            return copy_string(ptr, &params.get_preset_name(index), MAX_PRESET_NAME_LEN);
         }
 
         Ok(OpCode::GetInputInfo) => {
@@ -343,10 +343,10 @@ fn dispatch_inner(
         }
 
         Ok(OpCode::GetVendorName) => {
-            return copy_string(ptr, &get_plugin().get_info().vendor, MAX_VENDOR_STR_LEN)
+            return copy_string(ptr, &get_plugin().get_info().vendor, MAX_VENDOR_STR_LEN);
         }
         Ok(OpCode::GetProductName) => {
-            return copy_string(ptr, &get_plugin().get_info().name, MAX_PRODUCT_STR_LEN)
+            return copy_string(ptr, &get_plugin().get_info().name, MAX_PRODUCT_STR_LEN);
         }
         Ok(OpCode::GetVendorVersion) => return get_plugin().get_info().version as isize,
         Ok(OpCode::VendorSpecific) => return get_plugin().vendor_specific(index, value, ptr, opt),
@@ -401,20 +401,17 @@ fn dispatch_inner(
         Ok(OpCode::SetPrecision) => get_plugin().set_precision(value != 0),
 
         Ok(OpCode::GetNumMidiInputs) => {
-            return unsafe { (*effect).get_info() }.midi_inputs as isize
+            return unsafe { (*effect).get_info() }.midi_inputs as isize;
         }
         Ok(OpCode::GetNumMidiOutputs) => {
-            return unsafe { (*effect).get_info() }.midi_outputs as isize
+            return unsafe { (*effect).get_info() }.midi_outputs as isize;
         }
 
         _ => {
             debug!("Unimplemented opcode ({:?})", opcode);
             trace!(
                 "Arguments; index: {}, value: {}, ptr: {:?}, opt: {}",
-                index,
-                value,
-                ptr,
-                opt
+                index, value, ptr, opt
             );
         }
     }
@@ -466,10 +463,10 @@ pub fn host_dispatch(
 
         Ok(OpCode::GetVendorVersion) => return host.get_info().0,
         Ok(OpCode::GetVendorString) => {
-            return copy_string(ptr, &host.get_info().1, MAX_VENDOR_STR_LEN)
+            return copy_string(ptr, &host.get_info().1, MAX_VENDOR_STR_LEN);
         }
         Ok(OpCode::GetProductString) => {
-            return copy_string(ptr, &host.get_info().2, MAX_PRODUCT_STR_LEN)
+            return copy_string(ptr, &host.get_info().2, MAX_PRODUCT_STR_LEN);
         }
         Ok(OpCode::ProcessEvents) => {
             host.process_events(unsafe { &*(ptr as *const api::Events) });
@@ -532,11 +529,7 @@ pub fn host_dispatch(
             trace!("VST: Got unimplemented host opcode ({:?})", opcode);
             trace!(
                 "Arguments; effect: {:?}, index: {}, value: {}, ptr: {:?}, opt: {}",
-                effect,
-                index,
-                value,
-                ptr,
-                opt
+                effect, index, value, ptr, opt
             );
         }
     }

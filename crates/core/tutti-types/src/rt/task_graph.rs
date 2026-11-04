@@ -506,9 +506,10 @@ mod tests {
                     });
                 }
             });
-            assert!(runs
-                .iter()
-                .all(|r| r.load(std::sync::atomic::Ordering::Relaxed) == 1));
+            assert!(
+                runs.iter()
+                    .all(|r| r.load(std::sync::atomic::Ordering::Relaxed) == 1)
+            );
             assert_eq!(
                 seen_all_middle.load(std::sync::atomic::Ordering::Relaxed),
                 32

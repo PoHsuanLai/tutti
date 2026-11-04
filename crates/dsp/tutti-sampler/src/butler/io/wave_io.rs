@@ -14,8 +14,8 @@
 //! does not implement the matching [`AudioIn`](tutti_core::AudioIn) — see its
 //! type docs, which is where that decision and its reasoning live.
 
-use crate::{nonempty, MAX_SAMPLER_CHANNELS};
-use tutti_core::{fold_frame, ChannelLayout};
+use crate::{MAX_SAMPLER_CHANNELS, nonempty};
+use tutti_core::{ChannelLayout, fold_frame};
 use tutti_io::Wave;
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into

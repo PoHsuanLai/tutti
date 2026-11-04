@@ -44,8 +44,8 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    all_finite, impulse, peak, render, silence, DISTORTION, INSTRUMENTS, PRESETLESS_EFFECTS,
-    PRESET_EFFECTS,
+    DISTORTION, INSTRUMENTS, PRESET_EFFECTS, PRESETLESS_EFFECTS, all_finite, impulse, peak, render,
+    silence,
 };
 
 use tutti_au_host::AuError;

@@ -25,8 +25,8 @@
 //! fails with "moving it did not change a fresh fork's output".
 
 use tutti_core::{
-    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement,
-    Resonance, Seconds, Q,
+    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement, Q,
+    Resonance, Seconds,
 };
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{

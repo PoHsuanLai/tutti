@@ -20,15 +20,15 @@
 //! `Steinberg::Vst::ControllerNumbers`.
 
 use vst3::ComPtr;
-use vst3::Steinberg::kResultTrue;
 use vst3::Steinberg::Vst::{
     ControllerNumbers_::{kAfterTouch, kCountCtrlNumber, kPitchBend},
     IEditController, IMidiMapping, IMidiMappingTrait, ParamID,
 };
+use vst3::Steinberg::kResultTrue;
 
 use crate::com::EventList;
 use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
-use tutti_plugin_types::{ParamAddress, MIDI_STACK_CAPACITY};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, ParamAddress};
 use tutti_types::RtVec;
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
@@ -1072,10 +1072,11 @@ mod tests {
             let q = params
                 .get_queue(ParamAddress::Opaque(MAPPED.into()))
                 .expect("queued");
-            assert!(q
-                .points
-                .windows(2)
-                .all(|w| w[0].sample_offset <= w[1].sample_offset));
+            assert!(
+                q.points
+                    .windows(2)
+                    .all(|w| w[0].sample_offset <= w[1].sample_offset)
+            );
             q.points.last().map(|p| (p.sample_offset, p.value.get()))
         };
         assert_eq!(ends(&[cc(150, 127)]), Some((400, 0.75)));

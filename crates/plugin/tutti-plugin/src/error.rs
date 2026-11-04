@@ -113,7 +113,9 @@ pub enum BridgeError {
     },
 
     /// Host and subprocess speak different wire versions and refuse to proceed.
-    #[error("Plugin protocol version mismatch: host speaks {expected}, subprocess speaks {got} (rebuild the plugin-server)")]
+    #[error(
+        "Plugin protocol version mismatch: host speaks {expected}, subprocess speaks {got} (rebuild the plugin-server)"
+    )]
     ProtocolMismatch {
         /// The host's [`PROTOCOL_VERSION`](crate::protocol::PROTOCOL_VERSION).
         expected: u32,

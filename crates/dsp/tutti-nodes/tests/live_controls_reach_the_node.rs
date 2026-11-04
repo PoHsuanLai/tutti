@@ -30,7 +30,7 @@
 use tutti_core::UnitParam;
 use tutti_graph::{CrossfadeCurve, Fade, IntoNode, Prepare, Solo};
 use tutti_nodes::{EqBandNode, SvfType};
-use tutti_types::{Db, Hz, SampleRate, Samples, Q};
+use tutti_types::{Db, Hz, Q, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

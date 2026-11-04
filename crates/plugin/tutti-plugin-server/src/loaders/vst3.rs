@@ -12,7 +12,7 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
-use crate::loaders::common::{single_bus, Meta};
+use crate::loaders::common::{Meta, single_bus};
 use tutti_vst3_host::ProcessMode;
 
 pub use tutti_vst3_host;

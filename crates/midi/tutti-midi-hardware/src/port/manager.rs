@@ -1084,9 +1084,11 @@ mod tests {
             !manager.remove_input_port(trailing_gone),
             "a removed port is gone"
         );
-        assert!(manager
-            .get_port_info(PortType::Input, trailing_gone)
-            .is_none());
+        assert!(
+            manager
+                .get_port_info(PortType::Input, trailing_gone)
+                .is_none()
+        );
     }
 
     /// A removed port, and the ring its producer no longer holds, are freed by

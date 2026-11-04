@@ -53,7 +53,7 @@
 
 use crate::io::PortKind;
 use crate::node::InPlaceMask;
-use crate::plan::{Delta, EventSlotCapacity, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{Delta, EMPTY_SLOT, EventSlotCapacity, Op, Plan, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -351,7 +351,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                         None => {
                             return Err(VerifyError(format!(
                                 "a capture names {kind:?} feedback {feedback} of {fb_len}"
-                            )))
+                            )));
                         }
                     }
                 }
@@ -871,7 +871,7 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::{compile, Shapes};
+    use crate::compile::{Shapes, compile};
     use crate::node::Shape;
     use crate::spec::GraphSpec;
     use tutti_types::graph::{NodeSpec, OutPort, Source};

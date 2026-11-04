@@ -4,8 +4,8 @@ use bevy_ecs::prelude::*;
 use bevy_log::warn;
 use bevy_reflect::prelude::*;
 
-use crate::plugin_host::native_window::attach_child_window;
 use crate::plugin_host::PluginEditorMainThread;
+use crate::plugin_host::native_window::attach_child_window;
 use tutti_plugin::handles::ContentScale;
 
 /// Marks an entity as a loaded plugin with a control handle.

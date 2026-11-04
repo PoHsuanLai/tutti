@@ -51,8 +51,8 @@
 // dev-dependency cannot be referenced from a build that does not have it.
 #![cfg(loom)]
 
-use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::sync::Arc;
+use loom::sync::atomic::{AtomicU64, Ordering};
 use loom::thread;
 
 /// Mirrors `header::RING_SLOTS`.

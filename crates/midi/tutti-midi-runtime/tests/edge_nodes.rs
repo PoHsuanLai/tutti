@@ -13,11 +13,11 @@ use tutti_graph::{
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Ump,
 };
 use tutti_midi_runtime::{
-    ClockNode, MidiInputNode, MidiOutNode, MidiQueueNode, CHANNELLESS_PORT,
-    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
+    CHANNELLESS_PORT, ClockNode, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputNode,
+    MidiOutNode, MidiQueueNode,
 };
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-use tutti_midi_types::{cc, CCNumber, MidiChannel, MidiEvent, MidiGroup, MidiIn};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiEvent, MidiGroup, MidiIn, cc};
 
 const RATE: f64 = 48_000.0;
 

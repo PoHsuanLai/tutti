@@ -4,13 +4,13 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{prepare, Kind, TestNode};
+use common::{Kind, TestNode, prepare};
 use tutti_graph::{
-    CommitError, Cx, Editor, Executor, IntoNode, Io, Node, NodeParts, Prepare, Shape, SilenceMask,
-    Status, Transport, Unforkable, QUEUE_CAPACITY,
+    CommitError, Cx, Editor, Executor, IntoNode, Io, Node, NodeParts, Prepare, QUEUE_CAPACITY,
+    Shape, SilenceMask, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Amplitude, ChannelLayout, Latency, NodeKey, Param, Samples, Tail};

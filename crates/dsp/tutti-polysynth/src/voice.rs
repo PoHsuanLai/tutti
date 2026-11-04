@@ -785,10 +785,12 @@ mod tests {
         assert_eq!(alloc.slots()[0].note(), 64);
 
         // Note mapping should be updated
-        assert!(alloc
-            .id_to_slot
-            .get(NoteId::from_channel_note(MidiChannel::new(0), 60))
-            .is_none());
+        assert!(
+            alloc
+                .id_to_slot
+                .get(NoteId::from_channel_note(MidiChannel::new(0), 60))
+                .is_none()
+        );
         assert_eq!(
             alloc
                 .id_to_slot

@@ -145,10 +145,12 @@ impl<'a> Io<'a> {
             max.get()
         );
         debug_assert!(outputs.iter().all(|o| o.len() == frames));
-        debug_assert!(inputs
-            .iter()
-            .enumerate()
-            .all(|(c, i)| i.len() == frames || (in_place.get(c) && i.is_empty())));
+        debug_assert!(
+            inputs
+                .iter()
+                .enumerate()
+                .all(|(c, i)| i.len() == frames || (in_place.get(c) && i.is_empty()))
+        );
         Self {
             frames,
             inputs,

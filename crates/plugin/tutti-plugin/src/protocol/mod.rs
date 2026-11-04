@@ -115,7 +115,7 @@ pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
 }
 
 pub use envelope::{BridgeMessage, HostMessage};
-pub use midi::{midi_from_wire, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, MIDI_STACK_CAPACITY};
+pub use midi::{IpcMidiEvent, IpcMidiEventVec, MIDI_STACK_CAPACITY, MidiEventVec, midi_from_wire};
 pub use process::ProcessAudioData;
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
@@ -405,8 +405,8 @@ mod tests {
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
 
     fn is_note_on(ev: &MidiEvent) -> bool {
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
         use tutti_midi_types::midi2::UmpMessage;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
         matches!(
             UmpMessage::try_from(ev.data_words()),
             Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
@@ -414,8 +414,8 @@ mod tests {
     }
 
     fn note_number(ev: &MidiEvent) -> Option<u8> {
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
         use tutti_midi_types::midi2::UmpMessage;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
         match UmpMessage::try_from(ev.data_words()).ok()? {
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(u8::from(m.note_number())),
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(u8::from(m.note_number())),

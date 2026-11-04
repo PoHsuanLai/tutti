@@ -67,7 +67,7 @@ use tutti_midi_types::MidiChannel;
 
 use tutti_core::AudioNode;
 
-use crate::graph::{engine_ready, AudioGraphRes, EventWiring, GraphReconcileSystems};
+use crate::graph::{AudioGraphRes, EventWiring, GraphReconcileSystems, engine_ready};
 use crate::midi::MidiEngineNodes;
 
 /// One inbound routing rule: which channel reaches which entities.

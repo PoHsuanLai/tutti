@@ -26,7 +26,7 @@ mod probe_path;
 
 use std::time::Duration;
 
-use clap_probe::{exclusive, Rig};
+use clap_probe::{Rig, exclusive};
 use param_probe::{knobs, load_vst2_probe};
 use tutti_graph::{Prepare, Transport, TransportChanges};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};

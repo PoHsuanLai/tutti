@@ -18,7 +18,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{fold_frame_to_mono, Amplitude, ChannelLayout, Mix, SampleRate, Samples};
+use tutti_core::{Amplitude, ChannelLayout, Mix, SampleRate, Samples, fold_frame_to_mono};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -27,7 +27,7 @@ use tutti_types::{Latency, Tail, UnitParam};
 use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::buffer::CircularBuffer;
-use crate::ramp::{block_driven, LastGood, Ramp};
+use crate::ramp::{LastGood, Ramp, block_driven};
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.
@@ -596,10 +596,11 @@ mod tests {
             "every channel reads the one transform"
         );
         let fork = node.fork_fresh();
-        assert!(fork
-            .convolvers
-            .iter()
-            .all(|c| Arc::ptr_eq(c.spectra(), first)));
+        assert!(
+            fork.convolvers
+                .iter()
+                .all(|c| Arc::ptr_eq(c.spectra(), first))
+        );
         // Each channel, the fork and the node: one set of spectra.
         assert_eq!(Arc::strong_count(first), 12);
     }

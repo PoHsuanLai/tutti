@@ -63,11 +63,11 @@ use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
-use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
+use crate::node::{InPlaceMask, MAX_PORTS, Prepare, Resolution, Shape};
 use crate::param::ParamIn;
 use crate::plan::{
-    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, NodeTables, Op,
-    ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EMPTY_SLOT, EventSlotCapacity, FeedbackKey, FeedbackSpec,
+    NodeTables, Op, ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 

@@ -13,8 +13,8 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{ChannelLayout, SampleRate};
-use tutti_graph::contract::BlockRig;
 use tutti_graph::IntoNode;
+use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
 
 #[global_allocator]
@@ -1109,8 +1109,8 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
     use tutti_types::{
-        AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Samples, Seconds,
-        UnitParam, Q,
+        AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds,
+        UnitParam,
     };
 
     struct Host {

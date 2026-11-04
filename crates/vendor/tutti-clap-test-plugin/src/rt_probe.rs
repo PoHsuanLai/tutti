@@ -28,14 +28,14 @@ use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use clap_sys::events::{
-    clap_event_header, clap_event_midi_sysex, clap_event_param_value, CLAP_EVENT_MIDI_SYSEX,
-    CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_midi_sysex,
+    clap_event_param_value,
 };
-use clap_sys::ext::log::{clap_host_log, CLAP_EXT_LOG, CLAP_LOG_WARNING};
+use clap_sys::ext::log::{CLAP_EXT_LOG, CLAP_LOG_WARNING, clap_host_log};
 use clap_sys::host::clap_host;
 use clap_sys::process::{
-    clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET,
-    CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
+    CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET, CLAP_PROCESS_ERROR,
+    CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process, clap_process_status,
 };
 
 // ---------------------------------------------------------------------------

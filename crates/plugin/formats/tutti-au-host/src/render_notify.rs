@@ -123,17 +123,17 @@
 #![cfg(target_os = "macos")]
 
 use std::os::raw::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use coreaudio_sys::{
-    kAudioUnitScope_Global, kParameterEvent_Immediate, kParameterEvent_Ramped, AudioBufferList,
-    AudioTimeStamp, AudioUnit, AudioUnitAddRenderNotify, AudioUnitElement, AudioUnitParameterEvent,
-    AudioUnitParameterEvent__bindgen_ty_1 as ParamEventValues,
+    AudioBufferList, AudioTimeStamp, AudioUnit, AudioUnitAddRenderNotify, AudioUnitElement,
+    AudioUnitParameterEvent, AudioUnitParameterEvent__bindgen_ty_1 as ParamEventValues,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_1 as RawRamp,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_2 as RawImmediate, AudioUnitParameterID,
     AudioUnitRemoveRenderNotify, AudioUnitRenderActionFlags, AudioUnitScheduleParameters,
-    AudioUnitScope, OSStatus,
+    AudioUnitScope, OSStatus, kAudioUnitScope_Global, kParameterEvent_Immediate,
+    kParameterEvent_Ramped,
 };
 
 use crate::error::Result;

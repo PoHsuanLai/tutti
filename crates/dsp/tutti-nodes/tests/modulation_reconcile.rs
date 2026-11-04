@@ -18,7 +18,7 @@ use tutti_mod::{
     Adsr, Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
     Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
 };
-use tutti_nodes::automation::{ControlLaneNode, CONTROL_STEP};
+use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_nodes::testing::Through;
 use tutti_nodes::{Feed, ModHost, Modulation, ReconcileError, Target};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};

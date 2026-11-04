@@ -29,19 +29,19 @@
 
 use bevy_ecs::prelude::*;
 use bevy_log::{error, info};
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
 use tutti_core::SampleRate;
+use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::Plugin;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
-use tutti_plugin::BridgeError;
 use tutti_session::{PluginLoadRequest, PluginLoaded};
 
 use crate::graph::{AudioGraphRes, CapturedControls};
+use crate::plugin_host::PluginsRes;
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
-use crate::plugin_host::PluginsRes;
 
 /// Compile-time proof that a loaded plugin can cross a thread boundary, which
 /// is what lets the load run on the task pool rather than the frame thread.

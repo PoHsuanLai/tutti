@@ -307,14 +307,15 @@ fn a_rate_change_resets_rings_and_flushes_pending_events() {
         "the reference, stating the rule independently, agrees event for event"
     );
     // And some really were in the delay at the change, and landed after it.
-    assert!(rig
-        .exec_inbox
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|&(f, hop, at)| hop == 0
-            && u64::from(f) < in_flight_at_change
-            && at >= in_flight_at_change));
+    assert!(
+        rig.exec_inbox
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|&(f, hop, at)| hop == 0
+                && u64::from(f) < in_flight_at_change
+                && at >= in_flight_at_change)
+    );
 }
 
 /// Feedback whose delay is shorter than the new `MaxBlock` is refused by

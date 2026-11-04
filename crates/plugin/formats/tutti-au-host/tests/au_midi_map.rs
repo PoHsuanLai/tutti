@@ -67,15 +67,15 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    every_component, AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER,
-    THIRD_PARTY,
+    AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, THIRD_PARTY,
+    every_component,
 };
 
+use tutti_au_host::AuInstance;
 use tutti_au_host::types::{
     K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING, K_AUDIO_UNIT_SCOPE_GLOBAL,
     K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
 };
-use tutti_au_host::AuInstance;
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 

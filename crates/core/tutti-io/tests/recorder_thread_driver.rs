@@ -40,8 +40,8 @@
 //! externally visible consequence of the break is that the source stops being
 //! polled, so that is what the test asserts.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tutti_core::{ChannelLayout, Samples};
 use tutti_io::{AudioIn, BitDepth, OnEmpty, Recorder, WavOut};
 

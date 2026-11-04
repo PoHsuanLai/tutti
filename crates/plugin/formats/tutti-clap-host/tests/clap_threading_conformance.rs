@@ -40,8 +40,8 @@ use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext};
 use tutti_clap_test_plugin::{
-    Site, ThreadCapture, CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS,
-    CMD_REQUEST_RESTART, CMD_UNREGISTER_TIMER,
+    CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
+    CMD_UNREGISTER_TIMER, Site, ThreadCapture,
 };
 
 /// The probe's capture, command word and reset are process-globals shared by

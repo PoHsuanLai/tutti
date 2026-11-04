@@ -12,8 +12,8 @@
 //! accident). After it, and after a finite value is written back, the output
 //! must be finite.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::{AtomicF32, ChannelLayout, SampleRate, Samples};
 use tutti_graph::contract::drive;
@@ -217,7 +217,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 #[cfg(feature = "convolution")]
 #[test]
 fn the_convolver_holds_off_non_finite_controls() {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
     let ir = generate_test_ir(128, 0.1, 48_000.0);
     survives_node(
         "convolver",

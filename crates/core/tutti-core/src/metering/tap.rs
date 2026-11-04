@@ -16,8 +16,8 @@
 use crate::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use ringbuf::{
-    traits::{Producer, Split},
     HeapCons, HeapProd, HeapRb,
+    traits::{Producer, Split},
 };
 use std::sync::Arc;
 

@@ -220,7 +220,7 @@ unsafe extern "C" {
     /// The event is owned by alsa-lib and valid only until the next call — it
     /// must be copied out, never retained.
     pub fn snd_seq_ump_event_input(seq: *mut snd_seq_t, ev: *mut *mut snd_seq_ump_event_t)
-        -> c_int;
+    -> c_int;
     /// Send one UMP event immediately, bypassing the queue.
     pub fn snd_seq_ump_event_output_direct(
         seq: *mut snd_seq_t,

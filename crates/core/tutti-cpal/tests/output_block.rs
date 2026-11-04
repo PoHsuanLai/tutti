@@ -27,7 +27,7 @@ mod support;
 
 use support::{dc_state, rolling_state};
 use tutti_core::ChannelLayout;
-use tutti_cpal::{OutputBlock, MAX_FRAMES};
+use tutti_cpal::{MAX_FRAMES, OutputBlock};
 
 /// Full scale for an integer format, from the format's definition rather than
 /// from the conversion under test.
@@ -66,7 +66,7 @@ fn every_sample_format_carries_the_dc_level_it_was_given() {
     dc_and_check::<i16>(0.5, 1 << 14, "i16"); // 0.5 * 2^15
     dc_and_check::<i8>(0.5, 1 << 6, "i8"); //    0.5 * 2^7
     dc_and_check::<i32>(0.5, 1 << 30, "i32"); // 0.5 * 2^31
-                                              // Unsigned formats are offset-binary: silence is mid-scale.
+    // Unsigned formats are offset-binary: silence is mid-scale.
     dc_and_check::<u8>(0.0, 128, "u8 silence");
     dc_and_check::<u16>(0.0, 32768, "u16 silence");
     dc_and_check::<u32>(0.0, 2_147_483_648, "u32 silence");

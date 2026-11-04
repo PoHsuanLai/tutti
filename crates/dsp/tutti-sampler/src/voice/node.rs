@@ -11,14 +11,14 @@ use std::sync::Arc;
 
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crate::stretch;
-use crate::{nonempty, MAX_SAMPLER_CHANNELS};
+use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
+use super::VoiceWindow;
 use super::clock::{BlockClock, Clock};
 use super::command::{PlacementCell, VoiceNodeHandle};
 use super::disk_voice::VoiceHealth;
-use super::slot::{stretch_wanted, PlaybackSlot};
+use super::slot::{PlaybackSlot, stretch_wanted};
 use super::types::{SlotId, Voice};
-use super::VoiceWindow;
 use tutti_core::{Amplitude, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,

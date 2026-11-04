@@ -13,7 +13,7 @@ use tutti_vst2_host::{
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst2_test_plugin::{channel_tag, ProcessCapture, ProcessEntry, PROBE_UNIQUE_ID};
+use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, channel_tag};
 
 #[path = "support/probe_path.rs"]
 mod probe_path;

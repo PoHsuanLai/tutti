@@ -18,7 +18,7 @@ use tutti_graph::{
 };
 use tutti_types::UnitParam;
 
-use crate::ramp::{self, finite_or, LastGood, Ramp};
+use crate::ramp::{self, LastGood, Ramp, finite_or};
 
 /// Below these deltas a freq/resonance change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
@@ -667,7 +667,7 @@ impl<F: Real> Clone for LadderFilterNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, process_mono, rms};
-    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
+    use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::assert_param_fork;
 
     /// A fork starts from the values last set through the node's

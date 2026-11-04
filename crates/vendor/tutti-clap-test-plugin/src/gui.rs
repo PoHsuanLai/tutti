@@ -14,12 +14,12 @@
 //! host caches the extension pointer once at load, so the test selects the shape
 //! with [`crate::gui::tutti_test_plugin_set_gui_mode`] before loading.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap_sys::ext::gui::{
-    clap_gui_resize_hints, clap_host_gui, clap_plugin_gui, clap_window, CLAP_EXT_GUI,
+    CLAP_EXT_GUI, clap_gui_resize_hints, clap_host_gui, clap_plugin_gui, clap_window,
 };
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;

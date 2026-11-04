@@ -15,8 +15,8 @@
 
 use std::sync::Arc;
 
-use crate::output::{AudioCallbackState, AudioEngine};
 use crate::Result;
+use crate::output::{AudioCallbackState, AudioEngine};
 
 /// One enumerated audio device.
 ///

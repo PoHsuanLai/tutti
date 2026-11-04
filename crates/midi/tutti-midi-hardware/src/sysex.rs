@@ -37,8 +37,8 @@
 //! binary can install.
 
 use tracing::warn;
-use tutti_midi_types::ump::{MidiEvent, SYSEX7_MAX_PAYLOAD};
 use tutti_midi_types::MidiGroup;
+use tutti_midi_types::ump::{MidiEvent, SYSEX7_MAX_PAYLOAD};
 
 /// Ceiling on one in-flight SysEx payload, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`], which the plugin hosts' reassemblers also hold.
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
         use tutti_midi_runtime::{CiInitiator, Sysex7PacketReassembler};
-        use tutti_midi_types::ci::{ci_to_sysex7, sysex7_to_ci, DiscoveryData, Muid};
+        use tutti_midi_types::ci::{DiscoveryData, Muid, ci_to_sysex7, sysex7_to_ci};
 
         // A Discovery probe exactly as a peer device would send it.
         let peer = CiInitiator::new(

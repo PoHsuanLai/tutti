@@ -49,7 +49,7 @@ use tutti_core::{
     Beat, Bpm, ChannelLayout, Engine, Frame, FrameClock, InterleavedMut, MotionEvent, NodeKey,
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Transport,
 };
-use tutti_graph::{contract, Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges};
+use tutti_graph::{Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges, contract};
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, SlotId, Voice, VoicePool, VoiceSource};
 

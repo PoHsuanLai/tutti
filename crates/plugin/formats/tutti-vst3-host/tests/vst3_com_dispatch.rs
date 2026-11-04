@@ -23,14 +23,14 @@
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
-    kResultOk, tresult, FUnknown, IPlugFrame, IPlugFrameTrait, IPlugFrame_iid, IPlugView, ViewRect,
-    TUID,
+    FUnknown, IPlugFrame, IPlugFrame_iid, IPlugFrameTrait, IPlugView, TUID, ViewRect, kResultOk,
+    tresult,
 };
 use vst3::{Class, ComWrapper};
 
 #[cfg(target_os = "linux")]
 use vst3::Steinberg::Linux::{
-    FileDescriptor, IEventHandler, IRunLoop, IRunLoopTrait, IRunLoop_iid, ITimerHandler,
+    FileDescriptor, IEventHandler, IRunLoop, IRunLoop_iid, IRunLoopTrait, ITimerHandler,
     TimerInterval,
 };
 

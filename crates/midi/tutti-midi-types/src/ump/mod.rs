@@ -139,9 +139,9 @@ impl UmpMessageType {
 impl MidiEvent {
     /// `true` if this is a Channel Voice 1 or 2 Note On with non-zero velocity.
     pub fn is_note_on(&self) -> bool {
+        use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
         use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()) {
             Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m))) => m.velocity() > 0,
             Ok(UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m))) => u8::from(m.velocity()) > 0,
@@ -151,9 +151,9 @@ impl MidiEvent {
 
     /// `true` if this is a Note Off (or MIDI 1.0 velocity-0 NoteOn).
     pub fn is_note_off(&self) -> bool {
+        use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
         use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()) {
             Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_))) => true,
             Ok(UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(_))) => true,
@@ -164,9 +164,9 @@ impl MidiEvent {
 
     /// Note number for note-on/off/poly-pressure/per-note events.
     pub fn note(&self) -> Option<u8> {
+        use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
         use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()).ok()? {
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(u8::from(m.note_number())),
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(u8::from(m.note_number())),
@@ -193,9 +193,9 @@ impl MidiEvent {
     /// 7 bits and is only for a MIDI 1.0 destination.
     pub fn velocity_u16(&self) -> Option<u16> {
         use crate::convert::midi1_velocity_to_midi2;
+        use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
         use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()).ok()? {
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(m.velocity()),
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(m.velocity()),
@@ -213,9 +213,9 @@ impl MidiEvent {
     /// via spec Min-Center-Max).
     pub fn velocity_u7(&self) -> Option<u8> {
         use crate::convert::midi2_velocity_to_midi1;
+        use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
         use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()).ok()? {
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => {
                 Some(midi2_velocity_to_midi1(m.velocity()))
@@ -313,23 +313,23 @@ pub use controllers::{
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
 pub use flex_data::{
-    bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
-    flex_time_signature, push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents,
-    ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind, FlexTextReassembler,
-    KeySharpsFlats, Tonic,
+    Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind,
+    FlexTextReassembler, KeySharpsFlats, Tonic, bpm_to_ten_ns_per_quarter, flex_chord_name,
+    flex_key_signature, flex_tempo_bpm, flex_text, flex_time_signature, push_flex_text,
+    ten_ns_per_quarter_to_bpm,
 };
 pub use stream::{
-    endpoint_name, function_block_name, product_instance_id, EndpointCapabilities,
-    EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlockDiscoveryRequest,
-    FunctionBlocks, JrTimestamps, Protocol, UmpVersion, ALL_FUNCTION_BLOCKS,
+    ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
+    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
+    endpoint_name, function_block_name, product_instance_id,
 };
 pub use sysex::{
     SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
     SYSEX7_STATUS_START,
 };
 pub use sysex8::{
-    sysex8_message, SYSEX8_BYTES_ABORT, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END,
-    SYSEX8_STATUS_SINGLE, SYSEX8_STATUS_START,
+    SYSEX8_BYTES_ABORT, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
+    SYSEX8_STATUS_START, sysex8_message,
 };
 
 #[cfg(test)]

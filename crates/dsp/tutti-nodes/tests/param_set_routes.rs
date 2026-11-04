@@ -18,8 +18,8 @@
 //! not its first, fails (5 of 7, with `convolution`); the two that address
 //! the SVF's cutoff, its first param, pass, as they must.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
 use tutti_core::{ChannelLayout, UnitParam};

@@ -56,11 +56,7 @@ impl LayoutSupport {
             .iter()
             .chain(loaded.output_topology.iter())
             .any(Option::is_some);
-        if any {
-            Self::Partial
-        } else {
-            Self::None
-        }
+        if any { Self::Partial } else { Self::None }
     }
 
     /// Returns whether *every* bus can be routed by speaker.

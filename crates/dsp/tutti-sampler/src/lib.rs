@@ -68,7 +68,7 @@ pub mod testing;
 // `tutti-core`. Re-exported again here because the butler's refill path speaks
 // it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
 // itself an `AudioOut`, both carrying their width as a runtime `ChannelLayout`.
-pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
+pub use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
 // `Voice`'s memory tier) is `tutti-io`'s. Re-exported so a consumer building a
@@ -102,9 +102,10 @@ pub mod stretch;
 // heavily in their own docs, and privatizing it turns 31 of those into dangling
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
-    memory_voice, voice_width, Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource,
-    MemorySourceConfig, Playback, PoolDrops, PoolTooWide, SlotId, Voice, VoiceCommand, VoiceNode,
-    VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, VOICE_PARAMS,
+    Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
+    Playback, PoolDrops, PoolTooWide, SlotId, VOICE_PARAMS, Voice, VoiceCommand, VoiceNode,
+    VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow, memory_voice,
+    voice_width,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
 // plugin are bevy-tutti's; what lives here is the pair of marker components,
@@ -140,7 +141,7 @@ pub use ports::{Command, Commands, Source, Status};
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 mod probe;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-pub use probe::{probe, ProbeError, SampleFacts};
+pub use probe::{ProbeError, SampleFacts, probe};
 
 // This crate exposes no Bevy plugin of its own. `DiskStreamer` is an engine
 // service, not a Bevy noun: bevy-tutti wraps it as `DiskStreamerRes` and owns

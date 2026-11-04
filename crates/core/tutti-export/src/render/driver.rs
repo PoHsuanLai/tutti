@@ -23,8 +23,8 @@
     allow(dead_code)
 )]
 
-use crate::render::BlockCursor;
 use crate::RenderGraph;
+use crate::render::BlockCursor;
 use tutti_core::transport::RenderClock;
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 

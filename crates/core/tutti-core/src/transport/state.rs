@@ -11,8 +11,8 @@
 //! - [`ClockLinks`] — what `TransportClock` shares with the live transport.
 //! - [`Declick`] — the fade contract between the FSM and `Engine`.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::Samples;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32, AtomicU64};

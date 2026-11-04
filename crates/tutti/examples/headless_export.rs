@@ -26,11 +26,11 @@
 //! Run: `cargo run -p tutti --features "export,analysis,wav" \
 //!        --example headless_export -- <outdir>`
 
-use tutti::analysis::{measure_loudness, LoudnessConfig};
+use tutti::analysis::{LoudnessConfig, measure_loudness};
 use tutti::core::FrozenClock;
 use tutti::export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, EncodeConfig, ExportConfig,
-    RenderConfig, RenderGraph,
+    AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
+    render_to_buffers, render_to_file,
 };
 use tutti::graph::GraphBuilder;
 use tutti::prelude::*;

@@ -21,7 +21,7 @@
 
 use coremidi::{Client, EventList, Protocol, VirtualDestination};
 use tracing::debug;
-use tutti_midi_types::ump::{split_ump_stream, MidiEvent};
+use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
 
 use crate::error::{Error, Result};
 
@@ -148,8 +148,8 @@ mod tests {
     /// it has no MIDI-1.0 encoding, so it can only arrive this way.
     #[test]
     fn packet_words_decode_to_ump_stream_and_channel_voice() {
-        use tutti_midi_types::ump::UmpMessageType;
         use tutti_midi_types::EndpointDiscoveryRequest;
+        use tutti_midi_types::ump::UmpMessageType;
 
         let discovery = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
         let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000);

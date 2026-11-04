@@ -18,7 +18,7 @@
 //! (integer periods instead of interpolated ones; the global minimum instead of
 //! the first local one below threshold) before being committed.
 
-use tutti_analysis::{yin, yin_track, YinConfig};
+use tutti_analysis::{YinConfig, yin, yin_track};
 use tutti_types::{Hz, Samples};
 
 const SR: f64 = 48_000.0;

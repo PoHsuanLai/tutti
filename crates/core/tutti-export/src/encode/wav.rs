@@ -15,16 +15,16 @@
 //! deliberate difference: an export dithers first, a live capture does not.
 
 use crate::config::ExportConfig;
-use crate::encode::{pump_blocks, Encoder};
+use crate::encode::{Encoder, pump_blocks};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use tutti_core::ChannelLayout;
 use tutti_core::pcm::Sample;
 use tutti_core::wav;
-use tutti_core::ChannelLayout;
 
 pub(crate) struct WavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,

@@ -32,7 +32,7 @@ mod plugin_state;
 mod speakers;
 
 pub use instance::Vst3Active;
-pub use library::{factory_flags, ClassInfo, FactoryInfo, Vst3Library};
+pub use library::{ClassInfo, FactoryInfo, Vst3Library, factory_flags};
 pub use loaded::{RestartOutcome, Vst3Loaded};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are
@@ -49,7 +49,6 @@ pub use loaded::{
 
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultOk,
     Vst::{
         BusDirections_::{kInput, kOutput},
         BusInfo_::BusFlags_,
@@ -57,6 +56,7 @@ use vst3::Steinberg::{
         IComponent, IComponentTrait,
         MediaTypes_::kAudio,
     },
+    kResultOk,
 };
 
 use tutti_types::ChannelLayout;
@@ -169,7 +169,7 @@ impl IComponentExt for ComPtr<IComponent> {
 
 #[cfg(test)]
 mod bus_activation_policy_tests {
-    use super::{wants_activation, BUS_DEFAULT_ACTIVE, K_MAIN};
+    use super::{BUS_DEFAULT_ACTIVE, K_MAIN, wants_activation};
 
     /// `kAux` is not zero, so a test using `0` for "not main" would be testing
     /// the main path by accident.

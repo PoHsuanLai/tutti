@@ -22,14 +22,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 use tutti_core::{
-    fold_frame, snap_to_whole_frame, Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition,
-    SampleRate, Samples, TimelineSegment,
+    Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition, SampleRate, Samples, TimelineSegment,
+    fold_frame, snap_to_whole_frame,
 };
 use tutti_io::Wave;
 use tutti_types::cubic_hermite;
 
 use super::clock::{BlockClock, Run};
-use super::loop_span::{blend, LoopSpan};
+use super::loop_span::{LoopSpan, blend};
 use super::memory_source::VoiceWindow;
 use crate::MAX_SAMPLER_CHANNELS;
 

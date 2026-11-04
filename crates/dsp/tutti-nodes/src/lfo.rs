@@ -503,7 +503,7 @@ impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
 mod tests {
     use super::*;
     use tutti_core::{Beat, Bpm, Samples};
-    use tutti_graph::contract::{assert_param_fork, Direct};
+    use tutti_graph::contract::{Direct, assert_param_fork};
     use tutti_graph::{Solo, Transport};
 
     /// **The ports and their bases.** A free-running LFO declares its depth

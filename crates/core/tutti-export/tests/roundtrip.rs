@@ -29,8 +29,8 @@
 #![cfg(all(feature = "wav", feature = "flac"))]
 
 use tutti_export::{
-    render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    FrozenClock, RenderConfig, RenderGraph,
+    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, FrozenClock,
+    RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;

@@ -11,17 +11,17 @@
 
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
-    Cx, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape, SortedEvents,
-    Status, MAX_PORTS,
+    Cx, Event, EventKind, Harmony, HarmonyKind, Io, MAX_PORTS, Node, Offset, Prepare, Shape,
+    SortedEvents, Status,
 };
 use tutti_types::{ChannelLayout, Samples};
 
+use super::MidiIntake;
 use super::batcher::Chunks;
 use super::param_delivery::ParamDelivery;
 use super::param_input;
 use super::segment_points::SegmentPoints;
 use super::transport_source::{self, HostClock, ProjectTime, SteadyTime};
-use super::MidiIntake;
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{

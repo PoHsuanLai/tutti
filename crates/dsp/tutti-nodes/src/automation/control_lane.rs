@@ -2,8 +2,8 @@
 //! play-clock grid and sent to the target as curve segments (design doc 014
 //! §5).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tutti_core::ChannelLayout;
 use tutti_graph::{
@@ -11,7 +11,7 @@ use tutti_graph::{
     NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare,
     SegmentShape, Shape, Status, Transport,
 };
-use tutti_mod::{Clock, ControlProgram, CurveSegment, ProgramTime, Wave, MAX_LANE_INPUTS};
+use tutti_mod::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
 use tutti_types::{
     ArcLend, AtomicF32, Beat, Frame, PackedAtomic, ParamAddr, ParamKey, Reader, SamplePosition,
     Samples, Tail, Unit, UnitParam,

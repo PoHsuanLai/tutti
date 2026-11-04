@@ -17,7 +17,7 @@ use tutti_graph::{
 };
 use tutti_midi_types::ump::MidiEvent;
 
-use super::mailbox::{MidiMailbox, MidiReceiver, MidiSender, MAILBOX_CAPACITY};
+use super::mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 use super::order::{in_offset_order, offset_of};
 
 /// A [`MidiQueueNode`]'s ring, and its event port's declared capacity.

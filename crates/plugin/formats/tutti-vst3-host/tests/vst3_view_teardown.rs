@@ -32,8 +32,8 @@ use std::sync::{Arc, Mutex};
 use tutti_vst3_host::host::{detach_view, platform_type_refused};
 
 use vst3::Steinberg::{
-    char16, int16, kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue,
-    tresult, FIDString, IPlugFrame, IPlugView, IPlugViewTrait, TBool, ViewRect,
+    FIDString, IPlugFrame, IPlugView, IPlugViewTrait, TBool, ViewRect, char16, int16,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
 };
 use vst3::{Class, ComWrapper};
 

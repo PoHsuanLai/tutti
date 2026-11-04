@@ -2,7 +2,7 @@
 
 use tutti_core::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleRate, Seconds};
 
-use crate::ramp::{clamp_finite, LastGood};
+use crate::ramp::{LastGood, clamp_finite};
 
 /// LFO driver block: rate + running phase.
 ///

@@ -19,7 +19,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{ChannelLayout, Db, Engine, Hz, InterleavedMut, NodeKey, SampleRate, Samples, Q};
+use tutti_core::{ChannelLayout, Db, Engine, Hz, InterleavedMut, NodeKey, Q, SampleRate, Samples};
 use tutti_core::{MotionEvent, Transport};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;

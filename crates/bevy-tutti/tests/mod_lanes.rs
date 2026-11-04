@@ -22,20 +22,20 @@ use std::sync::Arc;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
+use bevy_tutti::AudioEngineState;
 use bevy_tutti::graph::{
-    crossfade_audio_node, AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide,
-    GraphReconcilePlugin, MasterSources, PortSource, SpawnAudioNode, TransportRes,
+    AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide, GraphReconcilePlugin, MasterSources,
+    PortSource, SpawnAudioNode, TransportRes, crossfade_audio_node,
 };
 use bevy_tutti::modulation::{
     Adsr, Automation, AutomationTake, Follower, Lfo, Macro, ModRange, ModRoute, ModSource, Mods,
     ModulationRefused, NoteEnvelope, ParamRef, TuttiModulationPlugin,
 };
-use bevy_tutti::AudioEngineState;
-use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
+use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
-use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, RecordMode};
 use tutti_nodes::ReconcileError;
+use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, RecordMode};
 use tutti_types::{Amplitude, Beat, BeatDuration, Bpm, Depth, Hz, SampleRate, Seconds, UnitParam};
 
 use common::probe::{Held, ProbeUnit, Pulse};
@@ -416,10 +416,11 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     let node = state
         .source_node(follower)
         .expect("the follower has a node");
-    assert!(app
-        .world()
-        .resource::<AudioGraphRes>()
-        .contains(AudioNode(node)));
+    assert!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .contains(AudioNode(node))
+    );
     let (_, lane) = state.lane(cutoff).expect("a lane");
     assert_eq!(
         lane.program().inputs().len(),
@@ -906,12 +907,13 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     );
     render(&mut side, 128, 128);
     settle(&mut app);
-    assert!(app
-        .world()
-        .resource::<AudioGraphRes>()
-        .modulation()
-        .lane(cutoff)
-        .is_some());
+    assert!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .modulation()
+            .lane(cutoff)
+            .is_some()
+    );
 }
 
 /// **A re-apply whose commit moves the latency is mirrored on that
@@ -945,12 +947,13 @@ fn a_re_apply_that_moves_the_latency_is_mirrored_on_that_frame() {
         tutti_types::Samples(LATE),
         "the re-apply's plan, mirrored"
     );
-    assert!(app
-        .world()
-        .resource::<AudioGraphRes>()
-        .modulation()
-        .lane(cutoff)
-        .is_some());
+    assert!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .modulation()
+            .lane(cutoff)
+            .is_some()
+    );
 }
 
 // ------------------------------------- ported from the old driver --

@@ -40,19 +40,19 @@
 //! `modulated_params_are_allocation_free`.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use proptest::prelude::*;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
-    GraphInvalid, Io, Node, ParamIn, ParamInput, ParamRamp, ParamRange, ParamSegment, Prepare,
-    Reference, SegmentShape, Shape, Status, Transport, Unforkable, PARAM_DECLICK,
+    GraphInvalid, Io, Node, PARAM_DECLICK, ParamIn, ParamInput, ParamRamp, ParamRange,
+    ParamSegment, Prepare, Reference, SegmentShape, Shape, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
-    ChannelLayout, Hz, Latency, NodeKey, ParamKey, SamplePosition, SampleRate, Samples, UnitParam,
-    Q,
+    ChannelLayout, Hz, Latency, NodeKey, ParamKey, Q, SamplePosition, SampleRate, Samples,
+    UnitParam,
 };
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -840,9 +840,10 @@ fn an_event_source_replaces_the_base_from_its_first_event() {
         "a knob move is overridden"
     );
 
-    assert!(ed
-        .spec_mut()
-        .disconnect_param(param(PROBE, UnitParam::Cutoff), ev(2)));
+    assert!(
+        ed.spec_mut()
+            .disconnect_param(param(PROBE, UnitParam::Cutoff), ev(2))
+    );
     ed.commit().expect("disconnects");
     let d = PARAM_DECLICK.get();
     let out = render(&mut exec, &mut ed, 2 * d, 64);

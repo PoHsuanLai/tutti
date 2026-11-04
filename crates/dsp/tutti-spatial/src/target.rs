@@ -4,7 +4,7 @@
 
 use tutti_core::{Azimuth, Elevation, Param, SampleRate, Samples};
 
-use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use crate::smoothing::{DEFAULT_POSITION_SMOOTH_TIME, ExponentialSmoother};
 
 /// A source's bearing and height as a pair of lock-free [`Param`] cells.
 ///

@@ -15,11 +15,11 @@
 //! SysEx7. It keeps one in-flight buffer per UMP group, so interleaved streams
 //! on different groups don't corrupt each other.
 
-use tutti_midi_types::ump::{
-    MidiEvent, UmpMessageType, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START,
-};
 use tutti_midi_types::MidiGroup;
+use tutti_midi_types::ump::{
+    MidiEvent, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
+    SYSEX7_STATUS_START, UmpMessageType,
+};
 
 /// Whether `event` may appear between a SysEx7 Start and its End without
 /// terminating the message (M2-104 §7.7.1).
@@ -195,8 +195,8 @@ impl Sysex7PacketReassembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::ci::{ci_to_sysex7, sysex7_to_ci, CiHeader, CiMessage, DiscoveryData};
-    use tutti_midi_types::ci::{CiCategories, Muid, CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION};
+    use tutti_midi_types::ci::{CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION, CiCategories, Muid};
+    use tutti_midi_types::ci::{CiHeader, CiMessage, DiscoveryData, ci_to_sysex7, sysex7_to_ci};
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn discovery(mfr: [u8; 3]) -> CiMessage {
@@ -303,14 +303,15 @@ mod tests {
         assert_eq!(r.in_flight_count(), 1);
 
         // A note-on on the same group terminates it.
-        assert!(r
-            .push(&MidiEvent::note_on(
+        assert!(
+            r.push(&MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_none());
+            .is_none()
+        );
         assert_eq!(r.in_flight_count(), 0, "run terminated");
 
         // The END now has no buffer, so nothing corrupt is emitted.
@@ -330,14 +331,15 @@ mod tests {
         // (MT 0x0 / 0xF) plus other-group traffic "may be interspersed".
         assert!(r.push(&MidiEvent::timing_clock(MidiGroup::FIRST)).is_none());
         assert!(r.push(&MidiEvent::jr_timestamp(0x1234)).is_none()); // MT 0x0
-        assert!(r
-            .push(&MidiEvent::note_on(
+        assert!(
+            r.push(&MidiEvent::note_on(
                 MidiGroup::new(3),
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_none()); // group 3
+            .is_none()
+        ); // group 3
         assert_eq!(r.in_flight_count(), 1, "run survives all three");
 
         // …and the message still completes intact.
@@ -352,9 +354,10 @@ mod tests {
         let packets = multi_packet_run(MidiGroup::FIRST);
         let mut r = Sysex7PacketReassembler::new();
         r.push(&packets[0]);
-        assert!(r
-            .push(&MidiEvent::song_select(MidiGroup::FIRST, 3))
-            .is_none());
+        assert!(
+            r.push(&MidiEvent::song_select(MidiGroup::FIRST, 3))
+                .is_none()
+        );
         assert_eq!(r.in_flight_count(), 0, "System Common terminates");
     }
 

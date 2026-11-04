@@ -9,14 +9,14 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::midi::IpcMidiEventVec;
-use super::process::ProcessAudioData;
-use super::sample::SampleFormat;
-use super::shm::SlabLayout;
 use super::ContentScale;
 use super::Normalized;
 use super::ParamAddress;
 use super::Samples;
+use super::midi::IpcMidiEventVec;
+use super::process::ProcessAudioData;
+use super::sample::SampleFormat;
+use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]

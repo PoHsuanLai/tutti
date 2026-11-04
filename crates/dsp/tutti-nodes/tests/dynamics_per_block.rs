@@ -13,8 +13,8 @@
 //! difference remains").
 
 use tutti_core::SampleRate;
-use tutti_graph::contract::{drive, prepared};
 use tutti_graph::Node;
+use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::{CompressorNode, GateNode};
 
 const RATE: SampleRate = SampleRate(48_000.0);

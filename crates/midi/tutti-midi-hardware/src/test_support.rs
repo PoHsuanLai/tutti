@@ -20,15 +20,15 @@
 //! fake device list, and shipping one in a release build invites it into
 //! production wiring by accident.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::InputProducerHandle;
 use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
-use crate::InputProducerHandle;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
+use tutti_midi_types::ump::MidiEvent;
 
 /// A backend with a fixed device list and no OS behind it.
 ///

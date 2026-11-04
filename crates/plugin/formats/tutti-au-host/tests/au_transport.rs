@@ -56,15 +56,15 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    render, silence, DELAY, DYNAMICS, EFFECTS, INSTRUMENTS, MATRIX_REVERB, NO_TAIL_EFFECTS,
-    TAILLESS_UNITS, TAIL_EFFECTS, TAIL_UNSUPPORTED,
+    DELAY, DYNAMICS, EFFECTS, INSTRUMENTS, MATRIX_REVERB, NO_TAIL_EFFECTS, TAIL_EFFECTS,
+    TAIL_UNSUPPORTED, TAILLESS_UNITS, render, silence,
 };
-use support::probe_au::{last_host_pull, Misbehaviour, NOT_CALLED};
+use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 
 use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
-use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_types::Samples;
+use tutti_types::meter::{BarNumber, TimeSignature};
 
 /// Serializes component discovery / instantiate / dispose, exactly as
 /// `au_conformance.rs`'s lock of the same name does. AudioToolbox tolerates
@@ -846,8 +846,8 @@ fn host_callback_info_matches_apples_layout() {
 #[test]
 #[ignore = "requires the third-party TAL-NoiseMaker AU; no Apple unit calls host callbacks"]
 fn a_real_au_pulls_and_consumes_the_transport() {
-    use tutti_au_host::component::{enumerate_components_of_type, AuType};
     use tutti_au_host::AuInstance;
+    use tutti_au_host::component::{AuType, enumerate_components_of_type};
 
     let _g = lock();
     let Some(info) = enumerate_components_of_type(AuType::Instrument)

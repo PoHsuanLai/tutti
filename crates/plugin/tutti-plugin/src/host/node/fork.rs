@@ -136,7 +136,7 @@ use super::{Bound, PluginClient, PluginControls, ProcessGuard};
 use crate::error::{PluginForkError, PluginRenderFault};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::RenderMode;
-use crate::util::config::{unique_socket_path, BridgeConfig};
+use crate::util::config::{BridgeConfig, unique_socket_path};
 
 /// What a [`PluginClient`] was loaded from: enough to load it again.
 pub(super) struct Origin {

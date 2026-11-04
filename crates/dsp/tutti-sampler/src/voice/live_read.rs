@@ -56,8 +56,8 @@
 
 use tutti_core::{PosClaim, PosReader, Reader, SamplePosition};
 
-use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 use crate::MAX_SAMPLER_CHANNELS;
+use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 
 use super::interp::{hermite_lanes, interpolate_taps};
 use super::loop_span::blend;

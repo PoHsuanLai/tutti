@@ -19,7 +19,7 @@ use tutti_mod::{
 };
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
-    GraphSource, ModInput, ModKeys, ModRefusal, ParamRef, PhaseCx, Session, SessionEvent, PHASES,
+    GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, Session, SessionEvent,
 };
 use tutti_types::{BeatDuration, Depth, Hz, NodeKey, ParamAddr, UnitParam};
 

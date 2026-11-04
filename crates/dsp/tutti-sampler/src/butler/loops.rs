@@ -38,7 +38,7 @@ use tutti_io::Wave;
 
 use crate::nonempty;
 use crate::voice::interp::{split_position, tap_indices};
-use crate::voice::loop_span::{blend, LoopSpan};
+use crate::voice::loop_span::{LoopSpan, blend};
 
 /// A loop at most this many frames long keeps its body (`[resume, end)`)
 /// resident, so a streamed refill does not seek the decoder once per wrap.

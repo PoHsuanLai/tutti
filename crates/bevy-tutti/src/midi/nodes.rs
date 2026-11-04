@@ -13,7 +13,7 @@ use bevy_ecs::prelude::*;
 use tutti_core::AudioNode;
 use tutti_midi_runtime::{MidiInputControls, MidiSender};
 
-use crate::graph::{engine_ready, AudioGraphRes, EventWiring};
+use crate::graph::{AudioGraphRes, EventWiring, engine_ready};
 
 /// The MIDI nodes the engine build inserts, each bound to an entity like any
 /// node:

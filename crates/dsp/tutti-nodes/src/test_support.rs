@@ -1,8 +1,8 @@
 //! Rendering helpers shared by the width-generic nodes' unit tests.
 
 use tutti_core::SampleRate;
-use tutti_graph::contract::drive;
 use tutti_graph::Node;
+use tutti_graph::contract::drive;
 
 /// Deterministic broadband input in `[-1, 1)`.
 pub(crate) fn noise(seed: u32, len: usize) -> Vec<f32> {

@@ -20,7 +20,7 @@
 //! (`prefetch::Ring`): the reader publishes the position it plays and the
 //! butler follows it, so there is nothing to request and nothing to flush.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use tutti_core::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
 
 use crate::voice::types::Direction;

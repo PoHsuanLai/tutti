@@ -8,7 +8,7 @@
 
 use std::os::raw::c_void;
 
-use crate::buffer::{iter_buffers_mut, RenderScratch};
+use crate::buffer::{RenderScratch, iter_buffers_mut};
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::cf::{CfArray, CfPlist, CfString};
 use crate::channel_layout::{self, AuLayoutTag};
@@ -26,10 +26,10 @@ use crate::transport::{self, TransportState};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{
-    ChannelLayout, EditorSize, SysExAssembler, TransportInfo, WindowHandle, SYSEX_MESSAGE_CAPACITY,
+    ChannelLayout, EditorSize, SYSEX_MESSAGE_CAPACITY, SysExAssembler, TransportInfo, WindowHandle,
 };
-use tutti_types::value::units::Seconds;
 use tutti_types::Samples;
+use tutti_types::value::units::Seconds;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -600,9 +600,9 @@ impl AuInstance {
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[MidiEvent]) {
-        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
         use tutti_midi_types::MidiMessage;
-        use tutti_plugin_types::{is_framed, SysExStep};
+        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
+        use tutti_plugin_types::{SysExStep, is_framed};
 
         /// Hands a complete SysEx message to the AU.
         ///

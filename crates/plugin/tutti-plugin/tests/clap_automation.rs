@@ -10,7 +10,7 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv};
+use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 
 use std::sync::Arc;
 

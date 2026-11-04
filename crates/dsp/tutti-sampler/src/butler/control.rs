@@ -15,8 +15,8 @@ use tutti_core::SampleRate;
 
 use super::prefetch::TakeVoiceError;
 use super::{ChannelPlan, RtState};
-use crate::voice::disk_voice::DiskSource;
 use crate::voice::LoopSetting;
+use crate::voice::disk_voice::DiskSource;
 
 /// The butler thread is gone, so a stream-control command was discarded.
 ///

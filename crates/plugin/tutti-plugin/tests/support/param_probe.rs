@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use tutti_mod::ControlProgram;
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
-use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeConfig;
+use tutti_plugin::handles::{PluginClient, PluginHandle};
 
 use crate::clap_probe::plugin_server_path;
 use crate::probe_path::probe_path;

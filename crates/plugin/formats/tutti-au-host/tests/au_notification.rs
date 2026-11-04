@@ -62,10 +62,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod support;
-use support::corpus::{all_finite, peak, render, silence, DELAY, MATRIX_REVERB, REVERB2};
+use support::corpus::{DELAY, MATRIX_REVERB, REVERB2, all_finite, peak, render, silence};
 
 use tutti_au_host::{
-    emit_gesture, notify_all_parameters, AuEvent, AuParameterListener, EventAddress,
+    AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,
 };
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component

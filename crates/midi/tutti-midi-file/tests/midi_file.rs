@@ -9,11 +9,11 @@
 
 mod support;
 
-use support::{build_smf, Division, RawEvent};
+use support::{Division, RawEvent, build_smf};
 use tutti_core::{Beat, Bpm};
 use tutti_midi_file::{
-    encode_midi_file, write_clip_file_from_beats, write_clip_file_with_header, ClipEvent,
-    ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage, SmfTimedEvent,
+    ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
+    SmfTimedEvent, encode_midi_file, write_clip_file_from_beats, write_clip_file_with_header,
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 

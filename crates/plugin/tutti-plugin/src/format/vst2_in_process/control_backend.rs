@@ -8,8 +8,8 @@
 //! silence on contention so a slow `editor_idle` can't underrun audio.
 
 use std::ffi::c_void;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;

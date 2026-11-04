@@ -11,8 +11,8 @@
 //! `ProbeUnit` is a [`SessionNode`] whose controls are its `ParamSet`, so
 //! `Graph::add` addresses its param.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::{AtomicF32, ChannelLayout};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};

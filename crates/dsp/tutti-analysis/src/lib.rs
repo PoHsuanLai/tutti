@@ -43,30 +43,30 @@ pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use loudness::{
-    finish as finish_loudness, measure_loudness, step_loudness, Loudness, LoudnessConfig,
-    LoudnessState,
+    Loudness, LoudnessConfig, LoudnessState, finish as finish_loudness, measure_loudness,
+    step_loudness,
 };
 // `finish` is renamed on the way out, matching `finish_peaks` /
 // `finish_loudness` above: three modules each have a `finish`, and the bare name
 // says nothing about which accumulator it drains.
 pub use onset::{
-    complex_domain_deviation, detect_onsets, finish as finish_onset, high_frequency_content,
-    spectral_energy, spectral_flux, step_onset, suppress_close_onsets, DetectionFunction, Onset,
-    OnsetConfig, OnsetState,
+    DetectionFunction, Onset, OnsetConfig, OnsetState, complex_domain_deviation, detect_onsets,
+    finish as finish_onset, high_frequency_content, spectral_energy, spectral_flux, step_onset,
+    suppress_close_onsets,
 };
 pub use peaks::{
-    finish as finish_peaks, step_peaks, summarize, summarize_block, PeakAccum, PeakBlock,
-    PeakBlocks, PeakConfig, PeakState,
+    PeakAccum, PeakBlock, PeakBlocks, PeakConfig, PeakState, finish as finish_peaks, step_peaks,
+    summarize, summarize_block,
 };
 pub use stereo::{
-    correlate, step_ballistics, Ballistics, BallisticsState, StereoLevels, StereoReading,
+    Ballistics, BallisticsState, StereoLevels, StereoReading, correlate, step_ballistics,
 };
 pub use transform::{
-    istft as istft_transform, stft, stft_magnitude, stft_polar, HopPolicy, NormalizedMagnitudes,
-    RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar, StftRequest,
+    HopPolicy, NormalizedMagnitudes, RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar,
+    StftRequest, istft as istft_transform, stft, stft_magnitude, stft_polar,
 };
 pub use window::{CosineWindow, Window};
-pub use yin::{median_filter, penalize_jumps, yin, yin_track, Pitch, PitchEstimate, YinConfig};
+pub use yin::{Pitch, PitchEstimate, YinConfig, median_filter, penalize_jumps, yin, yin_track};
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a
 /// [`Pitch`] names one, and callers should not need a second import to read it.

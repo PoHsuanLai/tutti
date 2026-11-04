@@ -113,8 +113,8 @@ use bevy_app::{App, Update};
 use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
 
-use tutti_core::io::{AudioIn, AudioOut};
 use tutti_core::Samples;
+use tutti_core::io::{AudioIn, AudioOut};
 use tutti_io::{Recorder, ThreadDriver};
 
 /// How long the pump parks when a [`Starved`](tutti_core::io::OnEmpty::Starved)

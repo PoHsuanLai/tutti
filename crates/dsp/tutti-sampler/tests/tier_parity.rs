@@ -49,7 +49,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tutti_core::{Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
-use tutti_graph::{contract, Node};
+use tutti_graph::{Node, contract};
 use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};

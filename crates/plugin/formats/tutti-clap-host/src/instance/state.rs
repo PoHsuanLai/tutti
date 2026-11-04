@@ -1,7 +1,7 @@
 //! Plugin state save/load and preset loading.
 
-use super::ext;
 use super::ClapLoaded;
+use super::ext;
 use crate::error::{ClapError, Result};
 use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;

@@ -18,13 +18,13 @@
 
 use std::path::Path;
 
-use tutti_analysis::{measure_loudness, LoudnessConfig};
+use tutti_analysis::{LoudnessConfig, measure_loudness};
 use tutti_core::transport::RenderClock;
 use tutti_types::Db;
 use tutti_types::Interleaved;
 
 use crate::config::ExportConfig;
-use crate::{render_to_buffers, write_buffers, Result, Written};
+use crate::{Result, Written, render_to_buffers, write_buffers};
 
 /// A gain chosen by measuring the rendered signal.
 ///

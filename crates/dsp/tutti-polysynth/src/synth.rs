@@ -6,7 +6,7 @@ use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
 use tutti_core::Adsr;
-use tutti_core::{Depth, Hz, Resonance, Semitones, Q};
+use tutti_core::{Depth, Hz, Q, Resonance, Semitones};
 
 /// The waveform every sub-voice of every voice generates.
 ///

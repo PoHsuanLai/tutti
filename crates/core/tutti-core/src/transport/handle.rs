@@ -173,8 +173,8 @@ impl super::TransportState for Transport {
 
 #[cfg(test)]
 mod tests {
-    use super::super::motion::MotionEvent;
     use super::super::Timeline;
+    use super::super::motion::MotionEvent;
     use super::*;
 
     #[test]

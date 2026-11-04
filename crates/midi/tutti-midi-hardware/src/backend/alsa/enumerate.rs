@@ -2,7 +2,7 @@
 
 use std::os::raw::c_int;
 
-use super::client::{cstr, SeqClient};
+use super::client::{SeqClient, cstr};
 use super::sys;
 use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
 

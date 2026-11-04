@@ -25,7 +25,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tutti_core::AudioNode;
 
-use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
+use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
 pub use tutti_session::EventSource;
 
 /// The entities whose event output 0 feeds this entity's event input 0.

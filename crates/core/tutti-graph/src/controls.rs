@@ -20,8 +20,8 @@
 //! node starts from it ([`ParamFork`]) without a second, "authored" copy
 //! (doc 014 §10).
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_types::{AtomicF32, UnitParam};
 

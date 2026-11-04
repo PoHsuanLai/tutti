@@ -6,10 +6,10 @@
 
 #![cfg(target_os = "macos")]
 
+use objc2::ClassType;
 use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2::ClassType;
 use objc2_foundation::{NSBundle, NSSize};
 use std::os::raw::c_void;
 

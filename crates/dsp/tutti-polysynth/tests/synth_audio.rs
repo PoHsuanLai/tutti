@@ -17,7 +17,7 @@
 
 mod support;
 
-use support::{Hand, BLOCK};
+use support::{BLOCK, Hand};
 use tutti_core::{Amplitude, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;

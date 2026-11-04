@@ -11,7 +11,7 @@
 //! how it tells a jump (a start, a seek, a loop wrap, a restart) from the
 //! next block of the same run.
 
-use tutti_core::{first_frame_at_or_after, At, LoopRange, Samples, FRAME_TOLERANCE};
+use tutti_core::{At, FRAME_TOLERANCE, LoopRange, Samples, first_frame_at_or_after};
 use tutti_graph::{Due, Env, Offset};
 
 /// An event scheduled at a beat.

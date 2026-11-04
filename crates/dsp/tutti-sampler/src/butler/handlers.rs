@@ -14,7 +14,7 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
-use super::loops::{apply_mapping, buffer_size_for_file, LeadIn, Mapping, RingLoop, RingMap};
+use super::loops::{LeadIn, Mapping, RingLoop, RingMap, apply_mapping, buffer_size_for_file};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::RegionBuffer;

@@ -17,9 +17,9 @@
 //! No transport, no inbound routing — that wiring is the ECS layer's job.
 
 use tutti_midi_types::ci::{
-    CiCategories, CiHeader, CiMessage, DiscoveryData, Muid, Nak, ProfileId, ProfileState,
-    PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand,
-    CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION,
+    CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION, CiCategories, CiHeader, CiMessage, DiscoveryData,
+    Muid, Nak, ProfileId, ProfileState, PropertyCapabilities, PropertyData, PropertyKind,
+    SubscriptionCommand,
 };
 
 /// A property this device exposes over Property Exchange: its resource name (the

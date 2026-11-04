@@ -21,10 +21,10 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::{ChannelLayout, SampleRate};
-use tutti_graph::contract::Direct;
 use tutti_graph::Node;
+use tutti_graph::contract::Direct;
 use tutti_nodes::{
     BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
     DownmixNode, GateNode, LimiterNode, ShapeKind,
@@ -286,7 +286,7 @@ fn dynamics(c: &mut Criterion) {
 
 #[cfg(feature = "convolution")]
 fn convolver(c: &mut Criterion) {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
     let ir = generate_test_ir(256, 0.05, SR);
     run(c, "convolver", "1", || ConvolverNode::new(&ir, 64), None);
 }

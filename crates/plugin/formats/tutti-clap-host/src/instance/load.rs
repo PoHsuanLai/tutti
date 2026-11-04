@@ -2,18 +2,18 @@
 //! point, plus the port-layout / f64-support helpers they read off the freshly
 //! instantiated plugin.
 
+use super::ClapLoaded;
 use super::config::{AudioConfig, LifecycleFlags, PortLayout};
 use super::descriptor::{self, load_descriptor};
 use super::ext;
 use super::extensions::ExtensionCache;
 use super::plugin_ptr::PluginPtr;
 use super::ports::layout_from_clap_port;
-use super::ClapLoaded;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
 use clap_sys::ext::audio_ports::{
-    clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_SUPPORTS_64BITS,
+    CLAP_AUDIO_PORT_SUPPORTS_64BITS, clap_audio_port_info, clap_plugin_audio_ports,
 };
 use clap_sys::plugin::clap_plugin;
 use std::path::Path;
@@ -454,8 +454,8 @@ fn check_f64_support(
 #[cfg(test)]
 mod enumeration_hole_tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     // The stub's configuration. Global because the stub is a bare
     // `extern "C"` fn with no state parameter.

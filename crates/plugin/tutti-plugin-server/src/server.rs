@@ -6,8 +6,8 @@
 
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
-use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 use tutti_plugin::Result;
+use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 
 /// Ask the OS to schedule this thread as realtime, now that it is about to do
 /// nothing but per-block audio work.

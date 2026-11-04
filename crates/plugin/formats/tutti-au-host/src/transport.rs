@@ -77,7 +77,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use tutti_plugin_types::TransportInfo;
 use tutti_types::value::units::{Beat, Bpm, Seconds};
 
-use crate::types::{AudioUnit, OSStatus, K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
+use crate::types::{AudioUnit, K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR, OSStatus};
 
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
 ///

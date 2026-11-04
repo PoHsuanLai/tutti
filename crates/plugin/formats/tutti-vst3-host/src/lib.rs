@@ -7,22 +7,22 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
-pub use host::{factory_flags, FactoryInfo, RestartOutcome, Vst3Active, Vst3Library, Vst3Loaded};
+pub use host::{FactoryInfo, RestartOutcome, Vst3Active, Vst3Library, Vst3Loaded, factory_flags};
 pub use types::{
-    automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
-    prefetchable_support, process_context_flags, to_process_context, unit_ids, vst3_to_chord,
-    vst3_to_note_expression, vst3_to_note_expression_int, vst3_to_note_expression_text,
-    vst3_to_scale, AudioBuffer, BufferPtrs, BusInfo, ChordValue, ContentScale, EditorCapabilities,
-    EditorSize, MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType,
-    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessMode,
-    ProcessOutput, ProcessOutputRef, Sample, ScaleValue, TransportInfo, Vst3InputEvents,
-    Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample,
-    Vst3UnitInfo, WindowHandle,
+    AudioBuffer, BufferPtrs, BusInfo, ChordValue, ContentScale, EditorCapabilities, EditorSize,
+    MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
+    ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessMode, ProcessOutput,
+    ProcessOutputRef, Sample, ScaleValue, TransportInfo, Vst3InputEvents, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
+    WindowHandle, automation_state, keyswitch_type, note_expression_flags, parameter_flags,
+    physical_ui_type, prefetchable_support, process_context_flags, to_process_context, unit_ids,
+    vst3_to_chord, vst3_to_note_expression, vst3_to_note_expression_int,
+    vst3_to_note_expression_text, vst3_to_scale,
 };
 
 pub use com::{
-    ParameterEditEvent, PluginNotification, ProgressDescription, ProgressEvent, RestartFlags,
-    UnitEvent, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY,
+    NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent, PluginNotification,
+    ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
 
 #[cfg(feature = "conformance")]
@@ -41,12 +41,12 @@ pub mod events {
     //! without depending on the raw `vst3` crate.
 
     pub use crate::types::{
-        ChordEvent, DataEvent, EventHeader, LegacyMidiCcOutEvent, NoteExpressionIntValueEvent,
-        NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,
-        PolyPressureEvent, ScaleEvent, SysExEvent, TextRef, Vst3Event, K_CHORD_EVENT, K_DATA_EVENT,
+        ChordEvent, DataEvent, EventHeader, K_CHORD_EVENT, K_DATA_EVENT,
         K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT,
         K_NOTE_EXPRESSION_TEXT_EVENT, K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT,
-        K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT, K_SCALE_EVENT,
+        K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT, K_SCALE_EVENT, LegacyMidiCcOutEvent,
+        NoteExpressionIntValueEvent, NoteExpressionTextEvent, NoteExpressionValueEvent,
+        NoteOffEvent, NoteOnEvent, PolyPressureEvent, ScaleEvent, SysExEvent, TextRef, Vst3Event,
     };
 }
 

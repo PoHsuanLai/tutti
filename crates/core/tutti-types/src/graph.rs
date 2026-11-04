@@ -39,10 +39,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::ChannelLayout;
 use crate::latency::{Feed, LatencyGraph};
 use crate::tail::TailGraph;
 use crate::value::{Samples, Tail};
-use crate::ChannelLayout;
 
 /// A stable identity for a node, chosen by the **author** of the topology.
 ///

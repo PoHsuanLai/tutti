@@ -26,7 +26,7 @@ use tutti_core::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
 use tutti_graph::{Node, Offset, Prepare, TransportChanges};
 
 use super::DiskVoice;
-use crate::testing::{block, MockTransport};
+use crate::testing::{MockTransport, block};
 use crate::{Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource};
 
 const SR: f64 = 48_000.0;

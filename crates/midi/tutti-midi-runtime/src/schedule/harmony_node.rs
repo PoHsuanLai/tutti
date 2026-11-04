@@ -33,7 +33,7 @@ use tutti_graph::{
     IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 
-use super::walk::{lands_on_first_frame, Beated, Visit, Walk};
+use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 
 /// The most events a [`HarmonyNode`] writes in one block, its declared
 /// event capacity: past it the rest are refused and counted

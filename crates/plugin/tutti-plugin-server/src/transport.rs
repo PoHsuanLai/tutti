@@ -9,7 +9,7 @@
 //! [`parent_is_alive`] exist to bound that wait by whether there is still
 //! anyone to serve.
 
-use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 use std::io::{Read, Write};
 use tutti_plugin::server::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
 use tutti_plugin::{BridgeError, Result};
@@ -416,14 +416,14 @@ fn parent_is_alive_given(
 #[cfg(windows)]
 fn parent_is_alive() -> bool {
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
     let Some(parent_pid) = parent_pid() else {

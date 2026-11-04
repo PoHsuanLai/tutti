@@ -29,16 +29,16 @@
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::{
-    traits::{Consumer, Producer, Split},
     HeapCons, HeapProd, HeapRb,
+    traits::{Consumer, Producer, Split},
 };
 
-use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
+use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_core::SampleRate;
 use tutti_core::Samples;
-use tutti_core::MAX_ROOT_CHANNELS;
+use tutti_core::io::{AudioIn, OnEmpty};
+use tutti_core::pcm::BitDepth;
 use tutti_io::{MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};

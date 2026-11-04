@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{bits, test_pool, Kind, TestNode, WORKERS};
+use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::{Cost, Editor, Executor, Schedule, Transport, Unforkable};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, Samples};

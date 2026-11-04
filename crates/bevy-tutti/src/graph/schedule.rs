@@ -12,7 +12,7 @@
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::SystemSet;
-use tutti_session::{Phase, PHASES};
+use tutti_session::{PHASES, Phase};
 
 use crate::AudioEngineState;
 
@@ -159,10 +159,10 @@ mod tests {
     //! §4.4): `Session::update`'s order, one system per phase.
 
     use bevy_app::prelude::*;
-    use tutti_session::{Phase, PHASES};
+    use tutti_session::{PHASES, Phase};
 
-    use crate::graph::{AudioGraphRes, GraphReconcilePlugin};
     use crate::AudioEngineState;
+    use crate::graph::{AudioGraphRes, GraphReconcilePlugin};
 
     /// Where `phase` is in `PHASES`.
     fn rank(phase: Phase) -> usize {
@@ -222,7 +222,7 @@ mod tests {
             use crate::modulation::{Lfo, Mods, ParamRef, TuttiModulationPlugin};
             use bevy_ecs::prelude::*;
             use tutti_nodes::{SvfFilterNode, SvfType};
-            use tutti_types::{Depth, Hz, UnitParam, Q};
+            use tutti_types::{Depth, Hz, Q, UnitParam};
 
             app.insert_resource(crate::graph::TransportRes(
                 tutti_core::transport::Transport::new(48_000.0),

@@ -28,10 +28,10 @@
 
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
-use super::handlers::{handle_command, Handles, Local};
+use super::handlers::{Handles, Local, handle_command};
 use super::io::refill::{refill_all, refill_all_parallel};
-use super::loops::{apply_mapping, Mapping};
-use super::preroll::{apply_pdc_updates, PdcFeed};
+use super::loops::{Mapping, apply_mapping};
+use super::preroll::{PdcFeed, apply_pdc_updates};
 
 /// What the pacing layer should do after one butler cycle.
 ///

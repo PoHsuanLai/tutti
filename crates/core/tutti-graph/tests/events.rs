@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use common::prepare;
 use proptest::prelude::*;
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io,
-    Node, Prepare, Reference, Shape, Shapes, Status, Transport, Ump,
+    Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io, Node,
+    Prepare, Reference, Shape, Shapes, Status, Transport, Ump, compile,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail, Topology};

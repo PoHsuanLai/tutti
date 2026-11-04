@@ -98,9 +98,9 @@ mod tests {
     /// second does (`[Realtime; 4]`: no Offline run at the hand-off).
     #[test]
     fn back_to_back_renders_stay_offline() {
+        use crate::AudioEngineState;
         use crate::export::{ExportDone, ExportPlugin, ExportRequest as BevyRequest};
         use crate::graph::AudioConfig;
-        use crate::AudioEngineState;
 
         let mut graph = AudioGraphRes::headless(0, 2);
         let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));

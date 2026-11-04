@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use tutti_midi_types::{read_clip_file, ClipEvent, ClipHeader, ParsedClipFile, CLIP_FILE_MAGIC};
+use tutti_midi_types::{CLIP_FILE_MAGIC, ClipEvent, ClipHeader, ParsedClipFile, read_clip_file};
 
 use crate::{Error, Result};
 

@@ -19,8 +19,8 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{ChannelLayout, SampleRate};
-use tutti_graph::contract::BlockRig;
 use tutti_graph::IntoNode;
+use tutti_graph::contract::BlockRig;
 use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
 
 #[global_allocator]

@@ -11,7 +11,7 @@ use crate::protocol::{
 };
 use crate::util::config::BridgeConfig;
 use crate::util::transport::control::{self as ipc, ControlStream};
-use crate::util::transport::shm::{AudioSlab, SlabLayout, RING_SLOTS};
+use crate::util::transport::shm::{AudioSlab, RING_SLOTS, SlabLayout};
 use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::Arc;
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn a_stale_v3_server_is_refused_with_a_named_version_error() {
         use crate::protocol::PROTOCOL_VERSION;
-        use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+        use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
         const STALE_VERSION: u32 = 3;
         assert_ne!(
@@ -720,7 +720,7 @@ mod tests {
     /// find nothing bound.
     #[test]
     fn the_connect_waits_for_a_socket_that_is_not_bound_yet() {
-        use interprocess::local_socket::{prelude::*, ListenerOptions};
+        use interprocess::local_socket::{ListenerOptions, prelude::*};
 
         let path = std::env::temp_dir().join(format!("tutti_late_bind_{}", std::process::id()));
         let _ = std::fs::remove_file(&path);

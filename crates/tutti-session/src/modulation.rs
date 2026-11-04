@@ -42,8 +42,8 @@ use tutti_nodes::automation::{LaneControls, RecordMode, Recorder};
 use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, NodeKey, ParamAddr, UnitParam};
 
-use crate::graph::{key, Graph};
 use crate::ModKeys;
+use crate::graph::{Graph, key};
 
 /// How long a modulation target may stay unresolved before it is logged:
 /// today's 240 frames at 60 Hz (design 015 §4.4). A target waits an update

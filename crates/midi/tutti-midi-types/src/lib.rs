@@ -44,10 +44,10 @@ pub mod ump;
 pub use translation::scaling as convert;
 
 pub use clip_file::{
+    CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
-pub use fixed::{q7_25_to_f32, q7_9_to_f32};
+pub use fixed::{q7_9_to_f32, q7_25_to_f32};
 pub use message::{
     ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
 };
@@ -57,12 +57,12 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use traits::{MidiIn, MidiOut};
-pub use translation::{normalize, Midi1Messages, Midi1ToMidi2Translator, MidiParseError};
+pub use translation::{Midi1Messages, Midi1ToMidi2Translator, MidiParseError, normalize};
 pub use ump::{
-    Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
+    ALL_FUNCTION_BLOCKS, Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent,
-    Protocol, Tonic, UmpMessageType, UmpVersion, ALL_FUNCTION_BLOCKS,
+    Protocol, Tonic, UmpMessageType, UmpVersion,
 };
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
@@ -149,9 +149,9 @@ pub use ump::{
 /// [`MidiIo`]: https://docs.rs/tutti-midi-hardware
 pub mod prelude {
     pub use crate::{
-        normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute, NoteId,
-        ParsedClipFile, PerNoteController, Protocol,
+        ClipEvent, ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute,
+        NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, read_clip_file,
+        write_clip_file, write_clip_file_from_beats,
     };
     pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
 }

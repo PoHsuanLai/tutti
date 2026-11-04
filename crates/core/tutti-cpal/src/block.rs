@@ -29,9 +29,9 @@
 //! it.
 
 use std::sync::Arc;
-use tutti_core::{meter_output, ChannelLayout, InterleavedMut, MeteringContext};
+use tutti_core::{ChannelLayout, InterleavedMut, MeteringContext, meter_output};
 
-use crate::output::{process_audio, AudioCallbackState, MAX_FRAMES};
+use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
 
 /// The working set one output stream's callback reads, sized once.
 ///

@@ -77,9 +77,9 @@ fn symbol<'a, T>(
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{load_failed, symbol, Path};
+    use super::{Path, load_failed, symbol};
     use crate::error::Vst3Error;
-    use core_foundation_sys::base::{kCFAllocatorDefault, CFRelease};
+    use core_foundation_sys::base::{CFRelease, kCFAllocatorDefault};
     use core_foundation_sys::bundle::{CFBundleCreate, CFBundleRef};
     use core_foundation_sys::url::{CFURLCreateFromFileSystemRepresentation, CFURLRef};
     use std::os::unix::ffi::OsStrExt;
@@ -189,7 +189,7 @@ mod platform {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod platform {
-    use super::{load_failed, symbol, Path};
+    use super::{Path, load_failed, symbol};
     use crate::error::Vst3Error;
     use std::ffi::c_void;
 
@@ -272,7 +272,7 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use super::{load_failed, symbol, Path};
+    use super::{Path, load_failed, symbol};
     use crate::error::Vst3Error;
 
     type InitDllFn = unsafe extern "system" fn() -> bool;

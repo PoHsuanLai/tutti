@@ -9,7 +9,7 @@ use std::fs::File;
 use std::path::Path;
 
 use symphonia::core::audio::{AudioBuffer, Signal};
-use symphonia::core::codecs::{Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatOptions, FormatReader, Packet};
 use symphonia::core::io::{MediaSource, MediaSourceStream};

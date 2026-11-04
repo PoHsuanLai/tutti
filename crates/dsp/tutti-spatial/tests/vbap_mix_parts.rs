@@ -16,7 +16,7 @@
 use tutti_core::SampleRate;
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
-use tutti_spatial::{build_vbap_mix, vbap_mix_parts, VbapMixNode, VbapMixParts, VbapSource};
+use tutti_spatial::{VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix, vbap_mix_parts};
 use tutti_types::{Amplitude, ChannelLayout, Hz, NodeKey, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -166,9 +166,11 @@ fn the_parts_list_every_edge_of_the_mix() {
     assert_eq!(parts.panners.len(), 1);
     let lfe = parts.lfe.as_ref().expect("5.1 has an LFE channel");
     assert_eq!(lfe.channel, 3);
-    assert!(edges
-        .iter()
-        .all(|e| !matches!(e.to, VbapMixNode::Source(_))));
+    assert!(
+        edges
+            .iter()
+            .all(|e| !matches!(e.to, VbapMixNode::Source(_)))
+    );
     let into_sum_lfe = edges
         .iter()
         .find(|e| e.from == VbapMixNode::LfeLowpass)

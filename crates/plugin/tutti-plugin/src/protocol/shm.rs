@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::sample::SampleFormat;
 use super::BusChannels;
+use super::sample::SampleFormat;
 
 /// Shared-memory slab descriptor: the shape both processes must agree on before
 /// either maps a byte.

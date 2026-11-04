@@ -25,16 +25,16 @@ use super::PluginBridge;
 use crate::error::StateError;
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, ParamAddress, ParamId, SampleFormat, SlabLayout,
-    PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, HostMessage, PROTOCOL_VERSION, ParamAddress, ParamId,
+    SampleFormat, SlabLayout,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{traits::Listener as _, ListenerOptions, Stream};
+use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
 
 /// Upper bound on how long any single "the host must notice" wait may take.
 ///
@@ -241,53 +241,55 @@ impl MockServer {
 
         let server = std::thread::Builder::new()
             .name(format!("mock-hostile-{label}"))
-            .spawn(move || loop {
-                let Ok(msg) = recv_host_msg(&stream) else {
-                    return; // host hung up
-                };
-                match respond(msg) {
-                    Action::Reply(m) => {
-                        if send_bridge_msg(&stream, &m).is_err() {
-                            return;
-                        }
-                    }
-                    Action::ReplyMany(ms) => {
-                        if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
-                            return;
-                        }
-                    }
-                    Action::ReplyManySlowly { msgs, gap } => {
-                        for m in &msgs {
-                            std::thread::sleep(gap);
-                            if send_bridge_msg(&stream, m).is_err() {
+            .spawn(move || {
+                loop {
+                    let Ok(msg) = recv_host_msg(&stream) else {
+                        return; // host hung up
+                    };
+                    match respond(msg) {
+                        Action::Reply(m) => {
+                            if send_bridge_msg(&stream, &m).is_err() {
                                 return;
                             }
                         }
-                    }
-                    Action::Silent => {}
-                    Action::Raw(len, body) => {
-                        if send_raw_frame(&stream, len, &body).is_err() {
-                            return;
-                        }
-                    }
-                    Action::Dribble { len, gap } => {
-                        let mut s = &stream;
-                        if s.write_all(&len.to_be_bytes()).is_err() {
-                            return;
-                        }
-                        // Forever, or until the host hangs up. A bounded loop
-                        // would let the test pass by the peer running out of
-                        // bytes rather than by the host refusing the frame.
-                        loop {
-                            std::thread::sleep(gap);
-                            if s.write_all(&[0u8]).is_err() {
+                        Action::ReplyMany(ms) => {
+                            if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
                                 return;
                             }
                         }
+                        Action::ReplyManySlowly { msgs, gap } => {
+                            for m in &msgs {
+                                std::thread::sleep(gap);
+                                if send_bridge_msg(&stream, m).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Action::Silent => {}
+                        Action::Raw(len, body) => {
+                            if send_raw_frame(&stream, len, &body).is_err() {
+                                return;
+                            }
+                        }
+                        Action::Dribble { len, gap } => {
+                            let mut s = &stream;
+                            if s.write_all(&len.to_be_bytes()).is_err() {
+                                return;
+                            }
+                            // Forever, or until the host hangs up. A bounded loop
+                            // would let the test pass by the peer running out of
+                            // bytes rather than by the host refusing the frame.
+                            loop {
+                                std::thread::sleep(gap);
+                                if s.write_all(&[0u8]).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        // Dropping `stream` closes the socket, so the host's next
+                        // read sees EOF — exactly what a killed server produces.
+                        Action::Die => return,
                     }
-                    // Dropping `stream` closes the socket, so the host's next
-                    // read sees EOF — exactly what a killed server produces.
-                    Action::Die => return,
                 }
             })
             .expect("spawn mock");

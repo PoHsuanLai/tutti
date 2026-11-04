@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 
-use support::{model_beats, Change, Segment};
+use support::{Change, Segment, model_beats};
 use tutti_core::{
     At, Beat, Bpm, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopRange, MotionEvent,
     SampleRate, Samples, Tail, Then, Transport, TransportCommand,
@@ -34,8 +34,8 @@ use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
     Unforkable,
 };
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{OutPort, Source};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.
@@ -1376,8 +1376,8 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
 /// links (no claim) → the second engine builds → fails.
 #[test]
 fn a_transport_has_one_playhead_writer() {
-    use tutti_core::transport::PlayheadClaimed;
     use tutti_core::GraphEngineError;
+    use tutti_core::transport::PlayheadClaimed;
 
     let transport = Transport::new(SR);
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);

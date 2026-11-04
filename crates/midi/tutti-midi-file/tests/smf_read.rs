@@ -29,7 +29,7 @@
 
 mod support;
 
-use support::{build_smf, Division, RawEvent};
+use support::{Division, RawEvent, build_smf};
 use tutti_midi_file::smf::{self, ParsedMidiFile};
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.

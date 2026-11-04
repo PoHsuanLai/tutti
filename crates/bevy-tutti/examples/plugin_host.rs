@@ -36,6 +36,7 @@
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
+use bevy_tutti::AudioEngineState;
 use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, PortSources,
     SpawnAudioNode, TransportRes,
@@ -44,10 +45,9 @@ use bevy_tutti::plugin_host::{
     PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLiveness, PluginLoadDone,
     PluginLoadTerminated, PluginRequest, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
 };
-use bevy_tutti::AudioEngineState;
-use tutti_core::transport::{ClickState, Transport};
 use tutti_core::AudioNode;
-use tutti_plugin::catalog::{CatalogConfig, PluginId, Plugins, NO_SCAN_DIRS};
+use tutti_core::transport::{ClickState, Transport};
+use tutti_plugin::catalog::{CatalogConfig, NO_SCAN_DIRS, PluginId, Plugins};
 
 #[cfg(feature = "modulation")]
 use bevy_tutti::modulation::{Mods, ParamRef, TuttiModulationPlugin};

@@ -209,8 +209,8 @@ impl MidiEvent {
 /// [`MidiEvent`], or `None` if `event` isn't one. Inverse of
 /// [`MidiEvent::flex_set_key_signature`].
 pub fn flex_key_signature(event: &MidiEvent) -> Option<(Tonic, KeySharpsFlats)> {
-    use midi2::flex_data::FlexData;
     use midi2::UmpMessage;
+    use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetKeySignature(m)) =
         UmpMessage::try_from(event.data_words()).ok()?
     else {
@@ -224,8 +224,8 @@ pub fn flex_key_signature(event: &MidiEvent) -> Option<(Tonic, KeySharpsFlats)> 
 /// The bass half is reported only when the message carries a bass chord type
 /// other than the "no bass" sentinel (`ChordType::ClearChord`).
 pub fn flex_chord_name(event: &MidiEvent) -> Option<ChordName> {
-    use midi2::flex_data::{ChordType, FlexData};
     use midi2::UmpMessage;
+    use midi2::flex_data::{ChordType, FlexData};
     let UmpMessage::FlexData(FlexData::SetChordName(m)) =
         UmpMessage::try_from(event.data_words()).ok()?
     else {
@@ -415,8 +415,8 @@ impl FlexTextReassembler {
 /// Decode a Flex Data text message from `words` — one packet's worth, or a
 /// reassembled multi-packet run.
 fn flex_text_from_words(words: &[u32]) -> Option<(FlexTextKind, String)> {
-    use midi2::flex_data::FlexData;
     use midi2::UmpMessage;
+    use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(fd) = UmpMessage::try_from(words).ok()? else {
         return None;
     };
@@ -450,8 +450,8 @@ fn flex_text_from_words(words: &[u32]) -> Option<(FlexTextKind, String)> {
 /// Recover BPM from a Flex Data Set Tempo [`MidiEvent`], or `None` if `event`
 /// isn't one. Inverse of [`MidiEvent::flex_set_tempo`].
 pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
-    use midi2::flex_data::FlexData;
     use midi2::UmpMessage;
+    use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetTempo(m)) =
         UmpMessage::try_from(event.data_words()).ok()?
     else {
@@ -464,8 +464,8 @@ pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
 /// [`MidiEvent`], or `None` if `event` isn't one. Inverse of
 /// [`MidiEvent::flex_set_time_signature`].
 pub fn flex_time_signature(event: &MidiEvent) -> Option<(u8, u8)> {
-    use midi2::flex_data::FlexData;
     use midi2::UmpMessage;
+    use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetTimeSignature(m)) =
         UmpMessage::try_from(event.data_words()).ok()?
     else {
@@ -535,13 +535,15 @@ mod tests {
 
     #[test]
     fn flex_tempo_bpm_rejects_non_tempo() {
-        assert!(flex_tempo_bpm(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none());
+        assert!(
+            flex_tempo_bpm(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -615,13 +617,15 @@ mod tests {
     #[test]
     fn flex_text_rejects_non_text() {
         assert!(flex_text(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0)).is_none());
-        assert!(flex_text(&MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none());
+        assert!(
+            flex_text(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none()
+        );
     }
 
     #[test]
@@ -696,17 +700,19 @@ mod tests {
         assert!(!r.is_in_flight());
 
         // Non-text Flex Data and non-Flex events are ignored.
-        assert!(r
-            .push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0))
-            .is_none());
-        assert!(r
-            .push(&MidiEvent::note_on(
+        assert!(
+            r.push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0))
+                .is_none()
+        );
+        assert!(
+            r.push(&MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_none());
+            .is_none()
+        );
         r.reset();
         assert!(!r.is_in_flight());
     }

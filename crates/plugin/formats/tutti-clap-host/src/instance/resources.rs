@@ -1,7 +1,7 @@
 //! Resource-directory methods from the draft `CLAP_EXT_RESOURCE_DIRECTORY`.
 
-use super::ext;
 use super::ClapLoaded;
+use super::ext;
 use crate::cstr_to_string;
 
 impl ClapLoaded {

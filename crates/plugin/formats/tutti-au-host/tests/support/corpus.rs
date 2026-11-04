@@ -30,8 +30,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
 use tutti_au_host::AuInstance;
+use tutti_au_host::component::{AuComponentInfo, AuType, enumerate_components_of_type};
 use tutti_au_host::{AuLayoutTag, BusDirection};
 use tutti_types::Samples;
 

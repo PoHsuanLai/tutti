@@ -47,8 +47,8 @@
 //! that way would be a second spelling of the same control.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Abort the process on this `process()` call (1-based). `0` = never.
 static CRASH_ON_BLOCK: AtomicU32 = AtomicU32::new(0);

@@ -19,8 +19,8 @@
 //! [`TransportSettings`](super::TransportSettings) and is not routed through
 //! this queue: nothing decides those, they are just values.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crossbeam_queue::ArrayQueue;
 
@@ -795,9 +795,10 @@ mod tests {
     #[test]
     fn send_all_preserves_order() {
         let (m, mut a) = fsm();
-        assert!(m
-            .try_send_all([MotionEvent::locate(Beat(16.0)), MotionEvent::Play])
-            .is_ok());
+        assert!(
+            m.try_send_all([MotionEvent::locate(Beat(16.0)), MotionEvent::Play])
+                .is_ok()
+        );
         a.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(16.0)));

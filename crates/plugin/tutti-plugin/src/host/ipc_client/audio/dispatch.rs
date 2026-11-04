@@ -8,8 +8,8 @@ use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::host::node::MidiIntake;
 use crate::protocol::{
-    midi_from_wire, BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamAddress,
-    ParameterChanges, ParameterPoint, ParameterQueue, ProcessAudioData,
+    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamAddress, ParameterChanges,
+    ParameterPoint, ParameterQueue, ProcessAudioData, midi_from_wire,
 };
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
@@ -579,7 +579,7 @@ pub(super) fn handle(
                         return Err(BridgeError::UnexpectedMessage {
                             expected: "SampleRateSet",
                             got: format!("{other:?}"),
-                        })
+                        });
                     }
                 }
             }
@@ -772,12 +772,12 @@ fn recv_state(
                     Ok(true) => return Ok(Ok(acc.into_inner())),
                     Ok(false) => {}
                     Err(ChunkError::TooLarge { bytes, limit }) => {
-                        return Ok(Err(StateError::TooLarge { bytes, limit }))
+                        return Ok(Err(StateError::TooLarge { bytes, limit }));
                     }
                     Err(ChunkError::OutOfOrder { got, expected }) => {
                         return Ok(Err(StateError::Rejected(format!(
                             "plugin sent state chunk {got} where {expected} was expected"
-                        ))))
+                        ))));
                     }
                 }
             }
@@ -786,7 +786,7 @@ fn recv_state(
             other => {
                 return Ok(Err(StateError::Rejected(format!(
                     "unexpected reply while reading plugin state: {other:?}"
-                ))))
+                ))));
             }
         }
     }

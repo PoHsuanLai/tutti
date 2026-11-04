@@ -25,7 +25,7 @@ use tutti_graph::{
 };
 use tutti_mod::ControlProgram;
 use tutti_mod::Curve;
-use tutti_nodes::automation::{ControlLaneNode, CONTROL_STEP};
+use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     Beat, Bpm, ChannelLayout, FrameClock, Hz, LoopRange, NodeKey, ParamKey, SampleRate, Samples,

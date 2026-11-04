@@ -7,23 +7,23 @@
 //! depending on which tier loaded it.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tutti_core::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
     SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
 };
 use tutti_graph::{
-    param_parts, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+    Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
 };
 use tutti_io::Wave;
 
 use super::clock::{BlockClock, Clock};
-use super::interp::{hermite_lanes, place, read_looped_frame, split_position, tap, Gate};
-use super::loop_span::{blend, LoopSpan};
+use super::interp::{Gate, hermite_lanes, place, read_looped_frame, split_position, tap};
+use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
 use crate::lanes::{Gather, UNPREPARED_FRAMES};
-use crate::{nonempty, MAX_SAMPLER_CHANNELS};
+use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
 /// [`LoopSetting`].
@@ -989,11 +989,7 @@ impl MemorySource {
                     (Direction::Forward, Some(span)) => span.place(p).0,
                     (Direction::Forward, None) => p,
                 };
-                if p >= flen {
-                    None
-                } else {
-                    Some(p)
-                }
+                if p >= flen { None } else { Some(p) }
             });
             (index[i], frac[i], live[i]) = match at {
                 Some(at) => {

@@ -27,11 +27,11 @@ use coremidi::{
     PropertyGetter, Protocol as CmProtocol, Source, Sources,
 };
 
+use crate::InputProducerHandle;
 use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
-use crate::InputProducerHandle;
-use tutti_midi_types::ump::{split_ump_stream, MidiEvent};
+use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
 use tutti_midi_types::{MidiOut, Protocol};
 
 pub mod virtual_destination;

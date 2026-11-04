@@ -77,14 +77,14 @@ use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
 };
 
-use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
+#[cfg(doc)]
+use crate::MotionFsm;
 use crate::transport::Control;
+use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
 use crate::transport::{
     FadeOut, MotionAudio, MotionEvent, MotionState, TransportClock, TransportCommand,
 };
-use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
-#[cfg(doc)]
-use crate::MotionFsm;
+use crate::transport::{SCHEDULE_CAPACITY, Schedule, Scheduled};
 use crate::{AudioThreadCell, InterleavedMut, LoadMeter, SampleRate, Samples, Seconds};
 use std::sync::Arc;
 use std::time::Instant;
@@ -527,69 +527,72 @@ impl Engine {
         // observed with its real length once it is cut; before that, a copy
         // observes it with the rest of the block, to answer `crossed`.
         let mut base = *playhead;
-        schedule.with_pending(|pending| loop {
-            let env = Env {
-                frame: frame0 + Samples(cursor),
-                sample_rate: rate,
-                block_len: Samples(frames - cursor),
-                transport: t,
-                changes: TransportChanges::NONE,
-                play: tutti_graph::PlayClock::ZERO,
-            };
-            // The next declicked command ahead, within one fade of the end of
-            // this block: the fade-out that ends on its frame may start here.
-            let next = lead_target(pending, &env);
-            if next != aim {
-                walk.gain.push(cursor, Gain::Aim(next));
-                aim = next;
-            }
-            let mut ph = base;
-            ph.observe(&env);
-            // The earliest command due from the cursor on; send order breaks
-            // ties.
-            let mut best: Option<(usize, usize, bool)> = None;
-            for (i, cmd) in pending.iter().enumerate() {
-                let (k, late) = match (cmd.at, env.due(cmd.at)) {
-                    (_, Due::In(k)) => (k.index(), false),
-                    (At::Frame(_), Due::Late) => (0, true),
-                    (At::Beat(b), _) if ph.crossed(b.get()) => (0, true),
-                    _ => continue,
+        schedule.with_pending(|pending| {
+            loop {
+                let env = Env {
+                    frame: frame0 + Samples(cursor),
+                    sample_rate: rate,
+                    block_len: Samples(frames - cursor),
+                    transport: t,
+                    changes: TransportChanges::NONE,
+                    play: tutti_graph::PlayClock::ZERO,
                 };
-                let earlier = best
-                    .is_none_or(|(bk, bi, _)| k < bk || (k == bk && cmd.seq() < pending[bi].seq()));
-                if earlier {
-                    best = Some((k, i, late));
+                // The next declicked command ahead, within one fade of the end of
+                // this block: the fade-out that ends on its frame may start here.
+                let next = lead_target(pending, &env);
+                if next != aim {
+                    walk.gain.push(cursor, Gain::Aim(next));
+                    aim = next;
                 }
-            }
-            let Some((k, i, late)) = best else { break };
-            let at = cursor + k;
-            if at > cursor {
-                if !pieces.room() {
-                    // No more cuts fit this block: the rest wait for the
-                    // next one, where they land late.
-                    break;
+                let mut ph = base;
+                ph.observe(&env);
+                // The earliest command due from the cursor on; send order breaks
+                // ties.
+                let mut best: Option<(usize, usize, bool)> = None;
+                for (i, cmd) in pending.iter().enumerate() {
+                    let (k, late) = match (cmd.at, env.due(cmd.at)) {
+                        (_, Due::In(k)) => (k.index(), false),
+                        (At::Frame(_), Due::Late) => (0, true),
+                        (At::Beat(b), _) if ph.crossed(b.get()) => (0, true),
+                        _ => continue,
+                    };
+                    let earlier = best.is_none_or(|(bk, bi, _)| {
+                        k < bk || (k == bk && cmd.seq() < pending[bi].seq())
+                    });
+                    if earlier {
+                        best = Some((k, i, late));
+                    }
                 }
-                base.observe(&Env {
-                    block_len: Samples(at - cursor),
-                    ..env
-                });
-                pieces.run(cursor, at, &t);
-                cursor = at;
-            }
-            let cmd = pending.swap_remove(i);
-            motion.apply(cmd.command);
-            schedule.release(1);
-            if late {
-                schedule.count_late();
-            }
-            if settle_declick(motion, &mut walk.gain, cursor) {
-                // A jump clears the fader's aim.
-                aim = None;
-            }
-            t = pieces.begin(Some(&cmd.command));
-            match Offset::new(cursor, Samples(frames)) {
-                Some(o) if cursor > 0 => pieces.change(o, t),
-                _ => walk.start = t,
+                let Some((k, i, late)) = best else { break };
+                let at = cursor + k;
+                if at > cursor {
+                    if !pieces.room() {
+                        // No more cuts fit this block: the rest wait for the
+                        // next one, where they land late.
+                        break;
+                    }
+                    base.observe(&Env {
+                        block_len: Samples(at - cursor),
+                        ..env
+                    });
+                    pieces.run(cursor, at, &t);
+                    cursor = at;
+                }
+                let cmd = pending.swap_remove(i);
+                motion.apply(cmd.command);
+                schedule.release(1);
+                if late {
+                    schedule.count_late();
+                }
+                if settle_declick(motion, &mut walk.gain, cursor) {
+                    // A jump clears the fader's aim.
+                    aim = None;
+                }
+                t = pieces.begin(Some(&cmd.command));
+                match Offset::new(cursor, Samples(frames)) {
+                    Some(o) if cursor > 0 => pieces.change(o, t),
+                    _ => walk.start = t,
+                }
             }
         });
         base.observe(&Env {

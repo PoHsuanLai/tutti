@@ -19,8 +19,8 @@
 use std::sync::atomic::Ordering;
 
 use tutti_midi_types::ump::{
-    UmpMessageType, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
-    SYSEX7_STATUS_START,
+    SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
+    UmpMessageType,
 };
 
 use super::param_delivery::DeliveryCounters;

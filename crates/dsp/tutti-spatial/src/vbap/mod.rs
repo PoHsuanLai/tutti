@@ -23,6 +23,6 @@ mod panner;
 
 pub use error::{Result, VbapError};
 pub use mix::{
-    build_vbap_mix, vbap_mix_parts, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapSource,
+    VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix, vbap_mix_parts,
 };
 pub use node::{VbapPannerControls, VbapPannerNode};

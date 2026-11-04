@@ -17,7 +17,7 @@ use super::super::cache::LruCache;
 use super::super::loops::{Content, RingMap};
 use super::super::metrics::Metrics;
 use super::super::plan::ChannelPlan;
-use super::super::prefetch::{RegionOut, HISTORY_FRAMES};
+use super::super::prefetch::{HISTORY_FRAMES, RegionOut};
 use super::super::region_map::RegionMap;
 use super::super::rt_state::RtState;
 use dashmap::DashMap;

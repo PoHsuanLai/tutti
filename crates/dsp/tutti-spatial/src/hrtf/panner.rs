@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, Mix, Radians, SampleRate, Samples};
+use tutti_core::{Azimuth, Elevation, Mix, Radians, SampleRate, Samples, fold_frame_to_mono};
 use tutti_types::Complex32;
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
@@ -380,11 +380,7 @@ fn blend_into(
 ) {
     let [a, b, c] = weights.verts.map(|v| {
         let (left, right) = set.spectrum(v);
-        if ear == 0 {
-            left
-        } else {
-            right
-        }
+        if ear == 0 { left } else { right }
     });
     let [wa, wb, wc] = weights.w;
     let filters = a.iter().zip(b).zip(c);

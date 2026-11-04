@@ -25,9 +25,8 @@ use std::sync::Arc;
 
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream,
-    IPlugView, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
-    IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
+    FUnknown, IBStream, IPlugView, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait,
+    IPlugViewTrait, IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
         IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
         IAudioProcessorTrait, IAutomationState, IAutomationStateTrait, IComponent, IComponentTrait,
@@ -40,6 +39,7 @@ use vst3::Steinberg::{
         IUnitInfoTrait, IXmlRepresentationController, IXmlRepresentationControllerTrait,
         PhysicalUIMap, PhysicalUIMapList, RepresentationInfo,
     },
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue,
 };
 
 #[cfg(target_os = "windows")]
@@ -2084,8 +2084,8 @@ impl Vst3Loaded {
     /// the pair is one less.
     #[cfg(feature = "conformance")]
     pub fn host_context_refcount(&self) -> usize {
-        use vst3::com_scrape_types::Unknown;
         use vst3::Steinberg::Vst::IHostApplication;
+        use vst3::com_scrape_types::Unknown;
 
         let Some(iface) = self.host.application.as_com_ref::<IHostApplication>() else {
             return 0;
@@ -2748,7 +2748,7 @@ mod char8_fill_tests {
 
 #[cfg(test)]
 mod state_container_tests {
-    use super::{pack_state, unpack_state, STATE_MAGIC, STATE_VERSION};
+    use super::{STATE_MAGIC, STATE_VERSION, pack_state, unpack_state};
 
     /// Both halves survive the round trip, split back at the right byte.
     #[test]
@@ -3132,7 +3132,7 @@ mod unit_group_tests {
 
 #[cfg(test)]
 mod content_scale_tests {
-    use super::{content_scale_for, ContentScale};
+    use super::{ContentScale, content_scale_for};
     use vst3::Steinberg::{
         kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID,
     };

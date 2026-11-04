@@ -15,7 +15,7 @@ use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeModMix};
 use crate::delay::{DelayLine, InterpolationMode};
-use crate::ramp::{block_driven, Ramp, COEFF_INTERVAL};
+use crate::ramp::{COEFF_INTERVAL, Ramp, block_driven};
 
 /// Everything that distinguishes one modulated-delay effect from another: the
 /// delay it sweeps around, how the channels' sweeps are staggered, and the

@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use libloading::Library;
 use vst3::Steinberg::{
-    kResultOk, FIDString, FUnknown, IPluginFactory, IPluginFactory3, IPluginFactory3Trait,
-    IPluginFactoryTrait, PClassInfo, PClassInfoW, PFactoryInfo, TUID,
+    FIDString, FUnknown, IPluginFactory, IPluginFactory3, IPluginFactory3Trait,
+    IPluginFactoryTrait, PClassInfo, PClassInfoW, PFactoryInfo, TUID, kResultOk,
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
@@ -420,7 +420,7 @@ fn non_empty(s: String) -> Option<String> {
 
 #[cfg(test)]
 mod factory_flag_tests {
-    use super::{factory_flags, FactoryInfo};
+    use super::{FactoryInfo, factory_flags};
 
     fn with_flags(flags: i32) -> FactoryInfo {
         FactoryInfo {

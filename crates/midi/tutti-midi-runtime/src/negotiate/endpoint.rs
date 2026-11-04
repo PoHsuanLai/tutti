@@ -11,14 +11,13 @@
 //! pure (no interior mutation), so it is trivially testable and safe to call
 //! from any thread.
 
-use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
-use tutti_midi_types::midi2::UmpMessage;
-use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
 use tutti_midi_types::MidiGroup;
+use tutti_midi_types::midi2::UmpMessage;
+use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
+use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
 use tutti_midi_types::{
-    EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
+    ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
-    ALL_FUNCTION_BLOCKS,
 };
 
 /// One Function Block this endpoint exposes (M2-104 §7.1.3).
@@ -498,8 +497,8 @@ fn decode_product_instance_id(words: &[u32]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::midi2::flex_data::FlexData;
     use tutti_midi_types::MidiChannel;
+    use tutti_midi_types::midi2::flex_data::FlexData;
 
     fn negotiator() -> EndpointNegotiator {
         EndpointNegotiator::new(
@@ -804,12 +803,14 @@ mod tests {
             .expect("Endpoint Info was in the reply stream");
 
         assert_eq!(d.ump_version, Some(UmpVersion::V1_1));
-        assert!(d
-            .capabilities
-            .contains(EndpointCapabilities::MIDI2_PROTOCOL));
-        assert!(d
-            .capabilities
-            .contains(EndpointCapabilities::MIDI1_PROTOCOL));
+        assert!(
+            d.capabilities
+                .contains(EndpointCapabilities::MIDI2_PROTOCOL)
+        );
+        assert!(
+            d.capabilities
+                .contains(EndpointCapabilities::MIDI1_PROTOCOL)
+        );
         assert_eq!(d.protocol, Some(Protocol::Midi2));
         assert_eq!(
             d.identity,
@@ -848,14 +849,15 @@ mod tests {
     #[test]
     fn non_discovery_event_yields_no_reply() {
         let n = negotiator();
-        assert!(n
-            .respond_to(&MidiEvent::note_on(
+        assert!(
+            n.respond_to(&MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_empty());
+            .is_empty()
+        );
         // A Flex message isn't UMP Stream either.
         let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0);
         assert!(matches!(

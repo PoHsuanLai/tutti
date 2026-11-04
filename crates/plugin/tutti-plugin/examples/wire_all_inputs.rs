@@ -22,9 +22,9 @@ use tutti_mod::{
     Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;
+use tutti_plugin::Result;
 use tutti_plugin::catalog::{Plugin, PluginRole};
 use tutti_plugin::handles::ParamAddress;
-use tutti_plugin::Result;
 
 use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, ProjectMeter, SampleRate};
 

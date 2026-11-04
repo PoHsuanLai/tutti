@@ -48,8 +48,8 @@
 //! `a_width_crossing_the_fold_threshold_crossfades` pins the crossfade itself.
 
 use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate, Spread, StereoWidth};
-use tutti_graph::contract::{drive, prepared};
 use tutti_graph::Node;
+use tutti_graph::contract::{drive, prepared};
 use tutti_spatial::VbapPannerNode;
 
 const BLOCK: usize = 64;

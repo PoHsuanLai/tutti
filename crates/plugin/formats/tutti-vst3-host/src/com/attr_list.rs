@@ -1,12 +1,12 @@
 //! IAttributeList COM implementation — key/value store for plugin messages.
 
 use std::collections::HashMap;
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 
 use parking_lot::Mutex;
 use vst3::Steinberg::{
+    Vst::{IAttributeList, IAttributeList_::AttrID, IAttributeListTrait, TChar},
     kInvalidArgument, kResultOk, tresult,
-    Vst::{IAttributeList, IAttributeListTrait, IAttributeList_::AttrID, TChar},
 };
 use vst3::{Class, ComWrapper};
 

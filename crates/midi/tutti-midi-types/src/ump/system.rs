@@ -141,7 +141,7 @@ impl MidiEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midi2::{system_common, UmpMessage};
+    use midi2::{UmpMessage, system_common};
 
     #[test]
     fn timing_clock_is_one_word() {

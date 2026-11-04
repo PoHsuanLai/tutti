@@ -18,7 +18,7 @@ use tutti_mod::{
     Adsr, Amount, ControlProgram, CurveType, InputLayer, LayerId, Polarity, SignalKind, SourceId,
     SourceNode,
 };
-use tutti_nodes::automation::{ControlLaneNode, CONTROL_STEP};
+use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_nodes::{EnvelopeFollowerNode, NoteEnvelopeNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
@@ -739,7 +739,9 @@ fn a_note_envelopes_stages_land_on_their_frames() {
     let marks: Vec<usize> = (0..28_000).filter(|&f| all[1][f] != 0.0).collect();
     assert_eq!(
         marks,
-        [1_000, 1_480, 5_000, 10_000, 10_120, 20_000, 20_480, 22_000, 22_480, 25_000]
+        [
+            1_000, 1_480, 5_000, 10_000, 10_120, 20_000, 20_480, 22_000, 22_480, 25_000
+        ]
     );
     let at = |f: usize| v[f];
     assert!(v[..1_000].iter().all(|&x| x == 0.0));

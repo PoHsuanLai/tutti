@@ -22,8 +22,8 @@
 //! the same "plumbed but idle until a producer wires it" shape note expression
 //! uses.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use vst3::ComPtr;

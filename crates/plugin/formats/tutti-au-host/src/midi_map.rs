@@ -1112,10 +1112,12 @@ mod tests {
         assert!(!MidiTrigger::ProgramChange { patch: 0 }.is_note_command());
         assert!(!MidiTrigger::ChannelPressure.is_note_command());
         assert!(!MidiTrigger::PitchBend.is_note_command());
-        assert!(!MidiTrigger::Other {
-            status: 0xF8,
-            data1: 0
-        }
-        .is_note_command());
+        assert!(
+            !MidiTrigger::Other {
+                status: 0xF8,
+                data1: 0
+            }
+            .is_note_command()
+        );
     }
 }

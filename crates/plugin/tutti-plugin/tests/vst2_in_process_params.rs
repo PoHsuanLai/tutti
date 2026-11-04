@@ -32,7 +32,7 @@ use tutti_graph::{
 use tutti_mod::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamAddress, PluginHandle};
-use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
+use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 
 #[path = "support/probe_path.rs"]
 mod probe_path;

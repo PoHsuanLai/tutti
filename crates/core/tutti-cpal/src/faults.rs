@@ -15,8 +15,8 @@
 //! from [`OutputBlock::render`](crate::OutputBlock::render), so no audio-thread
 //! rule applies to it. If that ever changes, the message field has to go.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// What kind of fault the backend reported.
 ///

@@ -13,8 +13,8 @@
 //! `assert_no_alloc` test in `tests/`).
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use tutti_core::{MeterMap, MeterSlotReader, ProjectMeter, Samples};
@@ -659,15 +659,18 @@ mod transport_tests {
     fn only_a_live_feed_carries_the_host_clock() {
         let e = env();
         let mut live = TransportFeed::new();
-        assert!(live
-            .block(&cx(&e), 64, loader_features())
-            .system_time_ns
-            .is_some());
+        assert!(
+            live.block(&cx(&e), 64, loader_features())
+                .system_time_ns
+                .is_some()
+        );
         let mut live_fork = live.forked(false);
-        assert!(live_fork
-            .block(&cx(&e), 64, loader_features())
-            .system_time_ns
-            .is_some());
+        assert!(
+            live_fork
+                .block(&cx(&e), 64, loader_features())
+                .system_time_ns
+                .is_some()
+        );
         let mut offline = live.forked(true);
         assert_eq!(
             offline.block(&cx(&e), 64, loader_features()).system_time_ns,

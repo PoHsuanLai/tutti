@@ -42,7 +42,7 @@
 //! The device callback only ever *pushes* (the producer half, holding
 //! `HeapProd` directly), never pops.
 
-use ringbuf::{traits::Consumer, HeapCons};
+use ringbuf::{HeapCons, traits::Consumer};
 use tutti_core::{Amplitude, ChannelLayout, SampleRate, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 
@@ -279,8 +279,8 @@ impl IntoNode for MicMonitorNode {
 mod tests {
     use super::*;
     use ringbuf::{
-        traits::{Producer, Split},
         HeapRb,
+        traits::{Producer, Split},
     };
     use tutti_graph::contract::prepared;
 
@@ -452,8 +452,8 @@ mod tests {
     /// fails.
     #[test]
     fn the_mic_refuses_to_fork() {
-        use tutti_core::graph::{OutPort, Source};
         use tutti_core::NodeKey;
+        use tutti_core::graph::{OutPort, Source};
         use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget};
 
         let (ring, _prod) = ring_with(&[[1.0, 2.0]]);

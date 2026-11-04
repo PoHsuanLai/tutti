@@ -58,8 +58,8 @@ impl MidiEvent {
     /// for the next message.
     #[inline]
     pub fn jr_clock_value(&self) -> Option<u16> {
-        use midi2::utility::Utility;
         use midi2::UmpMessage;
+        use midi2::utility::Utility;
         match UmpMessage::try_from(self.data_words()).ok()? {
             UmpMessage::Utility(Utility::Clock(m)) => Some(m.time_data()),
             _ => None,
@@ -70,8 +70,8 @@ impl MidiEvent {
     /// message, else `None`. Inverse of [`Self::jr_timestamp`].
     #[inline]
     pub fn jr_timestamp_value(&self) -> Option<u16> {
-        use midi2::utility::Utility;
         use midi2::UmpMessage;
+        use midi2::utility::Utility;
         match UmpMessage::try_from(self.data_words()).ok()? {
             UmpMessage::Utility(Utility::Timestamp(m)) => Some(m.time_data()),
             _ => None,
@@ -82,7 +82,7 @@ impl MidiEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midi2::{utility, UmpMessage};
+    use midi2::{UmpMessage, utility};
 
     #[test]
     fn noop_is_utility_zero_word() {

@@ -367,7 +367,7 @@ impl IntoNode for DistortionNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{tick, RATE};
+    use crate::test_support::{RATE, tick};
     use tutti_graph::contract::{assert_param_fork, drive};
 
     fn process_mono_through(node: &mut DistortionNode, input: &[f32]) -> Vec<f32> {

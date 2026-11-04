@@ -9,9 +9,9 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::Latency;
 
 use super::panner::{HrtfBinaural, HrtfBinauralError, LATENCY};
-use crate::fork::{fresh_fork_parts, FreshFork};
-use crate::target::hold_finite;
 use crate::SpatialTarget;
+use crate::fork::{FreshFork, fresh_fork_parts};
+use crate::target::hold_finite;
 
 /// A binaural panner for headphones: FFT convolution against a measured HRIR
 /// sphere, stereo in, stereo out.

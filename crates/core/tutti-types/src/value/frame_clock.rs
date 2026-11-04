@@ -92,11 +92,7 @@ impl LoopRange {
     /// not looping, and `transport_at` walks with [`FrameClock`]), so the two agree.
     #[inline]
     pub fn advance(&self, from: Beat, to: Beat) -> Beat {
-        if from < self.end {
-            self.wrap(to)
-        } else {
-            to
-        }
+        if from < self.end { self.wrap(to) } else { to }
     }
 
     /// Wraps `beat` back into the region, preserving overshoot.

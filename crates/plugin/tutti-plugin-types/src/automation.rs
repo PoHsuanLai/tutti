@@ -1015,11 +1015,13 @@ mod pool_tests {
                     "{params} at {chunk}: {} points",
                     changes.point_storage()
                 );
-                assert!(changes
-                    .pool
-                    .free_blocks()
-                    .iter()
-                    .all(|b| b.capacity() == room + 1));
+                assert!(
+                    changes
+                        .pool
+                        .free_blocks()
+                        .iter()
+                        .all(|b| b.capacity() == room + 1)
+                );
             }
         }
         let few = ParameterChanges::reserved(10, 40);
@@ -1212,15 +1214,19 @@ mod pool_tests {
             .collect();
         back.sort_unstable();
         assert_eq!(back, blocks);
-        assert!(changes
-            .pool
-            .free_blocks()
-            .iter()
-            .all(|b| b.is_empty() && b.capacity() == ROOM + 1));
-        assert!(changes
-            .spare
-            .iter()
-            .any(|q| q.points.as_ptr() as usize == grown));
+        assert!(
+            changes
+                .pool
+                .free_blocks()
+                .iter()
+                .all(|b| b.is_empty() && b.capacity() == ROOM + 1)
+        );
+        assert!(
+            changes
+                .spare
+                .iter()
+                .any(|q| q.points.as_ptr() as usize == grown)
+        );
         assert_eq!(changes.pool.lent(), 0);
     }
 

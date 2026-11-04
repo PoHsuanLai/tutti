@@ -24,7 +24,7 @@ use std::f32::consts::TAU;
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
 use tutti_graph::contract::Direct;
 use tutti_io::Wave;

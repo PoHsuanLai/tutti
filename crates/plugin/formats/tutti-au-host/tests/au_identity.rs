@@ -55,7 +55,7 @@ mod support;
 use std::sync::Mutex;
 
 use support::corpus::{
-    every_component, open_info, DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB,
+    DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB, every_component, open_info,
 };
 use support::probe_au::{Misbehaviour, PROBE_MANUFACTURER};
 use tutti_au_host::AuError;

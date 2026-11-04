@@ -5,12 +5,12 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering as StdOrdering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering as StdOrdering;
 
 use crate::cell::ArcLend;
-use crate::slots::{Slot, Word, FREE};
-use crate::sync::{fence, Ordering};
+use crate::slots::{FREE, Slot, Word};
+use crate::sync::{Ordering, fence};
 
 /// One thread's registration to read an [`ArcLend`].
 ///

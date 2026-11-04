@@ -101,8 +101,8 @@ mod tests;
 // re-exported here so `crate::host::node::...` paths resolve.
 pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
-pub(crate) use capability_view::is_declined;
 pub use capability_view::TransportView;
+pub(crate) use capability_view::is_declined;
 pub use controls::PluginControls;
 pub use meter::PluginMeter;
 pub(crate) use midi_intake::MidiIntake;
@@ -122,9 +122,9 @@ pub(crate) use segment_points::SegmentPoints;
 pub(crate) use batcher::MAX_CHUNK;
 
 use crate::error::Result;
+use crate::host::ipc_client::PluginBridge;
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
-use crate::host::ipc_client::PluginBridge;
 use crate::host::subprocess;
 use crate::protocol::{
     LoadedPlugin, MidiEventVec, Normalized, ParamAddress, PluginDescriptor, SampleFormat,
@@ -133,8 +133,8 @@ use crate::protocol::{
 use crate::util::config::BridgeConfig;
 use batcher::Batcher;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tutti_core::meter::MeterMap;
 use tutti_core::{SampleRate, Samples};
 use tutti_plugin_types::PluginTail;

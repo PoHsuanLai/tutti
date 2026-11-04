@@ -9,9 +9,9 @@ pub use real::Real;
 
 pub use eq_band::{BandState, EqBandNode};
 pub use ladder::{
-    compute_ladder_coeffs, LadderCoeffs, LadderFilterNode, LadderType, LADDER_PARAMS,
+    LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType, compute_ladder_coeffs,
 };
-pub use svf::{compute_svf_coeffs, SvfCoeffs, SvfFilterNode, SvfType, SVF_PARAMS};
+pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType, compute_svf_coeffs};
 
 #[cfg(test)]
 pub(super) mod test_utils {

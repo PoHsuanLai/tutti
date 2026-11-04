@@ -297,7 +297,7 @@ impl MidiEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midi2::{channel_voice2, UmpMessage};
+    use midi2::{UmpMessage, channel_voice2};
 
     #[test]
     fn note_on_decodes_via_midi2() {

@@ -84,14 +84,14 @@
 //! future frame holds its credit until it lands, so the limit is on
 //! *outstanding* commands, not on commands per block.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{At, Latency};
 
-use crate::event::{merge_into, Event, EventKind};
+use crate::event::{Event, EventKind, merge_into};
 use crate::node::{Env, Resolution};
 use crate::plan::Plan;
 use crate::spec::EventIn;

@@ -42,7 +42,7 @@
 //! instrument plays.
 
 mod golden;
-pub use golden::{assert_golden, RECORDED_ARCH, RECORDED_GLIBC};
+pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 
 use std::f64::consts::TAU;
 

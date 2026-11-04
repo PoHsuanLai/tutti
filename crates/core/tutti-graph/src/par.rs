@@ -67,9 +67,9 @@
 //! participant has left, naming the cause. The node's own panic message has
 //! already been printed by the panic hook.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::AtomicU8;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 
 use tutti_types::{
     BlockWaits, ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw,
@@ -80,11 +80,11 @@ use crate::arena::{Arena, Line};
 use crate::command::Deliveries;
 use crate::event::Event;
 use crate::exec::{
-    audio_ring, capture_op, delay_op, event_delay_op, event_merge_op, event_ring, global_in,
-    node_dispatch, output_op, Head, Inject, OpState, Ring, Unit,
+    Head, Inject, OpState, Ring, Unit, audio_ring, capture_op, delay_op, event_delay_op,
+    event_merge_op, event_ring, global_in, node_dispatch, output_op,
 };
 use crate::history::TransportHistory;
-use crate::node::{Env, MaxBlock, MAX_PORTS};
+use crate::node::{Env, MAX_PORTS, MaxBlock};
 use crate::plan::{Op, Plan, Span};
 use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 

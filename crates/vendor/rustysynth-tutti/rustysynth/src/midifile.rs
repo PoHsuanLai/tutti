@@ -2,11 +2,11 @@
 
 use std::io::Read;
 
+use crate::MidiFileError;
+use crate::MidiFileLoopType;
 use crate::binary_reader::BinaryReader;
 use crate::four_cc::FourCC;
 use crate::read_counter::ReadCounter;
-use crate::MidiFileError;
-use crate::MidiFileLoopType;
 
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]

@@ -18,10 +18,22 @@ pub fn c_str_to_string(bytes: &[i8]) -> String {
 pub(crate) fn cid_to_string(cid: &[u8; 16]) -> String {
     format!(
         "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}",
-        cid[0], cid[1], cid[2], cid[3],
-        cid[4], cid[5], cid[6], cid[7],
-        cid[8], cid[9], cid[10], cid[11],
-        cid[12], cid[13], cid[14], cid[15]
+        cid[0],
+        cid[1],
+        cid[2],
+        cid[3],
+        cid[4],
+        cid[5],
+        cid[6],
+        cid[7],
+        cid[8],
+        cid[9],
+        cid[10],
+        cid[11],
+        cid[12],
+        cid[13],
+        cid[14],
+        cid[15]
     )
 }
 

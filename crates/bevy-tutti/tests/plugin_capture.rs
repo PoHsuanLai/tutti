@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use bevy_app::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
+use bevy_tutti::AudioEngineState;
 use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources, MetronomeRes,
     TransportRes,
@@ -49,7 +50,6 @@ use bevy_tutti::graph::{
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
-use bevy_tutti::AudioEngineState;
 use tutti_core::transport::{ClickState, Transport};
 use tutti_core::{AudioNode, SampleRate, Samples};
 use tutti_plugin::catalog::PluginId;

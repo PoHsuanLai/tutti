@@ -48,7 +48,7 @@ pub mod backend {
 // which dispatches here for `.vst` files.
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::{
-    load_client as in_process_vst2_client, InProcessVst2Client, InProcessVst2Controls,
+    InProcessVst2Client, InProcessVst2Controls, load_client as in_process_vst2_client,
 };
 
 /// Discovering, persisting, and loading plugins.
@@ -81,9 +81,10 @@ pub mod catalog {
     #[cfg(feature = "json")]
     pub use crate::host::discovery::JsonCatalog;
     pub use crate::host::discovery::{
-        discover, AuComponentType, Blacklist, CatalogExt, ClapFeature, PluginCatalog, PluginClass,
+        AuComponentType, Blacklist, CatalogExt, ClapFeature, PluginCatalog, PluginClass,
         PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanHandle,
         ScanPhase, ScanProgress, ScanResult, Vst2Category, Vst3PlugType, Vst3SubCategories,
+        discover,
     };
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};

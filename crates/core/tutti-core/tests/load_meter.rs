@@ -12,8 +12,8 @@ use assert_no_alloc::AllocDisabler;
 use std::time::{Duration, Instant};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, SampleRate, Samples, Transport};
 use tutti_graph::{Editor, Prepare, Unforkable};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{OutPort, Source};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

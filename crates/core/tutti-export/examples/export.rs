@@ -9,11 +9,11 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
-use tutti_analysis::{measure_loudness, LoudnessConfig};
+use tutti_analysis::{LoudnessConfig, measure_loudness};
 use tutti_core::{Amplitude, FrozenClock, Hz, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
-    ExportConfig, RenderConfig, RenderGraph,
+    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
+    render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};

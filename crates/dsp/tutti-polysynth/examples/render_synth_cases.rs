@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use tutti_core::{Amplitude, Hz, Samples, Seconds, Spread, Q};
+use tutti_core::{Amplitude, Hz, Q, Samples, Seconds, Spread};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;

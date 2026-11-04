@@ -39,8 +39,8 @@
 //! content rule.
 
 use tutti_midi_types::{
-    read_clip_file, write_clip_file_with_header, Beat, Bpm, ClipEvent, ClipHeader, MidiChannel,
-    MidiEvent, MidiGroup,
+    Beat, Bpm, ClipEvent, ClipHeader, MidiChannel, MidiEvent, MidiGroup, read_clip_file,
+    write_clip_file_with_header,
 };
 
 const TPQ: u16 = 96;

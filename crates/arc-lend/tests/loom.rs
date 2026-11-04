@@ -121,8 +121,8 @@
 
 use arc_lend::ArcLend;
 use loom::cell::UnsafeCell;
-use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::sync::Mutex;
+use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::thread;
 use std::sync::Arc;
 

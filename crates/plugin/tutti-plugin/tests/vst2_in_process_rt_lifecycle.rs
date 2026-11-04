@@ -29,7 +29,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use tutti_core::SampleRate;
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
+use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/probe_path.rs"]

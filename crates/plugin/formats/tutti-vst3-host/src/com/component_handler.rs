@@ -34,16 +34,16 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use arrayvec::ArrayString;
 use crossbeam_queue::ArrayQueue;
 use vst3::Steinberg::{
-    kResultOk, tresult, FIDString, IPlugView, TBool,
+    FIDString, IPlugView, TBool,
     Vst::{
         BusDirection, IComponentHandler, IComponentHandler2, IComponentHandler2Trait,
         IComponentHandler3, IComponentHandler3Trait, IComponentHandlerBusActivation,
         IComponentHandlerBusActivationTrait, IComponentHandlerTrait, IContextMenu, IProgress,
-        IProgressTrait,
-        IProgress_::{ProgressType, ID},
-        IUnitHandler, IUnitHandler2, IUnitHandler2Trait, IUnitHandlerTrait, MediaType, ParamID,
-        ParamValue, ProgramListID, UnitID,
+        IProgress_::{ID, ProgressType},
+        IProgressTrait, IUnitHandler, IUnitHandler2, IUnitHandler2Trait, IUnitHandlerTrait,
+        MediaType, ParamID, ParamValue, ProgramListID, UnitID,
     },
+    kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 

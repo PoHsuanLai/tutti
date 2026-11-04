@@ -34,8 +34,8 @@ pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiOut,
-    NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
+    ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiOut, NoteAttribute, NoteId,
+    PerNoteController, UmpMessageType, UnencodableMessage, midi2, midly, normalize,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
@@ -54,8 +54,8 @@ pub use tutti_midi_types::Midi1ToMidi2Translator;
 /// the file-level path codec (`clip`) are `tutti-midi-file`'s and are not
 /// re-exported here.
 pub use tutti_midi_types::{
+    CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

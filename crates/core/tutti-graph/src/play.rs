@@ -20,8 +20,8 @@
 //! epoch equals a live one's, and a reading taken from one executor never
 //! names a play start of another.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use tutti_types::{Frame, PlayReading, Samples};
 

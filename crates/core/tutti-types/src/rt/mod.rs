@@ -69,7 +69,7 @@ pub use denormals::ScopedNoDenormals;
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{
-    PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
+    MAX_POS_RING_FRAMES, PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow,
 };
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{Contended, SeqReader, SeqWriter};

@@ -160,8 +160,8 @@ mod tests {
     use bevy_app::App;
     use tutti_core::{At, ChannelLayout, Db, Frame, Hz, MotionEvent, SampleRate};
     use tutti_cpal::{ManualStream, ManualStreamDriver};
-    use tutti_nodes::testing::Osc;
     use tutti_nodes::LimiterNode;
+    use tutti_nodes::testing::Osc;
 
     const OLD: f64 = 44_100.0;
     const NEW: f64 = 48_000.0;

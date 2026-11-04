@@ -34,12 +34,12 @@
 //! thread. Something sent once the session is gone drops where it is.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use tutti_core::transport::OfflineTransport;
 use tutti_core::AudioNode;
+use tutti_core::transport::OfflineTransport;
 use tutti_export::{ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written};
 use tutti_types::{NodeKey, Samples};
 

@@ -48,7 +48,7 @@ use std::collections::{HashMap, HashSet};
 
 use tutti_midi_runtime::TimedMidiEvent;
 
-use crate::graph::{engine_ready, AudioGraphRes, EventWiring, GraphReconcileSystems};
+use crate::graph::{AudioGraphRes, EventWiring, GraphReconcileSystems, engine_ready};
 use tutti_core::AudioNode;
 
 /// Declares events for the synth (or plugin) on `target` to play.

@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use common::prepare;
 use tutti_graph::{
-    Cx, Editor, EventIn, EventKind, Executor, Io, Node, ParamRamp, Prepare, Reference,
-    ScheduleError, Shape, Status, Transport, Ump, Unforkable, COMMAND_CAPACITY,
+    COMMAND_CAPACITY, Cx, Editor, EventIn, EventKind, Executor, Io, Node, ParamRamp, Prepare,
+    Reference, ScheduleError, Shape, Status, Transport, Ump, Unforkable,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, Samples, Tail};

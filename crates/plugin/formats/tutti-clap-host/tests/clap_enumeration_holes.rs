@@ -44,7 +44,7 @@ use tutti_clap_host::{
     AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, ParameterChanges,
 };
 use tutti_clap_test_plugin::params_state::probe_params;
-use tutti_clap_test_plugin::{ProcessCapture, HOLE_NONE};
+use tutti_clap_test_plugin::{HOLE_NONE, ProcessCapture};
 use tutti_plugin_types::ParamAddress;
 
 /// CLAP's `PARAM_VALUE` wire type, pinned rather than imported: it is the value

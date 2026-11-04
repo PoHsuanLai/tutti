@@ -19,11 +19,11 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv};
+use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 

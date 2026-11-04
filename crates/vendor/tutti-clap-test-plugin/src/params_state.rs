@@ -20,20 +20,19 @@
 //! through [`crate::params_state::tutti_test_plugin_param_capture`], which the test reaches across a
 //! second `dlopen` of this same image.
 
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap_sys::events::{
-    clap_event_header, clap_event_param_gesture, clap_event_param_mod, clap_event_param_value,
-    clap_input_events, clap_output_events, CLAP_CORE_EVENT_SPACE_ID,
-    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
-    CLAP_EVENT_PARAM_VALUE,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+    CLAP_EVENT_PARAM_MOD, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_gesture,
+    clap_event_param_mod, clap_event_param_value, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::params::{
-    clap_param_info, clap_plugin_params, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_MODULATABLE,
-    CLAP_PARAM_IS_STEPPED, CLAP_PARAM_RESCAN_VALUES,
+    CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_MODULATABLE, CLAP_PARAM_IS_STEPPED,
+    CLAP_PARAM_RESCAN_VALUES, clap_param_info, clap_plugin_params,
 };
 use clap_sys::ext::state::clap_plugin_state;
 use clap_sys::ext::state_context::{clap_plugin_state_context, clap_plugin_state_context_type};

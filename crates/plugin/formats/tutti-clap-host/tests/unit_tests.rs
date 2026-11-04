@@ -3,11 +3,11 @@ use std::ffi::c_void;
 use tutti_plugin_types::ParamAddress;
 
 use clap_sys::events::{
-    clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
-    clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
-    CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF,
-    CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
-    CLAP_EVENT_PARAM_MOD, CLAP_EVENT_PARAM_VALUE,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END,
+    CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
+    CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_note, clap_event_note_expression,
+    clap_event_param_gesture, clap_event_param_mod, clap_event_param_value,
 };
 use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
@@ -749,7 +749,7 @@ fn test_host_state_main_thread_id_is_current() {
 /// Mutation (run): return `true` from either callback → its assertion fails.
 #[test]
 fn host_gui_show_and_hide_requests_are_declined() {
-    use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
+    use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
 
     let host = ClapHost::default();
     let raw = host.as_raw();
@@ -765,7 +765,7 @@ fn host_gui_closed_was_destroyed_latches_window_destroyed() {
     // gone, which is what makes close_editor skip gui.hide. It does not record
     // that the gui object was released — the host still owes it a gui.destroy.
     // With was_destroyed = false the latch stays clear.
-    use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
+    use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
     use std::sync::atomic::Ordering;
 
     let host = ClapHost::default();
@@ -1065,8 +1065,8 @@ fn thread_check_roles_are_mutually_exclusive_c1() {
 /// and which a `debug_assert!` (compiled out in release) could not provide.
 #[test]
 fn audio_thread_claim_serializes_across_threads_c2() {
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     let state = Arc::new(HostState::new());
     // Counts concurrent occupants of the claimed region; must never exceed 1.
@@ -1238,7 +1238,7 @@ fn test_note_port_dialect_to_send() {
 
 #[test]
 fn test_host_timer_register_unregister() {
-    use clap_sys::ext::timer_support::{clap_host_timer_support, CLAP_EXT_TIMER_SUPPORT};
+    use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
     use std::sync::Arc;
 
     let state = Arc::new(HostState::new());
@@ -1338,7 +1338,7 @@ fn track_audio_count_comes_from_the_layout() {
 
 #[test]
 fn test_host_track_info_get_returns_false_when_empty() {
-    use clap_sys::ext::track_info::{clap_host_track_info, clap_track_info, CLAP_EXT_TRACK_INFO};
+    use clap_sys::ext::track_info::{CLAP_EXT_TRACK_INFO, clap_host_track_info, clap_track_info};
 
     let host = ClapHost::default();
     let raw = host.as_raw();
@@ -1359,7 +1359,7 @@ fn test_host_track_info_get_returns_false_when_empty() {
 /// assertions fail.
 #[test]
 fn test_host_event_registry_claims_no_space() {
-    use clap_sys::ext::event_registry::{clap_host_event_registry, CLAP_EXT_EVENT_REGISTRY};
+    use clap_sys::ext::event_registry::{CLAP_EXT_EVENT_REGISTRY, clap_host_event_registry};
     use std::sync::Arc;
 
     let state = Arc::new(HostState::new());
@@ -1378,7 +1378,7 @@ fn test_host_event_registry_claims_no_space() {
 #[test]
 fn test_host_transport_control_callbacks_exist() {
     use clap_sys::ext::draft::transport_control::{
-        clap_host_transport_control, CLAP_EXT_TRANSPORT_CONTROL,
+        CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
     };
 
     let host = ClapHost::default();
@@ -1404,10 +1404,10 @@ fn test_host_transport_control_callbacks_exist() {
 #[test]
 fn test_host_audio_ports_config_rescan() {
     use clap_sys::ext::audio_ports_config::{
-        clap_host_audio_ports_config, CLAP_EXT_AUDIO_PORTS_CONFIG,
+        CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
     };
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1423,9 +1423,9 @@ fn test_host_audio_ports_config_rescan() {
 
 #[test]
 fn test_host_remote_controls_changed_and_suggest() {
-    use clap_sys::ext::remote_controls::{clap_host_remote_controls, CLAP_EXT_REMOTE_CONTROLS};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::remote_controls::{CLAP_EXT_REMOTE_CONTROLS, clap_host_remote_controls};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1451,7 +1451,7 @@ fn test_host_remote_controls_changed_and_suggest() {
 /// them. The served case is `tests/clap_thread_pool.rs`.
 #[test]
 fn test_host_thread_pool_request_exec_rejects() {
-    use clap_sys::ext::thread_pool::{clap_host_thread_pool, CLAP_EXT_THREAD_POOL};
+    use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
     use std::sync::Arc;
 
     let host = ClapHost::new(Arc::new(HostState::new()));
@@ -1526,9 +1526,9 @@ fn a_surround_position_round_trips_through_the_enum() {
 
 #[test]
 fn test_host_ambisonic_changed_callback() {
-    use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_EXT_AMBISONIC};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, clap_host_ambisonic};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1544,9 +1544,9 @@ fn test_host_ambisonic_changed_callback() {
 
 #[test]
 fn test_host_surround_changed_callback() {
-    use clap_sys::ext::surround::{clap_host_surround, CLAP_EXT_SURROUND};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::surround::{CLAP_EXT_SURROUND, clap_host_surround};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1566,7 +1566,7 @@ fn test_host_surround_changed_callback() {
 #[test]
 fn test_host_posix_fd_register_and_unregister() {
     use clap_sys::ext::posix_fd_support::{
-        clap_host_posix_fd_support, CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ,
+        CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ, clap_host_posix_fd_support,
     };
     use std::sync::Arc;
 
@@ -1608,8 +1608,8 @@ fn test_host_posix_fd_register_and_unregister() {
 #[test]
 fn test_host_posix_fd_modify() {
     use clap_sys::ext::posix_fd_support::{
-        clap_host_posix_fd_support, CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ,
-        CLAP_POSIX_FD_WRITE,
+        CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+        clap_host_posix_fd_support,
     };
     use std::sync::Arc;
 
@@ -1656,9 +1656,9 @@ fn test_trigger_info_type() {
 
 #[test]
 fn test_host_triggers_rescan_callback() {
-    use clap_sys::ext::draft::triggers::{clap_host_triggers, CLAP_EXT_TRIGGERS};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::draft::triggers::{CLAP_EXT_TRIGGERS, clap_host_triggers};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1667,15 +1667,19 @@ fn test_host_triggers_rescan_callback() {
     let trig_ptr = unsafe { get_ext(raw, CLAP_EXT_TRIGGERS.as_ptr()) };
     let trig = unsafe { &*(trig_ptr as *const clap_host_triggers) };
 
-    assert!(!state
-        .resources
-        .triggers_rescan_requested
-        .load(Ordering::Acquire));
+    assert!(
+        !state
+            .resources
+            .triggers_rescan_requested
+            .load(Ordering::Acquire)
+    );
     unsafe { trig.rescan.unwrap()(raw, 0) };
-    assert!(state
-        .resources
-        .triggers_rescan_requested
-        .load(Ordering::Acquire));
+    assert!(
+        state
+            .resources
+            .triggers_rescan_requested
+            .load(Ordering::Acquire)
+    );
 }
 
 // ── Tuning extension tests ──
@@ -1697,7 +1701,7 @@ fn test_tuning_info_type() {
 
 #[test]
 fn test_host_tuning_callbacks() {
-    use clap_sys::ext::draft::tuning::{clap_host_tuning, CLAP_EXT_TUNING};
+    use clap_sys::ext::draft::tuning::{CLAP_EXT_TUNING, clap_host_tuning};
 
     let host = ClapHost::default();
     let raw = host.as_raw();
@@ -1721,7 +1725,7 @@ fn test_host_tuning_callbacks() {
 #[test]
 fn test_host_resource_directory_callbacks() {
     use clap_sys::ext::draft::resource_directory::{
-        clap_host_resource_directory, CLAP_EXT_RESOURCE_DIRECTORY,
+        CLAP_EXT_RESOURCE_DIRECTORY, clap_host_resource_directory,
     };
 
     let host = ClapHost::default();
@@ -1773,9 +1777,9 @@ fn test_undo_change_type() {
 
 #[test]
 fn test_host_undo_begin_cancel_change() {
-    use clap_sys::ext::draft::undo::{clap_host_undo, CLAP_EXT_UNDO};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1795,7 +1799,7 @@ fn test_host_undo_begin_cancel_change() {
 
 #[test]
 fn test_host_undo_change_made() {
-    use clap_sys::ext::draft::undo::{clap_host_undo, CLAP_EXT_UNDO};
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
     use std::sync::Arc;
 
     let state = Arc::new(HostState::new());
@@ -1827,9 +1831,9 @@ fn test_host_undo_change_made() {
 
 #[test]
 fn test_host_undo_request_undo_redo() {
-    use clap_sys::ext::draft::undo::{clap_host_undo, CLAP_EXT_UNDO};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1850,9 +1854,9 @@ fn test_host_undo_request_undo_redo() {
 
 #[test]
 fn test_host_undo_wants_context_updates() {
-    use clap_sys::ext::draft::undo::{clap_host_undo, CLAP_EXT_UNDO};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::draft::undo::{CLAP_EXT_UNDO, clap_host_undo};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1874,9 +1878,9 @@ fn test_host_undo_wants_context_updates() {
 
 #[test]
 fn test_host_note_name_changed_callback() {
-    use clap_sys::ext::note_name::{clap_host_note_name, CLAP_EXT_NOTE_NAME};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::note_name::{CLAP_EXT_NOTE_NAME, clap_host_note_name};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1894,9 +1898,9 @@ fn test_host_note_name_changed_callback() {
 
 #[test]
 fn test_host_voice_info_changed_callback() {
-    use clap_sys::ext::voice_info::{clap_host_voice_info, CLAP_EXT_VOICE_INFO};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1914,9 +1918,9 @@ fn test_host_voice_info_changed_callback() {
 
 #[test]
 fn test_host_preset_load_loaded_callback() {
-    use clap_sys::ext::preset_load::{clap_host_preset_load, CLAP_EXT_PRESET_LOAD};
-    use std::sync::atomic::Ordering;
+    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -1936,7 +1940,7 @@ fn test_host_preset_load_loaded_callback() {
 
 #[test]
 fn test_host_preset_load_on_error_doesnt_panic() {
-    use clap_sys::ext::preset_load::{clap_host_preset_load, CLAP_EXT_PRESET_LOAD};
+    use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, clap_host_preset_load};
 
     let host = ClapHost::default();
     let raw = host.as_raw();

@@ -36,8 +36,8 @@ use tutti_graph::{
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
-use super::client::{drive_f32, InProcessVst2Client};
-use crate::host::node::{param_input, DeliveryCounters, ParamDeliveryStats, PluginMeter};
+use super::client::{InProcessVst2Client, drive_f32};
+use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
 use crate::protocol::Features;
 
 /// The most channels a block hands the plugin (the stack tables `process`
@@ -342,8 +342,8 @@ impl InProcessVst2Client {
 #[cfg(test)]
 mod owed_tests {
     use std::path::PathBuf;
-    use std::sync::atomic::Ordering;
     use std::sync::OnceLock;
+    use std::sync::atomic::Ordering;
 
     use tutti_core::SampleRate;
     use tutti_graph::contract::Direct;
@@ -422,8 +422,8 @@ mod owed_tests {
     /// A 60-byte SysEx's ten packets, then a 12-byte one's two, all on
     /// group 1, as graph events at frame 0.
     fn dumps() -> (Vec<Event>, Vec<Event>) {
-        use tutti_midi_types::ump::MidiEvent;
         use tutti_midi_types::MidiGroup;
+        use tutti_midi_types::ump::MidiEvent;
         let packets = |len: usize| {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();

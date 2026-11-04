@@ -9,8 +9,8 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::SampleRate;
-use tutti_graph::contract::BlockRig;
 use tutti_graph::IntoNode;
+use tutti_graph::contract::BlockRig;
 use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfFilterNode, SvfType};
 
 #[global_allocator]

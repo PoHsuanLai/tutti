@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 
-use support::{model_beats, Change};
+use support::{Change, model_beats};
 use tutti_core::{
     At, Beat, Bpm, ChannelLayout, ClickNode, ClickSettings, Engine, FadeOut, Frame, InterleavedMut,
     LoopRange, MetronomeMode, MotionEvent, OfflineTimeline, OfflineTimelineConfig, SampleRate,
@@ -33,8 +33,8 @@ use tutti_core::{
 use tutti_graph::{
     Cx, Editor, Env, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Unforkable,
 };
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
 const SR: f64 = 48_000.0;
 

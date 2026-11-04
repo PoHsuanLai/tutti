@@ -42,8 +42,8 @@ use std::sync::{Arc, Mutex};
 
 mod support;
 use support::corpus::{
-    all_finite, envelope, open_info, optional_third_party, peak, render, silence, DELAY, DYNAMICS,
-    SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, TAL_REVERB_4,
+    DELAY, DYNAMICS, SPATIAL_MIXER, SPATIAL_MIXER_RAMP_PARAM, TAL_REVERB_4, all_finite, envelope,
+    open_info, optional_third_party, peak, render, silence,
 };
 
 use tutti_au_host::component::AuType;

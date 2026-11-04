@@ -19,7 +19,7 @@ mod follower;
 mod note_envelope;
 
 pub use follower::{EnvelopeFollowerNode, FOLLOWER_EVENT_CAPACITY};
-pub use note_envelope::{NoteEnvelopeNode, NOTE_ENVELOPE_EVENT_CAPACITY};
+pub use note_envelope::{NOTE_ENVELOPE_EVENT_CAPACITY, NoteEnvelopeNode};
 
 use tutti_graph::{Cx, Offset, PlayReading};
 use tutti_types::Samples;

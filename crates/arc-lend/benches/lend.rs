@@ -13,12 +13,12 @@
 //! the publisher's scan keeps pulling the reader's cache lines away.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arc_lend::ArcLend;
 use arc_swap::ArcSwap;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn uncontended(c: &mut Criterion) {
     let mut g = c.benchmark_group("read_uncontended");

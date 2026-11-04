@@ -89,10 +89,10 @@ use std::time::{Duration, Instant};
 
 use arc_lend::{ArcLend, Reader};
 use arc_lend_compare::{
-    begin_counting, end_counting, live_payloads, machine, new_histogram, ns, CountingAlloc, Counts,
-    Histogram, Payload, Tail,
+    CountingAlloc, Counts, Histogram, Payload, Tail, begin_counting, end_counting, live_payloads,
+    machine, new_histogram, ns,
 };
-use contenders::{for_each_contender, ArcLendCell, Contender};
+use contenders::{ArcLendCell, Contender, for_each_contender};
 
 type ArcLendReader = Reader<Payload>;
 

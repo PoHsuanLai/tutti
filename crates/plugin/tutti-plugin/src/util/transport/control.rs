@@ -247,7 +247,7 @@ fn read_exact_by(
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "peer closed mid-frame",
-                ))
+                ));
             }
             Ok(n) => {
                 *filled += n;
@@ -282,7 +282,7 @@ fn read_exact_by(
                         "read failed with {filled} of {} bytes in hand: {e}",
                         buf.len()
                     ),
-                ))
+                ));
             }
         }
     }

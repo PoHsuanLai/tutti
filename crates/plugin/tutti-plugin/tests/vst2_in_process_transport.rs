@@ -25,7 +25,7 @@ use tutti_graph::{
     Transport, TransportChanges, Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
+use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 use tutti_types::Latency;
 use tutti_vst2_test_plugin::ProcessCapture;
 

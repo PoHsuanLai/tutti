@@ -112,8 +112,8 @@ mod tests {
     use super::polling::{context_menu_builder_add_item, context_menu_builder_supports};
     use crate::types::ContextMenuItem;
     use clap_sys::ext::context_menu::{
-        clap_context_menu_builder, clap_context_menu_entry, CLAP_CONTEXT_MENU_ITEM_ENTRY,
-        CLAP_CONTEXT_MENU_ITEM_SEPARATOR,
+        CLAP_CONTEXT_MENU_ITEM_ENTRY, CLAP_CONTEXT_MENU_ITEM_SEPARATOR, clap_context_menu_builder,
+        clap_context_menu_entry,
     };
     use std::ffi::c_void;
 

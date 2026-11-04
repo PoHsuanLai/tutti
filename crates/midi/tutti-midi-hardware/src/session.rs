@@ -35,8 +35,8 @@ use crate::capability::{EndpointId, EndpointInfo};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
 use crate::{HardwareMidiInputs, PortId};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
+use tutti_midi_types::ump::MidiEvent;
 
 /// The set of open MIDI connections, and the endpoints available to open.
 ///
@@ -448,8 +448,8 @@ impl MidiOut for MidiSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::FakeBackend;
     use crate::InputProducerHandle;
+    use crate::test_support::FakeBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // The fake backend is in `crate::test_support` so `bevy-tutti` can test

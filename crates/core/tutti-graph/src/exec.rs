@@ -149,30 +149,30 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{Frame, NodeKey, RtScope, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{Arena, Role};
-use crate::command::{overlay_capacity, CommandRx, Deliveries};
+use crate::command::{CommandRx, Deliveries, overlay_capacity};
 use crate::cost::Schedule;
-use crate::event::{merge_into, Event, EventWriter, SortedEvents};
+use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::fade::CrossfadeCurve;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::node::{
-    ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
-    TransportChanges, MAX_PORTS,
+    ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, MaxBlock, Node, Prepare, SilenceMask, Status,
+    Transport, TransportChanges,
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
 use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::play::{PlayClock, PlayReader, PlayState};
-use crate::slots::{borrow_events, event_pair, AudioSlots, EventSlots, SlotFlags};
+use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use tutti_types::PlayReading;
 

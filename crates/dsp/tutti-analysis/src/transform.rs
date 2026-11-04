@@ -15,12 +15,12 @@
 
 use tutti_types::{Amplitude, SampleRate, Samples};
 
+use crate::Complex;
 use crate::error::{Error, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
 use crate::grid::{BinIndex, FrameCount, FrameIndex, Grid};
 use crate::window::CosineWindow;
-use crate::Complex;
 
 /// Linear magnitudes, in the units the transform produced. **The invertible
 /// form.**

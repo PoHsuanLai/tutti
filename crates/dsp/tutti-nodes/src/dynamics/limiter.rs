@@ -14,7 +14,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{
-    amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope, LimiterCurve,
+    LimiterCurve, amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope,
 };
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
 use crate::ramp::LastGood;
@@ -792,7 +792,7 @@ impl Clone for BrickwallLimiterNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
+    use crate::test_support::{RATE_44K, prepared_at, tick, tick_fed};
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// A fork starts from the values last set through the node's

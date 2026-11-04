@@ -43,7 +43,7 @@ use clap_sys::ext::track_info::CLAP_EXT_TRACK_INFO;
 use clap_sys::ext::voice_info::CLAP_EXT_VOICE_INFO;
 use clap_sys::host::clap_host as ClapHostVtable;
 use clap_sys::version::CLAP_VERSION;
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::ptr;
 use std::sync::Arc;
 

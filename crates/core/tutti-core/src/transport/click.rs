@@ -30,9 +30,9 @@
 //! keeps meter a layer *over* the engine: `TransportSettings`, `Timeline`, and
 //! the graph know nothing about bars.
 
+use super::Transport;
 use super::beat_walk::piece_beats;
 use super::project_meter::ProjectMeter;
-use super::Transport;
 use crate::{AtomicBool, AtomicF32, AtomicU8, Ordering};
 use std::sync::Arc;
 use tutti_graph::{
@@ -634,8 +634,8 @@ mod tests {
     use crate::{Bpm, FrameClock};
     use tutti_graph::contract::{drive_in, prepared};
     use tutti_graph::{Offset, TransportChanges};
-    use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::Frame;
+    use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
 
     const SR: f64 = 44_100.0;
 

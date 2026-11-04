@@ -22,9 +22,9 @@ use support::{clap_probe, plugin_server};
 use tutti_core::{AudioNode, ChannelLayout, InterleavedMut, SampleRate, Samples};
 use tutti_export::{ExportConfig, RenderConfig};
 use tutti_graph::ForkByClone;
+use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::PluginStatus;
-use tutti_plugin::RenderMode;
 use tutti_session::{
     ExportClock, ExportRequest, ExportSource, ExportTarget, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Session, SessionEvent,

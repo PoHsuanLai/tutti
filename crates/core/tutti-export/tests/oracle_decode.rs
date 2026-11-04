@@ -52,8 +52,8 @@ use symphonia::core::probe::Hint;
 use tutti_core::Amplitude;
 use tutti_core::Hz;
 use tutti_export::{
-    render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, Flac,
-    FrozenClock, RenderConfig, RenderGraph,
+    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, Flac, FrozenClock,
+    RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};

@@ -25,9 +25,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, EventSlotCapacity,
-    GraphSpec, Io, Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Ump, Unforkable,
-    ValidGraph,
+    Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, EventSlotCapacity, GraphSpec, Io,
+    Node, Op, Prepare, Reference, Shape, Shapes, Status, Transport, Ump, Unforkable, ValidGraph,
+    compile,
 };
 use tutti_types::graph::NodeSpec;
 use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Topology};

@@ -24,7 +24,7 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
-use tutti_core::{Hz, SampleRate, Q};
+use tutti_core::{Hz, Q, SampleRate};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};

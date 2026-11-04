@@ -68,8 +68,8 @@ use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
-    host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
-    Vst3Active, Vst3InputEvents, Vst3Library, Vst3Loaded, Vst3Sample,
+    AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo, Vst3Active,
+    Vst3InputEvents, Vst3Library, Vst3Loaded, Vst3Sample, host::conformance,
 };
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────

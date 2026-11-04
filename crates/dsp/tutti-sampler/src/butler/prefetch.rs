@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_core::{
-    ArcLend, ChannelLayout, PosReader, PosRing, PosWriter, Reader, Samples, MAX_POS_RING_FRAMES,
+    ArcLend, ChannelLayout, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader, Samples,
 };
 use tutti_io::Wave;
 

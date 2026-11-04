@@ -28,8 +28,8 @@ mod recording;
 // re-exported here for the automation consumers.
 #[doc(hidden)]
 pub use control_lane::LaneProbe;
-pub use control_lane::{ControlLaneNode, LaneControls, CONTROL_STEP, LANE_EVENT_CAPACITY};
-pub use lane::{segment_shape, AutomationLaneNode, LiveAutomationLane};
+pub use control_lane::{CONTROL_STEP, ControlLaneNode, LANE_EVENT_CAPACITY, LaneControls};
+pub use lane::{AutomationLaneNode, LiveAutomationLane, segment_shape};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_mod::Curve;
 

@@ -15,13 +15,13 @@ mod wave;
 pub use error::{Error, Result};
 pub use mic::{MicMonitorNode, MicRing};
 pub use recorder::{
-    FinalizeStatus, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, Recorder,
-    RunningPump, ThreadDriver, IDLE_PARK,
+    FinalizeStatus, IDLE_PARK, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, Recorder,
+    RunningPump, ThreadDriver,
 };
 pub use tap_in::TapIn;
 // `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller
 // sizing a buffer for it has to name the same ceiling.
-pub use wav_out::{WavOut, MAX_WAV_FOLD_CHANNELS};
+pub use wav_out::{MAX_WAV_FOLD_CHANNELS, WavOut};
 
 // The file-reading half of the edge. `Wave` is the resident buffer and needs no codec; decoding
 // into it, probing a header and streaming (`FileIn`) exist only when a codec
@@ -41,5 +41,5 @@ pub use wave::Wave;
 
 // The traits this crate implements, re-exported so a consumer reaches the
 // vocabulary and its live impls from one place.
-pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
+pub use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
 pub use tutti_core::pcm::BitDepth;

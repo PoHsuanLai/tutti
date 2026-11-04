@@ -12,7 +12,7 @@
 //! Nothing here allocates after [`Midi1Decoder::new`]: the SysEx capture
 //! buffer is reserved there, and the batch is inline.
 
-use crate::{push_sysex_stack, MidiEvent, MidiEventVec, MIDI_STACK_CAPACITY};
+use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, push_sysex_stack};
 
 /// The longest SysEx message the decoder delivers, in bytes, delimiters
 /// included: what [`MIDI_STACK_CAPACITY`] SysEx7 packets (six payload bytes
@@ -309,11 +309,7 @@ fn flush_batch(batch: &mut MidiEventVec, flush: &mut impl FnMut(&[MidiEvent])) {
 /// would otherwise turn a soft note-on into a note-off.
 pub fn note_on_velocity_midi1(velocity: u16) -> u8 {
     let v = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity) & 0x7F;
-    if velocity == 0 {
-        0
-    } else {
-        v.max(1)
-    }
+    if velocity == 0 { 0 } else { v.max(1) }
 }
 
 /// How reading a short message's data bytes ended.
@@ -565,9 +561,11 @@ mod tests {
         assert_eq!(events[0].note(), Some(60));
         assert_eq!(events[1].note(), Some(62));
         assert_eq!(events[3].note(), Some(64));
-        assert!(events
-            .iter()
-            .all(|e| e.frame_offset == 2 || e.frame_offset == 3));
+        assert!(
+            events
+                .iter()
+                .all(|e| e.frame_offset == 2 || e.frame_offset == 3)
+        );
     }
 
     /// **A SysEx that does not fit the room left flushes what is staged

@@ -11,12 +11,12 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference,
-    Shape, Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
+    Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
+    Shapes, Status, Transport, TransportChanges, Ump, ValidGraph, compile,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 

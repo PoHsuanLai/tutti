@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, Message};
+use objc2::{AllocAnyThread, DefinedClass, Message, define_class, msg_send, sel};
 use objc2_app_kit::{NSView, NSWindowDidResizeNotification};
 use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
 

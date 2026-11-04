@@ -19,11 +19,11 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use assert_no_alloc::AllocDisabler;
-use common::{prepare, Kind, TestNode};
+use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Node, ParamRamp,
     ParamSegment, Prepare, SegmentShape, Shape, Status, Transport, Ump, Unforkable,

@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_midi_types::MidiChannel;
 
-use super::input_node::{input_ports, MIDI_INPUT_PORTS};
+use super::input_node::{MIDI_INPUT_PORTS, input_ports};
 
 /// One inbound routing rule, as [`compile_routes`] reads it: a channel filter
 /// and the listeners it reaches.

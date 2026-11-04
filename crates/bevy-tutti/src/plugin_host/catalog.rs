@@ -32,10 +32,10 @@
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
 use bevy_ecs::prelude::*;
 use bevy_log::{info, warn};
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
-use tutti_plugin::catalog::{PluginId, PluginRecord};
 use tutti_plugin::BridgeError;
+use tutti_plugin::catalog::{PluginId, PluginRecord};
 
 use crate::plugin_host::PluginsRes;
 

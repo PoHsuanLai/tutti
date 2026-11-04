@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Every member inherits `edition = "2024"` from `[workspace.package]`
 (`edition.workspace = true`), vendored members included. `rust-toolchain.toml`
-already pins a toolchain that supports it. `rustfmt.toml` keeps
-`style_edition = "2021"` so `cargo fmt` does not re-sort and rewrap the tree.
+already pins a toolchain that supports it. `cargo fmt` uses the 2024 style
+edition; the reformat is one commit, listed in `.git-blame-ignore-revs` so
+`git blame` skips it.
 
 - **Unsafe is explicit in `unsafe fn`.** `unsafe_op_in_unsafe_fn` warns by
   default now, so every unsafe operation in an `unsafe fn` body sits in its own

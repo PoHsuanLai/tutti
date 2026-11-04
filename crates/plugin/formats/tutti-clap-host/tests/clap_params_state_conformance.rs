@@ -31,10 +31,10 @@ use tutti_clap_host::types::StateContext;
 use tutti_clap_host::{
     AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, ParameterChanges,
 };
-use tutti_clap_test_plugin::params_state::{probe_params, ProbeParam};
+use tutti_clap_test_plugin::params_state::{ProbeParam, probe_params};
 use tutti_clap_test_plugin::{
-    ParamStateCapture, ProcessCapture, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,
-    PARAM_CMD_RESCAN_VALUES, STATE_MAGIC,
+    PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES, ParamStateCapture,
+    ProcessCapture, STATE_MAGIC,
 };
 use tutti_plugin_types::{ParamAddress, ParamFlags, ParamSteps};
 

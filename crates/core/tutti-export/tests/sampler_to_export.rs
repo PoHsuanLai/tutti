@@ -55,8 +55,8 @@ use tutti_core::{
     Beat, Bpm, Cents, OfflineTimeline, OfflineTimelineConfig, SampleRate, StretchFactor,
 };
 use tutti_export::{
-    render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    RenderConfig, RenderGraph,
+    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, RenderConfig,
+    RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_io::Wave;

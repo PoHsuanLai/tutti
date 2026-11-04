@@ -8,15 +8,15 @@
 use crate::butler::RegionId;
 use crate::ports::Commands;
 use crate::stretch;
-use crate::{nonempty, MAX_SAMPLER_CHANNELS};
+use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
 use super::clock::{BlockClock, Clock};
 use super::command::{
-    loop_setting, Queued, SharedRate, StreamEntry, VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY,
-    MAX_RESIDENT_VOICES,
+    COMMAND_CAPACITY, MAX_RESIDENT_VOICES, Queued, SharedRate, StreamEntry, VoiceCommand,
+    VoicePoolHandle, loop_setting,
 };
 use super::memory_source::LoopSetting;
-use super::slot::{stretch_wanted, PlaybackSlot};
+use super::slot::{PlaybackSlot, stretch_wanted};
 use super::types::{SlotId, Voice, VoiceSource};
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use std::collections::HashMap;
@@ -25,9 +25,9 @@ use std::collections::HashMap;
 use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
-use crossbeam_channel::{bounded, Receiver, Sender};
-use std::sync::atomic::{AtomicU64, Ordering};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_core::{ChannelLayout, SampleRate, Tail};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,

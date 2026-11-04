@@ -25,7 +25,7 @@ use tutti_core::{
     Amplitude, Beat, Bpm, Cents, ChannelLayout, Frame, FrameClock, PlaybackRate, SamplePosition,
     SampleRate, Samples, StretchFactor,
 };
-use tutti_graph::{contract, Env, Node, Offset, Prepare, Transport, TransportChanges};
+use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
 use tutti_io::Wave;
 
 use super::memory_source::{LoopSetting, MemorySource};

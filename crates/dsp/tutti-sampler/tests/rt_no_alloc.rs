@@ -27,8 +27,8 @@ use tutti_core::{
     Beat, BeatDuration, Bpm, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
     StretchFactor,
 };
-use tutti_graph::contract::Direct;
 use tutti_graph::Node;
+use tutti_graph::contract::Direct;
 use tutti_io::Wave;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::testing::MockTransport;

@@ -60,11 +60,11 @@ use tutti_types::{Latency, NodeKey};
 
 use tutti_types::At;
 
-use crate::command::{command_channel, CommandId, CommandTx, ScheduleError};
-use crate::compile::{compile, CompileError, Shapes, VerifyError};
+use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
+use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
 use crate::exec::{
-    channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY,
+    Channels, Commit, DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY, channels,
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};

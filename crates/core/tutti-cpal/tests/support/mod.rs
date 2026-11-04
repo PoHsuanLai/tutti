@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{
-    AudioTap, ChannelLayout, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples, Q,
+    AudioTap, ChannelLayout, Engine, Hz, MasterMeter, NodeKey, Q, SampleRate, Samples,
 };
 use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{AudioCallbackState, OutputSpec};

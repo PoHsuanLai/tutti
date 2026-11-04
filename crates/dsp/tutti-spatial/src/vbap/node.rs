@@ -1,14 +1,14 @@
 use super::error::Result;
-use tutti_core::fold_frame_to_mono;
 use tutti_core::ChannelLayout;
+use tutti_core::fold_frame_to_mono;
 use tutti_core::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 
 use super::panner::{BlockGains, VbapPanner};
-use crate::fork::{fresh_fork_parts, FreshFork};
+use crate::SpatialTarget;
+use crate::fork::{FreshFork, fresh_fork_parts};
 use crate::layout::speaker_channel_map;
 use crate::target::hold_finite;
-use crate::SpatialTarget;
 
 /// A VBAP loudspeaker panner: stereo in, one output per speaker of a fixed
 /// layout.

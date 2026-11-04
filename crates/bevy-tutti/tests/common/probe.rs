@@ -11,8 +11,8 @@
 //! The including module registers `ProbeUnit` with `param_graph_node!`
 //! (`bevy_tutti::` outside the crate, `crate::` inside it).
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::{AtomicF32, ChannelLayout};
 use tutti_graph::{

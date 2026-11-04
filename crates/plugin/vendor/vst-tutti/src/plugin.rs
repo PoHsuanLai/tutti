@@ -7,7 +7,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use crate::{
-    api::{self, consts::VST_MAGIC, AEffect, ChunkError, HostCallbackProc, Supported, TimeInfo},
+    api::{self, AEffect, ChunkError, HostCallbackProc, Supported, TimeInfo, consts::VST_MAGIC},
     buffer::AudioBuffer,
     channels::ChannelInfo,
     editor::Editor,

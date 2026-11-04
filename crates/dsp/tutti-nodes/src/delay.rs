@@ -17,7 +17,7 @@ use tutti_graph::{
 };
 use tutti_types::UnitParam;
 
-use crate::ramp::{block_driven, finite_or, LastGood, Ramp};
+use crate::ramp::{LastGood, Ramp, block_driven, finite_or};
 
 /// How a fractional delay position is turned into a sample.
 ///

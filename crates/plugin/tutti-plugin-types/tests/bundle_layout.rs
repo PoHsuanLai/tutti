@@ -30,7 +30,7 @@ use tempfile::TempDir;
 // beside a module and alone in a directory already pin its effect, and a test
 // that called it on a `.lib` would only restate its `matches!`.
 use tutti_plugin_types::bundle::{
-    any_module_in_bundle, native_module_in_bundle, ModuleKind, ALL_ARCH_SUBDIRS,
+    ALL_ARCH_SUBDIRS, ModuleKind, any_module_in_bundle, native_module_in_bundle,
 };
 
 /// The bundle extension a format wears on the outside.

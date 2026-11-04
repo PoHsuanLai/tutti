@@ -33,32 +33,36 @@ use std::sync::Arc;
 /// rustfft's semver: a rustfft bump that changes num-complex changes this type.
 pub use rustfft::num_complex::Complex32;
 
+/// The pass twiddles of an even `size`: `size / 4` rounded up, minus the DC
+/// term. Forward carries `w^k / 2`, inverse the conjugate of `w^k`, with
+/// `w = exp(-2 pi i / size)`.
+pub(crate) fn pass_twiddles(size: usize, direction: FftDirection) -> Vec<Complex32> {
+    (1..size.div_ceil(4))
+        .map(|k| {
+            // The angle in f64, narrowed once, as `realfft` does.
+            let angle = -2.0 * PI / size as f64 * k as f64;
+            let w = Complex32::new(angle.cos() as f32, angle.sin() as f32);
+            match direction {
+                FftDirection::Forward => w * 0.5,
+                FftDirection::Inverse => w.conj(),
+            }
+        })
+        .collect()
+}
+
 /// One direction of the even-size transform: the inner FFT (`size / 2` points)
 /// and the pass twiddles.
 struct EvenPass {
     inner: Arc<dyn InnerFft<f32>>,
-    /// `size / 4` rounded up, minus the DC term: forward carries `w^k / 2`,
-    /// inverse the conjugate of `w^k`, with `w = exp(-2 pi i / size)`.
+    /// [`pass_twiddles`].
     twiddles: Vec<Complex32>,
 }
 
 impl EvenPass {
     fn new(size: usize, direction: FftDirection, planner: &mut FftPlannerScalar<f32>) -> Self {
-        let count = size.div_ceil(4);
-        let twiddles = (1..count)
-            .map(|k| {
-                // The angle in f64, narrowed once, as `realfft` does.
-                let angle = -2.0 * PI / size as f64 * k as f64;
-                let w = Complex32::new(angle.cos() as f32, angle.sin() as f32);
-                match direction {
-                    FftDirection::Forward => w * 0.5,
-                    FftDirection::Inverse => w.conj(),
-                }
-            })
-            .collect();
         Self {
             inner: planner.plan_fft(size / 2, direction),
-            twiddles,
+            twiddles: pass_twiddles(size, direction),
         }
     }
 
@@ -234,42 +238,7 @@ impl RealFft {
             &mut inner[..pass.scratch_len()],
         );
 
-        // DC and Nyquist are the sum and difference of the first point's parts.
-        let first = bins[0];
-        bins[0] = Complex32::new(first.re + first.im, 0.0);
-        bins[half] = Complex32::new(first.re - first.im, 0.0);
-
-        // The rest, two mirrored bins at a time. The mirror bin's twiddle is
-        // this one's with the real part negated, which halves the multiplies.
-        let bins_len = bins.len();
-        let (left, right) = bins.split_at_mut(bins_len / 2);
-        let right_len = right.len();
-        let pairs = pass
-            .twiddles
-            .iter()
-            .zip(left[1..].iter_mut())
-            .zip(right[..right_len - 1].iter_mut().rev());
-        for ((twiddle, low), high) in pairs {
-            let sum = *low + *high;
-            let diff = *low - *high;
-            let twiddled_re_sum = sum * twiddle.re;
-            let twiddled_im_sum = sum * twiddle.im;
-            let twiddled_re_diff = diff * twiddle.re;
-            let twiddled_im_diff = diff * twiddle.im;
-            let half_sum_re = 0.5 * sum.re;
-            let half_diff_im = 0.5 * diff.im;
-
-            let twiddled_real = twiddled_re_sum.im + twiddled_im_diff.re;
-            let twiddled_im = twiddled_im_sum.im - twiddled_re_diff.re;
-
-            *low = Complex32::new(half_sum_re + twiddled_real, half_diff_im + twiddled_im);
-            *high = Complex32::new(half_sum_re - twiddled_real, twiddled_im - half_diff_im);
-        }
-
-        // An odd bin count leaves the centre bin unpaired.
-        if bins_len % 2 == 1 {
-            bins[bins_len / 2].im = -bins[bins_len / 2].im;
-        }
+        forward_post_pass(&pass.twiddles, bins);
     }
 
     fn inverse_even(
@@ -280,44 +249,7 @@ impl RealFft {
         scratch: &mut [Complex32],
     ) {
         let half = self.size / 2;
-        bins[0].im = 0.0;
-        bins[half].im = 0.0;
-
-        // Fold DC and Nyquist into the first inner point.
-        let first = bins[0];
-        let last = bins[half];
-        let sum = first + last;
-        let diff = first - last;
-        bins[0] = Complex32::new(sum.re - sum.im, diff.re - diff.im);
-
-        let bins_len = bins.len();
-        let (left, right) = bins.split_at_mut(bins_len / 2);
-        let right_len = right.len();
-        let pairs = pass
-            .twiddles
-            .iter()
-            .zip(left[1..].iter_mut())
-            .zip(right[..right_len - 1].iter_mut().rev());
-        for ((twiddle, low), high) in pairs {
-            let sum = *low + *high;
-            let diff = *low - *high;
-            let twiddled_re_sum = sum * twiddle.re;
-            let twiddled_im_sum = sum * twiddle.im;
-            let twiddled_re_diff = diff * twiddle.re;
-            let twiddled_im_diff = diff * twiddle.im;
-
-            let twiddled_real = twiddled_re_sum.im + twiddled_im_diff.re;
-            let twiddled_im = twiddled_im_sum.im - twiddled_re_diff.re;
-
-            *low = Complex32::new(sum.re - twiddled_real, diff.im - twiddled_im);
-            *high = Complex32::new(sum.re + twiddled_real, -twiddled_im - diff.im);
-        }
-
-        // An odd bin count leaves the centre bin unpaired.
-        if bins_len % 2 == 1 {
-            let centre = bins[bins_len / 2];
-            bins[bins_len / 2] = (centre + centre).conj();
-        }
+        inverse_pre_pass(&pass.twiddles, bins);
 
         let (work, inner) = scratch.split_at_mut(half);
         pass.inner.process_outofplace_with_scratch(
@@ -329,6 +261,90 @@ impl RealFft {
             pair[0] = point.re;
             pair[1] = point.im;
         }
+    }
+}
+
+/// The even-size forward transform after its inner FFT: `bins[..size / 2]`
+/// holds that FFT's output, and becomes the `size / 2 + 1` bins.
+pub(crate) fn forward_post_pass(twiddles: &[Complex32], bins: &mut [Complex32]) {
+    let half = bins.len() - 1;
+    // DC and Nyquist are the sum and difference of the first point's parts.
+    let first = bins[0];
+    bins[0] = Complex32::new(first.re + first.im, 0.0);
+    bins[half] = Complex32::new(first.re - first.im, 0.0);
+
+    // The rest, two mirrored bins at a time. The mirror bin's twiddle is
+    // this one's with the real part negated, which halves the multiplies.
+    let bins_len = bins.len();
+    let (left, right) = bins.split_at_mut(bins_len / 2);
+    let right_len = right.len();
+    let pairs = twiddles
+        .iter()
+        .zip(left[1..].iter_mut())
+        .zip(right[..right_len - 1].iter_mut().rev());
+    for ((twiddle, low), high) in pairs {
+        let sum = *low + *high;
+        let diff = *low - *high;
+        let twiddled_re_sum = sum * twiddle.re;
+        let twiddled_im_sum = sum * twiddle.im;
+        let twiddled_re_diff = diff * twiddle.re;
+        let twiddled_im_diff = diff * twiddle.im;
+        let half_sum_re = 0.5 * sum.re;
+        let half_diff_im = 0.5 * diff.im;
+
+        let twiddled_real = twiddled_re_sum.im + twiddled_im_diff.re;
+        let twiddled_im = twiddled_im_sum.im - twiddled_re_diff.re;
+
+        *low = Complex32::new(half_sum_re + twiddled_real, half_diff_im + twiddled_im);
+        *high = Complex32::new(half_sum_re - twiddled_real, twiddled_im - half_diff_im);
+    }
+
+    // An odd bin count leaves the centre bin unpaired.
+    if bins_len % 2 == 1 {
+        bins[bins_len / 2].im = -bins[bins_len / 2].im;
+    }
+}
+
+/// The even-size inverse transform before its inner FFT: `bins` become the
+/// `size / 2` points that FFT takes, in `bins[..size / 2]`.
+pub(crate) fn inverse_pre_pass(twiddles: &[Complex32], bins: &mut [Complex32]) {
+    let half = bins.len() - 1;
+    bins[0].im = 0.0;
+    bins[half].im = 0.0;
+
+    // Fold DC and Nyquist into the first inner point.
+    let first = bins[0];
+    let last = bins[half];
+    let sum = first + last;
+    let diff = first - last;
+    bins[0] = Complex32::new(sum.re - sum.im, diff.re - diff.im);
+
+    let bins_len = bins.len();
+    let (left, right) = bins.split_at_mut(bins_len / 2);
+    let right_len = right.len();
+    let pairs = twiddles
+        .iter()
+        .zip(left[1..].iter_mut())
+        .zip(right[..right_len - 1].iter_mut().rev());
+    for ((twiddle, low), high) in pairs {
+        let sum = *low + *high;
+        let diff = *low - *high;
+        let twiddled_re_sum = sum * twiddle.re;
+        let twiddled_im_sum = sum * twiddle.im;
+        let twiddled_re_diff = diff * twiddle.re;
+        let twiddled_im_diff = diff * twiddle.im;
+
+        let twiddled_real = twiddled_re_sum.im + twiddled_im_diff.re;
+        let twiddled_im = twiddled_im_sum.im - twiddled_re_diff.re;
+
+        *low = Complex32::new(sum.re - twiddled_real, diff.im - twiddled_im);
+        *high = Complex32::new(sum.re + twiddled_real, -twiddled_im - diff.im);
+    }
+
+    // An odd bin count leaves the centre bin unpaired.
+    if bins_len % 2 == 1 {
+        let centre = bins[bins_len / 2];
+        bins[bins_len / 2] = (centre + centre).conj();
     }
 }
 

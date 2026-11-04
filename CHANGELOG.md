@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a long tail transform runs in steps over several host blocks: the 64-frame p99 of a 2 s IR falls by a fifth or more; `StagedRealFft`; output bits change for IRs reaching a 2048-frame tail
+
+**`tutti_types::StagedRealFft`** is a `RealFft` whose transform runs in steps
+(`forward_step`, `inverse_step`, state in the caller's scratch). Its inner
+complex FFT is cut by decimation in time into `ways` sub-FFTs and
+`log2(ways)` radix-2 combine passes, one step each; `ways == 1` is `RealFft`
+itself, bit for bit. The sub-FFTs are rustfft's scalar ones and the combine
+is plain `f32`, so the output stays CPU-independent; a cut transform rounds
+differently from the uncut one (both are within `2 eps log2(n) |x|` of the
+DFT) and costs about 4% more in total.
+
+**The convolver cuts a tail level's transform into sub-FFTs of at most 1024
+points** (`MAX_SUB_FFT`) and spreads the steps over the level's slack, at
+distinct frames, so the largest unit of work a block holds is a 1024-point
+FFT (6 to 8 us) and not the 4096-point transform of a 2048-frame partition
+(18 to 23 us). Heads, and every level of a layout with partitions of at most
+1024 frames (`B <= 256`), keep their transforms whole. Median of seven
+interleaved runs against the commit before, 512-frame partition, 64-frame
+host blocks, p99 per call in us: 2 s IR 21.9 to 17.4 (runs between 2% and 30%
+lower; a reviewer's runs on another machine measured 35 to 50%), and 0.7, 1
+and 1.5 s 22.4 to 12.8, 25.2 to 14.7 and 26.9 to 16.3. A 5 s IR's p99 (29.1
+to 28.5) and a ragged mix's are unchanged within noise, and the means of a
+long IR are 5 to 15% higher (4.2 to 4.8 us at 2 s, 7.4 to 7.9 at 5 s), the
+cut's extra pass and bookkeeping. Calls of a head partition or more are
+unchanged within noise. Full table in doc 013 ("The convolver's cost
+profile"). A call that runs only an inverse step still spreads the older
+partitions' sum (`crossed` is set by forward steps only); that shapes load,
+not output.
+
+**Output bits change** for an IR whose layout has a tail partition above 1024
+frames (a 512 head where the cost model picks a 2048-frame level): the cut
+transforms round differently, to about 1e-7 of the output's norm (`tests`:
+equal to a direct convolution within `2 eps log2(n) |h| |x|`, and to the uncut
+layout within twice that). Migration: re-record a pinned digest over such an
+IR; one over a shorter IR, or a head of 256 frames or fewer, does not change.
+API: the new `StagedRealFft`; `Level` and `IrSpectra` are private, and nothing
+else changes.
+
 ### Changed — golden digests gate on the recorded glibc, not on "Linux/glibc"
 
 The per-file `GOLDEN_HERE` constants and local `assert_golden` helpers are
@@ -92,11 +130,10 @@ changes. Stretched voices and offline forks still render.
 levels.** The node's `block_size` is the latency and the head partition; the
 tail levels have larger partitions (up to four times the head and 4096 frames,
 each with its own FFT size), so the late part of the IR costs a quarter of the
-multiply-accumulates. A level's two transforms run at offsets in the slack its
-larger partition leaves (the output is due `B` frames after it could be
-computed), at frames no other level uses. For a host block of at most
-`B / (2T + 1)` frames, with `T` tail levels (102 frames at `B = 512` with two
-tail levels), a block holds at most one tail transform.
+multiply-accumulates. A level's two transforms run in steps at offsets in the
+slack its larger partition leaves (the output is due `B` frames after it could
+be computed), at frames no other level uses. A host block of at most one slot
+(`B` over the tail levels' steps plus one) holds at most one step.
 
 A cost model picks between the uniform layout and the split ones and keeps the
 uniform one unless the split models at most 0.7 of its cost. Measured on the
@@ -109,12 +146,9 @@ frame at a time.
 
 Per call at a 512 partition, 64-frame host blocks, 48 kHz, mean (us), uniform
 to levels: 2 s IR 7.9 to 4.5, 5 s IR 19.5 to 7.1; at 128 frames 15.4 to 8.2 and
-41.9 to 13.9. The mean is 0.53 to 0.57 of the uniform convolver's at 2 s and
-0.33 to 0.36 at 5 s. The p99 falls with it at 5 s (45 to 27 us at 64 frames, 98
-to 42 at 128); at 2 s and 64 frames it moves from 20 to 28 us, which is near
-the run-to-run noise of the benchmark. The tail's 4096-point transform is the
-biggest unit of work a block can hold. The full table is in doc 013 ("The
-convolver's cost profile").
+41.9 to 13.9. The mean is 0.53 of the uniform convolver's at 2 s and 0.35 at
+5 s. The p99 falls with it at 64 and 128 frames. The full table is in doc 013
+("The convolver's cost profile").
 
 **Output bits change** for an IR that takes the split layout: partitions of
 different sizes round differently, to about 1e-7 of the output's norm

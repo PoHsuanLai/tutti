@@ -105,8 +105,10 @@ fn plan_cost(plan: &[Plan]) -> f64 {
     plan.iter()
         .map(|l| {
             let p = l.part as f64;
-            let n = 2.0 * p;
-            l.count as f64 * (p + 1.0) * MAC_NS / p + 2.0 * FFT_NS * n * n.log2() / p
+            let n = 2 * l.part;
+            // Every partition is a power of two, so the integer log is exact.
+            let n_log_n = n as f64 * f64::from(n.ilog2());
+            l.count as f64 * (p + 1.0) * MAC_NS / p + 2.0 * FFT_NS * n_log_n / p
         })
         .sum()
 }
@@ -1257,22 +1259,27 @@ mod tests {
 
     /// The tolerance is within a small factor of the error the layouts
     /// actually make, so it cannot be so loose that a wrong partition passes.
+    /// Checked at IR lengths of 700, 3000 and 9000 taps (the longer ones
+    /// exercise transforms of up to 128 points with many partitions per
+    /// level), over every layout.
     ///
     /// Mutation (run): `tolerance`'s constant 2 raised to 4096 fails.
     #[test]
     fn the_tolerance_is_tight_enough() {
         let x = noise(900);
         let mut worst_ratio = 0.0f32;
-        for (head, parts) in LAYOUTS {
-            let ir = flat_ir(700);
-            let want = direct_convolve(&x, &ir);
-            let mut c = Convolver::with_parts(&ir, head, parts);
-            let got = render(&mut c, &x, &[61]);
-            let err = want
-                .iter()
-                .zip(&got)
-                .fold(0.0f32, |a, (w, g)| a.max((w - g).abs()));
-            worst_ratio = worst_ratio.max(err / tolerance(&ir, &x, 2 * parts[parts.len() - 1]));
+        for len in [700, 3000, 9000] {
+            for (head, parts) in LAYOUTS {
+                let ir = flat_ir(len);
+                let want = direct_convolve(&x, &ir);
+                let mut c = Convolver::with_parts(&ir, head, parts);
+                let got = render(&mut c, &x, &[61]);
+                let err = want
+                    .iter()
+                    .zip(&got)
+                    .fold(0.0f32, |a, (w, g)| a.max((w - g).abs()));
+                worst_ratio = worst_ratio.max(err / tolerance(&ir, &x, 2 * parts[parts.len() - 1]));
+            }
         }
         assert!(
             (0.02..0.5).contains(&worst_ratio),
@@ -1577,5 +1584,61 @@ mod tests {
         let silence = vec![0.0f32; 1000];
         let got = run_blocks(&mut c, &silence, &[29]);
         assert!(got.iter().all(|&s| s == 0.0));
+    }
+
+    /// After `reset`, a convolver renders a signal bit for bit as a fresh one
+    /// does, whatever junk it had taken in before: the reset restores the
+    /// whole running state (every level's schedule, sums, history and
+    /// overlap, and both rings), not just the silence. Junk lengths cross
+    /// slots, level partitions and ring wraps, with call lengths that
+    /// straddle them; layouts are non-uniform, uniform with several
+    /// partitions, and the cost model's own pick for a long IR.
+    ///
+    /// Mutations (run), each fails: `LevelState::reset` without
+    /// `self.next_inv = ...` (the inverse runs on the old schedule); without
+    /// `self.next_fwd = ...`; `Convolver::reset` without `self.output.fill`
+    /// (the old output ring plays); `self.pushed = 0` left out (the rings'
+    /// positions and the schedule disagree).
+    #[test]
+    fn a_reset_convolver_renders_as_a_fresh_one() {
+        let x = noise(1500);
+        let ir = flat_ir(1200);
+        let cases: Vec<(&str, Box<dyn Fn() -> Convolver>)> = vec![
+            (
+                "non-uniform [16, 64]",
+                Box::new(|| Convolver::with_parts(&ir, 16, &[16, 64])),
+            ),
+            (
+                "non-uniform [8, 16, 32, 64]",
+                Box::new(|| Convolver::with_parts(&ir, 8, &[8, 16, 32, 64])),
+            ),
+            (
+                "uniform [16]",
+                Box::new(|| Convolver::with_parts(&ir, 16, &[16])),
+            ),
+            (
+                "uniform [64]",
+                Box::new(|| Convolver::with_parts(&ir, 64, &[64])),
+            ),
+            (
+                "cost model, 512",
+                Box::new(|| Convolver::new(&flat_ir(100_000), 512)),
+            ),
+        ];
+        for (name, make) in &cases {
+            let want = render(&mut make(), &x, &[61]);
+            for n in [1, 37, 700, 2049, 8191] {
+                for lens in [&[1usize][..], &[13, 100], &[5000]] {
+                    let mut c = make();
+                    run_blocks(&mut c, &noise(n + 3)[3..], lens);
+                    c.reset();
+                    let got = render(&mut c, &x, &[61]);
+                    assert!(
+                        got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+                        "{name}: after {n} junk frames in calls {lens:?} the render differs from a fresh one's"
+                    );
+                }
+            }
+        }
     }
 }

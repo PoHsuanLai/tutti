@@ -632,7 +632,7 @@ mod tests {
     /// same bits at every call length.
     ///
     /// The tolerance is 2 eps log2(n) |h|_2 |x|_2 (see the convolver's
-    /// `tolerance`), about 3e-4 here; 1e-3 is used.
+    /// `tolerance`), about 3e-4 here, and that is the bound used.
     ///
     /// Mutation (run): `shape()` declaring `2 * latency_samples` fails the
     /// alignment check; `Convolver::latency` returning 0 does too.
@@ -672,7 +672,7 @@ mod tests {
             }
             for (i, (&g, &w)) in out.iter().zip(&want).enumerate() {
                 assert!(
-                    (f64::from(g) - w).abs() < 1e-3,
+                    (f64::from(g) - w).abs() < 3e-4,
                     "calls {lens:?}: frame {i} is {g} want {w}"
                 );
             }

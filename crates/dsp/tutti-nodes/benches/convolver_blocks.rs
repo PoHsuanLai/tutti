@@ -5,8 +5,10 @@
 //! mean, the 99th and 99.9th percentiles and the maximum, per IR length
 //! (0.5, 2 and 5 s at 48 kHz) and host block size (64, 128, 512), against a
 //! 512-frame head partition. The last row is a ragged mix (64, 64, 64, 500)
-//! over the 2 s IR. The p99 and the maximum are what meet an audio
-//! deadline.
+//! over the 2 s IR. After them come rows at the cost model's decision
+//! boundary: 0.7, 1 and 1.5 s at a 512-frame head, and 0.15, 0.3 and 0.5 s
+//! at a 128-frame head, all at 64-frame host blocks. The p99 and the maximum
+//! are what meet an audio deadline.
 //!
 //! ```text
 //! cargo bench -p tutti-nodes --bench convolver_blocks --features convolution
@@ -15,8 +17,8 @@
 //! One timed call is a few microseconds to a few milliseconds, so the
 //! `Instant` pair (tens of nanoseconds) is in the noise for the figures that
 //! matter. The machine's scheduler adds spikes, so the maximum column is the
-//! smallest of 21 passes' maxima; compare it, and the percentiles, only
-//! across interleaved runs.
+//! minimum over the 21 passes of each pass's maximum; compare it, and the
+//! percentiles, only across interleaved runs.
 
 #[cfg(feature = "convolution")]
 fn main() {
@@ -76,6 +78,27 @@ fn main() {
                 );
             }
         }
+    }
+    // The decision boundary.
+    for (partition, secs) in [
+        (512usize, 0.7f32),
+        (512, 1.0),
+        (512, 1.5),
+        (128, 0.15),
+        (128, 0.3),
+        (128, 0.5),
+    ] {
+        let ir = generate_test_ir(
+            (secs * 48_000.0) as usize,
+            secs.min(1.0),
+            SampleRate(48_000.0),
+        );
+        let (mean, p99, p999, max) = run(&ir, partition, &[64]);
+        println!(
+            "{partition:>9} {secs:>6} {:>6} {mean:>9.2} {p99:>9.2} {p999:>9.2} {max:>9.2} {:>9.2}",
+            64,
+            max / mean
+        );
     }
     // A ragged mix: three small calls and one that crosses a boundary.
     let ir = generate_test_ir(96_000, 1.0, SampleRate(48_000.0));

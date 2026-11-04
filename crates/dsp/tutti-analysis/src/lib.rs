@@ -79,14 +79,10 @@ pub use tutti_types::{Note, PitchClass};
 /// channels past the second.
 pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 
-/// The generic complex type, re-exported so consumers can name a bin without
-/// depending on `num_complex` directly. Most code wants [`Complex`] instead.
-pub use realfft::num_complex::Complex as GenericComplex;
-
 /// A single frequency bin: a rectangular complex number.
 ///
-/// A plain alias for `num_complex::Complex<f32>`, the type `realfft` works
-/// in, so bins cross the FFT boundary without conversion. The vocoder in
-/// `tutti-sampler` works in the same `num_complex` type, so values cross
-/// freely between the two.
-pub type Complex = realfft::num_complex::Complex<f32>;
+/// `num_complex::Complex<f32>`, the type [`tutti_types::RealFft`] works in, so
+/// bins cross the FFT boundary without conversion. The vocoder in
+/// `tutti-sampler` and the convolver in `tutti-nodes` work in the same type, so
+/// values cross freely between them.
+pub use tutti_types::Complex32 as Complex;

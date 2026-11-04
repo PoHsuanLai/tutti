@@ -124,7 +124,7 @@ it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 `default = []`.
 
 - `convolution` — FFT convolution reverb over a partitioned IR (`Convolver`,
-  `ConvolverNode` at any width, with `IrChannelConfig`). Pulls `realfft`. An
+  `ConvolverNode` at any width, with `IrChannelConfig`). Its FFT is `tutti_types::RealFft` (scalar, so the output is CPU-independent). An
   IR's spectra are stored once (`IrSpectra`, behind an `Arc`) and shared by
   every channel and every fork of the graph.
 - `testing` — stimulus and plumbing nodes for tests, examples and benches

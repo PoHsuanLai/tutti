@@ -21,6 +21,7 @@ mod channels;
 mod downmix;
 mod interleaved;
 mod interp;
+mod real_fft;
 mod rt;
 mod topology;
 
@@ -136,3 +137,7 @@ pub use pcm::{f32_to_i16, f32_to_i24};
 
 // Interpolation.
 pub use interp::cubic_hermite;
+
+// The real-input FFT every engine user shares, on rustfft's scalar planner so
+// its arithmetic is the same on every CPU.
+pub use real_fft::{Complex32, RealFft};

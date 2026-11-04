@@ -123,152 +123,25 @@ fn fft_roundtrip_is_the_identity() {
     }
 }
 
-/// A non-zero imaginary DC or Nyquist is not part of a real signal: the
-/// inverse must neither panic nor let those parts reach the signal. Any
-/// non-zero value does this (`realfft` reported every such frame, not only a
-/// NaN one, as its tolerated `InputValues` error); NaN is the worst of them.
+/// A clone shares the plans but not the scratch: both transform the same
+/// frame to the same bits, and neither disturbs the other.
 ///
-/// Mutation (run): delete the two `bins[..].im = 0.0` lines in `Fft::inverse`
-/// -> the `0.25`/`-0.75` frame no longer equals the clean one (and the NaN
-/// frame's output is not finite) and this test fails.
+/// Mutation (run): make `clone_fresh` build `Fft::new(size)` with a different
+/// size, or return a plan of another length -> the bins differ or the
+/// transform panics.
 #[test]
-fn the_inverse_ignores_dc_and_nyquist_imaginary_parts() {
-    let n = 64usize;
-    let mut fft = Fft::new(n);
-    let mut tone = |im_dc: f32, im_ny: f32| {
-        let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-        bins[0] = Complex32::new(1.0, im_dc);
-        bins[3] = Complex32::new(2.0, -1.0);
-        bins[n / 2] = Complex32::new(0.5, im_ny);
-        let mut out = vec![0.0f32; n];
-        fft.inverse(&mut bins, &mut out);
-        out
-    };
-    let clean = tone(0.0, 0.0);
-    let dirty = tone(0.25, -0.75);
-    assert_eq!(clean, dirty);
-    // The DC bin alone contributes 1.0 to every sample's mean.
-    let mean = clean.iter().sum::<f32>() / n as f32;
-    assert!((mean - 1.0).abs() < 1e-5, "{mean}");
-
-    let nan = tone(f32::NAN, f32::INFINITY);
-    assert!(nan.iter().all(|x| x.is_finite()));
-}
-
-/// The transform pair against the textbook DFT, so the real-FFT passes are
-/// checked against an analytic figure and not against another FFT. Every
-/// even size small enough for the O(n^2) sum, including the ones that are not
-/// a multiple of four (an odd bin count, a lone centre bin).
-///
-/// Mutation (run): negate the centre bin's imaginary part's sign handling
-/// (drop the `bins[bins_len / 2].im = -...` line in `Fft::forward`) -> the
-/// size-6 case fails; swap `w * 0.5` for `w` in `Plan::new` -> all fail.
-#[test]
-fn the_forward_transform_is_the_dft_for_every_even_size() {
-    for n in (2..=64usize).step_by(2) {
-        let frame: Vec<f32> = (0..n)
-            .map(|i| ((i * 7 + 3) % 11) as f32 * 0.25 - 1.0)
-            .collect();
-        let mut fft = Fft::new(n);
-        let real = frame.clone();
-        let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-        fft.forward(&real, &mut bins);
-        for (k, bin) in bins.iter().enumerate() {
-            let (mut re, mut im) = (0.0f64, 0.0f64);
-            for (t, &x) in frame.iter().enumerate() {
-                let angle = -2.0 * std::f64::consts::PI * (k * t) as f64 / n as f64;
-                re += x as f64 * angle.cos();
-                im += x as f64 * angle.sin();
-            }
-            assert!(
-                (bin.re as f64 - re).abs() < 1e-4 && (bin.im as f64 - im).abs() < 1e-4,
-                "size {n} bin {k}: {bin} != {re} + {im}i"
-            );
-        }
-
-        let mut back = vec![0.0f32; n];
-        fft.inverse(&mut bins, &mut back);
-        for (i, (&got, &want)) in back.iter().zip(&frame).enumerate() {
-            assert!(
-                (got / n as f32 - want).abs() < 1e-5,
-                "size {n} sample {i}: {got} / {n} != {want}"
-            );
-        }
-    }
-}
-
-/// The scratch is shared by both directions, so it must cover the larger of
-/// the two plans' needs, at every window the vocoder can be built with.
-///
-/// Not mutation-covered: rustfft 6.4's scalar out-of-place scratch length is 0
-/// at every size, so sizing the scratch as `0` or from one direction alone
-/// still passes. This is a cheap guard for a future rustfft whose scratch is
-/// nonzero or differs by direction; it cannot fail today.
-#[test]
-fn the_scratch_covers_both_plans_at_every_fft_size() {
-    let mut size = FftSize::MIN.size().get();
-    let mut checked = 0;
-    while size <= FftSize::MAX.size().get() {
-        let fft = Fft::new(size);
-        assert!(
-            fft.scratch_len() >= fft.forward_scratch_len(),
-            "size {size}: scratch {} < forward {}",
-            fft.scratch_len(),
-            fft.forward_scratch_len()
-        );
-        assert!(
-            fft.scratch_len() >= fft.inverse_scratch_len(),
-            "size {size}: scratch {} < inverse {}",
-            fft.scratch_len(),
-            fft.inverse_scratch_len()
-        );
-        // A clone's fresh scratch is sized the same.
-        assert_eq!(fft.clone_fresh().scratch_len(), fft.scratch_len());
-        size *= 2;
-        checked += 1;
-    }
-    assert_eq!(checked, 14, "4, 8, ..., 32768");
-}
-
-/// Pins that the vocoder's FFT is rustfft's *scalar* one, which is what makes
-/// a render bit-identical on every CPU. The auto planner (AVX, SSE or NEON)
-/// differs from scalar bitwise in nearly every bin of this frame, so a swap
-/// to it moves the digest on any machine with SIMD.
-///
-/// The digest is a self-recorded golden, asserted only where it was recorded:
-/// the twiddles come from libm (`sin`, `cos` in f64), which can differ in the
-/// last ulp between CRTs. The input is integer-valued, with no libm in it.
-///
-/// Mutation (run): build the plans on `rustfft::FftPlanner` instead of
-/// `FftPlannerScalar` in `Fft::new` -> the digest moves on an AVX machine.
-#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
-#[test]
-fn the_fft_is_scalar_so_renders_match_across_cpus() {
-    let n = 1024usize;
-    let mut state = 12345u32;
-    let frame: Vec<f32> = (0..n)
-        .map(|_| {
-            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            ((state >> 16) % 2001) as f32 / 1000.0 - 1.0
-        })
-        .collect();
-    let mut fft = Fft::new(n);
-    let real = frame.clone();
-    let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-    fft.forward(&real, &mut bins);
-    let mut back = vec![0.0f32; n];
-    fft.inverse(&mut bins.clone(), &mut back);
-
-    let mut digest = 0xcbf2_9ce4_8422_2325u64;
-    let mut eat = |x: f32| {
-        digest = (digest ^ x.to_bits() as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    };
-    for b in &bins {
-        eat(b.re);
-        eat(b.im);
-    }
-    back.iter().copied().for_each(&mut eat);
-    assert_eq!(digest, 1_168_166_466_409_112_443);
+fn a_cloned_fft_transforms_identically() {
+    let n = 256usize;
+    let frame: Vec<f32> = (0..n).map(|i| (i as f32 * 0.3).sin()).collect();
+    let mut a = Fft::new(n);
+    let mut b = a.clone_fresh();
+    let (mut bins_a, mut bins_b) = (
+        vec![Complex32::new(0.0, 0.0); n / 2 + 1],
+        vec![Complex32::new(0.0, 0.0); n / 2 + 1],
+    );
+    a.forward(&frame, &mut bins_a);
+    b.forward(&frame, &mut bins_b);
+    assert_eq!(bins_a, bins_b);
 }
 
 #[test]

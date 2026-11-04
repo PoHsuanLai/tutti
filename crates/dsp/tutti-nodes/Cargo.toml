@@ -14,7 +14,9 @@ default = []
 # No `bevy` feature: ECS bindings are host-side. No `spatial` feature: the
 # panners are `tutti-spatial`, which depends on this crate.
 # FFT convolution reverb (partitioned IR).
-convolution = ["dep:realfft"]
+# (The transforms are `tutti_types::RealFft`; the convolution itself is this
+# crate's, so its IR spectra can be stored once and shared.)
+convolution = []
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
 # benches (`Const`, `Osc`, `Through`, `Split`, `Sink`). Off by default and
 # enabled only from `[dev-dependencies]`, so it is never production API: the
@@ -44,12 +46,6 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false }
 # The node contract every node here implements. tutti-graph depends on no
 # tutti crate but tutti-types, so the edge adds no cycle.
 tutti-graph = { path = "../../core/tutti-graph" }
-
-# The real FFT under the partitioned convolver (optional, gated by the
-# `convolution` feature). The convolution itself is this crate's
-# (`convolution/convolver.rs`), so its IR spectra can be stored once and
-# shared.
-realfft = { version = "3.5", optional = true }
 
 # Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.

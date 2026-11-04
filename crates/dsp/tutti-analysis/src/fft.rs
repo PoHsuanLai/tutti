@@ -10,19 +10,19 @@
 //! mutation is confined to one visible parameter rather than hidden inside each
 //! call site.
 
-use realfft::{ComplexToReal, FftError, RealFftPlanner, RealToComplex};
-use std::sync::Arc;
+use tutti_types::RealFft;
 
 use crate::Complex;
 
-/// Cached real-input plans plus the buffers a forward or inverse transform needs.
+/// The cached real-input plan plus the buffers a transform needs.
 ///
-/// Both directions run on `realfft`'s real-to-complex plans, which do about
-/// half the work of a complex transform over the same real signal.
+/// Both directions run on [`RealFft`], the engine's CPU-independent real FFT
+/// (rustfft's scalar planner), so the spectra are the same bits on every CPU.
+/// It does about half the work of a complex transform over a real signal at an
+/// even size; an odd size runs a full-length complex transform.
 pub struct FftScratch {
-    planner: RealFftPlanner<f32>,
-    forward: Option<(usize, Arc<dyn RealToComplex<f32>>)>,
-    inverse: Option<(usize, Arc<dyn ComplexToReal<f32>>)>,
+    /// The plan for the last size transformed; a different size re-plans.
+    plan: Option<(usize, RealFft)>,
     /// The windowed real input of a forward transform.
     real: Vec<f32>,
     /// The `size / 2 + 1` input bins of an inverse transform (the plan
@@ -32,13 +32,11 @@ pub struct FftScratch {
 }
 
 impl FftScratch {
-    /// An empty working set. Planners and buffers are built lazily on the
-    /// first transform of each size and reused after that.
+    /// An empty working set. The plan and buffers are built lazily on the
+    /// first transform and reused while the size stays the same.
     pub fn new() -> Self {
         Self {
-            planner: RealFftPlanner::new(),
-            forward: None,
-            inverse: None,
+            plan: None,
             real: Vec::new(),
             half: Vec::new(),
             scratch: Vec::new(),
@@ -56,17 +54,16 @@ impl FftScratch {
         debug_assert_eq!(window.len(), size);
         debug_assert_eq!(out.len(), size / 2 + 1);
 
-        let fft = self.forward_plan(size);
+        let fft = plan_for(&mut self.plan, size);
         self.real.clear();
         self.real
             .extend(input.iter().zip(window).map(|(&s, &w)| s * w));
 
-        let needed = fft.get_scratch_len();
+        let needed = fft.scratch_len();
         if self.scratch.len() < needed {
             self.scratch.resize(needed, Complex::default());
         }
-        fft.process_with_scratch(&mut self.real, out, &mut self.scratch[..needed])
-            .expect("buffer lengths were sized from the plan");
+        fft.forward(&self.real, out, &mut self.scratch);
     }
 
     /// Complex bins `DC..=Nyquist` → real samples, conjugate half rebuilt.
@@ -79,48 +76,31 @@ impl FftScratch {
         let size = out.len();
         debug_assert_eq!(bins.len(), size / 2 + 1);
 
-        let fft = self.inverse_plan(size);
+        let fft = plan_for(&mut self.plan, size);
         self.half.clear();
         self.half.extend_from_slice(bins);
 
-        let needed = fft.get_scratch_len();
+        let needed = fft.scratch_len();
         if self.scratch.len() < needed {
             self.scratch.resize(needed, Complex::default());
         }
-        // A non-zero imaginary DC or Nyquist is reported as `InputValues` after
-        // the transform has run; the output is the real part either way.
-        match fft.process_with_scratch(&mut self.half, out, &mut self.scratch[..needed]) {
-            Ok(()) | Err(FftError::InputValues(..)) => {}
-            Err(e) => unreachable!("buffer lengths were sized from the plan: {e}"),
-        }
+        fft.inverse(&mut self.half, out, &mut self.scratch);
 
         let norm = 1.0 / size as f32;
         for slot in out.iter_mut() {
             *slot *= norm;
         }
     }
+}
 
-    fn forward_plan(&mut self, size: usize) -> Arc<dyn RealToComplex<f32>> {
-        match &self.forward {
-            Some((cached, fft)) if *cached == size => Arc::clone(fft),
-            _ => {
-                let fft = self.planner.plan_fft_forward(size);
-                self.forward = Some((size, Arc::clone(&fft)));
-                fft
-            }
-        }
+/// The plan for `size`, built on a change of size. A free function over the
+/// `plan` field alone, so the caller's other fields stay borrowable.
+fn plan_for(plan: &mut Option<(usize, RealFft)>, size: usize) -> &RealFft {
+    match plan {
+        Some((cached, _)) if *cached == size => {}
+        _ => *plan = Some((size, RealFft::new(size))),
     }
-
-    fn inverse_plan(&mut self, size: usize) -> Arc<dyn ComplexToReal<f32>> {
-        match &self.inverse {
-            Some((cached, fft)) if *cached == size => Arc::clone(fft),
-            _ => {
-                let fft = self.planner.plan_fft_inverse(size);
-                self.inverse = Some((size, Arc::clone(&fft)));
-                fft
-            }
-        }
-    }
+    &plan.as_ref().expect("just set").1
 }
 
 impl Default for FftScratch {
@@ -131,10 +111,8 @@ impl Default for FftScratch {
 
 impl core::fmt::Debug for FftScratch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FftScratch")
-            .field("forward_size", &self.forward.as_ref().map(|(n, _)| n))
-            .field("inverse_size", &self.inverse.as_ref().map(|(n, _)| n))
-            .finish()
+        let size = self.plan.as_ref().map(|(size, _)| *size);
+        f.debug_struct("FftScratch").field("size", &size).finish()
     }
 }
 
@@ -187,7 +165,8 @@ mod tests {
     /// The imaginary parts of DC (and Nyquist, for an even size) are ignored.
     ///
     /// Mutation: add `half[0].im` into `half[0].re` before the transform, or
-    /// drop the `InputValues` arm so the error panics → fails.
+    /// drop the zeroing of DC's and Nyquist's imaginary parts in
+    /// `tutti_types::RealFft::inverse` → fails.
     #[test]
     fn inverse_ignores_imaginary_dc_and_nyquist() {
         for size in [64usize, 63] {

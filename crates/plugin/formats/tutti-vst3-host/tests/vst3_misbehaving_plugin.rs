@@ -726,8 +726,28 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
         "the 64-bit answer was read before `initialize`, where the probe says no"
     );
 
-    // `probe` never initializes, so for it the answer is best effort.
+    // `probe` never initializes, so it does not ask.
     assert!(!Vst3Loaded::probe(&path).expect("probe").supports_f64);
+}
+
+/// `probe` never initializes, and the SDK allows the bus queries only on an
+/// initialized component, so it does not ask: no buses, no MIDI, 32-bit only,
+/// where a load of the same plugin reads them.
+///
+/// Mutation (run): pass `true` for `query_buses` in `Vst3Loaded::probe` → the
+/// probe reads the buses the plugin declares at construction and the
+/// `num_outputs` assertion fails.
+#[test]
+fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
+    let path = probe_path();
+    let loaded = Vst3Loaded::load(&path).expect("load");
+    assert!(loaded.info().num_outputs > 0, "the load reads the buses");
+
+    let probed = Vst3Loaded::probe(&path).expect("probe");
+    assert_eq!(probed.num_inputs, 0);
+    assert_eq!(probed.num_outputs, 0);
+    assert!(probed.input_bus_channels.is_empty() && probed.output_bus_channels.is_empty());
+    assert!(!probed.supports_f64);
 }
 
 /// A latency that is a duration moves with the rate, and is valid once the

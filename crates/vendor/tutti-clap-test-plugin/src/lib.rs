@@ -358,6 +358,17 @@ unsafe extern "C" fn plugin_activate(
         // Where a plugin that computes its group delay at activation (for the
         // rate it is activated at) settles on a figure.
         LATENCY_ACTIVE_EXTRA.store(LATENCY_NEXT_EXTRA.load(Ordering::SeqCst), Ordering::SeqCst);
+        // `clap.latency` lets a plugin announce its figure from inside
+        // `activate`, which is where it settled on it.
+        if LATENCY_CHANGED_IN_ACTIVATE.load(Ordering::SeqCst) {
+            if let Some(ext) =
+                threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
+            {
+                if let Some(changed) = ext.changed {
+                    changed(plugin_host(plugin));
+                }
+            }
+        }
     }
     accepted
 }
@@ -1772,6 +1783,19 @@ const MAX_DELAY_LEN: usize = 512;
 static LATENCY_NEXT_EXTRA: AtomicU32 = AtomicU32::new(0);
 /// The frames the latest activation settled on.
 static LATENCY_ACTIVE_EXTRA: AtomicU32 = AtomicU32::new(0);
+
+/// Whether `activate` calls the host's `latency.changed()` before it returns.
+static LATENCY_CHANGED_IN_ACTIVATE: AtomicBool = AtomicBool::new(false);
+
+/// Make every accepted `activate` call `clap_host_latency.changed()` from
+/// inside itself, as `clap.latency` allows (`1`), or stop (`0`).
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_latency_changed_in_activate(on: u32) {
+    LATENCY_CHANGED_IN_ACTIVATE.store(on != 0, Ordering::SeqCst);
+}
 
 /// Make the plugin's latency `extra` frames longer from its next activation on,
 /// as a plugin whose group delay depends on the rate or oversampling it is

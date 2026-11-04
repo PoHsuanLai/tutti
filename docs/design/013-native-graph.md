@@ -5597,16 +5597,24 @@ under both.
   `a_values_rescan_*`, `latency_changed_on_an_active_plugin_*` and
   `a_latency_that_depends_on_the_rate_*` of `loaders::clap`, on the reference
   plugin's `tutti_test_plugin_request_ports_rescan`, thread commands,
-  param commands and `tutti_test_plugin_set_latency_at_activation`.
+  param commands and `tutti_test_plugin_set_latency_at_activation`. A
+  `changed()` raised inside `activate` is cleared at the end of
+  `activate_plugin` (the figures are read right after), so one request is one
+  activation. The per-block main-thread pass (`run_main_thread_work`) is gated
+  on cached state: the callback atomic, the earliest timer deadline, and a
+  5 ms scan period for registered descriptors; it reads no clock when neither
+  is registered. Timers and callbacks are serviced only while the host keeps
+  sending requests, since its loop blocks in `recv`.
 - **A VST3 plugin's restart flags are acted on.** `kIoChanged`,
   `kLatencyChanged` and `kPrefetchableSupportChanged` run the deactivate and
-  activate cycle (`Vst3Active::restart_bus_configuration`, which reads
-  `IPrefetchableSupport` while the plugin is down) and re-read the latency
-  after it; `kParamIDMappingChanged` is reported as a changed parameter list.
+  activate cycle (`Vst3Active::restart_bus_configuration`) and re-read the
+  latency after it; keeping `IPrefetchableSupport`'s answer is deferred.
+  `kParamIDMappingChanged` is reported as a changed parameter list; remapping
+  through `IRemapParamID` is deferred.
   The latency is read again after an in-place rate change and after a
   rebuild. The bus counts, the event buses and the 64-bit answer are read
   after `initialize` (`Vst3Loaded::reconcile_bus_counts`); `probe`, which
-  never initializes, reports them best effort. `kNoteExpressionChanged`,
+  never initializes, does not read them. `kNoteExpressionChanged`,
   `kKeyswitchChanged`, `kIoTitlesChanged` and `kRoutingInfoChanged` are
   decoded and reach nothing: no client consumes them.
 - **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes

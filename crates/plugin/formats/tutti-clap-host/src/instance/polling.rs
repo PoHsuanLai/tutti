@@ -859,27 +859,25 @@ impl ClapLoaded {
     /// loaded the plugin.
     pub fn poll_timers_at(&mut self, now: std::time::Instant) -> usize {
         self.assert_main_thread();
-        if self.extensions.system.timer_support.is_null() {
+        let ext = self.extensions.system.timer_support;
+        let on_timer = if ext.is_null() {
+            None
+        } else {
+            unsafe { &*ext }.on_timer
+        };
+        let Some(on_timer) = on_timer else {
+            // Nothing can fire, so nothing is due: the per-block pass need not
+            // come back for these timers.
+            self.host_state.timer.set_next_due(None);
             return 0;
-        }
-        let ext = unsafe { &*self.extensions.system.timer_support };
-        let on_timer = match ext.on_timer {
-            Some(f) => f,
-            None => return 0,
         };
 
-        let expired_ids = match self.host_state.timer.timers.lock() {
-            Ok(mut timers) => take_due_timers(&mut timers, now),
-            Err(_) => Vec::new(),
-        };
-
-        let mut fired = 0usize;
-        for id in expired_ids {
-            unsafe { on_timer(self.plugin.as_ptr(), id) };
-            fired += 1;
-        }
-
-        fired
+        let plugin = self.plugin.as_ptr();
+        fire_due_timers(&self.host_state.timer, now, |id| {
+            // SAFETY: `on_timer` is the plugin's `[main-thread]` callback, and
+            // `assert_main_thread` above holds.
+            unsafe { on_timer(plugin, id) }
+        })
     }
 
     /// Consumes and returns the `audio_ports.config_changed` flag.
@@ -1159,12 +1157,20 @@ impl ClapLoaded {
         let ext = unsafe { &*self.extensions.system.posix_fd_support };
         let Some(on_fd) = ext.on_fd else { return 0 };
 
-        let watched: Vec<(i32, u32)> = match self.host_state.resources.posix_fds.lock() {
-            Ok(fds) => fds.iter().map(|e| (e.fd, e.flags)).collect(),
-            Err(_) => return 0,
-        };
+        // The scratch lives on the instance, so a scan allocates only when the
+        // set of descriptors grows. Taken out so `on_fd` can borrow `self`.
+        let mut scratch = std::mem::take(&mut self.work.fds);
+        scratch.watched.clear();
+        match self.host_state.resources.posix_fds.lock() {
+            Ok(fds) => scratch.watched.extend(fds.iter().map(|e| (e.fd, e.flags))),
+            Err(_) => {
+                self.work.fds = scratch;
+                return 0;
+            }
+        }
+        ready_fds_into(&mut scratch);
         let mut fired = 0;
-        for (fd, ready) in ready_fds(&watched) {
+        for &(fd, ready) in &scratch.ready {
             // An earlier `on_fd` may have unregistered this one.
             let registered = self
                 .host_state
@@ -1177,6 +1183,7 @@ impl ClapLoaded {
                 fired += 1;
             }
         }
+        self.work.fds = scratch;
         fired
     }
 
@@ -1186,72 +1193,218 @@ impl ClapLoaded {
     /// that loaded the plugin, as often as the host ticks (a timer's period is
     /// at best that fine).
     ///
+    /// It is cheap when there is nothing to do, so it can run on every block
+    /// of a real-time-priority thread: a `request_callback` is one atomic, and
+    /// the clock is read only while a timer or a descriptor is registered. The
+    /// timers lock is taken only once the earliest deadline has passed, and the
+    /// descriptors are polled at most once per 5 ms (a
+    /// descriptor's readiness is noticed that late at worst).
+    ///
+    /// Timers and callbacks are serviced only while the caller keeps calling
+    /// this: a host loop that blocks waiting for a request services none until
+    /// the next one arrives.
+    ///
     /// # Panics
     ///
     /// In debug builds, panics if called from a thread other than the one that
     /// loaded the plugin.
     pub fn run_main_thread_work(&mut self) {
+        self.run_main_thread_work_with(std::time::Instant::now);
+    }
+
+    /// [`run_main_thread_work`](Self::run_main_thread_work) with the clock
+    /// supplied, which it reads at most once and only when a timer or a
+    /// descriptor is registered. Returns which scans it ran.
+    pub(crate) fn run_main_thread_work_with(
+        &mut self,
+        clock: impl FnOnce() -> std::time::Instant,
+    ) -> WorkRan {
         if self.poll_callback_requested() {
             self.on_main_thread();
         }
-        self.poll_timers();
+        let timer = &self.host_state.timer;
         #[cfg(unix)]
-        self.poll_posix_fds();
+        let fds_registered = self
+            .host_state
+            .resources
+            .posix_fd_count
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0;
+        #[cfg(not(unix))]
+        let fds_registered = false;
+        let next_timer = timer.next_due_nanos();
+        if !work_needs_clock(next_timer, fds_registered) {
+            return WorkRan::default();
+        }
+        let now = clock();
+        let ran = work_due(
+            next_timer,
+            timer.epoch(),
+            fds_registered,
+            self.work.last_fd_scan,
+            now,
+        );
+        if ran.timers {
+            self.poll_timers_at(now);
+        }
+        #[cfg(unix)]
+        if ran.fds {
+            self.work.last_fd_scan = Some(now);
+            self.poll_posix_fds();
+        }
+        ran
     }
 }
 
-/// The registered descriptors `(fd, flags)` that are ready, each with the
-/// `clap_posix_fd_flags` ready among the ones it registered. A zero-timeout
-/// `poll(2)`, so it never blocks.
+/// What the per-block pass keeps between calls.
+#[derive(Default)]
+pub(crate) struct MainThreadWork {
+    /// When the descriptors were last polled.
+    last_fd_scan: Option<std::time::Instant>,
+    /// Room the descriptor scan reuses.
+    #[cfg(unix)]
+    fds: FdScratch,
+}
+
+/// Which scans a pass ran.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WorkRan {
+    pub timers: bool,
+    pub fds: bool,
+}
+
+/// The least time between two polls of the registered descriptors.
+const FD_SCAN_PERIOD: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Whether the pass needs to read the clock at all: a timer is registered or a
+/// descriptor is.
+fn work_needs_clock(next_timer_nanos: u64, fds_registered: bool) -> bool {
+    next_timer_nanos != crate::host::state::TimerState::NONE || fds_registered
+}
+
+/// Which scans are due at `now`: the timers once the earliest deadline has
+/// passed, the descriptors once [`FD_SCAN_PERIOD`] has passed since the last.
+fn work_due(
+    next_timer_nanos: u64,
+    epoch: std::time::Instant,
+    fds_registered: bool,
+    last_fd_scan: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> WorkRan {
+    let since_epoch = now.saturating_duration_since(epoch).as_nanos();
+    WorkRan {
+        timers: next_timer_nanos != crate::host::state::TimerState::NONE
+            && since_epoch >= u128::from(next_timer_nanos),
+        fds: fds_registered
+            && last_fd_scan
+                .is_none_or(|last| now.saturating_duration_since(last) >= FD_SCAN_PERIOD),
+    }
+}
+
+/// Fires each due timer through `fire`, skipping one an earlier callback in
+/// the same pass unregistered, and caches the next deadline. Returns how many
+/// fired.
+fn fire_due_timers(
+    state: &crate::host::state::TimerState,
+    now: std::time::Instant,
+    mut fire: impl FnMut(u32),
+) -> usize {
+    let due = match state.timers.lock() {
+        Ok(mut timers) => take_due_timers(&mut timers, now),
+        Err(_) => Vec::new(),
+    };
+    let mut fired = 0usize;
+    for id in due {
+        // An earlier `on_timer` may have unregistered this one.
+        let registered = state
+            .timers
+            .lock()
+            .is_ok_and(|timers| timers.iter().any(|t| t.id == id));
+        if registered {
+            fire(id);
+            fired += 1;
+        }
+    }
+    // After the callbacks, which may have registered or unregistered timers.
+    let next = state.timers.lock().ok().and_then(|timers| {
+        timers
+            .iter()
+            .map(|t| t.last_fire + std::time::Duration::from_millis(u64::from(t.period_ms)))
+            .min()
+    });
+    state.set_next_due(next);
+    fired
+}
+
+/// Room for one scan of the registered descriptors.
 #[cfg(unix)]
-fn ready_fds(watched: &[(i32, u32)]) -> Vec<(i32, u32)> {
+#[derive(Default)]
+struct FdScratch {
+    /// The descriptors to poll, `(fd, flags)`; filled by the caller.
+    watched: Vec<(i32, u32)>,
+    polls: Vec<libc::pollfd>,
+    /// The result: each ready descriptor with the events ready.
+    ready: Vec<(i32, u32)>,
+}
+
+/// Fills `scratch.ready` with the descriptors of `scratch.watched` that are
+/// ready, each with the `clap_posix_fd_flags` ready among the ones it
+/// registered. A zero-timeout `poll(2)`, so it never blocks; it allocates only
+/// when `scratch` has to grow.
+#[cfg(unix)]
+fn ready_fds_into(scratch: &mut FdScratch) {
     use clap_sys::ext::posix_fd_support::{
         CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
     };
+    let FdScratch {
+        watched,
+        polls,
+        ready: out,
+    } = scratch;
+    out.clear();
+    polls.clear();
     if watched.is_empty() {
-        return Vec::new();
+        return;
     }
-    let mut polls: Vec<libc::pollfd> = watched
-        .iter()
-        .map(|&(fd, flags)| {
-            let mut events = 0;
-            if flags & CLAP_POSIX_FD_READ != 0 {
-                events |= libc::POLLIN;
-            }
-            if flags & CLAP_POSIX_FD_WRITE != 0 {
-                events |= libc::POLLOUT;
-            }
-            libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            }
-        })
-        .collect();
+    polls.extend(watched.iter().map(|&(fd, flags)| {
+        let mut events = 0;
+        if flags & CLAP_POSIX_FD_READ != 0 {
+            events |= libc::POLLIN;
+        }
+        if flags & CLAP_POSIX_FD_WRITE != 0 {
+            events |= libc::POLLOUT;
+        }
+        libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        }
+    }));
     // SAFETY: `polls` is a live slice of `polls.len()` initialised `pollfd`s.
     let n = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, 0) };
     if n <= 0 {
-        return Vec::new();
+        return;
     }
-    polls
-        .iter()
-        .zip(watched)
-        .filter_map(|(poll, &(fd, flags))| {
-            let mut ready = 0;
-            // A hang-up reads as readable: the read returns end of file.
-            if poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-                ready |= CLAP_POSIX_FD_READ;
-            }
-            if poll.revents & libc::POLLOUT != 0 {
-                ready |= CLAP_POSIX_FD_WRITE;
-            }
-            if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                ready |= CLAP_POSIX_FD_ERROR;
-            }
-            let ready = ready & flags;
-            (ready != 0).then_some((fd, ready))
-        })
-        .collect()
+    out.extend(
+        polls
+            .iter()
+            .zip(watched.iter())
+            .filter_map(|(poll, &(fd, flags))| {
+                let mut ready = 0;
+                // A hang-up reads as readable: the read returns end of file.
+                if poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+                    ready |= CLAP_POSIX_FD_READ;
+                }
+                if poll.revents & libc::POLLOUT != 0 {
+                    ready |= CLAP_POSIX_FD_WRITE;
+                }
+                if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                    ready |= CLAP_POSIX_FD_ERROR;
+                }
+                let ready = ready & flags;
+                (ready != 0).then_some((fd, ready))
+            }),
+    );
 }
 
 #[cfg(feature = "clap-extras")]
@@ -1806,10 +1959,19 @@ mod timer_due_tests {
 
 #[cfg(all(test, unix))]
 mod ready_fd_tests {
-    use super::ready_fds;
+    use super::{ready_fds_into, FdScratch};
     use clap_sys::ext::posix_fd_support::{
         CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
     };
+
+    fn ready_fds(watched: &[(i32, u32)]) -> Vec<(i32, u32)> {
+        let mut scratch = FdScratch {
+            watched: watched.to_vec(),
+            ..FdScratch::default()
+        };
+        ready_fds_into(&mut scratch);
+        scratch.ready
+    }
 
     fn pipe() -> (i32, i32) {
         let mut fds = [0i32; 2];
@@ -1852,5 +2014,116 @@ mod ready_fd_tests {
         assert_eq!(ready_fds(&[(r, CLAP_POSIX_FD_READ)]).len(), 1);
         unsafe { libc::close(r) };
         assert_eq!(ready_fds(&[]), []);
+    }
+}
+
+#[cfg(test)]
+mod main_thread_work_tests {
+    use super::*;
+    use crate::host::state::TimerState;
+    use std::time::{Duration, Instant};
+
+    /// **With no timer and no descriptor the pass does not read the clock**,
+    /// and a pass over registered ones does.
+    ///
+    /// Mutation (run): make `work_needs_clock` return `true` → the first
+    /// assertion fails.
+    #[test]
+    fn nothing_registered_needs_no_clock() {
+        assert!(!work_needs_clock(TimerState::NONE, false));
+        assert!(work_needs_clock(0, false));
+        assert!(work_needs_clock(TimerState::NONE, true));
+    }
+
+    /// **The timers are scanned only once the earliest deadline has passed.**
+    ///
+    /// Mutation (run): change `>=` to `<` in `work_due`'s timer test → the
+    /// three assertions fail.
+    #[test]
+    fn timers_wait_for_the_earliest_deadline() {
+        let epoch = Instant::now();
+        let at = |ms| epoch + Duration::from_millis(ms);
+        let due = |now| work_due(10_000_000, epoch, false, None, now);
+        assert!(!due(at(9)).timers, "before the deadline");
+        assert!(due(at(10)).timers, "at the deadline");
+        assert!(due(at(50)).timers, "after it");
+        assert!(!work_due(TimerState::NONE, epoch, false, None, at(50)).timers);
+    }
+
+    /// **The descriptors are polled at most once per scan period, and only
+    /// while one is registered.**
+    ///
+    /// Mutation (run): drop the `FD_SCAN_PERIOD` comparison (`|_| true`) → the
+    /// "just scanned" assertion fails.
+    #[test]
+    fn descriptors_are_polled_once_per_period() {
+        let epoch = Instant::now();
+        let last = epoch + Duration::from_millis(100);
+        let fds = |reg, last_scan, ms| {
+            work_due(
+                TimerState::NONE,
+                epoch,
+                reg,
+                last_scan,
+                last + Duration::from_millis(ms),
+            )
+            .fds
+        };
+        assert!(fds(true, None, 0), "never scanned");
+        assert!(!fds(true, Some(last), 1), "just scanned");
+        assert!(fds(true, Some(last), 5), "a period later");
+        assert!(!fds(false, None, 50), "none registered");
+    }
+
+    /// A state holding the timers `(id, period_ms)`, each last fired at the
+    /// state's epoch.
+    fn state_with(timers: &[(u32, u32)]) -> TimerState {
+        let state = TimerState::new();
+        let at = state.epoch();
+        let mut list = state.timers.lock().unwrap();
+        for &(id, period_ms) in timers {
+            list.push(TimerEntry {
+                id,
+                period_ms,
+                last_fire: at,
+            });
+        }
+        drop(list);
+        state
+    }
+
+    /// **A timer an earlier callback of the same pass unregistered is not
+    /// fired**, as a descriptor is not.
+    ///
+    /// Mutation (run): delete the `registered` re-check in `fire_due_timers`
+    /// → timer 2 fires and the assertion fails.
+    #[test]
+    fn a_timer_unregistered_earlier_in_the_pass_does_not_fire() {
+        let state = state_with(&[(1, 0), (2, 0)]);
+        let start = state.epoch();
+        let mut fired = Vec::new();
+        let n = fire_due_timers(&state, start, |id| {
+            fired.push(id);
+            // Timer 1's callback unregisters timer 2.
+            state.timers.lock().unwrap().retain(|t| t.id != 2);
+        });
+        assert_eq!(fired, [1]);
+        assert_eq!(n, 1);
+    }
+
+    /// **The pass leaves the cached deadline at the earliest timer's**, and at
+    /// none once none is left.
+    ///
+    /// Mutation (run): delete `state.set_next_due(next)` → the first
+    /// assertion fails (the cache stays at `NONE`).
+    #[test]
+    fn the_pass_caches_the_next_deadline() {
+        let state = state_with(&[(1, 30), (2, 10)]);
+        let t0 = state.epoch();
+        fire_due_timers(&state, t0, |_| {});
+        assert_eq!(state.next_due_nanos(), 10_000_000);
+        state.timers.lock().unwrap().clear();
+        fire_due_timers(&state, t0, |_| {});
+        assert_eq!(state.next_due_nanos(), TimerState::NONE);
     }
 }

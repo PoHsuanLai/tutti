@@ -78,18 +78,28 @@ against (`ClapActive::rescan_params`, also run by every re-activation).
 they asked for, and is no longer behind `clap-extras`. `gui.request_show` and
 `request_hide` answer `false`: the host owns the editor window.
 
-VST3: `kPrefetchableSupportChanged` runs the restart cycle with
-`IPrefetchableSupport` read while the plugin is down, and
-`kParamIDMappingChanged` reaches the client as a changed parameter list. The
-bus counts, the event buses and `canProcessSampleSize` are read after
-`initialize`, not before (`Vst3Loaded::probe`, which never initializes, is best
-effort).
+VST3: `kPrefetchableSupportChanged` runs the restart cycle (the plugin is
+deactivated; reading and keeping `IPrefetchableSupport`'s answer is deferred),
+and `kParamIDMappingChanged` reaches the client as a changed parameter list
+(remapping the ids through `IRemapParamID` is deferred). The bus counts, the
+event buses and `canProcessSampleSize` are read after `initialize`, not before:
+`Vst3Loaded::probe`, which never initializes, no longer asks, so its
+`PluginInfo` has no buses, no MIDI and 32-bit only (the catalog descriptor
+built from it reads none of them).
 
 Migration: `ClapInstance::{poll_latency_changed, get_latency, poll_tail_changed,
 get_tail}` are gone; `take_changes()` returns what moved. `tutti-clap-host`
 depends on `libc` on unix. The reference VST3 probe gains
 `TUTTI_PROBE_MISBEHAVIOUR` 12 and 13, and the reference CLAP plugin
-`tutti_test_plugin_set_latency_at_activation`.
+`tutti_test_plugin_set_latency_at_activation` and
+`tutti_test_plugin_set_latency_changed_in_activate`. A `latency.changed` or
+`tail.changed` a CLAP plugin raises inside `activate` is answered by that
+activation and no longer asks for another. `ClapLoaded::run_main_thread_work`
+is cheap when idle (it reads no clock without a registered timer or
+descriptor, takes the timers lock once a deadline has passed, and polls
+descriptors at most every 5 ms), and a timer an earlier callback of the same
+pass unregistered no longer fires. Timers and callbacks are serviced only
+while the host keeps calling it.
 
 ### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 

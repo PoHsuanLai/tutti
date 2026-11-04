@@ -145,7 +145,9 @@ pub struct RestartOutcome {
     /// `kParamIDMappingChanged` fired (3.7.11) — the `IRemapParamID` mapping
     /// changed. Emitted during *project load*, when a newer plugin version
     /// remaps the ids an older session saved: dropping it silently detaches
-    /// every automation lane that referenced a remapped parameter.
+    /// every automation lane that referenced a remapped parameter. The host
+    /// reports it as a changed parameter list; remapping the ids through
+    /// `IRemapParamID` is deferred.
     pub param_id_mapping_changed: bool,
     // The six fields above stop here, at the format layer, on purpose. Carrying
     // them further means new `AsyncEvent` variants, and bincode encodes a
@@ -207,15 +209,15 @@ impl RestartOutcome {
 impl Vst3Loaded {
     /// Reads a plugin's metadata without initializing it.
     ///
-    /// Loads the library and reads factory and bus info, but never calls
+    /// Loads the library and reads the factory's class info, but never calls
     /// `initialize()` or `setActive()`. Safe for plugins that would otherwise
     /// pop license dialogs or hit the network during a full load.
     ///
-    /// The bus counts, the MIDI buses and the 64-bit answer are best effort:
-    /// the SDK allows those queries only on an initialized component
-    /// (`getBusCount`, `canProcessSampleSize`), so a plugin that declares them
-    /// in `initialize` reads as having none and as 32-bit only. A loaded
-    /// instance's [`info`](Self::info) is the authoritative answer.
+    /// The bus counts, the MIDI buses and the 64-bit answer are not read: the
+    /// SDK allows those queries (`getBusCount`, `canProcessSampleSize`) only on
+    /// an initialized component, so the result carries none, no MIDI and
+    /// 32-bit only, whatever the plugin has. A loaded instance's
+    /// [`info`](Self::info) is the answer for them.
     ///
     /// # Errors
     ///
@@ -235,7 +237,7 @@ impl Vst3Loaded {
             &component,
             processor.as_ref(),
             &class,
-            true,
+            false,
         ))
     }
 
@@ -2546,9 +2548,9 @@ fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
 /// [`Vst3Loaded::load`] (which does).
 ///
 /// `query_buses` reads the bus counts, the MIDI buses and the 64-bit answer,
-/// which the SDK allows only on an initialized component: `probe` has no
-/// component that is, and asks for a best effort; the load path asks for none
-/// and reads them after `initialize` (`Vst3Loaded::reconcile_bus_counts`).
+/// which the SDK allows only on an initialized component. Both callers pass
+/// `false`: `probe` never initializes, and the load path reads them after
+/// `initialize` (`Vst3Loaded::reconcile_bus_counts`).
 fn build_plugin_info_raw(
     library: &Vst3Library,
     component: &ComPtr<IComponent>,

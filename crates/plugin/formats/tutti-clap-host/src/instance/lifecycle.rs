@@ -235,6 +235,18 @@ impl ClapLoaded {
         // contract of every `[active ? audio-thread : main-thread]` method — see
         // `LifecycleFlags::active`.
         self.flags.active = true;
+        // `clap.latency` and `clap.tail` let a plugin call `changed()` from
+        // inside `activate`. The figures are read right after every
+        // activation, so the announcement is answered; left latched it would
+        // ask for another activation, which would announce again.
+        self.host_state
+            .processing
+            .latency_changed
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.host_state
+            .processing
+            .tail_changed
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 

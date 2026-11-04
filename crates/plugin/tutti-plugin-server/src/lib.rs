@@ -461,6 +461,26 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Make the reference plugin call `latency.changed()` from inside every
+    /// `activate`, until the returned guard drops.
+    #[cfg(feature = "clap")]
+    #[must_use = "the plugin goes back to silence when the guard drops"]
+    pub fn clap_probe_latency_changed_in_activate() -> ClapProbeChangedInActivate {
+        set_clap_probe_switch(b"tutti_test_plugin_set_latency_changed_in_activate\0", 1);
+        ClapProbeChangedInActivate
+    }
+
+    /// Stops the announcement on drop; see [`clap_probe_latency_changed_in_activate`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeChangedInActivate;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeChangedInActivate {
+        fn drop(&mut self) {
+            set_clap_probe_switch(b"tutti_test_plugin_set_latency_changed_in_activate\0", 0);
+        }
+    }
+
     /// What the reference plugin recorded of its threading and timer calls
     /// since the last reset.
     #[cfg(feature = "clap")]

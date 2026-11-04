@@ -521,6 +521,10 @@ impl ClapInstance {
     /// `params.rescan` that changed what the parameters are re-reads their
     /// ranges.
     ///
+    /// Timers and callbacks are serviced only while the host keeps calling
+    /// this: a loop that blocks in `recv` for the next request services none
+    /// until one arrives.
+    ///
     /// Call it between blocks, on the thread that loaded the plugin
     /// (`deactivate` and `activate` are `[main-thread]` and never overlap a
     /// `process`). It allocates, as a rate change does. A request is consumed
@@ -542,6 +546,8 @@ impl ClapInstance {
         let was_active = clap_dispatch!(self, i => i.is_active());
         let params_before = clap_dispatch!(self, i => i.parameter_count());
 
+        // A successful re-activation re-reads the parameters' ranges itself.
+        let mut ranges_read = false;
         let reactivate = ports.needs_deactivate()
             || restart
             || params.needs_deactivate()
@@ -550,6 +556,7 @@ impl ClapInstance {
             let outcome = clap_dispatch_mut!(self, i => i.reactivate());
             let active = clap_dispatch!(self, i => i.is_active());
             self.note_layout_change();
+            ranges_read = outcome.is_ok();
             if let Err(e) = outcome {
                 tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
             }
@@ -581,7 +588,9 @@ impl ClapInstance {
 
         if params.requested {
             if params.info || params.all {
-                clap_dispatch_mut!(self, i => i.rescan_params());
+                if !ranges_read {
+                    clap_dispatch_mut!(self, i => i.rescan_params());
+                }
                 self.pending.param_titles = true;
             }
             if params.values || params.text {
@@ -1701,6 +1710,49 @@ mod tests {
 
         assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
         assert_eq!(instance.take_changes().latency, Some(Samples(before.0 + 5)));
+    }
+
+    /// **A `latency.changed()` a plugin raises from inside `activate` is
+    /// answered by that activation**: one request is one activation, not a
+    /// second restart, and not a loop when the plugin does it every time.
+    ///
+    /// Mutation (run): delete the two `store(false, ..)` calls at the end of
+    /// `ClapLoaded::activate_plugin` → the load-time announcement is still
+    /// latched, so the first `service_requests` re-activates for it (the first
+    /// count assertion reads 1), and each activation re-latches it (no loop
+    /// guard).
+    #[test]
+    fn a_latency_changed_inside_activate_is_not_restarted_for() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let _announces = crate::test_utils::clap_probe_latency_changed_in_activate();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        instance.service_requests();
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            0,
+            "the announcement made while loading was answered by the load"
+        );
+
+        // One request, one activation, whose own announcement is answered too.
+        instance
+            .clap_loaded()
+            .host_state()
+            .processing
+            .latency_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+        instance.service_requests();
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        instance.service_requests();
+        instance.service_requests();
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            1,
+            "no loop"
+        );
+        assert!(!instance.clap_loaded().poll_latency_changed());
     }
 
     /// **A `params.rescan` of values is reported as changed values and does not

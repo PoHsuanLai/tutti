@@ -9,6 +9,8 @@
 
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
@@ -303,14 +305,54 @@ impl LogState {
 pub struct TimerState {
     pub(crate) timers: Mutex<Vec<TimerEntry>>,
     pub(crate) next_id: AtomicU32,
+    /// What `next_due` counts from.
+    epoch: Instant,
+    /// The earliest moment a timer can be due, in nanoseconds after `epoch`,
+    /// or [`Self::NONE`] with no timer. Never later than the true earliest: a
+    /// registration lowers it, an unregistration leaves it (a stale early
+    /// value costs one pass, which recomputes it), and a pass over the timers
+    /// sets it exactly. It lets the per-block pass skip the timers lock.
+    next_due: AtomicU64,
 }
 
 impl TimerState {
-    fn new() -> Self {
+    /// [`Self::next_due_nanos`] when no timer is registered.
+    pub(crate) const NONE: u64 = u64::MAX;
+
+    pub(crate) fn new() -> Self {
         Self {
             timers: Mutex::new(Vec::new()),
             next_id: AtomicU32::new(1),
+            epoch: Instant::now(),
+            next_due: AtomicU64::new(Self::NONE),
         }
+    }
+
+    pub(crate) fn epoch(&self) -> Instant {
+        self.epoch
+    }
+
+    fn nanos(&self, at: Instant) -> u64 {
+        // Saturating, and one short of `NONE`, which a real deadline never is.
+        at.saturating_duration_since(self.epoch)
+            .as_nanos()
+            .min(u128::from(Self::NONE - 1)) as u64
+    }
+
+    /// Lowers the cached deadline to `due`, for a timer just registered.
+    pub(crate) fn note_due(&self, due: Instant) {
+        self.next_due.fetch_min(self.nanos(due), Ordering::AcqRel);
+    }
+
+    /// Sets the cached deadline exactly: `None` when no timer is left.
+    pub(crate) fn set_next_due(&self, due: Option<Instant>) {
+        let nanos = due.map_or(Self::NONE, |d| self.nanos(d));
+        self.next_due.store(nanos, Ordering::Release);
+    }
+
+    /// The cached deadline in nanoseconds after [`Self::epoch`]; see `next_due`.
+    pub(crate) fn next_due_nanos(&self) -> u64 {
+        self.next_due.load(Ordering::Acquire)
     }
 }
 
@@ -444,6 +486,10 @@ pub struct ResourceState {
     /// Descriptors the plugin asked the host to watch, in registration order.
     #[cfg(unix)]
     pub posix_fds: Mutex<Vec<PosixFdEntry>>,
+    /// How many descriptors `posix_fds` holds, kept beside it so the per-block
+    /// pass can ask without the lock.
+    #[cfg(unix)]
+    pub(crate) posix_fd_count: AtomicUsize,
 }
 
 impl ResourceState {
@@ -458,6 +504,8 @@ impl ResourceState {
             triggers_rescan_requested: AtomicBool::new(false),
             #[cfg(unix)]
             posix_fds: Mutex::new(Vec::new()),
+            #[cfg(unix)]
+            posix_fd_count: AtomicUsize::new(0),
         }
     }
 }

@@ -1131,10 +1131,10 @@ impl<T: Vst3Sample> Vst3Active<T> {
         self.stop_processing();
         self.set_active(false)?;
 
-        // `kPrefetchableSupportChanged` asks for the answer to be read with the
-        // plugin deactivated (`ivsteditcontroller.h`), and a restart is when it
-        // may have moved. Nothing keeps it: a caller asks `prefetchable_support`.
-        let _ = self.loaded.prefetchable_support();
+        // `kPrefetchableSupportChanged` asks for `getPrefetchableSupport` to be
+        // read with the plugin deactivated (`ivstprefetchablesupport.h`). The
+        // deactivation is done here; reading and keeping the answer is deferred
+        // (nothing holds it, and a caller asks `prefetchable_support` itself).
 
         // Re-ask the plugin for its layout while it is down. Arrangements are
         // renegotiated before the counts are re-read, matching the activation

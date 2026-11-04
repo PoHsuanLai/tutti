@@ -414,7 +414,8 @@ impl Vst3Instance {
 
         changes.param_values_changed = restart.param_values_changed;
         // A remapped parameter id detaches every lane that named the old one:
-        // the host re-pulls the list to find the new ids.
+        // the host re-pulls the list. Remapping the ids through `IRemapParamID`
+        // is deferred.
         changes.param_titles_changed =
             restart.param_titles_changed || restart.param_id_mapping_changed;
 

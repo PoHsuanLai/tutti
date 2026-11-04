@@ -36,12 +36,17 @@
 //! declared latency is the same as the uniform convolver's. That delay is
 //! **slack**: once a block of `P` input frames is complete the level's output
 //! is not due for `start + B - P` frames (`B` for a tail level), and the
-//! level's two transforms run at fixed offsets inside it, one at a host
-//! block and the other at another, at offsets no other level uses, so no
-//! host block of up to a third to a fifth of `B` carries more than one
-//! tail transform. Every level's output is summed into one ring at the frame
-//! it is due, in the order of the transforms' frames, which does not depend
-//! on how the host splits its calls.
+//! level's two transforms run in **steps** at fixed offsets inside it, at
+//! offsets no other level's steps use, so no host block of up to one slot of
+//! `B` carries more than one step of a tail level's transforms. A tail
+//! transform whose inner FFT has more than [`MAX_SUB_FFT`] points
+//! ([`StagedRealFft`]) is cut by decimation in time into sub-FFTs of at most
+//! that many points and radix-2 combine passes, one step each, so the biggest
+//! unit of work a host block is handed is a 1024-point complex FFT whatever
+//! the partition; the cut costs a few percent of the transform's total and
+//! changes its rounding but not its result. Every level's output is summed
+//! into one ring at the frame it is due, in the order of the steps' frames,
+//! which does not depend on how the host splits its calls.
 //!
 //! A cost model picks the levels (`plan_levels`): the layout with the lowest
 //! modelled cost per frame wins, the single uniform level included, and only
@@ -64,18 +69,24 @@
 
 use std::sync::Arc;
 
-use tutti_types::{Complex32, RealFft};
+use tutti_types::{Complex32, StagedRealFft};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.
 pub(crate) const DEFAULT_BLOCK_SIZE: usize = 512;
 
 /// A tail level's partition is at most this many times the head's, and at
-/// most [`MAX_PARTITION`] frames: its two transforms (`2 * P` points) are the
-/// biggest unit of work one host block can be handed, and this keeps that no
-/// bigger than a few of the head's own.
+/// most [`MAX_PARTITION`] frames: the larger it is, the more steps its
+/// transforms take, and the fewer slots of the head's slack are left.
 const MAX_TAIL_RATIO: usize = 4;
 const MAX_PARTITION: usize = 4096;
+
+/// A tail transform's inner complex FFT is cut into sub-FFTs of at most this
+/// many points, run on different host blocks ([`StagedRealFft`]): a partition
+/// `P` has a `P`-point inner FFT, so a level of partition 2048 runs its
+/// transforms as two steps of 1024 points and a combine. A head never splits
+/// (its transforms have no slack).
+const MAX_SUB_FFT: usize = 1024;
 
 /// A non-uniform layout replaces the uniform one only when its modelled cost
 /// is at most this fraction of it: the model leaves out each level's
@@ -205,15 +216,16 @@ struct Level {
     /// Frames from the level's uniform output (latency `part`) to its due
     /// time (latency `B`): `start + B - part`. Zero for the head.
     delay: usize,
-    /// Frames after a block of `part` inputs is complete at which its forward
-    /// transform runs, and at which the multiply and inverse transform run:
-    /// `fwd_at <= inv_at <= delay`, and `inv_at < part`.
-    fwd_at: usize,
-    inv_at: usize,
+    /// Frames after a block of `part` inputs is complete at which each step
+    /// of its transforms runs: the forward transform's steps, then the
+    /// multiply and the inverse transform's. Non-decreasing, ending at most
+    /// `delay` and below `part`. `forward_steps` of them are the forward's.
+    steps: Vec<usize>,
+    forward_steps: usize,
     /// `part + 1` bins each.
     segments: Vec<Vec<Complex32>>,
-    /// Both directions, `2 × part` points.
-    fft: RealFft,
+    /// Both directions, `2 × part` points, in steps.
+    fft: StagedRealFft,
 }
 
 /// An impulse response, transformed: its levels, built once and
@@ -224,8 +236,8 @@ pub struct IrSpectra {
     block_size: usize,
     ir_len: usize,
     levels: Vec<Level>,
-    /// Power-of-two lengths of the input ring (the newest `part + fwd_at`
-    /// frames of every level) and the output ring (the furthest frame a level
+    /// Power-of-two lengths of the input ring (the newest `part` frames plus
+    /// the first step's offset, of every level) and the output ring (the furthest frame a level
     /// writes ahead of the read cursor).
     input_ring: usize,
     output_ring: usize,
@@ -236,23 +248,47 @@ impl IrSpectra {
     /// of two. Allocates; control thread.
     fn new(ir: &[f32], block_size: usize) -> Self {
         debug_assert!(block_size.is_power_of_two());
-        Self::from_plan(ir, block_size, &plan_levels(ir.len(), block_size))
+        Self::from_plan(
+            ir,
+            block_size,
+            &plan_levels(ir.len(), block_size),
+            MAX_SUB_FFT,
+        )
     }
 
-    /// `ir` cut into the levels of `plan`.
-    fn from_plan(ir: &[f32], block_size: usize, plan: &[Plan]) -> Self {
-        // The tail levels' offsets in the head partition's cycle: the head's
-        // transforms are at its start, and the two of each tail level at
-        // slots that no other transform uses, spaced evenly through the
-        // `block_size` frames of slack, so that a host block no longer than
-        // one slot (a third to a fifth of the head partition) holds at most
-        // one of them.
-        let slot = (block_size / (2 * plan.len().saturating_sub(1) + 1)).max(1);
-        let levels: Vec<Level> = plan
+    /// `ir` cut into the levels of `plan`, whose tail transforms are cut into
+    /// sub-FFTs of at most `max_sub` points.
+    fn from_plan(ir: &[f32], block_size: usize, plan: &[Plan], max_sub: usize) -> Self {
+        // A tail level's transforms (`2 * part` real points, `part` complex)
+        // run in `part / max_sub` sub-FFTs and the passes around them; a
+        // head's run whole, at its start.
+        let ffts: Vec<StagedRealFft> = plan
             .iter()
             .enumerate()
             .map(|(j, l)| {
-                let fft = RealFft::new(2 * l.part);
+                StagedRealFft::new(
+                    2 * l.part,
+                    if j == 0 { 1 } else { l.part.div_ceil(max_sub) },
+                )
+            })
+            .collect();
+        // The tail levels' steps in the head partition's cycle: the head's
+        // transforms are at its start, and the steps of each tail level (its
+        // forward steps, then its inverse's) at slots that no other step
+        // uses, spaced evenly through the `block_size` frames of slack, so
+        // that a host block no longer than one slot holds at most one of
+        // them.
+        let tail_steps: usize = ffts[1.min(ffts.len())..]
+            .iter()
+            .map(|f| f.forward_steps() + f.inverse_steps())
+            .sum();
+        let slot = (block_size / (tail_steps + 1)).max(1);
+        let mut taken = 0;
+        let levels: Vec<Level> = plan
+            .iter()
+            .zip(ffts)
+            .enumerate()
+            .map(|(j, (l, fft))| {
                 let mut scratch = fft.make_scratch();
                 let mut buffer = vec![0.0f32; 2 * l.part];
                 let segments = (0..l.count)
@@ -261,18 +297,31 @@ impl IrSpectra {
                         let hi = ir.len().min(lo + l.part);
                         copy_and_pad(&mut buffer, &ir[lo..hi]);
                         let mut spectrum = zeros(l.part + 1);
-                        fft.forward(&buffer, &mut spectrum, &mut scratch);
+                        for step in 0..fft.forward_steps() {
+                            fft.forward_step(step, &buffer, &mut spectrum, &mut scratch);
+                        }
                         spectrum
                     })
                     .collect();
                 let delay = l.start + block_size - l.part;
-                let inv_at = (2 * j * slot).min(delay);
-                let fwd_at = ((2 * j).saturating_sub(1) * slot).min(inv_at);
+                let (forward_steps, steps) = (
+                    fft.forward_steps(),
+                    fft.forward_steps() + fft.inverse_steps(),
+                );
+                let steps = (0..steps)
+                    .map(|_| {
+                        if j == 0 {
+                            return 0;
+                        }
+                        taken += 1;
+                        (taken * slot).min(delay)
+                    })
+                    .collect();
                 Level {
                     part: l.part,
                     delay,
-                    fwd_at,
-                    inv_at,
+                    steps,
+                    forward_steps,
                     segments,
                     fft,
                 }
@@ -280,7 +329,7 @@ impl IrSpectra {
             .collect();
         let input_ring = levels
             .iter()
-            .map(|l| l.part + l.fwd_at)
+            .map(|l| l.part + l.steps[0])
             .max()
             .unwrap_or(1)
             .next_power_of_two();
@@ -315,7 +364,7 @@ struct LevelState {
     current: usize,
     /// `2 × part`: the padded input going in, the product coming out.
     buffer: Vec<f32>,
-    /// Both transforms' scratch.
+    /// Both transforms' scratch, which holds a transform between its steps.
     scratch: Vec<Complex32>,
     /// The older partitions' products for the *next* block, summed a few
     /// partitions at a time ([`accumulate_to`](Self::accumulate_to)):
@@ -329,14 +378,18 @@ struct LevelState {
     conv: Vec<Complex32>,
     /// The second half of the last block's product, added to the next.
     overlap: Vec<f32>,
-    /// The frame (frames pushed so far) at which the next forward transform
-    /// and the next multiply/inverse run.
-    next_fwd: u64,
-    next_inv: u64,
-    /// The frame of the last forward transform, once there is one: the
-    /// spread of the sum is measured from it.
-    last_fwd: Option<u64>,
-    /// A forward transform ran in the current call.
+    /// The frame (frames pushed so far) at which the block being transformed
+    /// was complete, and the next of the level's steps to run for it
+    /// (`Level::steps`, which are offsets from `base`).
+    base: u64,
+    step: usize,
+    /// The frame of the last forward step, once the block's forward
+    /// transform is done and until the next one starts: the spread of the sum
+    /// is measured from it.
+    spread_from: Option<u64>,
+    /// A forward transform has finished, so a sum for the next block exists.
+    seeded: bool,
+    /// A step of a forward transform ran in the current call.
     crossed: bool,
 }
 
@@ -355,10 +408,32 @@ impl LevelState {
             ready: zeros(lv.part + 1),
             conv: zeros(lv.part + 1),
             overlap: vec![0.0; lv.part],
-            next_fwd: (lv.part + lv.fwd_at) as u64,
-            next_inv: (lv.part + lv.inv_at) as u64,
-            last_fwd: None,
+            base: lv.part as u64,
+            step: 0,
+            spread_from: None,
+            seeded: false,
             crossed: false,
+        }
+    }
+
+    /// The frame at which the next step runs.
+    fn next_frame(&self, lv: &Level) -> u64 {
+        self.base + lv.steps[self.step] as u64
+    }
+
+    /// The step due: a step of the block's forward transform, then of its
+    /// multiply and inverse transform, then the next block's.
+    fn run_step(&mut self, lv: &Level, input: &[f32], output: &mut [f32]) {
+        let at = self.next_frame(lv);
+        if self.step < lv.forward_steps {
+            self.forward(lv, input, at);
+        } else {
+            self.inverse(lv, self.step - lv.forward_steps, output);
+        }
+        self.step += 1;
+        if self.step == lv.steps.len() {
+            self.step = 0;
+            self.base += lv.part as u64;
         }
     }
 
@@ -382,44 +457,54 @@ impl LevelState {
         self.accumulated = self.accumulated.max(upto);
     }
 
-    /// The block's forward transform: finish the sum for the block, take the
-    /// block of `part` frames that ended `fwd_at` frames ago from the input
-    /// ring, and transform it into the write slot.
-    fn forward(&mut self, lv: &Level, input: &[f32]) {
-        if self.last_fwd.is_some() {
-            self.accumulate_to(lv, usize::MAX);
-            std::mem::swap(&mut self.building, &mut self.ready);
+    /// Forward step, at frame `at`. The first finishes the sum for the block,
+    /// takes the block of `part` frames that ended `steps[0]` frames ago from
+    /// the input ring, and starts its transform; the last writes the spectrum
+    /// into the write slot.
+    fn forward(&mut self, lv: &Level, input: &[f32], at: u64) {
+        if self.step == 0 {
+            if self.seeded {
+                self.accumulate_to(lv, usize::MAX);
+                std::mem::swap(&mut self.building, &mut self.ready);
+            }
+            self.accumulated = 0;
+            self.begun = false;
+            self.spread_from = None;
+            let mask = input.len() - 1;
+            let first = (self.base as usize).wrapping_sub(lv.part);
+            for (r, b) in self.buffer[..lv.part].iter_mut().enumerate() {
+                *b = input[first.wrapping_add(r) & mask];
+            }
+            self.buffer[lv.part..].fill(0.0);
         }
-        self.accumulated = 0;
-        self.begun = false;
-        let mask = input.len() - 1;
-        let first = (self.next_fwd as usize).wrapping_sub(lv.fwd_at + lv.part);
-        for (r, b) in self.buffer[..lv.part].iter_mut().enumerate() {
-            *b = input[first.wrapping_add(r) & mask];
-        }
-        self.buffer[lv.part..].fill(0.0);
-        lv.fft.forward(
+        lv.fft.forward_step(
+            self.step,
             &self.buffer,
             &mut self.history[self.current],
             &mut self.scratch,
         );
-        self.current = if self.current > 0 {
-            self.current - 1
-        } else {
-            lv.segments.len() - 1
-        };
-        self.last_fwd = Some(self.next_fwd);
-        self.next_fwd += lv.part as u64;
+        if self.step + 1 == lv.forward_steps {
+            self.current = if self.current > 0 {
+                self.current - 1
+            } else {
+                lv.segments.len() - 1
+            };
+            self.spread_from = Some(at);
+            self.seeded = true;
+        }
     }
 
-    /// The block's product: the older partitions' sum plus the newest
-    /// partition, inverse-transformed, added to the overlap, and summed into
-    /// the output ring where the level's output is due.
-    fn inverse(&mut self, lv: &Level, output: &mut [f32]) {
-        let count = lv.segments.len();
-        let newest = (self.current + 1) % count;
-        self.conv.copy_from_slice(&self.ready);
-        complex_multiply_accumulate(&mut self.conv, &self.history[newest], &lv.segments[0]);
+    /// Inverse step `k`. The first is the block's product: the older
+    /// partitions' sum plus the newest partition. The last
+    /// normalises the result, adds it to the overlap, and sums it into the
+    /// output ring where the level's output is due.
+    fn inverse(&mut self, lv: &Level, k: usize, output: &mut [f32]) {
+        if k == 0 {
+            let count = lv.segments.len();
+            let newest = (self.current + 1) % count;
+            self.conv.copy_from_slice(&self.ready);
+            complex_multiply_accumulate(&mut self.conv, &self.history[newest], &lv.segments[0]);
+        }
         // A non-zero imaginary part at DC or Nyquist, which the spectrum of a
         // real input has only when the input held NaN or ±∞, is ignored by
         // the inverse and the transform completes, so the block is used as
@@ -427,21 +512,21 @@ impl LevelState {
         // filter, the same in debug and release, and leaves with the
         // partition that carried it.
         lv.fft
-            .inverse(&mut self.conv, &mut self.buffer, &mut self.scratch);
+            .inverse_step(k, &mut self.conv, &mut self.buffer, &mut self.scratch);
+        if k + 1 < lv.steps.len() - lv.forward_steps {
+            return;
+        }
         // The inverse is unnormalised.
         let len = self.buffer.len() as f32;
         for x in &mut self.buffer {
             *x /= len;
         }
         let mask = output.len() - 1;
-        let due = (self.next_inv as usize)
-            .wrapping_sub(lv.inv_at)
-            .wrapping_add(lv.delay);
+        let due = (self.base as usize).wrapping_add(lv.delay);
         for (r, (&y, &v)) in self.buffer[..lv.part].iter().zip(&self.overlap).enumerate() {
             output[due.wrapping_add(r) & mask] += y + v;
         }
         self.overlap.copy_from_slice(&self.buffer[lv.part..]);
-        self.next_inv += lv.part as u64;
     }
 
     /// Clear the running state; the spectra stay.
@@ -458,9 +543,10 @@ impl LevelState {
         self.begun = false;
         self.overlap.fill(0.0);
         self.current = 0;
-        self.next_fwd = (lv.part + lv.fwd_at) as u64;
-        self.next_inv = (lv.part + lv.inv_at) as u64;
-        self.last_fwd = None;
+        self.base = lv.part as u64;
+        self.step = 0;
+        self.spread_from = None;
+        self.seeded = false;
         self.crossed = false;
     }
 }
@@ -499,9 +585,18 @@ impl Convolver {
     /// by the cost model.
     #[cfg(test)]
     fn with_parts(ir: &[f32], block_size: usize, parts: &[usize]) -> Self {
+        Self::with_parts_split(ir, block_size, parts, MAX_SUB_FFT)
+    }
+
+    /// [`with_parts`](Self::with_parts), with the tail transforms cut into
+    /// sub-FFTs of at most `max_sub` points.
+    #[cfg(test)]
+    fn with_parts_split(ir: &[f32], block_size: usize, parts: &[usize], max_sub: usize) -> Self {
         assert_eq!(parts[0], block_size);
         let plan = build_plan(ir.len(), parts);
-        Self::over(Arc::new(IrSpectra::from_plan(ir, block_size, &plan)))
+        Self::over(Arc::new(IrSpectra::from_plan(
+            ir, block_size, &plan, max_sub,
+        )))
     }
 
     /// A convolver over `spectra`, in its freshly built state.
@@ -576,7 +671,8 @@ impl Convolver {
             // The frames to the next transform, or the end of the call.
             let next = levels
                 .iter()
-                .map(|st| st.next_fwd.min(st.next_inv))
+                .zip(&spectra.levels)
+                .map(|(st, lv)| st.next_frame(lv))
                 .min()
                 .unwrap_or(u64::MAX);
             let run = (next - *pushed).min((input.len() - done) as u64) as usize;
@@ -596,25 +692,22 @@ impl Convolver {
                 // at one frame, a level's forward transform before its
                 // inverse and the levels in order: the sums into the output
                 // ring add in an order that does not depend on the calls.
-                while st.next_fwd <= *pushed || st.next_inv <= *pushed {
-                    if st.next_fwd <= st.next_inv {
-                        st.forward(lv, ring);
-                        st.crossed = true;
-                    } else {
-                        st.inverse(lv, out_ring);
-                    }
+                while st.next_frame(lv) <= *pushed {
+                    st.crossed |= st.step < lv.forward_steps;
+                    st.run_step(lv, ring, out_ring);
                 }
                 // Spread the older partitions' sum over the block: by the
-                // time `horizon` frames have passed since the level's last
-                // forward transform every partition is in. The horizon stops
-                // short of the next transform by this call's length (at most
-                // half a partition), so the call that holds it pays for the
-                // transforms and the newest partition only. A call that has
-                // crossed does no spread work for the next block: a later
-                // call or the next transform does it.
+                // time `horizon` frames have passed since the level's forward
+                // transform finished every partition is in. The horizon stops
+                // short of the next transform's first step by this call's
+                // length (at most half the span), so the call that holds it
+                // pays for the transforms and the newest partition only. A
+                // call that has run a step does no spread work for the next
+                // block: a later call or the next transform does it.
                 let older = lv.segments.len() - 1;
-                if let (Some(last), true) = (st.last_fwd, older > 0 && !st.crossed) {
-                    let horizon = (lv.part - input.len().min(lv.part / 2)).max(1) as u64;
+                if let (Some(last), true) = (st.spread_from, older > 0 && !st.crossed) {
+                    let span = lv.part - (lv.steps[lv.forward_steps - 1] - lv.steps[0]);
+                    let horizon = (span - input.len().min(span / 2)).max(1) as u64;
                     let target = older as u64 * (*pushed - last) / horizon;
                     st.accumulate_to(lv, target.min(older as u64) as usize);
                 }
@@ -1458,10 +1551,12 @@ mod tests {
                         assert_eq!(p.start, p.part, "a tail level starts at its own size");
                         assert!(l.delay >= head, "slack of a head partition");
                     } else {
-                        assert_eq!((l.delay, l.fwd_at, l.inv_at), (0, 0, 0));
+                        assert_eq!((l.delay, &l.steps[..]), (0, &[0usize, 0][..]));
                     }
-                    assert!(l.fwd_at <= l.inv_at && l.inv_at <= l.delay && l.inv_at < l.part);
-                    assert!(s.input_ring >= l.part + l.fwd_at);
+                    assert!(l.steps.windows(2).all(|w| w[0] <= w[1]));
+                    assert!(l.steps.iter().all(|&o| o <= l.delay && o < l.part));
+                    assert!(0 < l.forward_steps && l.forward_steps < l.steps.len());
+                    assert!(s.input_ring >= l.part + l.steps[0]);
                     assert!(s.output_ring > l.delay + l.part);
                     assert!(s.input_ring.is_power_of_two() && s.output_ring.is_power_of_two());
                 }
@@ -1508,38 +1603,52 @@ mod tests {
         assert!(plan_cost(&plan) <= MIN_GAIN * plan_cost(&uniform));
     }
 
-    /// No host block carries two big transforms. With calls of one slot (the
-    /// head partition over `2 * tail levels + 1`), no call holds both
-    /// transforms of a tail level or transforms of two levels, and the
-    /// head's two (it has no slack) share a call with nothing else.
+    /// No host block carries two steps of the tail transforms, and a split
+    /// transform's steps land in different blocks. With calls of one slot
+    /// (the head partition over the tail levels' steps plus one), no call
+    /// holds two steps of one level or steps of two levels, and the head's
+    /// two (it has no slack) share a call with nothing else. The last two
+    /// layouts split their tail transforms into up to eight and sixteen
+    /// sub-FFTs, so each transform's steps are spread over that many calls.
     ///
-    /// Mutations (run): `inv_at = fwd_at` for tail levels, or the same `j`
-    /// in every level's slot, puts two transforms in one call → fails.
+    /// Mutations (run): every tail step given the offset of the first (all at
+    /// `slot`) puts several steps in one call → fails; `max_sub` ignored (`ways = 1`) leaves the split
+    /// layout with one step per transform → the `forward_steps` check fails.
     #[test]
     fn transforms_land_in_different_host_blocks() {
-        for (head, parts) in [
-            (64usize, &[64usize, 128, 256][..]),
-            (64, &[64, 256]),
-            (32, &[32, 64, 128]),
+        let steps_run = |st: &LevelState, lv: &Level| {
+            ((st.base - lv.part as u64) / lv.part as u64) as usize * lv.steps.len() + st.step
+        };
+        for (head, parts, max_sub) in [
+            (64usize, &[64usize, 128, 256][..], 1024usize),
+            (64, &[64, 256], 1024),
+            (32, &[32, 64, 128], 1024),
+            (512, &[512, 1024, 2048], 256),
+            (128, &[128, 256, 512], 32),
         ] {
             let ir = flat_ir(3000);
-            let mut c = Convolver::with_parts(&ir, head, parts);
-            let call = head / (2 * (parts.len() - 1) + 1);
+            let mut c = Convolver::with_parts_split(&ir, head, parts, max_sub);
+            let split = c.spectra.levels.iter().any(|l| l.forward_steps > 1);
+            assert_eq!(split, max_sub < 1024, "{parts:?}");
+            let tail: usize = c.spectra.levels[1..].iter().map(|l| l.steps.len()).sum();
+            let call = head / (tail + 1);
             let x = vec![0.1f32; call];
             let mut out = vec![0.0f32; call];
             let mut busy_calls = 0;
-            for k in 0..20 * 256 / call {
-                let before: Vec<(u64, u64)> =
-                    c.levels.iter().map(|l| (l.next_fwd, l.next_inv)).collect();
-                c.process_block(&x, &mut out);
-                let mut per_level = Vec::new();
-                for (b, l) in before.iter().zip(&c.levels) {
-                    per_level.push(((l.next_fwd - b.0) + (l.next_inv - b.1)) as usize);
-                }
-                let events: Vec<usize> = per_level
+            for k in 0..20 * 4096 / call {
+                let before: Vec<usize> = c
+                    .levels
                     .iter()
                     .zip(&c.spectra.levels)
-                    .map(|(&d, lv)| d / lv.part)
+                    .map(|(st, lv)| steps_run(st, lv))
+                    .collect();
+                c.process_block(&x, &mut out);
+                let events: Vec<usize> = c
+                    .levels
+                    .iter()
+                    .zip(&c.spectra.levels)
+                    .zip(&before)
+                    .map(|((st, lv), &b)| steps_run(st, lv) - b)
                     .collect();
                 let total: usize = events.iter().sum();
                 if total > 0 {
@@ -1552,6 +1661,101 @@ mod tests {
                 }
             }
             assert!(busy_calls > 20);
+        }
+    }
+
+    /// Layouts whose tail transforms are cut into sub-FFTs: head, partitions
+    /// and the largest sub-FFT. The last cuts a 64-frame partition into
+    /// sixteen, more steps than it has frames of slack, so its steps share
+    /// frames.
+    const SPLIT_LAYOUTS: [(usize, &[usize], usize); 4] = [
+        (64, &[64, 256], 64),
+        (32, &[32, 64, 128], 16),
+        (16, &[16, 64], 8),
+        (16, &[16, 64], 4),
+    ];
+
+    /// A split transform is a convolution: every split layout, at IR lengths
+    /// on and around each level's first and last tap, equals the direct
+    /// convolution within [`tolerance`] (the splitting adds a combine pass,
+    /// not a transform stage, so the bound is the unsplit one's), and equals
+    /// the same layout unsplit within twice that, being off from the exact
+    /// sum by at most the tolerance each. Call lengths divide a partition,
+    /// straddle the steps' frames, and exceed the longest partition.
+    ///
+    /// Mutations (run): the spectra built with the last forward step left
+    /// out (`0..fft.forward_steps() - 1`) fails every length that reaches a
+    /// tail level; `inverse` leaving out the newest partition's multiply
+    /// fails the same.
+    #[test]
+    fn split_output_equals_direct_convolution() {
+        let x = noise(900);
+        let patterns: [&[usize]; 4] = [&[1], &[7, 13], &[64, 3, 127], &[5000]];
+        for (head, parts, max_sub) in SPLIT_LAYOUTS {
+            for len in boundary_lengths(head, parts) {
+                let ir = flat_ir(len);
+                let want = direct_convolve(&x, &ir);
+                let tol = tolerance(&ir, &x, 2 * parts[parts.len() - 1]);
+                for lens in patterns {
+                    let mut c = Convolver::with_parts_split(&ir, head, parts, max_sub);
+                    assert!(
+                        len <= parts[1] || c.spectra.levels.iter().any(|l| l.forward_steps > 1)
+                    );
+                    let got = render(&mut c, &x, lens);
+                    let unsplit = render(&mut Convolver::with_parts(&ir, head, parts), &x, lens);
+                    for (i, w) in want.iter().enumerate() {
+                        assert!(
+                            (got[i] - w).abs() <= tol && (got[i] - unsplit[i]).abs() <= 2.0 * tol,
+                            "parts {parts:?}/{max_sub}, {len} taps, calls {lens:?}: frame {i} is {} \
+                             want {w} (unsplit {}, tol {tol})",
+                            got[i],
+                            unsplit[i]
+                        );
+                    }
+                    let rest = got[want.len()..]
+                        .iter()
+                        .fold(0.0f32, |a, &s| a.max(s.abs()));
+                    assert!(
+                        rest <= tol,
+                        "parts {parts:?}/{max_sub}, {len} taps: ringing after the tail {rest}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The render of a split layout does not depend on how the host cuts its
+    /// calls: one frame at a time, odd lengths, and calls that hold several
+    /// steps or none give the same bits, though the steps of a transform
+    /// land in different calls.
+    ///
+    /// Mutation (run): `process_block` running the whole call as one run
+    /// (not cut at the frames of the steps) runs the steps after later frames
+    /// are written, and fails the bitwise comparison.
+    #[test]
+    fn a_split_render_is_independent_of_the_call_lengths() {
+        let x = noise(2500);
+        for (head, parts, max_sub) in SPLIT_LAYOUTS {
+            let ir = flat_ir(700);
+            let mut per_sample = Convolver::with_parts_split(&ir, head, parts, max_sub);
+            let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
+            let patterns: [&[usize]; 5] = [
+                &[3],
+                &[7, 13, 1],
+                &[head - 1, head + 1],
+                &[61, 64, 127],
+                &[5000],
+            ];
+            for lens in patterns {
+                let mut c = Convolver::with_parts_split(&ir, head, parts, max_sub);
+                let got = run_blocks(&mut c, &x, lens);
+                assert!(
+                    got.iter()
+                        .zip(&want)
+                        .all(|(g, w)| g.to_bits() == w.to_bits()),
+                    "parts {parts:?}/{max_sub}, calls {lens:?}"
+                );
+            }
         }
     }
 
@@ -1595,8 +1799,8 @@ mod tests {
     /// partitions, and the cost model's own pick for a long IR.
     ///
     /// Mutations (run), each fails: `LevelState::reset` without
-    /// `self.next_inv = ...` (the inverse runs on the old schedule); without
-    /// `self.next_fwd = ...`; `Convolver::reset` without `self.output.fill`
+    /// `self.step = 0` (a split transform resumes part-way); without
+    /// `self.base = ...` (the steps run on the old schedule); `Convolver::reset` without `self.output.fill`
     /// (the old output ring plays); `self.pushed = 0` left out (the rings'
     /// positions and the schedule disagree).
     #[test]
@@ -1619,6 +1823,10 @@ mod tests {
             (
                 "uniform [64]",
                 Box::new(|| Convolver::with_parts(&ir, 64, &[64])),
+            ),
+            (
+                "split [16, 64] in eight",
+                Box::new(|| Convolver::with_parts_split(&ir, 16, &[16, 64], 8)),
             ),
             (
                 "cost model, 512",

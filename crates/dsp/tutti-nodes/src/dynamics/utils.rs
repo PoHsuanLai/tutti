@@ -202,12 +202,10 @@ pub(crate) fn compute_limiter_gain(
 /// which is `10^(cap/20) * threshold_lin / peak`; the comparison
 /// `peak_db > threshold` is `peak > threshold_lin` (the log is monotonic).
 ///
-/// **Silence and the floor.** main pinned an exact-zero peak at -144 dB, so
-/// under a threshold below -144 dB silence took the "over" branch. Here a
-/// zero peak is simply under the threshold, so for thresholds below -144 dB
-/// exact digital silence takes the `below` boost `10^((ceiling - threshold)/20)`
-/// (at exactly -144 dB main already did); a real, nonzero signal is
-/// unaffected. To keep that boost finite (`0 * inf` is NaN), the gap
+/// **Silence.** A zero peak is under any finite threshold, so exact digital
+/// silence takes the `below` gain `10^((ceiling - threshold)/20)` (the dB
+/// form pinned it at -144 dB instead, which differs only for thresholds
+/// below that). To keep that boost finite (`0 * inf` is NaN), the gap
 /// `ceiling - threshold` is clamped to [`Self::MAX_GAP_DB`] and the threshold
 /// amplitude to `f32::MIN_POSITIVE`; neither moves a threshold at or above
 /// -144 dB.

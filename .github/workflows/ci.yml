@@ -588,9 +588,12 @@ jobs:
   miri:
     name: miri
     runs-on: ubuntu-24.04
-    # About 20 minutes on main: a hang (a test miri cannot finish) fails here,
-    # not at GitHub's six-hour cap.
-    timeout-minutes: 40
+    # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
+    # not at GitHub's six-hour cap. A test that is slow only because it is a
+    # pure-arithmetic loop or a large transform shrinks under `cfg!(miri)`
+    # (an O(n^2) DFT reference or a 200 000-step search ran 10 to 15 minutes
+    # each); the native test job still runs it at full size.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       # ALSA headers: `tutti-types` does not need them, but

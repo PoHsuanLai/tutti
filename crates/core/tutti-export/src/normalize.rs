@@ -42,8 +42,9 @@ use crate::{render_to_buffers, write_buffers, Result, Written};
 /// ignores the LFE (slot 3) and leaves any channel beyond the sixth unweighted;
 /// four channels read as L, R, Ls, Rs and five as L, R, C, Ls, Rs. A 5.1 mix
 /// with only the LFE active reads -70 LUFS. A 7.1 or 7.1.4 export is therefore
-/// normalized on its first six channels: content that lives only in the rear surrounds or the height
-/// layer does not raise the reading, so the gain lands higher than that mix's
+/// normalized on five of its first six channels: content that lives only in
+/// the rear surrounds or the height layer does not raise the reading, so the
+/// gain lands higher than that mix's
 /// true loudness warrants — the ceiling is what stops it.
 ///
 /// [`Peak`](Self::Peak) has no such limit; true peak folds over every channel.

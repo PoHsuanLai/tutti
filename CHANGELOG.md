@@ -24,7 +24,8 @@ will sound different.
   from `fc` is unchanged.
 - **`LadderType::HP12` / `HP24`** are true 12 and 24 dB/octave high-passes
   (`u - 2*lp1 + lp2` and `u - 4*lp1 + 6*lp2 - 4*lp3 + lp4`). Before, both fell
-  6 dB/octave (`u - lp2`, `u - lp4`). Resonance still peaks at the cutoff.
+  6 dB/octave (`u - lp2`, `u - lp4`). With resonance they still peak at the cutoff,
+  relative to the same filter without it.
   `compute_svf_coeffs` returns the new coefficients; there is no signature
   change. Migration: re-tune any bell, shelf or ladder high-pass by ear; a
   high-pass that leaned on the shallow slope now cuts the low end harder.

@@ -728,7 +728,8 @@ mod tests {
     }
 
     /// Well below the cutoff the high-passes fall 12 and 24 dB per octave
-    /// (`(s/(1+s))^2` and `^4`), and still peak at the cutoff with resonance.
+    /// (`(s/(1+s))^2` and `^4`), and resonance still lifts the cutoff above
+    /// the same filter without it.
     ///
     /// Mutation (run): `u - lp2` / `u - lp4` (6 dB/octave) fails the slopes.
     #[test]

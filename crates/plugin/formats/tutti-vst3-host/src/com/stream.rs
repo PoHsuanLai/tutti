@@ -53,22 +53,24 @@ impl IBStreamTrait for BStream {
     ) -> tresult {
         if num_bytes == 0 {
             if !num_bytes_read.is_null() {
-                *num_bytes_read = 0;
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3 ABI.
+                unsafe { *num_bytes_read = 0 };
             }
             return kResultOk;
         }
         if num_bytes < 0 || buffer.is_null() {
             if !num_bytes_read.is_null() {
-                *num_bytes_read = 0;
+                unsafe { *num_bytes_read = 0 };
             }
             return kInvalidArgument;
         }
         let mut cursor = self.cursor.lock();
-        let buf = std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize);
+        let buf = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize) };
         match cursor.read(buf) {
             Ok(n) => {
                 if !num_bytes_read.is_null() {
-                    *num_bytes_read = n as i32;
+                    unsafe { *num_bytes_read = n as i32 };
                 }
                 kResultOk
             }
@@ -84,22 +86,24 @@ impl IBStreamTrait for BStream {
     ) -> tresult {
         if num_bytes == 0 {
             if !num_bytes_written.is_null() {
-                *num_bytes_written = 0;
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3 ABI.
+                unsafe { *num_bytes_written = 0 };
             }
             return kResultOk;
         }
         if num_bytes < 0 || buffer.is_null() {
             if !num_bytes_written.is_null() {
-                *num_bytes_written = 0;
+                unsafe { *num_bytes_written = 0 };
             }
             return kInvalidArgument;
         }
         let mut cursor = self.cursor.lock();
-        let buf = std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize);
+        let buf = unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) };
         match cursor.write(buf) {
             Ok(n) => {
                 if !num_bytes_written.is_null() {
-                    *num_bytes_written = n as i32;
+                    unsafe { *num_bytes_written = n as i32 };
                 }
                 kResultOk
             }
@@ -118,7 +122,9 @@ impl IBStreamTrait for BStream {
         match cursor.seek(seek_from) {
             Ok(new_pos) => {
                 if !result.is_null() {
-                    *result = new_pos as i64;
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *result = new_pos as i64 };
                 }
                 kResultOk
             }
@@ -129,7 +135,9 @@ impl IBStreamTrait for BStream {
     unsafe fn tell(&self, pos: *mut i64) -> tresult {
         let cursor = self.cursor.lock();
         if !pos.is_null() {
-            *pos = cursor.position() as i64;
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+            // ABI.
+            unsafe { *pos = cursor.position() as i64 };
         }
         kResultOk
     }

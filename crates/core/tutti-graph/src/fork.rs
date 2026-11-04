@@ -906,8 +906,10 @@ impl Editor {
         let mut sources = Vec::with_capacity(keys.len());
         for &key in &keys {
             match self.fork_source(key) {
-                Some((gen, source)) if gen == live.generation(key) => sources.push((key, source)),
-                Some((gen, _)) => {
+                Some((generation, source)) if generation == live.generation(key) => {
+                    sources.push((key, source))
+                }
+                Some((generation, _)) => {
                     // Every path that places a unit (insert, replace) sets
                     // or clears its source with the generation it assigns,
                     // so this is a generation moved some other way (a
@@ -916,7 +918,7 @@ impl Editor {
                     // unit would be a copy of something no longer there.
                     debug_assert!(
                         false,
-                        "fork source for {key:?} is from generation {gen}, the spec is at {}",
+                        "fork source for {key:?} is from generation {generation}, the spec is at {}",
                         live.generation(key)
                     );
                     return Err(ForkError::NotForkable { key });

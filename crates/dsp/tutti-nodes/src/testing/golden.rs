@@ -28,7 +28,7 @@ pub const RECORDED_GLIBC: (u32, u32) = (2, 39);
 pub const RECORDED_ARCH: &str = "x86_64";
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-extern "C" {
+unsafe extern "C" {
     fn gnu_get_libc_version() -> *const std::ffi::c_char;
 }
 

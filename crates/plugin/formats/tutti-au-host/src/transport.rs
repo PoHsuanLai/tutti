@@ -428,7 +428,7 @@ unsafe fn state_from<'a>(user_data: *mut c_void) -> Option<&'a TransportState> {
     if user_data.is_null() {
         None
     } else {
-        Some(&*(user_data as *const TransportState))
+        Some(unsafe { &*(user_data as *const TransportState) })
     }
 }
 
@@ -444,7 +444,7 @@ unsafe fn state_from<'a>(user_data: *mut c_void) -> Option<&'a TransportState> {
 #[inline]
 unsafe fn write_opt<T>(ptr: *mut T, value: T) {
     if !ptr.is_null() {
-        *ptr = value;
+        unsafe { *ptr = value };
     }
 }
 
@@ -464,7 +464,7 @@ unsafe fn guarded<F>(user_data: *mut c_void, body: F) -> OSStatus
 where
     F: FnOnce(&TransportState) -> OSStatus,
 {
-    let Some(state) = state_from(user_data) else {
+    let Some(state) = (unsafe { state_from(user_data) }) else {
         return K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT;
     };
     // Nothing published: no out-param is written and the AU is told the host
@@ -499,12 +499,14 @@ unsafe extern "C" fn beat_and_tempo_proc(
     out_beat: *mut f64,
     out_tempo: *mut f64,
 ) -> OSStatus {
-    guarded(user_data, |state| {
-        // Unit newtypes stop here: Apple declares both out-params `Float64`.
-        write_opt(out_beat, state.beat().0);
-        write_opt(out_tempo, state.tempo().0);
-        NO_ERR
-    })
+    unsafe {
+        guarded(user_data, |state| {
+            // Unit newtypes stop here: Apple declares both out-params `Float64`.
+            write_opt(out_beat, state.beat().0);
+            write_opt(out_tempo, state.tempo().0);
+            NO_ERR
+        })
+    }
 }
 
 /// `HostCallback_GetMusicalTimeLocation`. Called on the render thread.
@@ -518,25 +520,27 @@ unsafe extern "C" fn musical_time_location_proc(
     out_time_sig_denominator: *mut u32,
     out_current_measure_downbeat: *mut f64,
 ) -> OSStatus {
-    guarded(user_data, |state| {
-        write_opt(
-            out_delta_to_next_beat,
-            state.samples_to_next_beat.load(Ordering::Relaxed),
-        );
-        write_opt(
-            out_time_sig_numerator,
-            f32::from_bits(state.time_sig_numerator_bits.load(Ordering::Relaxed)),
-        );
-        write_opt(
-            out_time_sig_denominator,
-            state.time_sig_denominator.load(Ordering::Relaxed),
-        );
-        write_opt(
-            out_current_measure_downbeat,
-            f64::from_bits(state.measure_downbeat_bits.load(Ordering::Relaxed)),
-        );
-        NO_ERR
-    })
+    unsafe {
+        guarded(user_data, |state| {
+            write_opt(
+                out_delta_to_next_beat,
+                state.samples_to_next_beat.load(Ordering::Relaxed),
+            );
+            write_opt(
+                out_time_sig_numerator,
+                f32::from_bits(state.time_sig_numerator_bits.load(Ordering::Relaxed)),
+            );
+            write_opt(
+                out_time_sig_denominator,
+                state.time_sig_denominator.load(Ordering::Relaxed),
+            );
+            write_opt(
+                out_current_measure_downbeat,
+                f64::from_bits(state.measure_downbeat_bits.load(Ordering::Relaxed)),
+            );
+            NO_ERR
+        })
+    }
 }
 
 /// `HostCallback_GetTransportState` (v1). Called on the render thread.
@@ -555,18 +559,20 @@ unsafe extern "C" fn transport_state_proc(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) -> OSStatus {
-    guarded(user_data, |state| {
-        write_transport_common(
-            state,
-            out_is_playing,
-            out_transport_state_changed,
-            out_current_sample_in_timeline,
-            out_is_cycling,
-            out_cycle_start_beat,
-            out_cycle_end_beat,
-        );
-        NO_ERR
-    })
+    unsafe {
+        guarded(user_data, |state| {
+            write_transport_common(
+                state,
+                out_is_playing,
+                out_transport_state_changed,
+                out_current_sample_in_timeline,
+                out_is_cycling,
+                out_cycle_start_beat,
+                out_cycle_end_beat,
+            );
+            NO_ERR
+        })
+    }
 }
 
 /// `HostCallback_GetTransportState2` (v2) — v1 plus `outIsRecording`.
@@ -583,19 +589,21 @@ unsafe extern "C" fn transport_state2_proc(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) -> OSStatus {
-    guarded(user_data, |state| {
-        write_opt(out_is_recording, Boolean::from(state.is_recording()));
-        write_transport_common(
-            state,
-            out_is_playing,
-            out_transport_state_changed,
-            out_current_sample_in_timeline,
-            out_is_cycling,
-            out_cycle_start_beat,
-            out_cycle_end_beat,
-        );
-        NO_ERR
-    })
+    unsafe {
+        guarded(user_data, |state| {
+            write_opt(out_is_recording, Boolean::from(state.is_recording()));
+            write_transport_common(
+                state,
+                out_is_playing,
+                out_transport_state_changed,
+                out_current_sample_in_timeline,
+                out_is_cycling,
+                out_cycle_start_beat,
+                out_cycle_end_beat,
+            );
+            NO_ERR
+        })
+    }
 }
 
 /// The six fields v1 and v2 share, written identically for both.
@@ -616,25 +624,31 @@ unsafe fn write_transport_common(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) {
-    write_opt(out_is_playing, Boolean::from(state.is_playing()));
-    write_opt(out_is_cycling, Boolean::from(state.is_cycling()));
-    write_opt(
-        out_current_sample_in_timeline,
-        f64::from_bits(state.sample_time_bits.load(Ordering::Relaxed)),
-    );
-    write_opt(
-        out_cycle_start_beat,
-        f64::from_bits(state.cycle_start_bits.load(Ordering::Relaxed)),
-    );
-    write_opt(
-        out_cycle_end_beat,
-        f64::from_bits(state.cycle_end_bits.load(Ordering::Relaxed)),
-    );
+    unsafe { write_opt(out_is_playing, Boolean::from(state.is_playing())) };
+    unsafe { write_opt(out_is_cycling, Boolean::from(state.is_cycling())) };
+    unsafe {
+        write_opt(
+            out_current_sample_in_timeline,
+            f64::from_bits(state.sample_time_bits.load(Ordering::Relaxed)),
+        )
+    };
+    unsafe {
+        write_opt(
+            out_cycle_start_beat,
+            f64::from_bits(state.cycle_start_bits.load(Ordering::Relaxed)),
+        )
+    };
+    unsafe {
+        write_opt(
+            out_cycle_end_beat,
+            f64::from_bits(state.cycle_end_bits.load(Ordering::Relaxed)),
+        )
+    };
     // Consumed last, and only if the AU asked for it. Clearing a flag the AU
     // never read would drop the locate: the plugin would be told nothing
     // changed on the block where it most needed to flush.
     if !out_transport_state_changed.is_null() {
-        *out_transport_state_changed = Boolean::from(state.take_state_changed());
+        unsafe { *out_transport_state_changed = Boolean::from(state.take_state_changed()) };
     }
 }
 
@@ -677,12 +691,14 @@ pub(crate) unsafe fn tail_time(unit: AudioUnit) -> crate::error::Result<Seconds>
     // safe for every value this property carries — measured maxima are ~21 s
     // (AUDelay) and 10 s (AUMatrixReverb), far inside f32's exact-integer range
     // — and `Seconds` is the crate's unit for exactly this quantity.
-    let seconds: f64 = get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )?;
+    let seconds: f64 = unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }?;
     Ok(Seconds(seconds as f32))
 }
 
@@ -757,11 +773,13 @@ pub(crate) unsafe fn set_presentation_latency(
     use crate::types::K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY;
 
     let seconds = f64::from(latency.0);
-    set_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY,
-        direction.scope(),
-        bus,
-        &seconds,
-    )
+    unsafe {
+        set_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY,
+            direction.scope(),
+            bus,
+            &seconds,
+        )
+    }
 }

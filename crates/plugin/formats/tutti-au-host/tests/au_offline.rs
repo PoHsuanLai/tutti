@@ -447,14 +447,16 @@ fn an_out_of_range_render_quality_is_refused_by_the_host() {
 /// `unit` must be a live `AudioUnit`. The property's value type is `UInt32`, which
 /// is what is written.
 unsafe fn raw_set_render_quality(unit: coreaudio_sys::AudioUnit, quality: u32) -> i32 {
-    coreaudio_sys::AudioUnitSetProperty(
-        unit,
-        coreaudio_sys::kAudioUnitProperty_RenderQuality,
-        coreaudio_sys::kAudioUnitScope_Global,
-        0,
-        &quality as *const u32 as *const std::os::raw::c_void,
-        std::mem::size_of::<u32>() as u32,
-    )
+    unsafe {
+        coreaudio_sys::AudioUnitSetProperty(
+            unit,
+            coreaudio_sys::kAudioUnitProperty_RenderQuality,
+            coreaudio_sys::kAudioUnitScope_Global,
+            0,
+            &quality as *const u32 as *const std::os::raw::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    }
 }
 
 // ----------------------------------------------------------- push render path

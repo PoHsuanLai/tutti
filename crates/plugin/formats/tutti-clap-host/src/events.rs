@@ -1193,7 +1193,9 @@ impl EventList for InputEventList {
     reason = "one block's event count; the CLAP vtable returns u32"
 )]
 unsafe extern "C" fn input_events_size(list: *const clap_input_events) -> u32 {
-    let event_list = &*(list as *const InputEventList);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let event_list = unsafe { &*(list as *const InputEventList) };
     event_list.events.len() as u32
 }
 
@@ -1205,7 +1207,9 @@ unsafe extern "C" fn input_events_get(
     list: *const clap_input_events,
     index: u32,
 ) -> *const clap_event_header {
-    let event_list = &*(list as *const InputEventList);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let event_list = unsafe { &*(list as *const InputEventList) };
     if index >= event_list.events.len() as u32 {
         return ptr::null();
     }
@@ -1688,8 +1692,10 @@ unsafe extern "C" fn output_events_try_push(
         return false;
     }
 
-    let output_list = &mut *(list as *mut OutputEventList);
-    let header = &*event;
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let output_list = unsafe { &mut *(list as *mut OutputEventList) };
+    let header = unsafe { &*event };
 
     // Only core events are read below. An event of another space can reuse a
     // core type number for a different, smaller struct, and a `size` under
@@ -1708,7 +1714,7 @@ unsafe extern "C" fn output_events_try_push(
     // note-off (a refused note-off is a stuck note: plugins rarely check).
     if header.type_ == CLAP_EVENT_PARAM_VALUE {
         if output_list.param_pushed >= output_list.param_room {
-            let e = &*(event as *const clap_event_param_value);
+            let e = unsafe { &*(event as *const clap_event_param_value) };
             return output_list.coalesce_param(e);
         }
     } else if output_list
@@ -1723,58 +1729,58 @@ unsafe extern "C" fn output_events_try_push(
 
     match header.type_ {
         CLAP_EVENT_NOTE_ON => {
-            let e = &*(event as *const clap_event_note);
+            let e = unsafe { &*(event as *const clap_event_note) };
             output_list.events.push(ClapEvent::NoteOn(*e));
             true
         }
         CLAP_EVENT_NOTE_OFF => {
-            let e = &*(event as *const clap_event_note);
+            let e = unsafe { &*(event as *const clap_event_note) };
             output_list.events.push(ClapEvent::NoteOff(*e));
             true
         }
         CLAP_EVENT_MIDI => {
-            let e = &*(event as *const clap_event_midi);
+            let e = unsafe { &*(event as *const clap_event_midi) };
             output_list.events.push(ClapEvent::Midi(*e));
             true
         }
         CLAP_EVENT_NOTE_EXPRESSION => {
-            let e = &*(event as *const clap_event_note_expression);
+            let e = unsafe { &*(event as *const clap_event_note_expression) };
             output_list.events.push(ClapEvent::NoteExpression(*e));
             true
         }
         CLAP_EVENT_NOTE_CHOKE => {
-            let e = &*(event as *const clap_event_note);
+            let e = unsafe { &*(event as *const clap_event_note) };
             output_list.events.push(ClapEvent::NoteChoke(*e));
             true
         }
         CLAP_EVENT_NOTE_END => {
-            let e = &*(event as *const clap_event_note);
+            let e = unsafe { &*(event as *const clap_event_note) };
             output_list.events.push(ClapEvent::NoteEnd(*e));
             true
         }
         CLAP_EVENT_PARAM_VALUE => {
-            let e = &*(event as *const clap_event_param_value);
+            let e = unsafe { &*(event as *const clap_event_param_value) };
             output_list.events.push(ClapEvent::ParamValue(*e));
             output_list.param_pushed += 1;
             true
         }
         CLAP_EVENT_PARAM_MOD => {
-            let e = &*(event as *const clap_event_param_mod);
+            let e = unsafe { &*(event as *const clap_event_param_mod) };
             output_list.events.push(ClapEvent::ParamMod(*e));
             true
         }
         CLAP_EVENT_PARAM_GESTURE_BEGIN => {
-            let e = &*(event as *const clap_event_param_gesture);
+            let e = unsafe { &*(event as *const clap_event_param_gesture) };
             output_list.events.push(ClapEvent::ParamGestureBegin(*e));
             true
         }
         CLAP_EVENT_PARAM_GESTURE_END => {
-            let e = &*(event as *const clap_event_param_gesture);
+            let e = unsafe { &*(event as *const clap_event_param_gesture) };
             output_list.events.push(ClapEvent::ParamGestureEnd(*e));
             true
         }
         CLAP_EVENT_MIDI_SYSEX => {
-            let e = &*(event as *const clap_event_midi_sysex);
+            let e = unsafe { &*(event as *const clap_event_midi_sysex) };
             if !e.buffer.is_null() && e.size > 0 {
                 // Recycle a pooled buffer instead of `to_vec()`-ing a fresh
                 // one: the plugin calls this from inside its own `process`, so
@@ -1782,7 +1788,9 @@ unsafe extern "C" fn output_events_try_push(
                 // thread.
                 let mut data = output_list.sysex_pool.pop().unwrap_or_default();
                 data.clear();
-                data.extend_from_slice(std::slice::from_raw_parts(e.buffer, e.size as usize));
+                data.extend_from_slice(unsafe {
+                    std::slice::from_raw_parts(e.buffer, e.size as usize)
+                });
                 // The buffer pointer aliases `data`; the ClapEvent::MidiSysex
                 // variant keeps both together and is never moved independently.
                 // Taken *after* the extend, since that is the last thing that

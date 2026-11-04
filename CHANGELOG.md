@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the workspace is on Rust edition 2024
+
+Every member inherits `edition = "2024"` from `[workspace.package]`
+(`edition.workspace = true`), vendored members included. `rust-toolchain.toml`
+already pins a toolchain that supports it. `rustfmt.toml` keeps
+`style_edition = "2021"` so `cargo fmt` does not re-sort and rewrap the tree.
+
+- **Unsafe is explicit in `unsafe fn`.** `unsafe_op_in_unsafe_fn` warns by
+  default now, so every unsafe operation in an `unsafe fn` body sits in its own
+  minimal `unsafe {}` block, with a `// SAFETY:` comment where the fn has no
+  `# Safety` doc. `extern` blocks are `unsafe extern`, `#[no_mangle]` and
+  `#[export_name]` are `#[unsafe(...)]`, and `std::env::set_var` / `remove_var`
+  sit in `unsafe` blocks that name what serialises them.
+- **`gen` is a reserved word**, so the unit-generation field and locals are
+  now `generation`. Migration: `PlanUnit::gen` and `Placement::gen` (in
+  `tutti-graph`) are `PlanUnit::generation` and `Placement::generation`.
+- `impl Iterator` returns that do not borrow `&self` say so with `+ use<>`
+  (`unresolved_targets`, `unresolved_sources`, `offsets`), which keeps their
+  2021 capture rules.
+- Lint: `clippy::collapsible_if` is allowed workspace-wide. In 2024 it also
+  asks to fold `if a { if let .. }` into let chains; that is a style change
+  across about a hundred sites, left for its own change.
+- Macros that took `$x:expr` keep their meaning (2024's `expr` also matches
+  `const {}` and `_`, which none of them is called with).
+
 ### Fixed — a CLAP plugin's events from another space are refused, and notes follow the note port's dialect
 
 `try_push` read every event as the core struct its `type` named. A plugin's

@@ -197,10 +197,12 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
         }
         let point = &points[index as usize];
         if !sample_offset.is_null() {
-            *sample_offset = point.sample_offset;
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+            // ABI.
+            unsafe { *sample_offset = point.sample_offset };
         }
         if !value.is_null() {
-            *value = point.value.get();
+            unsafe { *value = point.value.get() };
         }
         kResultOk
     }
@@ -236,7 +238,9 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
             }
         };
         match at {
-            Some(i) if !index.is_null() => *index = i as i32,
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+            // ABI.
+            Some(i) if !index.is_null() => unsafe { *index = i as i32 },
             Some(_) => {}
             None => return kResultFalse,
         }

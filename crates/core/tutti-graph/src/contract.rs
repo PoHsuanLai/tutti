@@ -998,7 +998,10 @@ impl Rig {
             ),
             Edit::Regenerate => {
                 let (key, _) = self.feeder.expect("checked at the edit");
-                let now = plan.unit(key).expect("the feeder is in the plan").gen;
+                let now = plan
+                    .unit(key)
+                    .expect("the feeder is in the plan")
+                    .generation;
                 assert!(
                     now > before,
                     "{ctx}: the feeder is still generation {now} in the running plan"

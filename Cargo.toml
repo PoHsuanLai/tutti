@@ -72,6 +72,11 @@ members = [
     "crates/bevy-tutti",
 ]
 
+# The edition every member inherits with `edition.workspace = true`, vendored
+# members included. Pinned here once.
+[workspace.package]
+edition = "2024"
+
 # Lints every member inherits with `[lints] workspace = true`.
 #
 # `broken_intra_doc_links` is deny, not the default warn: a doc link into a
@@ -98,6 +103,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 # moves the one thing a reader needs out of the signature.
 [workspace.lints.clippy]
 too_many_arguments = "allow"
+# Edition 2024 stabilizes let chains, so this lint now also asks to fold
+# `if a { if let .. }` into `if a && let ..`. That is a style change across
+# ~100 sites, left for its own PR; every inheriting crate keeps the old shape.
+collapsible_if = "allow"
 type_complexity = "allow"
 
 # Shared-dep pins the members inherit via `workspace = true`.

@@ -153,7 +153,7 @@ pub enum FeedbackKey {
         /// The source port.
         from: OutPort,
         /// The source unit's generation.
-        gen: u32,
+        generation: u32,
         /// The edge's delay.
         delay: Samples,
     },
@@ -164,7 +164,7 @@ pub enum FeedbackKey {
         /// The source port.
         from: EventOut,
         /// The source unit's generation.
-        gen: u32,
+        generation: u32,
         /// The edge's delay.
         delay: Samples,
     },
@@ -291,7 +291,7 @@ pub struct PlanUnit {
     /// The author's key.
     pub key: NodeKey,
     /// The unit generation this plan expects at `idx`.
-    pub gen: u32,
+    pub generation: u32,
     /// Where the unit lives.
     pub idx: UnitIdx,
     /// The shape it was compiled against.
@@ -538,7 +538,7 @@ pub(crate) struct NodeRec {
     /// Where the unit lives in the store.
     pub(crate) store: u32,
     /// The unit generation the plan expects there.
-    pub(crate) gen: u32,
+    pub(crate) generation: u32,
     /// Compiled arrival latency.
     pub(crate) arrival: Latency,
     /// Declared latency then declared tail (`Shape::park_after`):
@@ -688,7 +688,7 @@ impl NodeTables {
             let rec = NodeRec {
                 unit,
                 store: pu.idx.0,
-                gen: pu.gen,
+                generation: pu.generation,
                 arrival: pu.arrival,
                 park_after: pu.shape.park_after(),
                 event_capacity: pu.shape.event_capacity,
@@ -715,7 +715,7 @@ impl NodeTables {
                 r.unwrap_or(NodeRec {
                     unit: u as u32,
                     store: units[u].idx.0,
-                    gen: units[u].gen,
+                    generation: units[u].generation,
                     arrival: units[u].arrival,
                     park_after: units[u].shape.park_after(),
                     event_capacity: units[u].shape.event_capacity,
@@ -1074,7 +1074,7 @@ pub struct Placement {
     /// The node.
     pub key: NodeKey,
     /// Its unit generation.
-    pub gen: u32,
+    pub generation: u32,
     /// Its store index.
     pub idx: UnitIdx,
 }

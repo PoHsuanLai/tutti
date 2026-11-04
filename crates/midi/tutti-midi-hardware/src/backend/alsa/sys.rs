@@ -157,7 +157,7 @@ pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
 // --- Functions -------------------------------------------------------------
 
 #[link(name = "asound")]
-extern "C" {
+unsafe extern "C" {
     // Client lifecycle.
     pub fn snd_seq_open(
         seq: *mut *mut snd_seq_t,

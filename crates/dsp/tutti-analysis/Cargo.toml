@@ -1,7 +1,7 @@
 [package]
 name = "tutti-analysis"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
 description = "Audio analysis for Tutti over plain sample slices: waveform blocks, onsets, pitch, loudness, stereo correlation, STFT"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

@@ -116,7 +116,8 @@ impl IHostApplicationTrait for HostApplication {
         if name.is_null() {
             return kInvalidArgument;
         }
-        *name = self.name;
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        unsafe { *name = self.name };
         kResultOk
     }
 
@@ -129,26 +130,29 @@ impl IHostApplicationTrait for HostApplication {
         if cid.is_null() || iid.is_null() || obj.is_null() {
             return kInvalidArgument;
         }
-        let cid_bytes: [u8; 16] = std::mem::transmute(*cid);
-        let iid_bytes: [u8; 16] = std::mem::transmute(*iid);
-        let imessage_iid: [u8; 16] = std::mem::transmute(vst3::Steinberg::Vst::IMessage_iid);
-        let iattrlist_iid: [u8; 16] = std::mem::transmute(vst3::Steinberg::Vst::IAttributeList_iid);
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        let cid_bytes: [u8; 16] = unsafe { std::mem::transmute(*cid) };
+        let iid_bytes: [u8; 16] = unsafe { std::mem::transmute(*iid) };
+        let imessage_iid: [u8; 16] =
+            unsafe { std::mem::transmute(vst3::Steinberg::Vst::IMessage_iid) };
+        let iattrlist_iid: [u8; 16] =
+            unsafe { std::mem::transmute(vst3::Steinberg::Vst::IAttributeList_iid) };
 
         if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
             let msg = Message::new();
             if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
-                *obj = ptr.into_raw() as *mut c_void;
+                unsafe { *obj = ptr.into_raw() as *mut c_void };
                 return kResultOk;
             }
         }
         if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
             let attrs = AttributeList::new();
             if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
-                *obj = ptr.into_raw() as *mut c_void;
+                unsafe { *obj = ptr.into_raw() as *mut c_void };
                 return kResultOk;
             }
         }
-        *obj = std::ptr::null_mut();
+        unsafe { *obj = std::ptr::null_mut() };
         kNotImplemented
     }
 }
@@ -204,7 +208,8 @@ impl IPlugInterfaceSupportTrait for HostApplication {
         if iid.is_null() {
             return kInvalidArgument;
         }
-        let queried = *iid;
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        let queried = unsafe { *iid };
         if SUPPORTED_IIDS.contains(&queried) {
             kResultTrue
         } else {

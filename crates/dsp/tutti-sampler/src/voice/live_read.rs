@@ -575,7 +575,8 @@ impl State {
         // fade) goes to the new side over its last `RAMP_FRAMES`.
         let out_ramp = (left as f32 / RAMP_FRAMES as f32).min(1.0);
         fade.started |= new;
-        let sounded = match (fade.started, old) {
+
+        match (fade.started, old) {
             (true, Some(o)) if fade.k < fade.frames => {
                 let t = Fade::weight(fade.frames, fade.k).max(1.0 - out_ramp);
                 for (n, &o) in frame.iter_mut().zip(o) {
@@ -602,8 +603,7 @@ impl State {
                 self.fade = None;
                 false
             }
-        };
-        sounded
+        }
     }
 }
 

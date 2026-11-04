@@ -37,7 +37,7 @@ impl CfString {
             None
         } else {
             let raw = raw as core_foundation_sys::string::CFStringRef;
-            Some(Self(CfCFString::wrap_under_create_rule(raw)))
+            Some(Self(unsafe { CfCFString::wrap_under_create_rule(raw) }))
         }
     }
 
@@ -92,7 +92,7 @@ impl CfUrl {
             None
         } else {
             let raw = raw as core_foundation_sys::url::CFURLRef;
-            Some(Self(CFURL::wrap_under_create_rule(raw)))
+            Some(Self(unsafe { CFURL::wrap_under_create_rule(raw) }))
         }
     }
 
@@ -132,7 +132,7 @@ impl CfArray {
             None
         } else {
             let raw = raw as core_foundation_sys::array::CFArrayRef;
-            Some(Self(CFArray::wrap_under_create_rule(raw)))
+            Some(Self(unsafe { CFArray::wrap_under_create_rule(raw) }))
         }
     }
 
@@ -186,7 +186,7 @@ impl CfPlist {
         if raw.is_null() {
             None
         } else {
-            Some(Self(CFPropertyList::wrap_under_create_rule(raw)))
+            Some(Self(unsafe { CFPropertyList::wrap_under_create_rule(raw) }))
         }
     }
 

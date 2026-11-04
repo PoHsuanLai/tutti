@@ -197,7 +197,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     unsafe fn read_mxcsr() -> u32 {
         let mut val: u32 = 0;
-        core::arch::asm!("stmxcsr [{}]", in(reg) &mut val, options(nostack));
+        // SAFETY: `val` is a live `u32`, the four bytes `stmxcsr` stores.
+        unsafe { core::arch::asm!("stmxcsr [{}]", in(reg) &mut val, options(nostack)) };
         val
     }
 

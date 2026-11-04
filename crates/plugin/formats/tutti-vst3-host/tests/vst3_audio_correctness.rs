@@ -614,13 +614,19 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
     // loaded and dropped entirely inside this scope, so the window is closed
     // before any other test can load it. Restored unconditionally below.
     let previous = std::env::var("TUTTI_PROBE_MISBEHAVIOUR").ok();
-    std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "10");
+    // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+    // writes the environment meanwhile.
+    unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "10") };
 
     let balance = {
         let Some(mut inst) = load_probe(512) else {
             match previous {
-                Some(v) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v),
-                None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+                // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+                // writes the environment meanwhile.
+                Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
+                // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+                // writes the environment meanwhile.
+                None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
             }
             return;
         };
@@ -630,8 +636,12 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
     };
 
     match previous {
-        Some(v) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v),
-        None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+        // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+        // writes the environment meanwhile.
+        Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
+        // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+        // writes the environment meanwhile.
+        None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
     }
 
     // `kConnectBalanceBase + balance`. 0 means the component was never left

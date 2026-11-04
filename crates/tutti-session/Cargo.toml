@@ -9,7 +9,7 @@
 [package]
 name = "tutti-session"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "The tutti audio engine's Bevy-free API layer: a graph, its engine, its device and the order they run in"
 license = "MIT OR Apache-2.0"
 

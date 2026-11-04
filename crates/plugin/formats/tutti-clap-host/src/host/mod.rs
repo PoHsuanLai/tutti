@@ -118,7 +118,9 @@ unsafe extern "C" fn host_get_extension(
     if extension_id.is_null() {
         return ptr::null();
     }
-    let id = CStr::from_ptr(extension_id);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let id = unsafe { CStr::from_ptr(extension_id) };
 
     dispatch_extension!(id,
         CLAP_EXT_THREAD_CHECK       => HOST_THREAD_CHECK,

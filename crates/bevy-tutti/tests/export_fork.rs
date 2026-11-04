@@ -991,7 +991,7 @@ mod plugin {
         let open: Vec<usize> = planes[0]
             .iter()
             .enumerate()
-            .filter(|(_, &s)| s != 0.0)
+            .filter(|&(_, &s)| s != 0.0)
             .map(|(i, _)| i)
             .collect();
         assert!(

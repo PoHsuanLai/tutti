@@ -446,12 +446,14 @@ impl AuMidiMapping {
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn all(unit: AudioUnit) -> Result<Vec<AuMidiMapping>> {
-    let bytes = get_property_bytes(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )?;
+    let bytes = unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }?;
     Ok(decode_table(&bytes))
 }
 
@@ -501,8 +503,7 @@ fn encode_table(mappings: &[AuMidiMapping]) -> Vec<AuParameterMidiMappingRaw> {
 /// that takes an `AUParameterMIDIMapping` array.
 unsafe fn write_table(unit: AudioUnit, property: u32, mappings: &[AuMidiMapping]) -> Result<()> {
     let raw = encode_table(mappings);
-    check(
-        "AudioUnitSetProperty",
+    check("AudioUnitSetProperty", unsafe {
         AudioUnitSetProperty(
             unit,
             property,
@@ -510,8 +511,8 @@ unsafe fn write_table(unit: AudioUnit, property: u32, mappings: &[AuMidiMapping]
             0,
             raw.as_ptr() as *const c_void,
             (raw.len() * size_of::<AuParameterMidiMappingRaw>()) as u32,
-        ),
-    )
+        )
+    })
 }
 
 /// Adds `mappings` to whatever the AU already has, replacing any mapping that
@@ -533,11 +534,13 @@ pub unsafe fn add(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING,
-        mappings,
-    )
+    unsafe {
+        write_table(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING,
+            mappings,
+        )
+    }
 }
 
 /// Removes the mappings targeting each of `mappings`'
@@ -556,11 +559,13 @@ pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> 
     if mappings.is_empty() {
         return Ok(());
     }
-    write_table(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING,
-        mappings,
-    )
+    unsafe {
+        write_table(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING,
+            mappings,
+        )
+    }
 }
 
 /// Replaces the AU's entire mapping table with `mappings`.
@@ -587,14 +592,16 @@ pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> 
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
-        let existing = all(unit)?;
-        return remove(unit, &existing);
+        let existing = unsafe { all(unit) }?;
+        return unsafe { remove(unit, &existing) };
     }
-    write_table(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-        mappings,
-    )
+    unsafe {
+        write_table(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
+            mappings,
+        )
+    }
 }
 
 /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
@@ -614,13 +621,15 @@ pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()>
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn arm_hot_map(unit: AudioUnit, mapping: &AuMidiMapping) -> Result<()> {
     let raw = mapping.to_raw();
-    crate::ffi::set_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-        &raw,
-    )
+    unsafe {
+        crate::ffi::set_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+            &raw,
+        )
+    }
 }
 
 /// Reads the pending or just-completed hot map.
@@ -647,12 +656,14 @@ pub unsafe fn arm_hot_map(unit: AudioUnit, mapping: &AuMidiMapping) -> Result<()
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn hot_map(unit: AudioUnit) -> Option<AuMidiMapping> {
-    let raw: AuParameterMidiMappingRaw = crate::ffi::get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )
+    let raw: AuParameterMidiMappingRaw = unsafe {
+        crate::ffi::get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }
     .ok()?;
     // See the docs above: `mStatus == 0` is the only reliable "nothing here"
     // signal, because the documented error is not delivered.
@@ -668,7 +679,7 @@ pub unsafe fn hot_map(unit: AudioUnit) -> Option<AuMidiMapping> {
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn hot_map_pending(unit: AudioUnit) -> bool {
-    hot_map(unit).is_some()
+    unsafe { hot_map(unit).is_some() }
 }
 
 /// Whether this AU implements the parameter↔MIDI mapping family at all.
@@ -686,13 +697,15 @@ pub unsafe fn hot_map_pending(unit: AudioUnit) -> bool {
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn supports_parameter_midi_mapping(unit: AudioUnit) -> bool {
-    property_size(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )
-    .is_ok()
+    unsafe {
+        property_size(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+        .is_ok()
+    }
 }
 
 #[cfg(test)]

@@ -89,14 +89,14 @@ use tutti_types::{PosReader, PosRing, PosWriter};
 
 const STRIDE: usize = 2;
 
-fn tag(pos: u64, gen: u64, c: usize) -> f32 {
-    (pos * 100 + gen * 10 + c as u64) as f32
+fn tag(pos: u64, generation: u64, c: usize) -> f32 {
+    (pos * 100 + generation * 10 + c as u64) as f32
 }
 
 /// `n` frames from position `from`, written under `gen`.
-fn frames(from: u64, n: u64, gen: u64) -> Vec<f32> {
+fn frames(from: u64, n: u64, generation: u64) -> Vec<f32> {
     (from..from + n)
-        .flat_map(|p| (0..STRIDE).map(move |c| tag(p, gen, c)))
+        .flat_map(|p| (0..STRIDE).map(move |c| tag(p, generation, c)))
         .collect()
 }
 

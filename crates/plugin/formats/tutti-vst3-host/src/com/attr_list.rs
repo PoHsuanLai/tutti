@@ -59,7 +59,9 @@ impl IAttributeListTrait for AttributeList {
         }
         match self.attributes.lock().get(&k) {
             Some(AttributeValue::Int(v)) => {
-                *value = *v;
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3 ABI.
+                unsafe { *value = *v };
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -85,7 +87,9 @@ impl IAttributeListTrait for AttributeList {
         }
         match self.attributes.lock().get(&k) {
             Some(AttributeValue::Float(v)) => {
-                *value = *v;
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3 ABI.
+                unsafe { *value = *v };
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -102,9 +106,10 @@ impl IAttributeListTrait for AttributeList {
         let mut buf = Vec::new();
         let mut ptr = string;
         const MAX_STRING_LEN: usize = 65536;
-        while *ptr != 0 && buf.len() < MAX_STRING_LEN {
-            buf.push(*ptr);
-            ptr = ptr.add(1);
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        while unsafe { *ptr } != 0 && buf.len() < MAX_STRING_LEN {
+            buf.push(unsafe { *ptr });
+            ptr = unsafe { ptr.add(1) };
         }
         buf.push(0);
         self.attributes
@@ -133,13 +138,17 @@ impl IAttributeListTrait for AttributeList {
                     return kInvalidArgument;
                 }
                 let copy_len = v.len().min(max_chars);
-                std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len);
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3 ABI.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len)
+                };
                 // The stored value already carries its own NUL terminator, so a
                 // full copy is terminated. On truncation the terminator is lost,
                 // leaving the caller with an unterminated buffer — write one back
                 // into the final slot so the returned string is always valid.
                 if v.len() > max_chars {
-                    *string.add(max_chars - 1) = 0;
+                    unsafe { *string.add(max_chars - 1) = 0 };
                 }
                 kResultOk
             }
@@ -154,7 +163,10 @@ impl IAttributeListTrait for AttributeList {
         if data.is_null() {
             return kInvalidArgument;
         }
-        let slice = std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize);
+        let slice =
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+            // ABI.
+            unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
         self.attributes
             .lock()
             .insert(k, AttributeValue::Binary(slice.to_vec()));
@@ -183,10 +195,12 @@ impl IAttributeListTrait for AttributeList {
         match self.attributes.lock().get(&k) {
             Some(AttributeValue::Binary(v)) => {
                 if !data.is_null() {
-                    *data = v.as_ptr() as *const c_void;
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *data = v.as_ptr() as *const c_void };
                 }
                 if !size_in_bytes.is_null() {
-                    *size_in_bytes = v.len() as u32;
+                    unsafe { *size_in_bytes = v.len() as u32 };
                 }
                 kResultOk
             }

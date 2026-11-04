@@ -572,7 +572,7 @@ impl Topology {
         // valid answer — so a test can assert the exact vector.
         let mut queue: Vec<NodeKey> = in_degree
             .iter()
-            .filter(|(_, &d)| d == 0)
+            .filter(|&(_, &d)| d == 0)
             .map(|(&k, _)| k)
             .rev()
             .collect();

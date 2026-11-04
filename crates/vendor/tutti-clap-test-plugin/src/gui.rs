@@ -102,7 +102,7 @@ fn gui_mode() -> GuiMode {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_gui_mode(mode: u32) {
     GUI_MODE.store(mode, Ordering::SeqCst);
 }
@@ -324,7 +324,7 @@ fn record(id: u32) {
 ///
 /// # Safety
 /// `out` must point to a valid, writable [`GuiCapture`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_gui_capture(out: *mut GuiCapture) -> bool {
     if out.is_null() {
         return false;
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn tutti_test_plugin_gui_capture(out: *mut GuiCapture) -> 
     {
         *dst = src.load(Ordering::Acquire) as u8;
     }
-    *out = cap;
+    unsafe { *out = cap };
     true
 }
 
@@ -374,7 +374,7 @@ pub unsafe extern "C" fn tutti_test_plugin_gui_capture(out: *mut GuiCapture) -> 
 ///
 /// Does **not** clear the selected [`GuiMode`]: the mode is chosen before load
 /// and must survive a mid-scenario reset.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_test_plugin_gui_reset() {
     for slot in GUI.calls.iter() {
         slot.store(0, Ordering::Release);
@@ -454,7 +454,7 @@ pub const GUI_REQUESTED_RESIZE_H: u32 = 768;
 /// # Safety
 /// Safe to call from any thread; a single swap. `extern "C"` only so the test
 /// can reach it across the dlopen seam.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_test_plugin_gui_command(cmd: u32) -> u32 {
     GUI.command.swap(cmd, Ordering::AcqRel)
 }
@@ -475,13 +475,13 @@ static LAST_HOST: std::sync::atomic::AtomicPtr<clap_host> =
 /// # Safety
 /// The host recorded at `create` must still be alive — i.e. the `ClapLoaded`
 /// that opened the editor must not have been dropped.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_gui_run_command() -> bool {
     let host = LAST_HOST.load(Ordering::Acquire);
     if host.is_null() || GUI.command.load(Ordering::Acquire) == GUI_CMD_NONE {
         return false;
     }
-    run_command_against(host);
+    unsafe { run_command_against(host) };
     true
 }
 
@@ -494,12 +494,12 @@ unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Option<&'a T> {
     if host.is_null() {
         return None;
     }
-    let get_ext = (*host).get_extension?;
-    let ptr = get_ext(host, id.as_ptr());
+    let get_ext = unsafe { (*host).get_extension }?;
+    let ptr = unsafe { get_ext(host, id.as_ptr()) };
     if ptr.is_null() {
         None
     } else {
-        Some(&*(ptr as *const T))
+        Some(unsafe { &*(ptr as *const T) })
     }
 }
 
@@ -515,7 +515,7 @@ unsafe fn run_pending_command(plugin: *const clap_plugin) {
     if GUI.command.load(Ordering::Acquire) == GUI_CMD_CLOSED_AND_DESTROYED {
         return;
     }
-    run_command_against(crate::plugin_host(plugin));
+    unsafe { run_command_against(crate::plugin_host(plugin)) };
 }
 
 /// Claim the latched command and run it against `host`. Consumes it so it
@@ -536,18 +536,18 @@ unsafe fn run_command_against(host: *const clap_host) {
     {
         return;
     }
-    let Some(gui_host) = host_ext::<clap_host_gui>(host, CLAP_EXT_GUI) else {
+    let Some(gui_host) = (unsafe { host_ext::<clap_host_gui>(host, CLAP_EXT_GUI) }) else {
         return;
     };
     match cmd {
         GUI_CMD_REQUEST_RESIZE => {
             if let Some(f) = gui_host.request_resize {
-                f(host, GUI_REQUESTED_RESIZE_W, GUI_REQUESTED_RESIZE_H);
+                unsafe { f(host, GUI_REQUESTED_RESIZE_W, GUI_REQUESTED_RESIZE_H) };
             }
         }
         GUI_CMD_CLOSED_NOT_DESTROYED => {
             if let Some(f) = gui_host.closed {
-                f(host, false);
+                unsafe { f(host, false) };
             }
         }
         // Both window-destroyed variants behave identically here; they differ
@@ -561,7 +561,7 @@ unsafe fn run_command_against(host: *const clap_host) {
             // resources look correct.
             GUI.window_destroyed.store(true, Ordering::Release);
             if let Some(f) = gui_host.closed {
-                f(host, true);
+                unsafe { f(host, true) };
             }
         }
         _ => {}
@@ -603,7 +603,9 @@ unsafe extern "C" fn gui_is_api_supported(
     }
     // An unrecognised api string is a "no" regardless of mode — a host that
     // sends the wrong platform's constant must not be told yes.
-    if api.is_null() || CStr::from_ptr(api) != platform_api() {
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    if api.is_null() || unsafe { CStr::from_ptr(api) } != platform_api() {
         return false;
     }
     match gui_mode() {
@@ -620,7 +622,9 @@ unsafe extern "C" fn gui_create(
     is_floating: bool,
 ) -> bool {
     record(GUI_CALL_CREATE);
-    if api.is_null() || CStr::from_ptr(api) != platform_api() {
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    if api.is_null() || unsafe { CStr::from_ptr(api) } != platform_api() {
         return false;
     }
     // Refuse the same combination `is_api_supported` refuses. A host that
@@ -632,7 +636,7 @@ unsafe extern "C" fn gui_create(
     // Remember the host so a test can drive a callback out-of-band; see
     // `tutti_test_plugin_gui_run_command`.
     LAST_HOST.store(
-        crate::plugin_host(plugin) as *mut clap_host,
+        unsafe { crate::plugin_host(plugin) } as *mut clap_host,
         Ordering::Release,
     );
     GUI.created.store(true, Ordering::Release);
@@ -663,8 +667,10 @@ unsafe extern "C" fn gui_get_size(
     if width.is_null() || height.is_null() {
         return false;
     }
-    *width = GUI_WIDTH;
-    *height = GUI_HEIGHT;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { *width = GUI_WIDTH };
+    unsafe { *height = GUI_HEIGHT };
     true
 }
 
@@ -687,11 +693,13 @@ unsafe extern "C" fn gui_get_resize_hints(
     if gui_mode() == GuiMode::FixedSize {
         return false;
     }
-    (*hints).can_resize_horizontally = true;
-    (*hints).can_resize_vertically = true;
-    (*hints).preserve_aspect_ratio = true;
-    (*hints).aspect_ratio_width = GUI_ASPECT_W;
-    (*hints).aspect_ratio_height = GUI_ASPECT_H;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { (*hints).can_resize_horizontally = true };
+    unsafe { (*hints).can_resize_vertically = true };
+    unsafe { (*hints).preserve_aspect_ratio = true };
+    unsafe { (*hints).aspect_ratio_width = GUI_ASPECT_W };
+    unsafe { (*hints).aspect_ratio_height = GUI_ASPECT_H };
     true
 }
 
@@ -704,8 +712,12 @@ unsafe extern "C" fn gui_adjust_size(
     if width.is_null() || height.is_null() {
         return false;
     }
-    GUI.last_adjust_in_w.store(*width, Ordering::Release);
-    GUI.last_adjust_in_h.store(*height, Ordering::Release);
+    GUI.last_adjust_in_w
+        // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+        // arguments valid per the CLAP ABI.
+        .store(unsafe { *width }, Ordering::Release);
+    GUI.last_adjust_in_h
+        .store(unsafe { *height }, Ordering::Release);
     // CLAP: "Returns true if the plugin could adjust the given size." A
     // fixed-size editor cannot, and leaves the out-params untouched — exactly
     // the situation where forwarding them to `set_size` would be wrong.
@@ -714,8 +726,8 @@ unsafe extern "C" fn gui_adjust_size(
     }
     // Snap down to the quantum — "fits in the given size" is a floor, not a
     // round. Clamp to one quantum so a tiny request cannot snap to zero.
-    *width = (*width / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM;
-    *height = (*height / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM;
+    unsafe { *width = (*width / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM };
+    unsafe { *height = (*height / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM };
     true
 }
 
@@ -744,8 +756,10 @@ unsafe extern "C" fn gui_set_parent(
     }
     GUI.set_parent_window_non_null
         .store(true, Ordering::Release);
-    let api = (*window).api;
-    let matches = !api.is_null() && CStr::from_ptr(api) == platform_api();
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let api = unsafe { (*window).api };
+    let matches = !api.is_null() && unsafe { CStr::from_ptr(api) } == platform_api();
     GUI.set_parent_api_matches_platform
         .store(matches, Ordering::Release);
     // The handle itself is never dereferenced — see the module docs. Recording
@@ -784,7 +798,9 @@ unsafe extern "C" fn gui_suggest_title(
     if title.is_null() {
         return;
     }
-    let bytes = CStr::from_ptr(title).to_bytes();
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let bytes = unsafe { CStr::from_ptr(title) }.to_bytes();
     // Leave the last cell as the NUL terminator, so a title at or over the
     // bound reads back truncated rather than unterminated.
     let n = bytes.len().min(MAX_TITLE_LEN - 1);
@@ -812,8 +828,10 @@ unsafe extern "C" fn gui_get_preferred_api(
     }
     // Assigned as a pointer to the constant, never strcopied — `ext/gui.h:114`
     // requires exactly this, and a host is entitled to compare it by address.
-    *api = platform_api().as_ptr();
-    *is_floating = gui_mode() == GuiMode::FloatingOnly;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { *api = platform_api().as_ptr() };
+    unsafe { *is_floating = gui_mode() == GuiMode::FloatingOnly };
     true
 }
 
@@ -822,7 +840,9 @@ unsafe extern "C" fn gui_show(plugin: *const clap_plugin) -> bool {
     // The latched command runs here: `show` is the last call of the host's
     // embed sequence, so a plugin-initiated resize or close lands while the
     // host still believes the editor is live.
-    run_pending_command(plugin);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { run_pending_command(plugin) };
     true
 }
 

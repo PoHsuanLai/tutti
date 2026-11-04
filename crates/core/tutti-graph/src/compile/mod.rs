@@ -646,13 +646,13 @@ pub fn compile(
     // ---- 5. emit ----------------------------------------------------------
     let audio_fb_key = |f: FeedbackFrom| FeedbackKey::Audio {
         from: f.from,
-        gen: graph.generation(f.from.node),
+        generation: graph.generation(f.from.node),
         delay: f.delay,
     };
     let event_fb_key = |at: EventIn, from: EventOut, delay: Samples| FeedbackKey::Event {
         at,
         from,
-        gen: graph.generation(from.node),
+        generation: graph.generation(from.node),
         delay,
     };
     let audio_fb: Vec<FeedbackKey> = topology
@@ -1189,20 +1189,20 @@ pub fn compile(
     let mut idx_of: BTreeMap<NodeKey, UnitIdx> = BTreeMap::new();
     let mut taken: BTreeSet<u32> = BTreeSet::new();
     for &key in &keys {
-        let gen = graph.generation(key);
+        let generation = graph.generation(key);
         if let Some(old) = prev_units.get(&key) {
             idx_of.insert(key, old.idx);
             taken.insert(old.idx.0);
-            if old.gen != gen {
+            if old.generation != generation {
                 delta.replace.push((
                     Placement {
                         key,
-                        gen: old.gen,
+                        generation: old.generation,
                         idx: old.idx,
                     },
                     Placement {
                         key,
-                        gen,
+                        generation,
                         idx: old.idx,
                     },
                 ));
@@ -1222,7 +1222,7 @@ pub fn compile(
         idx_of.insert(key, idx);
         delta.insert.push(Placement {
             key,
-            gen: graph.generation(key),
+            generation: graph.generation(key),
             idx,
         });
     }
@@ -1230,7 +1230,7 @@ pub fn compile(
         if !topology.nodes.contains_key(key) {
             delta.retire.push(Placement {
                 key: *key,
-                gen: old.gen,
+                generation: old.generation,
                 idx: old.idx,
             });
         }
@@ -1243,7 +1243,7 @@ pub fn compile(
         .enumerate()
         .map(|(n, &key)| PlanUnit {
             key,
-            gen: graph.generation(key),
+            generation: graph.generation(key),
             idx: idx_of[&key],
             shape: node_shapes[n],
             arrival: arrival[n],

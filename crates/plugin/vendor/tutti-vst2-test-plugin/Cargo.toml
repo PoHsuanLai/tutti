@@ -1,7 +1,7 @@
 [package]
 name = "tutti-vst2-test-plugin"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Reference VST2 plugin used as a host-conformance probe in tutti-vst2-host tests"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
@@ -29,3 +29,8 @@ crate-type = ["cdylib", "rlib"]
 # bound in scope. Pinned to what vst-tutti already resolves, so no new tree.
 num-traits = "0.2"
 vst-tutti = { path = "../vst-tutti" }
+
+# See the workspace lint of the same name: let-chain collapsing is not part of the
+# edition move.
+[lints.clippy]
+collapsible_if = "allow"

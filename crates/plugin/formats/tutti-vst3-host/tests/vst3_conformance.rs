@@ -74,7 +74,7 @@ use tutti_vst3_host::{
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
 
-extern "C" {
+unsafe extern "C" {
     fn hc_num_log_events() -> c_int;
     fn hc_log_description(id: c_int) -> *const c_char;
     fn hc_log_severity(id: c_int) -> *const c_char;
@@ -160,7 +160,7 @@ fn findings_from(counts: &[i64]) -> Vec<Finding> {
     counts
         .iter()
         .enumerate()
-        .filter(|(_, &c)| c > 0)
+        .filter(|&(_, &c)| c > 0)
         .map(|(id, &count)| unsafe {
             let d = CStr::from_ptr(hc_log_description(id as c_int));
             let s = CStr::from_ptr(hc_log_severity(id as c_int));

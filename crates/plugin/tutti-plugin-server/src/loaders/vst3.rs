@@ -1217,7 +1217,7 @@ mod tests {
     #[test]
     fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
         // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
-        std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "12");
+        unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "12") };
         let _lock = crate::test_utils::plugin_load_lock();
         let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 44_100.0, 128, false)
             .expect("the vendored VST3 probe loads");

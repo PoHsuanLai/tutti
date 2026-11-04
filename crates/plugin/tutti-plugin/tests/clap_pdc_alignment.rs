@@ -178,7 +178,7 @@ fn arrivals(samples: &[f32]) -> Vec<(usize, f32)> {
     samples
         .iter()
         .enumerate()
-        .filter(|(_, &s)| s != 0.0)
+        .filter(|&(_, &s)| s != 0.0)
         .map(|(i, &s)| (i, s))
         .collect()
 }

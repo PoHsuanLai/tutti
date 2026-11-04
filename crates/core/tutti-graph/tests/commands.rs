@@ -500,7 +500,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
             let hits: Vec<usize> = ch
                 .iter()
                 .enumerate()
-                .filter(|(_, &x)| x != 0.0)
+                .filter(|&(_, &x)| x != 0.0)
                 .map(|(i, _)| i)
                 .collect();
             assert_eq!(hits, vec![120], "both impulses leave on the same frame");

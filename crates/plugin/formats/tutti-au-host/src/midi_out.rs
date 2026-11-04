@@ -209,14 +209,16 @@ pub(crate) unsafe fn midi_output_info(unit: AudioUnit) -> Option<MidiOutputInfo>
     // release them". `CfArray::from_copied` takes that +1 under the Create rule
     // so the release happens on drop, on every path out including the early
     // returns below.
-    let raw: CFArrayRef = get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK_INFO,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )
+    let raw: CFArrayRef = unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK_INFO,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }
     .ok()?;
-    let array = crate::cf::CfArray::from_copied(raw)?;
+    let array = unsafe { crate::cf::CfArray::from_copied(raw) }?;
 
     let names = (0..array.len())
         .map(|i| {
@@ -236,7 +238,7 @@ pub(crate) unsafe fn midi_output_info(unit: AudioUnit) -> Option<MidiOutputInfo>
             // are also short strings, i.e. arm64 *tagged pointers* — legitimately
             // misaligned — which is why the checked converter's tag-bit
             // allowance, not a plain alignment test, is what admits them.
-            cfstring_to_string_checked(ptr as CFStringRef)
+            unsafe { cfstring_to_string_checked(ptr as CFStringRef) }
         })
         .collect();
 
@@ -290,13 +292,15 @@ pub(crate) unsafe fn install(unit: AudioUnit, sink: MidiOutSink) -> Result<AuMid
         state: Some(state),
         sysex_dropped,
     };
-    set_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-        &callback,
-    )?;
+    unsafe {
+        set_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+            &callback,
+        )?
+    };
     Ok(handle)
 }
 
@@ -401,13 +405,15 @@ impl AuMidiOutput {
             midi_output_callback: Some(au_midi_output_callback),
             user_data: std::ptr::null_mut(),
         };
-        let result = set_property(
-            self.unit,
-            K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            &withdrawn,
-        );
+        let result = unsafe {
+            set_property(
+                self.unit,
+                K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &withdrawn,
+            )
+        };
         // Freed only after the write above returned — in both the success and the
         // failure arm, per the reasoning in this method's docs.
         drop(self.state.take());
@@ -468,7 +474,7 @@ unsafe extern "C" fn au_midi_output_callback(
     // and the rest were not — a glitched block, not a broken invariant — so there
     // is nothing for unwind safety to protect. Same judgement as the input
     // render callback's.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         decode_and_dispatch(user_data, midi_out_num, pktlist)
     }));
     match result {
@@ -501,16 +507,18 @@ unsafe fn decode_and_dispatch(
     if user_data.is_null() || pktlist.is_null() {
         return -1;
     }
-    let state = &mut *(user_data as *mut MidiOutState);
+    let state = unsafe { &mut *(user_data as *mut MidiOutState) };
 
     // A list cut short by a panic last time leaves events staged; they belong
     // to a block that is gone.
     state.decoder.begin_list();
     let MidiOutState { sink, decoder, .. } = &mut *state;
     let mut flush = |events: &[MidiEvent]| (*sink)(midi_out_num, events);
-    for_each_packet(pktlist, |frame_offset, bytes| {
-        decoder.decode(bytes, frame_offset, &mut flush);
-    });
+    unsafe {
+        for_each_packet(pktlist, |frame_offset, bytes| {
+            decoder.decode(bytes, frame_offset, &mut flush);
+        })
+    };
     // The tail of the list is flushed whole, never held for the next one:
     // a note-off held back is a stuck voice.
     decoder.flush(&mut flush);
@@ -561,19 +569,25 @@ unsafe fn decode_and_dispatch(
 /// packets laid out per `MIDIPacketNext`, each `length` bytes of `data` within the
 /// allocation.
 unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32, &[u8])) {
-    let num_packets = std::ptr::read_unaligned(
-        (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, numPackets)) as *const u32,
-    );
+    let num_packets = unsafe {
+        std::ptr::read_unaligned(
+            (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, numPackets))
+                as *const u32,
+        )
+    };
     // The first packet begins at the `packet` field's offset — 4, immediately
     // after `numPackets`.
-    let mut p = (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, packet));
+    let mut p = unsafe { (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, packet)) };
 
     for _ in 0..num_packets {
-        let time_stamp = std::ptr::read_unaligned(
-            p.add(std::mem::offset_of!(MIDIPacket, timeStamp)) as *const u64,
-        );
-        let length =
-            std::ptr::read_unaligned(p.add(std::mem::offset_of!(MIDIPacket, length)) as *const u16);
+        let time_stamp = unsafe {
+            std::ptr::read_unaligned(
+                p.add(std::mem::offset_of!(MIDIPacket, timeStamp)) as *const u64
+            )
+        };
+        let length = unsafe {
+            std::ptr::read_unaligned(p.add(std::mem::offset_of!(MIDIPacket, length)) as *const u16)
+        };
         // Clamp the plugin-supplied length to Apple's own documented maximum.
         // `MIDIServices.h` declares `Byte data[256]`, so a packet claiming more
         // than that is malformed by the framework's own definition, and honouring
@@ -589,7 +603,7 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
         // this prevents is a read outside the allocation entirely, which would be
         // ours.
         let length = length.min(MAX_PACKET_PAYLOAD);
-        let data = p.add(PACKET_HEADER_SIZE);
+        let data = unsafe { p.add(PACKET_HEADER_SIZE) };
 
         // Apple's header: "The time stamp values contained within the MIDIPackets
         // in this list are **sample offsets** from the AudioTimeStamp provided."
@@ -600,13 +614,13 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
         // wrapping, would place a late event at the start of the block).
         let frame_offset = u32::try_from(time_stamp).unwrap_or(u32::MAX);
 
-        let bytes = std::slice::from_raw_parts(data, length as usize);
+        let bytes = unsafe { std::slice::from_raw_parts(data, length as usize) };
         f(frame_offset, bytes);
 
         // `MIDIPacketNext`: advance past the header and payload, then align. On
         // arm64 Apple rounds up to 4; on x86_64 it does not round at all, and
         // rounding there would skip bytes of the next packet.
-        let raw_next = p.add(PACKET_HEADER_SIZE + length as usize);
+        let raw_next = unsafe { p.add(PACKET_HEADER_SIZE + length as usize) };
         p = next_packet(raw_next);
     }
 }
@@ -676,9 +690,11 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
     let mut out = Vec::new();
     let mut decoder = Midi1Decoder::new();
     let mut flush = |events: &[MidiEvent]| out.extend_from_slice(events);
-    for_each_packet(pktlist, |frame_offset, bytes| {
-        decoder.decode(bytes, frame_offset, &mut flush);
-    });
+    unsafe {
+        for_each_packet(pktlist, |frame_offset, bytes| {
+            decoder.decode(bytes, frame_offset, &mut flush);
+        })
+    };
     decoder.flush(&mut flush);
     out
 }
@@ -696,13 +712,15 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
 pub unsafe fn split_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<(u32, Vec<u8>)> {
     let mut out = Vec::new();
     let mut splitter = Midi1Splitter::new();
-    for_each_packet(pktlist, |frame_offset, bytes| {
-        splitter.split(bytes, frame_offset, &mut |frame, message| match message {
-            Midi1Message::Short(bytes) | Midi1Message::SysEx(bytes) => {
-                out.push((frame, bytes.to_vec()));
-            }
-        });
-    });
+    unsafe {
+        for_each_packet(pktlist, |frame_offset, bytes| {
+            splitter.split(bytes, frame_offset, &mut |frame, message| match message {
+                Midi1Message::Short(bytes) | Midi1Message::SysEx(bytes) => {
+                    out.push((frame, bytes.to_vec()));
+                }
+            });
+        })
+    };
     out
 }
 

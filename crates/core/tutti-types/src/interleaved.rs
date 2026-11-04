@@ -274,7 +274,7 @@ impl<'a> InterleavedMut<'a> {
     /// Iterates frame by frame, mutably. Each item is `stride()` long — the
     /// shape [`fold_frame`](crate::fold_frame) writes into.
     #[inline]
-    pub fn frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> {
+    pub fn frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_> {
         let ch = self.stride();
         self.data.chunks_exact_mut(ch)
     }

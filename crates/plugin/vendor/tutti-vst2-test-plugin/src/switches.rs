@@ -95,7 +95,7 @@ static LATE_LATENCY: AtomicI32 = AtomicI32::new(0);
 ///
 /// Set before `Vst2Instance::load` and restore afterwards — like every switch
 /// here, this mutates the loaded image the whole process shares.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_late_latency(samples: i32) {
     LATE_LATENCY.store(samples, Ordering::SeqCst);
     // Clear the "rate is known" latch with it. Both are process-global and the
@@ -135,7 +135,7 @@ pub(crate) fn rate_known() -> bool {
 static FIRE_UPDATE_DISPLAY: AtomicBool = AtomicBool::new(false);
 
 /// Make the probe call `audioMasterUpdateDisplay` from its next `resume`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_fire_update_display(enable: bool) {
     FIRE_UPDATE_DISPLAY.store(enable, Ordering::SeqCst);
 }
@@ -153,7 +153,7 @@ pub(crate) fn fire_update_display() -> bool {
 ///
 /// Without this switch the host's decode path is unreachable from any test on
 /// this machine — the opcode would be implemented and never executed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_answer_param_properties(enable: bool) {
     ANSWER_PARAM_PROPERTIES.store(enable, Ordering::SeqCst);
 }
@@ -167,7 +167,7 @@ pub(crate) fn answer_param_properties() -> bool {
 /// Off by default: a plugin with no soft bypass is the common case, and an
 /// unimplemented opcode returns 0 — the same "no" an explicit refusal gives.
 /// A host must not read either as success.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_accept_soft_bypass(enable: bool) {
     ACCEPT_SOFT_BYPASS.store(enable, Ordering::SeqCst);
 }
@@ -175,7 +175,7 @@ pub extern "C" fn tutti_vst2_probe_set_accept_soft_bypass(enable: bool) {
 /// The last `effSetBypass` value the host sent: `-1` never, `0` resume,
 /// `1` bypass. Records what arrived even when the probe refuses it, so a test
 /// can tell "the host never dispatched" from "the plugin said no".
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_last_bypass() -> i32 {
     LAST_BYPASS.load(Ordering::SeqCst)
 }
@@ -197,7 +197,7 @@ pub(crate) fn record_bypass(bypass: bool) {
 /// enumeration hole the parameter/preset switches already model on their axes:
 /// a host that trusts the advertised count and walks it reads names the plugin
 /// never had.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_answer_midi_metadata(enable: bool, serviced_programs: i32) {
     ANSWER_MIDI_METADATA.store(enable, Ordering::SeqCst);
     SERVICED_MIDI_PROGRAMS.store(serviced_programs, Ordering::SeqCst);
@@ -213,7 +213,7 @@ pub(crate) fn serviced_midi_programs() -> i32 {
 
 /// Set the `effCanDo` answer. `answer` is a [`CanDoAnswer`] discriminant;
 /// `custom` is the raw value used only when `answer` is `Custom`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_can_do(answer: i32, custom: isize) {
     CAN_DO_ANSWER.store(answer, Ordering::SeqCst);
     CAN_DO_CUSTOM.store(custom, Ordering::SeqCst);
@@ -235,7 +235,7 @@ pub(crate) fn can_do_custom_value() -> isize {
 /// and render silence, as a plugin whose device or licence claim failed
 /// does. `resume_count` still increments, so a test can tell "the host never
 /// called resume" from "the plugin declined it".
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_refuse_resume(refuse: bool) {
     REFUSE_RESUME.store(refuse, Ordering::SeqCst);
 }
@@ -248,7 +248,7 @@ pub(crate) fn refuse_resume() -> bool {
 /// stale-buffer leak. A host that does not zero its output scratch between
 /// blocks replays the previous block's audio; well-behaved plugins never
 /// expose it, because they always write.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_silent_process(silent: bool) {
     SILENT_PROCESS.store(silent, Ordering::SeqCst);
 }
@@ -262,7 +262,7 @@ pub(crate) fn silent_process() -> bool {
 /// The host sizes its pointer table from the AEffect, so this is a genuine
 /// out-of-bounds write: it will corrupt or crash a host that trusts the
 /// plugin, which is the finding. Off by default.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_write_extra_output(enable: bool) {
     WRITE_EXTRA_OUTPUT.store(enable, Ordering::SeqCst);
 }
@@ -275,7 +275,7 @@ pub(crate) fn write_extra_output() -> bool {
 /// [`tutti_vst2_probe_set_write_extra_output`]; the value read is folded
 /// into the output so the test can observe whether the host supplied a
 /// readable (zeroed) slot or garbage.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_read_extra_input(enable: bool) {
     READ_EXTRA_INPUT.store(enable, Ordering::SeqCst);
 }
@@ -286,7 +286,7 @@ pub(crate) fn read_extra_input() -> bool {
 
 /// Make `effSetChunk` refuse every blob (answer `0`), as a plugin does a
 /// chunk it cannot read.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_refuse_chunk_load(refuse: bool) {
     REFUSE_CHUNK_LOAD.store(refuse, Ordering::SeqCst);
 }
@@ -298,7 +298,7 @@ pub(crate) fn refuse_chunk_load() -> bool {
 /// Send `count` `audioMasterAutomate` reports (parameter 0) from inside each
 /// `process` call, as a plugin applying a preset from its audio thread does:
 /// a burst the host must queue without allocating, and may have to drop.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_automate_burst(count: u32) {
     AUTOMATE_BURST.store(count, Ordering::SeqCst);
 }
@@ -309,7 +309,7 @@ pub(crate) fn automate_burst() -> u32 {
 
 /// Make `setParameter` echo each value it is set to through
 /// `audioMasterAutomate`, on the caller's thread, before it returns.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_echo_set_parameter(on: bool) {
     ECHO_SET_PARAMETER.store(on, Ordering::SeqCst);
 }
@@ -322,7 +322,7 @@ pub(crate) fn echo_set_parameter() -> bool {
 ///
 /// Tests share one loaded image, so a switch left set contaminates every
 /// later test. Call it on the way out of any misbehaviour test.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_reset_switches() {
     CAN_DO_ANSWER.store(CanDoAnswer::Yes as i32, Ordering::SeqCst);
     CAN_DO_CUSTOM.store(0, Ordering::SeqCst);
@@ -366,13 +366,13 @@ pub(crate) fn record_preset_event(event: i32) {
 
 /// The packed preset-opcode trace. Decode with [`preset_event`]'s constants,
 /// two bits per entry, oldest first.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_preset_trace() -> i32 {
     PRESET_TRACE.load(Ordering::SeqCst)
 }
 
 /// How many entries [`tutti_vst2_probe_preset_trace`] holds.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_preset_trace_len() -> i32 {
     PRESET_TRACE_LEN.load(Ordering::SeqCst)
 }
@@ -409,13 +409,13 @@ pub(crate) fn record_close() {
 }
 
 /// Read the `effClose` count out of the loaded image.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_close_count() -> u32 {
     CLOSE_COUNT.load(Ordering::SeqCst)
 }
 
 /// Reset the `effClose` count, so a test can start from a known zero.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_reset_close_count() {
     CLOSE_COUNT.store(0, Ordering::SeqCst);
 }
@@ -442,13 +442,13 @@ pub(crate) fn record_lifecycle(opcode: i32, value: isize) {
 }
 
 /// How many entries the lifecycle trace holds.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_trace_len() -> u32 {
     LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner()).len() as u32
 }
 
 /// Entry `index` of the lifecycle trace (`opcode << 32 | value`), or `-1`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_trace_at(index: u32) -> i64 {
     LIFECYCLE
         .lock()
@@ -459,7 +459,7 @@ pub extern "C" fn tutti_vst2_probe_trace_at(index: u32) -> i64 {
 }
 
 /// Clear the lifecycle trace.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_reset_trace() {
     LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner()).clear();
 }
@@ -489,16 +489,16 @@ unsafe fn call_host(opcode: i32, ptr: *mut std::ffi::c_void) -> Option<isize> {
     if callback == 0 {
         return None;
     }
-    let callback: vst::api::HostCallbackProc = std::mem::transmute(callback);
+    let callback: vst::api::HostCallbackProc = unsafe { std::mem::transmute(callback) };
     let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
-    Some(callback(effect, opcode, 0, 0, ptr, 0.0))
+    Some(unsafe { callback(effect, opcode, 0, 0, ptr, 0.0) })
 }
 
 /// What a plugin does when its configuration changes under it: write the new
 /// `initialDelay` and `numInputs` into its `AEffect` and call
 /// `audioMasterIOChanged`. Returns the host's answer (`1` = handled), or `-1`
 /// before a plugin is loaded.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_fire_io_changed(latency: i32, inputs: i32) -> isize {
     let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
     if effect.is_null() {
@@ -519,12 +519,12 @@ pub extern "C" fn tutti_vst2_probe_fire_io_changed(latency: i32, inputs: i32) ->
 ///
 /// # Safety
 /// `name` must be a valid NUL-terminated string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_vst2_probe_ask_host_can_do(
     name: *const std::os::raw::c_char,
 ) -> isize {
     // `audioMasterCanDo` is opcode 37.
-    call_host(37, name as *mut std::ffi::c_void).unwrap_or(-2)
+    unsafe { call_host(37, name as *mut std::ffi::c_void).unwrap_or(-2) }
 }
 
 // ---------------------------------------------------------------------------
@@ -535,7 +535,7 @@ static EDITOR_OPENS: AtomicBool = AtomicBool::new(false);
 
 /// Let the probe's editor (`TUTTI_VST2_PROBE_EDITOR=1`) accept `effEditOpen`.
 /// Off by default: it has no window to embed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_editor_opens(opens: bool) {
     EDITOR_OPENS.store(opens, Ordering::SeqCst);
 }

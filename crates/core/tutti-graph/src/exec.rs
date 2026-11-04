@@ -372,7 +372,7 @@ impl Commit {
                     plan.unit(p.key).map_or(0, |u| u.shape.params.len()),
                     max_block,
                 );
-                (p.idx, p.gen, NodeBox::new(unit), fade, params)
+                (p.idx, p.generation, NodeBox::new(unit), fade, params)
             })
             .collect::<Vec<_>>();
         assert!(
@@ -522,7 +522,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
 }
 
 pub(crate) struct Unit {
-    gen: u32,
+    generation: u32,
     node: NodeBox,
     /// Consecutive frames of fully silent input, saturating.
     quiet: u64,
@@ -540,9 +540,9 @@ pub(crate) struct Unit {
 }
 
 impl Unit {
-    fn new(gen: u32, node: NodeBox, params: ParamState) -> Self {
+    fn new(generation: u32, node: NodeBox, params: ParamState) -> Self {
         Self {
-            gen,
+            generation,
             node,
             quiet: 0,
             last_quiet: false,
@@ -940,7 +940,10 @@ impl Executor {
                 }
             };
             if let Some(u) = self.store.get_mut(p.idx.0 as usize).and_then(Option::take) {
-                debug_assert_eq!(u.gen, p.gen, "retiring the unit the delta named");
+                debug_assert_eq!(
+                    u.generation, p.generation,
+                    "retiring the unit the delta named"
+                );
                 c.retired.push((p.key, u.node));
                 c.spare_params.push(u.params);
                 for f in [u.fade, u.queued].into_iter().flatten() {
@@ -955,7 +958,10 @@ impl Executor {
                 .get_mut(p.idx.0 as usize)
                 .and_then(Option::as_mut)
             {
-                debug_assert_eq!(u.gen, p.gen, "cutting the unit the delta named");
+                debug_assert_eq!(
+                    u.generation, p.generation,
+                    "cutting the unit the delta named"
+                );
                 cut_fades(u, &mut self.fade_back);
             }
         }
@@ -964,7 +970,7 @@ impl Executor {
         }
         // Taken out and put back, so the list's buffer is not freed here.
         let mut incoming = std::mem::take(&mut c.incoming);
-        for (idx, gen, node, fade, params) in incoming.drain(..) {
+        for (idx, generation, node, fade, params) in incoming.drain(..) {
             let slot = &mut self.store[idx.0 as usize];
             match (fade, slot.as_mut()) {
                 (Some(mut x), Some(u)) => {
@@ -974,7 +980,7 @@ impl Executor {
                     // A crossfade: the unit at this key fades out — or, with
                     // a fade already running here, this one waits for it,
                     // superseding one that was waiting.
-                    u.gen = gen;
+                    u.generation = generation;
                     if u.fade.is_some() {
                         x.waiting = Some(node);
                         if let Some(q) = u.queued.replace(x) {
@@ -990,7 +996,7 @@ impl Executor {
                 }
                 (fade, _) => {
                     debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
-                    *slot = Some(Unit::new(gen, node, params));
+                    *slot = Some(Unit::new(generation, node, params));
                     // Nothing to fade from (reachable only through
                     // `package`): the crossfade goes back unused.
                     if let Some(x) = fade {
@@ -1719,7 +1725,10 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
     st: &mut OpState<'_, A, F, E>,
 ) -> bool {
     let (rec, plan, frames) = (head.rec, head.plan, head.frames);
-    debug_assert_eq!(u.gen, rec.gen, "unit generation matches the plan");
+    debug_assert_eq!(
+        u.generation, rec.generation,
+        "unit generation matches the plan"
+    );
     let borrows = &plan.nodes.borrows[..];
     if u.fade.is_some() {
         // A crossfade runs here: both units, then the blend. Off the hot

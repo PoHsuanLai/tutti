@@ -134,8 +134,10 @@ unsafe fn host_thread_pool(host: *const clap_host) -> *const clap_host_thread_po
     if host.is_null() {
         return std::ptr::null();
     }
-    match (*host).get_extension {
-        Some(get) => get(host, CLAP_EXT_THREAD_POOL.as_ptr()) as *const clap_host_thread_pool,
+    match unsafe { (*host).get_extension } {
+        Some(get) => {
+            (unsafe { get(host, CLAP_EXT_THREAD_POOL.as_ptr()) }) as *const clap_host_thread_pool
+        }
         None => std::ptr::null(),
     }
 }
@@ -151,11 +153,13 @@ unsafe extern "C" fn exec(plugin: *const clap_plugin, task_index: u32) {
         THREADS[task_index as usize].store(me, Ordering::Relaxed);
     }
     if task_index == 0 && NESTED.load(Ordering::Relaxed) {
-        let tp = host_thread_pool(crate::plugin_host(plugin));
-        if let Some(request) = tp.as_ref().and_then(|tp| tp.request_exec) {
+        // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+        // arguments valid per the CLAP ABI.
+        let tp = unsafe { host_thread_pool(crate::plugin_host(plugin)) };
+        if let Some(request) = unsafe { tp.as_ref() }.and_then(|tp| tp.request_exec) {
             // The nested call asks for no tasks, so an accepting host has
             // nothing to run and the outer request's counts stay exact.
-            if request(crate::plugin_host(plugin), 0) {
+            if unsafe { request(crate::plugin_host(plugin), 0) } {
                 NESTED_ACCEPTED.fetch_add(1, Ordering::Relaxed);
             } else {
                 NESTED_REFUSED.fetch_add(1, Ordering::Relaxed);
@@ -163,7 +167,7 @@ unsafe extern "C" fn exec(plugin: *const clap_plugin, task_index: u32) {
         }
     }
     if LOG.load(Ordering::Relaxed) {
-        log_from_task(crate::plugin_host(plugin));
+        unsafe { log_from_task(crate::plugin_host(plugin)) };
     }
     let us = TASK_US.load(Ordering::Relaxed);
     if us > 0 {
@@ -182,12 +186,12 @@ unsafe fn log_from_task(host: *const clap_host) {
     if host.is_null() {
         return;
     }
-    let Some(get) = (*host).get_extension else {
+    let Some(get) = (unsafe { (*host).get_extension }) else {
         return;
     };
-    let log = get(host, CLAP_EXT_LOG.as_ptr()) as *const clap_host_log;
-    if let Some(log) = log.as_ref().and_then(|l| l.log) {
-        log(host, CLAP_LOG_INFO, TASK_LOG_LINE.as_ptr());
+    let log = unsafe { get(host, CLAP_EXT_LOG.as_ptr()) } as *const clap_host_log;
+    if let Some(log) = unsafe { log.as_ref() }.and_then(|l| l.log) {
+        unsafe { log(host, CLAP_LOG_INFO, TASK_LOG_LINE.as_ptr()) };
     }
 }
 
@@ -214,11 +218,11 @@ pub(crate) unsafe fn on_process(plugin: *const clap_plugin, host: *const clap_ho
     } else {
         host
     };
-    let tp = host_thread_pool(host);
-    let request = tp.as_ref().and_then(|tp| tp.request_exec);
+    let tp = unsafe { host_thread_pool(host) };
+    let request = unsafe { tp.as_ref() }.and_then(|tp| tp.request_exec);
     HOST_OFFERS.store(request.is_some(), Ordering::Relaxed);
     let accepted = match request {
-        Some(request) => request(named, n),
+        Some(request) => unsafe { request(named, n) },
         None => false,
     };
     if accepted {
@@ -248,7 +252,7 @@ pub(crate) unsafe fn on_process(plugin: *const clap_plugin, host: *const clap_ho
         // What the header tells a plugin to do: run them itself.
         REFUSED.fetch_add(1, Ordering::Relaxed);
         for i in 0..n {
-            exec(plugin, i);
+            unsafe { exec(plugin, i) };
         }
     }
     CALLER.store(0, Ordering::Relaxed);
@@ -259,7 +263,7 @@ pub(crate) unsafe fn on_process(plugin: *const clap_plugin, host: *const clap_ho
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_tasks(tasks: u32) {
     TASKS.store(tasks, Ordering::SeqCst);
 }
@@ -268,7 +272,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_tasks(tasks: u32) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_task_us(us: u32) {
     TASK_US.store(us, Ordering::SeqCst);
 }
@@ -277,7 +281,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_task_us(us: u32) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_nested(nested: bool) {
     NESTED.store(nested, Ordering::SeqCst);
 }
@@ -286,7 +290,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_nested(nested: bool) 
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_log(log: bool) {
     LOG.store(log, Ordering::SeqCst);
 }
@@ -297,7 +301,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_log(log: bool) {
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
 /// While it is on, the instance that processed last must stay loaded.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_foreign(foreign: bool) {
     FOREIGN.store(foreign, Ordering::SeqCst);
 }
@@ -309,12 +313,12 @@ pub unsafe extern "C" fn tutti_test_plugin_set_thread_pool_foreign(foreign: bool
 ///
 /// # Safety
 /// The instance that last called `process` must still be loaded.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_thread_pool_request_now(tasks: u32) -> i32 {
     let host = LAST_HOST.load(Ordering::SeqCst) as *const clap_host;
-    let tp = host_thread_pool(host);
-    match tp.as_ref().and_then(|tp| tp.request_exec) {
-        Some(request) => i32::from(request(host, tasks)),
+    let tp = unsafe { host_thread_pool(host) };
+    match unsafe { tp.as_ref() }.and_then(|tp| tp.request_exec) {
+        Some(request) => i32::from(unsafe { request(host, tasks) }),
         None => -1,
     }
 }
@@ -323,7 +327,7 @@ pub unsafe extern "C" fn tutti_test_plugin_thread_pool_request_now(tasks: u32) -
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_thread_pool() {
     for c in [
         &REQUESTS,
@@ -346,7 +350,7 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_thread_pool() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_thread_pool_capture() -> ThreadPoolCapture {
     ThreadPoolCapture {
         requests: REQUESTS.load(Ordering::SeqCst),

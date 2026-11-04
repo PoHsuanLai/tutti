@@ -353,8 +353,8 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
         // PDC ring downstream of it.
         let j = rng.below(d.order.len() as u64) as usize;
         let key = d.order[j];
-        let gen = d.spec.generation(key) + 1;
-        d.spec.generations.insert(key, gen);
+        let generation = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, generation);
         if rng.chance(50) {
             let old = shape(&d.kinds[&key]);
             let kind = random_kind(rng);
@@ -1900,8 +1900,8 @@ fn mutate_with_fades(desc: &Desc, rng: &mut Rng) -> (Desc, BTreeMap<NodeKey, tut
                 kind = other;
             }
         }
-        let gen = d.spec.generation(key) + 1;
-        d.spec.generations.insert(key, gen);
+        let generation = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, generation);
         d.spec.topology.nodes.insert(key, spec_for(&kind));
         d.kinds.insert(key, kind);
         fades.insert(key, random_fade(rng));

@@ -54,8 +54,10 @@ unsafe extern "C" fn ostream_write(
     buffer: *const c_void,
     size: u64,
 ) -> i64 {
-    let out_buffer = &mut *((*stream).ctx as *mut Vec<u8>);
-    let data = std::slice::from_raw_parts(buffer as *const u8, size as usize);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let out_buffer = unsafe { &mut *((*stream).ctx as *mut Vec<u8>) };
+    let data = unsafe { std::slice::from_raw_parts(buffer as *const u8, size as usize) };
     out_buffer.extend_from_slice(data);
     size as i64
 }
@@ -104,7 +106,9 @@ unsafe extern "C" fn istream_read(
     buffer: *mut c_void,
     size: u64,
 ) -> i64 {
-    let input = &mut *((*stream).ctx as *mut InputStream);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let input = unsafe { &mut *((*stream).ctx as *mut InputStream) };
     let remaining = input.data.len() - input.position;
     let to_read = (size as usize).min(remaining);
 
@@ -113,7 +117,7 @@ unsafe extern "C" fn istream_read(
     }
 
     let source = &input.data[input.position..input.position + to_read];
-    let dest = std::slice::from_raw_parts_mut(buffer as *mut u8, to_read);
+    let dest = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, to_read) };
     dest.copy_from_slice(source);
 
     input.position += to_read;

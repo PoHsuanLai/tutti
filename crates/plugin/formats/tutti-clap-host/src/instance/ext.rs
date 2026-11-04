@@ -16,6 +16,6 @@ pub(crate) unsafe fn opt<'a, T>(ptr: *const T) -> Option<&'a T> {
     if ptr.is_null() {
         None
     } else {
-        Some(&*ptr)
+        Some(unsafe { &*ptr })
     }
 }

@@ -55,7 +55,7 @@ pub(crate) fn param_hole_at(index: u32) -> bool {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_port_hole(index: u32) {
     PORT_HOLE.store(index, Ordering::SeqCst);
 }
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_port_hole(index: u32) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_param_hole(index: u32) {
     PARAM_HOLE.store(index, Ordering::SeqCst);
 }
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_param_hole(index: u32) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_clear_holes() {
     PORT_HOLE.store(HOLE_NONE, Ordering::SeqCst);
     PARAM_HOLE.store(HOLE_NONE, Ordering::SeqCst);

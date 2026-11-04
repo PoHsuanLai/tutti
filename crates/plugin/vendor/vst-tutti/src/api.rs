@@ -243,7 +243,7 @@ impl AEffect {
     #[allow(clippy::borrowed_box)]
     pub unsafe fn get_plugin(&self) -> &mut Box<dyn Plugin> {
         //FIXME: find a way to do this without resorting to transmuting via a box
-        &mut *(self.object as *mut Box<dyn Plugin>)
+        unsafe { &mut *(self.object as *mut Box<dyn Plugin>) }
     }
 
     /// Return handle to Info object. Only works for plugins created using this library.
@@ -251,7 +251,7 @@ impl AEffect {
     /// # Safety
     /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_info(&self) -> &Info {
-        &(*(self.user as *mut super::PluginCache)).info
+        unsafe { &(*(self.user as *mut super::PluginCache)).info }
     }
 
     /// Return handle to PluginParameters object. Only works for plugins created using this library.
@@ -259,7 +259,7 @@ impl AEffect {
     /// # Safety
     /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_params(&self) -> &Arc<dyn PluginParameters> {
-        &(*(self.user as *mut super::PluginCache)).params
+        unsafe { &(*(self.user as *mut super::PluginCache)).params }
     }
 
     /// Return handle to Editor object. Only works for plugins created using this library.
@@ -269,7 +269,7 @@ impl AEffect {
     /// the caller must not invoke this concurrently with any other accessor on
     /// the same `AEffect`.
     pub unsafe fn get_editor(&self) -> &mut Option<Box<dyn Editor>> {
-        &mut (*(self.user as *mut super::PluginCache)).editor
+        unsafe { &mut (*(self.user as *mut super::PluginCache)).editor }
     }
 
     /// Drop the Plugin object. Only works for plugins created using this library.
@@ -278,8 +278,8 @@ impl AEffect {
     /// Must be called exactly once, from `effClose`, after which neither
     /// `self.object` nor `self.user` may be dereferenced again.
     pub unsafe fn drop_plugin(&mut self) {
-        drop(Box::from_raw(self.object as *mut Box<dyn Plugin>));
-        drop(Box::from_raw(self.user as *mut super::PluginCache));
+        drop(unsafe { Box::from_raw(self.object as *mut Box<dyn Plugin>) });
+        drop(unsafe { Box::from_raw(self.user as *mut super::PluginCache) });
     }
 }
 

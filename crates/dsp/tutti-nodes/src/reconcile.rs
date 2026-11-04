@@ -191,13 +191,13 @@ enum Bind {
         at: ParamIn,
         knob: Option<Arc<AtomicF32>>,
         /// The node's unit generation: a new unit has new cells.
-        gen: u32,
+        generation: u32,
     },
     Foreign {
         to: EventIn,
         id: u32,
         knob: Option<f32>,
-        gen: u32,
+        generation: u32,
     },
 }
 
@@ -206,15 +206,19 @@ impl Bind {
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
             (
-                Self::Native { at, knob, gen },
+                Self::Native {
+                    at,
+                    knob,
+                    generation,
+                },
                 Self::Native {
                     at: a2,
                     knob: k2,
-                    gen: g2,
+                    generation: g2,
                 },
             ) => {
                 at == a2
-                    && gen == g2
+                    && generation == g2
                     && match (knob, k2) {
                         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                         (None, None) => true,
@@ -222,14 +226,16 @@ impl Bind {
                     }
             }
             (
-                Self::Foreign { to, id, gen, .. },
+                Self::Foreign {
+                    to, id, generation, ..
+                },
                 Self::Foreign {
                     to: t2,
                     id: i2,
-                    gen: g2,
+                    generation: g2,
                     ..
                 },
-            ) => to == t2 && id == i2 && gen == g2,
+            ) => to == t2 && id == i2 && generation == g2,
             _ => false,
         }
     }
@@ -247,7 +253,7 @@ struct Lane {
     key: NodeKey,
     /// The lane node's generation at its insert: another means a host
     /// replaced (or removed) it at its key.
-    gen: u32,
+    generation: u32,
     controls: LaneControls,
     bind: Bind,
     /// The program last published to it.
@@ -260,7 +266,7 @@ struct Lane {
 struct SignalNode {
     key: NodeKey,
     /// As [`Lane::gen`].
-    gen: u32,
+    generation: u32,
     decl: SourceNode,
     feed: Option<Feed>,
     /// A follower's input width.
@@ -653,13 +659,13 @@ impl Modulation {
         let taken_lanes: BTreeSet<TargetKey> = self
             .lanes
             .iter()
-            .filter(|(_, l)| taken(editor, l.key, l.gen))
+            .filter(|(_, l)| taken(editor, l.key, l.generation))
             .map(|(&t, _)| t)
             .collect();
         let taken_sources: BTreeSet<SourceKey> = self
             .sources
             .iter()
-            .filter(|(_, n)| taken(editor, n.key, n.gen))
+            .filter(|(_, n)| taken(editor, n.key, n.generation))
             .map(|(&s, _)| s)
             .collect();
 
@@ -864,7 +870,7 @@ impl Modulation {
                 source,
                 SignalNode {
                     key: plan.key,
-                    gen: editor.spec().generation(plan.key),
+                    generation: editor.spec().generation(plan.key),
                     decl: plan.decl,
                     feed: plan.feed,
                     width: plan.width,
@@ -928,7 +934,7 @@ impl Modulation {
                 target,
                 Lane {
                     key,
-                    gen: editor.spec().generation(key),
+                    generation: editor.spec().generation(key),
                     controls: lane,
                     bind,
                     program: program.clone(),
@@ -1084,7 +1090,7 @@ impl Modulation {
                 Ok(Some(Bind::Native {
                     at,
                     knob,
-                    gen: editor.spec().generation(node),
+                    generation: editor.spec().generation(node),
                 }))
             }
             (Target::Foreign { node, port, knob }, ParamAddr::Id(id)) => {
@@ -1098,7 +1104,7 @@ impl Modulation {
                     to: EventIn { node, port },
                     id,
                     knob,
-                    gen: editor.spec().generation(node),
+                    generation: editor.spec().generation(node),
                 }))
             }
             _ => Err(ReconcileError::WrongTarget(target)),
@@ -1351,9 +1357,9 @@ fn unused_key(editor: &Editor) -> NodeKey {
 
 /// Whether the node the reconciler built at `key` (generation `gen` at its
 /// insert) is gone from it: removed, or replaced by a host's insert.
-fn taken(editor: &Editor, key: NodeKey, gen: u32) -> bool {
+fn taken(editor: &Editor, key: NodeKey, generation: u32) -> bool {
     let spec = editor.spec();
-    !spec.topology.nodes.contains_key(&key) || spec.generation(key) != gen
+    !spec.topology.nodes.contains_key(&key) || spec.generation(key) != generation
 }
 
 /// Removes the direct event edge `from` → `at` this reconciler wired, and

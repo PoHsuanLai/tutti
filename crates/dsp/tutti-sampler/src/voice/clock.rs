@@ -303,7 +303,7 @@ impl<'e> BlockClock<'e> {
     }
 
     /// The runs meeting frames `range`, cut to it.
-    pub(crate) fn runs_in(&self, range: Range<usize>) -> impl Iterator<Item = Run> + 'e {
+    pub(crate) fn runs_in(&self, range: Range<usize>) -> impl Iterator<Item = Run> + 'e + use<'e> {
         self.runs()
             .take_while(move |r| r.start < range.end)
             .filter_map(move |r| r.clipped(&range))

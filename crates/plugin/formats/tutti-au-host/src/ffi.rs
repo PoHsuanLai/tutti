@@ -35,8 +35,7 @@ pub(crate) unsafe fn get_property<T>(
 ) -> Result<T> {
     let mut out: MaybeUninit<T> = MaybeUninit::uninit();
     let mut size = size_of::<T>() as u32;
-    check(
-        "AudioUnitGetProperty",
+    check("AudioUnitGetProperty", unsafe {
         AudioUnitGetProperty(
             unit,
             id,
@@ -44,9 +43,9 @@ pub(crate) unsafe fn get_property<T>(
             element,
             out.as_mut_ptr() as *mut c_void,
             &mut size,
-        ),
-    )?;
-    Ok(out.assume_init())
+        )
+    })?;
+    Ok(unsafe { out.assume_init() })
 }
 
 /// Writes a `T`-valued AudioUnit property.
@@ -61,8 +60,7 @@ pub(crate) unsafe fn set_property<T>(
     element: u32,
     value: &T,
 ) -> Result<()> {
-    check(
-        "AudioUnitSetProperty",
+    check("AudioUnitSetProperty", unsafe {
         AudioUnitSetProperty(
             unit,
             id,
@@ -70,8 +68,8 @@ pub(crate) unsafe fn set_property<T>(
             element,
             value as *const T as *const c_void,
             size_of::<T>() as u32,
-        ),
-    )
+        )
+    })
 }
 
 /// Queries the byte size of an AudioUnit property without reading its value.
@@ -87,10 +85,9 @@ pub(crate) unsafe fn property_size(
     let mut size: u32 = 0;
     // `outWritable` is `*mut Boolean` (a C `unsigned char`) in AudioToolbox.
     let mut writable: u8 = 0;
-    check(
-        "AudioUnitGetPropertyInfo",
-        AudioUnitGetPropertyInfo(unit, id, scope, element, &mut size, &mut writable),
-    )?;
+    check("AudioUnitGetPropertyInfo", unsafe {
+        AudioUnitGetPropertyInfo(unit, id, scope, element, &mut size, &mut writable)
+    })?;
     Ok(size)
 }
 
@@ -104,13 +101,12 @@ pub(crate) unsafe fn get_property_bytes(
     scope: u32,
     element: u32,
 ) -> Result<Vec<u8>> {
-    let mut size = property_size(unit, id, scope, element)?;
+    let mut size = unsafe { property_size(unit, id, scope, element) }?;
     if size == 0 {
         return Ok(Vec::new());
     }
     let mut buf = vec![0u8; size as usize];
-    check(
-        "AudioUnitGetProperty",
+    check("AudioUnitGetProperty", unsafe {
         AudioUnitGetProperty(
             unit,
             id,
@@ -118,8 +114,8 @@ pub(crate) unsafe fn get_property_bytes(
             element,
             buf.as_mut_ptr() as *mut c_void,
             &mut size,
-        ),
-    )?;
+        )
+    })?;
     buf.truncate(size as usize);
     Ok(buf)
 }

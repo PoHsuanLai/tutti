@@ -166,7 +166,7 @@ impl Inner {
         let start = self.sysex_out.len();
         // Within the reserved capacity, so this never reallocates.
         self.sysex_out
-            .extend_from_slice(std::slice::from_raw_parts(bytes, size));
+            .extend_from_slice(unsafe { std::slice::from_raw_parts(bytes, size) });
         self.push(Vst3Event::SysEx(SysExEvent {
             header,
             bytes: SysExRef::new(start, size),
@@ -485,7 +485,8 @@ impl IEventListTrait for EventList {
         let Some(event) = inner.events.get(index) else {
             return kInvalidArgument;
         };
-        *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes());
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        unsafe { *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes()) };
         kResultOk
     }
 
@@ -493,7 +494,7 @@ impl IEventListTrait for EventList {
         if e.is_null() {
             return kInvalidArgument;
         }
-        let c_event = &*e;
+        let c_event = unsafe { &*e };
         // `kResultFalse`, uncounted, while another thread reads or adds to
         // the list: the count lives in the storage that is borrowed.
         let Some(mut inner) = self.inner.try_borrow_mut() else {
@@ -508,7 +509,7 @@ impl IEventListTrait for EventList {
         // A framed SysEx, or any data longer than the event's inline bytes,
         // keeps all of its bytes (a channel-voice message is never longer).
         if c_event.r#type == K_DATA_EVENT {
-            let data = c_event.__field0.data;
+            let data = unsafe { c_event.__field0.data };
             // The `kMidiSysEx` type says it is SysEx, framed or not, of any
             // length. That type is 0, which is also what the host's own raw
             // channel-voice fallback carries, so data led by a status byte
@@ -520,8 +521,8 @@ impl IEventListTrait for EventList {
                 && !data.bytes.is_null()
                 && data.size > 0
                 && (data.size as usize > INLINE_DATA_BYTES
-                    || *data.bytes == 0xF0
-                    || *data.bytes < 0x80);
+                    || unsafe { *data.bytes } == 0xF0
+                    || unsafe { *data.bytes } < 0x80);
             if sysex {
                 let header = EventHeader {
                     bus_index: c_event.busIndex,
@@ -530,14 +531,16 @@ impl IEventListTrait for EventList {
                     flags: c_event.flags,
                     event_type: K_DATA_EVENT,
                 };
-                return if inner.stage_plugin_sysex(header, data.bytes, data.size as usize) {
+                return if unsafe {
+                    inner.stage_plugin_sysex(header, data.bytes, data.size as usize)
+                } {
                     kResultOk
                 } else {
                     kResultFalse
                 };
             }
         }
-        match from_c_event(c_event, &mut inner.text_arena) {
+        match unsafe { from_c_event(c_event, &mut inner.text_arena) } {
             Some(ev) => {
                 if inner.push(ev) {
                     kResultOk

@@ -8,7 +8,7 @@
 [package]
 name = "vst-tutti"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
 resolver = "2"
 description = "VST 2.4 API implementation in Rust (Tutti fork with host-side audioMaster callbacks). Create plugins or hosts."
 readme = "README.md"
@@ -49,3 +49,8 @@ num_enum = "0.5.2"
 # how a fork with "no failing tests" also had no *running* ones.
 [dev-dependencies]
 rand = "0.8"
+
+# See the workspace lint of the same name: let-chain collapsing is not part of the
+# edition move.
+[lints.clippy]
+collapsible_if = "allow"

@@ -3,7 +3,7 @@
 [package]
 name = "bevy-tutti"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Bevy plugin for the Tutti real-time audio engine: the audio graph, transport, MIDI, plugin hosting and export as ECS entities and resources"
 license = "MIT OR Apache-2.0"
 

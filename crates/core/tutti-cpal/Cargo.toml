@@ -1,7 +1,7 @@
 [package]
 name = "tutti-cpal"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
 description = "CPAL device layer for Tutti — output stream, mic capture, and the driver lifecycle"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

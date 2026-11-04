@@ -80,7 +80,7 @@ impl ModulationState<'_> {
     /// The targets the last apply could not resolve: their node is not in
     /// the graph (or not yet committed), or a plugin's values are not read
     /// yet.
-    pub fn unresolved_targets(&self) -> impl Iterator<Item = ParamRef> {
+    pub fn unresolved_targets(&self) -> impl Iterator<Item = ParamRef> + use<> {
         self.read(|s| {
             s.unresolved_targets()
                 .iter()
@@ -91,7 +91,7 @@ impl ModulationState<'_> {
     }
 
     /// The followers the last apply could not feed.
-    pub fn unresolved_sources(&self) -> impl Iterator<Item = Entity> {
+    pub fn unresolved_sources(&self) -> impl Iterator<Item = Entity> + use<> {
         self.read(|s| {
             s.unresolved_sources()
                 .iter()

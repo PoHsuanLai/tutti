@@ -347,7 +347,7 @@ fn topological_order<G: LatencyGraph>(g: &G, latency: &HashMap<G::Node, Samples>
 
     let mut queue: Vec<G::Node> = in_degree
         .iter()
-        .filter(|(_, &deg)| deg == 0)
+        .filter(|&(_, &deg)| deg == 0)
         .map(|(&n, _)| n)
         .collect();
 

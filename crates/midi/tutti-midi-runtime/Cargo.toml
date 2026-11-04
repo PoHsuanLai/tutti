@@ -1,7 +1,7 @@
 [package]
 name = "tutti-midi-runtime"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
 description = "MIDI runtime for the Tutti audio engine: MIDI graph nodes (input, queue, clip, clock, out), MPE ingest, MIDI-CI, SysEx"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

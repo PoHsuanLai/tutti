@@ -517,11 +517,12 @@ unsafe fn value_to_text_ffi(
     // CLAP fills a caller-provided C buffer; 256 bytes covers any sane
     // parameter display string (the SDK examples use the same size).
     let mut buf = [0i8; 256];
-    let ok = value_to_text_fn(plugin, param_id, value, buf.as_mut_ptr(), buf.len() as u32);
+    let ok =
+        unsafe { value_to_text_fn(plugin, param_id, value, buf.as_mut_ptr(), buf.len() as u32) };
     if !ok {
         return None;
     }
-    Some(crate::cstr_to_string(buf.as_ptr()))
+    Some(unsafe { crate::cstr_to_string(buf.as_ptr()) })
 }
 
 /// FFI core of [`ClapLoaded::text_to_value`]: hand the plugin a C string and
@@ -538,7 +539,7 @@ unsafe fn text_to_value_ffi(
     let text_to_value_fn = params.text_to_value?;
     let c_text = std::ffi::CString::new(text).ok()?;
     let mut out: f64 = 0.0;
-    let ok = text_to_value_fn(plugin, param_id, c_text.as_ptr(), &mut out);
+    let ok = unsafe { text_to_value_fn(plugin, param_id, c_text.as_ptr(), &mut out) };
     ok.then_some(out)
 }
 
@@ -591,7 +592,9 @@ mod param_text_tests {
     ) -> bool {
         let s = b"42.0 dB\0";
         let n = (s.len()).min(out_capacity as usize);
-        std::ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out_buffer, n);
+        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
+        // arguments valid per the CLAP ABI.
+        unsafe { std::ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out_buffer, n) };
         true
     }
 
@@ -602,14 +605,16 @@ mod param_text_tests {
         text: *const c_char,
         out_value: *mut f64,
     ) -> bool {
-        let s = CStr::from_ptr(text).to_string_lossy();
+        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
+        // arguments valid per the CLAP ABI.
+        let s = unsafe { CStr::from_ptr(text) }.to_string_lossy();
         match s
             .split_whitespace()
             .next()
             .and_then(|t| t.parse::<f64>().ok())
         {
             Some(v) => {
-                *out_value = v;
+                unsafe { *out_value = v };
                 true
             }
             None => false,

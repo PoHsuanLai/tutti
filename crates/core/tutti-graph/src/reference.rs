@@ -499,8 +499,8 @@ impl Reference {
             }
         }
         for (&key, fade) in fades {
-            let gen = graph.generation(key);
-            let changed = self.units.get(&key).is_some_and(|(g, _)| *g != gen);
+            let generation = graph.generation(key);
+            let changed = self.units.get(&key).is_some_and(|(g, _)| *g != generation);
             if fade.duration.is_zero() || !t.nodes.contains_key(&key) || !changed {
                 continue;
             }
@@ -522,7 +522,7 @@ impl Reference {
                 "node {} crossfades between shapes",
                 key.0
             );
-            slot.0 = gen;
+            slot.0 = generation;
             match self.fading.get_mut(&key) {
                 // Behind the running fade; a unit waiting there never ran.
                 Some(running) => running.next = Some((incoming, *fade)),
@@ -541,8 +541,9 @@ impl Reference {
                 }
             }
         }
-        self.units
-            .retain(|k, (gen, _)| t.nodes.contains_key(k) && *gen == graph.generation(*k));
+        self.units.retain(|k, (generation, _)| {
+            t.nodes.contains_key(k) && *generation == graph.generation(*k)
+        });
         // A key swapped or removed takes its crossfade with it.
         let units = &self.units;
         self.fading.retain(|k, _| units.contains_key(k));

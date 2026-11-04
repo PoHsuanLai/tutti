@@ -114,8 +114,12 @@ impl Misbehaviour {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var("TUTTI_PROBE_MISBEHAVIOUR").ok();
         match code {
-            Some(c) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", c),
-            None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+            // SAFETY: `PROBE_ENV_LOCK` is held for the life of this guard, so no other
+            // test in this binary reads or writes the environment meanwhile.
+            Some(c) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", c) },
+            // SAFETY: `PROBE_ENV_LOCK` is held for the life of this guard, so no other
+            // test in this binary reads or writes the environment meanwhile.
+            None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
         }
         Self {
             _guard: guard,
@@ -127,8 +131,12 @@ impl Misbehaviour {
 impl Drop for Misbehaviour {
     fn drop(&mut self) {
         match self.previous.take() {
-            Some(v) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v),
-            None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+            // SAFETY: `PROBE_ENV_LOCK` is held for the life of this guard, so no other
+            // test in this binary reads or writes the environment meanwhile.
+            Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
+            // SAFETY: `PROBE_ENV_LOCK` is held for the life of this guard, so no other
+            // test in this binary reads or writes the environment meanwhile.
+            None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
         }
     }
 }

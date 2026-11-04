@@ -87,10 +87,10 @@ impl<'a> Event<'a> {
     /// [`SysExEvent`]. In case of a [`SysExEvent`], `system_data` and `data_size` must be correct.
     pub unsafe fn from_raw_event(event: *const api::Event) -> Event<'a> {
         use api::EventType::*;
-        let event = &*event;
+        let event = unsafe { &*event };
         match event.event_type {
             Midi => {
-                let event: api::MidiEvent = mem::transmute(*event);
+                let event: api::MidiEvent = unsafe { mem::transmute(*event) };
 
                 let length = if event.note_length > 0 {
                     Some(event.note_length)
@@ -128,8 +128,8 @@ impl<'a> Event<'a> {
                     // event_type refers to a `SysEx` type.
                     #[allow(clippy::cast_ptr_alignment)]
                     let event: &api::SysExEvent =
-                        &*(event as *const api::Event as *const api::SysExEvent);
-                    slice::from_raw_parts(event.system_data, event.data_size as usize)
+                        unsafe { &*(event as *const api::Event as *const api::SysExEvent) };
+                    unsafe { slice::from_raw_parts(event.system_data, event.data_size as usize) }
                 },
 
                 delta_frames: event.delta_frames,

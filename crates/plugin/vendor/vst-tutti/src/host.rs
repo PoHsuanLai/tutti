@@ -588,7 +588,9 @@ impl<T: Host> PluginLoader<T> {
 
     /// Call the VST entry point and retrieve a (possibly null) pointer.
     unsafe fn call_main(&mut self) -> *mut AEffect {
-        LOAD_POINTER = Box::into_raw(Box::new(Arc::clone(&self.host))) as *mut c_void;
+        // SAFETY: `main` is the plugin's `VSTPluginMain` entry point, called once with this host's
+        // callback.
+        unsafe { LOAD_POINTER = Box::into_raw(Box::new(Arc::clone(&self.host))) as *mut c_void };
         (self.main)(callback_wrapper::<T>)
     }
 

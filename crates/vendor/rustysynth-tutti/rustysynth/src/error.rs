@@ -82,7 +82,7 @@ pub enum SoundFontError {
 impl error::Error for SoundFontError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SoundFontError::IoError(ref err) => Some(err),
+            SoundFontError::IoError(err) => Some(err),
             _ => None,
         }
     }
@@ -167,7 +167,7 @@ pub enum MidiFileError {
 impl error::Error for MidiFileError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            MidiFileError::IoError(ref err) => Some(err),
+            MidiFileError::IoError(err) => Some(err),
             _ => None,
         }
     }

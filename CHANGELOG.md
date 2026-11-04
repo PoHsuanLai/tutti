@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the lookahead limiter's gain runs on the linear peak, last-bit differences
+
+`LimiterNode` no longer takes a `log10` of the peak and a `powf` of the
+reduction on every frame when its threshold and ceiling are not fed. Over the
+threshold the gain is `10^(cap/20) * threshold_lin / peak` (the dB form
+`10^((cap - (peak_dB - threshold)) / 20)` rearranged), with the constants
+computed once per block, so a frame is a compare and a divide. The release
+smoothing was already linear (`envelope += coeff * (target - envelope)` on
+the gain) and is untouched, as is the path with a fed threshold or ceiling.
+Gains differ from the old ones by at most 5e-7 relative (a few f32 ulps; over
+a million random peaks, more than half of the gains differ in the last bits), and the old figure carried the larger rounding of `log10` and
+`powf`. Only a threshold under -144 dB can change a result by more than that:
+silence was pinned to a -144 dB floor in the dB form and is now simply under
+the threshold. The golden digest in `bevy-tutti`'s `scene_render` was
+re-recorded. `LimiterCurve::gain` now takes the linear peak, not dB.
+Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
+64 frames 1.86 to 1.03 us, 1024 frames 30.0 to 12.1 us.
+
 ### Changed — one implementation each for the cubic Hermite, MIDI event gather, ADSR and Q7.25 conversion, renders unchanged
 
 **Four duplicated pieces are folded into one home each.** Every render is

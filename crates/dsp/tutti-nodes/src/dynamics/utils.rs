@@ -195,12 +195,18 @@ pub(crate) fn compute_limiter_gain(
 }
 
 /// [`compute_limiter_gain`] for a threshold and ceiling that hold across a
-/// block: what depends on only those two is computed once, and each frame
-/// takes the same branch and expression as the per-frame form.
+/// block, evaluated on the linear peak: what depends on only those two is
+/// computed once, and a frame is a compare and a divide.
+///
+/// Over the threshold the dB form is `10^((cap - (peak_db - threshold)) / 20)`,
+/// which is `10^(cap/20) * threshold_lin / peak`; the comparison
+/// `peak_db > threshold` is `peak > threshold_lin` (the log is monotonic).
 pub(crate) struct LimiterCurve {
+    /// The threshold as an amplitude.
     threshold: f32,
-    /// `(ceiling - threshold).min(0.0)`.
-    cap: f32,
+    /// `10^(cap/20) * threshold`, with `cap = (ceiling - threshold).min(0.0)`
+    /// in dB: the gain over the threshold is this over the peak.
+    over: f32,
     /// The gain at or under the threshold.
     below: f32,
 }
@@ -208,18 +214,20 @@ pub(crate) struct LimiterCurve {
 impl LimiterCurve {
     pub(crate) fn new(threshold: Db, ceiling: Db) -> Self {
         let (threshold, ceiling) = (threshold.get(), ceiling.get());
+        let cap = (ceiling - threshold).min(0.0);
+        let threshold_lin = db_to_amplitude(Db(threshold)).get();
         Self {
-            threshold,
-            cap: (ceiling - threshold).min(0.0),
+            threshold: threshold_lin,
+            over: db_to_amplitude(Db(cap)).get() * threshold_lin,
             below: db_to_amplitude(Db(ceiling - threshold)).get(),
         }
     }
 
+    /// The gain for a linked peak amplitude (`>= 0`; a NaN takes `below`).
     #[inline]
-    pub(crate) fn gain(&self, peak_db: Db) -> f32 {
-        let peak_db = peak_db.get();
-        if peak_db > self.threshold {
-            limiter_over_gain(peak_db, self.threshold, self.cap).get()
+    pub(crate) fn gain(&self, peak: f32) -> f32 {
+        if peak > self.threshold {
+            self.over / peak
         } else {
             self.below
         }

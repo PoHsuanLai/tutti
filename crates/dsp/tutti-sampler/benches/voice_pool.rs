@@ -420,6 +420,7 @@ fn bench_pool64(c: &mut Criterion) {
     };
     let knobbed: &[(&str, Tier, f32, Knobs)] = &[
         ("memory-silent/64", Tier::Memory, 1.0, silent),
+        ("disk-silent/64", Tier::Disk, 1.0, silent),
         ("memory-loop/64", Tier::Memory, 1.0, looped),
         ("memory-loop-varispeed/64", Tier::Memory, 1.37, looped),
     ];

@@ -143,6 +143,9 @@ fn play(f: impl FnOnce(&mut Playback)) -> Playback {
 ///
 /// Mutation (run): `Runs` ignoring `Env::changes` (one segment per block)
 /// → the long blocks play through the stop → fails.
+/// Mutation (run): the stretched disk arm of `PlaybackSlot::render_lanes`
+/// not clearing `raw` when the reader skips a silent block → the filter is
+/// fed stale lanes through the stop → fails.
 ///
 /// Not caught here, because both sides share it (this is a consistency
 /// check): `render_into` not flushing at a jump — the voice pool's

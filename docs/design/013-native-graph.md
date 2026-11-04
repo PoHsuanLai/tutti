@@ -3209,7 +3209,7 @@ FFT size.
   butterflies, so the bits stay CPU-independent), one sub-FFT or combine pass
   a step: a 2048-frame partition's 4096-point transform is three forward steps
   (a gather and a 1024-point FFT, a 1024-point FFT, the combine and the
-  real-input pass) and four inverse ones, the biggest about 8 us instead of
+  real-input pass) and four inverse ones, the biggest 6 to 8 us instead of
   the unsplit 18 to 23 us. The cut is a few percent of a 4096-point
   transform's total (measured 18.9 us against 18.2 forward, 17.5 against 17.1
   inverse) and changes its rounding, not its result: a split transform
@@ -3237,55 +3237,95 @@ FFT size.
   400 partitions. An empty IR is uniform.
 - **No thread is added.** The steps run in the block that holds their
   offset, on the audio thread, in the node; the executor owns parallelism.
-  The biggest step is a 1024-point complex FFT whatever the partition, a
-  little below the head's own pair of transforms at `B = 512`, so the peak
-  block is the head's and the tail's steps ride under it.
+  The biggest step is a 1024-point complex FFT whatever the partition: 6 to
+  8 us (the first forward step, with its gather, the most), measured against
+  6.6 us for the head's whole forward and inverse pair at `B = 512`. A step is
+  about the head's pair, so the cut brings a tail block down to the head's
+  peak and not below it.
 
 `cargo bench -p tutti-nodes --bench convolver_blocks --features convolution`,
-512-frame partition, microseconds per call, best of five interleaved runs
-on a shared four-core container, uniform ("uniform") against levels
-("levels"). The max column is the minimum over the runs of the minimum over
-the passes of each pass's maximum:
+512-frame partition, microseconds per call, best of two interleaved runs
+on a shared four-core container, uniform ("uniform") against levels whose
+transforms are whole ("levels"; the cut transforms are measured below). The
+max column is the minimum over the passes of each pass's
+maximum:
 
 | IR | host block | mean | p99 | max |
 |---|---|---|---|---|
-| 0.5 s | 64 | 2.7 uniform, 2.7 levels | 11.0, 8.1 | 20.1, 18.8 |
-| 0.5 s | 128 | 5.5, 5.3 | 13.1, 11.4 | 21.0, 23.0 |
-| 0.5 s | 512 | 21.8, 23.7 | 39.6, 46.4 | 46.2, 44.8 |
-| 2 s | 64 | 7.8, 4.2 | 19.3, 12.6 | 24.5, 26.2 |
-| 2 s | 128 | 15.9, 8.0 | 36.1, 22.4 | 40.5, 33.8 |
-| 2 s | 512 | 62.8, 33.4 | 105.5, 67.0 | 88.3, 71.1 |
-| 5 s | 64 | 19.5, 6.8 | 47.0, 20.2 | 50.3, 32.9 |
-| 5 s | 128 | 38.9, 14.2 | 78.9, 35.4 | 86.8, 42.1 |
-| 5 s | 512 | 151.9, 57.2 | 243.7, 131.2 | 263.1, 126.6 |
-| 2 s, calls 64, 64, 64, 500 | | 21.3, 11.0 | 68.7, 48.7 | 76.2, 63.0 |
+| 0.5 s | 64 | 2.7 uniform, 2.8 levels | 9.4, 8.6 | 22.9, 17.8 |
+| 0.5 s | 128 | 5.5, 5.4 | 12.2, 12.3 | 28.0, 23.6 |
+| 0.5 s | 512 | 22.1, 22.8 | 41.1, 41.9 | 41.0, 47.0 |
+| 2 s | 64 | 7.9, 4.5 | 20.4, 28.3 | 29.7, 34.5 |
+| 2 s | 128 | 15.4, 8.2 | 32.6, 29.7 | 46.4, 41.9 |
+| 2 s | 512 | 64.8, 36.2 | 100.4, 94.4 | 99.7, 74.9 |
+| 5 s | 64 | 19.5, 7.1 | 45.0, 26.7 | 53.4, 39.8 |
+| 5 s | 128 | 41.9, 13.9 | 97.9, 42.1 | 82.6, 60.0 |
+| 5 s | 512 | 165.4, 57.4 | 273.8, 127.9 | 256.6, 125.3 |
+| 2 s, calls 64, 64, 64, 500 | | 26.5, 14.7 | 107.2, 77.7 | 89.0, 102.2 |
 
-The mean is 0.53 of the uniform convolver's at 2 s and 0.35 at 5 s. The p99
-falls with it at 64 and 128 frames (2 s: 19.3 to 12.6 and 36.1 to 22.4 us), and
-the maximum at 5 s and at 128 frames and above; the 2 s, 64-frame maximum (24.5
-to 26.2) and the 0.5 s rows are inside the bench's noise. The 0.5 s rows are
-the same (uniform) layout in both columns and differ by up to 20% between
-columns: that is the noise floor of this bench. A host block of the head
-partition or more holds every step of a cycle, so the cut does nothing for its
-peak (the 512-frame rows differ by that noise).
+The mean is 0.53 to 0.57 of the uniform convolver's at 2 s and 0.33 to 0.36 at
+5 s. The p99 and maximum fall at 5 s and at 128 frames and above. Two rows
+regress: the 2 s, 64-frame p99 (20 to 28 us), where the 2048-frame level's
+transform is the biggest unit of work, and the ragged mix's maximum (89 to 102
+us). The 0.5 s rows are the same (uniform) layout in both columns, and differ
+by about 20% between runs: that is the noise floor of this bench. The 2 s,
+64-frame p99 regression is near it (22.1 to 23.0 us on
+another machine), and a later pair of runs on this machine gave 19.9 to 20.1 us
+for it and 77 to 65 us for the ragged maximum.
 
-At the decision boundary (64-frame host blocks, best of five interleaved runs,
+At the decision boundary (64-frame host blocks, best of two interleaved runs,
 uniform to levels, microseconds per call):
 
 | head | IR | mean | p99 | max |
 |---|---|---|---|---|
-| 512 | 0.7 s (66 partitions) | 3.3 to 2.9 | 8.6 to 9.0 | 18.5 to 18.8 |
-| 512 | 1 s | 4.3 to 3.2 | 8.6 to 9.4 | 18.7 to 19.8 |
-| 512 | 1.5 s | 5.9 to 3.9 | 11.3 to 12.9 | 24.5 to 25.4 |
-| 128 | 0.15 s | 3.1 to 2.5 | 5.5 to 6.9 | 19.2 to 17.9 |
-| 128 | 0.3 s | 5.1 to 3.0 | 11.5 to 7.8 | 25.3 to 18.9 |
-| 128 | 0.5 s | 8.0 to 3.7 | 21.9 to 8.6 | 30.1 to 21.5 |
+| 512 | 0.7 s (66 partitions) | 3.4 to 2.7 | 9.9 to 18.2 | 18.4 to 25.3 |
+| 512 | 1 s | 4.3 to 3.1 | 10.0 to 20.4 | 20.8 to 27.5 |
+| 512 | 1.5 s | 6.0 to 3.3 | 13.6 to 19.6 | 22.2 to 26.2 |
+| 128 | 0.15 s | 2.9 to 2.3 | 6.0 to 6.5 | 18.4 to 15.3 |
+| 128 | 0.3 s | 4.8 to 2.9 | 11.2 to 8.0 | 20.9 to 15.8 |
+| 128 | 0.5 s | 7.8 to 3.6 | 22.9 to 8.5 | 30.2 to 19.9 |
 
-The mean falls at every point, to 0.86 of the uniform's just past the
-threshold at `B = 512` and 0.74 at 1 s, so the 0.7 factor keeps the uniform
-layout only where the split gains nothing measurable. The p99 and maximum of a
-64-frame block stay at the uniform convolver's, within the bench's noise. A
-128 head has no cut transform (its largest partition is 512 frames).
+The mean falls at every point, to 0.79 of the uniform's just past the
+threshold at `B = 512` and 0.72 at 1 s, so the 0.7 factor keeps the uniform
+layout only where the split gains nothing measurable. At a 512 head the p99
+and maximum of a 64-frame block rise by 7 to 10 us for IRs up to 1.5 s (under
+1% of the 1.33 ms block budget); at a 128 head they fall.
+
+
+**Cutting the tail transforms** (same bench, the commit before against the
+commit that cuts them; the median of seven interleaved runs of the two
+binaries on a shared, loaded four-core container; microseconds per call,
+"whole" to "cut"; the max column is the minimum over each run's passes, then
+the median over the runs):
+
+| IR | host block | mean | p99 | max |
+|---|---|---|---|---|
+| 2 s | 64 | 4.23 to 4.80 | 21.9 to 17.4 | 34.9 to 32.6 |
+| 2 s | 128 | 8.68 to 9.09 | 35.0 to 28.1 | 46.9 to 40.5 |
+| 2 s | 512 | 33.4 to 36.3 | 76.3 to 81.8 | 81.1 to 85.2 |
+| 5 s | 64 | 7.44 to 7.92 | 29.1 to 28.5 | 42.9 to 38.1 |
+| 5 s | 128 | 14.7 to 17.3 | 46.9 to 52.9 | 60.3 to 63.3 |
+| 5 s | 512 | 60.4 to 65.7 | 151.7 to 160.1 | 153.9 to 159.2 |
+| 2 s, calls 64, 64, 64, 500 | | 11.6 to 12.9 | 56.8 to 60.8 | 68.9 to 74.7 |
+| 0.7 s, 64 | | 3.09 to 3.33 | 22.4 to 12.8 | 30.1 to 23.1 |
+| 1 s, 64 | | 3.48 to 3.96 | 25.2 to 14.7 | 31.2 to 24.1 |
+| 1.5 s, 64 | | 4.03 to 4.26 | 26.9 to 16.3 | 33.8 to 30.2 |
+
+The cut helps where the largest tail partition's whole transform is the peak:
+the 64- and 128-frame p99 of a 2 s IR falls by a fifth (a reviewer's separate
+interleaved runs on another machine measured 35 to 50% at 2 s and 64 frames;
+run to run on this one it moves between 2 and 30%), and that of the IRs just
+past the cost model's threshold (0.7 to 1.5 s at a 512 head) by about 40%,
+where a 2048-frame level's two transforms were the peak block. The 5 s p99
+and the ragged mix's are unchanged within the runs' noise (a 5 s 64-frame p99
+of 22 to 33 us in both): a 5 s IR's peak is its older partitions' sum and its
+other levels, which the cut does not touch. A block of the head partition or
+more holds every step of a cycle, so the 512-frame rows are the same within
+noise. The means are 5 to 15% higher, the cost of the cut's extra pass (about
+4% of a transform, above) and of a step's bookkeeping; the cut buys the p99 of
+a 2 s IR and the 0.7 to 1.5 s IRs, not the mean of a long one. A 128 head has
+no cut transform (its largest partition is 512 frames), and its rows differ
+only by noise.
 
 Tests: a direct (time-domain) convolution for layouts of two to four levels at
 IR lengths on and around each level's first and last tap, an impulse at the

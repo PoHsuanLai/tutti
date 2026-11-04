@@ -83,9 +83,10 @@ impl StagedRealFft {
     /// two, and at one the transform is [`RealFft`]'s single step. Allocates.
     ///
     /// # Panics
-    /// If `ways` is not a power of two, or above one with a `size` that is
-    /// not a multiple of `2 * ways`.
+    /// If `size` is zero, `ways` is not a power of two, or `ways` is above
+    /// one with a `size` that is not a multiple of `2 * ways`.
     pub fn new(size: usize, ways: usize) -> Self {
+        assert!(size > 0, "BUG: a transform has at least one sample");
         assert!(ways.is_power_of_two(), "BUG: ways is a power of two");
         let split = (ways > 1).then(|| {
             assert!(
@@ -413,6 +414,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An empty frame is refused at construction, split or not, with a clear
+    /// message and not a later index error.
+    ///
+    /// Mutation (run): removing the `size > 0` assert lets `new(0, 4)` reach
+    /// the sub-FFT plans, which panic with another message → fails.
+    #[test]
+    #[should_panic(expected = "a transform has at least one sample")]
+    fn a_zero_size_is_refused() {
+        let _ = StagedRealFft::new(0, 4);
     }
 
     /// All the transform's state is in its scratch: two transforms stepped

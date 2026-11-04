@@ -237,8 +237,8 @@ pub struct IrSpectra {
     ir_len: usize,
     levels: Vec<Level>,
     /// Power-of-two lengths of the input ring (the newest `part` frames plus
-    /// the first step's offset, of every level) and the output ring (the furthest frame a level
-    /// writes ahead of the read cursor).
+    /// the first step's offset, of every level) and the output ring (the
+    /// furthest frame a level writes ahead of the read cursor).
     input_ring: usize,
     output_ring: usize,
 }
@@ -1199,6 +1199,38 @@ mod tests {
         assert!(crossings >= 5);
     }
 
+    /// Only a forward step suppresses the call's spread work: a call that
+    /// runs a tail level's inverse step still advances its sum of older
+    /// partitions. This shapes load only (any split of the work into calls
+    /// renders the same bits), so the observable is `accumulated`. Calls of
+    /// one frame into a cut 256-frame level: some call that ran an inverse
+    /// step and no forward one leaves `accumulated` higher than before.
+    ///
+    /// Mutation (run): `crossed |= true` in `process_block` (any step) leaves
+    /// no such call → fails.
+    #[test]
+    fn an_inverse_step_does_not_suppress_the_spread() {
+        let mut c = Convolver::with_parts_split(&long_ir(8000), 64, &[64, 256], 16);
+        let tail = 1;
+        let (forward, all) = (
+            c.spectra.levels[tail].forward_steps,
+            c.spectra.levels[tail].steps.len(),
+        );
+        assert!(forward > 1 && all > forward);
+        let mut out = [0.0f32; 1];
+        let mut advanced = 0;
+        for _ in 0..40 * 256 {
+            let (step, acc) = (c.levels[tail].step, c.levels[tail].accumulated);
+            c.process_block(&[0.25], &mut out);
+            let st = &c.levels[tail];
+            let inverse_only = step >= forward && st.step > step;
+            if inverse_only && st.accumulated > acc {
+                advanced += 1;
+            }
+        }
+        assert!(advanced > 0);
+    }
+
     /// `reset` must clear the tail, not just the input buffer.
     ///
     /// After a reset the convolver has to behave like a fresh one. If the FFT
@@ -1612,8 +1644,9 @@ mod tests {
     /// sub-FFTs, so each transform's steps are spread over that many calls.
     ///
     /// Mutations (run): every tail step given the offset of the first (all at
-    /// `slot`) puts several steps in one call → fails; `max_sub` ignored (`ways = 1`) leaves the split
-    /// layout with one step per transform → the `forward_steps` check fails.
+    /// `slot`) puts several steps in one call → fails; `max_sub` ignored
+    /// (`ways = 1`) leaves the split layout with one step per transform → the
+    /// `forward_steps` check fails.
     #[test]
     fn transforms_land_in_different_host_blocks() {
         let steps_run = |st: &LevelState, lv: &Level| {
@@ -1800,9 +1833,10 @@ mod tests {
     ///
     /// Mutations (run), each fails: `LevelState::reset` without
     /// `self.step = 0` (a split transform resumes part-way); without
-    /// `self.base = ...` (the steps run on the old schedule); `Convolver::reset` without `self.output.fill`
-    /// (the old output ring plays); `self.pushed = 0` left out (the rings'
-    /// positions and the schedule disagree).
+    /// `self.base = ...` (the steps run on the old schedule);
+    /// `Convolver::reset` without `self.output.fill` (the old output ring
+    /// plays); `self.pushed = 0` left out (the rings' positions and the
+    /// schedule disagree).
     #[test]
     fn a_reset_convolver_renders_as_a_fresh_one() {
         let x = noise(1500);

@@ -12,8 +12,11 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits, recorded from the graph's render against an independent
-//!   reference renderer it matched bit for bit. They catch the drift an analytic
+//!   file's) bits. All but the pitched sampler voice's were recorded from the
+//!   graph's render against an independent reference renderer it matched bit
+//!   for bit; the pitched digest is self-recorded (the vocoder's scalar FFT has
+//!   no reference renderer), and its cross-check is the fifth-up pitch figure.
+//!   They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
 //!   differ in the last ulp between C runtimes (the reason
@@ -895,6 +898,10 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// voices rendered 64-frame pieces, each re-seated; the one-piece render
 /// keeps it, because a seat lands where the step would have put it.
 ///
+/// The pitched digest is self-recorded: it carries the rounding of the
+/// vocoder's scalar FFT, over the portable fifth-up figure below; it moves only
+/// when that does. The dry digest was cross-checked against a reference render.
+///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more — computing the chunk positions a different
 /// way moves the fifth-up voice by 1e-3 at frame 3076.
@@ -913,7 +920,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
     for (cents, want) in [
         (0.0f32, 0xbd52_29c7_8f1d_ca41u64),
-        (700.0, 0xd11e_26e8_e6d8_b81d),
+        (700.0, 0xb4b1_7145_b7ea_643d),
     ] {
         let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

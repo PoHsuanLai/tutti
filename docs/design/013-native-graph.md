@@ -816,8 +816,10 @@ below). What each item became:
     `tutti-polysynth`'s own `kernel.rs`/`bank.rs` rather than a
     `tutti-nodes::kernel`; moog and the SVF modes are the bank's own ladder
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
-  - `real_fft`/`inverse_fft`: the sampler's vocoder calls
-    `microfft` directly (`stretch/fft.rs`).
+  - `real_fft`/`inverse_fft`: the sampler's vocoder plans a real-input
+    pair at construction (realfft's even-length passes over rustfft's
+    *scalar* planner, so the FFT arithmetic is CPU-independent; renders are bit-identical across CPUs on one OS and libm, not across libms. The convolver, tutti-analysis and the HRTF still use SIMD FFTs) and
+    shares the plans across its channels and clones (`stretch/fft.rs`).
   - `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,
     re-exported by `tutti-core` (whose `net_fade` converted it for
     `Net::crossfade` until `Net` went).
@@ -862,7 +864,7 @@ or example.
 | `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`) |
 | `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until `Net` is deleted |
 | `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel when params go through `Controls` |
-| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` |
+| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` (rustfft, planned at construction on the scalar planner) |
 
 **No tutti equivalent yet.** These must be written or rehomed rather than
 dropped:
@@ -6923,7 +6925,7 @@ converts at its edges in an f64 graph.
 | `ConvolverNode` | tutti-nodes | f32, converted at its edges; an f64 convolution is a type parameter | the f64 FFT costs about 2.5× and doubles the IR spectra (1.5 → 2.9 MiB per channel for a 2 s IR); a reverb's tail does not need it. An f64 convolver is a choice, as an f64 filter state is today |
 | `VbapPannerNode` | tutti-spatial | Both | a gain matrix |
 | `HrtfBinauralNode` | tutti-spatial | f32, converted at its edges | as the convolver |
-| `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (realfft f32) and its output widens |
+| `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (rustfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
 | `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
 | `ClickNode` | tutti-core | Both | a generated click; cheap to make generic |

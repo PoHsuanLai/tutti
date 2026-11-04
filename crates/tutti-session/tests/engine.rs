@@ -6,11 +6,14 @@
 //! Each test stands on analytic figures (onset frames, the tone a dry voice
 //! reads), on what needs no oracle (a voice's render at two block sizes,
 //! which a voice's frames do not depend on), and, for the samples
-//! themselves, on a golden digest of a render checked against an independent
-//! reference implementation when it was recorded. The click and the pitched
-//! voice call `sin` (and the vocoder's FFT), libm quality-of-implementation
-//! that differs in the last ulp between C runtimes, so the digests are
-//! asserted on Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
+//! themselves, on golden digests. The click's was checked against an
+//! independent reference implementation when it was recorded. The dry voice has
+//! no digest: it is pinned to the tone itself. The pitched voice's digest is
+//! self-recorded (the vocoder's FFT was replaced and no independent reference
+//! renders it), so its cross-check is the fifth-up pitch figure. The click
+//! and the pitched voice call `sin` (and the vocoder's FFT), libm
+//! quality-of-implementation that differs in the last ulp between C runtimes,
+//! so the digests are asserted on Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
 
 use std::sync::Arc;
 
@@ -259,7 +262,7 @@ fn a_voice_plays_in_time(block: usize) {
     let frames = 24_000;
     // The dry voice is pinned to the tone itself; only the pitched one,
     // which has no closed form, carries a digest.
-    for (cents, want) in [(0.0f32, None), (700.0, Some(0x5681_b9dc_0fbe_0695u64))] {
+    for (cents, want) in [(0.0f32, None), (700.0, Some(0x960c_d60d_47df_c691u64))] {
         let rendered = render_voice(cents, frames, block);
         let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
@@ -299,6 +302,9 @@ fn a_voice_plays_in_time(block: usize) {
                 );
             }
         }
+        // The pitched digest is self-recorded: the vocoder's scalar FFT
+        // rounding over the portable figures above, which are the oracle. It
+        // moves only when that rounding does.
         if let Some(want) = want {
             assert_golden(&format!("voice, {cents} cents"), digest(&rendered), want);
         }

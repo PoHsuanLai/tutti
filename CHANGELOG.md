@@ -75,6 +75,59 @@ digest in `bevy-tutti`'s `scene_render` was re-recorded.
 Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
 64 frames 1.86 to 1.03 us, 1024 frames 30.0 to 12.1 us.
 
+### Changed — the sampler's phase vocoder inverts with a real-input FFT; stretched output bits change
+
+**`stretch::Unit` runs a real-input FFT pair instead of `microfft`.**
+The forward transform was already real-input; the inverse was a full
+`size`-point complex transform over a rebuilt conjugate half, and is now a
+`size / 2 + 1`-bin complex-to-real transform, so the half-spectrum is never
+mirrored. The plans are built in `Vocoder::new` and shared by a unit's
+channels and clones (scratch is per vocoder), so `tick` and `process` still
+allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`, and
+`rustfft` joins it.
+**The FFT is forced scalar, so its arithmetic is CPU-independent.**
+`realfft`'s planners always use rustfft's auto planner, which picks AVX, SSE or
+NEON at run time and differs bitwise from scalar in about 97% of bins. `realfft`
+cannot be given a planner, so `stretch::fft` carries its even-length real-FFT
+passes over `rustfft::FftPlannerScalar` (adapted from realfft 3.5.0 by Henrik
+Enquist, MIT; the notice is `stretch/LICENSE-realfft`). A test pins the scalar
+choice on Linux/glibc, and another checks the transforms against the textbook
+DFT. The twiddles and the vocoder's phase math still use the C library's
+sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS
+and libm, not across libms. The tutti-nodes convolver, tutti-analysis and the
+tutti-spatial HRTF still use SIMD-dispatching FFTs.
+The inverse zeroes the
+imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
+so non-finite input there cannot panic the audio path; the state after a
+non-finite frame is as before (the phase history stays non-finite until
+`reset`).
+Measured on the new `stretch` bench (stereo, 512-frame blocks, stretch 1.5,
++200 cents), `taskset -c 0`, interleaved main/branch runs, median of 3, against
+main at #175 (us per block):
+
+| window | main | branch | change |
+| --- | --- | --- | --- |
+| 1024 | 191.8 | 174.7 | -9% |
+| 2048 | 206.4 | 181.3 | -12% |
+| 4096 | 217.5 | 191.3 | -12% |
+
+**The output bits change, by rounding only.** A different FFT algorithm rounds
+every bin differently, and the `1 / size` scale is now a separate exact
+multiply (`fft_buffer[i] * norm * w`) in the synthesis loop. Measured on the
+pitched sampler voice of `tutti-session`'s `engine` test (a fifth up, 48000
+samples, 256-frame blocks) against main: peak difference 7.75e-4, rms
+difference 2.40e-5 (-88.8 dB against the signal's rms of 0.66). That is the
+vocoder's existing sensitivity to rounding (the phase accumulator feeds every
+bin's error forward), not a defect in the transform pair; nothing audible moves,
+and the unity-reconstruction, level, pitch and frequency tests hold at their
+existing tolerances. Two golden digests were re-recorded: the pitched voice's in
+`tutti-session/tests/engine.rs` (`0x5681_b9dc_0fbe_0695` to
+`0x960c_d60d_47df_c691`) and in `tutti-export/tests/graph_source.rs`
+(`0xd11e_26e8_e6d8_b81d` to `0xb4b1_7145_b7ea_643d`); both are self-recorded.
+The dry-voice digest and the pitch figure are unchanged. Migration: none for
+callers; a test that compared a stretched render bit for bit against a
+recording from before this change must re-record it.
+
 ### Changed — `GateNode` compares its threshold in the linear domain; boundary decisions can move
 
 **`GateNode` no longer takes a `log10` of the sidechain level every sample.**

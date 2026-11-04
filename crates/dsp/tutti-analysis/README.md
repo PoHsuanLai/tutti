@@ -20,12 +20,11 @@ where the results go:
   types so invertibility is a compile-time question.
 
 FFT is [realfft](https://crates.io/crates/realfft)'s (real-input transforms on
-[rustfft](https://crates.io/crates/rustfft)). That is deliberate and
-differs from the realtime side of the engine, where `tutti-sampler`'s vocoder
-calls [microfft](https://crates.io/crates/microfft)'s fixed sizes directly:
-analysis windows are arbitrary-size and cold-path, so realfft's planner
-and SIMD are the right trade, where microfft's allocation-free fixed sizes are
-what the realtime graph needs and this crate does not. Both are
+[rustfft](https://crates.io/crates/rustfft)). `tutti-sampler`'s vocoder
+has its own real-input pair over rustfft's scalar planner (so its renders are
+bit-identical on every CPU), planned at construction so its audio path
+allocates nothing. This crate plans lazily, per scratch, on the cold path
+(rustfft's auto planner, which picks SIMD at run time). Both are
 `num_complex::Complex<f32>` underneath, so values cross freely.
 
 ## Scope

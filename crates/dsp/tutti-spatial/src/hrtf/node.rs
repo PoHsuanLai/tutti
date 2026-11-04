@@ -227,7 +227,7 @@ impl Node for HrtfBinauralNode {
             // An exception to the nearest-class rule (doc 013, "The cost
             // model and coarsening"). The FFT work lands all at once in the
             // block that completes a 128-frame step: at 64-frame blocks that
-            // block carries twice the mean, about the Heavy boundary for a
+            // block carries twice the mean, past the Heavy boundary for a
             // moving source with 512-tap HRIRs, and the schedule must price
             // the worst block, not the mean. Longer HRIRs cost more.
             .with_cost(tutti_graph::Cost::Heavy)

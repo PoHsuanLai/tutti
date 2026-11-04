@@ -821,9 +821,9 @@ below). What each item became:
     scalar complex transform for an odd size), so the FFT arithmetic is
     CPU-independent: a result is bit-identical across CPUs on one OS and
     libm, not across libms. The sampler's vocoder, the convolver,
-    tutti-analysis and the export resampler (`tutti-export`'s
-    `fft_resample.rs`, rubato's `FftFixedIn` algorithm) all use it; the HRTF
-    still uses a SIMD FFT. The
+    tutti-analysis, the binaural panner and the export resampler
+    (`tutti-export`'s `fft_resample.rs`, rubato's `FftFixedIn` algorithm)
+    all use it. The
     vocoder plans a pair at construction and shares the plans across its
     channels and clones (`stretch/fft.rs`, a scratch owner over `RealFft`).
   - `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,
@@ -3523,7 +3523,7 @@ Decisions:
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
    | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |
    | `PolySynth`, saw, every voice held | 18–21 at 8 lanes, 65 at 8 × 4 unison, 74 at 32 | `Moderate` to 16 lanes, `Heavy` past |
-   | `HrtfBinauralNode` (a 162-vertex sphere; the `hrtf_binaural` bench, on a 4-core container, not against the references) | 3.6 still and 6.5 moving with 128-tap HRIRs, 14 and 23 with 512 taps, in bursts each 128 frames | `Heavy` (the exception below) |
+   | `HrtfBinauralNode` (a 162-vertex sphere; the `hrtf_binaural` bench on scalar `RealFft`, on a different machine from the rest of this table, not against the references) | 11 still and 21 moving with 128-tap HRIRs, 47 and 77 with 512 taps, in bursts each 128 frames | `Heavy` (the exception below) |
    | `SoundFontUnit` | 76 at one note, 140 at eight | `Heavy` |
    | `VoicePool` | 13 per plain voice (82 at eight); a stretched voice alone 288 | `Heavy` |
    | `VoiceNode`, stretched (the phase vocoder) | 288 | `Heavy` |
@@ -3568,10 +3568,10 @@ Decisions:
    Each block pays about 110 ns fixed, against the gain's 125.
 
    **One exception to the nearest-class rule: HRTF.** Its average is
-   under the 45 boundary, but the renderer does all of a 128-frame
-   step's FFT work in the one block that completes it. At 64-frame blocks
-   that block carries twice the mean, about 46 ns per frame and channel
-   for a moving source with 512-tap HRIRs, and the schedule decides per
+   under the 45 boundary with 128-tap HRIRs, but the renderer does all of
+   a 128-frame step's FFT work in the one block that completes it. At
+   64-frame blocks that block carries twice the mean (about 150 ns per
+   frame and channel for a moving source with 512-tap HRIRs), and the schedule decides per
    plan, for every block, so it must price the worst block rather than
    the mean. Longer HRIRs, or smaller blocks, raise the burst again.
 

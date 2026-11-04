@@ -4659,7 +4659,6 @@ dependencies = [
  "approx",
  "assert_no_alloc",
  "criterion",
- "rustfft",
  "thiserror 2.0.21",
  "tutti-core",
  "tutti-graph",

@@ -12,10 +12,10 @@ workspace = true
 [features]
 default = []
 # HRTF (head-related transfer function) binaural rendering via FFT
-# convolution against a measured HRIR sphere (`HrtfBinauralNode`). Pulls
-# `rustfft` for the convolution. The HRIR dataset is supplied by the caller
-# as bytes (see `HrtfBinauralNode::new`).
-hrtf = ["dep:rustfft"]
+# convolution against a measured HRIR sphere (`HrtfBinauralNode`), on
+# `tutti_types::RealFft`. The HRIR dataset is supplied by the caller as bytes
+# (see `HrtfBinauralNode::new`).
+hrtf = []
 
 [dependencies]
 # Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`). default-features
@@ -37,9 +37,6 @@ tutti-graph = { path = "../../core/tutti-graph" }
 
 # Vector Base Amplitude Panning: the speaker-field placement math.
 vbap = "0.1"
-
-# The FFT for HRTF binaural rendering (optional, gated by the `hrtf` feature).
-rustfft = { version = "6", optional = true }
 
 # Error handling
 thiserror = { version = "2", default-features = false }

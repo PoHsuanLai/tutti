@@ -6,9 +6,11 @@
 //! Input accumulates into steps of [`STEP`] frames. When a step is full it is
 //! rendered in one go and its output drains over the next step, so output
 //! lags input by exactly [`LATENCY`] = `STEP` frames whatever the block size.
-//! A step costs one forward FFT of the input history and one inverse FFT of
-//! the product with the blended spectrum (both ears at once: see
-//! [`HrtfSet`]), plus a second inverse FFT while the direction moves.
+//! A step costs one real forward FFT of the input history and, per ear, one
+//! real inverse FFT of the product with the blended spectrum (see
+//! [`HrtfSet`]), plus another per ear while the direction moves. The
+//! transforms are [`tutti_types::RealFft`]'s, so the arithmetic does not
+//! depend on the CPU.
 //!
 //! ## Direction changes
 //!
@@ -24,8 +26,8 @@
 
 use std::sync::Arc;
 
-use rustfft::num_complex::Complex32;
 use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, Mix, Radians, SampleRate, Samples};
+use tutti_types::Complex32;
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::AngleSmoother;
@@ -163,9 +165,14 @@ pub(crate) struct HrtfBinaural {
     wet_left: Vec<f32>,
     wet_right: Vec<f32>,
     dry: Vec<f32>,
+    /// The input history's spectrum, `fft_len / 2 + 1` bins.
     spectrum: Vec<Complex32>,
-    /// The previous filter's product while a direction change crossfades.
-    spectrum_prev: Vec<Complex32>,
+    /// The product with one ear's filter, inverse-transformed in place.
+    product: Vec<Complex32>,
+    /// One ear's `fft_len` output frame, and the previous filter's while a
+    /// direction change crossfades.
+    frame: Vec<f32>,
+    frame_prev: Vec<f32>,
     scratch: Vec<Complex32>,
     /// The blend the last step ended on.
     current: Weights,
@@ -193,6 +200,7 @@ impl HrtfBinaural {
     /// wherever `aim` is.
     fn over(sphere: Arc<HrirSphere>, set: Arc<HrtfSet>, aim: AngleSmoother) -> Self {
         let n = set.fft_len;
+        let bins = set.fft.bins();
         let zero = Complex32::new(0.0, 0.0);
         let mut face_hint = 0;
         let (az, el) = aim.current();
@@ -203,9 +211,11 @@ impl HrtfBinaural {
             wet_left: vec![0.0; STEP],
             wet_right: vec![0.0; STEP],
             dry: vec![0.0; STEP],
-            spectrum: vec![zero; n],
-            spectrum_prev: vec![zero; n],
-            scratch: vec![zero; set.scratch_len],
+            spectrum: vec![zero; bins],
+            product: vec![zero; bins],
+            frame: vec![0.0; n],
+            frame_prev: vec![0.0; n],
+            scratch: set.fft.make_scratch(),
             current,
             face_hint,
             aim,
@@ -313,62 +323,75 @@ impl HrtfBinaural {
         let start = set.fft_len - STEP;
         self.dry.copy_from_slice(&self.history[start..]);
 
-        for (s, &x) in self.spectrum.iter_mut().zip(&self.history) {
-            *s = Complex32::new(x, 0.0);
-        }
-        set.forward
-            .process_with_scratch(&mut self.spectrum, &mut self.scratch);
+        set.fft
+            .forward(&self.history, &mut self.spectrum, &mut self.scratch);
 
-        let [a, b, c] = next.verts.map(|v| set.spectrum(v));
-        let [wa, wb, wc] = next.w;
-        if next == self.current {
-            for (k, s) in self.spectrum.iter_mut().enumerate() {
-                *s *= a[k] * wa + b[k] * wb + c[k] * wc;
+        let crossfade = next != self.current;
+        let step = 1.0 / STEP as f32;
+        let wet = [&mut self.wet_left, &mut self.wet_right];
+        for (ear, wet) in wet.into_iter().enumerate() {
+            blend_into(
+                set,
+                &next,
+                ear,
+                &self.spectrum,
+                &mut self.product,
+                &mut self.frame,
+                &mut self.scratch,
+            );
+            let new = &self.frame[start..];
+            if crossfade {
+                blend_into(
+                    set,
+                    &self.current,
+                    ear,
+                    &self.spectrum,
+                    &mut self.product,
+                    &mut self.frame_prev,
+                    &mut self.scratch,
+                );
+                let old = &self.frame_prev[start..];
+                for (i, ((w, &y), &z)) in wet.iter_mut().zip(new).zip(old).enumerate() {
+                    // Reaches the new filter on the step's last frame, so the
+                    // next step continues from it.
+                    let t = (i + 1) as f32 * step;
+                    *w = z + (y - z) * t;
+                }
+            } else {
+                wet.copy_from_slice(new);
             }
-            set.inverse
-                .process_with_scratch(&mut self.spectrum, &mut self.scratch);
-            let out = &self.spectrum[start..];
-            for ((l, r), y) in self.wet_left.iter_mut().zip(&mut self.wet_right).zip(out) {
-                *l = y.re;
-                *r = y.im;
-            }
-        } else {
-            let [pa, pb, pc] = self.current.verts.map(|v| set.spectrum(v));
-            let [qa, qb, qc] = self.current.w;
-            for (k, (s, p)) in self
-                .spectrum
-                .iter_mut()
-                .zip(&mut self.spectrum_prev)
-                .enumerate()
-            {
-                let x = *s;
-                *p = x * (pa[k] * qa + pb[k] * qb + pc[k] * qc);
-                *s = x * (a[k] * wa + b[k] * wb + c[k] * wc);
-            }
-            set.inverse
-                .process_with_scratch(&mut self.spectrum, &mut self.scratch);
-            set.inverse
-                .process_with_scratch(&mut self.spectrum_prev, &mut self.scratch);
-            let new = &self.spectrum[start..];
-            let old = &self.spectrum_prev[start..];
-            let step = 1.0 / STEP as f32;
-            for (i, ((l, r), (y, z))) in self
-                .wet_left
-                .iter_mut()
-                .zip(&mut self.wet_right)
-                .zip(new.iter().zip(old))
-                .enumerate()
-            {
-                // Reaches the new filter on the step's last frame, so the
-                // next step continues from it.
-                let t = (i + 1) as f32 * step;
-                *l = z.re + (y.re - z.re) * t;
-                *r = z.im + (y.im - z.im) * t;
-            }
-            self.current = next;
         }
+        self.current = next;
         self.history.copy_within(STEP.., 0);
     }
+}
+
+/// One ear's `fft_len` output frame for `input`'s spectrum through the
+/// filter `weights` blend: the weighted sum of the three vertices' spectra,
+/// multiplied in and inverse-transformed. `product` is clobbered.
+fn blend_into(
+    set: &HrtfSet,
+    weights: &Weights,
+    ear: usize,
+    input: &[Complex32],
+    product: &mut [Complex32],
+    frame: &mut [f32],
+    scratch: &mut [Complex32],
+) {
+    let [a, b, c] = weights.verts.map(|v| {
+        let (left, right) = set.spectrum(v);
+        if ear == 0 {
+            left
+        } else {
+            right
+        }
+    });
+    let [wa, wb, wc] = weights.w;
+    let filters = a.iter().zip(b).zip(c);
+    for ((p, &x), ((&a, &b), &c)) in product.iter_mut().zip(input).zip(filters) {
+        *p = x * (a * wa + b * wb + c * wc);
+    }
+    set.fft.inverse(product, frame, scratch);
 }
 
 impl Clone for HrtfBinaural {
@@ -475,6 +498,54 @@ mod tests {
             (left - e_inv).abs() < 1e-4,
             "after 50 ms at 1.024 MHz {left} of the move is left, expected e^-1 = {e_inv}"
         );
+    }
+
+    /// A direction that is NaN, infinite or zero finds no face and takes a
+    /// real vertex: the weights name vertices the sphere has and sum to one.
+    /// The renderer is then fed NaN and infinite targets (the node holds the
+    /// last finite one, so only the panner sees them; a zero direction
+    /// cannot come from angles, so only the weights are checked with it) and
+    /// must keep producing finite, non-silent audio: the tetrahedron's
+    /// deltas pass the constant input through at every vertex.
+    ///
+    /// Mutations (run), each of which fails the render half on its own
+    /// (the weights loop disabled): in `HrtfSet::weights`, starting the
+    /// fallback at `nearest = self.directions.len() as u32` and never
+    /// updating it → the render hits `spectrum`'s `debug_assert`; and
+    /// returning zero weights `w: [0.0; 3]` from the fallback → the render
+    /// is silent and the audibility assertion fails. With the weights loop
+    /// on, the first mutation also fails the vertex assertion.
+    #[test]
+    fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
+        let rate = SampleRate(48_000.0);
+        let mut p = HrtfBinaural::new(&tetrahedron(48_000), rate).expect("parses");
+        let mut hint = 0;
+        for dir in [
+            [f32::NAN; 3],
+            [f32::INFINITY, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [f32::NAN, 1.0, 0.0],
+        ] {
+            let w = p.set.weights(dir, &mut hint);
+            assert!(w.verts.iter().all(|&v| (v as usize) < 4), "{dir:?}: {w:?}");
+            assert!(
+                w.w.iter().all(|x| x.is_finite()) && (w.w.iter().sum::<f32>() - 1.0).abs() < 1e-6
+            );
+        }
+        let input = [0.5f32; 64];
+        let (mut left, mut right) = ([0.0f32; 64], [0.0f32; 64]);
+        for target in [
+            (Azimuth(f32::NAN), Elevation(f32::NAN)),
+            (Azimuth(f32::INFINITY), Elevation(0.0)),
+        ] {
+            let mut peak = 0.0f32;
+            for _ in 0..20 {
+                p.process(target, Mix::WET, (&input, &input), (&mut left, &mut right));
+                assert!(left.iter().chain(&right).all(|s| s.is_finite()));
+                peak = left.iter().chain(&right).fold(peak, |m, s| m.max(s.abs()));
+            }
+            assert!(peak > 0.1, "{target:?} rendered silence (peak {peak})");
+        }
     }
 
     /// Remaining fraction of a step from 0 to 90 degrees of height after

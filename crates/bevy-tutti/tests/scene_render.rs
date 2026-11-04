@@ -30,7 +30,10 @@
 //!   `Seconds::one_pole_coeff` and again for the limiter's gain moving from
 //!   dB to the linear peak (`threshold / peak` over the threshold instead of
 //!   `10^(-(peak_dB - threshold) / 20)`: a few last-bits differences in the
-//!   gain; the channel checks above are independent of it). The filter's
+//!   gain; the channel checks above are independent of it), and again for
+//!   the limiter's threshold driving its input: at -12 / -1 dB the saw's
+//!   samples over the threshold now reach the ceiling at -1 dB, where the
+//!   old curve held them at the threshold. The filter's
 //!   coefficients, the waveshaper and the limiter's constants call the
 //!   platform's `tan`, `tanh` and `powf`, whose last ulp differs between C
 //!   runtimes, so it is asserted where it was recorded.
@@ -232,7 +235,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     if GOLDEN_HERE {
         assert_eq!(
             digest(&b),
-            0x9171_6fcb_83b8_0121,
+            0x44de_35eb_5401_831b,
             "the recorded samples: digest {:#018x}",
             digest(&b)
         );

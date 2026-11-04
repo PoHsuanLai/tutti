@@ -526,14 +526,14 @@ impl OwnMods {
     /// target's automation.
     fn close_takes(&mut self) {
         for automation in self.automation.values_mut() {
-            if automation.take.as_mut().is_some_and(Take::is_done) {
-                if let Some(take) = automation.take.take() {
-                    automation.curve = take.finish();
-                    // A take becomes done through `Mods` (closed, or
-                    // released), which already cleared it; cleared here
-                    // too so the build never depends on that.
-                    self.built = None;
-                }
+            if automation.take.as_mut().is_some_and(Take::is_done)
+                && let Some(take) = automation.take.take()
+            {
+                automation.curve = take.finish();
+                // A take becomes done through `Mods` (closed, or
+                // released), which already cleared it; cleared here
+                // too so the build never depends on that.
+                self.built = None;
             }
         }
     }

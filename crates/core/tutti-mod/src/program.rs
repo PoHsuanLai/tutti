@@ -596,10 +596,11 @@ impl ControlProgram {
                 if let Some(b) = c.beat {
                     beat(b.get());
                 }
-                if let Some(p) = c.play {
-                    if p.get().is_finite() && out.play.is_none_or(|o| p.get() < o.get()) {
-                        out.play = Some(p);
-                    }
+                if let Some(p) = c.play
+                    && p.get().is_finite()
+                    && out.play.is_none_or(|o| p.get() < o.get())
+                {
+                    out.play = Some(p);
                 }
             }
         }

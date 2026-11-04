@@ -216,10 +216,10 @@ pub fn note_declaration_changes(mut changes: DeclChanges) {
     changes.ranges.clear();
     changes.automation.clear();
     changes.takes.clear();
-    if removed || !changes.changed.is_empty() {
-        if let Some(pending) = changes.pending.as_deref_mut() {
-            pending.0 = true;
-        }
+    if (removed || !changes.changed.is_empty())
+        && let Some(pending) = changes.pending.as_deref_mut()
+    {
+        pending.0 = true;
     }
 }
 

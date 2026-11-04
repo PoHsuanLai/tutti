@@ -2,6 +2,7 @@
 name = "tutti-au-host"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Audio Unit (AUv2) plugin hosting for macOS via AudioToolbox framework"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

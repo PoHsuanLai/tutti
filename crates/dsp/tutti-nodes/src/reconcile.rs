@@ -265,7 +265,7 @@ struct Lane {
 /// A signal source's node as built.
 struct SignalNode {
     key: NodeKey,
-    /// As [`Lane::gen`].
+    /// As [`Lane::generation`].
     generation: u32,
     decl: SourceNode,
     feed: Option<Feed>,
@@ -1270,10 +1270,10 @@ fn owe_resyncs(
     let before = was.map(read).unwrap_or_default();
     for id in read(now).difference(&before) {
         let found = compiled.nodes.iter().find(|(_, n)| n.id == *id);
-        if let Some((&key, node)) = found {
-            if matches!(node.kind, SignalKind::NoteEnvelope { .. }) {
-                owed.insert(key);
-            }
+        if let Some((&key, node)) = found
+            && matches!(node.kind, SignalKind::NoteEnvelope { .. })
+        {
+            owed.insert(key);
         }
     }
 }
@@ -1355,7 +1355,7 @@ fn unused_key(editor: &Editor) -> NodeKey {
     }
 }
 
-/// Whether the node the reconciler built at `key` (generation `gen` at its
+/// Whether the node the reconciler built at `key` (generation `generation` at its
 /// insert) is gone from it: removed, or replaced by a host's insert.
 fn taken(editor: &Editor, key: NodeKey, generation: u32) -> bool {
     let spec = editor.spec();

@@ -947,10 +947,10 @@ impl Editor {
         // later commit with nothing else to send is the plain comparison,
         // not a validate. (A committed spec without the node differs in its
         // topology anyway, and gets a full commit.)
-        if let Some((committed, _)) = &mut self.committed {
-            if committed.topology.nodes.contains_key(&at.node) {
-                committed.set_param_range(at, range);
-            }
+        if let Some((committed, _)) = &mut self.committed
+            && committed.topology.nodes.contains_key(&at.node)
+        {
+            committed.set_param_range(at, range);
         }
         Ok(())
     }

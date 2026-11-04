@@ -2,6 +2,7 @@
 name = "tutti-polysynth"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

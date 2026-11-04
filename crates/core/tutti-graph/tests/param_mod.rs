@@ -2267,7 +2267,7 @@ fn gen_shaped_ramp() -> impl Strategy<Value = (u64, ParamRamp)> {
     )
 }
 
-fn generation() -> impl Strategy<Value = Gen> {
+fn generator() -> impl Strategy<Value = Gen> {
     (1usize..=3, 0usize..=2, 1usize..=3, 1usize..=6).prop_flat_map(|(ns, nr, np, steps)| {
         let signals = prop::collection::vec(1u64..10_000, ns);
         let ramps = prop::collection::vec(
@@ -2541,7 +2541,7 @@ proptest! {
     /// arrival does not diverge (the reference reads the compiler's
     /// arrival); `a_param_source_counts_toward_arrival_in_both_solves` pins it.
     #[test]
-    fn modulated_graphs_match_the_reference(g in generation()) {
+    fn modulated_graphs_match_the_reference(g in generator()) {
         run_differential(&g);
     }
 }

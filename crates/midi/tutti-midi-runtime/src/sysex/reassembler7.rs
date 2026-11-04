@@ -265,15 +265,15 @@ mod tests {
         let mut got_b = None;
         let max = pa.len().max(pb.len());
         for i in 0..max {
-            if let Some(p) = pa.get(i) {
-                if let Some(run) = r.push(p) {
-                    got_a = Some(run);
-                }
+            if let Some(p) = pa.get(i)
+                && let Some(run) = r.push(p)
+            {
+                got_a = Some(run);
             }
-            if let Some(p) = pb.get(i) {
-                if let Some(run) = r.push(p) {
-                    got_b = Some(run);
-                }
+            if let Some(p) = pb.get(i)
+                && let Some(run) = r.push(p)
+            {
+                got_b = Some(run);
             }
         }
         assert_eq!(sysex7_to_ci(&got_a.expect("a completes")), Some(a));

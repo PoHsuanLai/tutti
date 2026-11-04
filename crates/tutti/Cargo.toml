@@ -3,6 +3,7 @@
 name = "tutti"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "The tutti audio engine behind one dependency. Bevy-free."
 license = "MIT OR Apache-2.0"
 

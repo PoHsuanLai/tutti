@@ -598,7 +598,10 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
 ///
 /// # Safety
 ///
-/// `event.type_` must accurately label the variant stored in `__field0`.
+/// `event.type_` must accurately label the variant stored in `__field0`. For a chord, scale or
+/// note-expression-text event, its text pointer must be null or valid for reads of
+/// `min(text length, MAX_EVENT_TEXT_LEN)` `u16`s (the `intern` closure builds a slice of that
+/// length from it).
 #[allow(
     clippy::unnecessary_cast,
     reason = "the SDK event ordinals are u32 on unix and c_int on Windows; each \
@@ -624,6 +627,7 @@ pub(crate) unsafe fn from_c_event(
         if ptr.is_null() || n == 0 {
             return TextRef::default();
         }
+        // SAFETY: `ptr` is non-null and valid for `n` `u16`s, by this fn's `# Safety`.
         arena.intern(unsafe { std::slice::from_raw_parts(ptr, n) })
     };
 

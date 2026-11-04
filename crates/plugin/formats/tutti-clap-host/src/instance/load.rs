@@ -488,8 +488,7 @@ mod enumeration_hole_tests {
             return false;
         }
         let flagged = if is_input { &F64_IN } else { &F64_OUT }.load(Ordering::SeqCst);
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
         unsafe { (*info).channel_count = index + 1 };
         unsafe {
             (*info).flags = if flagged & (1 << index) != 0 {

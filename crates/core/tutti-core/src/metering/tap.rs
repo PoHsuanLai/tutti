@@ -231,13 +231,13 @@ impl AudioTap {
             return;
         }
         // try_lock: skip this callback if the producer is being swapped.
-        if let Some(ref mut guard) = self.producer.try_lock() {
-            if let Some(ref mut prod) = **guard {
-                // One copy and one write-index update for the block; what
-                // does not fit is dropped, as a full ring always has been.
-                let pairs = output.as_chunks::<2>().0;
-                let _ = prod.push_slice(&pairs[..frames.min(pairs.len())]);
-            }
+        if let Some(ref mut guard) = self.producer.try_lock()
+            && let Some(ref mut prod) = **guard
+        {
+            // One copy and one write-index update for the block; what
+            // does not fit is dropped, as a full ring always has been.
+            let pairs = output.as_chunks::<2>().0;
+            let _ = prod.push_slice(&pairs[..frames.min(pairs.len())]);
         }
     }
 }

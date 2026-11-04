@@ -441,7 +441,7 @@ impl tutti_graph::Node for Probe8 {
     }
 }
 
-/// Lane `k`'s program in generation `gen` (a republish moves its depths):
+/// Lane `k`'s program in generation `generation` (a republish moves its depths):
 /// five kinds in turn, beats, seconds, drawn, random, and automation under
 /// a layer.
 fn lane_program(k: usize, generation: u32) -> tutti_mod::ControlProgram {

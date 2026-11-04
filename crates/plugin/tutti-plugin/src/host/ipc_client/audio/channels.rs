@@ -195,10 +195,10 @@ impl Channels {
     /// to its pools instead of freeing it.
     pub(super) fn try_push_command(&self, cmd: Command) -> Result<(), Command> {
         self.commands.push(cmd)?;
-        if let Some(guard) = self.worker.try_lock() {
-            if let Some(thread) = guard.as_ref() {
-                thread.unpark();
-            }
+        if let Some(guard) = self.worker.try_lock()
+            && let Some(thread) = guard.as_ref()
+        {
+            thread.unpark();
         }
         Ok(())
     }

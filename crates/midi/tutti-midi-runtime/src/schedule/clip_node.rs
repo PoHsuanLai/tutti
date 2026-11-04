@@ -335,10 +335,10 @@ impl Node for MidiClipNode {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let clip = self.clip.lend();
         let out = io.event_out(0);
-        if self.play.held.owed {
-            if let Some(o) = cx.env.offset(0) {
-                self.play.held.release(out, o);
-            }
+        if self.play.held.owed
+            && let Some(o) = cx.env.offset(0)
+        {
+            self.play.held.release(out, o);
         }
         if clip.generation != self.generation {
             self.generation = clip.generation;

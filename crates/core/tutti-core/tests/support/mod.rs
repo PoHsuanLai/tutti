@@ -148,16 +148,16 @@ pub fn model_beats(rate: f64, bpm: f64, changes: &[(u64, Change)], frames: u64) 
     let mut next = 0;
     let mut out = Vec::with_capacity(frames as usize + 1);
     for f in 0..=frames {
-        if f > 0 {
-            if let Some((start, end)) = looping {
-                let (was, now) = (seg.at(f - 1), seg.at(f));
-                if was < end && now >= end {
-                    seg = Segment {
-                        frame: f,
-                        beat: start + (now - start).rem_euclid(end - start),
-                        ..seg
-                    };
-                }
+        if f > 0
+            && let Some((start, end)) = looping
+        {
+            let (was, now) = (seg.at(f - 1), seg.at(f));
+            if was < end && now >= end {
+                seg = Segment {
+                    frame: f,
+                    beat: start + (now - start).rem_euclid(end - start),
+                    ..seg
+                };
             }
         }
         while next < changes.len() && changes[next].0 == f {

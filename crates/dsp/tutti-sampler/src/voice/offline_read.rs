@@ -160,14 +160,13 @@ impl OfflineRead {
             Direction::Reverse => true,
             Direction::Forward => self.file.loop_ == LoopSetting::Off,
         };
-        if played_out {
-            if let Some(len) = self.len {
-                if pos.get() >= len as f64 {
-                    self.close();
-                    out.fill(0.0);
-                    return;
-                }
-            }
+        if played_out
+            && let Some(len) = self.len
+            && pos.get() >= len as f64
+        {
+            self.close();
+            out.fill(0.0);
+            return;
         }
         let setting = self.file.loop_;
         let Some(open) = self.open() else {
@@ -458,12 +457,12 @@ impl Pages {
                 path: self.path.clone(),
                 what,
             };
-            if self.decoder.cursor() != start as u64 {
-                if let Err(e) = self.decoder.seek(start as u64) {
-                    self.fault
-                        .latch(fail(format!("seek to frame {start}: {e}")));
-                    return;
-                }
+            if self.decoder.cursor() != start as u64
+                && let Err(e) = self.decoder.seek(start as u64)
+            {
+                self.fault
+                    .latch(fail(format!("seek to frame {start}: {e}")));
+                return;
             }
             if let Err(e) = self.decoder.fill_sequential_interleaved(&mut page.data) {
                 self.fault

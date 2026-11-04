@@ -170,10 +170,11 @@ impl Node for PinnedUnit {
 
 impl Drop for PinnedUnit {
     fn drop(&mut self) {
-        if std::thread::panicking() && std::thread::current().id() != self.home {
-            if let Some(node) = self.node.take() {
-                std::mem::forget(node);
-            }
+        if std::thread::panicking()
+            && std::thread::current().id() != self.home
+            && let Some(node) = self.node.take()
+        {
+            std::mem::forget(node);
         }
     }
 }

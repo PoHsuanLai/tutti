@@ -202,12 +202,12 @@ impl LruCache {
             .min_by_key(|entry| entry.value().last_access.load(Ordering::Relaxed))
             .map(|entry| entry.key().clone());
 
-        if let Some(path) = oldest_path {
-            if let Some((_, entry)) = self.cache.remove(&path) {
-                self.current_bytes
-                    .fetch_sub(entry.size_bytes, Ordering::Relaxed);
-                return true;
-            }
+        if let Some(path) = oldest_path
+            && let Some((_, entry)) = self.cache.remove(&path)
+        {
+            self.current_bytes
+                .fetch_sub(entry.size_bytes, Ordering::Relaxed);
+            return true;
         }
         false
     }

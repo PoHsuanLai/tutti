@@ -590,6 +590,32 @@ fn a_sample_rate_change_deactivates_the_plugin_around_setup_processing() {
     );
 }
 
+/// Sets `TUTTI_PROBE_MISBEHAVIOUR` and restores the previous value on drop.
+/// Hold `plugin_guard()` for its whole life.
+struct ProbeMisbehaviour {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ProbeMisbehaviour {
+    fn set(code: &str) -> Self {
+        let previous = std::env::var_os("TUTTI_PROBE_MISBEHAVIOUR");
+        // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
+        // writes the environment meanwhile.
+        unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", code) };
+        Self { previous }
+    }
+}
+
+impl Drop for ProbeMisbehaviour {
+    fn drop(&mut self) {
+        // SAFETY: as in `set`; `plugin_guard` outlives this guard.
+        match self.previous.take() {
+            Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
+            None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
+        }
+    }
+}
+
 /// A half-refused connection is unwound, not left dangling.
 ///
 /// Wiring a separate controller takes two `connect` calls, and a plugin may
@@ -612,37 +638,18 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
     // `TUTTI_PROBE_MISBEHAVIOUR` is process-global and the probe reads it at
     // `connect` time. `plugin_guard` serialises this file, and the probe is
     // loaded and dropped entirely inside this scope, so the window is closed
-    // before any other test can load it. Restored unconditionally below.
-    let previous = std::env::var("TUTTI_PROBE_MISBEHAVIOUR").ok();
-    // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
-    // writes the environment meanwhile.
-    unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "10") };
+    // before any other test can load it. `_misbehaviour` restores the variable
+    // on every exit, a panic included; declared after `_guard`, it drops first.
+    let _misbehaviour = ProbeMisbehaviour::set("10");
 
     let balance = {
         let Some(mut inst) = load_probe(512) else {
-            match previous {
-                // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
-                // writes the environment meanwhile.
-                Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
-                // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
-                // writes the environment meanwhile.
-                None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
-            }
             return;
         };
         set_mode(&mut inst, mode(7));
         let rendered = render(&mut inst, 512, &[], None, |_, _, _| 0.0);
         rendered.out[0][0][0]
     };
-
-    match previous {
-        // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
-        // writes the environment meanwhile.
-        Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
-        // SAFETY: `plugin_guard` serialises this file's tests, so no other thread reads or
-        // writes the environment meanwhile.
-        None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
-    }
 
     // `kConnectBalanceBase + balance`. 0 means the component was never left
     // joined — either the connect never happened or it was unwound. 1 means it

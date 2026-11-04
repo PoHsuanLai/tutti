@@ -718,10 +718,10 @@ mod tests {
         let (mut at, mut k) = (0, 0);
         while at < len {
             let n = pieces[k % pieces.len()].min(len - at);
-            if let Some((frame, hz)) = step {
-                if at == frame {
-                    node.set_rate(hz);
-                }
+            if let Some((frame, hz)) = step
+                && at == frame
+            {
+                node.set_rate(hz);
             }
             let xs = &x[at..at + n];
             let o = tutti_graph::contract::drive(&mut node, SampleRate(48_000.0), &[xs], &[]);

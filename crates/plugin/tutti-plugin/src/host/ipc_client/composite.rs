@@ -126,10 +126,10 @@ impl PluginBridge {
         // main-thread `open_editor`/`editor_idle` holding the same GUI lock. The
         // authoritative delivery is the audio command below; a dropped GUI mirror
         // self-heals on the next edit / editor idle.
-        if let Ok(mut guard) = self.gui.try_lock() {
-            if let Some(gui) = guard.as_mut() {
-                gui.set_parameter(param_id, value);
-            }
+        if let Ok(mut guard) = self.gui.try_lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            gui.set_parameter(param_id, value);
         }
         // The wire carries `f32`; the domain is enforced up to this point.
         self.audio.set_parameter_rt(param_id, value.get() as f32)
@@ -148,10 +148,10 @@ impl PluginBridge {
         // The GUI mirror is cosmetic, so `try_lock` (never block): the `_rt`
         // contract stays non-blocking, and a dropped glow self-heals on the next
         // mode change. See `set_parameter_rt` for the RT rationale.
-        if let Ok(mut guard) = self.gui.try_lock() {
-            if let Some(gui) = guard.as_mut() {
-                gui.set_automation_state(mode);
-            }
+        if let Ok(mut guard) = self.gui.try_lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            gui.set_automation_state(mode);
         }
         self.audio.set_automation_state_rt(mode)
     }
@@ -365,13 +365,13 @@ impl PluginBridge {
 
     pub fn editor_idle(&self) {
         tutti_plugin_types::assert_main_thread();
-        if let Ok(mut guard) = self.gui.lock() {
-            if let Some(gui) = guard.as_mut() {
-                gui.editor_idle();
-                // Forward GUI-originated parameter changes to the audio bridge.
-                for (param_id, value) in gui.poll_gui_param_changes() {
-                    self.audio.set_parameter_rt(param_id, value);
-                }
+        if let Ok(mut guard) = self.gui.lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            gui.editor_idle();
+            // Forward GUI-originated parameter changes to the audio bridge.
+            for (param_id, value) in gui.poll_gui_param_changes() {
+                self.audio.set_parameter_rt(param_id, value);
             }
         }
     }
@@ -390,10 +390,10 @@ impl PluginBridge {
     pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
         let audio = self.audio.load_state(data);
         // Also load into GUI instance so its display stays in sync.
-        if let Ok(mut guard) = self.gui.lock() {
-            if let Some(gui) = guard.as_mut() {
-                let _ = gui.set_state(data);
-            }
+        if let Ok(mut guard) = self.gui.lock()
+            && let Some(gui) = guard.as_mut()
+        {
+            let _ = gui.set_state(data);
         }
         audio
     }
@@ -678,10 +678,10 @@ impl Drop for PluginBridge {
         // which can be off-main), so the main-thread assert in the public
         // close_editor would false-fire.
         self.close_editor_inner();
-        if let Ok(mut guard) = self.gui.lock() {
-            if let Some(gui) = guard.take() {
-                std::mem::forget(gui);
-            }
+        if let Ok(mut guard) = self.gui.lock()
+            && let Some(gui) = guard.take()
+        {
+            std::mem::forget(gui);
         }
     }
 }

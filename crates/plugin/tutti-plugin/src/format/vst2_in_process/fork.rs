@@ -187,13 +187,13 @@ impl Vst2Fork {
         };
         {
             let mut instance = fork.inner.lock();
-            if let Some(program) = program {
-                if !instance.set_program(program) {
-                    return Err(PluginForkError::LoadState(StateError::Rejected(format!(
-                        "the live instance's program {program} is out of the fresh \
+            if let Some(program) = program
+                && !instance.set_program(program)
+            {
+                return Err(PluginForkError::LoadState(StateError::Rejected(format!(
+                    "the live instance's program {program} is out of the fresh \
                          instance's range"
-                    ))));
-                }
+                ))));
             }
             instance
                 .set_state(&state)

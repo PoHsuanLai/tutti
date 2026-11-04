@@ -927,10 +927,10 @@ extern "C" fn probe_dispatch(
         switches::record_lifecycle(opcode, value);
     }
 
-    if opcode == EFF_GET_TAIL_SIZE {
-        if let Some(tail) = unsafe { RAW_TAIL_SIZE } {
-            return tail;
-        }
+    if opcode == EFF_GET_TAIL_SIZE
+        && let Some(tail) = unsafe { RAW_TAIL_SIZE }
+    {
+        return tail;
     }
 
     // Parameter properties and the MIDI-metadata family have no `Plugin` trait

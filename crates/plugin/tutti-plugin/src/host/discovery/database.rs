@@ -110,10 +110,10 @@ impl PluginCatalog for JsonCatalog {
         let count = records.len();
         drop(records);
 
-        if let Some(parent) = self.db_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = self.db_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
 
         // Temp file must be a *sibling* so the rename stays within one

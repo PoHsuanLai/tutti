@@ -140,13 +140,13 @@ pub(super) static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_c
 unsafe extern "C" fn host_thread_check_is_main(host: *const ClapHostVtable) -> bool {
     // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
     // valid per the CLAP ABI.
-    unsafe { get_host_state(host).is_some_and(|state| state.is_main_thread()) }
+    (unsafe { get_host_state(host) }).is_some_and(|state| state.is_main_thread())
 }
 
 unsafe extern "C" fn host_thread_check_is_audio(host: *const ClapHostVtable) -> bool {
     // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
     // valid per the CLAP ABI.
-    unsafe { get_host_state(host).is_some_and(|state| state.is_audio_thread()) }
+    (unsafe { get_host_state(host) }).is_some_and(|state| state.is_audio_thread())
 }
 
 pub(super) static HOST_LOG: clap_host_log = clap_host_log {

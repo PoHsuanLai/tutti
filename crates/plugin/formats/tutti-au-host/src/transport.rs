@@ -499,14 +499,17 @@ unsafe extern "C" fn beat_and_tempo_proc(
     out_beat: *mut f64,
     out_tempo: *mut f64,
 ) -> OSStatus {
-    unsafe {
-        guarded(user_data, |state| {
+    let body = |state: &TransportState| {
+        // SAFETY: the out-params are null or valid writable pointers, by this fn's `# Safety`.
+        unsafe {
             // Unit newtypes stop here: Apple declares both out-params `Float64`.
             write_opt(out_beat, state.beat().0);
             write_opt(out_tempo, state.tempo().0);
-            NO_ERR
-        })
-    }
+        }
+        NO_ERR
+    };
+    // SAFETY: `user_data` is the pointer installed with the property, by this fn's `# Safety`.
+    unsafe { guarded(user_data, body) }
 }
 
 /// `HostCallback_GetMusicalTimeLocation`. Called on the render thread.
@@ -520,8 +523,9 @@ unsafe extern "C" fn musical_time_location_proc(
     out_time_sig_denominator: *mut u32,
     out_current_measure_downbeat: *mut f64,
 ) -> OSStatus {
-    unsafe {
-        guarded(user_data, |state| {
+    let body = |state: &TransportState| {
+        // SAFETY: the out-params are null or valid writable pointers, by this fn's `# Safety`.
+        unsafe {
             write_opt(
                 out_delta_to_next_beat,
                 state.samples_to_next_beat.load(Ordering::Relaxed),
@@ -538,9 +542,11 @@ unsafe extern "C" fn musical_time_location_proc(
                 out_current_measure_downbeat,
                 f64::from_bits(state.measure_downbeat_bits.load(Ordering::Relaxed)),
             );
-            NO_ERR
-        })
-    }
+        }
+        NO_ERR
+    };
+    // SAFETY: `user_data` is the pointer installed with the property, by this fn's `# Safety`.
+    unsafe { guarded(user_data, body) }
 }
 
 /// `HostCallback_GetTransportState` (v1). Called on the render thread.
@@ -559,8 +565,9 @@ unsafe extern "C" fn transport_state_proc(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) -> OSStatus {
-    unsafe {
-        guarded(user_data, |state| {
+    let body = |state: &TransportState| {
+        // SAFETY: the out-params are null or valid writable pointers, by this fn's `# Safety`.
+        unsafe {
             write_transport_common(
                 state,
                 out_is_playing,
@@ -569,10 +576,12 @@ unsafe extern "C" fn transport_state_proc(
                 out_is_cycling,
                 out_cycle_start_beat,
                 out_cycle_end_beat,
-            );
-            NO_ERR
-        })
-    }
+            )
+        };
+        NO_ERR
+    };
+    // SAFETY: `user_data` is the pointer installed with the property, by this fn's `# Safety`.
+    unsafe { guarded(user_data, body) }
 }
 
 /// `HostCallback_GetTransportState2` (v2) — v1 plus `outIsRecording`.
@@ -589,8 +598,9 @@ unsafe extern "C" fn transport_state2_proc(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) -> OSStatus {
-    unsafe {
-        guarded(user_data, |state| {
+    let body = |state: &TransportState| {
+        // SAFETY: the out-params are null or valid writable pointers, by this fn's `# Safety`.
+        unsafe {
             write_opt(out_is_recording, Boolean::from(state.is_recording()));
             write_transport_common(
                 state,
@@ -601,9 +611,11 @@ unsafe extern "C" fn transport_state2_proc(
                 out_cycle_start_beat,
                 out_cycle_end_beat,
             );
-            NO_ERR
-        })
-    }
+        }
+        NO_ERR
+    };
+    // SAFETY: `user_data` is the pointer installed with the property, by this fn's `# Safety`.
+    unsafe { guarded(user_data, body) }
 }
 
 /// The six fields v1 and v2 share, written identically for both.

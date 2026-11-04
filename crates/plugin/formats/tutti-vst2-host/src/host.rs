@@ -342,10 +342,10 @@ impl Host for HostState {
             let event = unsafe { &*event_ptr };
             if matches!(event.event_type, vst::api::EventType::Midi) {
                 let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
-                if let Some(converted) = to_midi(midi_event) {
-                    if self.midi_out_tx.push(converted).is_err() {
-                        self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
-                    }
+                if let Some(converted) = to_midi(midi_event)
+                    && self.midi_out_tx.push(converted).is_err()
+                {
+                    self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
                 }
             } else if matches!(event.event_type, vst::api::EventType::SysEx) {
                 let sysex = unsafe { &*(event_ptr as *const vst::api::SysExEvent) };

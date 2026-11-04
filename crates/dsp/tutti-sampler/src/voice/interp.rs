@@ -117,10 +117,10 @@ pub fn window_position(
     if !gate.reached(now, tempo, start_beat) {
         return None;
     }
-    if let Some(dur) = duration {
-        if gate.reached(now, tempo, start_beat + dur) {
-            return None;
-        }
+    if let Some(dur) = duration
+        && gate.reached(now, tempo, start_beat + dur)
+    {
+        return None;
     }
     Some(gate.origin(now, tempo))
 }

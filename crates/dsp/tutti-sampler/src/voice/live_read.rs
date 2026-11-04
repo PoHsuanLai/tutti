@@ -327,22 +327,21 @@ impl LiveRead {
             });
         }
 
-        if let Out::Lanes { lanes, gather } = out {
-            if jump.is_none()
-                && st.fade.is_none()
-                && st.recover.is_none()
-                && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
+        if let Out::Lanes { lanes, gather } = out
+            && jump.is_none()
+            && st.fade.is_none()
+            && st.recover.is_none()
+            && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
+        {
+            st.last = positions.last().copied().flatten().map(SamplePosition::get);
+            #[cfg(test)]
             {
-                st.last = positions.last().copied().flatten().map(SamplePosition::get);
-                #[cfg(test)]
-                {
-                    for p in positions.iter().flatten() {
-                        st.read_to = st.read_to.max(p.get());
-                    }
-                    st.steady += 1;
+                for p in positions.iter().flatten() {
+                    st.read_to = st.read_to.max(p.get());
                 }
-                return;
+                st.steady += 1;
             }
+            return;
         }
 
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];

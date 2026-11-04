@@ -330,11 +330,11 @@ impl FileIn {
             self.decoder.reset();
 
             let (decoded, ts) = self.decode_next_packet()?;
-            if decoded == 0 || ts > start {
-                if let Some(primer) = self.skipped_primer.filter(|&p| target > 0 && p <= target) {
-                    target = primer.saturating_sub(1);
-                    continue;
-                }
+            if (decoded == 0 || ts > start)
+                && let Some(primer) = self.skipped_primer.filter(|&p| target > 0 && p <= target)
+            {
+                target = primer.saturating_sub(1);
+                continue;
             }
             if decoded == 0 {
                 // Seeked past EOF; nothing to discard.

@@ -1128,6 +1128,35 @@ mod tests {
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
+    /// Sets `TUTTI_PROBE_MISBEHAVIOUR` for the life of the guard and restores
+    /// the previous value on drop, a panic included. Take it while holding
+    /// `plugin_load_lock()`, and drop it before the lock (declare it after).
+    struct ProbeMisbehaviour {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ProbeMisbehaviour {
+        fn set(code: &str) -> Self {
+            let previous = std::env::var_os("TUTTI_PROBE_MISBEHAVIOUR");
+            // SAFETY: the caller holds `plugin_load_lock()`, which every test here that loads
+            // the probe (the only reader of this variable) also takes, so none runs meanwhile.
+            // Process-wide `std::env` access from code that does not take the lock is not
+            // excluded, only absent from this crate's tests.
+            unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", code) };
+            Self { previous }
+        }
+    }
+
+    impl Drop for ProbeMisbehaviour {
+        fn drop(&mut self) {
+            // SAFETY: as in `set`; the lock outlives this guard.
+            match self.previous.take() {
+                Some(v) => unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v) },
+                None => unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") },
+            }
+        }
+    }
+
     /// The reference VST3 plugin, built by `tutti-vst3-host`'s build script
     /// from the in-repo SDK submodules during this same `cargo test`.
     ///
@@ -1216,9 +1245,9 @@ mod tests {
     /// fails.
     #[test]
     fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
-        // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
-        unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "12") };
         let _lock = crate::test_utils::plugin_load_lock();
+        // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
+        let _misbehaviour = ProbeMisbehaviour::set("12");
         let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 44_100.0, 128, false)
             .expect("the vendored VST3 probe loads");
         assert_eq!(instance.meta.loaded.latency_samples, Samples(44));

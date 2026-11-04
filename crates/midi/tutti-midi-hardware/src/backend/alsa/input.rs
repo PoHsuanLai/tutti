@@ -124,10 +124,10 @@ fn pump(seq: SeqClient, running: Arc<AtomicBool>, mut producer: InputProducerHan
         // four words to `from_ump` is what keeps a 1-word message from
         // swallowing three words of zeros.
         let decoded = split_ump_stream(&words).next();
-        if let Some(event) = decoded {
-            if !producer.push(event, now) {
-                tracing::debug!("MIDI input ring full, dropping event");
-            }
+        if let Some(event) = decoded
+            && !producer.push(event, now)
+        {
+            tracing::debug!("MIDI input ring full, dropping event");
         }
     }
 }

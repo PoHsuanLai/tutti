@@ -2242,10 +2242,9 @@ fn plugin_observes_the_offline_mode_we_requested() {
         if let Some(queue) = out
             .parameter_changes
             .get_queue(param_address(K_PARAM_PROCESS_MODE_TAG))
+            && let Some(point) = queue.points.last()
         {
-            if let Some(point) = queue.points.last() {
-                reported = Some(point.value.get());
-            }
+            reported = Some(point.value.get());
         }
     }
 
@@ -2522,10 +2521,11 @@ fn units_enumerate_with_resolvable_parents() {
     let ids: Vec<i32> = units.iter().map(|u| u.id).collect();
     let mut orphans = Vec::new();
     for unit in &units {
-        if let Some(parent) = unit.parent {
-            if parent != tutti_vst3_host::unit_ids::ROOT && !ids.contains(&parent) {
-                orphans.push(format!("unit {} names absent parent {parent}", unit.id));
-            }
+        if let Some(parent) = unit.parent
+            && parent != tutti_vst3_host::unit_ids::ROOT
+            && !ids.contains(&parent)
+        {
+            orphans.push(format!("unit {} names absent parent {parent}", unit.id));
         }
     }
     assert!(

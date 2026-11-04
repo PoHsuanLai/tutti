@@ -581,10 +581,10 @@ impl Reference {
             }
             let mut best = Latency::ZERO;
             for (at, e) in &g.topology().edges {
-                if at.node == k {
-                    if let Edge::Direct(Source::Node(p)) = e {
-                        best = best.max(arrive(p.node, g, lat, memo) + lat(p.node));
-                    }
+                if at.node == k
+                    && let Edge::Direct(Source::Node(p)) = e
+                {
+                    best = best.max(arrive(p.node, g, lat, memo) + lat(p.node));
                 }
             }
             for (at, sources) in g.events() {
@@ -597,11 +597,11 @@ impl Reference {
                 }
             }
             for (at, m) in g.params() {
-                if at.node == k {
-                    if let Some(from) = m.source {
-                        let n = from.node;
-                        best = best.max(arrive(n, g, lat, memo) + lat(n));
-                    }
+                if at.node == k
+                    && let Some(from) = m.source
+                {
+                    let n = from.node;
+                    best = best.max(arrive(n, g, lat, memo) + lat(n));
                 }
             }
             memo.insert(k, best);
@@ -711,10 +711,10 @@ impl Reference {
         // line and event feedback FIFO is flushed as if it had vanished.
         let reset = std::mem::take(&mut self.reset_time);
         for (k, f) in &self.event_lines {
-            if let DelayKey::Event { at, .. } = *k {
-                if reset || !delays.contains_key(k) {
-                    flush(at, relative(f));
-                }
+            if let DelayKey::Event { at, .. } = *k
+                && (reset || !delays.contains_key(k))
+            {
+                flush(at, relative(f));
             }
         }
         for (k, f) in &self.fb_event {
@@ -1034,10 +1034,10 @@ impl Reference {
                     line.iter().take(frames).copied().collect()
                 }
             };
-            if let Some(&Edge::Direct(from)) = t.edges.get(&at) {
-                if let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from }) {
-                    delay_line(line, &mut buf);
-                }
+            if let Some(&Edge::Direct(from)) = t.edges.get(&at)
+                && let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from })
+            {
+                delay_line(line, &mut buf);
             }
             ins.push(buf);
         }

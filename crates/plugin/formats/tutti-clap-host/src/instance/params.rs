@@ -592,8 +592,7 @@ mod param_text_tests {
     ) -> bool {
         let s = b"42.0 dB\0";
         let n = (s.len()).min(out_capacity as usize);
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
         unsafe { std::ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out_buffer, n) };
         true
     }
@@ -605,8 +604,7 @@ mod param_text_tests {
         text: *const c_char,
         out_value: *mut f64,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
         let s = unsafe { CStr::from_ptr(text) }.to_string_lossy();
         match s
             .split_whitespace()

@@ -364,12 +364,12 @@ impl<T: super::ClapSample> ClapActive<T> {
         }
 
         let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
-        if let Some(start_fn) = plugin_ref.start_processing {
-            if !unsafe { start_fn(self.loaded.plugin.as_ptr()) } {
-                // Allocation-free: this runs on the audio thread, and a plugin
-                // that refuses to start typically refuses on every block.
-                return Err(ClapError::StartProcessingFailed);
-            }
+        if let Some(start_fn) = plugin_ref.start_processing
+            && !unsafe { start_fn(self.loaded.plugin.as_ptr()) }
+        {
+            // Allocation-free: this runs on the audio thread, and a plugin
+            // that refuses to start typically refuses on every block.
+            return Err(ClapError::StartProcessingFailed);
         }
 
         self.loaded.flags.processing = true;

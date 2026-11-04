@@ -197,11 +197,11 @@ pub fn poll_scan(world: &mut World) {
             phase: last.phase,
         });
     }
-    if !progressed.is_empty() {
-        if let Some(mut writer) = world.get_resource_mut::<Messages<ScanProgressed>>() {
-            for progress in progressed {
-                writer.write(ScanProgressed(progress));
-            }
+    if !progressed.is_empty()
+        && let Some(mut writer) = world.get_resource_mut::<Messages<ScanProgressed>>()
+    {
+        for progress in progressed {
+            writer.write(ScanProgressed(progress));
         }
     }
 

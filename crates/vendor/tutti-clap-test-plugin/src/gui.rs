@@ -669,8 +669,10 @@ unsafe extern "C" fn gui_get_size(
     }
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
     // arguments valid per the CLAP ABI.
-    unsafe { *width = GUI_WIDTH };
-    unsafe { *height = GUI_HEIGHT };
+    unsafe {
+        *width = GUI_WIDTH;
+        *height = GUI_HEIGHT;
+    }
     true
 }
 
@@ -693,13 +695,15 @@ unsafe extern "C" fn gui_get_resize_hints(
     if gui_mode() == GuiMode::FixedSize {
         return false;
     }
-    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
-    // arguments valid per the CLAP ABI.
-    unsafe { (*hints).can_resize_horizontally = true };
-    unsafe { (*hints).can_resize_vertically = true };
-    unsafe { (*hints).preserve_aspect_ratio = true };
-    unsafe { (*hints).aspect_ratio_width = GUI_ASPECT_W };
-    unsafe { (*hints).aspect_ratio_height = GUI_ASPECT_H };
+    // SAFETY: a CLAP plugin entry point: `hints` is non-null (checked above) and points to a live
+    // `clap_gui_resize_hints` per the CLAP ABI.
+    unsafe {
+        (*hints).can_resize_horizontally = true;
+        (*hints).can_resize_vertically = true;
+        (*hints).preserve_aspect_ratio = true;
+        (*hints).aspect_ratio_width = GUI_ASPECT_W;
+        (*hints).aspect_ratio_height = GUI_ASPECT_H;
+    }
     true
 }
 
@@ -712,12 +716,11 @@ unsafe extern "C" fn gui_adjust_size(
     if width.is_null() || height.is_null() {
         return false;
     }
-    GUI.last_adjust_in_w
-        // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
-        // arguments valid per the CLAP ABI.
-        .store(unsafe { *width }, Ordering::Release);
-    GUI.last_adjust_in_h
-        .store(unsafe { *height }, Ordering::Release);
+    // SAFETY: a CLAP plugin entry point: `width` and `height` are non-null (checked above) and
+    // point to live `u32`s per the CLAP ABI.
+    let (in_w, in_h) = unsafe { (*width, *height) };
+    GUI.last_adjust_in_w.store(in_w, Ordering::Release);
+    GUI.last_adjust_in_h.store(in_h, Ordering::Release);
     // CLAP: "Returns true if the plugin could adjust the given size." A
     // fixed-size editor cannot, and leaves the out-params untouched — exactly
     // the situation where forwarding them to `set_size` would be wrong.
@@ -726,8 +729,10 @@ unsafe extern "C" fn gui_adjust_size(
     }
     // Snap down to the quantum — "fits in the given size" is a floor, not a
     // round. Clamp to one quantum so a tiny request cannot snap to zero.
-    unsafe { *width = (*width / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM };
-    unsafe { *height = (*height / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM };
+    unsafe {
+        *width = (*width / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM;
+        *height = (*height / GUI_SIZE_QUANTUM).max(1) * GUI_SIZE_QUANTUM;
+    }
     true
 }
 
@@ -830,8 +835,10 @@ unsafe extern "C" fn gui_get_preferred_api(
     // requires exactly this, and a host is entitled to compare it by address.
     // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
     // arguments valid per the CLAP ABI.
-    unsafe { *api = platform_api().as_ptr() };
-    unsafe { *is_floating = gui_mode() == GuiMode::FloatingOnly };
+    unsafe {
+        *api = platform_api().as_ptr();
+        *is_floating = gui_mode() == GuiMode::FloatingOnly;
+    }
     true
 }
 

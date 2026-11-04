@@ -90,16 +90,16 @@ impl MidiClockDecoder {
             self.tick_count += 1;
         }
 
-        if let Some(last) = self.last_timestamp_us {
-            if timestamp_us > last {
-                let interval = timestamp_us - last;
-                self.interval_buf[self.interval_idx] = interval;
-                self.interval_idx = (self.interval_idx + 1) % TEMPO_WINDOW;
-                if self.interval_count < TEMPO_WINDOW {
-                    self.interval_count += 1;
-                }
-                self.update_tempo();
+        if let Some(last) = self.last_timestamp_us
+            && timestamp_us > last
+        {
+            let interval = timestamp_us - last;
+            self.interval_buf[self.interval_idx] = interval;
+            self.interval_idx = (self.interval_idx + 1) % TEMPO_WINDOW;
+            if self.interval_count < TEMPO_WINDOW {
+                self.interval_count += 1;
             }
+            self.update_tempo();
         }
 
         self.last_timestamp_us = Some(timestamp_us);

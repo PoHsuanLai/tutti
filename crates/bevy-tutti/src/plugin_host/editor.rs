@@ -551,14 +551,10 @@ pub fn plugin_editor_window_resize_system(
                     editor.last_applied = (snapped.width, snapped.height);
                     editor.width = snapped.width;
                     editor.height = snapped.height;
-                    if (snapped.width, snapped.height) != event_size {
-                        if let Ok(mut win) = windows.get_mut(ev.window) {
-                            set_editor_resolution(
-                                &mut win.resolution,
-                                snapped.width,
-                                snapped.height,
-                            );
-                        }
+                    if (snapped.width, snapped.height) != event_size
+                        && let Ok(mut win) = windows.get_mut(ev.window)
+                    {
+                        set_editor_resolution(&mut win.resolution, snapped.width, snapped.height);
                     }
                 }
                 Err(e) => {
@@ -694,14 +690,14 @@ pub fn plugin_editor_resize_request_system(
 
         // Drive onSize so the plugin lays out at the new bounds. A further
         // snap gets one follow-up update; this deliberately does not loop.
-        if let Ok(snapped) = emitter.handle.set_editor_size(req) {
-            if (snapped.width, snapped.height) != (req.width, req.height) {
-                editor.last_applied = (snapped.width, snapped.height);
-                editor.width = snapped.width;
-                editor.height = snapped.height;
-                if let Ok(mut win) = windows.get_mut(editor.editor_window) {
-                    set_editor_resolution(&mut win.resolution, snapped.width, snapped.height);
-                }
+        if let Ok(snapped) = emitter.handle.set_editor_size(req)
+            && (snapped.width, snapped.height) != (req.width, req.height)
+        {
+            editor.last_applied = (snapped.width, snapped.height);
+            editor.width = snapped.width;
+            editor.height = snapped.height;
+            if let Ok(mut win) = windows.get_mut(editor.editor_window) {
+                set_editor_resolution(&mut win.resolution, snapped.width, snapped.height);
             }
         }
     }

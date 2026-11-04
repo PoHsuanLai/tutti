@@ -921,14 +921,14 @@ mod tests {
         use crate::param::ParamIn;
         use crate::spec::EventOut;
         use tutti_types::UnitParam;
-        let generation = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let generator = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
         let sender = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(0, 1);
         let thru = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_in_place()
             .with_params(&[UnitParam::Cutoff]);
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
-        for (k, s) in [(1, generation), (2, thru), (3, sender), (4, sender)] {
+        for (k, s) in [(1, generator), (2, thru), (3, sender), (4, sender)] {
             t.nodes
                 .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
             shapes.insert(NodeKey(k), s);
@@ -1142,10 +1142,10 @@ mod tests {
         assert_ne!(sa, sw);
         bad.audio_list[iw] = sa;
         for op in &mut bad.ops {
-            if let Op::Output { src, .. } = op {
-                if *src == sw {
-                    *src = sa;
-                }
+            if let Op::Output { src, .. } = op
+                && *src == sw
+            {
+                *src = sa;
             }
         }
         for v in &mut bad.audio_values {
@@ -1188,12 +1188,11 @@ mod tests {
             if let Op::Node {
                 in_place, audio_in, ..
             } = op
+                && audio_in.len == 0
             {
-                if audio_in.len == 0 {
-                    // A generator: no input, so any bit is a lie.
-                    *in_place = in_place.with(0);
-                    break;
-                }
+                // A generator: no input, so any bit is a lie.
+                *in_place = in_place.with(0);
+                break;
             }
         }
         assert!(verify(&bad).unwrap_err().0.contains("in place"));
@@ -1350,13 +1349,13 @@ mod tests {
         // The one-in/one-out shape: `Split` needs the two slots its op names,
         // and is not `InPlace`.
         let mut t = Topology::default();
-        let (generation, thru) = (NodeKey(1), NodeKey(2));
+        let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
             Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO),
             Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO),
         );
         t.nodes
-            .insert(generation, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
+            .insert(generator, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
         t.nodes
             .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
         t.edges.insert(
@@ -1365,7 +1364,7 @@ mod tests {
                 port: 0,
             },
             tutti_types::graph::Edge::Direct(Source::Node(OutPort {
-                node: generation,
+                node: generator,
                 port: 0,
             })),
         );
@@ -1373,7 +1372,7 @@ mod tests {
             node: thru,
             port: 0,
         })];
-        let shapes: Shapes = [(generation, sg), (thru, st)].into_iter().collect();
+        let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
         let prep =
             crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
@@ -1407,20 +1406,20 @@ mod tests {
     fn the_verifier_checks_the_direct_slot_table() {
         use crate::plan::{Direct, Form};
         let mut t = Topology::default();
-        let (generation, thru) = (NodeKey(1), NodeKey(2));
+        let (generator, thru) = (NodeKey(1), NodeKey(2));
         let (sg, st) = (
             Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO),
             Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO),
         );
         t.nodes
-            .insert(generation, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
+            .insert(generator, NodeSpec::new("gen", sg.audio_in, sg.audio_out));
         t.nodes
             .insert(thru, NodeSpec::new("thru", st.audio_in, st.audio_out));
         for port in 0..2 {
             t.edges.insert(
                 tutti_types::graph::InPort { node: thru, port },
                 tutti_types::graph::Edge::Direct(Source::Node(OutPort {
-                    node: generation,
+                    node: generator,
                     port,
                 })),
             );
@@ -1435,7 +1434,7 @@ mod tests {
                 port: 1,
             }),
         ];
-        let shapes: Shapes = [(generation, sg), (thru, st)].into_iter().collect();
+        let shapes: Shapes = [(generator, sg), (thru, st)].into_iter().collect();
         let valid = GraphSpec::new(t).validate().expect("valid");
         let prep =
             crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
@@ -1445,7 +1444,7 @@ mod tests {
             panic!("a stereo node lowers to the direct form");
         };
         assert_eq!((d.ins, d.outs, d.count), (2, 2, 4), "two reads, two writes");
-        let g = plan.units.iter().position(|p| p.key == generation).unwrap();
+        let g = plan.units.iter().position(|p| p.key == generator).unwrap();
         assert!(matches!(plan.nodes.recs[g].form, Form::Direct(_)));
 
         let refused = |d: Direct| {
@@ -1580,10 +1579,10 @@ mod tests {
     fn fades_are_checked_against_both_plans() {
         use crate::fade::{CrossfadeCurve, Fade};
         let (a, b) = (NodeKey(1), NodeKey(2));
-        let generation = || Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let generator = || Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
         let build = |shape_a: Shape, gen_a: u32, prev: Option<&Plan>| {
             let mut t = Topology::default();
-            let shapes: Shapes = [(a, shape_a), (b, generation())]
+            let shapes: Shapes = [(a, shape_a), (b, generator())]
                 .into_iter()
                 .map(|(k, s)| {
                     t.nodes.insert(
@@ -1602,7 +1601,7 @@ mod tests {
             );
             compile(&spec.validate().expect("valid"), &shapes, &prepare, prev).expect("compiles")
         };
-        let (base, _) = build(generation(), 0, None);
+        let (base, _) = build(generator(), 0, None);
         let fade = Fade::new(tutti_types::Samples(32), CrossfadeCurve::EqualPower);
         let check = |shape_a: Shape, fades: Vec<(NodeKey, Fade)>| {
             let (plan, mut delta) = build(shape_a, 1, Some(&base));
@@ -1610,19 +1609,19 @@ mod tests {
             verify_fades(Some(&base), &plan, &delta)
         };
 
-        assert_eq!(check(generation(), vec![(a, fade)]), Ok(()));
-        let tail = generation().with_tail(tutti_types::Tail::Finite(tutti_types::Samples(9)));
+        assert_eq!(check(generator(), vec![(a, fade)]), Ok(()));
+        let tail = generator().with_tail(tutti_types::Tail::Finite(tutti_types::Samples(9)));
         assert_eq!(
             check(tail, vec![(a, fade)]),
             Ok(()),
             "only the tail differs"
         );
-        let not_replaced = check(generation(), vec![(b, fade)]).unwrap_err();
+        let not_replaced = check(generator(), vec![(b, fade)]).unwrap_err();
         assert!(
             not_replaced.0.contains("does not replace"),
             "{not_replaced}"
         );
-        let twice = check(generation(), vec![(a, fade), (a, fade)]).unwrap_err();
+        let twice = check(generator(), vec![(a, fade), (a, fade)]).unwrap_err();
         assert!(twice.0.contains("twice"), "{twice}");
         let in_place = check(
             Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_in_place(),

@@ -2278,24 +2278,24 @@ impl AuLoaded {
         // that has no input element is a property error, and the `?` aborted
         // init entirely.
         let scratch_ptr: *mut RenderScratch = &*ready.scratch as *const RenderScratch as *mut _;
-        if ready.loaded.config.channels.has_input {
-            if let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) } {
-                // The AU *is* initialized at this point, so backing out has to
-                // undo that too — not merely drop the half-built `AuActive`.
-                // Route through `uninitialize`, which owns the ordering
-                // invariant (uninitialize before the boxed scratch is freed)
-                // rather than duplicating it here.
-                //
-                // The reported error is always `e`, the install failure: it is
-                // what actually went wrong, and a follow-on
-                // `AudioUnitUninitialize` complaint would only describe the
-                // cleanup. If that cleanup also failed there is no `Loaded` AU
-                // to hand back — dropping the `AuActive` still disposes the unit.
-                return Err(match ready.uninitialize() {
-                    Ok(loaded) => (Some(loaded), e),
-                    Err((_ready, _unwind_err)) => (None, e),
-                });
-            }
+        if ready.loaded.config.channels.has_input
+            && let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) }
+        {
+            // The AU *is* initialized at this point, so backing out has to
+            // undo that too — not merely drop the half-built `AuActive`.
+            // Route through `uninitialize`, which owns the ordering
+            // invariant (uninitialize before the boxed scratch is freed)
+            // rather than duplicating it here.
+            //
+            // The reported error is always `e`, the install failure: it is
+            // what actually went wrong, and a follow-on
+            // `AudioUnitUninitialize` complaint would only describe the
+            // cleanup. If that cleanup also failed there is no `Loaded` AU
+            // to hand back — dropping the `AuActive` still disposes the unit.
+            return Err(match ready.uninitialize() {
+                Ok(loaded) => (Some(loaded), e),
+                Err((_ready, _unwind_err)) => (None, e),
+            });
         }
         Ok(ready)
     }

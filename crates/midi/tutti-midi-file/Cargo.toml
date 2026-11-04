@@ -2,6 +2,7 @@
 name = "tutti-midi-file"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "MIDI file codecs — Standard MIDI File (SMF) and MIDI 2.0 Clip File"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

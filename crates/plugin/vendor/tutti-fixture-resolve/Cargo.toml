@@ -2,6 +2,7 @@
 name = "tutti-fixture-resolve"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "Locating the reference plugin cdylibs the host test suites load"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

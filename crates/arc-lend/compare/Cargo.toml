@@ -2,6 +2,7 @@
 name = "arc-lend-compare"
 version = "0.0.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "Tail-latency, allocation and retained-memory comparison of arc-lend against arc-swap, basedrop, left-right, crossbeam-epoch, haphazard, triple_buffer and locks"
 license = "MIT OR Apache-2.0"
 # A measuring harness, never a library anyone depends on. It lives in its own

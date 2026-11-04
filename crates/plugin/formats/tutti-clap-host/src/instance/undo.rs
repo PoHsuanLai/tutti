@@ -92,10 +92,10 @@ impl ClapLoaded {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
             return;
         };
-        if let Some(f) = ext.set_undo_name {
-            if let Ok(cstr) = std::ffi::CString::new(name) {
-                unsafe { f(self.plugin.as_ptr(), cstr.as_ptr()) };
-            }
+        if let Some(f) = ext.set_undo_name
+            && let Ok(cstr) = std::ffi::CString::new(name)
+        {
+            unsafe { f(self.plugin.as_ptr(), cstr.as_ptr()) };
         }
     }
 
@@ -104,10 +104,10 @@ impl ClapLoaded {
         let Some(ext) = (unsafe { ext::opt(self.extensions.undo.context) }) else {
             return;
         };
-        if let Some(f) = ext.set_redo_name {
-            if let Ok(cstr) = std::ffi::CString::new(name) {
-                unsafe { f(self.plugin.as_ptr(), cstr.as_ptr()) };
-            }
+        if let Some(f) = ext.set_redo_name
+            && let Ok(cstr) = std::ffi::CString::new(name)
+        {
+            unsafe { f(self.plugin.as_ptr(), cstr.as_ptr()) };
         }
     }
 }

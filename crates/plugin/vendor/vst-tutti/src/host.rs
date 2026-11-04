@@ -588,8 +588,9 @@ impl<T: Host> PluginLoader<T> {
 
     /// Call the VST entry point and retrieve a (possibly null) pointer.
     unsafe fn call_main(&mut self) -> *mut AEffect {
-        // SAFETY: `main` is the plugin's `VSTPluginMain` entry point, called once with this host's
-        // callback.
+        // SAFETY: `LOAD_POINTER` is a `static mut`, so this is sound only while no other
+        // loader reads or writes it. That is not enforced: two loaders running at once race on
+        // it (a known issue, fixed separately), so callers must load one plugin at a time.
         unsafe { LOAD_POINTER = Box::into_raw(Box::new(Arc::clone(&self.host))) as *mut c_void };
         (self.main)(callback_wrapper::<T>)
     }

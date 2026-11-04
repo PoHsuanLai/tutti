@@ -224,10 +224,10 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
                 let delay = Samples(MAX_BLOCK + 17 * rng.below(3) as usize);
                 rng.pick(&any_ev).map(|f| EventEdge::feedback(f, delay))
             };
-            if let Some(e) = e {
-                if seen.insert(e.from()) {
-                    sources.push(e);
-                }
+            if let Some(e) = e
+                && seen.insert(e.from())
+            {
+                sources.push(e);
             }
         }
         desc.spec.events.insert(at, sources);
@@ -993,10 +993,10 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
                     continue;
                 }
                 for (at, e) in &d.spec.topology.edges {
-                    if let Edge::Direct(Source::Node(p)) = e {
-                        if p.node == k {
-                            stack.push(at.node);
-                        }
+                    if let Edge::Direct(Source::Node(p)) = e
+                        && p.node == k
+                    {
+                        stack.push(at.node);
                     }
                 }
                 for (at, v) in &d.spec.events {

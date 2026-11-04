@@ -120,17 +120,23 @@ mod platform {
     /// and must not release it more than once, nor use it after releasing.
     unsafe fn make_bundle(dir: &Path) -> Option<CFBundleRef> {
         let bytes = dir.as_os_str().as_bytes();
-        let url: CFURLRef = CFURLCreateFromFileSystemRepresentation(
-            kCFAllocatorDefault,
-            bytes.as_ptr(),
-            bytes.len() as isize,
-            true as u8, // isDirectory — a .vst3 bundle always is
-        );
+        // SAFETY: `bytes` is a live slice for the call, and the default allocator is valid; the
+        // URL is released below on every path that created one.
+        let url: CFURLRef = unsafe {
+            CFURLCreateFromFileSystemRepresentation(
+                kCFAllocatorDefault,
+                bytes.as_ptr(),
+                bytes.len() as isize,
+                true as u8, // isDirectory — a .vst3 bundle always is
+            )
+        };
         if url.is_null() {
             return None;
         }
-        let bundle = CFBundleCreate(kCFAllocatorDefault, url);
-        CFRelease(url as *const _);
+        // SAFETY: `url` is the non-null `CFURLRef` created above, released once right after.
+        let bundle = unsafe { CFBundleCreate(kCFAllocatorDefault, url) };
+        // SAFETY: as above; the bundle (if any) retains what it needs of the URL.
+        unsafe { CFRelease(url as *const _) };
         (!bundle.is_null()).then_some(bundle)
     }
 
@@ -158,11 +164,11 @@ mod platform {
         // initialises successfully is never left without its finalizer.
         let exit = symbol::<BundleExitFn>(library, "bundleExit").map(|s| *s);
 
-        if let Some(entry) = symbol::<BundleEntryFn>(library, "bundleEntry") {
-            if !unsafe { entry(bundle) } {
-                unsafe { CFRelease(bundle as *const _) };
-                return Err(load_failed(lib_path, "bundleEntry returned false"));
-            }
+        if let Some(entry) = symbol::<BundleEntryFn>(library, "bundleEntry")
+            && !unsafe { entry(bundle) }
+        {
+            unsafe { CFRelease(bundle as *const _) };
+            return Err(load_failed(lib_path, "bundleEntry returned false"));
         }
         // No `bundleEntry` export: supported, nothing to do. The bundle ref is
         // still released on drop.
@@ -282,10 +288,10 @@ mod platform {
     ) -> Result<Entry, Vst3Error> {
         let exit = symbol::<ExitDllFn>(library, "ExitDll").map(|s| *s);
 
-        if let Some(entry) = symbol::<InitDllFn>(library, "InitDll") {
-            if !unsafe { entry() } {
-                return Err(load_failed(lib_path, "InitDll returned false"));
-            }
+        if let Some(entry) = symbol::<InitDllFn>(library, "InitDll")
+            && !unsafe { entry() }
+        {
+            return Err(load_failed(lib_path, "InitDll returned false"));
         }
 
         Ok(Entry { exit })

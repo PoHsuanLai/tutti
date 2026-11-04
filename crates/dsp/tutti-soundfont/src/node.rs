@@ -31,10 +31,10 @@ impl Node for SoundFontUnit {
     /// render scratch to the largest block. Control thread.
     fn prepare(&mut self, p: &Prepare) {
         let rate = p.sample_rate();
-        if rate.get().round() != self.sample_rate.get().round() {
-            if let Ok(unit) = self.with_sample_rate(rate) {
-                *self = unit;
-            }
+        if rate.get().round() != self.sample_rate.get().round()
+            && let Ok(unit) = self.with_sample_rate(rate)
+        {
+            *self = unit;
         }
         let frames = p.max_block().get();
         if self.left_buffer.len() < frames {

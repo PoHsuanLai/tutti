@@ -476,13 +476,13 @@ impl HrtfSet {
     /// lock-free; the scan is linear in the face count, which only a miss of
     /// the hint pays.
     pub(crate) fn weights(&self, dir: [f32; 3], hint: &mut usize) -> Weights {
-        if let Some(face) = self.faces.get(*hint) {
-            if let Some(w) = face.hit(dir) {
-                return Weights {
-                    verts: face.verts,
-                    w,
-                };
-            }
+        if let Some(face) = self.faces.get(*hint)
+            && let Some(w) = face.hit(dir)
+        {
+            return Weights {
+                verts: face.verts,
+                w,
+            };
         }
         for (i, face) in self.faces.iter().enumerate() {
             if let Some(w) = face.hit(dir) {

@@ -277,10 +277,10 @@ pub(crate) fn on_process_entry() {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         while BLOCKED.load(Ordering::SeqCst) {
-            if let Some(path) = release_file.as_deref() {
-                if path.exists() {
-                    break;
-                }
+            if let Some(path) = release_file.as_deref()
+                && path.exists()
+            {
+                break;
             }
             parked = true;
             std::hint::spin_loop();

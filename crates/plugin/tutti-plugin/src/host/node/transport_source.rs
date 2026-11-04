@@ -285,12 +285,12 @@ fn continued_without_origin(
     rate: SampleRate,
     to: &Transport,
 ) -> Option<usize> {
-    if from.looping == to.looping {
-        if let Some(l) = from.looping {
-            let (start, end) = (from.beat().get(), to.beat().get());
-            if start < l.end.get() && end >= l.end.get() {
-                return None;
-            }
+    if from.looping == to.looping
+        && let Some(l) = from.looping
+    {
+        let (start, end) = (from.beat().get(), to.beat().get());
+        if start < l.end.get() && end >= l.end.get() {
+            return None;
         }
     }
     let mut seen = *to;

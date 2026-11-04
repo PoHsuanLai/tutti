@@ -175,10 +175,10 @@ fn pass<T: Beated>(
         } else {
             first_frame_at_or_after(ahead).max(0) as usize
         };
-        if k + d < next {
-            if let Some(o) = at(k + d) {
-                v.event(o, e);
-            }
+        if k + d < next
+            && let Some(o) = at(k + d)
+        {
+            v.event(o, e);
         }
     }
 }

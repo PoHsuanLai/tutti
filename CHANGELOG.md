@@ -21,14 +21,23 @@ already pins a toolchain that supports it. `rustfmt.toml` keeps
   `#[export_name]` are `#[unsafe(...)]`, and `std::env::set_var` / `remove_var`
   sit in `unsafe` blocks that name what serialises them.
 - **`gen` is a reserved word**, so the unit-generation field and locals are
-  now `generation`. Migration: `PlanUnit::gen` and `Placement::gen` (in
-  `tutti-graph`) are `PlanUnit::generation` and `Placement::generation`.
-- `impl Iterator` returns that do not borrow `&self` say so with `+ use<>`
-  (`unresolved_targets`, `unresolved_sources`, `offsets`), which keeps their
-  2021 capture rules.
-- Lint: `clippy::collapsible_if` is allowed workspace-wide. In 2024 it also
-  asks to fold `if a { if let .. }` into let chains; that is a style change
-  across about a hundred sites, left for its own change.
+  now `generation`. Migration (all in `tutti-graph`): `PlanUnit::gen` and
+  `Placement::gen` are `PlanUnit::generation` and `Placement::generation`, and
+  the fields of `FeedbackKey::Audio { gen }` and `FeedbackKey::Event { gen }`
+  are `generation`.
+- Five `impl Iterator` returns carry an explicit `+ use<..>` capture list,
+  because 2024 captures every in-scope lifetime in return-position
+  `impl Trait`: `unresolved_targets` and `unresolved_sources` (bevy-tutti) and
+  `offsets` (tutti-graph) borrow nothing from `&self` and say `use<>`;
+  `InterleavedMut::frames_mut` (tutti-types) does borrow `self` and says
+  `use<'_>`; the sampler's `runs_in` (crate-private) captures only `'e`.
+- **Let chains.** `clippy::collapsible_if` is no longer allowed, workspace-wide
+  or in the vendored members: nested `if` / `if let` pairs are folded into
+  let chains (`if a && let Some(x) = b`), which need Rust 1.88.
+- **`rust-version = "1.99"`** is set in `[workspace.package]` and inherited by
+  every member (`rust-version.workspace = true`), matching the minor of the
+  toolchain `rust-toolchain.toml` pins. Building with an older compiler now
+  fails at the manifest instead of at a let chain.
 - Macros that took `$x:expr` keep their meaning (2024's `expr` also matches
   `const {}` and `_`, which none of them is called with).
 

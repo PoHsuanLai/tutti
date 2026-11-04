@@ -371,12 +371,10 @@ impl AudioBridge {
         // bridge thread takes the buffer out before recycling), so the
         // assignments below drop nothing that holds memory.
         let mut params = param_changes.queues.is_empty();
-        if !params {
-            if let Some(mut fresh) = self.payloads.take_params() {
-                std::mem::swap(param_changes, &mut fresh);
-                payload.param_changes = fresh;
-                params = true;
-            }
+        if !params && let Some(mut fresh) = self.payloads.take_params() {
+            std::mem::swap(param_changes, &mut fresh);
+            payload.param_changes = fresh;
+            params = true;
         }
         payload.note_expression = note_expression;
         payload.chords = harmony.chords;

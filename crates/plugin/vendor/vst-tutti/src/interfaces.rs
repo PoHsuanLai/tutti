@@ -366,32 +366,32 @@ fn dispatch_inner(
         Ok(OpCode::GetApiVersion) => return 2400,
 
         Ok(OpCode::EditorKeyDown) => {
-            if let Some(editor) = get_editor() {
-                if let Ok(key) = Key::try_from(value) {
-                    editor.key_down(KeyCode {
-                        character: index as u8 as char,
-                        key,
-                        modifier: opt.to_bits() as u8,
-                    });
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(key) = Key::try_from(value)
+            {
+                editor.key_down(KeyCode {
+                    character: index as u8 as char,
+                    key,
+                    modifier: opt.to_bits() as u8,
+                });
             }
         }
         Ok(OpCode::EditorKeyUp) => {
-            if let Some(editor) = get_editor() {
-                if let Ok(key) = Key::try_from(value) {
-                    editor.key_up(KeyCode {
-                        character: index as u8 as char,
-                        key,
-                        modifier: opt.to_bits() as u8,
-                    });
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(key) = Key::try_from(value)
+            {
+                editor.key_up(KeyCode {
+                    character: index as u8 as char,
+                    key,
+                    modifier: opt.to_bits() as u8,
+                });
             }
         }
         Ok(OpCode::EditorSetKnobMode) => {
-            if let Some(editor) = get_editor() {
-                if let Ok(knob_mode) = KnobMode::try_from(value) {
-                    editor.set_knob_mode(knob_mode);
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(knob_mode) = KnobMode::try_from(value)
+            {
+                editor.set_knob_mode(knob_mode);
             }
         }
 

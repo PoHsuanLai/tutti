@@ -93,16 +93,16 @@ impl ClapLoaded {
     /// loaded the plugin.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
-        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
-            if let Some(save_fn) = ext.save {
-                let mut stream = OutputStream::new();
-                if !unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                    return Err(ClapError::StateError(format!(
-                        "Context-aware save failed for {context:?}"
-                    )));
-                }
-                return Ok(stream.into_data());
+        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) }
+            && let Some(save_fn) = ext.save
+        {
+            let mut stream = OutputStream::new();
+            if !unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
+                return Err(ClapError::StateError(format!(
+                    "Context-aware save failed for {context:?}"
+                )));
             }
+            return Ok(stream.into_data());
         }
         self.get_state()
     }
@@ -132,16 +132,16 @@ impl ClapLoaded {
         if data.is_empty() {
             return Ok(());
         }
-        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
-            if let Some(load_fn) = ext.load {
-                let mut stream = InputStream::new(data);
-                if !unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                    return Err(ClapError::StateError(format!(
-                        "Context-aware load failed for {context:?}"
-                    )));
-                }
-                return Ok(());
+        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) }
+            && let Some(load_fn) = ext.load
+        {
+            let mut stream = InputStream::new(data);
+            if !unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
+                return Err(ClapError::StateError(format!(
+                    "Context-aware load failed for {context:?}"
+                )));
             }
+            return Ok(());
         }
         self.set_state(data)
     }

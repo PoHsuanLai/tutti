@@ -516,10 +516,10 @@ pub fn compile(
         {
             return Err(CompileError::UnknownParam { at });
         }
-        if let Some(from) = m.source {
-            if from.port >= node_shapes[dense[&from.node]].event_out {
-                return Err(CompileError::ParamSourceOutOfRange { at, from });
-            }
+        if let Some(from) = m.source
+            && from.port >= node_shapes[dense[&from.node]].event_out
+        {
+            return Err(CompileError::ParamSourceOutOfRange { at, from });
         }
     }
 
@@ -540,26 +540,26 @@ pub fn compile(
     // Feedback delays: at least one block, or a read would need the future.
     let max_block = prepare.max_block().samples();
     for (&at, e) in &topology.edges {
-        if let Edge::Feedback(f) = *e {
-            if f.delay < max_block {
-                return Err(CompileError::FeedbackTooShort {
-                    edge: CycleEdge::Audio(at),
-                    delay: f.delay,
-                    max_block,
-                });
-            }
+        if let Edge::Feedback(f) = *e
+            && f.delay < max_block
+        {
+            return Err(CompileError::FeedbackTooShort {
+                edge: CycleEdge::Audio(at),
+                delay: f.delay,
+                max_block,
+            });
         }
     }
     for (&at, sources) in graph.events() {
         for e in sources {
-            if let EventEdge::Feedback { from, delay } = *e {
-                if delay < max_block {
-                    return Err(CompileError::FeedbackTooShort {
-                        edge: CycleEdge::Event { at, from },
-                        delay,
-                        max_block,
-                    });
-                }
+            if let EventEdge::Feedback { from, delay } = *e
+                && delay < max_block
+            {
+                return Err(CompileError::FeedbackTooShort {
+                    edge: CycleEdge::Event { at, from },
+                    delay,
+                    max_block,
+                });
             }
         }
     }
@@ -1112,10 +1112,10 @@ pub fn compile(
                 };
                 let mut mask = InPlaceMask::NONE;
                 for (c, (&r, &o)) in ain.iter().zip(aout).enumerate() {
-                    if let ARef::Val(u) = r {
-                        if aslot(u) == aslot(o) {
-                            mask = mask.with(c);
-                        }
+                    if let ARef::Val(u) = r
+                        && aslot(u) == aslot(o)
+                    {
+                        mask = mask.with(c);
                     }
                 }
                 Op::Node {

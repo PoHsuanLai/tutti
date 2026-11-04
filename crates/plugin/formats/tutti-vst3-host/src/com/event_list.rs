@@ -446,10 +446,10 @@ impl EventList {
                 if !push_sysex(out, frame, &inner.sysex_out[e.bytes.range()]) {
                     refused += 1;
                 }
-            } else if let Some(midi) = event.to_midi() {
-                if !out.push(midi) {
-                    break;
-                }
+            } else if let Some(midi) = event.to_midi()
+                && !out.push(midi)
+            {
+                break;
             }
         }
         inner.dropped += refused;

@@ -163,9 +163,9 @@ impl IAttributeListTrait for AttributeList {
         if data.is_null() {
             return kInvalidArgument;
         }
+        // SAFETY: a COM method: `data` is non-null (checked above) and, per the VST3 ABI, valid
+        // for `size_in_bytes` bytes for this call.
         let slice =
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
-            // ABI.
             unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
         self.attributes
             .lock()

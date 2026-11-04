@@ -724,13 +724,13 @@ impl Session {
                 });
             }
 
-            if let Some(declared) = declared {
-                if self.graph.refresh_node_latency(node, declared) {
-                    out.push(SessionEvent::PluginLatencyChanged {
-                        node,
-                        latency: self.graph.node_latency(node),
-                    });
-                }
+            if let Some(declared) = declared
+                && self.graph.refresh_node_latency(node, declared)
+            {
+                out.push(SessionEvent::PluginLatencyChanged {
+                    node,
+                    latency: self.graph.node_latency(node),
+                });
             }
             if let Some(snapshot) = snapshot {
                 out.push(SessionEvent::PluginSnapshotDue(snapshot));

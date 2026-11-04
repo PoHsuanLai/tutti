@@ -322,10 +322,10 @@ mod tests {
                     Bpm(90.0),
                     SR,
                 );
-                if let Some(f) = seg.frame_of(beat) {
-                    if f.get() < 64 {
-                        hits += 1;
-                    }
+                if let Some(f) = seg.frame_of(beat)
+                    && f.get() < 64
+                {
+                    hits += 1;
                 }
                 // `frame_of` from a later block's origin is `None` (before
                 // its frame zero) for an earlier beat: never counted twice.

@@ -757,11 +757,13 @@ impl GainPlan {
 
     fn push(&mut self, at: usize, gain: Gain) {
         // A later aim at the same offset replaces an earlier one.
-        if let Some(last) = self.items[..self.len].last_mut() {
-            if last.0 == at && matches!(last.1, Gain::Aim(_)) && matches!(gain, Gain::Aim(_)) {
-                last.1 = gain;
-                return;
-            }
+        if let Some(last) = self.items[..self.len].last_mut()
+            && last.0 == at
+            && matches!(last.1, Gain::Aim(_))
+            && matches!(gain, Gain::Aim(_))
+        {
+            last.1 = gain;
+            return;
         }
         debug_assert!(self.len < GAIN_EVENTS, "bounded by the commands applied");
         if self.len < GAIN_EVENTS {

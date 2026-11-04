@@ -2,6 +2,7 @@
 name = "tutti-clap-test-plugin"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "Reference CLAP plugin used as a host-conformance probe in tutti-clap-host tests"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
@@ -27,8 +28,3 @@ clap-sys = "0.5"
 # `kill(getpid(), SIGKILL)`: how the probe dies on unix (`die`).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# See the workspace lint of the same name: let-chain collapsing is not part of the
-# edition move.
-[lints.clippy]
-collapsible_if = "allow"

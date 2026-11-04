@@ -140,14 +140,14 @@ impl RunLoop {
             if pfd.revents & libc::POLLIN == 0 {
                 continue;
             }
-            if let Some(&handler) = state.event_handlers.get(&pfd.fd) {
-                if !handler.is_null() {
-                    // SAFETY: as above.
-                    unsafe { ((*(*handler).vtbl).onFDIsSet)(handler, pfd.fd) };
-                    #[cfg(feature = "conformance")]
-                    {
-                        dispatched += 1;
-                    }
+            if let Some(&handler) = state.event_handlers.get(&pfd.fd)
+                && !handler.is_null()
+            {
+                // SAFETY: as above.
+                unsafe { ((*(*handler).vtbl).onFDIsSet)(handler, pfd.fd) };
+                #[cfg(feature = "conformance")]
+                {
+                    dispatched += 1;
                 }
             }
         }

@@ -2,6 +2,7 @@
 name = "tutti-plugin-server"
 version = "0.0.1"
 edition.workspace = true
+rust-version.workspace = true
 description = "The plugin-server subprocess for tutti-plugin: hosts one VST2, VST3, CLAP or AU plugin in isolation"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

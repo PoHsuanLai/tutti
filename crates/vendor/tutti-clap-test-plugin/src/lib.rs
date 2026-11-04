@@ -366,14 +366,13 @@ unsafe extern "C" fn plugin_activate(
         LATENCY_ACTIVE_EXTRA.store(LATENCY_NEXT_EXTRA.load(Ordering::SeqCst), Ordering::SeqCst);
         // `clap.latency` lets a plugin announce its figure from inside
         // `activate`, which is where it settled on it.
-        if LATENCY_CHANGED_IN_ACTIVATE.load(Ordering::SeqCst) {
-            if let Some(ext) = unsafe {
+        if LATENCY_CHANGED_IN_ACTIVATE.load(Ordering::SeqCst)
+            && let Some(ext) = unsafe {
                 threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
-            } {
-                if let Some(changed) = ext.changed {
-                    unsafe { changed(plugin_host(plugin)) };
-                }
             }
+            && let Some(changed) = ext.changed
+        {
+            unsafe { changed(plugin_host(plugin)) };
         }
     }
     accepted
@@ -525,25 +524,29 @@ unsafe extern "C" fn plugin_process(
     // it (host records the flag in its HostState). `request_callback` is
     // audio-thread-safe per the CLAP spec.
     let host = unsafe { plugin_host(plugin) };
-    if !host.is_null() {
-        if let Some(req) = unsafe { (*host).request_callback } {
-            unsafe { req(host) };
-        }
+    if !host.is_null()
+        && let Some(req) = unsafe { (*host).request_callback }
+    {
+        unsafe { req(host) };
     }
 
     // THREADING: `[audio-thread]`. Recorded after `request_callback` so the
     // roles reflect the same context the callback was made from, and any
     // latched `request_restart` / `request_process` command runs here.
-    unsafe { threading::record_thread_roles(threading::Site::Process, host) };
-    unsafe { threading::run_pending_command(threading::Site::Process, host) };
+    unsafe {
+        threading::record_thread_roles(threading::Site::Process, host);
+        threading::run_pending_command(threading::Site::Process, host);
+    }
 
     // RT-HAZARD: push any configured SysEx output events. Done here, inside the
     // host's `process`, because that is the only context in which CLAP permits
     // `out_events.try_push` — and it is the host's audio thread, which is the
     // whole point.
-    unsafe { rt_probe::emit_sysex_output(p) };
-    unsafe { rt_probe::emit_param_output(p) };
-    unsafe { echo_notes(p) };
+    unsafe {
+        rt_probe::emit_sysex_output(p);
+        rt_probe::emit_param_output(p);
+        echo_notes(p);
+    }
 
     // RT-HAZARD: log through `clap.log` from inside the host's `process`. CLAP
     // marks that callback `[thread-safe]`, so this is legal plugin behaviour —
@@ -1910,10 +1913,9 @@ unsafe extern "C" fn render_set(plugin: *const clap_plugin, mode: clap_plugin_re
         // arguments valid per the CLAP ABI.
         if let Some(ext) = unsafe {
             threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
-        } {
-            if let Some(changed) = ext.changed {
-                unsafe { changed(plugin_host(plugin)) };
-            }
+        } && let Some(changed) = ext.changed
+        {
+            unsafe { changed(plugin_host(plugin)) };
         }
     }
     true

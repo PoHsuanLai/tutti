@@ -52,10 +52,10 @@ pub fn clear_observer() {
 /// again would find the slot borrowed and be skipped rather than panicking.
 pub(crate) fn observe(data: &ProcessData, setup: &ProcessSetup) {
     OBSERVER.with(|o| {
-        if let Ok(mut slot) = o.try_borrow_mut() {
-            if let Some(f) = slot.as_mut() {
-                f(data, setup);
-            }
+        if let Ok(mut slot) = o.try_borrow_mut()
+            && let Some(f) = slot.as_mut()
+        {
+            f(data, setup);
         }
     });
 }

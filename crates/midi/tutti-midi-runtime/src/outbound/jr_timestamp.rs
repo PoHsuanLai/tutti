@@ -304,10 +304,10 @@ impl JrStream {
         out: &mut Vec<MidiEvent>,
     ) {
         out.clear();
-        if let Some(emitter) = self.emitter.as_mut() {
-            if let Some(clock) = emitter.due(self.origin_samples) {
-                out.push(clock);
-            }
+        if let Some(emitter) = self.emitter.as_mut()
+            && let Some(clock) = emitter.due(self.origin_samples)
+        {
+            out.push(clock);
         }
         self.stamper.stamp_block(events, self.origin_samples, out);
         self.origin_samples = self.origin_samples.wrapping_add(block_samples);

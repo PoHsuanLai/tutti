@@ -1078,10 +1078,8 @@ impl InputEventList {
                 // it still ends on its latest value; with none, the point is
                 // lost. Counted either way.
                 self.param_points_dropped += 1;
-                if pushed_here {
-                    if let Some(last) = self.events.last_mut() {
-                        *last = event;
-                    }
+                if pushed_here && let Some(last) = self.events.last_mut() {
+                    *last = event;
                 }
             }
         }
@@ -1449,10 +1447,10 @@ impl OutputEventList {
                 // (and reported through `overflowed`), and later events
                 // still get the room that is left.
                 push_sysex(out, time, bytes);
-            } else if let Some(midi) = e.to_midi() {
-                if !out.push(midi) {
-                    break;
-                }
+            } else if let Some(midi) = e.to_midi()
+                && !out.push(midi)
+            {
+                break;
             }
         }
     }
@@ -1570,10 +1568,10 @@ impl OutputEventList {
     pub fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
         out.clear();
         for event in &self.events {
-            if let Some(ne) = clap_event_to_note_expression(event) {
-                if !out.push(ne) {
-                    break;
-                }
+            if let Some(ne) = clap_event_to_note_expression(event)
+                && !out.push(ne)
+            {
+                break;
             }
         }
     }

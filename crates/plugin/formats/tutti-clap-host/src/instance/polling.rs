@@ -130,12 +130,12 @@ fn embed_editor_sequence(
     //    before we create. If it does not, degrade gracefully: a plugin that
     //    only supports floating windows has no embedded `create` path, which
     //    the existing create-fails handling already covers.
-    if let Some(is_api_supported_fn) = gui.is_api_supported {
-        if !unsafe { is_api_supported_fn(plugin, api, false) } {
-            return Err(ClapError::EditorError(
-                "GUI embedded window API not supported".to_string(),
-            ));
-        }
+    if let Some(is_api_supported_fn) = gui.is_api_supported
+        && !unsafe { is_api_supported_fn(plugin, api, false) }
+    {
+        return Err(ClapError::EditorError(
+            "GUI embedded window API not supported".to_string(),
+        ));
     }
 
     // 2. create (embedded, is_floating = false).
@@ -241,12 +241,12 @@ unsafe fn floating_editor_sequence(
     // 1. is_api_supported(floating) — the floating question, which is the one
     //    the embed path never asks and the whole reason a floating-only plugin
     //    reported no editor at all.
-    if let Some(is_api_supported_fn) = gui.is_api_supported {
-        if !unsafe { is_api_supported_fn(plugin, api, true) } {
-            return Err(ClapError::EditorError(
-                "GUI floating window API not supported".to_string(),
-            ));
-        }
+    if let Some(is_api_supported_fn) = gui.is_api_supported
+        && !unsafe { is_api_supported_fn(plugin, api, true) }
+    {
+        return Err(ClapError::EditorError(
+            "GUI floating window API not supported".to_string(),
+        ));
     }
 
     // 2. create(floating = true).
@@ -596,12 +596,12 @@ impl ClapLoaded {
         let gui = unsafe { &*self.extensions.gui.gui };
         let mut w = requested.width;
         let mut h = requested.height;
-        if let Some(adjust) = gui.adjust_size {
-            if !unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) } {
-                return Err(ClapError::EditorError(
-                    "adjust_size: no usable size fits the request".to_string(),
-                ));
-            }
+        if let Some(adjust) = gui.adjust_size
+            && !unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) }
+        {
+            return Err(ClapError::EditorError(
+                "adjust_size: no usable size fits the request".to_string(),
+            ));
         }
         let set_size = gui
             .set_size
@@ -1514,8 +1514,8 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "is_api_supported") };
         true
     }
@@ -1525,15 +1525,15 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "create") };
         true
     }
 
     unsafe extern "C" fn stub_set_scale(plugin: *const clap_plugin, _scale: f64) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "set_scale") };
         true
     }
@@ -1543,11 +1543,14 @@ mod embed_sequence_tests {
         width: *mut u32,
         height: *mut u32,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "get_size") };
-        unsafe { *width = 640 };
-        unsafe { *height = 480 };
+        // SAFETY: the gui call under test passes out-pointers to live `u32`s.
+        unsafe {
+            *width = 640;
+            *height = 480;
+        }
         true
     }
 
@@ -1555,15 +1558,15 @@ mod embed_sequence_tests {
         plugin: *const clap_plugin,
         _window: *const clap_window,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "set_parent") };
         true
     }
 
     unsafe extern "C" fn stub_show(plugin: *const clap_plugin) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "show") };
         true
     }
@@ -1573,15 +1576,15 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "is_api_supported") };
         false
     }
 
     unsafe extern "C" fn stub_can_resize(plugin: *const clap_plugin) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "can_resize") };
         true
     }
@@ -1590,12 +1593,15 @@ mod embed_sequence_tests {
         plugin: *const clap_plugin,
         hints: *mut clap_sys::ext::gui::clap_gui_resize_hints,
     ) -> bool {
-        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
-        // arguments valid per the CLAP ABI.
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
         unsafe { log(plugin, "get_resize_hints") };
         if !hints.is_null() {
-            unsafe { (*hints).can_resize_horizontally = true };
-            unsafe { (*hints).can_resize_vertically = true };
+            // SAFETY: `hints` is non-null and points to a live `clap_gui_resize_hints`.
+            unsafe {
+                (*hints).can_resize_horizontally = true;
+                (*hints).can_resize_vertically = true;
+            }
         }
         true
     }

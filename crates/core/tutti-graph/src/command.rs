@@ -442,11 +442,11 @@ impl CommandRx {
     pub(crate) fn rescale(&mut self, ratio: f64, before: u64) {
         self.pull();
         for cmd in &mut self.pending {
-            if cmd.plan_seq < before {
-                if let At::Frame(_) = cmd.at {
-                    cmd.pos *= ratio;
-                    cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
-                }
+            if cmd.plan_seq < before
+                && let At::Frame(_) = cmd.at
+            {
+                cmd.pos *= ratio;
+                cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
             }
         }
     }

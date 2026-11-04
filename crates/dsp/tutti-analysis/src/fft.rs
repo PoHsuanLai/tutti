@@ -10,20 +10,19 @@
 //! mutation is confined to one visible parameter rather than hidden inside each
 //! call site.
 
-use std::collections::HashMap;
-
 use tutti_types::RealFft;
 
 use crate::Complex;
 
-/// Cached real-input plans plus the buffers a forward or inverse transform needs.
+/// The cached real-input plan plus the buffers a transform needs.
 ///
 /// Both directions run on [`RealFft`], the engine's CPU-independent real FFT
 /// (rustfft's scalar planner), so the spectra are the same bits on every CPU.
 /// It does about half the work of a complex transform over a real signal at an
 /// even size; an odd size runs a full-length complex transform.
 pub struct FftScratch {
-    plans: HashMap<usize, RealFft>,
+    /// The plan for the last size transformed; a different size re-plans.
+    plan: Option<(usize, RealFft)>,
     /// The windowed real input of a forward transform.
     real: Vec<f32>,
     /// The `size / 2 + 1` input bins of an inverse transform (the plan
@@ -33,11 +32,11 @@ pub struct FftScratch {
 }
 
 impl FftScratch {
-    /// An empty working set. Plans and buffers are built lazily on the first
-    /// transform of each size and reused after that.
+    /// An empty working set. The plan and buffers are built lazily on the
+    /// first transform and reused while the size stays the same.
     pub fn new() -> Self {
         Self {
-            plans: HashMap::new(),
+            plan: None,
             real: Vec::new(),
             half: Vec::new(),
             scratch: Vec::new(),
@@ -55,7 +54,7 @@ impl FftScratch {
         debug_assert_eq!(window.len(), size);
         debug_assert_eq!(out.len(), size / 2 + 1);
 
-        let fft = self.plan(size);
+        let fft = plan_for(&mut self.plan, size);
         self.real.clear();
         self.real
             .extend(input.iter().zip(window).map(|(&s, &w)| s * w));
@@ -77,7 +76,7 @@ impl FftScratch {
         let size = out.len();
         debug_assert_eq!(bins.len(), size / 2 + 1);
 
-        let fft = self.plan(size);
+        let fft = plan_for(&mut self.plan, size);
         self.half.clear();
         self.half.extend_from_slice(bins);
 
@@ -92,13 +91,16 @@ impl FftScratch {
             *slot *= norm;
         }
     }
+}
 
-    fn plan(&mut self, size: usize) -> RealFft {
-        self.plans
-            .entry(size)
-            .or_insert_with(|| RealFft::new(size))
-            .clone()
+/// The plan for `size`, built on a change of size. A free function over the
+/// `plan` field alone, so the caller's other fields stay borrowable.
+fn plan_for(plan: &mut Option<(usize, RealFft)>, size: usize) -> &RealFft {
+    match plan {
+        Some((cached, _)) if *cached == size => {}
+        _ => *plan = Some((size, RealFft::new(size))),
     }
+    &plan.as_ref().expect("just set").1
 }
 
 impl Default for FftScratch {
@@ -109,9 +111,8 @@ impl Default for FftScratch {
 
 impl core::fmt::Debug for FftScratch {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let mut sizes: Vec<_> = self.plans.keys().collect();
-        sizes.sort();
-        f.debug_struct("FftScratch").field("sizes", &sizes).finish()
+        let size = self.plan.as_ref().map(|(size, _)| *size);
+        f.debug_struct("FftScratch").field("size", &size).finish()
     }
 }
 

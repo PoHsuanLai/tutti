@@ -53,7 +53,7 @@ libm = "0.2.15"
 # nothing else that is lower than `tutti-types`, which names no tutti crate and
 # which `tutti-graph` and the DSP crates already depend on; rustfft depends on
 # no tutti crate either. Same version as `Cargo.lock`'s.
-rustfft = "6.4"
+rustfft = { version = "6.4", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
 # defines vocabulary, not ECS surface.

@@ -22,8 +22,8 @@ where the results go:
 FFT is `tutti_types::RealFft`, the engine's one real-input FFT: rustfft's
 *scalar* planner under realfft's even-length real passes (an odd size runs a
 full-length complex transform). Its arithmetic does not depend on the CPU, so
-a spectrum, a pitch or an onset is bit-identical on every CPU on the same OS
-and libm (the twiddles call the C library's `sin` and `cos`, so not across
+a spectrum, a pitch or an onset is bit-identical on every CPU on the same OS,
+libm and rustfft version (the twiddles call the C library's `sin` and `cos`, so not across
 libms). `tutti-sampler`'s vocoder and `tutti-nodes`' convolver use the same
 transform, so values cross freely as `num_complex::Complex<f32>`. This crate
 plans lazily, per scratch, on the cold path.

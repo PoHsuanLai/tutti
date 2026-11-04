@@ -1,9 +1,10 @@
 //! A real-input FFT whose arithmetic does not depend on the CPU.
 //!
 //! A real frame of `size` samples has `size / 2 + 1` bins (`DC..=Nyquist` for
-//! an even size; an odd size has no Nyquist bin). An even size is one complex FFT of `size / 2` points plus an `O(size)` pre-
-//! or post-pass, half the work of a complex transform over the same signal. An
-//! odd size runs a complex FFT of `size` points over the real signal.
+//! an even size; an odd size has no Nyquist bin). An even size is one complex
+//! FFT of `size / 2` points plus an `O(size)` pre- or post-pass, half the work
+//! of a complex transform over the same signal. An odd size runs a complex FFT
+//! of `size` points over the real signal.
 //!
 //! **The inner FFT is rustfft's scalar one, on purpose.** rustfft's auto
 //! planner (what `realfft` always uses) picks AVX, SSE or NEON at run time, and
@@ -12,8 +13,8 @@
 //! [`FftPlannerScalar`]. Everything else is plain `f32` Rust, which the compiler
 //! does not contract into FMAs. The transform's arithmetic is therefore
 //! CPU-independent. Its twiddles come from the C library's `sin` and `cos`, so
-//! the output is bit-identical across CPUs on the same OS and libm, not across
-//! libms.
+//! the output is bit-identical across CPUs on the same OS, libm and rustfft
+//! version, not across libms.
 //!
 //! **Licence.** The `RealToComplexEven` and `ComplexToRealEven` passes and the
 //! twiddle construction are adapted from realfft 3.5.0 by Henrik Enquist (MIT);
@@ -28,6 +29,8 @@ use rustfft::{Fft as InnerFft, FftDirection, FftPlannerScalar};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+/// num-complex 0.4's `Complex<f32>`, re-exported from rustfft, so it follows
+/// rustfft's semver: a rustfft bump that changes num-complex changes this type.
 pub use rustfft::num_complex::Complex32;
 
 /// One direction of the even-size transform: the inner FFT (`size / 2` points)
@@ -425,9 +428,8 @@ mod tests {
     /// non-zero value does this; NaN is the worst of them. Even and odd.
     ///
     /// Mutation (run): delete the `bins[..].im = 0.0` lines in `inverse_even`
-    /// -> the `0.25`/`-0.75` frame no
-    /// longer equals the clean one (and the NaN frame's output is not finite)
-    /// and this test fails. The odd arm's equivalent is not mutation-covered:
+    /// -> the `0.25`/`-0.75` frame no longer equals the clean one (and the NaN
+    /// frame's output is not finite) and this test fails. The odd arm's equivalent is not mutation-covered:
     /// DC is added to every output point untwiddled, so its imaginary part
     /// only ever reaches the discarded imaginary output.
     #[test]
@@ -483,6 +485,10 @@ mod tests {
     /// no libm in it. (It is the digest the time-stretch vocoder's copy of
     /// this code recorded, so moving the code here changed no bit.)
     ///
+    /// Only the x86_64 Linux/glibc golden exists: aarch64 and the other
+    /// platforms are covered by the analytic DFT tests alone, which pin
+    /// correctness but not the scalar choice.
+    ///
     /// Mutation (run): build the plans on `rustfft::FftPlanner` instead of
     /// `FftPlannerScalar` in `RealFft::new` -> the digest moves on an AVX
     /// machine.
@@ -518,6 +524,9 @@ mod tests {
 
     /// The odd path is scalar too: a digest of an odd-size round trip, gated
     /// like the even one.
+    ///
+    /// Like the even one, it exists only on x86_64 Linux/glibc; aarch64 and the
+    /// other platforms are covered by the analytic DFT tests alone.
     ///
     /// Mutation (run): as above, in the odd arm of `RealFft::new`.
     #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]

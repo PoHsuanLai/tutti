@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — every FFT user but the HRTF is CPU-independent: `tutti_types::RealFft`; convolver and analysis output bits change
+### Changed — every FFT user but the HRTF and the export resampler is CPU-independent: `tutti_types::RealFft`; convolver and analysis output bits change
 
 **One real-input FFT, on rustfft's scalar planner, serves the convolver, the
 analysis kernels and the time-stretch vocoder.** `realfft`'s planners use
@@ -21,7 +21,7 @@ the same arithmetic, and the digest test that pinned it passes with its value
 untouched. An odd size, which tutti-analysis accepts, runs a full-length
 complex transform on the same scalar planner. The guarantee is
 CPU-independent arithmetic: results are bit-identical across CPUs on the same
-OS and libm, not across libms (the twiddles call the C library's `sin` and
+OS, libm and rustfft version, not across libms (the twiddles call the C library's `sin` and
 `cos`). `tutti-spatial`'s HRTF and `tutti-export`'s `rubato` resampler still use
 SIMD-dispatching FFTs.
 
@@ -136,8 +136,8 @@ cannot be given a planner, so the even-length real-FFT passes run over
 the notice is `tutti-types/src/LICENSE-realfft`). A test pins the scalar choice
 on Linux/glibc, and another checks the transforms against the textbook DFT.
 The twiddles and the vocoder's phase math still use the C library's
-sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS
-and libm, not across libms. The tutti-spatial HRTF and the
+sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS,
+libm and rustfft version, not across libms. The tutti-spatial HRTF and the
 `tutti-export` resampler (`rubato`'s FFT resampler, which runs `realfft`) still
 use SIMD-dispatching FFTs.
 The inverse zeroes the

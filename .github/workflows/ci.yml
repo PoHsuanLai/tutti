@@ -196,6 +196,14 @@ jobs:
       #                         plugin through a real plugin-server.
       #                         `export,modulation` so the render mode and the
       #                         GUI-edit drain compile with it.
+      #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
+      #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
+      #                         and the extension code they cover
+      #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
+      #                         `clap_*`, `plugin_param_delivery*` and
+      #                         `vst2_in_process*` suites): no other job turns
+      #                         the features on, so none of them ran. Only
+      #                         `real_plugin_pressure` did, by name.
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
       #                         (`headless_modulation`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
@@ -212,9 +220,11 @@ jobs:
           cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings
           cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings
           cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
 
       # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin.rs` and
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
@@ -233,9 +243,10 @@ jobs:
           cargo nextest run --locked -p bevy-tutti --features soundfont
           cargo nextest run --locked -p bevy-tutti --features sampler
           cargo nextest run --locked -p bevy-tutti --features full,plugin
-          cargo nextest run --locked -p tutti-session --features clap,export,modulation
+          cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
           cargo nextest run --locked -p tutti --features clap,export,modulation
           cargo nextest run --locked -p tutti-io --features bevy
+          cargo nextest run --locked -p tutti-clap-host --features clap-extras
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
       # pool runs each task inside `spawn`, on the main thread: a render's
@@ -295,8 +306,8 @@ jobs:
       # not `continue-on-error`, which is how the pre-extraction workflow died.
       - name: Build plugin-server
         run: cargo build --locked -p tutti-plugin-server
-      - name: Out-of-process plugin bridge under pressure
-        run: cargo nextest run --locked -p tutti-plugin --features clap --test real_plugin_pressure
+      - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
+        run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
 
   # Benchmarks: proved to RUN, never compared.
   #

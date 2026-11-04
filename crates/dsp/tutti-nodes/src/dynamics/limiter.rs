@@ -353,6 +353,13 @@ impl LimiterNode {
     }
 }
 
+/// The linked-peak fold: `max` returns the other operand for a NaN, so a NaN
+/// sample never reaches the peak.
+#[inline]
+fn fold_peak(peak: f32, x: f32) -> f32 {
+    peak.max(x.abs())
+}
+
 impl Node for LimiterNode {
     /// `channels` in and out, ceiling, threshold and release modulatable
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
@@ -396,8 +403,8 @@ impl Node for LimiterNode {
         let base_ceiling = self.ceiling_db.load();
         let (inputs, mut outputs) = io.split();
         let release_coeff = self.follower.release_coeff();
-        // Unfed, the curve is constant across the block: its sub-threshold
-        // gain is one `powf` here rather than one per quiet frame.
+        // Unfed, the curve is constant across the block: its constants are a
+        // few `powf`s here, and a frame is a compare and a divide.
         let curve = (threshold_fed.is_none() && ceiling_fed.is_none())
             .then(|| LimiterCurve::new(base_threshold, base_ceiling));
 
@@ -415,17 +422,17 @@ impl Node for LimiterNode {
             gains.fill(0.0);
             for c in 0..self.channels {
                 for (p, &x) in gains.iter_mut().zip(&inputs.get(c)[start..end]) {
-                    *p = p.max(x.abs());
+                    *p = fold_peak(*p, x);
                 }
             }
 
             // The recursive half: the envelope and the sliding minimum, one
             // frame at a time; each frame's peak becomes its window-min gain.
             for (k, p) in gains.iter_mut().enumerate() {
-                let peak_db = amplitude_to_db(*p);
                 let target_gain = match &curve {
-                    Some(curve) => curve.gain(peak_db),
+                    Some(curve) => curve.gain(*p),
                     None => {
+                        let peak_db = amplitude_to_db(*p);
                         let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[start + k]));
                         let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[start + k]));
                         compute_limiter_gain(peak_db, threshold, ceiling).get()
@@ -1443,6 +1450,195 @@ mod tests {
                     (y - delayed * gain).abs() <= 1e-6,
                     "lane {lane:?}, frame {i}: {y} against {delayed} x {gain}"
                 );
+            }
+        }
+    }
+    /// How close the one-pole envelope gets to a steady target: it stops when
+    /// a step rounds away, about `1 / coeff` ulps short (44 ulps at 1 ms).
+    const SETTLED: f32 = 2e-5;
+
+    /// A block of `n` frames of deterministic noise in `[-amp, amp]`.
+    fn noise(seed: &mut u32, n: usize, amp: f32) -> Vec<f32> {
+        (0..n)
+            .map(|_| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((*seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    /// Whatever loud noise goes in, the output stays at the ceiling, to the
+    /// rounding of a gain divide and a product plus the release's slack: the
+    /// gain window ends one frame after the delayed sample's own target, so
+    /// the envelope has risen one release step toward unity by then and the
+    /// frame can pass `|x| * coeff` above the ceiling. Threshold at the
+    /// ceiling, so the quiet gain is unity.
+    ///
+    /// Mutation (run): drop the `/ peak` in `LimiterCurve::gain` (return
+    /// `self.over`) -> a peak of 4 comes out at 4 x the ceiling -> fails.
+    #[test]
+    fn loud_noise_stays_at_the_ceiling() {
+        let ceiling = Db(-6.0);
+        let limit = db_to_amplitude(ceiling).get();
+        let mut lim = prepared_at(LimiterNode::new(ceiling, ceiling), RATE_44K);
+        let latency = lim.ring.lookahead_samples;
+        let coeff = Seconds(0.1).one_pole_coeff(RATE_44K);
+        let mut seed = 7;
+        let (mut input, mut output) = (Vec::new(), Vec::new());
+        for _ in 0..40 {
+            let l = noise(&mut seed, 1024, 4.0);
+            let r = noise(&mut seed, 1024, 4.0);
+            output.extend(drive(&mut lim, RATE_44K, &[&l, &r], &[]).remove(0));
+            input.extend(l);
+        }
+        let mut limited = 0;
+        for (i, &y) in output.iter().enumerate().skip(latency) {
+            let d = input[i - latency].abs();
+            let bound = (limit + coeff * d) * (1.0 + 4.0 * f32::EPSILON);
+            assert!(y.abs() <= bound, "frame {i}: {y} over {bound}");
+            limited += usize::from(y.abs() > 0.9 * limit);
+        }
+        assert!(limited > 1000, "the limiter was exercised: {limited}");
+    }
+
+    /// A steady signal under the threshold passes at unity once the lookahead
+    /// has filled; one over it settles at `ceiling / peak`.
+    ///
+    /// Mutation (run): `over: ... * threshold_lin` -> `over: ... ` (drop the
+    /// threshold factor in `LimiterCurve::new`) -> the loud gain is off by
+    /// the threshold -> fails; return `self.over` for the quiet branch ->
+    /// the quiet signal is not unity -> fails.
+    #[test]
+    fn a_steady_signal_passes_under_and_settles_at_ceiling_over_peak() {
+        let ceiling = Db(-6.0);
+        let limit = db_to_amplitude(ceiling).get();
+        for (level, want) in [(0.25f32, 1.0f32), (1.0, limit), (3.0, limit / 3.0)] {
+            let mut lim = prepared_at(
+                LimiterNode::new(ceiling, ceiling).with_release(0.001),
+                RATE_44K,
+            );
+            let x = vec![level; 1024];
+            let mut out = Vec::new();
+            for _ in 0..16 {
+                out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
+            }
+            let want = level * want;
+            for &y in &out[512..] {
+                assert!(
+                    (y - want).abs() <= SETTLED * want,
+                    "level {level}: {y} against {want}"
+                );
+            }
+        }
+    }
+
+    /// With the ceiling under the threshold the reduction is still
+    /// `ceiling / peak` over the threshold, and the constant
+    /// `ceiling / threshold` under it.
+    ///
+    /// Mutation (run): in `LimiterCurve::new`, take `cap` as `0.0` -> the
+    /// loud gain is `threshold / peak` -> fails.
+    #[test]
+    fn a_ceiling_under_the_threshold_scales_by_the_gap_under_it() {
+        let (threshold, ceiling) = (Db(-3.0), Db(-9.0));
+        let (t, c) = (
+            db_to_amplitude(threshold).get(),
+            db_to_amplitude(ceiling).get(),
+        );
+        for (level, gain) in [(0.1f32, c / t), (2.0, c / 2.0)] {
+            let mut lim = prepared_at(
+                LimiterNode::new(threshold, ceiling).with_release(0.001),
+                RATE_44K,
+            );
+            let x = vec![level; 1024];
+            let mut out = Vec::new();
+            for _ in 0..16 {
+                out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
+            }
+            let want = level * gain;
+            assert!(
+                (out[1023] - want).abs() <= SETTLED * want,
+                "level {level}: {} against {want}",
+                out[1023]
+            );
+        }
+    }
+
+    /// A NaN sample passes through as a NaN and does not poison the state:
+    /// the peak detector ignores it (`max`), so the gain is untouched and the
+    /// frames after it limit as before.
+    ///
+    /// Two layers keep a NaN out: the peak fold's `max` ignores it, and
+    /// `LimiterCurve::gain` sends one to the quiet gain. Either alone is
+    /// absorbed (the envelope attacks straight back), so the mutation breaks
+    /// both.
+    ///
+    /// Mutation (run): in the peak fold, `*p = if x.is_nan() { x } else {
+    /// p.max(x.abs()) }`, and in `LimiterCurve::gain`, `if !(peak <=
+    /// self.threshold)` -> a NaN gain enters the envelope and the minimum, and
+    /// every later frame is NaN -> fails.
+    #[test]
+    fn a_nan_input_does_not_poison_the_gain() {
+        let ceiling = Db(-6.0);
+        let limit = db_to_amplitude(ceiling).get();
+        let mut lim = prepared_at(
+            LimiterNode::new(ceiling, ceiling).with_release(0.001),
+            RATE_44K,
+        );
+        let latency = lim.ring.lookahead_samples;
+        let mut x = vec![1.0f32; 1024];
+        x[10] = f32::NAN;
+        let out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
+        assert!(
+            out[10 + latency].is_nan(),
+            "the NaN is delayed, not dropped"
+        );
+        let x = vec![1.0f32; 1024];
+        let out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);
+        for (i, &y) in out.iter().enumerate().skip(latency + 1) {
+            assert!(
+                (y - limit).abs() <= SETTLED * limit,
+                "frame {i}: {y} against {limit}"
+            );
+        }
+        assert!(lim.envelope.is_finite());
+    }
+
+    /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the
+    /// `LimiterCurve::gain` guard, which has its own test in `utils.rs`.
+    ///
+    /// Mutation (run): `if x.is_nan() { x } else { peak.max(x.abs()) }` in
+    /// `fold_peak` -> the peak is NaN -> fails.
+    #[test]
+    fn a_nan_fed_to_the_peak_fold_is_ignored() {
+        assert_eq!(fold_peak(0.5, f32::NAN), 0.5);
+        assert_eq!(fold_peak(0.0, f32::NAN), 0.0);
+        assert_eq!(fold_peak(0.5, -0.75), 0.75);
+    }
+
+    /// Silence, a burst, silence, at thresholds so low that `10^((ceiling -
+    /// threshold)/20)` overflows `f32` without the clamp in
+    /// `LimiterCurve::new`: `0 * inf` would put a NaN on every silent sample.
+    ///
+    /// Mutation (run): in `LimiterCurve::new`, `gap = ceiling - threshold`
+    /// (drop the `.min(MAX_GAP_DB)`) -> `below` is inf at -inf and -800 dB ->
+    /// NaN output -> fails.
+    #[test]
+    fn a_very_low_threshold_never_produces_a_nan() {
+        for threshold in [f32::NEG_INFINITY, -800.0, -150.0] {
+            let mut lim = prepared_at(
+                LimiterNode::new(Db(threshold), Db(-6.0)).with_release(0.001),
+                RATE_44K,
+            );
+            let mut x = vec![0.0f32; 1024];
+            x[300..400].fill(2.0);
+            x[400..500].fill(-0.001);
+            let mut output = Vec::new();
+            for _ in 0..4 {
+                output.extend(drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0));
+            }
+            for (i, &y) in output.iter().enumerate() {
+                assert!(y.is_finite(), "threshold {threshold}: frame {i} is {y}");
             }
         }
     }

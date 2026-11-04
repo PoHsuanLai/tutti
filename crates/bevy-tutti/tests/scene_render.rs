@@ -27,11 +27,13 @@
 //! - **A golden digest** of the scene, Linux/glibc only: recorded when the
 //!   render was checked against an independent reference implementation,
 //!   and re-recorded for the limiter's one-pole release moving to
-//!   `Seconds::one_pole_coeff` (a last-bits change; the channel checks above
-//!   are independent of it). The filter's coefficients, the waveshaper and
-//!   the limiter's detector call the platform's `tan`, `tanh` and `log10`,
-//!   whose last ulp differs between C runtimes, so it is asserted where it
-//!   was recorded.
+//!   `Seconds::one_pole_coeff` and again for the limiter's gain moving from
+//!   dB to the linear peak (`threshold / peak` over the threshold instead of
+//!   `10^(-(peak_dB - threshold) / 20)`: a few last-bits differences in the
+//!   gain; the channel checks above are independent of it). The filter's
+//!   coefficients, the waveshaper and the limiter's constants call the
+//!   platform's `tan`, `tanh` and `powf`, whose last ulp differs between C
+//!   runtimes, so it is asserted where it was recorded.
 
 #[macro_use]
 mod common;
@@ -230,7 +232,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     if GOLDEN_HERE {
         assert_eq!(
             digest(&b),
-            0xebe5_2622_021b_4654,
+            0x576a_ac03_8473_6dc5,
             "the recorded samples: digest {:#018x}",
             digest(&b)
         );

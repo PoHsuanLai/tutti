@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the lookahead limiter's gain runs on the linear peak, last-bit differences
+
+`LimiterNode` no longer takes a `log10` of the peak and a `powf` of the
+reduction on every frame when its threshold and ceiling are not fed. Over the
+threshold the gain is `10^(cap/20) * threshold_lin / peak` (the dB form
+`10^((cap - (peak_dB - threshold)) / 20)` rearranged), with the constants
+computed once per block, so a frame is a compare and a divide. The release
+smoothing was already linear (`envelope += coeff * (target - envelope)` on
+the gain) and is untouched, as is the path with a fed threshold or ceiling.
+Gains differ from the old ones by about 1e-6 relative (up to 5e-6 at extreme
+peaks), which is the old dB rounding in `log10` and `powf`; the linear form is
+the more accurate against an f64 reference. Only a threshold under -144 dB
+changes more: the dB form pinned an exact-zero peak at -144 dB, which sent
+silence down the "over" branch, and now, for thresholds below -144 dB, exact
+digital silence takes the `below` boost `10^((ceiling - threshold)/20)` (at
+exactly -144 dB it already did). Real (nonzero) signals are unaffected. That boost is
+kept finite by clamping the `ceiling - threshold` gap to 760 dB and the
+threshold amplitude to `f32::MIN_POSITIVE`, so a threshold of -inf or under
+-770 dB gives no NaN; no threshold at or above -144 dB is affected. The golden
+digest in `bevy-tutti`'s `scene_render` was re-recorded.
+`LimiterCurve::gain` now takes the linear peak, not dB.
+Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
+64 frames 1.86 to 1.03 us, 1024 frames 30.0 to 12.1 us.
+
 ### Changed — `GateNode` compares its threshold in the linear domain; boundary decisions can move
 
 **`GateNode` no longer takes a `log10` of the sidechain level every sample.**

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `clap_live` tolerates one bounded scheduler stall
+
+The paced `clap_live` tests allowed 1% silent blocks (2 of 200), so one
+scheduler stall (a run of about 3 silent blocks) failed about one run in
+seven on an idle 4-core machine. They now allow one contiguous silent run, no
+longer than 36 ms of block periods plus the pipeline's `RING_SLOTS` refill;
+a second run, a longer one or any wrong block still fails. Test-only change.
+
 ### Changed — golden digests gate on the recorded glibc, not on "Linux/glibc"
 
 The per-file `GOLDEN_HERE` constants and local `assert_golden` helpers are

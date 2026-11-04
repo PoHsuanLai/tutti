@@ -14,28 +14,21 @@ time) over complex transforms, so its render differed in the last bits between
 CPUs. It now transforms through `tutti_types::RealFft`, the scalar planner the
 convolver and analysis share: the input history is one real forward FFT, and
 each ear has its own spectrum per vertex and one real inverse FFT (two more
-while the source moves). The packed-pair trick it replaces needed complex
-transforms. Its sphere preparation no longer needs a complex buffer the size of
-the packed spectra: each resampled response is transformed into its spectrum as
-it is produced.
+while the source moves).
 
 - **Output bits change** (f32 rounding; the filter, the crossfade and the
   latency are unchanged). Results are bit-identical across CPUs on one OS and
   libm, not across libms.
-- **Slower than the old SIMD render, by the cost of scalar FFTs.** The
-  `hrtf_binaural` bench (64-frame blocks, 162-vertex sphere, one machine):
-  0.55 -> 1.46 us a block still and 0.97 -> 2.64 us moving with 128-tap HRIRs,
-  2.10 -> 6.05 us and 3.24 -> 9.83 us with 512 taps. Against the *same
-  packed code on the scalar planner* (1.73, 2.67, 7.20, 10.99 us) the real
-  transforms are 16-19 % faster still and 1-11 % faster moving. A 512-tap
-  moving source is 0.7 % of a 48 kHz block's budget.
+- **About 3x slower than the old SIMD render.** The `hrtf_binaural` bench
+  (64-frame blocks, 162-vertex sphere, one machine): 0.55 -> 1.46 us a block
+  still and 0.97 -> 2.64 us moving with 128-tap HRIRs, 2.10 -> 6.05 us and
+  3.24 -> 9.83 us with 512 taps. A 512-tap moving source is 0.7 % of a 48 kHz
+  block's budget.
+- Each vertex's two spectra are `N / 2 + 1` bins per ear, so the prepared set
+  is slightly larger than before; preparation resamples in bounded batches and
+  transforms each response as it is produced.
 - The `hrtf` feature of `tutti-spatial` no longer pulls `rustfft` directly
   (`hrtf = []`; the FFT is `tutti-types`'). No public type changes.
-
-The render path already could not panic on a sphere `new` accepted; a vertex
-index past the sphere now reads vertex 0 rather than indexing out of range.
-The external `hrtf` crate this item was first scoped against was already
-replaced by the crate's own convolver, so nothing is vendored.
 
 ### Changed — every FFT user but the export resampler is CPU-independent: `tutti_types::RealFft`; convolver, analysis and binaural output bits change
 

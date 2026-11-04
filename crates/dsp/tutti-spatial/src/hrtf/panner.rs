@@ -501,15 +501,20 @@ mod tests {
     }
 
     /// A direction that is NaN, infinite or zero finds no face and takes a
-    /// real vertex: the weights name vertices the sphere has and sum to one,
-    /// so the render that follows reads spectra that exist. The renderer
-    /// itself, fed a NaN target (bypassing the node's finite hold), keeps
-    /// producing finite audio and does not panic.
+    /// real vertex: the weights name vertices the sphere has and sum to one.
+    /// The renderer is then fed NaN and infinite targets (the node holds the
+    /// last finite one, so only the panner sees them; a zero direction
+    /// cannot come from angles, so only the weights are checked with it) and
+    /// must keep producing finite, non-silent audio: the tetrahedron's
+    /// deltas pass the constant input through at every vertex.
     ///
-    /// Mutations (run): in `HrtfSet::weights`, starting the fallback at
-    /// `nearest = self.directions.len() as u32` and never updating it (and
-    /// `HrtfSet::spectrum` indexing directly) → the vertex assertion fails
-    /// and the render panics out of range.
+    /// Mutations (run), each of which fails the render half on its own
+    /// (the weights loop disabled): in `HrtfSet::weights`, starting the
+    /// fallback at `nearest = self.directions.len() as u32` and never
+    /// updating it → the render hits `spectrum`'s `debug_assert`; and
+    /// returning zero weights `w: [0.0; 3]` from the fallback → the render
+    /// is silent and the audibility assertion fails. With the weights loop
+    /// on, the first mutation also fails the vertex assertion.
     #[test]
     fn a_degenerate_direction_takes_a_real_vertex_and_renders_finite_audio() {
         let rate = SampleRate(48_000.0);
@@ -533,10 +538,13 @@ mod tests {
             (Azimuth(f32::NAN), Elevation(f32::NAN)),
             (Azimuth(f32::INFINITY), Elevation(0.0)),
         ] {
+            let mut peak = 0.0f32;
             for _ in 0..20 {
                 p.process(target, Mix::WET, (&input, &input), (&mut left, &mut right));
                 assert!(left.iter().chain(&right).all(|s| s.is_finite()));
+                peak = left.iter().chain(&right).fold(peak, |m, s| m.max(s.abs()));
             }
+            assert!(peak > 0.1, "{target:?} rendered silence (peak {peak})");
         }
     }
 

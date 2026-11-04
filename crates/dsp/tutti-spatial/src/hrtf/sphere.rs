@@ -197,8 +197,8 @@ const RESAMPLE_BATCH: usize = 1 << 20;
 /// scaled by `from / to`: a response's taps are its continuous form times the
 /// sample period, so at twice the rate each tap carries half the weight.
 ///
-/// The responses go in batches of whole vertices holding up to
-/// [`RESAMPLE_BATCH`] samples of input and of output, copied tap-major so a
+/// The responses go in batches holding up to [`RESAMPLE_BATCH`] samples of
+/// input and of output, copied tap-major so a
 /// weight is applied to the whole batch in one contiguous pass. The kernel's
 /// weights depend only on the output tap, so each tap's are evaluated once
 /// per batch: the `sin` and `cos` calls cost `out_len` kernel widths per
@@ -214,6 +214,19 @@ fn resample_into(
     from: u32,
     to: u32,
     out_len: usize,
+    emit: impl FnMut(usize, &[f32]),
+) {
+    resample_batched(responses, len, from, to, out_len, RESAMPLE_BATCH, emit);
+}
+
+/// [`resample_into`] with the batch size, in samples, a parameter.
+fn resample_batched(
+    responses: &[f32],
+    len: usize,
+    from: u32,
+    to: u32,
+    out_len: usize,
+    batch_samples: usize,
     mut emit: impl FnMut(usize, &[f32]),
 ) {
     /// Kernel half-width, in zero crossings.
@@ -228,8 +241,8 @@ fn resample_into(
         let window = 0.42 + 0.5 * u.cos() + 0.08 * (2.0 * u).cos();
         cutoff * sinc * window
     };
-    // An even count, so a batch holds whole vertices.
-    let per_batch = (RESAMPLE_BATCH / len.max(out_len)).max(2) & !1;
+    // Responses per batch: at least one, whatever the size.
+    let per_batch = (batch_samples / len.max(out_len)).max(1);
     let mut taps = Vec::new();
     let mut weights = Vec::new();
     let mut sums = Vec::new();
@@ -442,18 +455,13 @@ impl HrtfSet {
 
     /// Vertex `v`'s spectra: the left ear's, then the right's.
     ///
-    /// A `v` past the sphere (none reaches here: [`weights`](Self::weights)
-    /// names only the sphere's vertices) reads vertex 0, so a bad index
-    /// degrades instead of panicking.
+    /// `v` must be a vertex of the sphere; [`weights`](Self::weights) names
+    /// only those.
     #[inline]
     pub(crate) fn spectrum(&self, v: u32) -> (&[Complex32], &[Complex32]) {
+        debug_assert!((v as usize) < self.directions.len());
         let bins = self.fft.bins();
-        let v = if (v as usize) < self.directions.len() {
-            v as usize
-        } else {
-            0
-        };
-        let at = 2 * v * bins;
+        let at = 2 * v as usize * bins;
         let (left, right) = self.spectra[at..at + 2 * bins].split_at(bins);
         (left, right)
     }
@@ -542,6 +550,60 @@ mod tests {
             assert!(
                 (tap - 0.475).abs() <= 1e-6,
                 "{ear}: the tap on the delta is {tap}, expected 0.475"
+            );
+        }
+    }
+
+    /// Resampling in small batches gives every response the same samples as
+    /// one batch, and the right index. Fifteen responses of 8 taps go from 8 to
+    /// 16 kHz in batches of 3, so four boundaries fall, some between a
+    /// vertex's two ears. Response `r` is a delta of
+    /// amplitude `r + 1` on tap `r % 8`, so its output tap `2 (r % 8)` is
+    /// `0.475 (r + 1)` (see `resampling_reads_a_responses_edge_taps`), which
+    /// pins each emitted index to its own response, and the whole output is
+    /// bit-identical to the single-batch run.
+    ///
+    /// Mutations (run):
+    /// - `emit(first + r, ..)` -> `emit(r, ..)` -> the order assertion fails
+    ///   at the first response of the second batch.
+    /// - `first = batch * per_batch` -> `batch * per_batch + 1` -> same.
+    /// - dropping the `r` offset in the tap-major copy (`taps[m * count]`)
+    ///   -> the analytic tap of response 1 is wrong.
+    #[test]
+    fn resampling_in_batches_matches_one_batch() {
+        const LEN: usize = 8;
+        const OUT_LEN: usize = 16;
+        const RESPONSES: usize = 15;
+        let mut responses = vec![0.0f32; RESPONSES * LEN];
+        for r in 0..RESPONSES {
+            responses[r * LEN + r % LEN] = (r + 1) as f32;
+        }
+        let run = |batch_samples: usize| {
+            let mut got = Vec::new();
+            resample_batched(
+                &responses,
+                LEN,
+                8_000,
+                16_000,
+                OUT_LEN,
+                batch_samples,
+                |r, response| {
+                    assert_eq!(r, got.len(), "emitted in index order");
+                    got.push(response.to_vec());
+                },
+            );
+            got
+        };
+        let whole = run(RESAMPLE_BATCH);
+        let small = run(3 * OUT_LEN);
+        assert_eq!(whole.len(), RESPONSES);
+        assert_eq!(small, whole, "batching changes no sample");
+        for (r, response) in small.iter().enumerate() {
+            let tap = response[2 * (r % LEN)];
+            let want = 0.475 * (r + 1) as f32;
+            assert!(
+                (tap - want).abs() <= 1e-5 * want,
+                "response {r}: tap {tap}, expected {want}"
             );
         }
     }

@@ -12,15 +12,18 @@
 //! in-block entries are the reference solver's, whose coefficient was within
 //! an `f32` rounding of that one (edges then differed by at most 4e-6), far
 //! inside `RAMP_TOL`. The edges agree with a frame-at-a-time render to
-//! ≤ 5e-9.
+//! ≤ 2.5e-6.
 //!
 //! Two tolerances, and why they differ:
 //!
-//! - **The last frame of every block is exact** (`EDGE_TOL`, 1e-6 — f32
-//!   rounding only; measured ≤ 5e-9). The smoother is still stepped once per
-//!   frame, so at the block's last frame the block render solves at the very
-//!   position the reference solved at, and the ramp is written so its last
-//!   sample *is* that solve.
+//! - **The last frame of every block is on the per-frame solve to within
+//!   the smoother's rounding** (`EDGE_TOL`, 2.5e-4). The smoother advances a
+//!   block in one analytic move where the reference stepped it per frame, so
+//!   the two positions differ by the reference's accumulated f32 rounding,
+//!   at most `1.5 * 2^-24 * 180°` per frame (≈ 1.6e-5° a frame, 6e-3° over
+//!   these six blocks). At the slope bound of 2 per radian that is 2.5e-4 on
+//!   a ±1 input; measured 2.5e-6 on the sweep. The ramp is written so its
+//!   last sample *is* the solve at the advanced position.
 //! - **Frames inside a block are within `RAMP_TOL`**. They lie on a chord of
 //!   the gain curve where the reference sat on the curve itself, so the error
 //!   is bounded by how far the source travels in one block. The 50 ms
@@ -52,7 +55,7 @@ const BLOCKS: usize = 6;
 /// Frame indices pinned per block. 63 is the block edge (exact), the others
 /// sit inside the ramp.
 const PINNED: [usize; 3] = [0, 31, 63];
-const EDGE_TOL: f32 = 1e-6;
+const EDGE_TOL: f32 = 2.5e-4;
 const RAMP_TOL: f32 = 0.06;
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -1057,10 +1060,10 @@ fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let mut any_moved = false;
     for (c, &s) in settled.iter().enumerate() {
         let last = out[c][BLOCK - 1];
-        assert_eq!(
-            last.to_bits(),
-            frame[c].to_bits(),
-            "ch {c}: the block must end on the per-frame solve"
+        assert!(
+            (last - frame[c]).abs() <= EDGE_TOL,
+            "ch {c}: the block must end on the per-frame solve: {last} vs {}",
+            frame[c]
         );
         let step = (last - s) / BLOCK as f32;
         let first = out[c][0];

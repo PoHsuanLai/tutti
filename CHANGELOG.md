@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the VBAP panner advances its position smoother in one move per block; output bits change
+
+`VbapPanner::solve_block` stepped the 50 ms position smoother once per frame
+(a `rem_euclid` chain for the bearing, 17 to 20 ns a frame), which was most of
+a moving source's block. The smoother's step toward a fixed target is a
+one-pole recurrence, so `ExponentialSmoother::advance` and `advance_angle`
+apply `steps` of them at once: the remaining gap is multiplied by
+`(1 - coeff)^steps`, along the short arc for a bearing (the arc does not change
+direction as the value closes on the target). A held source already skipped
+the steps once the smoother reached its fixed point; that skip stays, keyed on
+the target and the block length.
+
+Measured with `vbap_panner`, interleaved, one pinned core, median of 3 (block
+time, before to after): moving stereo 1.63 to 0.47 µs at 64 frames and 18.5 to
+1.9 µs at 1024; moving 5.1 1.81 to 0.67 µs and 21.9 to 4.4 µs. A held source
+is unchanged (within noise).
+
+Output bits change for a moving source, and the new position is the closer to
+the exact one-pole response: the per-frame loop's f32 rounding, injected every
+step and shrunk by `1 - coeff` after, leaves it within `1.5 * 2^-24 * R *
+min(steps, 1/coeff)` of the exact recurrence (`R` the range: 0.03 degrees of
+bearing at 48 kHz), and the loop also stalls short of the target by up to
+`ulp / (2 * coeff)` (about 0.02 degrees); the advance does neither. The gains
+at a block's last frame moved by at most 2.5e-6 on the pinned renders
+(`EDGE_TOL` in `tests/vbap_block_gains.rs` is now the 2.5e-4 bound at the
+gains' slope, not 1e-6). A source with a fixed target still converges to it, and
+the ramp keeps its timing. `AngleSmoother::step`, which HRTF uses once per
+convolution frame, is unchanged. The quad digest in `tutti-export`'s `graph_source` test was re-recorded (its folded stereo and mono renders are still checked against it bit for bit). No API break and no migration.
+
 ### Changed — the lookahead limiter's threshold drives its input; with the ceiling above the threshold the output changes
 
 `LimiterNode`'s curve was discontinuous and non-monotonic when `ceiling_db >

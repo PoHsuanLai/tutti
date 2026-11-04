@@ -547,7 +547,6 @@ impl ClapInstance {
         let params_before = clap_dispatch!(self, i => i.parameter_count());
 
         // A successful re-activation re-reads the parameters' ranges itself.
-        let mut ranges_read = false;
         let reactivate = ports.needs_deactivate()
             || restart
             || params.needs_deactivate()
@@ -556,7 +555,6 @@ impl ClapInstance {
             let outcome = clap_dispatch_mut!(self, i => i.reactivate());
             let active = clap_dispatch!(self, i => i.is_active());
             self.note_layout_change();
-            ranges_read = outcome.is_ok();
             if let Err(e) = outcome {
                 tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
             }
@@ -588,9 +586,9 @@ impl ClapInstance {
 
         if params.requested {
             if params.info || params.all {
-                if !ranges_read {
-                    clap_dispatch_mut!(self, i => i.rescan_params());
-                }
+                // Read after the activation: a plugin may settle its
+                // parameters in `activate`.
+                clap_dispatch_mut!(self, i => i.rescan_params());
                 self.pending.param_titles = true;
             }
             if params.values || params.text {
@@ -1615,7 +1613,7 @@ mod tests {
     /// **A timer the plugin registers ticks on the service pass.** The host
     /// answered `register_timer` with `true` and never called `on_timer`.
     ///
-    /// Mutation (run): delete `self.poll_timers()` from
+    /// Mutation (run): delete the `poll_timers_at(now)` call from
     /// `ClapLoaded::run_main_thread_work` → no tick → fails.
     #[test]
     fn a_timer_the_plugin_registers_is_ticked() {

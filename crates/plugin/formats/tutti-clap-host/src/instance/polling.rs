@@ -1325,14 +1325,15 @@ fn fire_due_timers(
             fired += 1;
         }
     }
-    // After the callbacks, which may have registered or unregistered timers.
-    let next = state.timers.lock().ok().and_then(|timers| {
-        timers
+    // After the callbacks, which may have registered or unregistered timers;
+    // stored under the lock, so a registration's `note_due` is not overwritten.
+    if let Ok(timers) = state.timers.lock() {
+        let next = timers
             .iter()
             .map(|t| t.last_fire + std::time::Duration::from_millis(u64::from(t.period_ms)))
-            .min()
-    });
-    state.set_next_due(next);
+            .min();
+        state.set_next_due(next);
+    }
     fired
 }
 

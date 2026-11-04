@@ -159,6 +159,16 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
         REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
+    // Refuse activation at this rate (Hz, matched bit for bit), as
+    // `tutti_test_plugin_set_activate_refusal` does in-process: an
+    // out-of-process test cannot reach that switch.
+    if let Some(hz) = std::env::var("TUTTI_CLAP_PROBE_REFUSE_RATE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::refusal::tutti_test_plugin_set_activate_refusal(hz.to_bits(), 0) };
+    }
     // The render mode has an `extern "C"` switch too, and this is the same
     // static — not a second copy. An out-of-process test cannot call that
     // switch (the plugin is in another process), and the mode is what decides

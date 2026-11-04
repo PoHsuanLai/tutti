@@ -8,6 +8,7 @@ use crate::protocol::{
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
     PresetId, Samples, ScaleChanges, TransportInfo,
 };
+use tutti_types::SampleRate;
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
 /// recycled between calls to avoid RT allocation.
@@ -178,6 +179,9 @@ pub enum BridgeEvent {
     /// (preset load, param-title change, IO change, full reload). Carries no
     /// payload — the host re-reads from the plugin in response.
     Resync(ResyncKind),
+    /// The plugin refused the rate it was asked to run at (`Some`: the rate in
+    /// Hz and the plugin's reason), or took a rate after refusing one (`None`).
+    RateRefusal(Option<(f64, String)>),
     /// The bridge died: the subprocess never connected, failed the handshake,
     /// or its stream dropped mid-session.
     ///
@@ -248,6 +252,12 @@ pub(super) struct Unsolicited {
     params: std::collections::VecDeque<(i32, f32)>,
     latency: Option<Samples>,
     tail: Option<PluginTail>,
+    rate: Option<Option<(f64, String)>>,
+    /// Rate changes the bridge stopped waiting for, whose answers have not
+    /// arrived.
+    late_rate_owed: u32,
+    /// What a late answer is applied to, when it is read.
+    lifecycle: Option<super::lifecycle::Lifecycle>,
     reloaded: bool,
     io: bool,
     param_titles: bool,
@@ -262,6 +272,9 @@ impl Unsolicited {
             params: std::collections::VecDeque::with_capacity(UNSOLICITED_PARAMS),
             latency: None,
             tail: None,
+            rate: None,
+            late_rate_owed: 0,
+            lifecycle: None,
             reloaded: false,
             io: false,
             param_titles: false,
@@ -288,6 +301,39 @@ impl Unsolicited {
     /// The plugin's new tail, replacing one already held.
     pub(super) fn tail(&mut self, tail: PluginTail) {
         self.tail = Some(tail);
+    }
+
+    /// A rate change was given up on; its answer is still to come.
+    pub(super) fn expect_late_rate_reply(&mut self) {
+        self.late_rate_owed = self.late_rate_owed.saturating_add(1);
+    }
+
+    /// An inbox whose late rate answers are applied to `lifecycle`.
+    pub(super) fn with_lifecycle(lifecycle: super::lifecycle::Lifecycle) -> Self {
+        Self {
+            lifecycle: Some(lifecycle),
+            ..Self::new()
+        }
+    }
+
+    /// Take `SampleRateSet` as a late answer if one is owed (`true`), applying
+    /// it **now**: it is read in stream order, ahead of whatever is read after
+    /// it, so a later answer (the request being waited on) lands after it and
+    /// wins. `false` when it answers the request being waited on.
+    pub(super) fn late_rate_reply(&mut self, rate: f64, error: Option<String>) -> bool {
+        if self.late_rate_owed == 0 {
+            return false;
+        }
+        self.late_rate_owed -= 1;
+        if let Some(lifecycle) = self.lifecycle.clone() {
+            super::dispatch::apply_rate_reply(&lifecycle, self, rate, error);
+        }
+        true
+    }
+
+    /// A rate refusal, or its clearing, replacing one already held.
+    pub(super) fn rate_refusal(&mut self, refusal: Option<(f64, String)>) {
+        self.rate = Some(refusal);
     }
 
     /// A resync request; a second of the same kind adds nothing.
@@ -326,12 +372,14 @@ impl Unsolicited {
             .tail
             .take()
             .map(|tail| BridgeEvent::TailChanged { tail });
+        let rate = self.rate.take().map(BridgeEvent::RateRefusal);
         structural
             .into_iter()
             .flatten()
             .chain(params)
             .chain(latency)
             .chain(tail)
+            .chain(rate)
             .chain(refresh.into_iter().flatten())
     }
 
@@ -382,7 +430,7 @@ impl ResyncKind {
 /// the host should fire.
 ///
 /// Not `Copy`, following [`PluginInvalidation`], which it wraps.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResyncClass {
     Refresh(PluginRefresh),
     Invalidate(PluginInvalidation),
@@ -412,7 +460,7 @@ pub enum PluginRefresh {
 /// **Not `Copy`**, because [`Crashed`](Self::Crashed) carries an owned cause.
 /// `Clone` is enough: every consumer takes this by value through
 /// `Fn(PluginInvalidation)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across
@@ -432,6 +480,19 @@ pub enum PluginInvalidation {
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.
     Reloaded,
+    /// The plugin refused the engine's sample rate and renders silence until
+    /// a rate it takes. Not terminal and not a rewire: the plugin stays
+    /// loaded and keeps its declared latency, so the plan stands. Retried at
+    /// every later rate change; [`RateRestored`](Self::RateRestored) says it
+    /// took one.
+    RateRefused {
+        /// The rate that was refused.
+        rate: SampleRate,
+        /// The plugin's reason, formatted subprocess-side.
+        reason: String,
+    },
+    /// The plugin took a rate after refusing one and renders again.
+    RateRestored,
     /// The plugin died and is not coming back — unwire it.
     ///
     /// Structural rather than cosmetic, and terminal rather than a request to

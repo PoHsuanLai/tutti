@@ -386,6 +386,12 @@ impl Batcher {
         if watch.stopped_waiting() {
             return;
         }
+        // A plugin that refused its rate publishes nothing, by design: the
+        // chunk is silence at once, and the render's health says why.
+        if let Some(refusal) = bridge.rate_refusal() {
+            watch.latch_refusal(refusal);
+            return;
+        }
         let deadline = Instant::now() + watch.budget();
         let mut next_poll = Instant::now() + PROCESS_POLL;
         while !bridge.is_crashed() && !bridge.audio_buffer().has_output(seq) {
@@ -492,7 +498,12 @@ impl Batcher {
             }
             None => {
                 // A chunk in flight the server had not answered: a dropout.
-                if self.expect_seq.is_some() && !bridge.is_crashed() {
+                // Not while the plugin refuses its rate: its silence is
+                // deliberate, and the status says so.
+                if self.expect_seq.is_some()
+                    && !bridge.is_crashed()
+                    && bridge.rate_refusal().is_none()
+                {
                     self.counters.missed.fetch_add(1, Ordering::Relaxed);
                 }
                 for row in &mut self.ring {

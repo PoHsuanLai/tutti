@@ -30,7 +30,7 @@ pub mod shm;
 /// - An **enum variant** is a varint discriminant over declaration order, so a
 ///   peer receiving a tag it has no arm for fails the decode mid-stream rather
 ///   than at a message boundary.
-pub const PROTOCOL_VERSION: u32 = 19;
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -324,6 +324,14 @@ mod tests {
                 value: Some(Normalized::new(0.375)),
             },
             BridgeMessage::ParameterValueFromText { value: None },
+            BridgeMessage::SampleRateSet {
+                rate: 96_000.0,
+                error: None,
+            },
+            BridgeMessage::SampleRateSet {
+                rate: 96_000.0,
+                error: Some("refused".to_string()),
+            },
         ];
         for msg in responses {
             let bytes = bincode::serialize(&msg).expect("serialize");

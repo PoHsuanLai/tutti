@@ -62,7 +62,7 @@ pub struct OptionalCapabilities {
 /// that is merely misbehaving is a judgement made by counting failed calls, and
 /// how many failures over how long is the host's policy, not the engine's. See
 /// [`PluginHandle::status`] for why `Alive` must not be read as "healthy".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PluginStatus {
     /// The bridge is up. **Not** a promise the plugin is behaving — only that
     /// it has not died in a way the engine can see.
@@ -77,6 +77,18 @@ pub enum PluginStatus {
         /// Why the plugin died, latched at the detection site.
         cause: String,
     },
+    /// The plugin refused the sample rate the engine runs at. It stays
+    /// loaded and renders silence, and it is retried at every later rate
+    /// change (the error clears when it takes one).
+    ///
+    /// Not [`Dead`](Self::Dead): the declared latency stands, so the graph's
+    /// plan does not change, and nothing needs reloading.
+    RateRefused {
+        /// The rate the plugin refused.
+        rate: tutti_types::SampleRate,
+        /// The plugin's reason, formatted subprocess-side.
+        reason: String,
+    },
 }
 
 impl PluginStatus {
@@ -89,7 +101,7 @@ impl PluginStatus {
     pub fn cause(&self) -> Option<&str> {
         match self {
             Self::Dead { cause } => Some(cause),
-            Self::Alive => None,
+            Self::Alive | Self::RateRefused { .. } => None,
         }
     }
 }
@@ -407,7 +419,13 @@ impl PluginHandle {
             None if self.params.is_crashed() => PluginStatus::Dead {
                 cause: "the backend reported a crash without a cause".to_string(),
             },
-            None => PluginStatus::Alive,
+            None => match self.params.rate_refusal() {
+                Some((rate, reason)) => PluginStatus::RateRefused {
+                    rate: tutti_types::SampleRate(rate),
+                    reason,
+                },
+                None => PluginStatus::Alive,
+            },
         }
     }
 

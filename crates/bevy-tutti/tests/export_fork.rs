@@ -4,7 +4,7 @@
 //! An export forks the live graph (`Editor::fork`). The exports are held to
 //! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
 //! a fresh graph is), to a synth's own reference note, and to golden digests
-//! on Linux/glibc (see [`GOLDEN_HERE`]). The rest pin
+//! (see `tutti_nodes::testing::assert_golden`). The rest pin
 //! what only a fork has: it shares nothing with the live graph, it names a
 //! node it cannot copy, it forks a hosted plugin by state transfer.
 //! `export_surface.rs` pins the request/response shape; this file pins the
@@ -33,7 +33,7 @@ use tutti_graph::{
     Cx, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Prepare, Shape, Status,
 };
-use tutti_nodes::testing::Osc;
+use tutti_nodes::testing::{assert_golden, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::{SampleRate, Samples};
 
@@ -159,15 +159,6 @@ fn chain(app: &mut App) -> Entity {
     app.world_mut().spawn(filter).id()
 }
 
-/// Whether this target is the one the golden digests were recorded on:
-/// Linux with glibc's libm. The digests are of the fork's render, recorded
-/// when it was checked against an independent reference implementation; the
-/// units
-/// call `tan` (the filter's coefficients) and `sin` (the synth), libm
-/// quality-of-implementation that differs in the last ulp between C
-/// runtimes, so they are asserted only where they were recorded.
-const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
-
 /// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
 fn digest(planes: &[Vec<f32>]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -176,16 +167,6 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
-}
-
-/// Assert `got` is the digest recorded as `want`, where the goldens hold.
-fn assert_golden(what: &str, got: u64, want: u64) {
-    if GOLDEN_HERE {
-        assert_eq!(
-            got, want,
-            "{what}: digest {got:#018x}, recorded {want:#018x}"
-        );
-    }
 }
 
 /// [`chain`]'s units wired fresh, with `GraphBuilder`, and rendered in the
@@ -219,7 +200,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 
 /// **An export renders its graph as wired fresh**, for the master and for
 /// one node, on a graph whose live side has not run: bit for bit the same
-/// units in a `GraphBuilder` graph ([`chain_fresh`]), and (Linux/glibc)
+/// units in a `GraphBuilder` graph ([`chain_fresh`]), and
 /// the golden digest.
 ///
 /// A fork starts reset rather than copying the running state (an
@@ -1354,7 +1335,7 @@ mod synths {
 
     /// **A node export of a synth plays its clip**: silent until beat 1,
     /// then the synth's own note ([`reference`]) sample for sample, and
-    /// (Linux/glibc) the golden digest. The fork carries the clip itself.
+    /// the golden digest. The fork carries the clip itself.
     ///
     /// Mutation (run): the synth's fork not reset (`PolySynth::fork_instance`
     /// skipping `reset_voices`) → no change: a fork from the template never

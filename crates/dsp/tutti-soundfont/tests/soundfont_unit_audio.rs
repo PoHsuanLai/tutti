@@ -12,6 +12,7 @@ mod support;
 use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_nodes::testing::assert_golden;
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 /// Path to the committed test SoundFont.
@@ -574,12 +575,6 @@ fn test_clone_creates_independent_instance() {
     assert!(rms_clone > rms_original);
 }
 
-/// Whether this target is the one the golden digest below was recorded on:
-/// Linux with glibc's libm. RustySynth's voices call `sin`, `exp` and `pow`,
-/// libm quality-of-implementation that differs in the last ulp between C
-/// runtimes, so the digest is asserted only where it was recorded.
-const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
-
 /// FNV-1a over the frames' little-endian `f32` bits, left then right.
 fn digest(samples: &[(f32, f32)]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -596,12 +591,12 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
 
 /// A `with_preset` unit's first note-on renders that preset: preset 40
 /// (TimGM6mb's violin) on channel 3 at 44.1 kHz, middle C at velocity 100,
-/// 2048 frames in 64-frame blocks. The digest was recorded on Linux/glibc
+/// 2048 frames in 64-frame blocks. The digest was recorded on the golden target
 /// from this unit's render; elsewhere only the rate and the sound are
 /// asserted, so the preset itself is pinned only by the glibc golden digest.
 /// A non-integral rate rounds to the nearest hertz (44 100.6 → 44 101).
 ///
-/// Mutations (each run on Linux/glibc, each failed): dropping the
+/// Mutations (each run on the golden target, each failed): dropping the
 /// `program_change` from `with_preset` (the unit plays preset 0, the digest
 /// assert); building at `sample_rate` truncated to 44_000 Hz (the rate
 /// assert); the note on channel 0 instead of 3 (preset 0 again, the digest
@@ -634,7 +629,6 @@ fn a_preset_units_first_note_on_renders_that_preset() {
     assert!(rms(&out) > 1e-3, "the note sounds: rms {}", rms(&out));
 
     let got = digest(&out);
-    if GOLDEN_HERE {
-        assert_eq!(got, 0xcf94_549c_015d_9f17, "digest {got:#018x}");
-    }
+    // RustySynth's voices call `sin`, `exp` and `pow`, so the digest is libm's.
+    assert_golden("the soundfont voice", got, 0xcf94_549c_015d_9f17);
 }

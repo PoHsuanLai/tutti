@@ -900,6 +900,31 @@ fn a_silent_server_is_bounded_by_the_timeout() {
     );
 }
 
+/// **Dropping the bridge ends a wait for a rate change that never answers.**
+/// The bridge thread waits up to `RATE_TIMEOUT` (10 s) for the reply, and the
+/// drop joins it: the wait must notice the shutdown, not run out.
+///
+/// Mutation (run): the wait loop's `!lifecycle.is_running()` exit removed →
+/// the drop takes the full 10 s → fails.
+#[test]
+fn dropping_the_bridge_ends_a_hung_rate_change() {
+    let mut mock = MockServer::start("hung_rate", |_| Action::Silent);
+    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    // Let the bridge thread reach the wait.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let thread = mock.thread.take().expect("the bridge thread");
+    let (done, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(thread);
+        let _ = done.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_secs(3)).is_ok(),
+        "the drop was still joining a bridge thread waiting out a rate change"
+    );
+}
+
 /// A dribble **under** the size cap must still end, on the clock.
 ///
 /// This is the hazard `MAX_FRAME_BYTES` does not touch, and the reason the

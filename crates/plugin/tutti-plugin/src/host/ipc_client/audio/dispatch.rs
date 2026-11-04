@@ -1,6 +1,7 @@
 //! Per-command IPC choreography for the bridge thread.
 
 use super::channels::Channels;
+use super::lifecycle::Lifecycle;
 use super::messages::{AudioResponse, Command, ResyncKind, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
@@ -53,7 +54,11 @@ const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the bridge waits for a plugin to re-activate at a new rate.
 /// Longer than [`PARAM_TIMEOUT`]: it tears down and rebuilds the plugin's
 /// processing, which a large instrument can take seconds to do.
-const RATE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const RATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The slice [`RATE_TIMEOUT`] is waited in, between checks that the bridge is
+/// still running.
+const RATE_SLICE: Duration = Duration::from_millis(100);
 
 /// How long [`Owed::settle`] waits to find out whether an owed reply has
 /// *started* arriving.
@@ -354,6 +359,7 @@ pub(super) fn handle(
     payloads: &PayloadPool,
     owed: &mut Owed,
     inbox: &mut Unsolicited,
+    lifecycle: &Lifecycle,
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
@@ -520,8 +526,30 @@ pub(super) fn handle(
             //
             // Replies owed from abandoned blocks can still be ahead of the
             // answer on the stream; they are taken as `settle` takes them.
+            //
+            // Waited in slices, so a shutdown (dropping the node joins this
+            // thread) ends the wait within one slice rather than after
+            // `RATE_TIMEOUT`. A slice that expires part-way through a frame
+            // resumes it (`owed.partial`), so slicing never unframes the stream.
+            let deadline = std::time::Instant::now() + RATE_TIMEOUT;
             loop {
-                match recv_reply(stream, inbox, RATE_TIMEOUT, &mut owed.partial)? {
+                let reply = match recv_reply(stream, inbox, RATE_SLICE, &mut owed.partial) {
+                    Err(BridgeError::Timeout { .. }) => {
+                        if !lifecycle.is_running() {
+                            return Ok(());
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(BridgeError::Timeout {
+                                operation: "SetSampleRate".to_owned(),
+                                duration_ms: RATE_TIMEOUT.as_millis() as u64,
+                                partial: false,
+                            });
+                        }
+                        continue;
+                    }
+                    other => other?,
+                };
+                match reply {
                     BridgeMessage::AudioProcessed { seq, midi_out, .. } if owed.count > 0 => {
                         owed.count -= 1;
                         let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();

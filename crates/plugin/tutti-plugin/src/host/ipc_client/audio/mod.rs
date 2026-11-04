@@ -527,12 +527,19 @@ impl AudioBridge {
     /// settle, not the second trip. A fork that lost the race anyway reports
     /// it through its health (`PluginRenderFault::LatencyChanged`).
     pub fn settle(&self) {
-        let _ = self.current_preset();
-        let _ = self.current_preset();
+        // The first query waits behind an outstanding rate change, so its
+        // budget is the rate change's plus its own.
+        let budget = dispatch::RATE_TIMEOUT + PARAM_TIMEOUT;
+        let _ = self.current_preset_within(budget);
+        let _ = self.current_preset_within(PARAM_TIMEOUT);
     }
 
     /// Which preset the plugin considers current, if it will say.
     pub fn current_preset(&self) -> Option<PresetId> {
+        self.current_preset_within(PARAM_TIMEOUT)
+    }
+
+    fn current_preset_within(&self, timeout: Duration) -> Option<PresetId> {
         if self.lifecycle.is_crashed() {
             return None;
         }
@@ -543,7 +550,7 @@ impl AudioBridge {
         {
             return None;
         }
-        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+        ask_resp.recv_timeout(timeout).ok().flatten()
     }
 
     pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {

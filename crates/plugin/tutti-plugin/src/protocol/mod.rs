@@ -324,6 +324,14 @@ mod tests {
                 value: Some(Normalized::new(0.375)),
             },
             BridgeMessage::ParameterValueFromText { value: None },
+            BridgeMessage::SampleRateSet {
+                rate: 96_000.0,
+                error: None,
+            },
+            BridgeMessage::SampleRateSet {
+                rate: 96_000.0,
+                error: Some("refused".to_string()),
+            },
         ];
         for msg in responses {
             let bytes = bincode::serialize(&msg).expect("serialize");

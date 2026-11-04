@@ -158,7 +158,9 @@ fn pump(
             continue;
         };
 
-        let result = handle(cmd, stream, channels, payloads, &mut owed, &mut inbox);
+        let result = handle(
+            cmd, stream, channels, payloads, &mut owed, &mut inbox, lifecycle,
+        );
         drain_unsolicited(&mut inbox, channels, listener);
 
         if let Err(e) = result {

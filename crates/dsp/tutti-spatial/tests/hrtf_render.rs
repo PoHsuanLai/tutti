@@ -5,6 +5,8 @@
 //!   within the FFT's round-off;
 //! - a mirror-symmetric sphere renders a source straight ahead with equal
 //!   ears, and one hard left with the left ear louder;
+//! - the whole response energy of a vertex's HRIR reaches the output, and the
+//!   output does not depend on how the input is cut into blocks;
 //! - a direction no face covers takes the nearest vertex instead of failing;
 //! - resampling the sphere keeps its DC gain, and downsampling low-passes
 //!   below the new Nyquist;
@@ -216,8 +218,8 @@ fn energy(x: &[f32]) -> f32 {
 /// Mutations (run): an FFT length of `(step + ir_len / 2).next_power_of_two()`
 /// (256, too short: the history no longer reaches back over the response)
 /// → off by 0.025 against a tolerance of 3e-5; dropping the `1 / fft_len` normalization → fails (every
-/// sample 512 times too large); writing `y.re` to both ears → the right ear
-/// fails.
+/// sample 512 times too large); taking the left ear's spectra for both ears (in
+/// `blend_into`) → the right ear fails.
 #[test]
 fn an_impulse_at_a_vertex_comes_out_as_that_vertexs_hrir() {
     const LEN: usize = 200;
@@ -249,8 +251,8 @@ fn an_impulse_at_a_vertex_comes_out_as_that_vertexs_hrir() {
 /// Hard left, the near (left) ear is the louder: every vertex near there has
 /// `1 + s/2` against `1 - s/2` with `s` above 0.5, an energy ratio above 3.
 ///
-/// Mutations (run): writing `y.re` to both ears → hard left is balanced and
-/// fails; swapping `re` and `im` (left and right) → hard left fails the other
+/// Mutations (run): taking the left ear's spectra for both ears → hard left is
+/// balanced and fails; swapping the ears' spectra → hard left fails the other
 /// way; scaling the right ear by 0.9 → straight ahead fails.
 #[test]
 fn straight_ahead_is_balanced_and_hard_left_favours_the_left_ear() {
@@ -749,4 +751,80 @@ fn a_malformed_sphere_is_refused_at_construction() {
     ));
     let faceless = sphere_bytes(RATE, 8, &flat, &[], delta);
     assert!(matches!(build(&faceless), Some(HrtfBinauralError::NoFace)));
+}
+
+/// A vertex whose left response is a delta of 0.8 and whose right is a delta
+/// of 0.6 (energies 0.64 and 0.36) comes out with exactly that energy, ear by
+/// ear: Parseval's identity for the convolution with an impulse, so the
+/// figure is the HRIR's own and no render is a reference. The tolerance is
+/// the FFT pair's round-off (`ε · log2 N` times a few).
+///
+/// Mutations (run): dropping the `1 / fft_len` normalization → energy 512^2
+/// too large; scaling one ear's inverse output by 0.9 → that ear's energy is
+/// off by 19 % and the other ear's is not.
+#[test]
+fn a_vertexs_hrir_energy_reaches_the_output_ear_by_ear() {
+    const LEN: usize = 16;
+    let (verts, faces) = icosahedron();
+    let response = |_: usize, ear: usize| {
+        let mut r = vec![0.0f32; LEN];
+        r[3] = if ear == 0 { 0.8 } else { 0.6 };
+        r
+    };
+    let bytes = sphere_bytes(RATE, LEN, &verts, &faces, response);
+    let mut node = node(&bytes, RATE);
+    for v in [0, 5, 11] {
+        let (left, right) = ir_of(&mut node, bearing_of(verts[v]), RATE, 2 * LEN);
+        for (ear, got, want) in [("left", &left, 0.64f32), ("right", &right, 0.36)] {
+            let e = energy(got);
+            assert!(
+                (e - want).abs() <= 1e-5,
+                "vertex {v} {ear}: energy {e}, expected {want}"
+            );
+        }
+    }
+}
+
+/// The render does not depend on where the host cuts the input into blocks:
+/// the same noise rendered in blocks of 1, 7, 33 and 64 frames, at a
+/// position between vertices, is bit for bit the render in blocks of 64.
+/// Input is gathered into fixed 128-frame steps and a block only reads the
+/// commanded position once, which is the same figure here (it never moves),
+/// so the arithmetic is identical.
+///
+/// Mutation (run): scaling the left output by 0.999 in `process` when the
+/// block is a single frame → the 1-frame render differs from the 64-frame
+/// one.
+#[test]
+fn the_render_is_independent_of_the_block_length() {
+    const LEN: usize = 100;
+    let (verts, faces) = icosahedron();
+    let bytes = sphere_bytes(RATE, LEN, &verts, &faces, mirrored_response(&verts, LEN));
+    let mut noise = 0x1234_5678u32;
+    let input: Vec<f32> = (0..1000)
+        .map(|_| {
+            noise = noise.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (noise >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+        })
+        .collect();
+    let render = |block: usize| {
+        let mut node = node(&bytes, RATE);
+        node.set_position(Azimuth(37.0), Elevation(12.0));
+        Node::reset(&mut node);
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        for chunk in input.chunks(block) {
+            let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);
+            left.extend_from_slice(&out[0]);
+            right.extend_from_slice(&out[1]);
+        }
+        (left, right)
+    };
+    let reference = render(64);
+    assert!(energy(&reference.0) > 0.0, "the reference is silent");
+    for block in [1, 7, 33] {
+        assert!(
+            render(block) == reference,
+            "blocks of {block} differ from blocks of 64"
+        );
+    }
 }

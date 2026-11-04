@@ -13,18 +13,15 @@
 //! renders it), so its cross-check is the fifth-up pitch figure. The click
 //! and the pitched voice call `sin` (and the vocoder's FFT), libm
 //! quality-of-implementation that differs in the last ulp between C runtimes,
-//! so the digests are asserted on Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
+//! so the digests are asserted on Linux/glibc only, where they were recorded (`tutti_nodes::testing::assert_golden`).
 
 use std::sync::Arc;
 
 use tutti_core::{ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent, SampleRate, Samples};
+use tutti_nodes::testing::assert_golden;
 use tutti_session::{GraphSource, Session};
 
 const RATE: f64 = 48_000.0;
-
-/// Whether this target is the one the golden digests were recorded on:
-/// Linux with glibc's libm (see the module docs).
-const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
 
 /// FNV-1a over the samples' little-endian `f32` bits.
 fn digest(samples: &[f32]) -> u64 {
@@ -34,16 +31,6 @@ fn digest(samples: &[f32]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
-}
-
-/// Assert `got` is the digest recorded as `want`, where the goldens hold.
-fn assert_golden(what: &str, got: u64, want: u64) {
-    if GOLDEN_HERE {
-        assert_eq!(
-            got, want,
-            "{what}: digest {got:#018x}, recorded {want:#018x}"
-        );
-    }
 }
 
 /// An offline session at `RATE`, stereo, graph blocks of up to 1 024 frames

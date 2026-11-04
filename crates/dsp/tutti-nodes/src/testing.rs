@@ -5,6 +5,8 @@
 //!
 //! - [`Const`] and [`Osc`] are sources: a constant, or a naive sine, saw,
 //!   square or triangle ([`Waveform`]).
+//! - [`assert_golden`] pins a render's digest where its libm was recorded and
+//!   skips out loud elsewhere (see the `TUTTI_GOLDEN` modes: unset, `require`, `record`).
 //! - [`Through`], [`Split`] and [`Sink`] are plumbing: pass-through, fan-out
 //!   from one input, and a sink with no outputs.
 //!
@@ -38,6 +40,9 @@
 //! function of the phase, so an expected value can be written down) and a
 //! synth does not. `tutti-polysynth` owns the audio-rate oscillators an
 //! instrument plays.
+
+mod golden;
+pub use golden::{assert_golden, glibc_version, golden_here, RECORDED_GLIBC};
 
 use std::f64::consts::TAU;
 

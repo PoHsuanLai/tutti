@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — golden digests gate on the recorded glibc, not on "Linux/glibc"
+
+The per-file `GOLDEN_HERE` constants and local `assert_golden` helpers are
+replaced by `tutti_nodes::testing::assert_golden`. It compares only on glibc
+2.39 (where the digests were recorded) and prints a skip note elsewhere;
+`TUTTI_GOLDEN=require` (set by CI's Linux jobs) fails instead of skipping, and
+`TUTTI_GOLDEN=record` prints every figure for a re-record. Migration: a test
+crate that asserted a libm-dependent digest depends on `tutti-nodes` with the
+`testing` feature and calls `assert_golden(what, got, want)`.
+
 ### Changed — the convolver cuts a long IR into a head and larger tail partitions: about 1.8x cheaper on a 2 s IR and 3x on a 5 s one, same latency, output bits change
 
 **`Convolver` (so `ConvolverNode`) cuts an IR long enough to pay for it into

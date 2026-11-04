@@ -150,6 +150,9 @@ jobs:
   features:
     name: dark features
     runs-on: ubuntu-24.04
+    # Its bevy-tutti suites assert golden digests; see the `test` job.
+    env:
+      TUTTI_GOLDEN: require
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux audio deps
@@ -365,7 +368,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
+    # `require` makes a Linux runner whose glibc is not the recorded one fail
+    # instead of skipping the digests (CLAUDE.md, Testing).
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    env:
+      TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:

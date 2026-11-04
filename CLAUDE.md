@@ -114,6 +114,13 @@ just test-all                      # both
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
   `dark features` job and `just test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
+- **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
+  on glibc 2.39 (`RECORDED_GLIBC`, Ubuntu 24.04), skipped with a printed note
+  on any other libm. CI's Linux jobs set `TUTTI_GOLDEN=require`, so a runner
+  image that moves glibc fails instead of skipping. To re-record, bump
+  `RECORDED_GLIBC` and the runner pin, run
+  `TUTTI_GOLDEN=record cargo nextest run --workspace --no-capture`, and copy the
+  `GOLDEN <what> <digest>` lines into the tests; only for an argued libm move.
 
 ### Setup
 

@@ -25,7 +25,7 @@
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
 //!   differ in the last ulp between C runtimes (the reason
 //!   `render_is_bit_identical_to_the_audionode_era` is gated off MSVC). So
-//!   they are asserted only where they were recorded ([`GOLDEN_HERE`]); CI's
+//!   they are asserted only where they were recorded (`tutti_nodes::testing::assert_golden`); CI's
 //!   Linux jobs run them. The one libm-free case (a dithered DC level) is
 //!   asserted everywhere.
 //!
@@ -59,7 +59,7 @@ use tutti_export::{
 use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
-use tutti_nodes::testing::{Const, Osc};
+use tutti_nodes::testing::{assert_golden, Const, Osc};
 use tutti_types::{Db, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -68,10 +68,6 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// The last block is short at either size.
 const SECS: f64 = 0.3013;
 const FRAMES: usize = 14_462;
-
-/// Whether this target is the one the golden digests were recorded on (see
-/// the module docs): Linux with glibc's libm.
-const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
 
 /// FNV-1a over the little-endian bytes of `bytes`.
 fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
@@ -86,17 +82,6 @@ fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
 /// [`fnv`] over every plane's `f32` bits, plane after plane.
 fn digest(planes: &[Vec<f32>]) -> u64 {
     fnv(planes.iter().flatten().flat_map(|s| s.to_le_bytes()))
-}
-
-/// Assert `got` is the digest recorded as `want`, where the goldens hold
-/// ([`GOLDEN_HERE`]). The message carries the new figure.
-fn assert_golden(what: &str, got: u64, want: u64) {
-    if GOLDEN_HERE {
-        assert_eq!(
-            got, want,
-            "{what}: digest {got:#018x}, recorded {want:#018x}"
-        );
-    }
 }
 
 fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {

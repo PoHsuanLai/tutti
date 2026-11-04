@@ -24,7 +24,7 @@
 //!   last, between the two throughout, the waveshaper being monotonic), and
 //!   ends on the new filter as if it had run from the fade's start: a
 //!   hand-wired graph whose filter hears silence until then.
-//! - **A golden digest** of the scene, Linux/glibc only: recorded when the
+//! - **A golden digest** of the scene, glibc 2.39 only: recorded when the
 //!   render was checked against an independent reference implementation,
 //!   and re-recorded for the limiter's one-pole release moving to
 //!   `Seconds::one_pole_coeff` and again for the limiter's gain moving from
@@ -51,7 +51,7 @@ use bevy_tutti::graph::{
 use bevy_tutti::AudioEngineState;
 use tutti_core::{ChannelLayout, Db, Drive, Hz, SampleRate, Samples, UnitParam, Q};
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
-use tutti_nodes::testing::Osc;
+use tutti_nodes::testing::{assert_golden, Osc};
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
 
 const RATE: f64 = 48_000.0;
@@ -182,10 +182,6 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
     h
 }
 
-/// Whether this target is the one the golden digest was recorded on (the
-/// module docs): Linux with glibc's libm.
-const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
-
 /// **The compensated scene**: its dry left channel is the uncompensated
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
@@ -232,14 +228,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
         "the right channel is the saw through the limiter"
     );
 
-    if GOLDEN_HERE {
-        assert_eq!(
-            digest(&b),
-            0x44de_35eb_5401_831b,
-            "the recorded samples: digest {:#018x}",
-            digest(&b)
-        );
-    }
+    assert_golden("the compensated scene", digest(&b), 0x44de_35eb_5401_831b);
 }
 
 /// **A block length that is not a multiple of 64 changes nothing for

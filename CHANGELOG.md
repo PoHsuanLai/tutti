@@ -7,18 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — `clap_live` tolerates one bounded scheduler stall and keeps the idle CPUs awake
+### Changed — `clap_live` tolerates one bounded scheduler stall
 
-The paced `clap_live` tests allowed 1% silent blocks (2 of 200), and about one
-run in seven failed on an idle 4-vCPU VM. Cause, measured per block: the
-plugin answers in about 0.3 ms, but about one cross-thread wake-up in 1000 (the
-host's bridge thread, or the server's) arrives 10 to 28 ms late, at any thread
-priority, and the plugin has one period to answer. A plain `sleep(1 ms)` loop
-shows the same tail. The tests now run niced spinner threads on the other CPUs
-(late wake-ups 8 in 5249 blocks to 1 in 8399) and allow one contiguous silent
-run, no longer than 36 ms of block periods plus the pipeline's `RING_SLOTS`
-refill; a second run, a longer one or any wrong block still fails. Test-only
-change. Remaining flakes: 0 of 45 binary runs, 8 of 135 paced runs with one stall.
+The paced `clap_live` tests allow one contiguous silent run, no longer than
+36 ms of block periods plus the pipeline's `RING_SLOTS` refill; a second run,
+a longer one or any wrong block fails, and the burst test counts a stall at
+the edge of its window as one run. A thread woken from an idle CPU is
+sometimes 10 to 28 ms late (observed on a 4-vCPU VM, at any thread priority),
+and a plugin has one period to answer, so a stall costs about three blocks.
+On Linux with at least 4 CPUs the tests also run `cpus / 2` nice-19 spinner
+threads to keep the other CPUs out of idle. Test-only change.
 
 ### Changed — a long tail transform runs in steps over several host blocks: the 64-frame p99 of a 2 s IR falls by a fifth or more; `StagedRealFft`; output bits change for IRs reaching a 2048-frame tail
 

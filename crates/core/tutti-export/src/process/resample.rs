@@ -78,8 +78,10 @@ impl ChunkSize {
     /// it, within `1..=MAX.sub_chunks()`.
     ///
     /// Fallible rather than clamping: rounding a chunk length hands back a
-    /// resampler whose latency is not the one that was asked for, and the
-    /// FFT sizes are derived from a power-of-two chunk.
+    /// resampler whose latency is not the one that was asked for. The chunk
+    /// sets the input frames per call and, with the sub-chunk count, how many
+    /// of the rate pair's repeating units one FFT block holds; the block
+    /// sizes are those units, not powers of two.
     pub const fn new(chunk: Samples, sub_chunks: usize) -> Option<Self> {
         if !chunk.0.is_power_of_two()
             || chunk.0 < Self::MIN.chunk.0
@@ -110,6 +112,18 @@ impl Default for ChunkSize {
     }
 }
 
+/// A rate as the converter's integer Hz, or an error if it is not a finite
+/// rate of at least 0.5 Hz (which rounds to 1) and under 2^32 Hz. A bare
+/// `as usize` would saturate infinity and a huge rate, and turn NaN or a
+/// negative rate into 0.
+fn whole_hz(hz: f64) -> Result<usize> {
+    if hz.is_finite() && (0.5..4_294_967_296.0).contains(&hz) {
+        Ok(hz.round() as usize)
+    } else {
+        Err(Error::Resample(format!("invalid sample rate: {hz} Hz")))
+    }
+}
+
 pub(crate) use streaming::Resampler;
 
 mod streaming {
@@ -125,10 +139,10 @@ mod streaming {
         ratio: f64,
         /// Input frames per channel, consumed up to `head`.
         carry: Vec<Vec<f32>>,
-        /// Frames at the front of every `carry` plane already handed to
-        /// the converter. A chunk advances it instead of shifting the plane down, so a
-        /// push of the whole signal (the two-pass path) costs O(N) rather than
-        /// one memmove of the rest per chunk; `drain` drops the consumed
+        /// Frames at the front of every `carry` plane already handed to the
+        /// converter. A chunk advances it instead of shifting the plane down,
+        /// so a push of the whole signal (the two-pass path) costs O(N) rather
+        /// than one memmove of the rest per chunk; `drain` drops the consumed
         /// prefix once, on its way out.
         head: usize,
         /// Output frames still to be discarded as filter warm-up.
@@ -140,15 +154,15 @@ mod streaming {
         emitted: usize,
         /// Reusable scratch so the per-block path does not allocate.
         in_scratch: Vec<Vec<f32>>,
-        /// The converter's output, `output_frames_max()` per channel, written by
-        /// `process_into_buffer`.
+        /// The converter's output, `output_frames_max()` per channel, written
+        /// by `process_into_buffer`.
         out_scratch: Vec<Vec<f32>>,
     }
 
     impl Resampler {
         /// Both rates are [`SampleRate`], which every caller already holds;
-        /// the narrowing to the converter's integer rates happens once, here, at its
-        /// boundary.
+        /// the narrowing to the converter's integer rates happens once, here,
+        /// at its boundary.
         ///
         /// This does **not** make a transposition a compile error: the two
         /// arguments are the same type, so swapping them still builds
@@ -162,9 +176,10 @@ mod streaming {
             chunk: ChunkSize,
         ) -> Result<Self> {
             let (source_hz, target_hz) = (source_rate.get(), target_rate.get());
+            let (source_int, target_int) = (whole_hz(source_hz)?, whole_hz(target_hz)?);
             let inner = FftFixedIn::new(
-                source_hz.round() as usize,
-                target_hz.round() as usize,
+                source_int,
+                target_int,
                 chunk.chunk().get(),
                 chunk.sub_chunks(),
                 channels,
@@ -687,11 +702,10 @@ mod tests {
     /// (so the output's frequency is 1 kHz) and the strongest of a +-10 Hz scan
     /// is the 1 kHz bin. Measured in the middle half, clear of the edges.
     ///
-    /// Mutations (run): write the output at the wrong stride (feed the
-    /// filter `fft_size_in` ahead: `fft_size_out` -> `fft_size_out + 1` in the
-    /// block copy) shifts the tone to ~1 kHz x 641/640 and the level at 1 kHz
-    /// collapses; scale the filter by 1.01 in `Unit::new` → the level reads
-    /// 0.5000 x 1.01 = 0.505, +0.086 dB, over the bound.
+    /// Mutations (run): drop the overlap-add in `resample_unit` (`*out =
+    /// fresh + 0.0 * carried`) → the level collapses at every block seam and
+    /// this fails; scale the filter by 1.01 in `Unit::new` → the level reads
+    /// 0.5 x 1.01 = 0.505, +0.086 dB, over the bound.
     #[test]
     fn a_sine_keeps_its_frequency_and_amplitude() {
         for (from, to) in [
@@ -727,8 +741,8 @@ mod tests {
     /// DC gain is 1: a constant comes out as that constant (within 1e-5 once
     /// the filter has settled), and the output never sits at the start-up value.
     ///
-    /// Mutation (run): drop the `/= sum` in `sinc_filter` → the level reads
-    /// 1/sum of the taps, ~1.1 for this cutoff, far over the bound.
+    /// Mutation (run): drop the `/= sum` in `sinc_filter` → the DC error is
+    /// 0.0119 on the 0.5 input (a gain of about 1.024), far over the bound.
     #[test]
     fn dc_passes_with_unit_gain() {
         for (from, to) in [(44_100u32, 48_000u32), (48_000, 44_100)] {
@@ -751,11 +765,10 @@ mod tests {
     /// input (`AMOUNT` below) at that frequency for every `f` from 22.3 kHz to
     /// 23.9 kHz. A 15 kHz tone, well inside the band, passes within 0.01 dB.
     ///
-    /// Mutation (run): bypass the filter and fold the input bins above the
-    /// output's Nyquist back onto the ones below (an aliasing downsampler:
-    /// multiply by `1 / (2 * fft_size_in)` instead of `filter_f`, and add each
-    /// bin `k >= shared` to bin `2 * (shared - 1) - k`) → the 22.3 kHz tone
-    /// reads about -6 dB at 21.8 kHz and this fails.
+    /// Mutation (run): drop the anti-alias cut when downsampling, so the
+    /// filter is cut at the output's Nyquist without the fit
+    /// (`cutoff(fft_size_out)` -> `1.0` in `Unit::new`) → the 22.3 kHz tone
+    /// leaves an alias at 21.8 kHz of -57.5 dB and this fails.
     #[test]
     fn content_above_the_new_nyquist_is_rejected_not_folded() {
         const AMOUNT: f64 = -120.0;
@@ -815,6 +828,94 @@ mod tests {
                 .0;
             assert_eq!(peak, 1088, "{q:?}");
         }
+    }
+
+    /// Upsampling filters at the input's band edge, not the output's. The
+    /// low-pass is designed to be 6 dB down (gain 0.5) at its relative cutoff
+    /// `cutoff(fft_size_in)`: 0.97679 of the input Nyquist for the 588-frame
+    /// blocks of 44.1 -> 48 kHz (21 538 Hz), 0.97337 for the 512-frame blocks
+    /// of 48 -> 96 kHz (23 361 Hz). A tone at that edge reads 0.5 x its
+    /// amplitude within 0.5 dB, and one at 0.995 Nyquist, in the stopband above
+    /// it, is at least 60 dB down, so nothing near the input's Nyquist reaches
+    /// the output to image against it (the output spectrum above the input
+    /// Nyquist is zero by construction).
+    ///
+    /// Mutations (run): `cutoff(fft_size_in)` -> `cutoff(fft_size_out)` in
+    /// `Unit::new` moves the 44.1 -> 48 kHz edge to 0.97867 of Nyquist, so its
+    /// edge tone reads -3.87 dB instead of -6.02 and this fails (the 48 -> 96
+    /// kHz edge moves further, to 0.98664, but the loop stops at the first
+    /// failure); multiplying each bin by `1 / (2 * fft_size_in)` alone, with
+    /// no `filter_f`, reads -0.03 dB at that edge and fails too.
+    #[test]
+    fn upsampling_cuts_at_the_input_band_edge() {
+        for (from, to, edge) in [
+            (44_100.0, 48_000.0, 21_538.0),
+            (48_000.0, 96_000.0, 23_361.0),
+        ] {
+            let at = |f: f64| {
+                let out = resample(
+                    &[tone(f, from, from as usize, 0.5)],
+                    from as u32,
+                    to as u32,
+                    ChunkSize::N1024,
+                );
+                let x = &out[0];
+                let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+                20.0 * (level_at(x, to, f, a, b) / 0.5).log10()
+            };
+            let edge_db = at(edge);
+            assert!(
+                (edge_db + 6.02).abs() < 0.5,
+                "{from}->{to}: {edge} Hz reads {edge_db:+.2} dB, expected -6.02"
+            );
+            let stop_db = at(0.995 * from / 2.0);
+            assert!(
+                stop_db < -60.0,
+                "{from}->{to}: 0.995 Nyquist reads {stop_db:.1} dB"
+            );
+        }
+    }
+
+    /// A rate the converter cannot take is an error that names the rate, not a
+    /// saturated or wrapped integer: NaN, infinities, zero, negatives and
+    /// anything under 0.5 Hz (which rounds to 0) or at 2^32 Hz and over. A
+    /// pair whose blocks would be enormous (1 Hz -> 192 kHz plans a ~98 M-point
+    /// FFT) is refused too.
+    ///
+    /// Mutations (run): `whole_hz` returning `Ok(hz.round() as usize)` makes
+    /// NaN, negatives and sub-0.5 Hz rates reach the converter as 0 and
+    /// infinity as `usize::MAX`; the converter still refuses them, but with its
+    /// own message, so the message assertions fail. Removing the block cap
+    /// (see `fft_resample`) makes the last case allocate gigabytes.
+    #[test]
+    fn an_unusable_rate_is_an_error() {
+        let new = |from: f64, to: f64| {
+            Resampler::new(1, SampleRate(from), SampleRate(to), ChunkSize::N1024)
+        };
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -48_000.0,
+            0.4,
+            1e300,
+            4_294_967_296.0,
+        ] {
+            for (from, to) in [(bad, 48_000.0), (44_100.0, bad)] {
+                let err = new(from, to).err().unwrap_or_else(|| {
+                    panic!("{from} -> {to} Hz was accepted");
+                });
+                assert!(
+                    err.to_string().contains("invalid sample rate"),
+                    "{from} -> {to}: {err}"
+                );
+            }
+        }
+        assert!(new(44_100.0, 48_000.0).is_ok());
+        assert!(new(0.5, 1.0).is_ok());
+        let err = new(1.0, 192_000.0).err().unwrap();
+        assert!(err.to_string().contains("block"), "{err}");
     }
 
     #[test]

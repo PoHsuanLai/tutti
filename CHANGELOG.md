@@ -19,6 +19,13 @@ per feature for `bevy-tutti`, `tutti-session` and `tutti` (`bevy-tutti`'s
 `export` and `midi` docs failed), and clippy under `--cfg loom` (`tutti-types`'
 task graph no longer takes a `% 1`).
 
+### Added — `missing_docs` is a workspace lint
+
+`[workspace.lints.rust]` sets `missing_docs = "warn"`, which CI's `-D warnings`
+enforces for every member that inherits the workspace lints. The remaining
+undocumented public items (the hand-written ALSA UMP bindings, `Tuning`'s test
+accessors, `arc-lend-compare`'s `Tail`) are documented.
+
 ### Changed — the workspace is on Rust edition 2024
 
 Every member inherits `edition = "2024"` from `[workspace.package]`

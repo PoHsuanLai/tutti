@@ -1,3 +1,5 @@
+//! Unit tests for the CLAP host's event translation.
+
 use std::ffi::c_void;
 
 use tutti_plugin_types::ParamAddress;

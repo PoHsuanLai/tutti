@@ -104,6 +104,7 @@ private_intra_doc_links = "deny"
 # `[package.metadata.docs.rs]`) for the `doc_cfg` feature badges.
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(docsrs)'] }
+missing_docs = "warn"
 
 # A system's argument list IS its dependency declaration, and a query filter is
 # the query specification — aliasing either behind a type or a SystemParam bundle

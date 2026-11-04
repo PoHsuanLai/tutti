@@ -10,8 +10,10 @@
 //! ## Algorithm
 //!
 //! The YIN algorithm (de Cheveigné & Kawahara, 2002) is a robust
-//! autocorrelation-based pitch detector. This implementation includes
-//! all 6 steps from the original paper:
+//! autocorrelation-based pitch detector. This implementation covers
+//! steps 1 to 5 of the paper (autocorrelation through parabolic interpolation),
+//! grouped here as four stages, and omits step 6, the best-local-estimate
+//! search over neighbouring frames:
 //!
 //! 1. **Difference function** - d(τ) = Σ(x\[j\] - x\[j+τ\])²
 //! 2. **Cumulative mean normalized difference** - d'(τ)

@@ -1352,8 +1352,13 @@ fn test_host_track_info_get_returns_false_when_empty() {
     assert!(!ok);
 }
 
+/// The host sends and takes core events only, so it claims no other event
+/// space: every name is unknown (`false`, `UINT16_MAX`).
+///
+/// Mutation (run): hand out an id again (`*space_id = 512; true`) → both
+/// assertions fail.
 #[test]
-fn test_host_event_registry_query() {
+fn test_host_event_registry_claims_no_space() {
     use clap_sys::ext::event_registry::{clap_host_event_registry, CLAP_EXT_EVENT_REGISTRY};
     use std::sync::Arc;
 
@@ -1364,24 +1369,10 @@ fn test_host_event_registry_query() {
     let er_ptr = unsafe { get_ext(raw, CLAP_EXT_EVENT_REGISTRY.as_ptr()) };
     let er = unsafe { &*(er_ptr as *const clap_host_event_registry) };
 
-    let name = c"com.example.my-events";
     let mut space_id: u16 = 0;
-    let ok = unsafe { er.query.unwrap()(raw, name.as_ptr(), &mut space_id) };
-    assert!(ok);
-    assert!(space_id >= 512);
-
-    // Same name should return same ID
-    let mut space_id2: u16 = 0;
-    let ok = unsafe { er.query.unwrap()(raw, name.as_ptr(), &mut space_id2) };
-    assert!(ok);
-    assert_eq!(space_id, space_id2);
-
-    // Different name should return different ID
-    let name2 = c"com.other.events";
-    let mut space_id3: u16 = 0;
-    let ok = unsafe { er.query.unwrap()(raw, name2.as_ptr(), &mut space_id3) };
-    assert!(ok);
-    assert_ne!(space_id, space_id3);
+    let ok = unsafe { er.query.unwrap()(raw, c"com.example.my-events".as_ptr(), &mut space_id) };
+    assert!(!ok);
+    assert_eq!(space_id, u16::MAX);
 }
 
 #[test]

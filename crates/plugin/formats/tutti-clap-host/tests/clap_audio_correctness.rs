@@ -830,6 +830,41 @@ fn host_does_not_invent_a_preferred_note_dialect() {
     assert_eq!(in0.preferred_dialect, Some(NoteDialect::Clap));
 }
 
+/// Notes go to the input note port in a dialect it takes: CLAP note events
+/// for a port that supports them, `clap_event_midi` for one that prefers MIDI,
+/// read at activation and again at every re-activation.
+///
+/// Mutations (run): `sends_midi_notes` returning `false` → the MIDI-preferring
+/// assertion fails; dropping `set_midi_notes` from `ClapLoaded::activate` → the
+/// first activation assertion fails; dropping it from `resize_scratch` → the
+/// re-activation assertions fail.
+#[test]
+fn notes_follow_the_input_note_ports_dialect() {
+    use clap_sys::ext::note_ports::CLAP_NOTE_DIALECT_MIDI;
+
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+    assert!(!session.load().sends_midi_notes(), "port 0 prefers CLAP");
+
+    session
+        .controls
+        .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI);
+    assert!(session.load().sends_midi_notes());
+    let mut active = session.activate();
+    assert!(active.sends_midi_notes(), "read at activation");
+
+    session
+        .controls
+        .set_preferred_dialect(PREFERRED_DIALECT_DEFAULT);
+    active.reactivate().expect("reactivates");
+    assert!(!active.sends_midi_notes(), "re-read at re-activation");
+
+    session
+        .controls
+        .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI);
+    active.reactivate().expect("reactivates");
+    assert!(active.sends_midi_notes());
+}
+
 /// `clap.render` must actually reach the plugin. The probe records the mode
 /// it was handed, so a host wrapper that returns `true` without calling
 /// through is caught.

@@ -102,18 +102,7 @@ impl RenderScratch {
     /// Panics if `num_samples` exceeds the block size given to
     /// [`new`](Self::new), or if an input slice is shorter than `num_samples`.
     pub fn prepare_f32(&mut self, caller_inputs: &[&[f32]], num_samples: usize) {
-        for (i, src) in caller_inputs.iter().enumerate() {
-            if i < self.inputs.len() {
-                self.inputs[i][..num_samples].copy_from_slice(&src[..num_samples]);
-            }
-        }
-        for i in caller_inputs.len()..self.inputs.len() {
-            self.inputs[i][..num_samples].fill(0.0);
-        }
-        for ch in &mut self.outputs {
-            ch[..num_samples].fill(0.0);
-        }
-        self.refresh_ptrs();
+        self.prepare_f32_range(caller_inputs, 0, num_samples);
     }
 
     /// Copies the caller's f64 inputs into the f64 scratch buffers, zeroing
@@ -127,20 +116,7 @@ impl RenderScratch {
     /// Panics if `num_samples` exceeds the block size given to
     /// [`new`](Self::new).
     pub fn prepare_f64(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
-        for (i, src) in caller_inputs.iter().enumerate() {
-            if i < self.inputs_f64.len() {
-                for (d, &s) in self.inputs_f64[i][..num_samples].iter_mut().zip(*src) {
-                    *d = s;
-                }
-            }
-        }
-        for i in caller_inputs.len()..self.inputs_f64.len() {
-            self.inputs_f64[i][..num_samples].fill(0.0);
-        }
-        for ch in &mut self.outputs_f64 {
-            ch[..num_samples].fill(0.0);
-        }
-        self.refresh_ptrs_f64();
+        self.prepare_f64_range(caller_inputs, 0, num_samples);
     }
 
     /// Narrows the caller's f64 inputs into the *f32* scratch buffers, for a
@@ -155,20 +131,7 @@ impl RenderScratch {
     /// Panics if `num_samples` exceeds the block size given to
     /// [`new`](Self::new).
     pub fn prepare_f64_as_f32(&mut self, caller_inputs: &[&[f64]], num_samples: usize) {
-        for (i, src) in caller_inputs.iter().enumerate() {
-            if i < self.inputs.len() {
-                for (d, &s) in self.inputs[i][..num_samples].iter_mut().zip(*src) {
-                    *d = s as f32;
-                }
-            }
-        }
-        for i in caller_inputs.len()..self.inputs.len() {
-            self.inputs[i][..num_samples].fill(0.0);
-        }
-        for ch in &mut self.outputs {
-            ch[..num_samples].fill(0.0);
-        }
-        self.refresh_ptrs();
+        self.prepare_f64_as_f32_range(caller_inputs, 0, num_samples);
     }
 
     /// Copies the scratch outputs back to the caller's f32 channels.
@@ -180,28 +143,14 @@ impl RenderScratch {
     // `copy_from_slice` requires equal lengths and would panic on any caller
     // slice that is not exactly the block, which `process_f32` allows.
     pub fn copy_out_f32(&self, caller_outputs: &mut [&mut [f32]], num_samples: usize) {
-        for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
-            if i < self.outputs.len() {
-                let n = num_samples
-                    .min(out_channel.len())
-                    .min(self.outputs[i].len());
-                out_channel[..n].copy_from_slice(&self.outputs[i][..n]);
-            }
-        }
+        self.copy_out_f32_range(caller_outputs, 0, num_samples);
     }
 
     /// Copies the f64 scratch outputs back to the caller's f64 channels.
     ///
     /// Bounded on both sides like [`copy_out_f32`](Self::copy_out_f32).
     pub fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
-        for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
-            if i < self.outputs_f64.len() {
-                let n = num_samples.min(out_channel.len());
-                for (o, &s) in out_channel[..n].iter_mut().zip(&self.outputs_f64[i]) {
-                    *o = s;
-                }
-            }
-        }
+        self.copy_out_f64_range(caller_outputs, 0, num_samples);
     }
 
     /// Widens the *f32* scratch outputs into the caller's f64 channels.
@@ -210,10 +159,107 @@ impl RenderScratch {
     /// [`prepare_f64_as_f32`](Self::prepare_f64_as_f32). Bounded like
     /// [`copy_out_f64`](Self::copy_out_f64).
     pub fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
+        self.copy_out_f64_from_f32_range(caller_outputs, 0, num_samples);
+    }
+
+    /// [`prepare_f32`](Self::prepare_f32) for the piece of the caller's block
+    /// `start..start + len`, staged at the front of the scratch.
+    pub fn prepare_f32_range(&mut self, caller_inputs: &[&[f32]], start: usize, len: usize) {
+        for (i, src) in caller_inputs.iter().enumerate() {
+            if i < self.inputs.len() {
+                self.inputs[i][..len].copy_from_slice(&src[start..start + len]);
+            }
+        }
+        for i in caller_inputs.len()..self.inputs.len() {
+            self.inputs[i][..len].fill(0.0);
+        }
+        for ch in &mut self.outputs {
+            ch[..len].fill(0.0);
+        }
+        self.refresh_ptrs();
+    }
+
+    /// [`prepare_f64`](Self::prepare_f64) for the piece `start..start + len`.
+    pub fn prepare_f64_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
+        for (i, src) in caller_inputs.iter().enumerate() {
+            if i < self.inputs_f64.len() {
+                let piece = &src[start.min(src.len())..(start + len).min(src.len())];
+                for (d, &s) in self.inputs_f64[i][..len].iter_mut().zip(piece) {
+                    *d = s;
+                }
+            }
+        }
+        for i in caller_inputs.len()..self.inputs_f64.len() {
+            self.inputs_f64[i][..len].fill(0.0);
+        }
+        for ch in &mut self.outputs_f64 {
+            ch[..len].fill(0.0);
+        }
+        self.refresh_ptrs_f64();
+    }
+
+    /// [`prepare_f64_as_f32`](Self::prepare_f64_as_f32) for the piece
+    /// `start..start + len`.
+    pub fn prepare_f64_as_f32_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
+        for (i, src) in caller_inputs.iter().enumerate() {
+            if i < self.inputs.len() {
+                for (d, &s) in self.inputs[i][..len]
+                    .iter_mut()
+                    .zip(&src[start..start + len])
+                {
+                    *d = s as f32;
+                }
+            }
+        }
+        for i in caller_inputs.len()..self.inputs.len() {
+            self.inputs[i][..len].fill(0.0);
+        }
+        for ch in &mut self.outputs {
+            ch[..len].fill(0.0);
+        }
+        self.refresh_ptrs();
+    }
+
+    /// [`copy_out_f32`](Self::copy_out_f32) into the piece of the caller's
+    /// block `start..start + len`.
+    pub fn copy_out_f32_range(&self, caller_outputs: &mut [&mut [f32]], start: usize, len: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs.len() {
-                let n = num_samples.min(out_channel.len());
-                for (o, &s) in out_channel[..n].iter_mut().zip(&self.outputs[i]) {
+                let n = len
+                    .min(out_channel.len().saturating_sub(start))
+                    .min(self.outputs[i].len());
+                out_channel[start..start + n].copy_from_slice(&self.outputs[i][..n]);
+            }
+        }
+    }
+
+    /// [`copy_out_f64`](Self::copy_out_f64) into the piece `start..start + len`.
+    pub fn copy_out_f64_range(&self, caller_outputs: &mut [&mut [f64]], start: usize, len: usize) {
+        for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
+            if i < self.outputs_f64.len() {
+                let n = len
+                    .min(out_channel.len().saturating_sub(start))
+                    .min(self.outputs_f64[i].len());
+                out_channel[start..start + n].copy_from_slice(&self.outputs_f64[i][..n]);
+            }
+        }
+    }
+
+    /// [`copy_out_f64_from_f32`](Self::copy_out_f64_from_f32) into the piece
+    /// `start..start + len`.
+    pub fn copy_out_f64_from_f32_range(
+        &self,
+        caller_outputs: &mut [&mut [f64]],
+        start: usize,
+        len: usize,
+    ) {
+        for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
+            if i < self.outputs.len() {
+                let n = len.min(out_channel.len().saturating_sub(start));
+                for (o, &s) in out_channel[start..start + n]
+                    .iter_mut()
+                    .zip(&self.outputs[i])
+                {
                     *o = s as f64;
                 }
             }

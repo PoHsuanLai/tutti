@@ -14,13 +14,15 @@
 //!   fails on a host that calls the right slot with narrowed staging.
 //!
 //! `effSetProcessPrecision` (77) is covered here too: it is the opcode that
-//! tells a dual-precision plugin which width to configure for, and it was
-//! never sent.
+//! tells a dual-precision plugin which width to configure for. It states the
+//! width the host WILL call the plugin at, so 64 goes only to a plugin that
+//! declared `effFlagsCanDoubleReplacing` and was loaded with
+//! `Precision::Double`; every other plugin is told 32.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{RenderScratch, Vst2Instance, Vst2ProcessContext};
+use tutti_vst2_host::{Precision, RenderScratch, Vst2Instance, Vst2ProcessContext};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
 #[path = "support/probe_path.rs"]
@@ -117,8 +119,9 @@ fn read_capture(path: &Path) -> ProcessCapture {
     cap
 }
 
-/// Load the probe, with `effFlagsCanDoubleReplacing` set or clear.
-fn load_probe(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf) {
+/// Load the probe, with `effFlagsCanDoubleReplacing` set or clear, telling it
+/// it will be processed at `precision`.
+fn load_probe(declares_f64: bool, precision: Precision) -> (Vst2Instance, RenderScratch, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
     clear_probe_env();
@@ -126,7 +129,7 @@ fn load_probe(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf) {
         // SAFETY: the caller holds `PROBE_LOCK`.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_F64", "1") };
     }
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let instance = Vst2Instance::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving
     // this load.
@@ -168,7 +171,7 @@ fn render_f64(
 #[test]
 fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(true);
+    let (mut instance, mut scratch, path) = load_probe(true, Precision::Double);
     assert!(
         instance.metadata().supports_f64,
         "the probe was asked to declare effFlagsCanDoubleReplacing but the \
@@ -197,7 +200,7 @@ fn f64_capable_plugin_is_entered_through_the_f64_slot() {
 #[test]
 fn f64_render_preserves_precision_f32_cannot_carry() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(true);
+    let (mut instance, mut scratch, path) = load_probe(true, Precision::Double);
     let meta = instance.metadata().clone();
 
     // Guard the fixture, per channel, against the tag rounding the difference
@@ -242,7 +245,7 @@ fn f64_render_preserves_precision_f32_cannot_carry() {
 #[test]
 fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(false);
+    let (mut instance, mut scratch, path) = load_probe(false, Precision::Double);
     assert!(
         !instance.metadata().supports_f64,
         "the default probe must not declare effFlagsCanDoubleReplacing"
@@ -271,39 +274,69 @@ fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
     }
 }
 
-/// `effSetProcessPrecision` must be dispatched at load, carrying the width the
-/// plugin declared. It was never sent, so a plugin that configures its
-/// internal precision on this opcode stayed wherever it defaulted.
+/// `effSetProcessPrecision` is dispatched once at load, carrying the width the
+/// host will call the plugin at: 64 only for a plugin that declared
+/// `effFlagsCanDoubleReplacing` and a caller that asked for `Double`.
+///
+/// Mutation (run): `double_precision` taken from `info.f64_precision` alone
+/// (the previous behaviour) -> the f64-capable plugin loaded at `Single` is
+/// told 64 and then called through `processReplacing` -> the second case
+/// fails. Mutation (run): `Double` ignored (always 32) -> the first case
+/// fails.
 #[test]
-fn set_process_precision_is_dispatched_with_the_declared_width() {
+fn set_process_precision_announces_the_width_the_host_will_use() {
     let _guard = lock_probe();
 
-    let (instance, _scratch, path) = load_probe(true);
-    let cap = read_capture(&path);
-    assert_eq!(
-        cap.set_precision_count, 1,
-        "effSetProcessPrecision was dispatched {} times at load; expected \
-         exactly one",
-        cap.set_precision_count
-    );
-    assert_eq!(
-        cap.set_precision_value, 1,
-        "the plugin declared effFlagsCanDoubleReplacing, so the host must \
-         announce 64-bit"
-    );
-    // Torn down before the next load, so its `effClose` cannot land between
-    // the second load and the read below.
-    drop(instance);
+    let announced = |declares_f64: bool, precision: Precision| {
+        let (instance, _scratch, path) = load_probe(declares_f64, precision);
+        let cap = read_capture(&path);
+        assert_eq!(
+            cap.set_precision_count, 1,
+            "effSetProcessPrecision was dispatched {} times at load; expected \
+             exactly one",
+            cap.set_precision_count
+        );
+        // Torn down before the next load, so its `effClose` cannot land between
+        // the next load and its read.
+        drop(instance);
+        cap.set_precision_value
+    };
 
-    // The complement, so a hardcoded `1` cannot satisfy the assertion above.
-    let (instance, _scratch, path) = load_probe(false);
-    let cap = read_capture(&path);
-    assert_eq!(cap.set_precision_count, 1);
     assert_eq!(
-        cap.set_precision_value, 0,
-        "the plugin declared no f64 support, so the host must announce 32-bit"
+        announced(true, Precision::Double),
+        1,
+        "declared f64 and the caller will use process_f64: announce 64-bit"
     );
-    drop(instance);
+    assert_eq!(
+        announced(true, Precision::Single),
+        0,
+        "the plugin can do f64 but the caller will call f32: announcing 64 \
+         would promise a width the host never uses"
+    );
+    assert_eq!(
+        announced(false, Precision::Double),
+        0,
+        "no effFlagsCanDoubleReplacing: the host cannot enter it at 64"
+    );
+    assert_eq!(announced(false, Precision::Single), 0);
+}
+
+/// A plugin told 32 is not entered at 64: `process_f64` narrows through the
+/// f32 slot even for a plugin that declared the f64 flag.
+///
+/// Mutation (run): `process_f64` choosing the native path on
+/// `metadata().supports_f64` (the previous behaviour) -> the entry is
+/// `ReplacingF64` for a plugin told 32 -> fails.
+#[test]
+fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
+    let _guard = lock_probe();
+    let (mut instance, mut scratch, path) = load_probe(true, Precision::Single);
+    assert!(instance.metadata().supports_f64, "fixture");
+
+    let _ = render_f64(&mut instance, &mut scratch, 0.0);
+
+    let cap = read_capture(&path);
+    assert_eq!(cap.entry, ProcessEntry::Replacing);
 }
 
 /// The opcode is only legal while suspended, and `load` sends it between
@@ -312,7 +345,7 @@ fn set_process_precision_is_dispatched_with_the_declared_width() {
 #[test]
 fn set_process_precision_precedes_the_load_resume() {
     let _guard = lock_probe();
-    let (_instance, _scratch, path) = load_probe(true);
+    let (_instance, _scratch, path) = load_probe(true, Precision::Double);
 
     let cap = read_capture(&path);
     assert_eq!(cap.set_precision_count, 1);

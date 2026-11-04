@@ -315,7 +315,7 @@ impl Vst2Instance {
     /// because the consequence differs: a dropped note-off whose note-on landed
     /// is a stuck note.
     pub fn dropped_midi_out(&self) -> u64 {
-        self.host_link.state.dropped_midi_out()
+        self.host_link.state.dropped_midi_out() + self.midi.out_overflow()
     }
 
     /// Returns how many SysEx messages were **dropped** whole since load

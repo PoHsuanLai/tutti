@@ -4650,6 +4650,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
+ "tutti-nodes",
 ]
 
 [[package]]

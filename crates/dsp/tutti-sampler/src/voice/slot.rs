@@ -486,7 +486,12 @@ impl PlaybackSlot {
                 // publish unity again — a set-once would leave the stream
                 // reading at the old factor.
                 reader.set_stretch_rate(unit.input_rate());
-                reader.render_lanes(clock, range, raw, n, positions, gather);
+                // The filter takes every frame, silent ones included (it
+                // rings on past its input): a block the reader skipped is
+                // the zeros it would have written.
+                if !reader.render_lanes(clock, range, raw, n, positions, gather) {
+                    raw.clear(n, frames);
+                }
                 unit.filter_lanes(raw.lanes(), out.lanes_mut(), n, 0..frames);
                 Piece::Ready
             }
@@ -519,8 +524,14 @@ impl PlaybackSlot {
                 // is reachable through ordinary use, not just teardown. The
                 // reader applies its own gain (the stream's control cell).
                 reader.set_stretch_rate(ReadRate::UNITY);
-                reader.render_lanes(clock, range, out, n, positions, gather);
-                Piece::Ready
+                if reader.render_lanes(clock, range, out, n, positions, gather) {
+                    Piece::Ready
+                } else {
+                    // No frame has a position: the reader's frames are +0.0
+                    // (its gain never scales a silent frame), and its state
+                    // is as the zeros left it.
+                    Piece::Silent
+                }
             }
         }
     }

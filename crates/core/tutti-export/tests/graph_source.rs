@@ -12,11 +12,14 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits. All but the pitched sampler voice's and the convolver's were
-//!   recorded from the graph's render against an independent reference
-//!   renderer it matched bit for bit; those two are self-recorded (the scalar
-//!   FFT has no reference renderer), and their cross-checks are the fifth-up
-//!   pitch figure and the direct convolution.
+//!   file's) bits. All but three were recorded from the graph's render
+//!   against an independent reference renderer it matched bit for bit. Three
+//!   are self-recorded: the pitched sampler voice's and the convolver's (the
+//!   scalar FFT has no reference renderer; their cross-checks are the
+//!   fifth-up pitch figure and the direct convolution), and the quad VBAP
+//!   digest (re-recorded when the panner's smoother moved to one advance per
+//!   block; its folded stereo and mono renders are checked against it bit for
+//!   bit).
 //!   They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
@@ -467,7 +470,7 @@ fn a_surround_mix_folds_to_every_width() {
     // front-left one in channel 0.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
     assert!(quad[0].iter().any(|s| s.abs() > 0.05), "no front energy");
-    assert_golden("quad", digest(&quad), 0x2e1f_79e4_959f_1ede);
+    assert_golden("quad", digest(&quad), 0xe087_842d_4937_bca6);
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {

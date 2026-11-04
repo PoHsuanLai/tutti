@@ -3517,7 +3517,7 @@ Decisions:
    | `DistortionNode` (tutti-nodes), stereo, by curve, measured on another box (the note below) | `HardClip` 0.11, `Softsign` 0.22 (fed 0.8 both); `Crush` 2.2 (fed 2.8), `SoftCrush` 2.8 (fed 3.5), `Atan` 7.6 (fed 9.0), `Tanh` 15–16 (fed 18) | `Light` for `HardClip` and `Softsign`, `Moderate` for the other four |
    | `ClickNode` | 3.8 | `Moderate` |
    | `MicMonitorNode`, one block copy out of the ring, measured on another box (the note below) | 0.4–0.6 | `Light` |
-   | `VbapPannerNode` | 10.9 stereo, 4.3 at 5.1 while moving; held (the de-zipper at its fixed point, the solve reused) 1.5 and 0.6 | `Moderate` (classed by the moving case) |
+   | `VbapPannerNode` | moving, the de-zipper advanced in one analytic move per block: 3.6 stereo and 1.7 at 5.1 at 64 frames, 0.9 and 0.7 at 1024 (10.9 and 4.3 when it stepped every frame); held (the de-zipper at its fixed point, the solve reused) 1.5 and 0.6 | `Moderate` (classed by the moving case at 64 frames) |
    | `VoiceNode`, a plain memory voice | 13 | `Moderate` |
    | `MemorySource`, placed or free-running | 16–17 | `Moderate` |
    | `DiskSource`, `DiskVoice` | not measured: the memory tier's kernel, from a ring of atomics | `Moderate` |

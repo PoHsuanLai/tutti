@@ -43,9 +43,11 @@ pub enum LadderType {
     /// Low-pass at 24 dB/octave — the fourth stage tap, the classic Moog
     /// response.
     LP24,
-    /// High-pass at 12 dB/octave, formed as input minus the 12 dB low-pass.
+    /// High-pass at 12 dB/octave: the stage mix `u - 2*lp1 + lp2`, which is
+    /// `(s / (1 + s))^2` for the stages' `1 / (1 + s)`.
     HP12,
-    /// High-pass at 24 dB/octave, formed as input minus the 24 dB low-pass.
+    /// High-pass at 24 dB/octave: the binomial stage mix
+    /// `u - 4*lp1 + 6*lp2 - 4*lp3 + lp4`, which is `(s / (1 + s))^4`.
     HP24,
 }
 
@@ -163,8 +165,10 @@ fn ladder_step<F: Real>(
     match ty {
         LadderType::LP12 => lp2,
         LadderType::LP24 => lp4,
-        LadderType::HP12 => u - lp2,
-        LadderType::HP24 => u - lp4,
+        LadderType::HP12 => u - lp1 - lp1 + lp2,
+        LadderType::HP24 => {
+            u - lp1 * F::from_f64(4.0) + lp2 * F::from_f64(6.0) - lp3 * F::from_f64(4.0) + lp4
+        }
     }
 }
 
@@ -702,6 +706,49 @@ mod tests {
             rms_low > rms_high * 5.0,
             "LP24 should strongly attenuate high freq: low={rms_low}, high={rms_high}"
         );
+    }
+
+    /// Gain (dB) of a 0.01-amplitude sine at `f` through the node, projected
+    /// on the last second of two.
+    fn gain_db(ty: LadderType, fc: f32, res: f32, f: f64) -> f64 {
+        let mut node = prepared_at(LadderFilterNode::<f64>::new(ty, fc, res), RATE_44K);
+        let n = 44100;
+        let amp = 0.01;
+        let x: Vec<f32> = (0..2 * n)
+            .map(|i| (amp * (2.0 * core::f64::consts::PI * f * i as f64 / 44100.0).sin()) as f32)
+            .collect();
+        let y = process_mono(&mut node, &x);
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (i, &yi) in y.iter().enumerate().skip(n) {
+            let ph = 2.0 * core::f64::consts::PI * f * i as f64 / 44100.0;
+            re += f64::from(yi) * ph.sin();
+            im += f64::from(yi) * ph.cos();
+        }
+        20.0 * (2.0 * (re * re + im * im).sqrt() / n as f64 / amp).log10()
+    }
+
+    /// Well below the cutoff the high-passes fall 12 and 24 dB per octave
+    /// (`(s/(1+s))^2` and `^4`), and resonance still lifts the cutoff above
+    /// the same filter without it.
+    ///
+    /// Mutation (run): `u - lp2` / `u - lp4` (6 dB/octave) fails the slopes.
+    #[test]
+    fn the_high_passes_have_their_documented_slopes() {
+        for (ty, want) in [(LadderType::HP12, 12.0), (LadderType::HP24, 24.0)] {
+            for (lo, hi) in [(100.0, 200.0), (200.0, 400.0)] {
+                let slope = gain_db(ty, 5000.0, 0.0, hi) - gain_db(ty, 5000.0, 0.0, lo);
+                assert!(
+                    (slope - want).abs() < 1.0,
+                    "{ty:?} {lo}->{hi} Hz: {slope:.2} dB/oct, want {want}"
+                );
+            }
+            let flat = gain_db(ty, 5000.0, 0.0, 5000.0);
+            let peak = gain_db(ty, 5000.0, 0.7, 5000.0);
+            assert!(
+                peak > flat + 3.0,
+                "{ty:?} resonance: {flat:.2} -> {peak:.2}"
+            );
+        }
     }
 
     #[test]

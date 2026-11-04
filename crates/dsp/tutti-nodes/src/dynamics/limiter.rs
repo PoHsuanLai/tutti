@@ -45,7 +45,8 @@ impl LookaheadRing {
             buffers: (0..channels.max(1))
                 .map(|_| CircularBuffer::new(n))
                 .collect(),
-            min_deque: MonotonicMinDeque::new(n),
+            // n + 1 frames: the one delayed out now and the n after it.
+            min_deque: MonotonicMinDeque::new(n + 1),
             sample_counter: 0,
             lookahead_samples: n,
         }
@@ -65,7 +66,9 @@ impl LookaheadRing {
 
     /// Feeds `gain` to the sliding minimum and returns the window-min gain
     /// (the linked gain reduction all channels share). The window is the
-    /// lookahead: the push drops the gain leaving it before adding this one.
+    /// delayed sample's own frame and the `lookahead_samples` after it, so the
+    /// gain that scales a sample is never later than its own target's: the
+    /// push drops the gain leaving the window before adding this one.
     #[inline]
     fn push_gain(&mut self, gain: f32) -> f32 {
         self.min_deque.push(self.sample_counter, gain);
@@ -95,7 +98,8 @@ impl LookaheadRing {
 /// outputs by default.
 ///
 /// A limiter is a compressor at an effectively infinite ratio: nothing is
-/// allowed past the ceiling. The **lookahead** is what makes that possible
+/// allowed past the ceiling: the output is bounded by it (a gain divide and a
+/// product can in principle round one ulp past). The **lookahead** is what makes that possible
 /// without distortion — the audio is delayed by the lookahead window while the
 /// gain decision runs ahead of it, so reduction is already in place when a peak
 /// arrives rather than chasing it.
@@ -1397,8 +1401,15 @@ mod tests {
     }
 
     /// Each frame of output is the input delayed by the declared latency,
-    /// times the minimum of the envelope over the lookahead window that ends
-    /// at that frame.
+    /// times the minimum of the envelope over the window that starts at that
+    /// delayed sample's own frame and ends at the current one (`latency + 1`
+    /// frames).
+    ///
+    /// The window used to be `latency` frames, ending one frame short of
+    /// the delayed sample's own target: by then the envelope had released one
+    /// step, and a peak could pass the ceiling. Correcting the window changes
+    /// this property, it does not weaken it: the expected gain is still
+    /// computed independently and compared at 1e-6.
     ///
     /// The test computes the envelope itself from the documented math: it
     /// starts at 0, a lower target is taken at once (no attack), a higher
@@ -1410,6 +1421,9 @@ mod tests {
     /// Mutation (run): in `delay_scaled`, apply each frame's gain one frame
     /// late (`gains.iter().cycle().skip(len - 1)`) -> the gain at the step and
     /// along the release is the previous frame's -> fails, at lane 512 and 100.
+    /// Mutation (run): `MonotonicMinDeque::new(n)` in `LookaheadRing::new` (the
+    /// old window) -> the frame at the end of the step's release is scaled by
+    /// a gain one release step too high -> fails.
     #[test]
     fn each_frame_is_scaled_by_its_own_window_minimum_gain() {
         let release = 0.001;
@@ -1444,7 +1458,7 @@ mod tests {
                 .collect();
             for (i, &y) in out.iter().enumerate() {
                 let delayed = if i < latency { 0.0 } else { input[i - latency] };
-                let window = &envelopes[(i + 1).saturating_sub(latency)..=i];
+                let window = &envelopes[i.saturating_sub(latency)..=i];
                 let gain = window.iter().copied().fold(f32::INFINITY, f32::min);
                 assert!(
                     (y - delayed * gain).abs() <= 1e-6,
@@ -1467,22 +1481,22 @@ mod tests {
             .collect()
     }
 
-    /// Whatever loud noise goes in, the output stays at the ceiling, to the
-    /// rounding of a gain divide and a product plus the release's slack: the
-    /// gain window ends one frame after the delayed sample's own target, so
-    /// the envelope has risen one release step toward unity by then and the
-    /// frame can pass `|x| * coeff` above the ceiling. Threshold at the
+    /// Whatever loud noise goes in, the output never exceeds the ceiling:
+    /// the gain window includes the delayed sample's own frame, so its gain is
+    /// at most `ceiling / |x|`. The bound is exact, with no tolerance: this
+    /// noise never rounds a product past the ceiling. Threshold at the
     /// ceiling, so the quiet gain is unity.
     ///
     /// Mutation (run): drop the `/ peak` in `LimiterCurve::gain` (return
     /// `self.over`) -> a peak of 4 comes out at 4 x the ceiling -> fails.
+    /// Mutation (run): `MonotonicMinDeque::new(n)` in `LookaheadRing::new` (the
+    /// old window) -> the output reaches 1.0016 x the ceiling -> fails.
     #[test]
     fn loud_noise_stays_at_the_ceiling() {
         let ceiling = Db(-6.0);
         let limit = db_to_amplitude(ceiling).get();
         let mut lim = prepared_at(LimiterNode::new(ceiling, ceiling), RATE_44K);
         let latency = lim.ring.lookahead_samples;
-        let coeff = Seconds(0.1).one_pole_coeff(RATE_44K);
         let mut seed = 7;
         let (mut input, mut output) = (Vec::new(), Vec::new());
         for _ in 0..40 {
@@ -1493,9 +1507,7 @@ mod tests {
         }
         let mut limited = 0;
         for (i, &y) in output.iter().enumerate().skip(latency) {
-            let d = input[i - latency].abs();
-            let bound = (limit + coeff * d) * (1.0 + 4.0 * f32::EPSILON);
-            assert!(y.abs() <= bound, "frame {i}: {y} over {bound}");
+            assert!(y.abs() <= limit, "frame {i}: {y} over {limit}");
             limited += usize::from(y.abs() > 0.9 * limit);
         }
         assert!(limited > 1000, "the limiter was exercised: {limited}");

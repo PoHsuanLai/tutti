@@ -14,7 +14,7 @@ use tutti_midi_types::ump::{
 };
 use tutti_midi_types::MidiGroup;
 
-use crate::{MidiEvent, MIDI_STACK_CAPACITY};
+use crate::{MidiEvent, RtMidiEvents, MIDI_STACK_CAPACITY};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer
@@ -34,6 +34,37 @@ pub const SYSEX_MESSAGE_CAPACITY: usize = SYSEX7_MAX_PAYLOAD + 2;
 /// both delimiters (a `SINGLE`).
 const BYTES_PER_PACKET: usize = 8;
 
+/// A SysEx message without its `0xF0` and `0xF7` delimiters, if it has them:
+/// the payload UMP SysEx7 carries.
+pub fn unframed(message: &[u8]) -> &[u8] {
+    let payload = message.strip_prefix(&[0xF0]).unwrap_or(message);
+    payload.strip_suffix(&[0xF7]).unwrap_or(payload)
+}
+
+/// Pushes one complete SysEx message a plugin emitted onto `out` as UMP
+/// SysEx7 packets (a lone `SINGLE`, or `START`, `CONTINUE`*, `END`), every
+/// packet at `frame_offset`, the inverse of what [`SysExAssembler`] does on
+/// the input side. `message` may carry its `0xF0` and `0xF7` delimiters or
+/// not. Never allocates.
+///
+/// A message is delivered whole or not at all: one whose packets do not all
+/// fit in `out`'s room is dropped and latches `out`'s
+/// [`overflowed`](tutti_types::RtVec::overflowed), because a `START` left
+/// without its `END` would corrupt the stream that follows it. Returns
+/// whether it was pushed.
+pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> bool {
+    let payload = unframed(message);
+    let packets = MidiEvent::sysex7_packet_count(payload.len());
+    if packets > out.remaining() {
+        out.mark_overflowed();
+        return false;
+    }
+    for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
+        out.push(packet.with_frame_offset(frame_offset));
+    }
+    true
+}
+
 /// Where one complete message lies in its [`SysExAssembler`]'s buffer.
 ///
 /// Valid until the assembler's next [`begin_block`](SysExAssembler::begin_block).
@@ -44,6 +75,19 @@ pub struct SysExRef {
 }
 
 impl SysExRef {
+    /// The message lying at `start..start + len` of some buffer the caller
+    /// owns (a host reading a plugin's output keeps its own).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a buffer reserved for SysEx messages is far below u32::MAX bytes"
+    )]
+    pub fn new(start: usize, len: usize) -> Self {
+        Self {
+            start: start as u32,
+            len: len as u32,
+        }
+    }
+
     /// The message's byte range in [`SysExAssembler::bytes`].
     pub fn range(self) -> std::ops::Range<usize> {
         let start = self.start as usize;
@@ -648,5 +692,52 @@ mod tests {
         assert!(asm.bytes().is_empty());
         assert!(feed(&mut asm, &pkts[2..]).is_empty());
         assert_eq!(asm.dropped(), 1);
+    }
+
+    /// **A plugin's SysEx of any length reaches the pool intact**, framed or
+    /// bare, and reassembles to the message it was.
+    ///
+    /// Mutation (run): in `push_sysex`, keep only the first packet (or cap
+    /// the payload at 6 bytes) → the 40-byte message comes back short →
+    /// fails.
+    #[test]
+    fn a_plugins_sysex_of_any_length_arrives_whole() {
+        let mut asm = SysExAssembler::reserved();
+        for len in [0, 1, 6, 7, 14, 17, 40, 63 * 6] {
+            let body = payload(len);
+            for message in [framed(&body), body.clone()] {
+                let mut out = RtMidiEvents::new();
+                assert!(push_sysex(&mut out, 9, &message), "{len} bytes");
+                assert!(out.iter().all(|e| e.frame_offset == 9));
+                assert!(!out.overflowed());
+                assert_eq!(feed(&mut asm, out.as_slice()), vec![framed(&body)]);
+            }
+        }
+        assert_eq!(asm.dropped(), 0);
+    }
+
+    /// **A message that does not fit the pool is dropped whole and
+    /// reported**, never cut: a `START` with no `END` would swallow the
+    /// stream after it.
+    ///
+    /// Mutation (run): drop the `packets > out.remaining()` check so the
+    /// packets are pushed until the pool is full → the pool holds a `START`
+    /// with no `END` → fails.
+    #[test]
+    fn a_message_past_the_pool_is_dropped_whole() {
+        let mut out = RtMidiEvents::new();
+        let room = out.remaining();
+        let too_long = payload(room * 6 + 1);
+        assert!(!push_sysex(&mut out, 0, &too_long));
+        assert!(out.is_empty(), "no partial message");
+        assert!(out.overflowed());
+
+        // What fits after another event is judged on the room that is left.
+        let mut out = RtMidiEvents::new();
+        assert!(out.push(MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100]).unwrap()));
+        assert!(!push_sysex(&mut out, 0, &payload((room - 1) * 6 + 1)));
+        assert_eq!(out.len(), 1);
+        assert!(push_sysex(&mut out, 0, &payload((room - 1) * 6)));
+        assert_eq!(out.len(), room);
     }
 }

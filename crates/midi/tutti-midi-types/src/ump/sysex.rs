@@ -62,6 +62,50 @@ impl MidiEvent {
         }
     }
 
+    /// How many SysEx 7-bit packets a payload of `payload_len` bytes (the
+    /// data between 0xF0 and 0xF7) takes: six bytes to a packet, and an empty
+    /// payload is one empty `SINGLE`. The count [`Self::sysex7_packets`]
+    /// yields.
+    pub const fn sysex7_packet_count(payload_len: usize) -> usize {
+        let packets = payload_len.div_ceil(6);
+        if packets == 0 {
+            1
+        } else {
+            packets
+        }
+    }
+
+    /// The SysEx 7-bit packets (UMP type 0x3) for `data`, one at a time and
+    /// without allocating: the same packets, in the same order, as
+    /// [`Self::sysex7_fragments`] pushes. `data` is the payload *between* 0xF0
+    /// and 0xF7 (no delimiters); a byte's high bit is dropped. An empty
+    /// payload is one empty `SINGLE` packet. Every packet carries frame
+    /// offset 0; stamp them with [`Self::with_frame_offset`].
+    ///
+    /// For the audio thread, where [`Self::sysex7_fragments`]' `Vec` is not
+    /// available.
+    pub fn sysex7_packets(group: MidiGroup, data: &[u8]) -> impl Iterator<Item = MidiEvent> + '_ {
+        let packets = Self::sysex7_packet_count(data.len());
+        (0..packets).map(move |i| {
+            let chunk = &data[(i * 6).min(data.len())..((i + 1) * 6).min(data.len())];
+            let status = match (packets, i) {
+                (1, _) => SYSEX7_STATUS_SINGLE,
+                (_, 0) => SYSEX7_STATUS_START,
+                (n, i) if i == n - 1 => SYSEX7_STATUS_END,
+                _ => SYSEX7_STATUS_CONTINUE,
+            };
+            let b = |k: usize| u32::from(chunk.get(k).copied().unwrap_or(0) & 0x7F);
+            let w0 = (0x3 << 28)
+                | (u32::from(group.get() & 0x0F) << 24)
+                | (u32::from(status) << 20)
+                | ((chunk.len() as u32) << 16)
+                | (b(0) << 8)
+                | b(1);
+            let w1 = (b(2) << 24) | (b(3) << 16) | (b(4) << 8) | b(5);
+            MidiEvent::from_ump(0, &[w0, w1])
+        })
+    }
+
     /// Builds a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
     /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
     /// delimiters). Returns `None` if the payload exceeds one packet — use
@@ -149,5 +193,40 @@ mod tests {
         }
         // 7 bytes is more than one packet.
         assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+    }
+
+    /// The allocation-free packetizer emits exactly the packets midi2 does,
+    /// for every length around the 6-byte packet boundary and a long one.
+    ///
+    /// Mutation: end the last packet as `CONTINUE` instead of `END` (or
+    /// split at 5 bytes) in `sysex7_packets` and this fails.
+    #[test]
+    fn sysex7_packets_match_the_midi2_fragmenter() {
+        let data: Vec<u8> = (0..200u32).map(|i| (i * 7 % 128) as u8).collect();
+        for len in (0..=40).chain([199, 200]) {
+            for group in [MidiGroup::FIRST, MidiGroup::new(5)] {
+                let mut expected = Vec::new();
+                MidiEvent::sysex7_fragments(group, &data[..len], &mut expected);
+                let got: Vec<MidiEvent> = MidiEvent::sysex7_packets(group, &data[..len]).collect();
+                assert_eq!(got, expected, "{len} bytes, group {}", group.get());
+            }
+        }
+    }
+
+    /// The packet count is what `sysex7_packets` yields, at every length
+    /// around a packet boundary, and an empty payload is one packet.
+    ///
+    /// Mutation: drop the empty-payload case (`0` for `0`) or round down
+    /// (`payload_len / 6`) in `sysex7_packet_count` and this fails.
+    #[test]
+    fn sysex7_packet_count_is_what_sysex7_packets_yields() {
+        let data = [0u8; 40];
+        for len in 0..=40 {
+            assert_eq!(
+                MidiEvent::sysex7_packet_count(len),
+                MidiEvent::sysex7_packets(MidiGroup::FIRST, &data[..len]).count(),
+                "{len} bytes"
+            );
+        }
     }
 }

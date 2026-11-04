@@ -482,7 +482,10 @@ mod tests {
     /// differs by direction; it cannot fail today.
     #[test]
     fn the_scratch_covers_both_directions() {
-        for n in (1..=33usize).chain((6..=15).map(|p| 1usize << p)) {
+        // Under miri the powers of two stop at 2^10: planning a 32k transform
+        // there takes tens of seconds and adds no new scratch rule.
+        let top = if cfg!(miri) { 10 } else { 15 };
+        for n in (1..=33usize).chain((6..=top).map(|p| 1usize << p)) {
             let fft = RealFft::new(n);
             assert!(fft.scratch_len() >= fft.forward_scratch_len(), "size {n}");
             assert!(fft.scratch_len() >= fft.inverse_scratch_len(), "size {n}");

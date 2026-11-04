@@ -415,7 +415,8 @@ mod tests {
         }
         // Brute force over many near-end overshoots of a tiny loop.
         let tiny = LoopRange::new(0.5, 0.5 + 1e-9).expect("non-empty");
-        for i in 0..100_000u64 {
+        // Pure f64 arithmetic with no unsafe or atomics: miri gets a short run.
+        for i in 0..if cfg!(miri) { 500 } else { 100_000u64 } {
             let b = Beat(0.5 + 1e-9 + i as f64 * 1.7e-12);
             assert!(tiny.contains(tiny.wrap(b)), "{b:?} wrapped outside");
         }
@@ -461,12 +462,15 @@ mod tests {
             for looping in loops {
                 let mut one = FrameClock::new(Beat(0.1), Bpm(tempo), SR);
                 let mut block = one;
-                for (i, n) in [64usize, 300, 1, 1024, 77, 512]
-                    .iter()
-                    .cycle()
-                    .take(60)
-                    .enumerate()
-                {
+                // Under miri the blocks are a tenth the size (pure f64
+                // arithmetic, no unsafe or atomics); the tempo changes, the
+                // seat and the wraps still happen.
+                let sizes: [usize; 6] = if cfg!(miri) {
+                    [6, 30, 1, 102, 7, 51]
+                } else {
+                    [64, 300, 1, 1024, 77, 512]
+                };
+                for (i, n) in sizes.iter().cycle().take(60).enumerate() {
                     if i == 20 {
                         one.set_tempo(Bpm(tempo * 1.5));
                         block.set_tempo(Bpm(tempo * 1.5));
@@ -566,14 +570,16 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        for _ in 0..50 {
+        // Under miri: fewer tempos and blocks (pure f64 arithmetic).
+        let (runs, blocks) = if cfg!(miri) { (5, 200) } else { (50, 2_000) };
+        for _ in 0..runs {
             let tempo = 40.0 + (next() % 20_000) as f64 / 100.0;
             let rate = [22_050.0, 44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0]
                 [(next() % 6) as usize];
             let start = (next() % 1_000) as f64 / 7.0;
             let mut c = FrameClock::new(Beat(start), Bpm(tempo), SampleRate(rate));
             let mut frames = 0u64;
-            for _ in 0..2_000 {
+            for _ in 0..blocks {
                 let n = 1 + (next() % 1_024) as usize;
                 c.advance(Samples(n), None);
                 frames += n as u64;
@@ -602,7 +608,9 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        for _ in 0..200_000 {
+        // Under miri: a short search (pure f64 arithmetic, no unsafe or
+        // atomics); the native run does the 200 000.
+        for _ in 0..if cfg!(miri) { 1_000 } else { 200_000 } {
             let tempo = 40.0 + (next() % 20_000) as f64 / 100.0;
             let rate = [44_100.0, 48_000.0, 96_000.0][(next() % 3) as usize];
             let origin = (next() % 4_096) as f64 / 64.0;

@@ -342,7 +342,14 @@ mod tests {
     /// `size + 2` points fails the length asserts.
     #[test]
     fn one_way_is_the_unsplit_transform() {
-        for n in [4usize, 64, 1024, 4096] {
+        // Under miri the sizes stop at 1024: the property is size-independent
+        // and miri runs this about a thousand times slower than native.
+        let sizes: &[usize] = if cfg!(miri) {
+            &[4, 64, 1024]
+        } else {
+            &[4, 64, 1024, 4096]
+        };
+        for &n in sizes {
             let x = signal(n);
             let f = StagedRealFft::new(n, 1);
             assert_eq!((f.forward_steps(), f.inverse_steps()), (1, 1));
@@ -379,15 +386,23 @@ mod tests {
     /// them; the inverse's twiddles not conjugated fail the round trip.
     #[test]
     fn a_split_transform_is_the_dft() {
-        for (n, ways) in [
-            (16usize, 2usize),
-            (64, 2),
-            (64, 4),
-            (256, 4),
-            (512, 8),
-            (2048, 2),
-            (2048, 4),
-        ] {
+        // The DFT reference is O(n^2) in f64 sin/cos. Under miri the 2048
+        // cases are left to the native run: every way count and the
+        // decimation/combine code are already hit by the smaller sizes.
+        let cases: &[(usize, usize)] = if cfg!(miri) {
+            &[(16, 2), (64, 2), (64, 4), (256, 4), (512, 8)]
+        } else {
+            &[
+                (16, 2),
+                (64, 2),
+                (64, 4),
+                (256, 4),
+                (512, 8),
+                (2048, 2),
+                (2048, 4),
+            ]
+        };
+        for &(n, ways) in cases {
             let x = signal(n);
             let f = StagedRealFft::new(n, ways);
             let steps = ways + ways.trailing_zeros() as usize;

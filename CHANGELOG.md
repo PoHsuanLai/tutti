@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — every FFT user but the HRTF and the export resampler is CPU-independent: `tutti_types::RealFft`; convolver and analysis output bits change
+### Changed — the binaural panner runs on `tutti_types::RealFft`: CPU-independent, output bits change
+
+`HrtfBinauralNode` ran rustfft's auto planner (AVX, SSE or NEON picked at run
+time) over complex transforms, so its render differed in the last bits between
+CPUs. It now transforms through `tutti_types::RealFft`, the scalar planner the
+convolver and analysis share: the input history is one real forward FFT, and
+each ear has its own spectrum per vertex and one real inverse FFT (two more
+while the source moves).
+
+- **Output bits change** (f32 rounding; the filter, the crossfade and the
+  latency are unchanged). Results are bit-identical across CPUs on one OS and
+  libm, not across libms.
+- **About 3x slower than the old SIMD render.** The `hrtf_binaural` bench
+  (64-frame blocks, 162-vertex sphere, one machine): 0.55 -> 1.46 us a block
+  still and 0.97 -> 2.64 us moving with 128-tap HRIRs, 2.10 -> 6.05 us and
+  3.24 -> 9.83 us with 512 taps. A 512-tap moving source is 0.7 % of a 48 kHz
+  block's budget.
+- Each vertex's two spectra are `N / 2 + 1` bins per ear, so the prepared set
+  is slightly larger than before; preparation resamples in bounded batches and
+  transforms each response as it is produced.
+- The `hrtf` feature of `tutti-spatial` no longer pulls `rustfft` directly
+  (`hrtf = []`; the FFT is `tutti-types`'). No public type changes.
+
+### Changed — every FFT user but the export resampler is CPU-independent: `tutti_types::RealFft`; convolver, analysis and binaural output bits change
 
 **One real-input FFT, on rustfft's scalar planner, serves the convolver, the
 analysis kernels and the time-stretch vocoder.** `realfft`'s planners use
@@ -22,8 +45,7 @@ untouched. An odd size, which tutti-analysis accepts, runs a full-length
 complex transform on the same scalar planner. The guarantee is
 CPU-independent arithmetic: results are bit-identical across CPUs on the same
 OS, libm and rustfft version, not across libms (the twiddles call the C library's `sin` and
-`cos`). `tutti-spatial`'s HRTF and `tutti-export`'s `rubato` resampler still use
-SIMD-dispatching FFTs.
+`cos`). `tutti-export`'s `rubato` resampler still uses SIMD-dispatching FFTs.
 
 **Output bits change** in `ConvolverNode`/`Convolver`, `FftScratch`
 (so `stft`, `istft`, `detect_onsets`) and `yin`/`yin_track`: the scalar inner
@@ -167,9 +189,9 @@ the notice is `tutti-types/src/LICENSE-realfft`). A test pins the scalar choice
 on Linux/glibc, and another checks the transforms against the textbook DFT.
 The twiddles and the vocoder's phase math still use the C library's
 sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS,
-libm and rustfft version, not across libms. The tutti-spatial HRTF and the
-`tutti-export` resampler (`rubato`'s FFT resampler, which runs `realfft`) still
-use SIMD-dispatching FFTs.
+libm and rustfft version, not across libms. The `tutti-export`
+resampler (`rubato`'s FFT resampler, which runs `realfft`) still uses
+SIMD-dispatching FFTs.
 The inverse zeroes the
 imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
 so non-finite input there cannot panic the audio path; the state after a

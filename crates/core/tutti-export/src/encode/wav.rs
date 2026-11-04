@@ -102,13 +102,17 @@ impl WavEncoder {
     }
 
     /// Frames the encoder will write for `plan` at the output rate, rounded
-    /// up: the plan's kept frames, resampled when the rates differ.
+    /// up: the plan's kept frames, scaled only when the driver resamples
+    /// (the condition `pump_blocks` uses).
     fn planned_frames(
         plan: &RenderPlan,
         source_rate: tutti_core::SampleRate,
         config: &ExportConfig,
     ) -> u64 {
         let kept = u128::from(plan.output_length.get() as u64);
+        if config.resample.is_none() {
+            return kept as u64;
+        }
         let (out, src) = (
             f64::from(crate::encode::encoder_rate(config)),
             source_rate.get().round(),

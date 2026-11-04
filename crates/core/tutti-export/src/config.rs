@@ -105,7 +105,7 @@ pub struct EncodeConfig {
     /// Which speaker each file channel feeds, for the WAV speaker mask: `None`
     /// is the engine's SMPTE order for `channels` (mono, stereo and 5.1 named;
     /// a bare 4 or 8 unassigned), and a caller that knows it is writing quad
-    /// passes [`ChannelTopology::quad`]. Its width must be `channels`. Samples
+    /// passes [`ChannelTopology::quad`](tutti_types::ChannelTopology::quad). Its width must be `channels`. Samples
     /// are never reordered; the other formats ignore it.
     pub topology: Option<tutti_types::ChannelTopology>,
 }

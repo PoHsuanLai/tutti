@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a CLAP plugin's events from another space are refused, and notes follow the note port's dialect
+
+`try_push` read every event as the core struct its `type` named. A plugin's
+event of another space, or one smaller than its type's struct, was read past
+its end. Only core-space events at least their struct's size are taken now
+(`ClapActive` and `flush_params` alike), and `clap_host_event_registry::query`
+answers every space name "unknown" (`false`, `UINT16_MAX`): the host delivers
+core events only, so it no longer hands out ids it cannot serve.
+
+Notes went to a plugin as CLAP note events whatever its input note port took, so
+a MIDI-only synth heard nothing. At activation and every re-activation the host
+reads input note port 0 and, when `NotePortInfo::dialect_to_send` is MIDI, sends
+notes as `clap_event_midi` (per-note expression has no MIDI 1.0 form and is
+dropped). New: `ClapLoaded::sends_midi_notes`, `ClapActive::sends_midi_notes`,
+`InputEventList::{set_midi_notes, midi_notes}`.
+
 ### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 
 A hosted plugin that refused a rate change (CLAP `activate` returning false)

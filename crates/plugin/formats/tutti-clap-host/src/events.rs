@@ -343,6 +343,33 @@ impl ClapEvent {
         })
     }
 
+    /// Re-encodes a note event as `clap_event_midi`, for a note port that takes
+    /// the MIDI dialect only. `None` for per-note expression, which that
+    /// dialect cannot carry. Other events pass through.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "velocity is clamped to 0..=127 before the cast"
+    )]
+    fn into_midi_dialect(self) -> Option<Self> {
+        let (status, e) = match self {
+            ClapEvent::NoteOn(e) => (0x90, e),
+            ClapEvent::NoteOff(e) => (0x80, e),
+            ClapEvent::NoteExpression(_) => return None,
+            other => return Some(other),
+        };
+        // A note-on at velocity 0 is a note-off in MIDI 1.0, so the lowest
+        // audible note-on velocity is 1.
+        let floor = if status == 0x90 { 1.0 } else { 0.0 };
+        let velocity = (e.velocity * 127.0).round().clamp(floor, 127.0) as u8;
+        let (channel, key) = (u8::try_from(e.channel).ok()?, u8::try_from(e.key).ok()?);
+        Some(ClapEvent::midi(
+            e.header.time,
+            0,
+            [status | (channel & 0x0F), key & 0x7F, velocity],
+        ))
+    }
+
     /// Builds a generic 3-byte MIDI-1 event (status + two data bytes).
     pub fn midi(time: u32, port_index: u16, data: [u8; 3]) -> Self {
         ClapEvent::Midi(clap_event_midi {
@@ -719,6 +746,9 @@ pub struct InputEventList {
     /// [`ClapEvent::MidiSysex`] points at. No room until
     /// [`reserve_sysex`](Self::reserve_sysex).
     sysex: SysExAssembler,
+    /// Notes go out as `clap_event_midi`: the input note port does not take
+    /// CLAP note events. See [`set_midi_notes`](Self::set_midi_notes).
+    midi_notes: bool,
 }
 
 impl InputEventList {
@@ -736,7 +766,22 @@ impl InputEventList {
             param_points_dropped: 0,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
+            midi_notes: false,
         }
+    }
+
+    /// Sets the note dialect of the plugin's input note port: `true` sends
+    /// notes as `clap_event_midi` (a port that takes MIDI but not CLAP note
+    /// events), `false` as CLAP note events. Per-note expression has no MIDI
+    /// 1.0 form and is dropped while set. Takes effect for events added after.
+    pub fn set_midi_notes(&mut self, midi_notes: bool) {
+        self.midi_notes = midi_notes;
+    }
+
+    /// Whether notes are sent as `clap_event_midi`: see
+    /// [`set_midi_notes`](Self::set_midi_notes).
+    pub fn midi_notes(&self) -> bool {
+        self.midi_notes
     }
 
     /// Creates an input event list pre-populated with the given events.
@@ -755,6 +800,7 @@ impl InputEventList {
             param_points_dropped: 0,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
+            midi_notes: false,
         }
     }
 
@@ -836,7 +882,13 @@ impl InputEventList {
                 if self.bend_ranges.observe(event) {
                     return self;
                 }
-                if let Some(clap_event) = ClapEvent::from_midi(event, &self.bend_ranges) {
+                let converted = ClapEvent::from_midi(event, &self.bend_ranges);
+                let converted = if self.midi_notes {
+                    converted.and_then(ClapEvent::into_midi_dialect)
+                } else {
+                    converted
+                };
+                if let Some(clap_event) = converted {
                     self.events.push(clap_event);
                 }
             }
@@ -981,6 +1033,9 @@ impl InputEventList {
     /// A `Custom` dimension is skipped — CLAP has no id for one, and
     /// [`ClapEvent::note_expression`] says why substituting would be worse.
     pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
+        if self.midi_notes {
+            return self;
+        }
         for expr in expressions {
             if let Some(event) = ClapEvent::note_expression(
                 // Same signed→unsigned trap as `add_param_changes`.
@@ -1542,6 +1597,25 @@ impl EventList for OutputEventList {
     }
 }
 
+/// The size of the core event struct a plugin's `try_push` of `type_` carries,
+/// or `None` for a type this host does not take from a plugin.
+fn core_event_size(type_: u16) -> Option<u32> {
+    Some(match type_ {
+        CLAP_EVENT_NOTE_ON | CLAP_EVENT_NOTE_OFF | CLAP_EVENT_NOTE_CHOKE | CLAP_EVENT_NOTE_END => {
+            header_size::<clap_event_note>()
+        }
+        CLAP_EVENT_MIDI => header_size::<clap_event_midi>(),
+        CLAP_EVENT_NOTE_EXPRESSION => header_size::<clap_event_note_expression>(),
+        CLAP_EVENT_PARAM_VALUE => header_size::<clap_event_param_value>(),
+        CLAP_EVENT_PARAM_MOD => header_size::<clap_event_param_mod>(),
+        CLAP_EVENT_PARAM_GESTURE_BEGIN | CLAP_EVENT_PARAM_GESTURE_END => {
+            header_size::<clap_event_param_gesture>()
+        }
+        CLAP_EVENT_MIDI_SYSEX => header_size::<clap_event_midi_sysex>(),
+        _ => return None,
+    })
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "SysEx payloads are bounded well below u32::MAX"
@@ -1556,6 +1630,15 @@ unsafe extern "C" fn output_events_try_push(
 
     let output_list = &mut *(list as *mut OutputEventList);
     let header = &*event;
+
+    // Only core events are read below. An event of another space can reuse a
+    // core type number for a different, smaller struct, and a `size` under
+    // the struct's would be read past its end.
+    if header.space_id != CLAP_CORE_EVENT_SPACE_ID
+        || core_event_size(header.type_).is_none_or(|min| header.size < min)
+    {
+        return false;
+    }
 
     // Past the reserved room the push is refused, never grown into: this is
     // the plugin's callback, inside its `process`, on the audio thread. CLAP
@@ -2721,6 +2804,112 @@ mod tests {
                 output_events_try_push(std::ptr::null(), header as *const clap_event_header);
             assert!(!result);
         }
+    }
+
+    /// An event of another space reuses core type numbers for other structs,
+    /// so it is refused, whatever its type says. Both the plain path and the
+    /// full-parameter-room path (`coalesce_param`) read the struct.
+    ///
+    /// Mutation (run): delete the `space_id` test in `output_events_try_push` →
+    /// both pushes are accepted and the assertions fail.
+    #[test]
+    fn output_events_refuse_a_foreign_space() {
+        let mut output = OutputEventList::new();
+        let list_ptr = output.as_raw_mut();
+        let push = unsafe { (*list_ptr).try_push.unwrap() };
+
+        let mut note = *match ClapEvent::note_on(0, 0, 60, 0.5) {
+            ClapEvent::NoteOn(e) => Box::new(e),
+            _ => unreachable!(),
+        };
+        note.header.space_id = 512;
+        assert!(!unsafe { push(list_ptr, &note.header) });
+
+        let mut param = clap_event_param_value {
+            header: *ClapEvent::param_value(0, 1, 0.5).header(),
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: 0.5,
+        };
+        param.header.space_id = 512;
+        output.param_room = 0;
+        assert!(!unsafe { push(list_ptr, &param.header) });
+        assert!(output.events().is_empty());
+    }
+
+    /// A `size` under the type's struct would read past the plugin's event.
+    ///
+    /// Mutation (run): delete the `header.size < min` test → the push is
+    /// accepted and the assertion fails.
+    #[test]
+    fn output_events_refuse_an_undersized_event() {
+        let mut output = OutputEventList::new();
+        let list_ptr = output.as_raw_mut();
+        let push = unsafe { (*list_ptr).try_push.unwrap() };
+
+        let ClapEvent::NoteOn(mut note) = ClapEvent::note_on(0, 0, 60, 0.5) else {
+            unreachable!()
+        };
+        note.header.size = header_size::<clap_event_header>();
+        assert!(!unsafe { push(list_ptr, &note.header) });
+        assert!(output.events().is_empty());
+
+        // The full size is taken.
+        note.header.size = header_size::<clap_event_note>();
+        assert!(unsafe { push(list_ptr, &note.header) });
+        assert_eq!(output.events().len(), 1);
+    }
+
+    /// A note goes out as `clap_event_midi` when the port takes the MIDI
+    /// dialect only; per-note expression has no such form and is dropped.
+    ///
+    /// Mutations (run): ignore `midi_notes` in `add_midi` → the first
+    /// assertions fail; ignore it in `add_note_expressions` → the last fails;
+    /// drop the velocity floor of 1 → the zero-velocity case fails.
+    #[test]
+    fn midi_dialect_sends_notes_as_midi_events() {
+        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 60, 0xFFFF);
+        let quiet = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 61, 1);
+        let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(2), 60, 0);
+
+        let mut list = InputEventList::new();
+        list.set_midi_notes(true);
+        list.add_midi(&on).add_midi(&quiet).add_midi(&off);
+        let bytes: Vec<[u8; 3]> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => m.data,
+                other => panic!("expected a MIDI event, got {:?}", other.header().type_),
+            })
+            .collect();
+        assert_eq!(
+            bytes,
+            [[0x92, 60, 127], [0x92, 61, 1], [0x82, 60, 0]],
+            "note-on never rounds to velocity 0, which would be a note-off"
+        );
+
+        let mut list = InputEventList::new();
+        list.add_midi(&on);
+        assert!(matches!(list.events()[0], ClapEvent::NoteOn(_)));
+
+        let expr = [ClapNoteExpression {
+            sample_offset: 0,
+            note_id: 1,
+            port_index: 0,
+            channel: -1,
+            key: -1,
+            expression_type: NoteExpressionType::Volume,
+            value: 0.5,
+        }];
+        let mut list = InputEventList::new();
+        list.set_midi_notes(true);
+        list.add_note_expressions(&expr);
+        assert!(list.events().is_empty());
     }
 
     #[test]

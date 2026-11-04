@@ -6,7 +6,8 @@
 //! rest of this crate carries any width.
 //!
 //! Vorbis is lossy and always float internally, so `bit_depth` and `dither` do
-//! not apply — quantization noise has nothing to dither against here.
+//! not apply: `DitherState::for_config` never arms for Ogg, since there is no
+//! quantization to dither against.
 
 use crate::config::ExportConfig;
 use crate::encode::{pump_blocks, Encoder};
@@ -59,8 +60,7 @@ impl Encoder for OggEncoder {
         // the target rate, playing back 8.8% fast at 44.1->48 k.
         //
         // Vorbis is lossy and float internally, so `pump_blocks`'s dither stage
-        // is a no-op here by construction — `DitherState::for_config` arms only
-        // for an integer bit depth.
+        // is a no-op here: `DitherState::for_config` never arms for Ogg.
 
         // The stride, derived once at entry — not re-derived per block.
         let ch = config.encode.channels.count() as usize;

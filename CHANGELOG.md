@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — SVF Bell and shelves and the ladder high-passes follow their specifications; Ogg export no longer dithers
+
+Audible change in `SvfFilterNode` and `EqBandNode`'s SVF, and in
+`LadderFilterNode`. Presets that were tuned by ear against the old response
+will sound different.
+
+- **`SvfType::Bell`** damps with `1 / (Q * A)` (`A = 10^(dB/40)`), so it is the
+  RBJ peaking EQ. Before, `Q` meant `Q / A`: a +12 dB bell at Q 1 was as wide
+  as an RBJ Q of 0.5, and a -12 dB cut as narrow as Q 2 (up to 3.5 dB off at
+  an octave from the centre). The gain at the centre is unchanged.
+- **`SvfType::LowShelf` / `HighShelf`** tune the prototype `sqrt(A)` below /
+  above `fc`, so `fc` is the RBJ shelf midpoint, where the gain is half the dB
+  gain. Before, the midpoint sat at `fc * sqrt(A)` (low) or `fc / sqrt(A)`
+  (high): a +12 dB shelf read +9.3 dB at `fc` instead of +6 dB. The gain far
+  from `fc` is unchanged.
+- **`LadderType::HP12` / `HP24`** are true 12 and 24 dB/octave high-passes
+  (`u - 2*lp1 + lp2` and `u - 4*lp1 + 6*lp2 - 4*lp3 + lp4`). Before, both fell
+  6 dB/octave (`u - lp2`, `u - lp4`). With resonance they still peak at the cutoff,
+  relative to the same filter without it.
+  `compute_svf_coeffs` returns the new coefficients; there is no signature
+  change. Migration: re-tune any bell, shelf or ladder high-pass by ear; a
+  high-pass that leaned on the shallow slope now cuts the low end harder.
+- **Ogg Vorbis export** no longer applies `ExportConfig::dither`. It used to
+  add TPDF noise at the default integer depth to the float stream before the
+  encoder, contrary to its documentation.
+- Documentation only: `Normalize::Lufs` ignores the LFE (and a 5.1 mix with
+  only the LFE reads -70 LUFS); true peak is 4x oversampled below 96 kHz, 2x
+  below 192 kHz and a sample peak above; the YIN detector covers steps 1 to 5.
+
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 
 The paced `clap_live` tests allow one contiguous silent run, no longer than

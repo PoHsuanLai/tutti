@@ -40,12 +40,18 @@ pub(super) struct GateCore {
 ///
 /// Reading per block keeps two atomic loads per sample out of the gain
 /// computation. The threshold only decides open/closed, and the attack/hold/release follower
-/// already turns a changed decision into a ramp, so it is held for the block.
+/// already turns a changed decision into a ramp, so it is held for the block
+/// and converted to a linear level once.
 /// The range multiplies the output directly — the closed floor — so a step
 /// would click; it ramps linearly from the previous block's value instead.
 #[derive(Clone, Copy)]
 pub(super) struct GateBlock {
-    threshold: Db,
+    /// The block's threshold as a linear level: the detector is compared in
+    /// the linear domain, so no `log10` runs per sample.
+    threshold_linear: f32,
+    /// Whether a silent detector (pinned at [`Db::FLOOR`]) is at or above the
+    /// threshold. Only a threshold at or under the floor opens on silence.
+    silence_opens: bool,
     range_from: Db,
     range_to: Db,
     /// `range_to` as a linear gain, converted once for the block.
@@ -145,8 +151,10 @@ impl GateCore {
         let range_to = Db(self.good[1].read(self.range_db.load().get()));
         let range_from = self.last_range.unwrap_or(range_to);
         self.last_range = Some(range_to);
+        let threshold = Db(self.good[0].read(self.threshold_db.load().get()));
         GateBlock {
-            threshold: Db(self.good[0].read(self.threshold_db.load().get())),
+            threshold_linear: db_to_amplitude(threshold).get(),
+            silence_opens: Db::FLOOR >= threshold,
             range_from,
             range_to,
             range_to_linear: db_to_amplitude(range_to).get(),
@@ -167,12 +175,15 @@ impl GateCore {
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
-        let input_db = amplitude_to_db(sc_level);
-        let threshold = threshold_override
-            .filter(|t| t.get().is_finite())
-            .unwrap_or(block.threshold);
+        // The block's threshold compares in the linear domain. A per-sample
+        // override changes every frame, so converting it costs what the
+        // detector's `log10` does; it stays in dB.
+        let open = match threshold_override.filter(|t| t.get().is_finite()) {
+            Some(t) => amplitude_to_db(sc_level) >= t,
+            None => sc_level >= block.threshold_linear || (sc_level <= 0.0 && block.silence_opens),
+        };
         self.envelope = sc_level;
-        self.follower.step(input_db >= threshold);
+        self.follower.step(open);
         // At the end of the ramp (a held range is always there) the range is
         // the block's, converted once.
         if ramp_is_at_end(block.range_from, block.range_to, i, n) {
@@ -681,6 +692,179 @@ mod tests {
         assert_eq!(m.param_base(2), Some(0.1), "the release's base");
         let s = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
         assert_eq!(s.shape().audio_in.count(), 4);
+    }
+
+    // ── The threshold compares in the linear domain ─────────────────────────
+
+    /// A mono gate at `-20 dB` (0.1 linear), 44.1 kHz, fast attack, no range
+    /// floor beyond the default.
+    fn gate_at_minus_20() -> GateNode {
+        prepared_at(GateNode::mono(-20.0, 0.0001, 0.0102, 0.001), RATE_44K)
+    }
+
+    /// Renders `frames` of a steady sidechain `sc` (audio 1.0) in one block.
+    fn run_steady(gate: &mut GateNode, sc: f32, frames: usize) -> Vec<f32> {
+        let audio = vec![1.0f32; frames];
+        let side = vec![sc; frames];
+        drive(gate, RATE_44K, &[&audio, &side], &[]).remove(0)
+    }
+
+    /// A steady sidechain a hair above the threshold opens the gate, a hair
+    /// below leaves it closed. The margin is 0.1 percent (0.009 dB), far
+    /// outside the rounding the comparison carries.
+    ///
+    /// Mutation (run): compare `sc_level >= block.threshold_linear * 1.01` →
+    /// the "above" half fails; `* 0.99` → the "below" half fails.
+    #[test]
+    fn a_steady_level_just_either_side_of_the_threshold_opens_or_closes_the_gate() {
+        let thr = 0.1f32; // -20 dB
+        let mut above = gate_at_minus_20();
+        run_steady(&mut above, thr * 1.001, 1024);
+        assert!(above.is_open(), "just above the threshold must open");
+        assert!(above.gate_level() > 0.999);
+
+        let mut below = gate_at_minus_20();
+        run_steady(&mut below, thr * 0.999, 1024);
+        assert!(
+            !below.is_open(),
+            "just below the threshold must stay closed"
+        );
+        assert_eq!(below.gate_level(), 0.0);
+    }
+
+    /// The hold keeps an opened gate fully open for exactly `floor(hold *
+    /// rate)` frames after the level falls under the threshold; the release
+    /// starts on the next one.
+    ///
+    /// Mutation (run): reload the counter with `hold_samples + 1` in
+    /// `GateEnvelopeFollower::step` → the gate still holds on the 450th frame
+    /// and the last assertion fails.
+    #[test]
+    fn the_hold_keeps_the_gate_open_for_its_whole_length() {
+        let mut gate = gate_at_minus_20();
+        run_steady(&mut gate, 0.5, 1024);
+        let open = gate.gate_level();
+        assert!(open > 0.999);
+        // 0.0102 s at 44.1 kHz is 449.82 frames, floored.
+        run_steady(&mut gate, 0.001, 449);
+        assert_eq!(gate.gate_level(), open, "held for the whole hold");
+        run_steady(&mut gate, 0.001, 1);
+        assert!(
+            gate.gate_level() < open,
+            "the release starts after the hold"
+        );
+    }
+
+    /// Closed, the gain is the range in dB as a linear factor: `10^(dB/20)`.
+    ///
+    /// Mutation (run): build `range_to_linear` from `range_to * 0.5` dB →
+    /// every range misses by far more than the tolerance.
+    #[test]
+    fn closed_the_gain_is_the_range_in_decibels() {
+        for (range_db, linear) in [
+            (-12.0f32, 0.251_188_64f32),
+            (-80.0, 1.0e-4),
+            (-6.0, 0.501_187_2),
+        ] {
+            let mut gate = prepared_at(
+                GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(range_db),
+                RATE_44K,
+            );
+            // Silent sidechain: closed from the first frame; a second block
+            // runs on the settled (held) range.
+            run_steady(&mut gate, 0.0, 256);
+            let out = run_steady(&mut gate, 0.0, 256);
+            for y in out {
+                assert!(
+                    (y - linear).abs() <= linear * 1e-5,
+                    "{range_db} dB: gain {y}, expected {linear}"
+                );
+            }
+        }
+    }
+
+    /// Silence is pinned at [`Db::FLOOR`] (-144 dB) for the comparison, so a
+    /// threshold at or under the floor opens on a silent sidechain and one
+    /// above it does not. In the linear domain a silent `0.0` is under every
+    /// positive threshold, so this is carried by `silence_opens`.
+    ///
+    /// Mutation (run): build the block with `silence_opens: false` → the
+    /// `-200 dB` and `-144 dB` cases stay closed and fail.
+    #[test]
+    fn a_threshold_at_or_under_the_floor_opens_on_silence() {
+        for (threshold, opens) in [(-200.0f32, true), (-144.0, true), (-143.0, false)] {
+            let mut gate = prepared_at(GateNode::mono(threshold, 0.0001, 0.01, 0.1), RATE_44K);
+            run_steady(&mut gate, 0.0, 1024);
+            assert_eq!(gate.is_open(), opens, "threshold {threshold} dB on silence");
+        }
+        // A level well above a floor-pinned threshold still decides on its
+        // own: -150 dB is 3.2e-8, so 1e-10 (-200 dB) is below it.
+        let mut gate = prepared_at(GateNode::mono(-150.0, 0.0001, 0.01, 0.1), RATE_44K);
+        run_steady(&mut gate, 1.0e-10, 1024);
+        assert!(!gate.is_open(), "-200 dB is under a -150 dB threshold");
+        run_steady(&mut gate, 1.0e-7, 1024);
+        assert!(gate.is_open(), "-140 dB is over a -150 dB threshold");
+    }
+
+    /// A threshold written between blocks is converted again for the next
+    /// block: a level that was under it is over the lowered one.
+    ///
+    /// Mutation (run): build `threshold_linear` from a fixed `-20 dB` rather
+    /// than the cell in `begin_block` → the lowered threshold never opens →
+    /// fails.
+    #[test]
+    fn a_changed_threshold_applies_on_the_next_block() {
+        let mut gate = gate_at_minus_20();
+        run_steady(&mut gate, 0.05, 512); // -26 dB
+        assert!(!gate.is_open());
+        gate.set_threshold(-30.0);
+        run_steady(&mut gate, 0.05, 512);
+        assert!(gate.is_open());
+        gate.set_threshold(-20.0);
+        run_steady(&mut gate, 0.05, 1024);
+        assert!(!gate.is_open(), "raising it closes the gate again");
+    }
+
+    /// A NaN detector level never makes the gate's state NaN: it compares as
+    /// not over the threshold (closed), and the gate recovers on the next
+    /// finite level. An infinite level is over every finite threshold.
+    ///
+    /// Mutation (run): in `compute_gain` open the gate on
+    /// `!(sc_level < block.threshold_linear)` → a NaN level opens it and the
+    /// `gate_level() == 0.0` assertion fails.
+    #[test]
+    fn a_nan_detector_level_leaves_the_state_finite_and_closed() {
+        let mut core = GateCore::new(-20.0, 0.0001, 0.01, 0.1);
+        core.set_sample_rate(RATE_44K);
+        core.update_coefficients([None, None]);
+        let block = core.begin_block();
+        for i in 0..64 {
+            let g = core.compute_gain(&block, i, 64, f32::NAN, None);
+            assert!(g.is_finite(), "gain {g} at {i}");
+            assert_eq!(core.gate_level(), 0.0);
+        }
+        let block = core.begin_block();
+        for i in 0..2048 {
+            core.compute_gain(&block, i % 64, 64, 0.5, None);
+        }
+        assert!(core.is_open(), "recovers on a finite level");
+        let g = core.compute_gain(&block, 0, 64, f32::INFINITY, None);
+        assert!(g.is_finite() && core.gate_level().is_finite());
+    }
+
+    /// Through the node: NaN on the sidechain is ignored by the max-abs
+    /// detector (reads as silent), so the closed gain applies and the gate's
+    /// own state stays finite. Audio NaN passes through, as a gain does.
+    #[test]
+    fn a_nan_sidechain_block_does_not_poison_the_gate() {
+        let mut gate = gate_at_minus_20();
+        let audio = vec![1.0f32; 64];
+        let nan = vec![f32::NAN; 64];
+        let out = drive(&mut gate, RATE_44K, &[&audio, &nan], &[]).remove(0);
+        assert!(out.iter().all(|y| y.is_finite()));
+        assert_eq!(gate.gate_level(), 0.0);
+        run_steady(&mut gate, 0.5, 1024);
+        assert!(gate.is_open());
     }
 
     #[test]

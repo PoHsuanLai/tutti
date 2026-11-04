@@ -180,6 +180,9 @@ impl GateCore {
         // detector's `log10` does; it stays in dB.
         let open = match threshold_override.filter(|t| t.get().is_finite()) {
             Some(t) => amplitude_to_db(sc_level) >= t,
+            // Exact equality is unreachable: `10^(t/20)` rounds, so no level a
+            // test can name sits on the threshold, and `>=` versus `>` cannot
+            // be pinned by a test.
             None => sc_level >= block.threshold_linear || (sc_level <= 0.0 && block.silence_opens),
         };
         self.envelope = sc_level;
@@ -729,6 +732,28 @@ mod tests {
             !below.is_open(),
             "just below the threshold must stay closed"
         );
+        assert_eq!(below.gate_level(), 0.0);
+    }
+
+    /// A threshold above 0 dB compares the same way: at `+6 dB` (1.995
+    /// linear) a steady level 0.1 percent over opens the gate and 0.1 percent
+    /// under leaves it closed.
+    ///
+    /// Mutation (run): clamp `threshold_linear` to at most 1.0 in
+    /// `begin_block` (`db_to_amplitude(threshold).get().min(1.0)`) → the
+    /// "below" half opens the gate and fails.
+    #[test]
+    fn a_threshold_above_zero_db_opens_above_and_stays_closed_below() {
+        let thr = 10f32.powf(6.0 / 20.0);
+        let at_plus_6 = || prepared_at(GateNode::mono(6.0, 0.0001, 0.0102, 0.001), RATE_44K);
+
+        let mut above = at_plus_6();
+        run_steady(&mut above, thr * 1.001, 1024);
+        assert!(above.is_open(), "just above +6 dB must open");
+
+        let mut below = at_plus_6();
+        run_steady(&mut below, thr * 0.999, 1024);
+        assert!(!below.is_open(), "just below +6 dB must stay closed");
         assert_eq!(below.gate_level(), 0.0);
     }
 

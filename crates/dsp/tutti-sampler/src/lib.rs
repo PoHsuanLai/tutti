@@ -15,7 +15,7 @@
 //! - [`stretch::Unit`]: the phase-vocoder time stretch and pitch shift.
 //! - [`Source`] and `probe`: the tier choice and the header probe that
 //!   informs it.
-//! - [`voice::interp`]: the interpolation kernel and transport-placement
+//! - [`voice::interp`]: the block interpolation and transport-placement
 //!   helpers the voices share.
 //! - [`AudioIn`], [`AudioOut`], [`pump`]: the engine's I/O edge vocabulary,
 //!   re-exported from `tutti-core` because the butler's refill path speaks it.

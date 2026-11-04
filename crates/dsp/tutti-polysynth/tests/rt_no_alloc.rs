@@ -337,7 +337,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 /// instance, and so the thread, before opening the gate.
 ///
 /// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in
-/// `gather_events` → the gate aborts on the cold thread.
+/// `tutti_midi_runtime::gather_midi` → the gate aborts on the cold thread.
 #[test]
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = Hand::new(
@@ -361,7 +361,7 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// inside the gate: publishing is the control thread's.
 ///
 /// Mutation: a `Vec` built in `MidiClipNode::process` → the gate aborts.
-/// Mutation: the synth's `gather_events` collecting the event input into a
+/// Mutation: the synth's `tutti_midi_runtime::gather_midi` collecting the event input into a
 /// `Vec` before merging → the gate aborts.
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {

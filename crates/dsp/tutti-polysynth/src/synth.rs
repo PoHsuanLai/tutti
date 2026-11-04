@@ -5,7 +5,8 @@
 use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_core::{Amplitude, Depth, Hz, Resonance, Seconds, Semitones, Q};
+use tutti_core::Adsr;
+use tutti_core::{Depth, Hz, Resonance, Semitones, Q};
 
 /// The waveform every sub-voice of every voice generates.
 ///
@@ -138,96 +139,6 @@ impl fmt::Display for FilterType {
     }
 }
 
-/// The ADSR amplitude envelope every voice's gate drives.
-///
-/// One envelope per synth, shared in shape by all voices; each voice runs its
-/// own instance, retriggered by note-on and released by note-off. The values
-/// are read once when the voice bank is built, so changing them needs a new
-/// [`PolySynth`](crate::PolySynth).
-///
-/// Every stage is a straight line and sample-accurate. A note-off releases
-/// from whatever level the envelope has reached, taking exactly
-/// [`release`](Self::release) to reach silence; a note-on that retriggers a
-/// still-sounding voice attacks from its current level rather than restarting
-/// from zero, so a fast re-strike does not click.
-///
-/// [`release`](Self::release) is the one field with a consequence outside the
-/// sound: [`PolySynth`](crate::PolySynth)'s `tail()` reports it as the node's
-/// ring-out, so an offline bounce that ignored it would chop the release off
-/// every note in the project.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnvelopeConfig {
-    /// Time in [`Seconds`] from note-on to full level. `0.0` is an instant
-    /// click; a few milliseconds is a percussive edge; a second or more is a
-    /// pad swell.
-    pub attack: Seconds,
-    /// Time in [`Seconds`] from full level down to [`sustain`](Self::sustain).
-    /// Irrelevant when `sustain` is already unity.
-    pub decay: Seconds,
-    /// The held level — an [`Amplitude`], not a time, which is why it is the
-    /// one `Amplitude` among three `Seconds`. `1.0` holds at full (an organ),
-    /// `0.0` makes the note die away after decay regardless of how long the key
-    /// is held (a pluck).
-    pub sustain: Amplitude,
-    /// Time in [`Seconds`] from note-off to silence. Also the value the synth
-    /// reports as its `tail()`, so it decides how far past the last note-off an
-    /// offline render must run.
-    pub release: Seconds,
-}
-
-impl Default for EnvelopeConfig {
-    fn default() -> Self {
-        Self {
-            attack: Seconds(0.01),
-            decay: Seconds(0.1),
-            sustain: Amplitude(0.7),
-            release: Seconds(0.2),
-        }
-    }
-}
-
-impl EnvelopeConfig {
-    /// Builds an envelope from attack, decay, sustain and release.
-    ///
-    /// The three times are [`Seconds`] and `sustain` is an [`Amplitude`]; the
-    /// odd one out sits third, so the unit types are what keep a positional
-    /// call from silently transposing a level and a time.
-    pub fn new(
-        attack: impl Into<Seconds>,
-        decay: impl Into<Seconds>,
-        sustain: impl Into<Amplitude>,
-        release: impl Into<Seconds>,
-    ) -> Self {
-        Self {
-            attack: attack.into(),
-            decay: decay.into(),
-            sustain: sustain.into(),
-            release: release.into(),
-        }
-    }
-
-    /// A gated organ envelope: 1 ms attack, no decay, full sustain, 10 ms
-    /// release. The note is at full level for exactly as long as the key is
-    /// held, and the short release only takes the edge off the note-off click.
-    pub fn organ() -> Self {
-        Self::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.01))
-    }
-
-    /// A plucked envelope: 1 ms attack, 300 ms decay to **zero** sustain, 100 ms
-    /// release. Zero sustain is what makes the note die on its own — holding the
-    /// key longer than the decay changes nothing.
-    pub fn pluck() -> Self {
-        Self::new(Seconds(0.001), Seconds(0.3), Amplitude(0.0), Seconds(0.1))
-    }
-
-    /// A pad envelope: 500 ms swell, 200 ms decay to 0.8, 1 s release. The long
-    /// release means voices keep ringing well past note-off, so a pad patch
-    /// exhausts `max_voices` far sooner than its note count suggests.
-    pub fn pad() -> Self {
-        Self::new(Seconds(0.5), Seconds(0.2), Amplitude(0.8), Seconds(1.0))
-    }
-}
-
 /// Per-voice modulation routed onto the filter cutoff.
 ///
 /// All three sources **multiply** the [`FilterType`] base cutoff rather than
@@ -308,7 +219,7 @@ pub struct SynthConfig {
     pub filter: FilterType,
     /// The amplitude envelope every voice's gate drives. Construction-only, and
     /// its release sets the synth's reported `tail()`.
-    pub envelope: EnvelopeConfig,
+    pub envelope: Adsr,
     /// Pitch glide between notes, or `None` for no glide. A synth built without
     /// one cannot gain it later — the glide state is only allocated when this is
     /// `Some`.
@@ -355,7 +266,7 @@ impl Default for SynthConfig {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::default(),
             filter: FilterType::default(),
-            envelope: EnvelopeConfig::default(),
+            envelope: Adsr::default(),
             portamento: None,
             unison: None,
             allocation_strategy: AllocationStrategy::Oldest,

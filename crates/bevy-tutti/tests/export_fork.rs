@@ -1083,7 +1083,7 @@ mod synths {
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
-    use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
+    use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
@@ -1099,7 +1099,7 @@ mod synths {
         PolySynth::new(SynthConfig {
             sample_rate: SampleRate(RATE),
             oscillator: OscillatorType::Saw,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.0),
                 ..Default::default()
             },

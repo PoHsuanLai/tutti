@@ -32,7 +32,9 @@ runs, median of 3 (ns per block):
 **The output bits change, but only for a level within rounding of the
 threshold.** `20*log10(a) >= t` and `a >= 10^(t/20)` round differently, so a
 sample whose level sits within about 26 f32 ulps (3e-6 relative, 3e-5 dB) of the
-threshold can land on the other side. Probing 7,602 thresholds from -140 to
+threshold can land on the other side. The 26 holds for thresholds above about
+-140 dB; the window scales with |threshold| (the reviewer measured up to about
+55-60 ulps near -300 dB). Probing 7,602 thresholds from -140 to
 +20 dB against levels within 200 ulps of each, 16,073 of 3,048,402 pairs
 (0.5%, all within 26 ulps) decide differently. Away from that window the
 decision, and so every output sample, is identical. No golden digest in the
@@ -40,6 +42,41 @@ tree moved. The tests are analytic: a steady level 0.1% over/under the
 threshold opens/closes the gate, the hold lasts exactly `floor(hold * rate)`
 frames, and the closed gain is `10^(range/20)`.
 
+### Changed — one implementation each for the cubic Hermite, MIDI event gather, ADSR and Q7.25 conversion, renders unchanged
+
+**Four duplicated pieces are folded into one home each.** Every render is
+bit-identical: the same expressions in the same operation order moved, and
+72 renders (sampler memory and disk voices at six varispeeds, looped,
+reversed, stretched and pitched, at 64 and ragged blocks; delay and cubic
+delay with fractional, stereo and swept times; chorus and flanger; the
+polysynth with note events across blocks, per-note bend, Pitch 7.25 and 7.9
+tuning and the sensitivity RPN under five envelopes; the soundfont at two
+rates; every Q7.25 sensitivity value) were written on main and on the branch
+and compared with `diff -rq`: 0 differences.
+
+- **`tutti_types::cubic_hermite(y0, y1, y2, y3, t)`** (new) is the one
+  Catmull-Rom kernel. The sampler's `voice::interp::cubic_hermite`, the delay
+  line's inlined cubic and the `ring_read` bench's copy are gone; the sampler
+  now depends on `tutti-types` directly. Migration: call
+  `tutti_types::cubic_hermite` (same argument order as the sampler's).
+- **`tutti_midi_runtime::gather_midi(events, &mut [MidiEvent]) -> usize`**
+  (new) replaces the private `gather_events` on `PolySynth` and
+  `SoundFontUnit`. A MIDI instrument node calls it on its event input.
+- **`tutti_types::Adsr` replaces `tutti_polysynth::EnvelopeConfig` and the
+  type of the same name in `tutti-mod`.** Same four fields and units
+  (`attack`, `decay`, `release` in `Seconds`, `sustain` an `Amplitude`), so a
+  struct literal only changes its name. It carries `Adsr::new`, `organ`,
+  `pluck`, `pad` and `Default` (10 ms, 100 ms, 0.7, 200 ms), and bitwise
+  `Eq`. `tutti_core::Adsr`, `tutti_mod::Adsr` and `tutti_polysynth::Adsr`
+  re-export it. Migration: rename `EnvelopeConfig` to `Adsr` (an import
+  `tutti_polysynth::EnvelopeConfig` becomes `tutti_polysynth::Adsr`).
+  `SynthConfig::envelope` is now `Adsr`, whose equality is bitwise rather than
+  `f32`'s (`-0.0` differs from `0.0`, a NaN equals itself). The range check
+  on a note envelope's sustain stays in the modulation compiler.
+- **`tutti_midi_types::q7_25_to_f32` and `q7_9_to_f32`** (new) are the fixed
+  point pitch conversions. `PitchBendSensitivity::as_semitones_f32` and the
+  polysynth's per-note tuning use them; the polysynth's private
+  `q7_25_to_fractional_note` and `q7_9_to_fractional_note` are gone.
 ### Changed — `tutti-analysis` runs real-input FFTs; output bits change
 
 **`FftScratch::forward`/`inverse` (so `stft`, `istft`, `detect_onsets`) and the

@@ -59,6 +59,9 @@ tutti-io = { path = "../../core/tutti-io" }
 # `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph" }
 
+# The shared cubic Hermite kernel (`tutti_types::cubic_hermite`).
+tutti-types = { path = "../../core/tutti-types", default-features = false }
+
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.

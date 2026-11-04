@@ -81,7 +81,7 @@ fn onset(out: &[f32]) -> Option<usize> {
 /// 8-frame chunk) it sounds exactly 1 000 frames after the same note at
 /// frame 0 does.
 ///
-/// Mutation: `gather` dropping the event input → silence → fails.
+/// Mutation: `tutti_midi_runtime::gather_midi` dropping the event input → silence → fails.
 /// Mutation: events applied at the block start (offsets ignored) → 1 000
 /// becomes 768 → fails.
 #[test]

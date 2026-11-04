@@ -5,7 +5,7 @@ use super::*;
 use crate::shape::shape;
 use crate::LfoShape;
 use audio_automation::{AutomationEnvelope, AutomationPoint};
-use tutti_types::{Frame, Hz, UnitParam};
+use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 
 const SR: SampleRate = SampleRate(48_000.0);
 

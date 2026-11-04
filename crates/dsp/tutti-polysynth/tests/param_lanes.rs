@@ -20,7 +20,7 @@ use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;
@@ -34,7 +34,7 @@ fn synth(unison: bool, detune: f32) -> PolySynth {
     PolySynth::new(SynthConfig {
         sample_rate: SampleRate(RATE),
         oscillator: OscillatorType::Saw,
-        envelope: EnvelopeConfig {
+        envelope: Adsr {
             attack: Seconds(0.0),
             ..Default::default()
         },

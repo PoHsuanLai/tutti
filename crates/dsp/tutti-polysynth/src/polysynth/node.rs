@@ -14,10 +14,8 @@
 
 use tutti_core::{ChannelLayout, UnitParam};
 use tutti_graph::{
-    Cx, EventKind, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape,
-    SortedEvents, Status, Ump,
+    Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, SortedEvents, Status,
 };
-use tutti_midi_types::MidiEvent;
 
 use super::PolySynth;
 
@@ -69,25 +67,6 @@ impl PolySynth {
             tutti_graph::Cost::Heavy
         }
     }
-
-    /// The block's MIDI from `events` into the scratch, in their (sorted)
-    /// order; returns how many it holds.
-    fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
-        let mut n = 0;
-        for e in events {
-            if n == self.midi_buffer.len() {
-                break;
-            }
-            if let EventKind::Midi(Ump(data)) = e.kind {
-                self.midi_buffer[n] = MidiEvent {
-                    frame_offset: e.offset.get(),
-                    data,
-                };
-                n += 1;
-            }
-        }
-        n
-    }
 }
 
 impl Node for PolySynth {
@@ -123,7 +102,7 @@ impl Node for PolySynth {
         } else {
             SortedEvents::EMPTY
         };
-        let count = self.gather_events(events);
+        let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
         let volume = block_driven(&io, 0)
             .map_or_else(|| self.master_volume.load().get(), Self::clamp_volume);
         let (_, mut outputs) = io.split();
@@ -195,9 +174,6 @@ impl IntoNode for PolySynth {
 
 #[cfg(test)]
 mod tests {
-    use tutti_graph::{Event, Offset, SortedEvents};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-
     use crate::{PolySynth, SynthConfig};
 
     /// **The ports and their bases.** A synth declares its volume, and with
@@ -231,30 +207,5 @@ mod tests {
         assert_eq!(unison.shape().params.as_slice(), &super::SYNTH_PARAMS[..]);
         assert_eq!(unison.param_base(1), Some(12.0));
         assert_eq!(unison.param_base(2), Some(0.25));
-    }
-
-    fn note(n: u8) -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
-    }
-
-    /// **A graph block plays its event input, on its offsets.**
-    ///
-    /// Mutation (run): `gather_events` writing every event at index 0 (not
-    /// advancing `n`) → no event gathered → fails.
-    #[test]
-    fn a_graph_block_plays_its_event_input() {
-        let mut synth = PolySynth::new(SynthConfig::default()).expect("builds");
-        let at = |k: usize| Offset::new(k, tutti_core::Samples(512)).expect("inside");
-        let events = [
-            Event::midi(at(5), note(70).data),
-            Event::midi(at(200), note(72).data),
-        ];
-        let sorted = SortedEvents::new(&events, 512).expect("sorted");
-        let n = synth.gather_events(sorted);
-        let got: Vec<(u32, u32)> = synth.midi_buffer[..n]
-            .iter()
-            .map(|e| (e.frame_offset, (e.data[0] >> 8) & 0x7f))
-            .collect();
-        assert_eq!(got, [(5, 70), (200, 72)]);
     }
 }

@@ -22,6 +22,7 @@
 #[macro_use]
 pub mod units;
 
+pub mod adsr;
 pub mod cc_number;
 pub mod midi_channel;
 pub mod midi_group;
@@ -37,6 +38,7 @@ pub mod tail;
 pub mod timeline;
 pub mod unit_param;
 
+pub use adsr::Adsr;
 pub use cc_number::CCNumber;
 pub use frame::{At, Frame};
 pub use frame_clock::{FrameClock, LoopRange, SegmentOrigin};

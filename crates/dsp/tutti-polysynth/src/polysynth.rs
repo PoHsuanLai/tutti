@@ -27,21 +27,6 @@ use tutti_midi_types::{CCNumber, MidiChannel};
 
 use std::sync::Arc;
 
-/// Convert a Q7.25 fixed-point pitch (Registered Per-Note Controller #3, M2-104
-/// §7.4.15.2) to a fractional MIDI note number: 7 integer bits = the 12-TET note,
-/// 25 fractional bits = fraction of one semitone (HCU).
-#[inline]
-fn q7_25_to_fractional_note(bits: u32) -> f32 {
-    bits as f32 / (1u32 << 25) as f32
-}
-
-/// Convert a Q7.9 fixed-point pitch (Note-On Attribute #3, M2-104 §7.4.15.3) to a
-/// fractional MIDI note number: 7 integer bits + 9 fractional bits.
-#[inline]
-fn q7_9_to_fractional_note(bits: u16) -> f32 {
-    bits as f32 / (1u16 << 9) as f32
-}
-
 /// A polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
 ///
@@ -385,7 +370,7 @@ impl PolySynth {
                 // allocation so it lands on the voice this note just claimed.
                 if let Some(NoteAttribute::Pitch7_9(p)) = m.attribute() {
                     let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
-                    self.set_voice_tuning(id, q7_9_to_fractional_note(p.to_bits()));
+                    self.set_voice_tuning(id, tutti_midi_types::q7_9_to_f32(p.to_bits()));
                 }
             }
             Cv2::NoteOff(m) => {
@@ -457,7 +442,7 @@ impl PolySynth {
                     // pitch (integer = 12-TET note, fraction = fraction of a
                     // semitone). Pitch bend then offsets from it.
                     Controller::Pitch7_25(v) => {
-                        self.set_voice_tuning(id, q7_25_to_fractional_note(v.to_bits()));
+                        self.set_voice_tuning(id, tutti_midi_types::q7_25_to_f32(v.to_bits()));
                     }
                     _ => {}
                 }
@@ -940,8 +925,8 @@ impl Clone for PolySynth {
 mod tests {
     use super::*;
     use crate::{
-        EnvelopeConfig, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve,
-        PortamentoMode, SynthConfig, UnisonConfig, VoiceMode,
+        Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve, PortamentoMode,
+        SynthConfig, UnisonConfig, VoiceMode,
     };
     use tutti_core::{Amplitude, Hz, Resonance, Seconds, Spread};
     use tutti_midi_types::convert::{
@@ -1039,7 +1024,7 @@ mod tests {
             max_voices: 4,
             // Near-instant attack, so the note is audible within the first block
             // rather than still ramping up from silence.
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1309,7 +1294,7 @@ mod tests {
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.1),
                 sustain: Amplitude(0.8),
@@ -1391,7 +1376,7 @@ mod tests {
         let mut bank = VoiceBank::new(
             OscillatorType::Saw,
             &FilterType::None,
-            &EnvelopeConfig::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
+            &Adsr::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
             tutti_core::SampleRate(44100.0),
             1,
             1,
@@ -1483,7 +1468,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.1),
                 sustain: Amplitude(1.0),
@@ -1535,7 +1520,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1587,7 +1572,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1651,7 +1636,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1687,7 +1672,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1728,7 +1713,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1772,7 +1757,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1808,7 +1793,7 @@ mod tests {
             max_voices: 1,
             voice_mode: VoiceMode::Legato,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1851,7 +1836,7 @@ mod tests {
             max_voices: 1,
             voice_mode: VoiceMode::Mono,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1901,7 +1886,7 @@ mod tests {
             // An unequal table is the whole point: on equal temperament the two
             // derivations coincide and this test cannot fail.
             tuning: crate::Tuning::just_intonation(),
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -1944,7 +1929,7 @@ mod tests {
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2007,7 +1992,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2039,7 +2024,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2106,7 +2091,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2164,7 +2149,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2252,7 +2237,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2313,7 +2298,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2393,7 +2378,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2451,7 +2436,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2508,7 +2493,7 @@ mod tests {
                 cutoff: Hz(1000.0),
                 resonance: Resonance(0.5),
             },
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2574,7 +2559,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2637,7 +2622,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2693,7 +2678,7 @@ mod tests {
                 cutoff: Hz(1000.0),
                 resonance: Resonance(0.5),
             },
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2740,7 +2725,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2779,7 +2764,7 @@ mod tests {
             max_voices: 1,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -2827,7 +2812,7 @@ mod tests {
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.001),
                 decay: Seconds(0.0),
                 sustain: Amplitude(1.0),
@@ -3136,12 +3121,7 @@ mod tests {
             max_voices: 1,
             voice_mode: VoiceMode::Mono,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig::new(
-                Seconds(0.001),
-                Seconds(0.0),
-                Amplitude(1.0),
-                Seconds(0.1),
-            ),
+            envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
             portamento: Some(PortamentoConfig {
                 mode: PortamentoMode::Always,
                 curve: PortamentoCurve::Linear,
@@ -3269,12 +3249,7 @@ mod tests {
             max_voices: 1,
             allocation_strategy: crate::AllocationStrategy::Oldest,
             oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig::new(
-                Seconds(0.001),
-                Seconds(0.0),
-                Amplitude(1.0),
-                Seconds(0.1),
-            ),
+            envelope: Adsr::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.1)),
             ..Default::default()
         });
         queue_midi(&mut synth, &[ev_note_on(0, 45, 127)]);

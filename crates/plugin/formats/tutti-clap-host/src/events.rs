@@ -711,6 +711,9 @@ pub struct InputEventList {
     /// Parameter points not handed on whole since the list was built: see
     /// [`param_points_dropped`](Self::param_points_dropped).
     param_points_dropped: u64,
+    /// MIDI messages a banked Program Change could not stage for lack of
+    /// room: see [`midi_dropped`](Self::midi_dropped).
+    midi_dropped: u64,
     /// Each channel's per-note pitch-bend range, as the MIDI added so far
     /// set it. Kept across blocks ([`EventList::clear`] leaves it): it is
     /// the stream's state.
@@ -734,6 +737,7 @@ impl InputEventList {
             order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
         }
@@ -753,6 +757,7 @@ impl InputEventList {
             events,
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
         }
@@ -778,6 +783,12 @@ impl InputEventList {
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
     pub fn set_param_point_room(&mut self, points: usize) {
         self.param_room = points;
+    }
+
+    /// MIDI messages refused since the list was built: the three of a
+    /// Program Change with a bank that did not all fit in the reserved room.
+    pub fn midi_dropped(&self) -> u64 {
+        self.midi_dropped
     }
 
     /// Parameter points [`add_param_changes`](Self::add_param_changes) could
@@ -836,7 +847,23 @@ impl InputEventList {
                 if self.bend_ranges.observe(event) {
                     return self;
                 }
-                if let Some(clap_event) = ClapEvent::from_midi(event, &self.bend_ranges) {
+                // A Program Change with a bank is three MIDI-1 messages (CC 0,
+                // CC 32, PC), each its own event at the same time.
+                let messages = event.to_midi1_messages();
+                if messages.len() > 1 {
+                    // All three or none, within the reserved room: the list
+                    // never grows on the audio thread, and a bank is not
+                    // sent without its program.
+                    let n = messages.len();
+                    if self.events.len() + n > self.events.capacity() {
+                        self.midi_dropped += n as u64;
+                        return self;
+                    }
+                    for (bytes, _) in messages {
+                        self.events
+                            .push(ClapEvent::midi(event.frame_offset, 0, bytes));
+                    }
+                } else if let Some(clap_event) = ClapEvent::from_midi(event, &self.bend_ranges) {
                     self.events.push(clap_event);
                 }
             }
@@ -1748,6 +1775,48 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![(9, 600.0), (5, 2.5)]);
+    }
+
+    /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
+    /// time, in that order.
+    ///
+    /// Mutation (run): `add_midi` converting the event with `from_midi` alone
+    /// → only the PC → fails.
+    #[test]
+    fn a_banked_program_change_is_three_midi_events() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let mut list = InputEventList::new();
+        list.reserve(8);
+        list.add_midi(&pc);
+        let got: Vec<(u32, [u8; 3])> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => (m.header.time, m.data),
+                _ => panic!("not a MIDI event"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(5, [0xB1, 0, 1]), (5, [0xB1, 32, 5]), (5, [0xC1, 9, 0])]
+        );
+        // Room for two: none of the three is staged, and all are counted.
+        let mut tight = InputEventList::new();
+        tight.reserve(2);
+        let room = tight.events.capacity();
+        for _ in 0..room.saturating_sub(1) {
+            tight.add_midi(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000,
+            ));
+        }
+        let before = tight.events().len();
+        tight.add_midi(&pc);
+        assert_eq!(tight.events().len(), before, "all or none");
+        assert_eq!(tight.midi_dropped(), 3);
     }
 
     /// **A dense block sorts without allocating, and ties keep their

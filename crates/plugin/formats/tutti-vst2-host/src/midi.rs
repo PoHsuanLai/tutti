@@ -89,11 +89,17 @@ pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond
 /// 7/14 bits.
+#[cfg(test)]
 pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
+    let (midi_data, len) = event.to_midi1_bytes()?;
+    Some(midi_event(event.frame_offset, midi_data, len))
+}
+
+/// One MIDI-1 message as a VST2 event at `frame_offset`.
+fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> vst::api::MidiEvent {
     use std::mem;
     use vst::api;
 
-    let (midi_data, len) = event.to_midi1_bytes()?;
     // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
     // zero-pads shorter messages into that fixed array, so `midi_data` is
     // wire-ready as-is and `len` is redundant here. The assert guards the
@@ -107,9 +113,9 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     // with it — an out-of-bounds access inside the plugin, out of reach of any
     // check on this side. Saturating keeps it in range; the inbound mirror
     // (`to_midi`) guards the same hazard with `.max(0)`.
-    let delta_frames = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
+    let delta_frames = i32::try_from(frame_offset).unwrap_or(i32::MAX);
 
-    Some(api::MidiEvent {
+    api::MidiEvent {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
         delta_frames,
@@ -129,7 +135,7 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
         note_off_velocity: 0,
         _reserved1: 0,
         _reserved2: 0,
-    })
+    }
 }
 
 /// Pre-allocated, reusable storage for a VST2 `api::Events` flexible-
@@ -241,14 +247,17 @@ impl MidiSendBuffer {
             let step = self.sysex.push(ev);
             let full = self.order.len() == self.room;
             match step {
+                // One UMP can be several MIDI-1 messages (a Program Change
+                // with a bank is CC 0, CC 32, PC); each takes a slot.
                 SysExStep::NotSysEx => {
-                    if let Some(api) = from_midi(ev) {
-                        if full {
+                    for (bytes, len) in ev.to_midi1_messages() {
+                        if self.order.len() == self.room {
                             self.events_dropped += 1;
                             continue;
                         }
                         self.order.push(Staged::Midi(self.api_events.len()));
-                        self.api_events.push(api);
+                        self.api_events
+                            .push(midi_event(ev.frame_offset, bytes, len));
                     }
                 }
                 SysExStep::Held => {}
@@ -672,6 +681,32 @@ mod tests {
     /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
     /// arrives in the second.
     ///
+    /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
+    /// offset, in that order, each in its own slot: with room for 2 events the
+    /// third is refused and counted.
+    ///
+    /// Mutation (run): `stage` sending the event through `from_midi` (one
+    /// message) → only the PC → fails.
+    #[test]
+    fn a_banked_program_change_stages_as_three_events() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage(&[pc]).expect("events staged"));
+        assert_eq!(
+            staged,
+            vec![
+                (5, vec![0xB1, 0, 1]),
+                (5, vec![0xB1, 32, 5]),
+                (5, vec![0xC1, 9, 0]),
+            ]
+        );
+        let mut small = MidiSendBuffer::with_capacity(2);
+        let staged = read_staged(small.stage(&[pc]).expect("events staged"));
+        assert_eq!(staged.len(), 2);
+        assert_eq!(small.events_dropped(), 1, "the third message is counted");
+    }
+
     /// Mutation (run): `stage` sending every event through `from_midi` (no
     /// reassembly) → no SysEx event → fails.
     #[test]

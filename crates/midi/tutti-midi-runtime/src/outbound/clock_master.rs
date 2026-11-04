@@ -97,6 +97,9 @@ pub struct ClockMaster {
     /// The eight nibbles of the timecode being sent, piece `p` in bits
     /// `4p..4p+4`. Set once at piece 0, so one cycle carries one position.
     mtc_cycle: AtomicU32,
+    /// The grid was just restarted: its first piece 0 is still to be placed
+    /// on an even frame ([`tick_mtc`](Self::tick_mtc)).
+    mtc_align: AtomicBool,
 }
 
 impl ClockMaster {
@@ -119,6 +122,7 @@ impl ClockMaster {
             mtc_frames: AtomicU64::new(0),
             mtc_lead: AtomicF64::new(0.0),
             mtc_cycle: AtomicU32::new(0),
+            mtc_align: AtomicBool::new(true),
         }
     }
 
@@ -212,6 +216,7 @@ impl ClockMaster {
         self.mtc_next.store(0, Ordering::Release);
         self.mtc_frames.store(0, Ordering::Release);
         self.mtc_lead.store(0.0, Ordering::Release);
+        self.mtc_align.store(true, Ordering::Release);
     }
 
     /// The rate [`tick`](Self::tick) places events at.
@@ -405,14 +410,30 @@ impl ClockMaster {
         let at = self.mtc_frames.load(Ordering::Acquire);
         let mut next = self.mtc_next.load(Ordering::Acquire);
 
-        // The sample at the block's first frame, counted from beat 0. The
-        // timecode is derived from whole samples, so a position on a frame
-        // boundary never lands a float's width short of it.
-        let block_start = if beats_per_sample > BeatDuration(0.0) {
-            (beat.get() / beats_per_sample.get()).round().max(0.0) as u64
+        // The sample position of the block's first frame, from beat 0.
+        let block_pos = if beats_per_sample > BeatDuration(0.0) {
+            (beat.get() / beats_per_sample.get()).max(0.0)
         } else {
-            0
+            0.0
         };
+        // A restarted grid puts its first piece 0 on the next even-frame
+        // boundary of the timeline (a multiple of two frames' samples from
+        // beat 0), so the label is the frame it goes out on. The grid then
+        // runs in frames from there: exact at a steady tempo, while a tempo
+        // change moves the timeline under a grid fixed in samples, and the
+        // label (read from the beat at each piece 0) follows within a frame.
+        if self.mtc_align.swap(false, Ordering::AcqRel) {
+            let (num, den) = fps.ratio();
+            let period = 2.0 * rate * den as f64 / num as f64;
+            let cycles = block_pos / period;
+            let k = if (cycles - cycles.round()).abs() < 1e-6 {
+                cycles.round()
+            } else {
+                cycles.ceil()
+            };
+            self.mtc_lead
+                .store((k * period - block_pos).max(0.0), Ordering::Release);
+        }
         let mut cycle = self.mtc_cycle.load(Ordering::Acquire);
 
         // Quarter-frames due inside [0, block_size), each on the frame it
@@ -427,7 +448,7 @@ impl ClockMaster {
             // A cycle's timecode is that of the sample piece 0 goes out on;
             // the receiver adds the two frames the cycle takes.
             if piece == 0 {
-                let tc = timecode_at(block_start + u64::from(sample_offset), rate, fps);
+                let tc = timecode_at(block_pos + qf_sample, rate, fps);
                 cycle = mtc_cycle_nibbles(&tc, fps);
             }
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
@@ -451,19 +472,15 @@ fn beats_to_midi_beats(beat: Beat) -> u16 {
     sixteenths.min(0x3FFF as f64) as u16
 }
 
-/// The timecode at sample `sample` (from transport beat 0) at `rate` Hz.
-///
-/// The frame count is integer arithmetic on the sample, so it does not
-/// depend on float rounding at a frame boundary. A cycle starts on an even
-/// frame: its eight pieces span two.
-fn timecode_at(sample: u64, rate: f64, fps: SmpteFrameRate) -> SmpteTimecode {
+/// The timecode at `position` samples from transport beat 0 at `rate` Hz: the
+/// nearest frame, on an even one (a cycle's eight pieces span two frames).
+/// Rounding, not flooring, so a position a float's width short of a frame
+/// boundary still reads as that frame.
+fn timecode_at(position: f64, rate: f64, fps: SmpteFrameRate) -> SmpteTimecode {
     let (num, den) = fps.ratio();
-    let whole_rate = rate.round();
-    let frames = if (rate - whole_rate).abs() < 1e-6 {
-        (u128::from(sample) * u128::from(num) / (u128::from(den) * whole_rate as u128)) as u64
-    } else {
-        (sample as f64 * num as f64 / (den as f64 * rate) + 1e-9).floor() as u64
-    };
+    let frames = (position * num as f64 / (den as f64 * rate))
+        .round()
+        .max(0.0) as u64;
     SmpteTimecode::from_frame_count(frames & !1, fps)
 }
 
@@ -1099,12 +1116,13 @@ mod tests {
                 u64::from(tc.frames) < tc.frame_rate.labels_per_second(),
                 "{rate} Hz {fps:?}: {tc}"
             );
-            // The label is the time piece 0 went out, rounded down to an even
-            // frame: at most two frames behind it, never ahead.
+            // Piece 0 sits on an even frame of the timeline, and the label is
+            // that frame: they differ by under the sample the event is placed
+            // on.
             let lag = piece0_at - tc.to_seconds();
             assert!(
-                (-1e-6..2.0 / fps.fps() + 1e-6).contains(&lag),
-                "{rate} Hz {fps:?}: {tc} lags piece 0 by {lag} s"
+                lag.abs() < 2.0 / rate,
+                "{rate} Hz {fps:?}: {tc} is {lag} s from piece 0"
             );
             let count = tc.frame_count();
             if let Some(prev) = last_count {
@@ -1125,14 +1143,15 @@ mod tests {
     }
 
     /// **One cycle carries one position.** Each assembled timecode is valid
-    /// (frames below the rate), monotonic, and within two frames of the
-    /// instant piece 0 went out, across the minute rollover, at every rate.
+    /// (frames below the rate), monotonic, and equal to the even frame piece 0
+    /// went out on, across the minute rollover, at every rate and start offset.
     ///
-    /// Mutation (run): compute the timecode at every piece (`piece == 0` made
-    /// `true`, without the even-frame floor) → pieces 4-7 carry the next
+    /// Mutations (run): compute the timecode at every piece (`piece == 0`
+    /// made `true`, without the even-frame floor) → pieces 4-7 carry the next
     /// frame, and a rollover between the halves assembles a torn value →
-    /// fails. Rounding the frame from float seconds instead of samples fails
-    /// the same way at exact frame boundaries.
+    /// fails. Skip the alignment in `tick_mtc` (no `mtc_lead` store) → a start
+    /// off an even frame sends piece 0 up to two frames from its label →
+    /// fails.
     #[test]
     fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
         for (rate, fps) in [
@@ -1150,35 +1169,26 @@ mod tests {
         }
     }
 
-    // Mutation: `frames & !1` → `frames` and the second assert fails; the
-    // float path (`sample as f64 * fps / rate`) lands 1919/1920 apart by one
-    // frame at 25 fps in a rounding-sensitive case.
+    // A position on a frame boundary, or a float's width short of it, reads as
+    // that frame, floored to an even one.
+    // Mutations: `frames & !1` → `frames` fails the 1920 case; `.round()` →
+    // `.floor()` fails every "- 1e-7" case.
     #[test]
-    fn timecode_comes_from_integer_samples() {
-        let fps = SmpteFrameRate::Fps25;
-        assert_eq!(timecode_at(3_839, 48_000.0, fps).to_string(), "00:00:00:00");
-        assert_eq!(timecode_at(3_840, 48_000.0, fps).to_string(), "00:00:00:02");
-        assert_eq!(timecode_at(3_841, 48_000.0, fps).to_string(), "00:00:00:02");
-        // Drop-frame count 1800 starts at sample 2_882_880 (60.06 s): the
-        // sample before it is still in the first minute.
+    fn timecode_rounds_to_the_nearest_even_frame() {
+        let at = |pos: f64, fps| timecode_at(pos, 48_000.0, fps).to_string();
+        let f25 = SmpteFrameRate::Fps25;
+        assert_eq!(at(3_840.0, f25), "00:00:00:02");
+        assert_eq!(at(3_840.0 - 1e-7, f25), "00:00:00:02");
+        assert_eq!(at(1_920.0, f25), "00:00:00:00");
+        assert_eq!(at(7_680.0 - 1e-7, f25), "00:00:00:04");
+        // Drop-frame count 1800 starts at sample 2_882_880 (60.06 s).
         let df = SmpteFrameRate::Fps2997Df;
-        assert_eq!(
-            timecode_at(2_882_880, 48_000.0, df).to_string(),
-            "00:01:00:02"
-        );
-        assert_eq!(
-            timecode_at(2_882_879, 48_000.0, df).to_string(),
-            "00:00:59:28"
-        );
+        assert_eq!(at(2_882_880.0, df), "00:01:00:02");
+        assert_eq!(at(2_882_880.0 - 1e-7, df), "00:01:00:02");
+        assert_eq!(at(2_882_880.0 - 1_601.6, df), "00:00:59:28");
         let t30 = SmpteFrameRate::Fps30;
-        assert_eq!(
-            timecode_at(2_880_000, 48_000.0, t30).to_string(),
-            "00:01:00:00"
-        );
-        assert_eq!(
-            timecode_at(2_879_999, 48_000.0, t30).to_string(),
-            "00:00:59:28"
-        );
+        assert_eq!(at(2_880_000.0, t30), "00:01:00:00");
+        assert_eq!(at(2_880_000.0 - 1e-7, t30), "00:01:00:00");
     }
 
     // MTC has no non-drop 29.97 code: Ndf is sent with the drop-frame one.

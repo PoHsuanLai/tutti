@@ -150,7 +150,14 @@ impl Iterator for Midi1Messages {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = usize::from(self.len - self.next);
+        (left, Some(left))
+    }
 }
+
+impl ExactSizeIterator for Midi1Messages {}
 
 impl MidiEvent {
     /// Emits the MIDI 1.0 wire form of this event (1-3 bytes), if the message

@@ -68,7 +68,15 @@ impl SmpteTimecode {
     pub fn frame_count(&self) -> u64 {
         let per_sec = self.frame_rate.labels_per_second();
         let minutes = u64::from(self.hours) * 60 + u64::from(self.minutes);
-        let labelled = (minutes * 60 + u64::from(self.seconds)) * per_sec + u64::from(self.frames);
+        let mut frames = u64::from(self.frames);
+        // `;00` and `;01` do not exist in a minute not divisible by ten: they
+        // count as `;02`, the next label that does.
+        let dropped_label =
+            self.frame_rate.is_drop_frame() && self.seconds == 0 && minutes % 10 != 0;
+        if dropped_label {
+            frames = frames.max(2);
+        }
+        let labelled = (minutes * 60 + u64::from(self.seconds)) * per_sec + frames;
         if self.frame_rate.is_drop_frame() {
             labelled.saturating_sub(2 * (minutes - minutes / 10))
         } else {
@@ -384,6 +392,24 @@ mod tests {
             SmpteTimecode::from_frame_count(1800, ndf).to_string(),
             "00:01:00:00"
         );
+    }
+
+    // Mutation: drop the `frames.max(2)` and `00:01:00:00` counts as frame 1798.
+    #[test]
+    fn invalid_drop_frame_labels_count_as_the_next_valid_one() {
+        let at = |m, s, f| SmpteTimecode {
+            hours: 0,
+            minutes: m,
+            seconds: s,
+            frames: f,
+            frame_rate: SmpteFrameRate::Fps2997Df,
+        };
+        assert_eq!(at(1, 0, 0).frame_count(), 1800);
+        assert_eq!(at(1, 0, 1).frame_count(), 1800);
+        assert_eq!(at(1, 0, 2).frame_count(), 1800);
+        // The tenth minute has them; later seconds in a minute do too.
+        assert_eq!(at(10, 0, 0).frame_count(), 17_982);
+        assert_eq!(at(1, 1, 0).frame_count(), 1830 - 2);
     }
 
     #[test]

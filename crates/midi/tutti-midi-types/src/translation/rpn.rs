@@ -45,16 +45,21 @@ struct ParamState {
     /// the other's.
     rpn: ParamNumber,
     nrpn: ParamNumber,
-    /// Data Entry MSB / LSB (CC 6 / 38) accumulated for the current parameter.
+    /// Data Entry MSB / LSB (CC 6 / 38) accumulated for the current parameter,
+    /// and whether each has arrived since the last emit.
     data_msb: u8,
     data_lsb: u8,
+    msb_set: bool,
+    lsb_set: bool,
     /// Whether the currently-selected parameter is registered (RPN) or not (NRPN).
     registered: bool,
     /// Whether a parameter has been selected (so a Data Entry is meaningful).
     selected: bool,
-    /// Bank Select MSB / LSB (CC 0 / 32) received since the last Program Change.
-    bank_msb: Option<u8>,
-    bank_lsb: Option<u8>,
+    /// The last Bank Select MSB / LSB (CC 0 / 32), kept across Program Changes;
+    /// `bank_set` is whether either arrived since the last Program Change.
+    bank_msb: u8,
+    bank_lsb: u8,
+    bank_set: bool,
 }
 
 /// The 0x7F value that, in *both* the MSB and LSB, forms the RPN/NRPN Null
@@ -90,14 +95,24 @@ impl Midi1ToMidi2Translator {
 
     /// Feeds one inbound event. Returns the MIDI-2 event it translates to:
     /// - a Data Entry on a selected (N)RPN yields one Registered/Assignable
-    ///   Controller message, with the value as accumulated so far; the run's
-    ///   next Data Entry yields another with the updated value;
+    ///   Controller message with the value so far: CC 6 emits at once with
+    ///   the LSB as last sent (0 if never), and a later CC 38 emits the
+    ///   refined value. A CC 38 with no CC 6 before it emits nothing: its
+    ///   value would have an MSB that never arrived. If a select ends such a
+    ///   run, it is emitted then, MSB 0 (`ump_convert.c` flushes a partial run
+    ///   the same way; it also waits for both halves before the first emit,
+    ///   which this does not, so a CC 6 alone is heard without waiting for the
+    ///   next select);
     /// - a parameter select, or a Data Entry with none selected, is *absorbed*
     ///   (returns `None`: it only updates state);
     /// - Bank Select (CC 0 / 32) is absorbed and attached to the channel's next
-    ///   Program Change, whose bank is then valid (a bank half never sent is
-    ///   0), after which the latch is clear;
-    /// - anything else is promoted through [`normalize`](super::normalize).
+    ///   Program Change, whose bank is then valid. As in `ump_convert.c`
+    ///   (408-413, 427-431), the last MSB and LSB are kept across Program
+    ///   Changes, so a later lone CC 32 pairs with the earlier CC 0, and a lone
+    ///   half pairs with the other as last sent (0 if never);
+    /// - anything else, Data Increment and Decrement included (`ump_convert.c`
+    ///   passes them through as CCs), is promoted through
+    ///   [`normalize`](super::normalize).
     pub fn translate(&mut self, event: &MidiEvent) -> Option<MidiEvent> {
         let Ok(UmpMessage::ChannelVoice1(cv1)) = UmpMessage::try_from(event.data_words()) else {
             // Not a MIDI-1 channel message — nothing to accumulate.
@@ -120,24 +135,35 @@ impl Midi1ToMidi2Translator {
         let state = &mut self.channels[channel & 0x0F];
 
         match control {
-            cc::RPN_MSB => self.select(channel, true, ParamByte::Bank(value)),
-            cc::RPN_LSB => self.select(channel, true, ParamByte::Index(value)),
-            cc::NRPN_MSB => self.select(channel, false, ParamByte::Bank(value)),
-            cc::NRPN_LSB => self.select(channel, false, ParamByte::Index(value)),
+            cc::RPN_MSB => self.select(channel, event.frame_offset, true, ParamByte::Bank(value)),
+            cc::RPN_LSB => self.select(channel, event.frame_offset, true, ParamByte::Index(value)),
+            cc::NRPN_MSB => self.select(channel, event.frame_offset, false, ParamByte::Bank(value)),
+            cc::NRPN_LSB => {
+                self.select(channel, event.frame_offset, false, ParamByte::Index(value))
+            }
             cc::DATA_ENTRY => {
                 state.data_msb = value;
+                state.msb_set = true;
                 self.emit(channel, event.frame_offset)
             }
             cc::DATA_ENTRY_LSB => {
                 state.data_lsb = value;
-                self.emit(channel, event.frame_offset)
+                state.lsb_set = true;
+                if state.msb_set {
+                    self.emit(channel, event.frame_offset)
+                } else {
+                    None
+                }
             }
+            // `ump_convert.c` 408-413: latch and absorb.
             cc::BANK_SELECT => {
-                state.bank_msb = Some(value);
+                state.bank_msb = value;
+                state.bank_set = true;
                 None
             }
             BANK_SELECT_LSB => {
-                state.bank_lsb = Some(value);
+                state.bank_lsb = value;
+                state.bank_set = true;
                 None
             }
             // A plain CC (not part of an (N)RPN run) promotes normally.
@@ -145,28 +171,44 @@ impl Midi1ToMidi2Translator {
         }
     }
 
-    /// A Program Change, carrying the bank latched on its channel if any.
+    /// A Program Change, carrying the bank latched on its channel if one was
+    /// selected since the last Program Change (`ump_convert.c` 427-431: the
+    /// flag is cleared, the MSB and LSB values are not).
     fn program_change(&mut self, event: &MidiEvent, channel: u8, program: u8) -> MidiEvent {
         let state = &mut self.channels[usize::from(channel & 0x0F)];
-        let latched = (state.bank_msb.take(), state.bank_lsb.take());
-        let bank = match latched {
-            (None, None) => None,
-            (msb, lsb) => Some((u16::from(msb.unwrap_or(0)) << 7) | u16::from(lsb.unwrap_or(0))),
-        };
+        let bank = state
+            .bank_set
+            .then(|| (u16::from(state.bank_msb) << 7) | u16::from(state.bank_lsb));
+        state.bank_set = false;
         MidiEvent::program_change(event.group(), MidiChannel::new(channel), program, bank)
             .with_frame_offset(event.frame_offset)
     }
 
     /// Handle one parameter-select byte (CC 98/99/100/101).
     ///
-    /// Each Data Entry has already produced its message, so a select has
-    /// nothing to flush: it adopts the new number and clears the accumulated
-    /// data, so the previous parameter's value never leaks into the next one.
+    /// Appendix D.3.3 lists a parameter select as an *emit trigger*: "a CC 98,
+    /// 99, 100, and 101 is received, indicating the last RPN/NRPN message has
+    /// ended and a new one has started." A run with only a CC 38 is emitted
+    /// here (every other value went out with its Data Entry), before the new
+    /// number is adopted; the accumulated data is cleared so it never leaks
+    /// into the next parameter.
     ///
     /// It also implements the Null Function rule: "RPN/NRPN Null Function, where
     /// both the MSB and LSB is set to 0x7F, is not translated." Null deselects,
     /// so a following Data Entry must not synthesize a controller message.
-    fn select(&mut self, channel: usize, registered: bool, byte: ParamByte) -> Option<MidiEvent> {
+    fn select(
+        &mut self,
+        channel: usize,
+        frame_offset: u32,
+        registered: bool,
+        byte: ParamByte,
+    ) -> Option<MidiEvent> {
+        let state = &self.channels[channel & 0x0F];
+        let flushed = if state.lsb_set && !state.msb_set {
+            self.emit(channel, frame_offset)
+        } else {
+            None
+        };
         let state = &mut self.channels[channel & 0x0F];
         state.registered = registered;
         let number = if registered {
@@ -181,8 +223,10 @@ impl Midi1ToMidi2Translator {
         let null = number.is_null();
         state.data_msb = 0;
         state.data_lsb = 0;
+        state.msb_set = false;
+        state.lsb_set = false;
         state.selected = !null;
-        None
+        flushed
     }
 
     /// Emit the MIDI-2 controller message for the channel's currently-selected
@@ -340,9 +384,11 @@ mod tests {
             "A was emitted by its Data Entry; the select adds nothing"
         );
 
-        // Now B's LSB alone: the value must not contain A's MSB of 64.
+        // B's LSB waits for its MSB; B's MSB of 0 then completes a value that
+        // must not contain A's MSB of 64.
+        assert!(t.translate(&cc_ev(0, cc::DATA_ENTRY_LSB, 1)).is_none());
         let out = t
-            .translate(&cc_ev(0, cc::DATA_ENTRY_LSB, 1))
+            .translate(&cc_ev(0, cc::DATA_ENTRY, 0))
             .expect("parameter B emits");
         let (bank, index, data) = controller_param(&out).expect("controller");
         assert_eq!((bank, index), (0, 1));
@@ -367,6 +413,27 @@ mod tests {
             n += usize::from(t.translate(&cc_ev(0, c, v)).is_some());
         }
         assert_eq!(n, 2);
+    }
+
+    // A CC 38 before any CC 6 is not a value yet: no transient MSB-0 event.
+    // Mutation: emit on CC 38 regardless of `msb_set` and the first assert fails.
+    #[test]
+    fn a_data_entry_lsb_before_its_msb_waits() {
+        let mut t = Midi1ToMidi2Translator::new();
+        t.translate(&cc_ev(0, cc::RPN_MSB, 0));
+        t.translate(&cc_ev(0, cc::RPN_LSB, 2));
+        assert!(t.translate(&cc_ev(0, cc::DATA_ENTRY_LSB, 5)).is_none());
+        let out = t.translate(&cc_ev(0, cc::DATA_ENTRY, 64)).expect("emits");
+        let want = super::super::scaling::midi1_pitch_bend_to_midi2((64 << 7) | 5);
+        assert_eq!(controller_param(&out).map(|(_, _, d)| d), Some(want));
+        // A run left with only the LSB is emitted when the next select ends it.
+        let mut t = Midi1ToMidi2Translator::new();
+        t.translate(&cc_ev(0, cc::RPN_MSB, 0));
+        t.translate(&cc_ev(0, cc::RPN_LSB, 2));
+        t.translate(&cc_ev(0, cc::DATA_ENTRY_LSB, 5));
+        let flushed = t.translate(&cc_ev(0, cc::RPN_MSB, 127)).expect("flushed");
+        let want = super::super::scaling::midi1_pitch_bend_to_midi2(5);
+        assert_eq!(controller_param(&flushed), Some((0, 2, want)));
     }
 
     // After RPN 0/6, a lone NRPN MSB must not take the RPN's LSB.
@@ -401,6 +468,12 @@ mod tests {
         assert_eq!(with.data_words(), pc_words(5, 8, Some(3 << 7)));
         let after = t.translate(&pc(5, 9)).unwrap();
         assert_eq!(after.data_words(), pc_words(5, 9, None));
+        // The values are kept: a lone LSB pairs with the earlier MSB
+        // (`ump_convert.c` clears only the flag). Mutation: clear the
+        // values on a Program Change and this reads bank 6.
+        assert!(t.translate(&cc_ev(5, CCNumber::new(32), 6)).is_none());
+        let again = t.translate(&pc(5, 10)).unwrap();
+        assert_eq!(again.data_words(), pc_words(5, 10, Some((3 << 7) | 6)));
     }
 
     fn pc_words(ch: u8, p: u8, bank: Option<u16>) -> Vec<u32> {

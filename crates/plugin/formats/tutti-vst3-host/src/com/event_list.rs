@@ -33,9 +33,9 @@ use vst3::{Class, ComWrapper};
 
 use crate::types::MidiEvent;
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi, EventHeader,
-    SysExEvent, TextArena, Vst3Event, Vst3InputEvents, K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX,
-    K_NOTE_OFF_EVENT,
+    from_c_event, midi1_data_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi,
+    EventHeader, SysExEvent, TextArena, Vst3Event, Vst3InputEvents, K_DATA_EVENT,
+    K_DATA_TYPE_MIDI_SYSEX, K_NOTE_OFF_EVENT,
 };
 use tutti_midi_types::PerNoteBendRanges;
 #[cfg(doc)]
@@ -191,7 +191,15 @@ impl Inner {
     fn stage_midi(&mut self, event: &MidiEvent) {
         match self.sysex.push(event) {
             SysExStep::NotSysEx => {
-                if let Some(event) = vst3_event_from_midi(event, &mut self.bend_ranges) {
+                // A Program Change with a bank is three MIDI-1 messages (CC 0,
+                // CC 32, PC), each its own event at the same offset.
+                let messages = event.to_midi1_messages();
+                if messages.len() > 1 {
+                    let offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
+                    for (bytes, _) in messages {
+                        self.push(midi1_data_event(offset, bytes));
+                    }
+                } else if let Some(event) = vst3_event_from_midi(event, &mut self.bend_ranges) {
                     self.push(event);
                 }
             }
@@ -1721,6 +1729,38 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
+    /// offset, in that order, as `kDataEvent`s of raw MIDI-1 bytes.
+    ///
+    /// Mutation (run): `stage_midi` converting the event with
+    /// `vst3_event_from_midi` alone → only the PC → fails.
+    #[test]
+    fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let list = EventList::input();
+        assert_no_alloc::assert_no_alloc(|| list.update_from_midi(&[pc]));
+        let mut seen = Vec::new();
+        unsafe {
+            for i in 0..list.getEventCount() {
+                let mut e: Event = std::mem::zeroed();
+                assert_eq!(list.getEvent(i, &mut e), kResultOk);
+                assert_eq!(e.r#type, K_DATA_EVENT);
+                let d = e.__field0.data;
+                let bytes = std::slice::from_raw_parts(d.bytes, d.size as usize).to_vec();
+                seen.push((e.sampleOffset, bytes));
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                (5, vec![0xB1, 0, 1]),
+                (5, vec![0xB1, 32, 5]),
+                (5, vec![0xC1, 9, 0]),
+            ]
+        );
     }
 
     fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {

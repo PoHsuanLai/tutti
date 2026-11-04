@@ -2354,7 +2354,8 @@ mod tests {
             f32::INFINITY,
         ];
         let mut state = 0x1234_5678_u32;
-        for _ in 0..20_000 {
+        // Under miri: fewer probes (no unsafe or atomics; the edge probes stay).
+        for _ in 0..if cfg!(miri) { 500 } else { 20_000 } {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             probes.push((state >> 8) as f32 / (1u32 << 24) as f32 * 6.0 - 2.0);
         }

@@ -3203,16 +3203,31 @@ FFT size.
   level starts at `P` (one of its own partitions in), so the delay is `B`:
   slack in which its transforms can run after its input block completes, and
   the head's delay is zero.
-- **Transforms land in different host blocks.** A tail level's forward
-  transform runs at one offset in that slack and its multiply and inverse
-  transform at another; the levels' offsets are distinct slots of
-  `B / (2 * tail levels + 1)` frames, none at the head's. A host block of up
-  to a slot holds at most one transform of a tail level (102 frames at
-  `B = 512` with two tail levels; checked by
-  `transforms_land_in_different_host_blocks`). Each level's output is summed
-  into one ring at the frame it is due, in the order of the transforms'
-  frames, so the render is bit-identical for any split of the input into
-  calls (checked down to one frame at a time).
+- **Transforms run in steps, in different host blocks.** A tail level's
+  forward transform and its multiply and inverse transform run as **steps** at
+  offsets in that slack. A tail transform whose inner complex FFT has more than
+  1024 points (`MAX_SUB_FFT`) is cut by decimation in time into sub-FFTs of at
+  most that many points plus radix-2 combine passes
+  (`tutti_types::StagedRealFft`, rustfft's scalar planner and plain `f32`
+  butterflies, so the bits stay CPU-independent), one sub-FFT or combine pass
+  a step: a 2048-frame partition's 4096-point transform is three forward steps
+  (a gather and a 1024-point FFT, a 1024-point FFT, the combine and the
+  real-input pass) and four inverse ones, the biggest 6 to 8 us instead of
+  the unsplit 18 to 23 us. The cut is a few percent of a 4096-point
+  transform's total (measured 18.9 us against 18.2 forward, 17.5 against 17.1
+  inverse) and changes its rounding, not its result: a split transform
+  equals the DFT to the unsplit transform's accuracy (`2 eps log2(n) |x|`,
+  checked against the f64 DFT), a transform that is not cut is `RealFft`'s,
+  bit for bit, and a head never splits (its transforms have no slack).
+  The levels' steps take distinct slots of `B / (steps + 1)` frames, none at
+  the head's, so a host block of up to a slot holds at most one step of a tail
+  level, and the head's pair alone (checked by
+  `transforms_land_in_different_host_blocks`, down to sub-FFTs of 4 points). The
+  spread of the older partitions' sum is measured from the forward
+  transform's last step. Each level's output is summed into one ring at the
+  frame it is due, in the order of the steps' frames, so the render is
+  bit-identical for any split of the input into calls (checked down to one
+  frame at a time, split layouts included).
 - **A cost model picks the layout**: per frame, `0.7 ns` a bin
   multiply-accumulate and `0.29 ns * n * log2(n)` a real transform of `n`
   points, over every layout of head and tail partitions that are powers of
@@ -3223,17 +3238,19 @@ FFT size.
   head: 18 partitions at `B = 2`, 31 at `B = 8`, 48 at `B = 64`, 63 at
   `B = 512` (0.67 s), 68 at `B = 1024`, and none at `B >= 2048` for IRs up to
   400 partitions. An empty IR is uniform.
-- **No thread is added.** The big transforms run in the block that holds
-  their offset, on the audio thread, in the node; the executor owns
-  parallelism. They are the cost of the peak: a tail of 2048-frame partitions
-  has two 4096-point transforms (about 15 us each on the bench machine), so
-  the peak block of a 2 s IR at a 64-frame host block is not lower than the
-  uniform convolver's (it can be 20% higher), while its mean halves.
+- **No thread is added.** The steps run in the block that holds their
+  offset, on the audio thread, in the node; the executor owns parallelism.
+  The biggest step is a 1024-point complex FFT whatever the partition: 6 to
+  8 us (the first forward step, with its gather, the most), measured against
+  6.6 us for the head's whole forward and inverse pair at `B = 512`. A step is
+  about the head's pair, so the cut brings a tail block down to the head's
+  peak and not below it.
 
 `cargo bench -p tutti-nodes --bench convolver_blocks --features convolution`,
 512-frame partition, microseconds per call, best of two interleaved runs
-on a shared four-core container, uniform ("uniform") against levels
-("levels"). The max column is the minimum over the passes of each pass's
+on a shared four-core container, uniform ("uniform") against levels whose
+transforms are whole ("levels"; the cut transforms are measured below). The
+max column is the minimum over the passes of each pass's
 maximum:
 
 | IR | host block | mean | p99 | max |
@@ -3277,11 +3294,50 @@ layout only where the split gains nothing measurable. At a 512 head the p99
 and maximum of a 64-frame block rise by 7 to 10 us for IRs up to 1.5 s (under
 1% of the 1.33 ms block budget); at a 128 head they fall.
 
+
+**Cutting the tail transforms** (same bench, the commit before against the
+commit that cuts them; the median of seven interleaved runs of the two
+binaries on a shared, loaded four-core container; microseconds per call,
+"whole" to "cut"; the max column is the minimum over each run's passes, then
+the median over the runs):
+
+| IR | host block | mean | p99 | max |
+|---|---|---|---|---|
+| 2 s | 64 | 4.23 to 4.80 | 21.9 to 17.4 | 34.9 to 32.6 |
+| 2 s | 128 | 8.68 to 9.09 | 35.0 to 28.1 | 46.9 to 40.5 |
+| 2 s | 512 | 33.4 to 36.3 | 76.3 to 81.8 | 81.1 to 85.2 |
+| 5 s | 64 | 7.44 to 7.92 | 29.1 to 28.5 | 42.9 to 38.1 |
+| 5 s | 128 | 14.7 to 17.3 | 46.9 to 52.9 | 60.3 to 63.3 |
+| 5 s | 512 | 60.4 to 65.7 | 151.7 to 160.1 | 153.9 to 159.2 |
+| 2 s, calls 64, 64, 64, 500 | | 11.6 to 12.9 | 56.8 to 60.8 | 68.9 to 74.7 |
+| 0.7 s, 64 | | 3.09 to 3.33 | 22.4 to 12.8 | 30.1 to 23.1 |
+| 1 s, 64 | | 3.48 to 3.96 | 25.2 to 14.7 | 31.2 to 24.1 |
+| 1.5 s, 64 | | 4.03 to 4.26 | 26.9 to 16.3 | 33.8 to 30.2 |
+
+The cut helps where the largest tail partition's whole transform is the peak:
+the 64- and 128-frame p99 of a 2 s IR falls by a fifth (a reviewer's separate
+interleaved runs on another machine measured 35 to 50% at 2 s and 64 frames;
+run to run on this one it moves between 2 and 30%), and that of the IRs just
+past the cost model's threshold (0.7 to 1.5 s at a 512 head) by about 40%,
+where a 2048-frame level's two transforms were the peak block. The 5 s p99
+and the ragged mix's are unchanged within the runs' noise (a 5 s 64-frame p99
+of 22 to 33 us in both): a 5 s IR's peak is its older partitions' sum and its
+other levels, which the cut does not touch. A block of the head partition or
+more holds every step of a cycle, so the 512-frame rows are the same within
+noise. The means are 5 to 15% higher, the cost of the cut's extra pass (about
+4% of a transform, above) and of a step's bookkeeping; the cut buys the p99 of
+a 2 s IR and the 0.7 to 1.5 s IRs, not the mean of a long one. A 128 head has
+no cut transform (its largest partition is 512 frames), and its rows differ
+only by noise.
+
 Tests: a direct (time-domain) convolution for layouts of two to four levels at
 IR lengths on and around each level's first and last tap, an impulse at the
 declared latency, the IR's last tap through the last level, bit-identical
 renders at odd call lengths, the layout's slack and offsets, a reset that
-renders as a fresh convolver does, and the allocation gate over a 5 s IR.
+renders as a fresh convolver does, the allocation gate over a 5 s IR, and for
+the cut transforms: split layouts equal to a direct convolution and to the
+uncut layout (within twice the tolerance), bit-identical renders at odd call
+lengths, steps at distinct frames, and `StagedRealFft` against the f64 DFT.
 
 `RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
 applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share

@@ -108,6 +108,8 @@ tresult PLUGIN_API AudioProbeProcessor::setBusArrangements (SpeakerArrangement* 
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::canProcessSampleSize (int32 symbolicSampleSize)
 {
+	if (mMisbehaviour == kMisbehaveSample64AfterInit && !mInitialized)
+		return kResultFalse;
 	// Both precisions, so the f64 path is testable with the same assertions.
 	if (symbolicSampleSize == kSample32 || symbolicSampleSize == kSample64)
 		return kResultTrue;
@@ -120,6 +122,8 @@ uint32 PLUGIN_API AudioProbeProcessor::getLatencySamples ()
 	// Claim a latency that is never applied — the stale-or-wrong-units bug.
 	if (mMisbehaviour == kMisbehaveLatencyLies)
 		return static_cast<uint32> (kLiedLatencySamples);
+	if (mMisbehaviour == kMisbehaveLatencyFollowsRate)
+		return static_cast<uint32> (processSetup.sampleRate / 1000.0);
 	return mMode == kModeLatency ? static_cast<uint32> (kReportedLatencySamples) : 0;
 }
 

@@ -440,12 +440,11 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // at all (HostChecker flags the omission as "Missing Call:
         // getLatencySamples ()").
         //
-        // The value is returned to the caller through `read_latency_samples`
-        // rather than stored here: the compensation machinery lives in
-        // `tutti-core` (`LatencyGraph` / `Compensation` / `PdcDelay`), which
-        // needs it per graph rather than per instance. What matters at this
-        // layer is that the call happens, in the right place, every activation
-        // — the figure PDC compensates by is only as good as this read.
+        // The figure is not stored here: a caller that compensates reads it
+        // with `read_latency_samples` once activation has returned (the
+        // plugin-server does so after a rate change and after a restart). What
+        // matters at this layer is that the call happens, in the right place,
+        // every activation.
         let _ = instance.loaded.read_latency_samples();
         Ok(instance)
     }
@@ -1131,6 +1130,11 @@ impl<T: Vst3Sample> Vst3Active<T> {
     pub fn restart_bus_configuration(&mut self) -> Result<()> {
         self.stop_processing();
         self.set_active(false)?;
+
+        // `kPrefetchableSupportChanged` asks for `getPrefetchableSupport` to be
+        // read with the plugin deactivated (`ivstprefetchablesupport.h`). The
+        // deactivation is done here; reading and keeping the answer is deferred
+        // (nothing holds it, and a caller asks `prefetchable_support` itself).
 
         // Re-ask the plugin for its layout while it is down. Arrangements are
         // renegotiated before the counts are re-read, matching the activation

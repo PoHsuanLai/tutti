@@ -742,6 +742,23 @@ fn test_host_state_main_thread_id_is_current() {
     assert_eq!(state.main_thread_id, std::thread::current().id());
 }
 
+/// The host does not route a plugin's `request_show` / `request_hide` to its
+/// editor window, so it says so: `true` would tell a floating GUI its window
+/// state changed when it did not.
+///
+/// Mutation (run): return `true` from either callback → its assertion fails.
+#[test]
+fn host_gui_show_and_hide_requests_are_declined() {
+    use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
+
+    let host = ClapHost::default();
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let gui_ext = unsafe { &*(get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui) };
+    assert!(!unsafe { gui_ext.request_show.unwrap()(raw) });
+    assert!(!unsafe { gui_ext.request_hide.unwrap()(raw) });
+}
+
 #[test]
 fn host_gui_closed_was_destroyed_latches_window_destroyed() {
     // gui.closed(was_destroyed = true) records that the plugin's *window* is

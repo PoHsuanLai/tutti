@@ -281,15 +281,25 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
         ),
         "the edit reached the plugin"
     );
+    // Every block is checked, not only the last: the live path never waits,
+    // so a block whose chunk is not yet back reads as silence (a late block,
+    // not a value). Mutation (run): `!near(&out, -15.0)` in the per-block
+    // check → the first block fails it, so a block at the held -6 dB would.
+    let mut heard = None;
     for _ in 0..20 {
-        *last.borrow_mut() = live.run(FORK_BLOCK, |_, _| 0.0);
+        let out = live.run(FORK_BLOCK, |_, _| 0.0);
+        assert!(
+            !near(&out, -6.0),
+            "live re-sent the held value over the edit"
+        );
+        if let Some(&s) = out.first().and_then(|c| c.last()).filter(|&&s| s != 0.0) {
+            heard = Some(s);
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let last = last.into_inner();
     assert!(
-        near(&last, -15.0),
-        "live keeps the edit: {:?}",
-        last[0].last()
+        heard.is_some_and(|s| (s - amplitude(-15.0)).abs() < 1e-4),
+        "live keeps the edit: {heard:?}"
     );
 
     // The export.

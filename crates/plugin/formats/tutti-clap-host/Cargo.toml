@@ -16,7 +16,7 @@ workspace = true
 # Off by default. Gates the speculative ~40% of the CLAP surface that no
 # consumer (`tutti-plugin-server` loader, in-process GUI host) currently calls:
 # param-indication, remote-controls, context-menus, triggers, tuning,
-# audio-port reconfiguration, POSIX-fd polling, preset-load, and the plugin
+# audio-port reconfiguration, preset-load, and the plugin
 # undo/redo + resource-directory extensions. The code and its tests stay
 # compiled — enable the feature to build/test them — but the default build is
 # lean. Consumed extensions (audio/note ports, params, state, gui, latency,
@@ -36,6 +36,9 @@ tutti-types = { path = "../../../core/tutti-types" }
 # (`ClapLoaded::set_thread_pool`). No cycle: `tutti-graph` names only
 # `tutti-types`.
 tutti-graph = { path = "../../../core/tutti-graph" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 # Shared with the other three crates that locate a reference plugin

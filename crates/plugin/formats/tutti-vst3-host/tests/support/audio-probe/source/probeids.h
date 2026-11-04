@@ -396,6 +396,22 @@ enum ProbeMisbehaviour : int32
     /// is a *narrowing* — a host that keeps the proposed width would over-read
     /// a channel the plugin is not running.
     kMisbehaveArrangementRefused = 11,
+
+    /// `getLatencySamples` reports the sample rate in kHz, as a plugin whose
+    /// group delay is a fixed duration (1 ms) does: it changes with the rate the
+    /// plugin is set up for.
+    ///
+    /// Not a violation: latency is valid once the plugin is active, and a rate
+    /// change deactivates and reactivates it. The host must read the figure
+    /// again after that, or PDC keeps the old rate's.
+    kMisbehaveLatencyFollowsRate = 12,
+
+    /// `canProcessSampleSize` answers `kResultFalse` until `initialize` has run.
+    ///
+    /// Not a violation: the SDK allows the call only on an initialized
+    /// component (`ivstaudioprocessor.h`), so a plugin may settle the answer
+    /// there. A host that reads it before `initialize` reports 32-bit only.
+    kMisbehaveSample64AfterInit = 13,
 };
 
 /// Read the selected misbehaviour from the environment. Returns
@@ -439,7 +455,7 @@ inline int32 probeMisbehaviour ()
     // whose value falls outside this range is silently read as `kMisbehaveNone`,
     // so the plugin behaves and the test passes against a probe that never
     // misbehaved.
-    return (v >= kMisbehaveNone && v <= kMisbehaveArrangementRefused) ? v : kMisbehaveNone;
+    return (v >= kMisbehaveNone && v <= kMisbehaveSample64AfterInit) ? v : kMisbehaveNone;
 }
 
 /// Bus count reported under [`kMisbehaveExtraBuses`]. Larger than any real

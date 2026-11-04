@@ -301,12 +301,15 @@ unsafe extern "C" fn host_gui_request_resize(
     }
 }
 
+/// The host owns the editor window and does not route a plugin's request to
+/// show or hide it, so both answer `false` (`ext/gui.h`: "return true on
+/// success").
 unsafe extern "C" fn host_gui_request_show(_host: *const ClapHostVtable) -> bool {
-    true
+    false
 }
 
 unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool {
-    true
+    false
 }
 
 unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {
@@ -401,11 +404,15 @@ unsafe extern "C" fn host_timer_register(
     };
     let id = state.timer.next_id.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut timers) = state.timer.timers.lock() {
+        let now = Instant::now();
         timers.push(TimerEntry {
             id,
             period_ms,
-            last_fire: Instant::now(),
+            last_fire: now,
         });
+        state
+            .timer
+            .note_due(now + std::time::Duration::from_millis(u64::from(period_ms)));
         *timer_id = id;
         true
     } else {
@@ -992,6 +999,10 @@ unsafe extern "C" fn host_posix_fd_register(
             return false;
         }
         fds.push(PosixFdEntry { fd, flags });
+        state
+            .resources
+            .posix_fd_count
+            .store(fds.len(), Ordering::Release);
         true
     } else {
         false
@@ -1027,6 +1038,10 @@ unsafe extern "C" fn host_posix_fd_unregister(host: *const ClapHostVtable, fd: i
     if let Ok(mut fds) = state.resources.posix_fds.lock() {
         let len_before = fds.len();
         fds.retain(|e| e.fd != fd);
+        state
+            .resources
+            .posix_fd_count
+            .store(fds.len(), Ordering::Release);
         fds.len() < len_before
     } else {
         false

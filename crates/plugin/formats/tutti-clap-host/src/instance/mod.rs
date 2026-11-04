@@ -80,6 +80,8 @@ pub struct ClapLoaded {
     pub(crate) audio: AudioConfig,
     pub(crate) ports: PortLayout,
     pub(crate) flags: LifecycleFlags,
+    /// What the per-block main-thread pass keeps between calls.
+    pub(crate) work: polling::MainThreadWork,
     /// The pool `clap.thread-pool` requests run on, or `None` to refuse them
     /// ([`set_thread_pool`](ClapLoaded::set_thread_pool)).
     pub(crate) thread_pool: Option<Arc<dyn tutti_graph::Pool>>,

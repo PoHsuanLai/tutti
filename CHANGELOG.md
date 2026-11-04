@@ -58,6 +58,39 @@ crossing frame and removes the partial file, with the new `Error::WavTooLarge
 Not done: RF64 (EBU Tech 3306) output, which would lift the limit; `hound`
 cannot write it, so it is a writer of our own.
 
+### Fixed — a CLAP plugin's callbacks, timers, fds and rescans are served, and latency is read when it can change
+
+The plugin-server recorded a CLAP plugin's `request_callback`, timers, POSIX
+fds and `params.rescan` and acted on none of them, and read `latency.changed`
+from a plugin that was still active, where `clap.latency` lets the figure change
+only across an activation. `ClapInstance::service_requests` now runs the
+plugin's main-thread work (`on_main_thread`, due timers, ready fds, new
+`ClapLoaded::run_main_thread_work`; the editor instance does the same from
+`editor_idle`) and then serves restarts: `request_restart`, an `audio-ports`
+or `params.rescan(ALL)` that needs the plugin deactivated, and a
+`latency.changed` on an active plugin each re-activate it, and the latency and
+tail are read afterwards. They are also read after an in-place sample-rate
+change, in CLAP and VST3 (the host crate read the VST3 figure and dropped it).
+A `params.rescan` reaches the client as `PluginParamValuesChanged` or
+`PluginParamTitlesChanged`, and re-reads the ranges automation is denormalized
+against (`ClapActive::rescan_params`, also run by every re-activation).
+`poll_posix_fds` reports only the descriptors that are ready, with the events
+they asked for, and is no longer behind `clap-extras`. `gui.request_show` and
+`request_hide` answer `false`: the host owns the editor window.
+
+VST3: `kPrefetchableSupportChanged` runs the restart cycle with
+`IPrefetchableSupport` read while the plugin is down, and
+`kParamIDMappingChanged` reaches the client as a changed parameter list. The
+bus counts, the event buses and `canProcessSampleSize` are read after
+`initialize`, not before (`Vst3Loaded::probe`, which never initializes, is best
+effort).
+
+Migration: `ClapInstance::{poll_latency_changed, get_latency, poll_tail_changed,
+get_tail}` are gone; `take_changes()` returns what moved. `tutti-clap-host`
+depends on `libc` on unix. The reference VST3 probe gains
+`TUTTI_PROBE_MISBEHAVIOUR` 12 and 13, and the reference CLAP plugin
+`tutti_test_plugin_set_latency_at_activation`.
+
 ### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 
 A hosted plugin that refused a rate change (CLAP `activate` returning false)

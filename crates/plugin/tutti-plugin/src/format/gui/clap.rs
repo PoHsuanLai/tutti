@@ -91,21 +91,27 @@ impl ClapGuiInstance {
         // One pass over the catalog instead of a scan per write. Params are
         // readable on an unactivated instance, which is what this GUI-only
         // load is.
-        let mut param_ranges: Vec<(u32, (f64, f64))> = inner
-            .get_parameter_list()
-            .into_iter()
-            .filter_map(|p| {
-                let id = p.id.opaque()?.get();
-                p.bounds().map(|b| (id, b))
-            })
-            .collect();
-        param_ranges.sort_unstable_by_key(|(id, _)| *id);
+        let param_ranges = read_param_ranges(&inner);
 
         Ok(Self {
             inner,
             param_ranges,
         })
     }
+}
+
+/// The plugin's declared plain-unit bounds per parameter id, sorted by id.
+fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64))> {
+    let mut ranges: Vec<(u32, (f64, f64))> = inner
+        .get_parameter_list()
+        .into_iter()
+        .filter_map(|p| {
+            let id = p.id.opaque()?.get();
+            p.bounds().map(|b| (id, b))
+        })
+        .collect();
+    ranges.sort_unstable_by_key(|(id, _)| *id);
+    ranges
 }
 
 impl PluginEditor for ClapGuiInstance {
@@ -137,6 +143,15 @@ impl PluginEditor for ClapGuiInstance {
     }
 
     fn editor_idle(&mut self) {
+        // The editor's timers (a UI toolkit's repaint tick), its callbacks to
+        // the main thread and its file descriptors are all served from here:
+        // this is the only main-thread tick the instance has.
+        self.inner.run_main_thread_work();
+        // A rescan that re-described the parameters re-reads their bounds.
+        let rescan = self.inner.poll_params_rescan();
+        if rescan.info || rescan.all {
+            self.param_ranges = read_param_ranges(&self.inner);
+        }
         // If the plugin requested a param flush, perform it.
         if self.inner.poll_params_flush_requested() {
             let _ = self.inner.flush_params(vec![]);
@@ -247,6 +262,49 @@ mod tests {
 
     use super::*;
     use tutti_clap_host::ClapEvent;
+
+    /// A timer the plugin registers ticks on the editor's idle, which is the
+    /// only main-thread tick the editor instance has. The host answered
+    /// `register_timer` with `true` and never called `on_timer`, so a plugin
+    /// that animates its editor from a timer froze.
+    ///
+    /// Mutation (run): delete `self.inner.run_main_thread_work()` from
+    /// `editor_idle` → the timer never ticks → fails.
+    #[test]
+    fn a_timer_the_editor_registers_ticks_on_idle() {
+        use tutti_clap_test_plugin::{Site, ThreadCapture, CMD_REGISTER_TIMER};
+
+        let real = std::path::PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
+            env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES"),
+            "tutti-clap-test-plugin",
+        ));
+        let path = tutti_fixture_resolve::publish_with_extension(&real, "clap");
+        let mut gui = ClapGuiInstance::load(&path).expect("loads");
+
+        // The probe's switches are `extern "C"` symbols in the image this
+        // instance loaded: re-open the same path, not the linked rlib.
+        let lib = unsafe { libloading::Library::new(&path) }.expect("re-opens");
+        let command: libloading::Symbol<unsafe extern "C" fn(u32) -> u32> =
+            unsafe { lib.get(b"tutti_test_plugin_thread_command\0") }.expect("symbol");
+        let capture: libloading::Symbol<unsafe extern "C" fn(*mut ThreadCapture) -> bool> =
+            unsafe { lib.get(b"tutti_test_plugin_thread_capture\0") }.expect("symbol");
+        let read = || {
+            let mut cap = ThreadCapture::default();
+            assert!(unsafe { capture(&mut cap) });
+            cap
+        };
+
+        // `on_main_thread` is where the plugin registers it.
+        unsafe { command(CMD_REGISTER_TIMER) };
+        gui.inner.on_main_thread();
+        assert!(read().timer_registered);
+        let tick = Site::OnTimer as usize;
+        assert_eq!(read().sites[tick].visits, 0);
+
+        gui.editor_idle();
+
+        assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
+    }
 
     /// A cutoff-shaped range: wide, and not `0..=1`, so a conversion is
     /// distinguishable from a pass-through. Both halves matter — against

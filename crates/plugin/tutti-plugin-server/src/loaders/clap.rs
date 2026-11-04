@@ -216,6 +216,35 @@ pub struct ClapInstance {
     /// last heard; see [`take_io_changed`](Self::take_io_changed).
     #[cfg(feature = "clap")]
     io_changed: bool,
+    /// What a re-activation or a rescan moved that the host has not heard of
+    /// yet; see [`take_changes`](Self::take_changes).
+    #[cfg(feature = "clap")]
+    pending: Pending,
+}
+
+/// What the plugin moved since the host last heard, each reported once.
+#[cfg(feature = "clap")]
+#[derive(Default)]
+struct Pending {
+    latency: Option<Samples>,
+    tail: Option<PluginTail>,
+    param_values: bool,
+    param_titles: bool,
+}
+
+/// What [`ClapInstance::take_changes`] hands the poll.
+#[cfg(feature = "clap")]
+#[derive(Debug, Default, PartialEq)]
+pub struct ClapChanges {
+    /// The latency, when it moved. Read from the plugin while it was
+    /// activated, which is the only time CLAP lets it change.
+    pub latency: Option<Samples>,
+    /// The tail, when it moved.
+    pub tail: Option<PluginTail>,
+    /// Parameter values (or their display text) changed.
+    pub param_values: bool,
+    /// Parameters were added, removed or described differently.
+    pub param_titles: bool,
 }
 
 /// What the plugin declares on its audio ports: the buses and, per port,
@@ -453,6 +482,7 @@ impl ClapInstance {
                 loaded: loaded_meta,
             },
             io_changed: false,
+            pending: Pending::default(),
         })
     }
 
@@ -477,12 +507,19 @@ impl ClapInstance {
         }
     }
 
-    /// Acts on what the plugin asked of the host since the last call: an
-    /// `audio-ports.rescan` with a flag that needs the plugin deactivated
-    /// (anything but `NAMES`, which the host's description does not carry),
-    /// or a `request_restart`. Both are served the one way CLAP has for them:
-    /// deactivate, re-read the ports, activate again, then compare the layout
-    /// with what the host was last given.
+    /// Acts on what the plugin asked of the host since the last call.
+    ///
+    /// Its main-thread work runs first, since it may ask for the rest: the
+    /// `on_main_thread` a `request_callback` wanted, the timers that are due and
+    /// the file descriptors that are ready. Then, when the plugin asked for a
+    /// restart (`request_restart`, an `audio-ports.rescan` or a
+    /// `params.rescan(ALL)` that needs the plugin deactivated, or a
+    /// `latency.changed` while it is active, which CLAP allows only across an
+    /// activation), the one way CLAP has: deactivate, re-read the ports,
+    /// activate again. Latency, tail and the layout are read after it, while
+    /// the plugin is activated, and the host is told what moved. A
+    /// `params.rescan` that changed what the parameters are re-reads their
+    /// ranges.
     ///
     /// Call it between blocks, on the thread that loaded the plugin
     /// (`deactivate` and `activate` are `[main-thread]` and never overlap a
@@ -494,25 +531,105 @@ impl ClapInstance {
     /// [`take_io_changed`]: Self::take_io_changed
     #[cfg(feature = "clap")]
     pub fn service_requests(&mut self) {
-        let (ports, restart) = clap_dispatch!(self, i => (
+        clap_dispatch_mut!(self, i => i.run_main_thread_work());
+        let (ports, restart, params, latency, tail) = clap_dispatch!(self, i => (
             i.poll_audio_ports_rescan(),
             i.poll_restart_requested(),
+            i.poll_params_rescan(),
+            i.poll_latency_changed(),
+            i.poll_tail_changed(),
         ));
-        if !(ports.needs_deactivate() || restart) {
+        let was_active = clap_dispatch!(self, i => i.is_active());
+        let params_before = clap_dispatch!(self, i => i.parameter_count());
+
+        let reactivate = ports.needs_deactivate()
+            || restart
+            || params.needs_deactivate()
+            || (latency && was_active);
+        if reactivate {
+            let outcome = clap_dispatch_mut!(self, i => i.reactivate());
+            let active = clap_dispatch!(self, i => i.is_active());
+            self.note_layout_change();
+            if let Err(e) = outcome {
+                tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
+            }
+            // A plugin left deactivated, or brought back after a failed rate
+            // change, is a different instance to the host than the one it last
+            // read, whatever its layout.
+            if active != was_active {
+                self.io_changed = true;
+            }
+            // The re-activation re-read the parameters' ranges: tell the host
+            // when the list is not the one it holds.
+            if clap_dispatch!(self, i => i.parameter_count()) != params_before {
+                self.pending.param_titles = true;
+            }
+        }
+        // Latency is read with the plugin activated (`clap.latency` allows it
+        // to change only across an activation), so a `changed()` on a
+        // deactivated plugin waits for the next one.
+        if reactivate {
+            // A `latency.changed` is reported as it comes, the figure being
+            // the one read after the activation.
+            self.note_latency_change(latency);
+        }
+        if reactivate || tail {
+            // A `tail.changed` is reported as it comes; a re-read after an
+            // activation, only when the figure moved.
+            self.note_tail_change(tail);
+        }
+
+        if params.requested {
+            if params.info || params.all {
+                clap_dispatch_mut!(self, i => i.rescan_params());
+                self.pending.param_titles = true;
+            }
+            if params.values || params.text {
+                self.pending.param_values = true;
+            }
+        }
+    }
+
+    /// Reads the latency from the activated plugin and keeps it when it moved
+    /// (or when `announced`: the plugin said it changed). Nothing happens while
+    /// the plugin is deactivated: `get` is allowed only when it is (being)
+    /// activated.
+    #[cfg(feature = "clap")]
+    fn note_latency_change(&mut self, announced: bool) {
+        if !clap_dispatch!(self, i => i.is_active()) {
             return;
         }
-        let was_active = clap_dispatch!(self, i => i.is_active());
-        let outcome = clap_dispatch_mut!(self, i => i.reactivate());
-        let active = clap_dispatch!(self, i => i.is_active());
-        self.note_layout_change();
-        if let Err(e) = outcome {
-            tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
+        let latency = Samples(clap_dispatch!(self, i => i.get_latency()) as usize);
+        if announced || latency != self.meta.loaded.latency_samples {
+            self.meta.loaded.latency_samples = latency;
+            self.pending.latency = Some(latency);
         }
-        // A plugin left deactivated, or brought back after a failed rate
-        // change, is a different instance to the host than the one it last
-        // read, whatever its layout.
-        if active != was_active {
-            self.io_changed = true;
+    }
+
+    /// The tail twin of [`note_latency_change`](Self::note_latency_change).
+    /// `announced` is a `tail.changed` the plugin made: it is reported even
+    /// when the figure is the one the host holds.
+    #[cfg(feature = "clap")]
+    fn note_tail_change(&mut self, announced: bool) {
+        let tail = clap_dispatch!(self, i => i.get_tail())
+            .map_or(PluginTail::Unknown, PluginTail::from_clap_samples);
+        if announced || tail != self.meta.loaded.tail {
+            self.meta.loaded.tail = tail;
+            self.pending.tail = Some(tail);
+        }
+    }
+
+    /// What the last [`service_requests`](Self::service_requests) or sample-rate
+    /// change moved, besides the layout ([`take_io_changed`](Self::take_io_changed)).
+    /// Clears it.
+    #[cfg(feature = "clap")]
+    pub fn take_changes(&mut self) -> ClapChanges {
+        let pending = std::mem::take(&mut self.pending);
+        ClapChanges {
+            latency: pending.latency,
+            tail: pending.tail,
+            param_values: pending.param_values,
+            param_titles: pending.param_titles,
         }
     }
 
@@ -523,35 +640,6 @@ impl ClapInstance {
     #[cfg(feature = "clap")]
     pub fn take_io_changed(&mut self) -> bool {
         std::mem::take(&mut self.io_changed)
-    }
-
-    /// Returns true if the plugin requested a latency change since the last poll.
-    /// Clears the flag.
-    #[cfg(feature = "clap")]
-    pub fn poll_latency_changed(&mut self) -> bool {
-        clap_dispatch_mut!(self, i => i.poll_latency_changed())
-    }
-
-    /// Current latency in samples, as reported by the plugin.
-    #[cfg(feature = "clap")]
-    pub fn get_latency(&self) -> u32 {
-        clap_dispatch!(self, i => i.get_latency())
-    }
-
-    /// Returns true if the plugin requested a tail change since the last poll.
-    /// Clears the flag.
-    #[cfg(feature = "clap")]
-    pub fn poll_tail_changed(&mut self) -> bool {
-        clap_dispatch_mut!(self, i => i.poll_tail_changed())
-    }
-
-    /// The plugin's raw tail answer in samples, undecoded, or `None` when it
-    /// has no `clap.tail`. CLAP reads any value at or above `INT32_MAX` as
-    /// infinite, so decode it with [`PluginTail::from_clap_samples`], never as
-    /// a plain count.
-    #[cfg(feature = "clap")]
-    pub fn get_tail(&self) -> Option<u32> {
-        clap_dispatch!(self, i => i.get_tail())
     }
 
     /// Test-only access to the underlying loaded instance (via `Deref` through
@@ -714,6 +802,10 @@ impl PluginAudio for ClapInstance {
                 .map_err(|e| (e, i.sample_rate(), i.is_active()))
         });
         self.note_layout_change();
+        // The latency and tail may depend on the rate; they are read from the
+        // plugin as it is now activated.
+        self.note_latency_change(false);
+        self.note_tail_change(false);
         outcome.map_err(|(e, running_at, active)| {
             if !active {
                 // Nothing else will reach the host: the instance now renders
@@ -1471,6 +1563,191 @@ mod tests {
 
         assert!(!instance.clap_loaded().is_active(), "left deactivated");
         assert!(instance.take_io_changed(), "the host is told");
+    }
+
+    /// Loads the reference plugin and takes it past one block, so it has asked
+    /// for a callback (`request_callback` from `process`).
+    fn loaded_and_called_back() -> ClapInstance {
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        process_blocks(&mut instance, 1);
+        instance
+    }
+
+    /// **A `request_callback` is served: the plugin's `on_main_thread` runs on
+    /// the server's service pass, and not before.** The flag was recorded and
+    /// nothing called back, so work a plugin deferred to the main thread (a
+    /// sample load finishing, a timer being registered) never ran.
+    ///
+    /// Mutation (run): delete `i.run_main_thread_work()` from
+    /// `service_requests` → the latched timer is never registered → fails.
+    #[test]
+    fn a_callback_the_plugin_asks_for_is_served() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        crate::test_utils::clap_probe_thread_reset();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        // `on_main_thread` runs this one; it registers a timer.
+        let _cmd = crate::test_utils::clap_probe_thread_command(
+            tutti_clap_test_plugin::CMD_REGISTER_TIMER,
+        );
+        process_blocks(&mut instance, 1);
+        let site = tutti_clap_test_plugin::Site::OnMainThread as usize;
+        let before = crate::test_utils::clap_probe_thread_capture();
+        assert_eq!(before.sites[site].visits, 0, "not before it is served");
+
+        instance.service_requests();
+
+        let after = crate::test_utils::clap_probe_thread_capture();
+        assert_eq!(after.sites[site].visits, 1);
+        assert!(after.timer_registered, "the latched command ran in it");
+    }
+
+    /// **A timer the plugin registers ticks on the service pass.** The host
+    /// answered `register_timer` with `true` and never called `on_timer`.
+    ///
+    /// Mutation (run): delete `self.poll_timers()` from
+    /// `ClapLoaded::run_main_thread_work` → no tick → fails.
+    #[test]
+    fn a_timer_the_plugin_registers_is_ticked() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        crate::test_utils::clap_probe_thread_reset();
+        let mut instance = loaded_and_called_back();
+        let _cmd = crate::test_utils::clap_probe_thread_command(
+            tutti_clap_test_plugin::CMD_REGISTER_TIMER,
+        );
+        // Run the callback that registers the timer (the block's request has
+        // gone unserved), then let the timer tick.
+        instance.loaded_mut().on_main_thread();
+        let site = tutti_clap_test_plugin::Site::OnTimer as usize;
+        assert!(crate::test_utils::clap_probe_thread_capture().timer_registered);
+        assert_eq!(
+            crate::test_utils::clap_probe_thread_capture().sites[site].visits,
+            0
+        );
+
+        instance.service_requests();
+
+        let cap = crate::test_utils::clap_probe_thread_capture();
+        assert_eq!(cap.sites[site].visits, 1, "a period-0 timer is due at once");
+        assert_eq!(cap.last_fired_timer_id, cap.timer_id);
+    }
+
+    /// **A latency the plugin settles on at activation is reported after a
+    /// sample-rate change**, with no `changed()` from the plugin: the figure
+    /// the host holds is from the old rate.
+    ///
+    /// Mutation (run): delete `self.note_latency_change(false)` from
+    /// `ClapInstance::set_sample_rate` → no change is reported → fails.
+    #[test]
+    fn a_latency_that_depends_on_the_rate_is_reread_after_a_rate_change() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        let before = instance.loaded().latency_samples;
+        assert_eq!(instance.take_changes().latency, None);
+
+        let _longer = crate::test_utils::clap_probe_latency_at_activation(11);
+        instance.set_sample_rate(48000.0).expect("rate change");
+
+        let now = Samples(before.0 + 11);
+        assert_eq!(instance.take_changes().latency, Some(now));
+        assert_eq!(instance.loaded().latency_samples, now, "the host's copy");
+        assert_eq!(instance.take_changes().latency, None, "once");
+    }
+
+    /// **A `request_restart` reports the latency the plugin has after it.**
+    ///
+    /// Mutation (run): delete `self.note_latency_change(latency)` under
+    /// `if reactivate` in `service_requests` → fails.
+    #[test]
+    fn a_restart_reports_the_latency_after_it() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        let before = instance.loaded().latency_samples;
+        let _longer = crate::test_utils::clap_probe_latency_at_activation(7);
+        let _asked = crate::test_utils::clap_probe_request_restart();
+        process_blocks(&mut instance, 1);
+
+        instance.service_requests();
+
+        assert_eq!(instance.take_changes().latency, Some(Samples(before.0 + 7)));
+    }
+
+    /// **`latency.changed` on an active plugin is served by a re-activation,
+    /// and the latency is read after it**, not from the active plugin
+    /// (`clap.latency`: it may change only across an activation).
+    ///
+    /// Mutation (run): drop `|| (latency && was_active)` from the condition in
+    /// `service_requests` → no re-activation, so the figure is never re-read →
+    /// both assertions fail.
+    #[test]
+    fn latency_changed_on_an_active_plugin_restarts_it() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        let before = instance.loaded().latency_samples;
+        crate::test_utils::clap_probe_reset_activation_count();
+        let _longer = crate::test_utils::clap_probe_latency_at_activation(5);
+        instance
+            .clap_loaded()
+            .host_state()
+            .processing
+            .latency_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        instance.service_requests();
+
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        assert_eq!(instance.take_changes().latency, Some(Samples(before.0 + 5)));
+    }
+
+    /// **A `params.rescan` of values is reported as changed values and does not
+    /// restart the plugin.** The flags were latched and nothing read them.
+    ///
+    /// Mutation (run): delete the `params.values || params.text` arm in
+    /// `service_requests` → nothing is reported → fails.
+    #[test]
+    fn a_values_rescan_is_reported_without_a_restart() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = loaded_and_called_back();
+        crate::test_utils::clap_probe_reset_activation_count();
+        let _asked = crate::test_utils::clap_probe_param_command(
+            tutti_clap_test_plugin::PARAM_CMD_RESCAN_VALUES,
+        );
+
+        instance.service_requests();
+
+        let changes = instance.take_changes();
+        assert!(changes.param_values);
+        assert!(!changes.param_titles);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+    }
+
+    /// **A `params.rescan(ALL)` restarts the plugin and is reported as changed
+    /// parameters**, so the host re-pulls the list.
+    ///
+    /// Mutations (run): drop `|| params.needs_deactivate()` from the condition
+    /// in `service_requests` → no re-activation → the count assertion fails.
+    /// Delete `self.pending.param_titles = true` under `params.info ||
+    /// params.all` → the report assertion fails. What the re-read changes (the
+    /// ranges automation is denormalized against) is not observable with a
+    /// plugin whose parameters are fixed.
+    #[test]
+    fn an_all_rescan_restarts_the_plugin_and_reports_the_list() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = loaded_and_called_back();
+        crate::test_utils::clap_probe_reset_activation_count();
+        let _asked = crate::test_utils::clap_probe_param_command(
+            tutti_clap_test_plugin::PARAM_CMD_RESCAN_ALL,
+        );
+
+        instance.service_requests();
+
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        assert!(instance.clap_loaded().is_active());
+        assert!(instance.take_changes().param_titles);
     }
 
     #[test]

@@ -211,6 +211,12 @@ impl Vst3Loaded {
     /// `initialize()` or `setActive()`. Safe for plugins that would otherwise
     /// pop license dialogs or hit the network during a full load.
     ///
+    /// The bus counts, the MIDI buses and the 64-bit answer are best effort:
+    /// the SDK allows those queries only on an initialized component
+    /// (`getBusCount`, `canProcessSampleSize`), so a plugin that declares them
+    /// in `initialize` reads as having none and as 32-bit only. A loaded
+    /// instance's [`info`](Self::info) is the authoritative answer.
+    ///
     /// # Errors
     ///
     /// Returns [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) if the
@@ -229,6 +235,7 @@ impl Vst3Loaded {
             &component,
             processor.as_ref(),
             &class,
+            true,
         ))
     }
 
@@ -283,7 +290,9 @@ impl Vst3Loaded {
                     reason: "VST3 plugin does not support IAudioProcessor".to_string(),
                 })?;
         let controller = query_controller(&component, &library);
-        let info = build_plugin_info(&library, &component, &processor, &class);
+        // The buses and the 64-bit answer are read once the component is
+        // initialized (`reconcile_bus_counts`).
+        let info = build_plugin_info_raw(&library, &component, None, &class, false);
 
         let mut loaded = Self::assemble(library, component, processor, controller, info);
         loaded.initialize()?;
@@ -2122,8 +2131,10 @@ impl Vst3Loaded {
             .as_ptr())
     }
 
-    /// Re-query bus counts from the component — `initialize` may have changed
-    /// them (some plugins don't declare bus counts until after init).
+    /// Re-query bus counts, the MIDI buses and the 64-bit answer from the
+    /// component — `initialize` may have changed them (some plugins don't
+    /// declare bus counts until after init), and it is the first point the SDK
+    /// allows asking.
     ///
     /// `pub(crate)` only so `Vst3Active::restart_bus_configuration` can call
     /// it from inside the deactivate/reactivate cycle. Deliberately not public:
@@ -2176,6 +2187,15 @@ impl Vst3Loaded {
             .clone()
             .midi(receives_midi)
             .midi_output(emits_midi);
+        // `canProcessSampleSize` is `[UI-thread & (Initialized | Connected)]`,
+        // and a plugin may settle its answer in `initialize`.
+        let supports_f64 = unsafe {
+            self.interfaces
+                .processor
+                .canProcessSampleSize(crate::types::K_SAMPLE_64_INT)
+                == kResultOk
+        };
+        self.info = self.info.clone().f64_support(supports_f64);
     }
 
     /// Hands the controller this host's `IComponentHandler` so it can report
@@ -2524,11 +2544,17 @@ fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
 /// Assembles `PluginInfo` from already-queried interfaces. Used by both
 /// [`Vst3Loaded::probe`] (which may not own an `IAudioProcessor`) and
 /// [`Vst3Loaded::load`] (which does).
+///
+/// `query_buses` reads the bus counts, the MIDI buses and the 64-bit answer,
+/// which the SDK allows only on an initialized component: `probe` has no
+/// component that is, and asks for a best effort; the load path asks for none
+/// and reads them after `initialize` (`Vst3Loaded::reconcile_bus_counts`).
 fn build_plugin_info_raw(
     library: &Vst3Library,
     component: &ComPtr<IComponent>,
     processor: Option<&ComPtr<IAudioProcessor>>,
     class: &AudioClass,
+    query_buses: bool,
 ) -> PluginInfo {
     // The class's own vendor wins over the factory's: `ipluginbase.h:357`
     // documents the field as "overwrite vendor information from factory info".
@@ -2549,20 +2575,32 @@ fn build_plugin_info_raw(
     // boundary. A plugin that reports no bus, or whose query fails, contributes
     // 0 — the per-bus vecs below carry the same absence, and `bus_channels` in
     // the server loader is the one place that decides what to do about it.
-    let num_inputs = component
-        .audio_bus_channel_count(K_INPUT)
-        .map_or(0, |l| l.count() as usize);
-    let num_outputs = component
-        .audio_bus_channel_count(K_OUTPUT)
-        .map_or(0, |l| l.count() as usize);
-    let input_bus_channels = component.audio_bus_channels(K_INPUT);
-    let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
-    let supports_f64 = processor
-        .map(|p| unsafe { p.canProcessSampleSize(crate::types::K_SAMPLE_64_INT) == kResultOk })
-        .unwrap_or(false);
-    let receives_midi =
-        unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_INPUT) > 0 };
-    let emits_midi = unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_OUTPUT) > 0 };
+    let count = |dir| {
+        if query_buses {
+            component
+                .audio_bus_channel_count(dir)
+                .map_or(0, |l| l.count() as usize)
+        } else {
+            0
+        }
+    };
+    let (num_inputs, num_outputs) = (count(K_INPUT), count(K_OUTPUT));
+    let bus_channels = |dir| {
+        if query_buses {
+            component.audio_bus_channels(dir)
+        } else {
+            Default::default()
+        }
+    };
+    let (input_bus_channels, output_bus_channels) = (bus_channels(K_INPUT), bus_channels(K_OUTPUT));
+    let supports_f64 = query_buses
+        && processor
+            .map(|p| unsafe { p.canProcessSampleSize(crate::types::K_SAMPLE_64_INT) == kResultOk })
+            .unwrap_or(false);
+    let event_bus = |dir| {
+        query_buses && unsafe { component.getBusCount(crate::host::instance::K_EVENT, dir) > 0 }
+    };
+    let (receives_midi, emits_midi) = (event_bus(K_INPUT), event_bus(K_OUTPUT));
 
     PluginInfo::new(
         format!("vst3.{}", cid_to_string(&class.cid_bytes)),
@@ -2576,16 +2614,6 @@ fn build_plugin_info_raw(
     .midi_output(emits_midi)
     .f64_support(supports_f64)
     .sub_categories(class.sub_categories.clone())
-}
-
-/// Convenience wrapper for the load path, where a processor is always present.
-fn build_plugin_info(
-    library: &Vst3Library,
-    component: &ComPtr<IComponent>,
-    processor: &ComPtr<IAudioProcessor>,
-    class: &AudioClass,
-) -> PluginInfo {
-    build_plugin_info_raw(library, component, Some(processor), class)
 }
 
 /// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.

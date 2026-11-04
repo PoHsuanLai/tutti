@@ -64,6 +64,8 @@ mod misbehave {
     pub const INITIALIZE_FAILS: &str = "9";
     pub const CONTROLLER_CONNECT_FAILS: &str = "10";
     pub const ARRANGEMENT_REFUSED: &str = "11";
+    pub const LATENCY_FOLLOWS_RATE: &str = "12";
+    pub const SAMPLE64_AFTER_INIT: &str = "13";
 }
 
 /// Width the probe's main *input* keeps under `ARRANGEMENT_REFUSED`, having
@@ -701,6 +703,49 @@ fn the_misbehaviour_switch_reaches_the_plugin() {
         lying, LIED_LATENCY_SAMPLES,
         "the probe reported {lying} rather than its inflated {LIED_LATENCY_SAMPLES}"
     );
+}
+
+// ── Answers that wait for `initialize` ───────────────────────────────────────
+
+/// `canProcessSampleSize` is `[UI-thread & (Initialized | Connected)]`, so a
+/// plugin may settle its 64-bit answer in `initialize`. A loaded instance
+/// reports the answer it gives once initialized, not the one before.
+///
+/// Mutations (run): delete the `f64_support` re-query in `reconcile_bus_counts`
+/// → the load reports 32-bit only and the first assertion fails. Pass `true`
+/// for `query_buses` on the load path in `load_class` and delete the re-query →
+/// the same.
+#[test]
+fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
+    let path = probe_path();
+    let _m = Misbehaviour::set(misbehave::SAMPLE64_AFTER_INIT);
+
+    let loaded = Vst3Loaded::load(&path).expect("load");
+    assert!(
+        loaded.info().supports_f64,
+        "the 64-bit answer was read before `initialize`, where the probe says no"
+    );
+
+    // `probe` never initializes, so for it the answer is best effort.
+    assert!(!Vst3Loaded::probe(&path).expect("probe").supports_f64);
+}
+
+/// A latency that is a duration moves with the rate, and is valid once the
+/// plugin is active again: `set_sample_rate` re-runs `setupProcessing` and
+/// `setActive`, after which `getLatencySamples` answers for the new rate. The
+/// figure itself is the caller's to read (`read_latency_samples`).
+///
+/// Mutation (run): skip `setupProcessing` in `reconfigure` → the plugin keeps
+/// the old rate and the second figure stays 44.
+#[test]
+fn a_latency_that_follows_the_rate_is_valid_after_a_rate_change() {
+    let _m = Misbehaviour::set(misbehave::LATENCY_FOLLOWS_RATE);
+    let mut inst = Vst3Active::<f32>::load(&probe_path(), 44_100.0, BLOCK).expect("load");
+    assert_eq!(inst.read_latency_samples(), 44);
+
+    inst.set_sample_rate(96_000.0).expect("rate change");
+
+    assert_eq!(inst.read_latency_samples(), 96);
 }
 
 // ── Return codes that are not refusals ───────────────────────────────────────

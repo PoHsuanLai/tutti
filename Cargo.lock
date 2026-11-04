@@ -4267,6 +4267,7 @@ dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
  "clap-sys",
+ "libc",
  "libloading 0.8.9",
  "tempfile",
  "thiserror 2.0.21",

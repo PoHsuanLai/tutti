@@ -52,6 +52,10 @@ pub struct Vst3Instance {
     reload: ReloadParams,
     /// Sequencer-context conversion buffers, reused across blocks.
     seq: SeqScratch,
+    /// A latency the host has not heard of: read after a rate change or a
+    /// rebuild moved it, and reported by the next
+    /// [`poll_restart`](Self::poll_restart).
+    pending_latency: Option<Samples>,
 }
 
 /// Reusable buffers for the sequencer-context conversion in [`process_block`].
@@ -299,6 +303,7 @@ impl Vst3Instance {
             meta,
             reload,
             seq: SeqScratch::default(),
+            pending_latency: None,
         })
     }
 
@@ -313,8 +318,12 @@ impl Vst3Instance {
         let saved_state = vst_dispatch_mut!(self, inner => inner.get_state()).ok();
 
         let (inner, meta) = build_inner(&self.reload)?;
+        let before = self.meta.loaded.latency_samples;
         self.inner = inner;
         self.meta = meta;
+        if self.meta.loaded.latency_samples != before {
+            self.pending_latency = Some(self.meta.loaded.latency_samples);
+        }
 
         if let Some(state) = saved_state {
             let _ = vst_dispatch_mut!(self, inner => inner.set_state(&state));
@@ -353,10 +362,13 @@ impl Vst3Instance {
     pub fn poll_restart(&mut self) -> RestartChanges {
         vst_dispatch!(self, inner => inner.discard_notifications());
         let restart = vst_dispatch!(self, inner => inner.take_restart());
+        let mut changes = RestartChanges {
+            latency: self.pending_latency.take(),
+            ..RestartChanges::default()
+        };
         if restart.is_empty() {
-            return RestartChanges::default();
+            return changes;
         }
-        let mut changes = RestartChanges::default();
 
         // `kIoChanged` and `kLatencyChanged` both require the same
         // deactivate → re-ask → reactivate cycle (`ivsteditcontroller.h:125-127`
@@ -368,7 +380,9 @@ impl Vst3Instance {
         // plugin that recomputes group delay in `setActive(true)` reports the
         // stale one. The re-read below happens inside the cycle, after
         // reactivation, which is the order the header specifies.
-        if restart.io_changed || restart.latency_changed {
+        // `kPrefetchableSupportChanged` asks for the same cycle, with the
+        // answer read while the plugin is down (`ivsteditcontroller.h`).
+        if restart.io_changed || restart.latency_changed || restart.prefetchable_support_changed {
             // `if let Ok(..)`, and the `else` is deliberately absent: a refused
             // reactivation leaves the plugin inactive, and saying nothing would
             // let the client keep processing it. Surfacing no change is the
@@ -399,7 +413,10 @@ impl Vst3Instance {
         }
 
         changes.param_values_changed = restart.param_values_changed;
-        changes.param_titles_changed = restart.param_titles_changed;
+        // A remapped parameter id detaches every lane that named the old one:
+        // the host re-pulls the list to find the new ids.
+        changes.param_titles_changed =
+            restart.param_titles_changed || restart.param_id_mapping_changed;
 
         if restart.reload_requested {
             // A failed reload leaves the old instance in place; surface nothing
@@ -690,7 +707,16 @@ impl PluginAudio for Vst3Instance {
                     inner.sample_rate()
                 ))
             })
-        })
+        })?;
+        // The latency is valid once the plugin is active again, and a group
+        // delay that is a duration moves with the rate.
+        let latency =
+            Samples(vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize);
+        if latency != self.meta.loaded.latency_samples {
+            self.meta.loaded.latency_samples = latency;
+            self.pending_latency = Some(latency);
+        }
+        Ok(())
     }
 
     /// Re-activate the instance in the requested mode, preserving its state.
@@ -1177,6 +1203,72 @@ mod tests {
             !instance.poll_restart().param_values_changed,
             "a poll consumes the restart"
         );
+    }
+
+    /// **A latency that moves with the rate is read again after a rate
+    /// change** and reaches the next restart poll, with no `restartComponent`
+    /// from the plugin. The figure was read inside the host crate and dropped,
+    /// so PDC kept the old rate's.
+    ///
+    /// Mutation (run): delete the `read_latency_samples` block from
+    /// `Vst3Instance::set_sample_rate` → `poll_restart().latency` is `None` →
+    /// fails.
+    #[test]
+    fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
+        // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
+        std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "12");
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 44_100.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert_eq!(instance.meta.loaded.latency_samples, Samples(44));
+        assert_eq!(instance.poll_restart().latency, None);
+
+        instance.set_sample_rate(96_000.0).expect("rate change");
+
+        assert_eq!(instance.meta.loaded.latency_samples, Samples(96));
+        assert_eq!(instance.poll_restart().latency, Some(Samples(96)));
+        assert_eq!(instance.poll_restart().latency, None, "once");
+    }
+
+    /// **`kPrefetchableSupportChanged` runs the deactivate and activate the
+    /// header asks for**, and the latency is read after it. The flag was
+    /// decoded and dropped.
+    ///
+    /// Mutation (run): drop `|| restart.prefetchable_support_changed` from the
+    /// cycle's condition in `poll_restart` → no latency comes back → fails.
+    #[test]
+    fn a_prefetchable_support_change_restarts_the_plugin() {
+        // `RestartFlags_::kPrefetchableSupportChanged`.
+        const K_PREFETCHABLE_SUPPORT_CHANGED: i32 = 1 << 8;
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert_eq!(instance.poll_restart().latency, None);
+
+        instance.plugin_restart_component(K_PREFETCHABLE_SUPPORT_CHANGED);
+
+        let changes = instance.poll_restart();
+        assert_eq!(changes.latency, Some(instance.meta.loaded.latency_samples));
+        assert!(!changes.io_changed, "the layout was not asked about");
+    }
+
+    /// **`kParamIDMappingChanged` reaches the client as a parameter-list
+    /// change**, so it re-pulls the ids; it was decoded and dropped, and every
+    /// lane that named a remapped id detached.
+    ///
+    /// Mutation (run): drop `|| restart.param_id_mapping_changed` in
+    /// `poll_restart` → fails.
+    #[test]
+    fn a_param_id_remap_is_reported_as_a_changed_list() {
+        // `RestartFlags_::kParamIDMappingChanged`.
+        const K_PARAM_ID_MAPPING_CHANGED: i32 = 1 << 11;
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+
+        instance.plugin_restart_component(K_PARAM_ID_MAPPING_CHANGED);
+
+        assert!(instance.poll_restart().param_titles_changed);
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.

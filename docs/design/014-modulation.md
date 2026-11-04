@@ -1358,9 +1358,11 @@ parameter with no spare queue left, counted, rather than pushing a queue;
 only the placeholder for a block with no changes gets carried-value queues
 built on the bridge thread (dropped on return).
 
-Not covered: a CLAP plugin's `params.rescan` reaches no event in the
-plugin-server, so its output stays reserved for the load's parameter count;
-points of parameters past it are dropped, counted.
+A CLAP plugin's `params.rescan` that re-describes its parameters (or a
+restart) re-reads the ranges and re-reserves the instance's lists
+(`ClapActive::rescan_params`) and reaches the client as
+`PluginParamTitlesChanged`, which re-fits the server's output the same way as
+VST3's.
 The in-process VST2 node reserves through the same `ParameterChanges` and
 so gets the pool, though it applies only each queue's last point.
 

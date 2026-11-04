@@ -1139,32 +1139,119 @@ impl ClapLoaded {
         }
     }
 
-    /// Fires `on_fd` for every POSIX FD the plugin has registered.
-    /// Returns the number of callbacks invoked. Requires the `clap-extras` feature.
-    #[cfg(all(unix, feature = "clap-extras"))]
+    /// Calls `on_fd` for each POSIX descriptor the plugin registered that is
+    /// ready now, with the events that are ready among those it asked for
+    /// (`ext/posix-fd-support.h`). Never blocks. Returns the number of
+    /// callbacks invoked.
+    ///
+    /// `on_fd` is `[main-thread]`.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
+    #[cfg(unix)]
     pub fn poll_posix_fds(&mut self) -> usize {
+        self.assert_main_thread();
         if self.extensions.system.posix_fd_support.is_null() {
             return 0;
         }
         let ext = unsafe { &*self.extensions.system.posix_fd_support };
-        let on_fd = match ext.on_fd {
-            Some(f) => f,
-            None => return 0,
-        };
+        let Some(on_fd) = ext.on_fd else { return 0 };
 
-        let fds: Vec<(i32, u32)> = if let Ok(guard) = self.host_state.resources.posix_fds.lock() {
-            guard.iter().map(|e| (e.fd, e.flags)).collect()
-        } else {
-            return 0;
+        let watched: Vec<(i32, u32)> = match self.host_state.resources.posix_fds.lock() {
+            Ok(fds) => fds.iter().map(|e| (e.fd, e.flags)).collect(),
+            Err(_) => return 0,
         };
-
         let mut fired = 0;
-        for (fd, flags) in fds {
-            unsafe { on_fd(self.plugin.as_ptr(), fd, flags) };
-            fired += 1;
+        for (fd, ready) in ready_fds(&watched) {
+            // An earlier `on_fd` may have unregistered this one.
+            let registered = self
+                .host_state
+                .resources
+                .posix_fds
+                .lock()
+                .is_ok_and(|fds| fds.iter().any(|e| e.fd == fd));
+            if registered {
+                unsafe { on_fd(self.plugin.as_ptr(), fd, ready) };
+                fired += 1;
+            }
         }
         fired
     }
+
+    /// Runs the main-thread work the plugin has asked for since the last call:
+    /// `on_main_thread` after a `request_callback`, the timers that are due and
+    /// the descriptors that are ready. Call it between blocks, on the thread
+    /// that loaded the plugin, as often as the host ticks (a timer's period is
+    /// at best that fine).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called from a thread other than the one that
+    /// loaded the plugin.
+    pub fn run_main_thread_work(&mut self) {
+        if self.poll_callback_requested() {
+            self.on_main_thread();
+        }
+        self.poll_timers();
+        #[cfg(unix)]
+        self.poll_posix_fds();
+    }
+}
+
+/// The registered descriptors `(fd, flags)` that are ready, each with the
+/// `clap_posix_fd_flags` ready among the ones it registered. A zero-timeout
+/// `poll(2)`, so it never blocks.
+#[cfg(unix)]
+fn ready_fds(watched: &[(i32, u32)]) -> Vec<(i32, u32)> {
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+    };
+    if watched.is_empty() {
+        return Vec::new();
+    }
+    let mut polls: Vec<libc::pollfd> = watched
+        .iter()
+        .map(|&(fd, flags)| {
+            let mut events = 0;
+            if flags & CLAP_POSIX_FD_READ != 0 {
+                events |= libc::POLLIN;
+            }
+            if flags & CLAP_POSIX_FD_WRITE != 0 {
+                events |= libc::POLLOUT;
+            }
+            libc::pollfd {
+                fd,
+                events,
+                revents: 0,
+            }
+        })
+        .collect();
+    // SAFETY: `polls` is a live slice of `polls.len()` initialised `pollfd`s.
+    let n = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, 0) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    polls
+        .iter()
+        .zip(watched)
+        .filter_map(|(poll, &(fd, flags))| {
+            let mut ready = 0;
+            // A hang-up reads as readable: the read returns end of file.
+            if poll.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+                ready |= CLAP_POSIX_FD_READ;
+            }
+            if poll.revents & libc::POLLOUT != 0 {
+                ready |= CLAP_POSIX_FD_WRITE;
+            }
+            if poll.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+                ready |= CLAP_POSIX_FD_ERROR;
+            }
+            let ready = ready & flags;
+            (ready != 0).then_some((fd, ready))
+        })
+        .collect()
 }
 
 #[cfg(feature = "clap-extras")]
@@ -1714,5 +1801,56 @@ mod timer_due_tests {
             Vec::<u32>::new(),
             "a timer whose last fire is in the future is not yet due"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod ready_fd_tests {
+    use super::ready_fds;
+    use clap_sys::ext::posix_fd_support::{
+        CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
+    };
+
+    fn pipe() -> (i32, i32) {
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        (fds[0], fds[1])
+    }
+
+    /// Only a descriptor that is ready is reported, and only with the events
+    /// it asked for. A host that reports every registered descriptor on every
+    /// call wakes the plugin for nothing, and one that reports `READ` for a
+    /// descriptor watched for `WRITE` hands it an event it never asked for.
+    ///
+    /// Mutations (run): report every watched descriptor (`Some((fd, flags))` for
+    /// all) → the first assertion fails. Drop `& flags` → the `WRITE`-only
+    /// assertion fails. Map `POLLHUP` to nothing → the hang-up assertion fails.
+    #[test]
+    fn only_ready_descriptors_are_reported_with_the_events_asked_for() {
+        let (r, w) = pipe();
+        let all = CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE | CLAP_POSIX_FD_ERROR;
+
+        // Nothing written: the read end is idle, the write end is writable.
+        assert_eq!(ready_fds(&[(r, all)]), []);
+        assert_eq!(ready_fds(&[(w, all)]), [(w, CLAP_POSIX_FD_WRITE)]);
+
+        // Data waiting: the read end is readable, and a `WRITE`-only watch of
+        // it hears nothing.
+        assert_eq!(unsafe { libc::write(w, [1u8].as_ptr().cast(), 1) }, 1);
+        assert_eq!(ready_fds(&[(r, all)]), [(r, CLAP_POSIX_FD_READ)]);
+        assert_eq!(ready_fds(&[(r, CLAP_POSIX_FD_WRITE)]), []);
+
+        // Drained, then the write end closed: the read end hangs up, which
+        // reads as ready (the read returns end of file).
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe { libc::read(r, (&mut byte as *mut u8).cast(), 1) },
+            1
+        );
+        assert_eq!(ready_fds(&[(r, CLAP_POSIX_FD_READ)]), []);
+        unsafe { libc::close(w) };
+        assert_eq!(ready_fds(&[(r, CLAP_POSIX_FD_READ)]).len(), 1);
+        unsafe { libc::close(r) };
+        assert_eq!(ready_fds(&[]), []);
     }
 }

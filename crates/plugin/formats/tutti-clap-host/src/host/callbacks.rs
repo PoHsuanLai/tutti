@@ -301,12 +301,15 @@ unsafe extern "C" fn host_gui_request_resize(
     }
 }
 
+/// The host owns the editor window and does not route a plugin's request to
+/// show or hide it, so both answer `false` (`ext/gui.h`: "return true on
+/// success").
 unsafe extern "C" fn host_gui_request_show(_host: *const ClapHostVtable) -> bool {
-    true
+    false
 }
 
 unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool {
-    true
+    false
 }
 
 unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {

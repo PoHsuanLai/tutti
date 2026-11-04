@@ -339,29 +339,25 @@ impl Plugin {
             }
             #[cfg(feature = "clap")]
             Plugin::Clap(clap) => {
-                if clap.poll_latency_changed() {
-                    out.push(AsyncEvent::LatencyChanged {
-                        samples: Samples(clap.get_latency() as usize),
-                    });
-                }
-                // Serve a rescan or restart the plugin asked for (this is
-                // between blocks, on the loading thread), then tell the host
-                // if that, or a rate change, altered the ports or left the
-                // plugin unable to run.
+                // Serve what the plugin asked for (this is between blocks, on
+                // the loading thread), then tell the host what that, or a rate
+                // change, altered: the ports, the plugin's ability to run, and
+                // what it reports.
                 clap.service_requests();
                 if clap.take_io_changed() {
                     out.push(AsyncEvent::IoChanged);
                 }
-                // The tail twin of the latency poll above. Without it a plugin
-                // whose decay is raised after load keeps reporting the tail it
-                // had at load, and a bounce sized from that truncates the
-                // decay the user just dialled in.
-                if clap.poll_tail_changed() {
-                    out.push(AsyncEvent::TailChanged {
-                        tail: clap
-                            .get_tail()
-                            .map_or(PluginTail::Unknown, PluginTail::from_clap_samples),
-                    });
+                let changes = clap.take_changes();
+                if let Some(samples) = changes.latency {
+                    out.push(AsyncEvent::LatencyChanged { samples });
+                }
+                if let Some(tail) = changes.tail {
+                    out.push(AsyncEvent::TailChanged { tail });
+                }
+                if changes.param_titles {
+                    out.push(AsyncEvent::ParamTitlesChanged);
+                } else if changes.param_values {
+                    out.push(AsyncEvent::ParamValuesChanged);
                 }
             }
             #[cfg(all(feature = "au", target_os = "macos"))]
@@ -465,7 +461,7 @@ mod tests {
     /// tail, not none.** The plugin signals `tail.changed` and the host has no
     /// extension to ask, so the event carries `Unknown`.
     ///
-    /// Mutation (run): in `poll_async_events`, map `get_tail() == None` to
+    /// Mutation (run): in `note_tail_change`, map `get_tail() == None` to
     /// `PluginTail::None` → the assertion sees `None` → fails.
     #[cfg(feature = "clap")]
     #[test]

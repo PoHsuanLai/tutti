@@ -5565,20 +5565,50 @@ under both.
   `a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin` and
   `clap_ports_rescan`'s count of `deactivate` calls on an inactive plugin. An
   in-process VST2 plugin cannot refuse.
-- **A CLAP plugin's rescan and restart requests are served.** The host
-  records `audio-ports.rescan` and `request_restart`; between blocks, on the
-  thread that loaded the plugin, `ClapInstance::service_requests` (called by
-  `Plugin::poll_async_events`) acts on a rescan with any flag but `NAMES`
-  (the host's description carries no names), or on a restart, with
-  `ClapActive::reactivate`: deactivate, re-read the ports, activate at the
-  same rate and block size. It then compares the layout with the host's copy
-  (`note_layout_change`) and raises `IoChanged` when it differs, or when the
-  instance's ability to run changed (left deactivated, or brought back). A
-  request is consumed whether or not it succeeds; a plugin left deactivated
-  renders silence and a later request tries it again. Pinned by the
-  `a_ports_rescan_the_plugin_asks_for_is_served`, `a_restart_*` and
-  `a_rescan_*` tests of `loaders::clap`, on the reference plugin's
-  `tutti_test_plugin_request_ports_rescan`.
+- **A CLAP plugin's requests to the host are served.** The host records
+  what the plugin asks of it; between blocks, after the reply to the block,
+  on the thread that loaded the plugin (the server has one: the plugin's main
+  thread and its audio phase are the same thread, so a restart is served
+  there and is not moved off it),
+  `ClapInstance::service_requests` (called by `Plugin::poll_async_events`)
+  serves it. First the plugin's main-thread work, which may ask for the rest
+  (`ClapLoaded::run_main_thread_work`): `on_main_thread` after a
+  `request_callback`, the `clap.timer-support` timers that are due and the
+  `clap.posix-fd-support` descriptors that are ready (a zero-timeout `poll`,
+  reporting the events asked for). The editor instance in the host process
+  does the same from `editor_idle`. Then, for a restart (`request_restart`),
+  an `audio-ports.rescan` with any flag but `NAMES` (the host's description
+  carries no names), a `params.rescan(ALL)` or a `latency.changed` on an
+  active plugin (`clap.latency` allows the latency to change only across an
+  activation), `ClapActive::reactivate`: deactivate, re-read the ports and the
+  parameters' ranges, activate at the same rate and block size. The layout is
+  compared with the host's copy (`note_layout_change`) and `IoChanged` raised
+  when it differs, or when the instance's ability to run changed (left
+  deactivated, or brought back). Latency and tail are read after the
+  activation, and after an in-place rate change, while the plugin is active,
+  and `LatencyChanged` / `TailChanged` raised when they moved (or the plugin
+  said so). A `params.rescan` of values or text raises `ParamValuesChanged`,
+  one of info or all `ParamTitlesChanged` (after `ClapActive::rescan_params`).
+  A request is consumed whether or not it succeeds; a plugin left deactivated
+  renders silence and a later request tries it again. A plugin's
+  `gui.request_show` and `request_hide` are answered `false`: the host owns
+  the editor window. Pinned by `a_ports_rescan_the_plugin_asks_for_is_served`,
+  `a_restart_*`, `a_rescan_*`, `a_callback_*`, `a_timer_*`, `an_all_rescan_*`,
+  `a_values_rescan_*`, `latency_changed_on_an_active_plugin_*` and
+  `a_latency_that_depends_on_the_rate_*` of `loaders::clap`, on the reference
+  plugin's `tutti_test_plugin_request_ports_rescan`, thread commands,
+  param commands and `tutti_test_plugin_set_latency_at_activation`.
+- **A VST3 plugin's restart flags are acted on.** `kIoChanged`,
+  `kLatencyChanged` and `kPrefetchableSupportChanged` run the deactivate and
+  activate cycle (`Vst3Active::restart_bus_configuration`, which reads
+  `IPrefetchableSupport` while the plugin is down) and re-read the latency
+  after it; `kParamIDMappingChanged` is reported as a changed parameter list.
+  The latency is read again after an in-place rate change and after a
+  rebuild. The bus counts, the event buses and the 64-bit answer are read
+  after `initialize` (`Vst3Loaded::reconcile_bus_counts`); `probe`, which
+  never initializes, reports them best effort. `kNoteExpressionChanged`,
+  `kKeyswitchChanged`, `kIoTitlesChanged` and `kRoutingInfoChanged` are
+  decoded and reach nothing: no client consumes them.
 - **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes
   UMP SysEx7 packets (`tutti_plugin_types::push_sysex`, on
   `MidiEvent::sysex7_packets`, which allocates nothing) at the plugin's
@@ -6163,9 +6193,7 @@ the source stands ("Shaped ramps" below).
   6.98 MB, a CLAP instance's lists from about 40 MB to 6.2 MB (at the room
   of the time; with doc 014's raised room (§12.1), 16.31 MB and 16.1 MB,
   where per-queue storage would have been about 118 MB each); the
-  figures, the budget's derivation and what is left (a CLAP
-  `params.rescan` does not re-reserve the server's output) are in doc 014
-  §9.
+  figures and the budget's derivation are in doc 014 §9.
 - **Scheduled.** `Editor::schedule` refuses a segment into a node that
   does not honour offsets sample-accurately, as it refuses a ramp.
 

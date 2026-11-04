@@ -133,36 +133,7 @@ impl ClapLoaded {
         // Only one sample-type pool exists (T), so the pre-split double-sizing
         // of both f32 and f64 is gone.
         let mut scratch = AudioScratch::<T>::new();
-        // Cache each param's native range for denormalizing incoming automation
-        // (host authors normalized 0..1; CLAP wants plain). Done once here, off
-        // the audio thread — `get_parameter_list()` queries the plugin.
-        scratch.param_ranges = self
-            .get_parameter_list()
-            .into_iter()
-            // A parameter with no declared bounds has nothing to denormalize
-            // against; dropping it leaves its automation to pass through
-            // untouched, which is what `add_param_changes` does for a param
-            // missing from this map. Every CLAP parameter declares a range, so
-            // this filters nothing today — but inventing bounds if one ever
-            // didn't would write a wrong plain value to the plugin.
-            .filter_map(|p| {
-                let (min, max) = p.range.bounds()?;
-                // `param_ranges` is matched against `ParameterQueue.param_id`,
-                // which stays a bare `u32` because it crosses the IPC wire, and
-                // is handed to `ClapEvent::param_value` as the ABI's `u32`.
-                // Unwrapping here keeps the whole path between those two in the
-                // one type they both speak. Every CLAP param is opaque, so the
-                // `None` arm is unreachable rather than a filter.
-                Some((p.id.opaque()?.get(), min as f32, max as f32))
-            })
-            .collect();
-        // Sorted by id: `add_param_changes` finds each queue's range by
-        // binary search.
-        scratch.param_ranges.sort_unstable_by_key(|&(id, _, _)| id);
-        // Read the plugin's own count, not the length of the map above: they
-        // differ exactly when `parameters()` truncated at a hole, which is the
-        // case `add_param_changes` has to tell apart from a params-less plugin.
-        scratch.plugin_claims_params = self.parameter_count() > 0;
+        self.read_param_ranges(&mut scratch);
         let input_total = self.ports.input_channel_total();
         let output_total = self.ports.output_channel_total();
         let max_frames = self.audio.max_frames as usize;
@@ -206,6 +177,39 @@ impl ClapLoaded {
             loaded: self,
             _sample: PhantomData,
         })
+    }
+
+    /// Caches each param's native range for denormalizing incoming automation
+    /// (the host authors normalized 0..1; CLAP wants plain), and whether the
+    /// plugin claims parameters at all. Queries the plugin: control thread only.
+    pub(crate) fn read_param_ranges<T: super::ClapSample>(&self, scratch: &mut AudioScratch<T>) {
+        scratch.param_ranges = self
+            .get_parameter_list()
+            .into_iter()
+            // A parameter with no declared bounds has nothing to denormalize
+            // against; dropping it leaves its automation to pass through
+            // untouched, which is what `add_param_changes` does for a param
+            // missing from this map. Every CLAP parameter declares a range, so
+            // this filters nothing today — but inventing bounds if one ever
+            // didn't would write a wrong plain value to the plugin.
+            .filter_map(|p| {
+                let (min, max) = p.range.bounds()?;
+                // `param_ranges` is matched against `ParameterQueue.param_id`,
+                // which stays a bare `u32` because it crosses the IPC wire, and
+                // is handed to `ClapEvent::param_value` as the ABI's `u32`.
+                // Unwrapping here keeps the whole path between those two in the
+                // one type they both speak. Every CLAP param is opaque, so the
+                // `None` arm is unreachable rather than a filter.
+                Some((p.id.opaque()?.get(), min as f32, max as f32))
+            })
+            .collect();
+        // Sorted by id: `add_param_changes` finds each queue's range by
+        // binary search.
+        scratch.param_ranges.sort_unstable_by_key(|&(id, _, _)| id);
+        // Read the plugin's own count, not the length of the map above: they
+        // differ exactly when `parameters()` truncated at a hole, which is the
+        // case `add_param_changes` has to tell apart from a params-less plugin.
+        scratch.plugin_claims_params = self.parameter_count() > 0;
     }
 
     /// Calls the plugin's `activate` FFI. Shared by `activate<T>` and the
@@ -542,12 +546,27 @@ impl<T: super::ClapSample> ClapActive<T> {
         )))
     }
 
+    /// Re-reads the plugin's parameter list after a `params.rescan` that
+    /// changed what the parameters are (`INFO` or `ALL`): the ranges automation
+    /// is denormalized against, and the room reserved for their events. A
+    /// rescan of values or text changes neither. Control thread, between
+    /// blocks: it queries the plugin and may allocate.
+    pub fn rescan_params(&mut self) {
+        self.loaded.assert_main_thread();
+        self.loaded.read_param_ranges(&mut self.scratch);
+        let max_frames = self.loaded.audio.max_frames as usize;
+        reserve_input_events(&mut self.scratch, max_frames);
+        reserve_output_params(&mut self.scratch, max_frames);
+    }
+
     /// Re-size the RT channel scratch for the current port layout and
     /// `max_frames`. The rollback path calls this a second time, paying a
     /// second allocation off the audio thread — worth it, since scratch sized
     /// for a ceiling the plugin is *not* activated at would let `process`
     /// accept a block the plugin never agreed to.
     fn resize_scratch(&mut self, max_frames: u32) {
+        // The plugin may declare other parameters after a restart.
+        self.loaded.read_param_ranges(&mut self.scratch);
         let input_total = self.loaded.ports.input_channel_total();
         let output_total = self.loaded.ports.output_channel_total();
         let num_in = self.loaded.ports.inputs.len();

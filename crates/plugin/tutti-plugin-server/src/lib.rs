@@ -404,6 +404,96 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Make the reference plugin run `cmd` (`tutti_clap_test_plugin::CMD_*`)
+    /// at its next legal call site until the returned guard drops, which
+    /// clears one not yet run: `on_main_thread` for the timer commands,
+    /// `process` for the restart ones.
+    #[cfg(feature = "clap")]
+    #[must_use = "a command not yet run is cleared when the guard drops"]
+    pub fn clap_probe_thread_command(cmd: u32) -> ClapProbeRestart {
+        set_clap_probe_switch(b"tutti_test_plugin_thread_command\0", cmd);
+        ClapProbeRestart
+    }
+
+    /// Make the reference plugin call `host.params.rescan` as
+    /// `tutti_clap_test_plugin::PARAM_CMD_*` says at its next `on_main_thread`,
+    /// until the returned guard drops, which clears one not yet made.
+    #[cfg(feature = "clap")]
+    #[must_use = "a call not yet made is cleared when the guard drops"]
+    pub fn clap_probe_param_command(cmd: u32) -> ClapProbeParamCommand {
+        set_clap_probe_switch(b"tutti_test_plugin_param_command\0", cmd);
+        ClapProbeParamCommand
+    }
+
+    /// Clears a pending params command on drop; see [`clap_probe_param_command`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeParamCommand;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeParamCommand {
+        fn drop(&mut self) {
+            set_clap_probe_switch(
+                b"tutti_test_plugin_param_command\0",
+                tutti_clap_test_plugin::PARAM_CMD_NONE,
+            );
+        }
+    }
+
+    /// Make the reference plugin's latency `extra` frames longer from its next
+    /// activation on (see `tutti_test_plugin_set_latency_at_activation`), until
+    /// the returned guard drops. The plugin does not call `changed()`.
+    #[cfg(feature = "clap")]
+    #[must_use = "the latency goes back when the guard drops"]
+    pub fn clap_probe_latency_at_activation(extra: u32) -> ClapProbeLatency {
+        set_clap_probe_switch(b"tutti_test_plugin_set_latency_at_activation\0", extra);
+        ClapProbeLatency
+    }
+
+    /// Restores the reference plugin's latency on drop; see
+    /// [`clap_probe_latency_at_activation`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeLatency;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeLatency {
+        fn drop(&mut self) {
+            set_clap_probe_switch(b"tutti_test_plugin_set_latency_at_activation\0", 0);
+        }
+    }
+
+    /// What the reference plugin recorded of its threading and timer calls
+    /// since the last reset.
+    #[cfg(feature = "clap")]
+    pub fn clap_probe_thread_capture() -> tutti_clap_test_plugin::ThreadCapture {
+        type F = unsafe extern "C" fn(*mut tutti_clap_test_plugin::ThreadCapture) -> bool;
+        let mut cap = tutti_clap_test_plugin::ThreadCapture::default();
+        // SAFETY: `#[no_mangle] extern "C"` in `tutti-clap-test-plugin`; the
+        // handle is leaked as in `set_clap_probe_switch`.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let capture: libloading::Symbol<F> = lib
+                .get(b"tutti_test_plugin_thread_capture\0")
+                .expect("capture exported by the reference plugin");
+            assert!(capture(&mut cap));
+            std::mem::forget(lib);
+        }
+        cap
+    }
+
+    /// Zeroes [`clap_probe_thread_capture`].
+    #[cfg(feature = "clap")]
+    pub fn clap_probe_thread_reset() {
+        // SAFETY: as above.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let reset: libloading::Symbol<unsafe extern "C" fn()> = lib
+                .get(b"tutti_test_plugin_thread_reset\0")
+                .expect("reset exported by the reference plugin");
+            reset();
+            std::mem::forget(lib);
+        }
+    }
+
     /// How many times the reference plugin accepted `activate` since
     /// [`clap_probe_reset_activation_count`]: one per activation, so a
     /// re-activation shows as one more.

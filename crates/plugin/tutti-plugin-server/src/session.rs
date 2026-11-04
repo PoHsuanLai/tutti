@@ -346,9 +346,8 @@ impl Session {
         // change. A VST3 `kParamTitlesChanged` without a reload keeps the
         // instance's activation-time output and emitted queue counts, so the
         // instance drops (and counts) points past them before they reach
-        // this output. A CLAP plugin's `params.rescan` reaches no event here,
-        // so its output stays reserved for the load's count: points past it
-        // are dropped, counted.
+        // this output. A CLAP plugin's `params.rescan` that changes the
+        // list reaches this as `ParamTitlesChanged` (the instance re-read it).
         if events
             .iter()
             .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged | AsyncEvent::Reloaded))

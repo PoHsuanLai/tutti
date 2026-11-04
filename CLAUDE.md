@@ -40,7 +40,8 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
-  `Loaded`/`Active` typestate traits and `Phase<L>` per
+  `Loaded` typestate trait whose `activate` splits a plugin into a realtime
+  `Processor` and a main-thread `Controller`, and `Lifecycle<L>` per
   [`docs/design/016-plugin-hosts.md`](docs/design/016-plugin-hosts.md).
 
 ## The parallel executor (doc 013)

@@ -11,8 +11,8 @@
 //!   `write_buffers`; a width is the quad render through `fold_frame`; a
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
-//! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits. All but three were recorded from the graph's render
+//! - **Golden digests, on the recorded target only:** FNV-1a over the planes'
+//!   (or the file's) bits. All but three were recorded from the graph's render
 //!   against an independent reference renderer it matched bit for bit. Three
 //!   are self-recorded: the pitched sampler voice's and the convolver's (the
 //!   scalar FFT has no reference renderer; their cross-checks are the
@@ -20,14 +20,13 @@
 //!   digest (re-recorded when the panner's smoother moved to one advance per
 //!   block; its folded stereo and mono renders are checked against it bit for
 //!   bit).
-//!   They catch the drift an analytic
-//!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
-//!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
-//!   differ in the last ulp between C runtimes (the reason
-//!   `render_is_bit_identical_to_the_audionode_era` is gated off MSVC). So
-//!   they are asserted only where they were recorded (`tutti_nodes::testing::assert_golden`); CI's
-//!   Linux jobs run them. The one libm-free case (a dithered DC level) is
-//!   asserted everywhere.
+//!   They catch the drift an analytic tolerance lets through (an output
+//!   scaled by `1 + f32::EPSILON`), but they pin `sin`/`cos`/`exp`, which are
+//!   libm quality-of-implementation and differ in the last ulp between C
+//!   runtimes (the reason `render_is_bit_identical_to_the_audionode_era` is
+//!   gated off MSVC). So they are asserted only where they were recorded
+//!   (`tutti_nodes::testing::assert_golden`); CI's Linux jobs run them. The
+//!   one libm-free case (a dithered DC level) is asserted everywhere.
 //!
 //! Recompute a digest only with a deliberate, argued DSP change: a mismatch
 //! prints the new figure.
@@ -286,7 +285,7 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 
 /// The sine, built for the export and forked from a live graph: the closed
 /// form on every frame of both channels, the fork the fresh graph to the
-/// bit, and (Linux/glibc) its golden digest.
+/// bit, and its golden digest.
 ///
 /// Mutations (run): `block_size` rounded down to a multiple of 64 in
 /// `GraphSource::fill` (the last, short block is never rendered) → the
@@ -314,7 +313,7 @@ fn a_sine_renders_its_closed_form() {
 
 /// The resample case (48 k → 44.1 k), to a file: the file is the render's
 /// planes through the same conversion and encoder (`write_buffers`), byte
-/// for byte, at 44.1 kHz, and (Linux/glibc) its golden digest. The
+/// for byte, at 44.1 kHz, and its golden digest. The
 /// resampler's carry makes its output independent of the block partition;
 /// `oracle_resample.rs` holds the conversion to first principles.
 ///
@@ -352,7 +351,7 @@ fn a_resampled_export_writes_its_render() {
 /// is its render normalized and written (`Normalize::gain_for_rendered`,
 /// then `write_buffers`), byte for byte; its sample peak sits at the
 /// -1 dBTP target or just under it (the true peak, between samples, is
-/// what reaches -1 dB); and (Linux/glibc) the bytes match their golden
+/// what reaches -1 dB); and the bytes match their golden
 /// digest.
 ///
 /// Mutation (run): as above → the digest moves.
@@ -432,7 +431,7 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// down to stereo and to mono. The narrower files are the quad render folded
 /// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
 /// render puts the front-left source in channel 0 and the rear-left one in
-/// channel 2; and (Linux/glibc) the built and forked quad renders match their
+/// channel 2; and the built and forked quad renders match their
 /// golden digests.
 ///
 /// This is also the case that pins the block rule in the module docs: the
@@ -487,7 +486,7 @@ fn a_surround_mix_folds_to_every_width() {
 
 /// A convolver — FFT-partitioned, latency- and tail-bearing — renders the
 /// direct time-domain convolution of its input, delayed by the latency it
-/// reports, at the graph's block; and (Linux/glibc) its golden digest.
+/// reports, at the graph's block; and its golden digest.
 ///
 /// It turns out not to be the block-sensitive unit: it buffers its
 /// partitions internally, so `GRAPH_MAX_BLOCK = 1000` still passes here
@@ -888,7 +887,7 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 
 /// **A sampler voice renders in time at `GRAPH_MAX_BLOCK`**, dry and a fifth
 /// up: the dry one is the tone it plays, to the bit, on both channels; the
-/// render clock ends the render's frames on; and (Linux/glibc) the pitched
+/// render clock ends the render's frames on; and the pitched
 /// one matches its golden digest.
 ///
 /// The voice reads the render clock's transport from each block's `Env`,

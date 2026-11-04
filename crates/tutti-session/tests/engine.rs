@@ -13,7 +13,8 @@
 //! renders it), so its cross-check is the fifth-up pitch figure. The click
 //! and the pitched voice call `sin` (and the vocoder's FFT), libm
 //! quality-of-implementation that differs in the last ulp between C runtimes,
-//! so the digests are asserted on Linux/glibc only, where they were recorded (`tutti_nodes::testing::assert_golden`).
+//! so the digests are asserted only where they were recorded
+//! (`tutti_nodes::testing::assert_golden`).
 
 use std::sync::Arc;
 
@@ -100,7 +101,7 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 }
 
 /// **The builder's engine clicks on every beat, across a seek**, and
-/// (Linux/glibc) clicks the golden digest's samples. The click reads the
+/// clicks the golden digest's samples. The click reads the
 /// beat of every frame from its block's `Env` (the transport the engine's
 /// own `TransportClock` reports). The transport starts before the first
 /// block, so the play gate opens on the first frame.
@@ -236,7 +237,7 @@ fn dominant_frequency(x: &[f32], from: usize, rate: f64) -> f64 {
 /// **A sampler voice plays in time through the builder's engine**, at
 /// `block`-frame device blocks with a rolling transport: the dry voice is
 /// the tone it plays, to the bit, on both channels; the voice a fifth up
-/// renders the same bits as at 64-frame blocks, and (Linux/glibc) the
+/// renders the same bits as at 64-frame blocks, and the
 /// golden digest's.
 ///
 /// Mutation (run in `bevy-tutti`, where this test was recorded):

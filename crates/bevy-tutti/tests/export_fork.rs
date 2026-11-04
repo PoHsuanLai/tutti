@@ -4,7 +4,7 @@
 //! An export forks the live graph (`Editor::fork`). The exports are held to
 //! the same units wired fresh with `GraphBuilder` (a fork starts reset, which
 //! a fresh graph is), to a synth's own reference note, and to golden digests
-//! on Linux/glibc (see `tutti_nodes::testing::assert_golden`). The rest pin
+//! (see `tutti_nodes::testing::assert_golden`). The rest pin
 //! what only a fork has: it shares nothing with the live graph, it names a
 //! node it cannot copy, it forks a hosted plugin by state transfer.
 //! `export_surface.rs` pins the request/response shape; this file pins the
@@ -200,7 +200,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 
 /// **An export renders its graph as wired fresh**, for the master and for
 /// one node, on a graph whose live side has not run: bit for bit the same
-/// units in a `GraphBuilder` graph ([`chain_fresh`]), and (Linux/glibc)
+/// units in a `GraphBuilder` graph ([`chain_fresh`]), and
 /// the golden digest.
 ///
 /// A fork starts reset rather than copying the running state (an
@@ -1335,7 +1335,7 @@ mod synths {
 
     /// **A node export of a synth plays its clip**: silent until beat 1,
     /// then the synth's own note ([`reference`]) sample for sample, and
-    /// (Linux/glibc) the golden digest. The fork carries the clip itself.
+    /// the golden digest. The fork carries the clip itself.
     ///
     /// Mutation (run): the synth's fork not reset (`PolySynth::fork_instance`
     /// skipping `reset_voices`) → no change: a fork from the template never

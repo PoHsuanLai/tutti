@@ -185,7 +185,7 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// **The compensated scene**: its dry left channel is the uncompensated
 /// scene's, delayed by the limiter's lookahead to the frame (silence
 /// first); its latent right channel is the saw through the limiter,
-/// hand-wired; and (Linux/glibc) the whole render matches the golden digest,
+/// hand-wired; and the whole render matches the golden digest,
 /// bit for bit.
 ///
 /// Mutations (run; each fails this test):

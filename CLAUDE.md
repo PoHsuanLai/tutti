@@ -115,9 +115,11 @@ just test-all                      # both
   `dark features` job and `just test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
 - **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
-  on glibc 2.39 (`RECORDED_GLIBC`, Ubuntu 24.04), skipped with a printed note
-  on any other libm. CI's Linux jobs set `TUTTI_GOLDEN=require`, so a runner
-  image that moves glibc fails instead of skipping. To re-record, bump
+  on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
+  skipped with a printed note on any other libm or architecture (nextest shows
+  the note only under `--no-capture`). CI's Linux jobs set
+  `TUTTI_GOLDEN=require`, so a runner image that moves glibc fails instead of
+  skipping; an unknown value panics, and `record` is refused when `CI` is set. To re-record, bump
   `RECORDED_GLIBC` and the runner pin, run
   `TUTTI_GOLDEN=record cargo nextest run --workspace --no-capture`, and copy the
   `GOLDEN <what> <digest>` lines into the tests; only for an argued libm move.

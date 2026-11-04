@@ -33,35 +33,51 @@ Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
 
 ### Changed — the sampler's phase vocoder inverts with a real-input FFT; stretched output bits change
 
-**`stretch::Unit` runs `realfft`'s real-input pair instead of `microfft`.**
+**`stretch::Unit` runs a real-input FFT pair instead of `microfft`.**
 The forward transform was already real-input; the inverse was a full
 `size`-point complex transform over a rebuilt conjugate half, and is now a
 `size / 2 + 1`-bin complex-to-real transform, so the half-spectrum is never
 mirrored. The plans are built in `Vocoder::new` and shared by a unit's
 channels and clones (scratch is per vocoder), so `tick` and `process` still
-allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`.
-The inverse tolerates only `FftError::InputValues` (a non-zero or NaN
-imaginary DC or Nyquist, which `realfft` reports after writing the output), as
-`tutti-analysis` does, so non-finite input cannot panic the audio path; the
-state after it is as before (the phase history stays non-finite until `reset`).
+allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`, and
+`rustfft` joins it.
+**The FFT is forced scalar so renders are bit-identical across CPUs.**
+`realfft`'s planners always use rustfft's auto planner, which picks AVX, SSE or
+NEON at run time and differs bitwise from scalar in about 97% of bins, so a
+render would differ between machines. `realfft` cannot be given a planner, so
+`stretch::fft` carries its even-length real-FFT passes over
+`rustfft::FftPlannerScalar` (a test pins the scalar choice on Linux/glibc, and
+another checks the transforms against the textbook DFT). The inverse zeroes the
+imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
+so non-finite input there cannot panic the audio path; the state after a
+non-finite frame is as before (the phase history stays non-finite until
+`reset`).
 Measured on the new `stretch` bench (stereo, 512-frame blocks, stretch 1.5,
 +200 cents), `taskset -c 0`, interleaved main/branch runs, median of 3 (us per
 block):
 
 | window | main | branch | change |
 | --- | --- | --- | --- |
-| 1024 | 195.3 | 163.2 | -16% |
-| 2048 | 218.0 | 172.2 | -21% |
-| 4096 | 231.3 | 184.4 | -20% |
+| 1024 | 202.3 | 177.8 | -12% |
+| 2048 | 216.5 | 193.6 | -11% |
+| 4096 | 218.8 | 203.7 | -7% |
 
 **The output bits change, by rounding only.** A different FFT algorithm rounds
-every bin differently (about 1e-7 relative), and the `1 / size` scale now
-rides on the synthesis window. The transform pair is the same mathematically,
-so nothing audible moves; the unity-reconstruction, level, pitch and
-frequency tests hold at their existing tolerances, and no golden digest in the
-sampler suite changes. Migration: none for callers; a test that compared a
-stretched render bit for bit against a recording from before this change must
-re-record it.
+every bin differently, and the `1 / size` scale is now a separate exact
+multiply (`fft_buffer[i] * norm * w`) in the synthesis loop. Measured on the
+pitched sampler voice of `tutti-session`'s `engine` test (a fifth up, 48000
+samples, 256-frame blocks) against main: peak difference 7.75e-4, rms
+difference 2.40e-5 (-88.8 dB against the signal's rms of 0.66). That is the
+vocoder's existing sensitivity to rounding (the phase accumulator feeds every
+bin's error forward), not a defect in the transform pair; nothing audible moves,
+and the unity-reconstruction, level, pitch and frequency tests hold at their
+existing tolerances. Two golden digests were re-recorded: the pitched voice's in
+`tutti-session/tests/engine.rs` (`0x5681_b9dc_0fbe_0695` to
+`0x960c_d60d_47df_c691`) and in `tutti-export/tests/graph_source.rs`
+(`0xd11e_26e8_e6d8_b81d` to `0xb4b1_7145_b7ea_643d`); both are self-recorded.
+The dry-voice digest and the pitch figure are unchanged. Migration: none for
+callers; a test that compared a stretched render bit for bit against a
+recording from before this change must re-record it.
 
 ### Changed — `GateNode` compares its threshold in the linear domain; boundary decisions can move
 

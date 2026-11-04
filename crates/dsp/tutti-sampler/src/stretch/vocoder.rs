@@ -238,7 +238,7 @@ impl Vocoder {
 
         self.primed = true;
 
-        // 4. Inverse transform, then window and overlap-add. `realfft`'s
+        // 4. Inverse transform, then window and overlap-add. The
         //    inverse is unnormalized, so the `1 / size` is applied with the
         //    synthesis window. The conjugate half is implied; DC's and
         //    Nyquist's imaginary parts (a polar bin at phase pi is not exactly

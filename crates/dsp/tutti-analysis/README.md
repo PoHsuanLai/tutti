@@ -20,9 +20,11 @@ where the results go:
   types so invertibility is a compile-time question.
 
 FFT is [realfft](https://crates.io/crates/realfft)'s (real-input transforms on
-[rustfft](https://crates.io/crates/rustfft)). `tutti-sampler`'s vocoder uses
-the same pair, planned at construction so its audio path allocates nothing.
-This crate plans lazily, per scratch, on the cold path. Both are
+[rustfft](https://crates.io/crates/rustfft)). `tutti-sampler`'s vocoder
+has its own real-input pair over rustfft's scalar planner (so its renders are
+bit-identical on every CPU), planned at construction so its audio path
+allocates nothing. This crate plans lazily, per scratch, on the cold path
+(rustfft's auto planner, which picks SIMD at run time). Both are
 `num_complex::Complex<f32>` underneath, so values cross freely.
 
 ## Scope

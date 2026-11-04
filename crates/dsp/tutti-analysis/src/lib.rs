@@ -87,6 +87,6 @@ pub use realfft::num_complex::Complex as GenericComplex;
 ///
 /// A plain alias for `num_complex::Complex<f32>`, the type `realfft` works
 /// in, so bins cross the FFT boundary without conversion. The vocoder in
-/// `tutti-sampler` plans the same `realfft` pair, so values cross freely
-/// between the two.
+/// `tutti-sampler` works in the same `num_complex` type, so values cross
+/// freely between the two.
 pub type Complex = realfft::num_complex::Complex<f32>;

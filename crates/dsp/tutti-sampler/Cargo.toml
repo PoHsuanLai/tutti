@@ -71,8 +71,15 @@ tutti-analysis = { path = "../tutti-analysis", default-features = false }
 # gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
-# The vocoder's real-input FFT (`stretch::fft`), planned at construction.
-realfft = "3.5"
+# The vocoder's real-input FFT (`stretch::fft`), planned at construction on
+# rustfft's *scalar* planner (`FftPlannerScalar`). `realfft`'s planners always
+# use rustfft's auto planner, which picks AVX, SSE or NEON at run time, and
+# those round differently from scalar in most bins; a render must be
+# bit-identical on every CPU. `realfft` cannot be handed a planner (its
+# constructors take the auto `FftPlanner`), so `stretch::fft` carries
+# realfft's even-length pre/post-processing over a scalar inner FFT. Same
+# version as Cargo.lock's (realfft's own dependency).
+rustfft = "6.4"
 
 tracing = "0.1"
 thiserror = "2"

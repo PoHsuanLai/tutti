@@ -430,6 +430,22 @@ mod tests {
         assert!(estimate.pitch().is_none());
     }
 
+    /// A non-finite sample in the window is an unvoiced frame, never a panic.
+    ///
+    /// Mutation: restore `.expect(..)` on the inverse transform's result →
+    /// both fail with a panic on `InputValues`.
+    #[test]
+    fn a_non_finite_sample_is_unvoiced_not_a_panic() {
+        let cfg = YinConfig::standard(44100.0).unwrap();
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut samples = sine(44100.0, 440.0, 1.0);
+            samples.truncate(cfg.buffer_size().get() + 10);
+            samples[3] = bad;
+            let estimate = yin(&cfg, &samples).unwrap();
+            assert!(!estimate.is_voiced(), "{bad} produced a pitch");
+        }
+    }
+
     /// The property `yin_track` relies on: one detector driven across many
     /// frames agrees with a fresh detector per frame.
     ///

@@ -77,6 +77,36 @@ and compared with `diff -rq`: 0 differences.
   point pitch conversions. `PitchBendSensitivity::as_semitones_f32` and the
   polysynth's per-note tuning use them; the polysynth's private
   `q7_25_to_fractional_note` and `q7_9_to_fractional_note` are gone.
+
+### Changed — `ModDelayNode` evaluates its LFO sine every 16 samples; output bits change
+
+**The chorus and flanger no longer call `sin` per sample and channel.** The
+sine is solved at control points every 16 samples (the phaser's spacing) and
+interpolated linearly between. The grid is counted across blocks, so the
+render still does not depend on how the stream is cut into blocks (a test
+renders 1-, 5-, 17-frame and other ragged cuts bit-identical to one block). The
+control point past a block's edge is stepped on from the block's own phase, so
+nothing is allocated or read ahead. **The output bits change**: the delay time
+is off the exact sine by at most `depth * h^2 / 8`, `h = 2*pi * rate * 16 / sr`
+(1.4e-5 of the depth at 5 Hz and 48 kHz, 2.2e-4 at 20 Hz: 0.003 samples of a
+5 ms chorus sweep at 5 Hz, 0.1 sample of a 10 ms sweep at 20 Hz). The three
+chorus and flanger digests in `width_generic_golden` were re-captured: their
+pinned frames moved by at most 2.9e-4 (chorus, 7 ms deep with 0.45 feedback), 1.4e-5
+(flanger) and 1.6e-4 (6-wide chorus). The delay-time trajectory is checked
+analytically (inside the declared depth, equal to the exact sine at control
+points, within the chord bound between them, period preserved), not against a
+reference render. A rate change at a block boundary reaches the delay at that block's first
+sample: when the block's step differs from the one that stepped on the pending
+control point, the segment's two points are solved again from the block's own phases (at a
+constant rate nothing is re-solved, so those renders are unchanged). The chord
+also kinks the delay's slope every 16 samples, about 0.05 samples/sample^2 at
+20 Hz and 10 ms: a small ripple on the pitch modulation.
+`LfoDrive::fill_block` now returns the increment it ran at.
+Measured on one core (`taskset -c 0`), median of three interleaved runs, main
+to branch, one 64-frame block of `cargo bench -p tutti-nodes --bench
+width_generic -- chorus`: 2 channels 6.12 to 4.28 us (1.43x), 6 channels 17.08
+to 12.41 us (1.38x).
+
 ### Changed — `tutti-analysis` runs real-input FFTs; output bits change
 
 **`FftScratch::forward`/`inverse` (so `stft`, `istft`, `detect_onsets`) and the

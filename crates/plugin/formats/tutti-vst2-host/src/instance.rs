@@ -3,7 +3,7 @@
 //! [`Vst2Instance`] is the main entry point. Construct via
 //! [`Vst2Instance::load`]; the constructor runs the full VST2 init/resume
 //! sequence so the returned instance is immediately usable for
-//! [`process_f32`](Self::process_f32) / [`process_f64`](Self::process_f64).
+//! [`process_f32`](Vst2Instance::process_f32) / [`process_f64`](Vst2Instance::process_f64).
 //!
 //! The lifecycle is short and atomic — `init → set_sample_rate →
 //! set_block_size → resume` all happen at construction — so there is no useful

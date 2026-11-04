@@ -34,6 +34,7 @@
 //! (`scripts/check-adapter.sh`).
 
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 /// With `plugin`, the main-thread guard of design 015 §4.2 (a no-op until a
 /// host marks its main thread); otherwise nothing. Called wherever a retired

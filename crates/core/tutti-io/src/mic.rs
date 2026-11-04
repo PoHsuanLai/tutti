@@ -19,7 +19,7 @@
 //!
 //! Popping advances the read index, so exactly one party may pop.
 //! What keeps that true: **the ring is popped only from
-//! [`Node::process`](tutti_graph::Node::process), and there is one node.**
+//! [`Node::process`], and there is one node.**
 //!
 //! - The node is **not `Clone`**: the graph owns its node and never clones
 //!   it, and without `Clone` no second consumer can be made from the node at

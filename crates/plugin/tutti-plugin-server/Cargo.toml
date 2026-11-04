@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "The plugin-server subprocess for tutti-plugin: hosts one VST2, VST3, CLAP or AU plugin in isolation"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-plugin-server"
+readme = "README.md"
+keywords = ["audio", "plugin", "vst3", "clap", "sandbox"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -129,3 +133,7 @@ tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }
 # whenever tests run with `--features vst3`, and its location arrives as
 # `DEP_TUTTI_VST3_PROBE_DIR` (see build.rs).
 tutti-vst3-host = { path = "../formats/tutti-vst3-host", features = ["conformance"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

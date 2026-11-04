@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod codec;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]

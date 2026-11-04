@@ -2,7 +2,7 @@
 //!
 //! This is the **outbound + resource** half of the two negotiation state
 //! machines that live in `tutti-midi-runtime`. It follows the same shape as
-//! [`super::device`]: a resource holding the pure state machine, fire-and-forget
+//! `super::device` (behind `midi-hardware`): a resource holding the pure state machine, fire-and-forget
 //! request [`Message`]s, and systems that drive the machine and push its output
 //! at external MIDI out via [`MidiOutRes`](super::track_out::MidiOutRes).
 //!

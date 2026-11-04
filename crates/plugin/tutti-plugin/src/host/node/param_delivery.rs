@@ -54,7 +54,7 @@
 //! An address past every slot is the one bound left. Its points are refused
 //! and counted ([`ParamDeliveryStats::points_dropped`]), never silently.
 //!
-//! **A closed list** ([`closed`](ParamDelivery::closed), the VST2 node's)
+//! **A closed list** (`ParamDelivery::closed`, the VST2 node's)
 //! has no spare slots: a VST2 plugin's parameters are the indices below the
 //! count it declared at load, and the host refuses any other index, so a
 //! spare slot learning one would only stage a point the plugin never takes.

@@ -26,7 +26,7 @@ use tutti_core::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, Str
 /// the two are kept in step by [`set_stretch`](Self::set_stretch) writing both.
 ///
 /// Shared verbatim by [`VoicePool`](super::pool::VoicePool)'s slot vector and by
-/// [`VoiceNode`], which holds exactly one — so the per-voice read has one
+/// [`VoiceNode`](super::node::VoiceNode), which holds exactly one — so the per-voice read has one
 /// definition and a fix in it is a fix in both.
 ///
 /// # Not a `VoiceSlot`
@@ -197,7 +197,7 @@ impl PlaybackSlot {
     ///
     /// **Allocation-free and free-free**, so it is safe on the audio-thread
     /// command drain: adopting is a move, and a redundant arrival is *returned*
-    /// rather than dropped — see the caller in [`VoicePool::drain_commands`],
+    /// rather than dropped — see the caller in `VoicePool::drain_commands`,
     /// which retires it for control-thread release. Dropping a `stretch::Unit`
     /// here would free its vocoder bank in the callback.
     ///

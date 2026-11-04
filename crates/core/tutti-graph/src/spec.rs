@@ -101,7 +101,7 @@ impl EventEdge {
 /// thread, usually through [`Editor::spec_mut`](crate::Editor::spec_mut).
 /// [`validate`](Self::validate) checks what can be checked without the
 /// nodes' shapes and returns a [`ValidGraph`], which is what
-/// [`compile`](crate::compile) takes.
+/// [`compile`](fn@crate::compile) takes.
 ///
 /// Audio edges live in the embedded `Topology`, one source per input port,
 /// so audio fan-in cannot be written (summing is a node's job). Event ports

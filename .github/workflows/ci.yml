@@ -551,9 +551,12 @@ jobs:
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to
       # deny; this is where that is actually enforced, since a plain build never
       # runs rustdoc.
+      # `--document-private-items`: the crates' internals carry doc comments
+      # with links too, and one that only breaks in a private item rots
+      # unseen.
       - run: cargo doc --locked --workspace --no-deps --exclude rustysynth-tutti
         env:
-          RUSTDOCFLAGS: -D warnings
+          RUSTDOCFLAGS: -D warnings --document-private-items
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the
       # off-by-default `contract` feature, which only dev-dependencies turn on
       # — and rustdoc builds none, so the line above never documents it. The
@@ -567,6 +570,18 @@ jobs:
       - run: cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
         env:
           RUSTDOCFLAGS: -D warnings
+      # Each feature of the feature-gated crates alone. The union above cannot
+      # see a link out of one feature's docs into an item another feature
+      # gates: `bevy-tutti --features export` and `--features midi` failed
+      # while the union was clean.
+      - run: scripts/check-doc-features.sh
+      # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
+      # the feature badges render. `+nightly` because `rust-toolchain.toml`
+      # pins stable.
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo +nightly doc --locked --workspace --no-deps --exclude rustysynth-tutti
+        env:
+          RUSTDOCFLAGS: -D warnings --cfg docsrs
 
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
@@ -653,6 +668,10 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # Clippy under `--cfg loom`: the flag changes constants the lints see
+      # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
+      # and no other job compiles that configuration.
+      - run: cargo clippy --locked -p arc-lend -p tutti-types -p tutti-shm-model --all-targets -- -D warnings
       - run: cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
       - run: cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
         env:

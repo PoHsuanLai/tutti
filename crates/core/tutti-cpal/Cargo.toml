@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "CPAL device layer for Tutti — output stream, mic capture, and the driver lifecycle"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-cpal"
+readme = "README.md"
+keywords = ["audio", "cpal", "audio-io", "real-time"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -59,3 +63,8 @@ tutti-graph = { path = "../tutti-graph" }
 [[bench]]
 name = "audio_callback"
 harness = false
+
+# Not `jack`: it links libjack, which the docs.rs builder does not provide.
+[package.metadata.docs.rs]
+features = ["capture"]
+rustdoc-args = ["--cfg", "docsrs"]

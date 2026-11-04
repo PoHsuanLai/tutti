@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Sample playback for Tutti: in-memory and disk-streamed voices, a voice pool, and a phase-vocoder time stretch"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-sampler"
+readme = "README.md"
+keywords = ["audio", "sampler", "time-stretch", "streaming", "dsp"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -136,3 +140,7 @@ harness = false
 [[bench]]
 name = "stretch"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

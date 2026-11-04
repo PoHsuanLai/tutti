@@ -1,12 +1,12 @@
 //! [`MidiClipNode`]: a MIDI clip as a graph node, playing its events
 //! out of an event port.
 //!
-//! The node reads the transport from its block's [`Env`], not from a shared
+//! The node reads the transport from its block's [`Env`](tutti_graph::Env), not from a shared
 //! timeline: every block it asks, segment by segment, which of its events
 //! playback reaches inside the segment, and writes each on its frame. It keeps
 //! **no play cursor**. Which events fall in a block is a function of the
 //! block's transport and the clip, answered by a binary search over the
-//! sorted events and the engine's one beat→frame rule ([`Env::due`]), so a
+//! sorted events and the engine's one beat→frame rule ([`Env::due`](tutti_graph::Env::due)), so a
 //! seek, a loop wrap or a tempo change inside a block needs no bookkeeping,
 //! and an offline fork plays the clip on its render's `Env`.
 //!

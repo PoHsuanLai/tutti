@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "VST2 plugin hosting (audio + native editor) via the vst-tutti crate"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-vst2-host"
+readme = "README.md"
+keywords = ["vst2", "vst", "audio", "plugin", "host"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -52,3 +56,7 @@ tempfile = "3"
 # the test the `ProcessCapture` type and the misbehaviour switches directly
 # instead of hand-mirroring them across the dlopen seam.
 tutti-vst2-test-plugin = { path = "../../vendor/tutti-vst2-test-plugin" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

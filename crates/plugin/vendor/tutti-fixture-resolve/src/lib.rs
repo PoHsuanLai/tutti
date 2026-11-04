@@ -31,6 +31,8 @@
 //! silently reversed a mutation-verification result, which is the one thing
 //! mutation testing exists to be trusted for.
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 
 /// The cdylib filename for the target being built, e.g.

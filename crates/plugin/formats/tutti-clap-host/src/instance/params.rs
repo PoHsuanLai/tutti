@@ -108,7 +108,7 @@ impl ClapLoaded {
     /// [`ClapParamInfo`] (with `module` and the full [`ClapParamFlags`]) stays
     /// inside; the crate boundary hands out the shared
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
-    /// [`parameter_list`](Self::parameter_list).
+    /// [`get_parameter_list`](Self::get_parameter_list).
     pub(crate) fn parameter_info(&self, index: u32) -> Option<ClapParamInfo> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_info_fn = ext.get_info?;

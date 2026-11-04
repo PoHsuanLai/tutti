@@ -508,7 +508,7 @@ pub fn recv_resumable(
 ///
 /// So each platform gets the mechanism it actually has. Unix arms `SO_RCVTIMEO`
 /// and lets the kernel end the wait; Windows never starts one, asking
-/// [`bytes_available`] whether a read would block and doing the waiting on this
+/// `bytes_available` whether a read would block and doing the waiting on this
 /// side. `set_nonblocking` looks like the Windows answer and is not — see
 /// [`Wakeup::arm`] for what happened when it was tried.
 ///
@@ -549,7 +549,7 @@ enum Wakeup {
     /// No wakeup could be armed. The deadline still holds between syscalls, but
     /// a single blocked read can overshoot it.
     ///
-    /// Not reachable on Windows, where [`Wakeup::Peek`] always applies — hence
+    /// Not reachable on Windows, where `Wakeup::Peek` always applies — hence
     /// the `cfg`, which keeps the dead arm from having to be tolerated there.
     #[cfg(not(windows))]
     None,
@@ -607,7 +607,7 @@ impl Wakeup {
 
     /// Whether a blocking `read` on this stream would park the thread now.
     ///
-    /// Only [`Wakeup::Peek`] can answer, and it answers conservatively: any
+    /// Only `Wakeup::Peek` can answer, and it answers conservatively: any
     /// failure to peek reports `false`, handing the decision to the real read.
     /// A peek must never be able to *invent* a reason not to read — that is how
     /// "the peer is quiet" turns into "the peer died", which is precisely the

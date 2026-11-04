@@ -213,7 +213,7 @@ impl AudioEngine {
     ///
     /// # Errors
     /// Whatever the driver's [`open`](StreamDriver::open) reports; for
-    /// [`CpalDriver`](crate::CpalDriver), [`Error::InvalidConfig`] for an
+    /// [`CpalDriver`], [`Error::InvalidConfig`] for an
     /// unsupported sample format or [`Error::BuildStream`] /
     /// [`Error::PlayStream`] from CPAL.
     pub fn start_with<D: StreamDriver>(

@@ -28,7 +28,7 @@ use tutti_io::Wave;
 ///
 /// Plain data. The sampler never decides the tier on its own; it plays whichever
 /// variant it is handed, and the caller owns the decision — a host's tiering
-/// policy, say. [`probe`](crate::probe) reports what a file *allows* —
+/// policy, say. [`probe`](fn@crate::probe) reports what a file *allows* —
 /// a `streamable: false` file has no `Disk` option at all.
 ///
 /// An enum rather than a trait over the two tiers, for the reason the runtime

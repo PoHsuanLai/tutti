@@ -1,6 +1,6 @@
 //! The YIN pitch-detection engine — **crate-internal**.
 //!
-//! The public pitch surface is [`yin`](crate::yin)'s: `yin`, `yin_track`,
+//! The public pitch surface is [`yin`](fn@crate::yin)'s: `yin`, `yin_track`,
 //! `Pitch`, `PitchEstimate`, `YinConfig`. This module is what that one is built
 //! from, and it is deliberately not exported — two parallel pitch APIs on one
 //! crate would be a choice a caller has no basis to make. `PitchDetector` holds

@@ -158,7 +158,7 @@ pub(crate) struct HostState {
     ///
     /// A latch rather than a channel because the signal carries no payload and
     /// is idempotent: ten preset changes between polls need one re-read, not
-    /// ten. Drained by [`Vst2Instance::take_display_stale`].
+    /// ten. Drained by [`HostState::take_display_stale`].
     display_stale: std::sync::atomic::AtomicBool,
     /// Latched by `audioMasterIOChanged`: the plugin changed its pin counts or
     /// its latency (VST2 has no separate latency callback, and plugins call

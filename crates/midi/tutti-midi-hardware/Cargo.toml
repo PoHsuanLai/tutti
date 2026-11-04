@@ -4,10 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-hardware"
 readme = "README.md"
-
+keywords = ["midi", "ump", "audio", "real-time"]
+categories = ["multimedia::audio", "hardware-support"]
 # One feature, and it adds no capability. This crate IS the OS MIDI edge — with
 # the file codecs in `tutti-midi-file`, there is nothing here that is not a port.
 #
@@ -66,3 +68,7 @@ tracing-subscriber = "0.3"
 # allocator.
 assert_no_alloc = { version = "1", default-features = false }
 tutti-graph = { path = "../../core/tutti-graph" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

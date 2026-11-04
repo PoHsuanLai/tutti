@@ -4,8 +4,10 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Tutti's audio I/O edge — mic monitoring and file decode in, WAV out"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-io"
+readme = "README.md"
 keywords = ["audio", "recording", "capture", "wav"]
 categories = ["multimedia::audio"]
 
@@ -69,3 +71,7 @@ tempfile = "3.8"
 assert_no_alloc = { version = "1", default-features = false }
 # The gate builds a ring by hand to feed the node under a disabled allocator.
 ringbuf = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

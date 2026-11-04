@@ -200,7 +200,7 @@ pub(super) fn handle_command(
 /// codec feature isn't compiled in, the probe fails, or the format is
 /// non-seekable.
 ///
-/// **The verdict comes from [`crate::probe`], not from a local copy of the
+/// **The verdict comes from [`crate::probe()`], not from a local copy of the
 /// rule.** A host picks a playback tier before any of this runs, and it must
 /// reach the same conclusion this function does — so "can the butler stream it"
 /// is asked in exactly one place. Re-deriving it here is how the two would drift

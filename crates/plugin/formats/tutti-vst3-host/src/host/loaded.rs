@@ -90,7 +90,7 @@ pub struct Vst3Loaded {
     pub(super) editor: EditorState,
     pub(super) info: PluginInfo,
     /// IMidiLearn forwarding: armed off the main thread, fed captured CCs from
-    /// the audio thread, drained in [`poll_plugin_notifications`]. Built at load
+    /// the audio thread, drained in [`Self::poll_plugin_notifications`]. Built at load
     /// and outlives activate/deactivate cycles.
     pub(super) midi_learn: MidiLearnConsumer,
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
@@ -221,7 +221,7 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) if the
+    /// Returns [`Vst3Error::LoadFailed`] if the
     /// file is missing, the DSO can't be opened, the factory is empty, no
     /// audio class is found, or the component cannot be created.
     pub fn probe(path: &Path) -> Result<PluginInfo> {
@@ -247,10 +247,10 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) if the
+    /// Returns [`Vst3Error::LoadFailed`] if the
     /// file is missing, the DSO can't be opened, the factory is empty, or no
     /// audio class is found; returns
-    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
+    /// [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: &Path) -> Result<Self> {
         Self::load_class(path, None)
@@ -270,7 +270,7 @@ impl Vst3Loaded {
     /// # Errors
     ///
     /// As [`load`](Self::load), plus
-    /// [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) when no audio
+    /// [`Vst3Error::LoadFailed`] when no audio
     /// class carries `class_name` — the message lists what the bundle does
     /// export, since a near-miss on a display name is the likely cause.
     pub fn load_class(path: &Path, class_name: Option<&str>) -> Result<Self> {
@@ -959,7 +959,7 @@ impl Vst3Loaded {
     /// implement `IUnitInfo` or refuses the id.
     ///
     /// The one write on this interface. Pass
-    /// [`unit_ids::ROOT`](crate::types::unit_ids::ROOT) to select the implicit
+    /// [`unit_ids::ROOT`] to select the implicit
     /// top-level unit. Main/UI thread.
     ///
     /// # Panics
@@ -1350,9 +1350,9 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
+    /// Returns [`Vst3Error::StateError`] if the
     /// host-side `IBStream` wrapper cannot be created, or
-    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// [`Vst3Error::PluginError`] if the plugin
     /// fails `getState`. A parameter dump is **not** substituted: a plugin's
     /// state covers more than parameters (active preset, internal DSP state,
     /// sample references), so a lossy synthetic blob would restore incorrectly
@@ -1453,9 +1453,9 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
+    /// Returns [`Vst3Error::StateError`] if the
     /// `IBStream` wrapper cannot be created, or
-    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// [`Vst3Error::PluginError`] if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
     /// own stream is tolerated, matching [`get_state`](Self::get_state).
     ///
@@ -1560,10 +1560,10 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::EditorError`](crate::Vst3Error::EditorError) if
+    /// Returns [`Vst3Error::EditorError`] if
     /// the plugin has no controller, refuses to create a view, or the view
     /// rejects this platform's window type, and
-    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
+    /// [`Vst3Error::PluginError`] if
     /// `IPlugView::attached` fails.
     ///
     /// # Panics

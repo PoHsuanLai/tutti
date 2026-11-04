@@ -69,7 +69,7 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
 /// Past the end it yields silence, so it is an *unbounded* source — the
 /// caller bounds the transfer by the size of the scratch buffer it fills.
 ///
-/// # Deliberately NOT an [`AudioIn`], and not because of the width
+/// # Deliberately NOT an [`AudioIn`](tutti_core::AudioIn), and not because of the width
 ///
 /// Width is no obstacle: [`AudioIn`](tutti_core::AudioIn) and
 /// [`AudioOut`](tutti_core::AudioOut) carry a runtime [`ChannelLayout`], which is

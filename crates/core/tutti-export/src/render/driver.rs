@@ -7,7 +7,7 @@
 //! stepped exactly once per block no matter which encoder is driving.
 //!
 //! The frame width is a **runtime** value carried by
-//! [`Interleaved`](tutti_types::Interleaved), never a `const CH`. A width in the type can only carry one that is a property of the
+//! [`Interleaved`], never a `const CH`. A width in the type can only carry one that is a property of the
 //! *code*; the destination width here is a property of the caller's config, so
 //! any positive count renders — 3- and 5-wide masters included.
 //!

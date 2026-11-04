@@ -442,7 +442,7 @@ impl SynthVoice {
 
     /// Detach this voice's per-note controllers (M2-104 §7.4.5, D=1): it keeps
     /// its current per-note values but stops responding to any further per-note
-    /// controllers, playing out frozen. The opposite intent from [`reset_mpe`].
+    /// controllers, playing out frozen. The opposite intent from [`Self::reset_mpe`].
     pub(crate) fn detach_mpe(&mut self) {
         self.mpe.detach();
     }

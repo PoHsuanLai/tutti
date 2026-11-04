@@ -28,7 +28,7 @@
 //! # Widths are read when a node is added
 //!
 //! `pipe`, `pipe_input`, `pipe_output` and `chain` fan out over a node's port
-//! counts, which the builder reads from [`Node::shape`] at
+//! counts, which the builder reads from [`Node::shape`](crate::Node::shape) at
 //! [`add`](GraphBuilder::add), before the node is prepared. A node whose
 //! port count depends on its [`Prepare`] would need wiring by
 //! [`connect`](GraphBuilder::connect) instead (none does today).
@@ -341,7 +341,7 @@ impl GraphBuilder {
 
     /// Feeds `to`'s input `to_port` from `from`'s output `from_port` as it
     /// was `delay` frames ago — a declared cycle
-    /// ([`FeedbackFrom`](tutti_types::graph::FeedbackFrom)). `delay` must be at least the maximum block the graph is
+    /// ([`FeedbackFrom`]). `delay` must be at least the maximum block the graph is
     /// built for; [`build`](Self::build) refuses a shorter one.
     pub fn feedback(
         &mut self,

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — lint, metadata and docs.rs policy
+
+`#![forbid(unsafe_code)]` is on every library with no `unsafe` (14 crates), and
+the vendored `vst-tutti` inherits the workspace lints. Published members carry
+the full crates.io metadata (`[workspace.package]` holds `license` and
+`repository`), and every library enables `doc_cfg` under `cfg(docsrs)` with a
+`[package.metadata.docs.rs]` table. CI and `just ci` gain three gates: rustdoc
+with `--document-private-items` (138 broken or redundant links fixed), rustdoc
+per feature for `bevy-tutti`, `tutti-session` and `tutti` (`bevy-tutti`'s
+`export` and `midi` docs failed), and clippy under `--cfg loom` (`tutti-types`'
+task graph no longer takes a `% 1`).
+
 ### Changed — the workspace is on Rust edition 2024
 
 Every member inherits `edition = "2024"` from `[workspace.package]`

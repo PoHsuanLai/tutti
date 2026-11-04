@@ -159,7 +159,7 @@ pub enum HostMessage {
     GetPresetList,
     /// Ask the plugin to load one preset, by an id its list produced.
     ///
-    /// [`PresetId`](crate::protocol::PresetId) is opaque and format-shaped —
+    /// [`PresetId`] is opaque and format-shaped —
     /// never construct one host-side. Three of the four formats number presets
     /// in a space that is not a position in the list, so an invented id loads
     /// the wrong preset rather than failing.

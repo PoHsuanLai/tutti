@@ -144,7 +144,7 @@ struct RefFifo {
 ///
 /// It runs a [`ValidGraph`] directly, written to be obviously right rather
 /// than fast and independently of the compiler: it never calls
-/// [`compile`](crate::compile), reads a [`Plan`](crate::Plan) or shares the
+/// [`compile`](fn@crate::compile), reads a [`Plan`](crate::Plan) or shares the
 /// executor's kernels. It re-derives the evaluation order, the latency
 /// compensation, the delays, the event fan-in and the feedback from the spec
 /// alone, never skips a node, never aliases a buffer and passes nodes no

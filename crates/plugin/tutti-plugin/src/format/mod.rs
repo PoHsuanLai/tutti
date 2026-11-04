@@ -9,7 +9,7 @@
 //!   subprocess (via the `tutti-*-host` crates), but the editor must open in
 //!   the host process because platform GUI toolkits are process-local, so each
 //!   format dlopens the plugin a second time purely for its window.
-//! - [`vst2_in_process`] — VST2's **in-process audio + editor** path. Unlike
+//! - `vst2_in_process` — VST2's **in-process audio + editor** path. Unlike
 //!   VST3/CLAP/AU, VST2 fuses the editor and audio processor into one
 //!   `AEffect`, so the editor can't live in a different process from audio
 //!   without remote-rendering pixels. Hosting in-process is the standard

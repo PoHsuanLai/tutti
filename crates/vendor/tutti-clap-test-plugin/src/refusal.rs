@@ -50,15 +50,15 @@ static REFUSE_RATE: AtomicU64 = AtomicU64::new(ACTIVATE_REFUSE_NONE);
 /// call `process`. No real host asks for it.
 static REFUSE_FRAMES: AtomicU32 = AtomicU32::new(0);
 
-/// Refused-`activate` count since the last [`reset`].
+/// Refused-`activate` count since the last [`tutti_test_plugin_reset_activation`].
 static REFUSALS: AtomicU32 = AtomicU32::new(0);
 
-/// Accepted-`activate` count since the last [`reset`]. Distinguishes "rolled
+/// Accepted-`activate` count since the last [`tutti_test_plugin_reset_activation`]. Distinguishes "rolled
 /// back" (two accepts — the original plus the rollback) from "abandoned" (one).
 static ACCEPTS: AtomicU32 = AtomicU32::new(0);
 
 /// `deactivate` calls that reached an instance that was not active, since the
-/// last [`reset`]: a host breaking `[active]` on `clap_plugin.deactivate`.
+/// last [`tutti_test_plugin_reset_activation`]: a host breaking `[active]` on `clap_plugin.deactivate`.
 static INACTIVE_DEACTIVATIONS: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn note_inactive_deactivation() {

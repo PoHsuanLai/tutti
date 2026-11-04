@@ -1,8 +1,8 @@
 //! Assembling a VBAP surround mix: place each source into the speaker field
 //! with a panner, then fold the panners into one N-wide master.
 //!
-//! [`VbapPannerNode`](crate::vbap::VbapPannerNode) does the placing. The folding
-//! is [`ChannelSumNode`](tutti_nodes::ChannelSumNode)'s — which lives in
+//! [`VbapPannerNode`] does the placing. The folding
+//! is [`ChannelSumNode`]'s — which lives in
 //! `tutti-nodes` rather than here, because summing `K` sources of `N` channels
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
 //! need it too.

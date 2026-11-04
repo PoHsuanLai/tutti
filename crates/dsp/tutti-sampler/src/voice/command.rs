@@ -557,7 +557,7 @@ pub struct VoicePoolHandle {
     pub(crate) tx: Sender<Queued>,
     /// Slots the audio thread has removed and handed back to be freed here.
     ///
-    /// See [`VoicePool::retired`]. Draining this is what actually moves the
+    /// See [`VoicePool`](super::pool::VoicePool)'s `retired`. Draining this is what actually moves the
     /// deallocation off the callback; [`collect_retired`](Self::collect_retired)
     /// is the call that does it.
     pub(crate) retired: Receiver<Retired>,

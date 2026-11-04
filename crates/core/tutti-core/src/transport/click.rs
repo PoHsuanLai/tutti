@@ -112,7 +112,7 @@ pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.
     ///
-    /// Published through an [`ArcLend`] rather than a packed atomic because a
+    /// Published through an [`ArcLend`](tutti_types::ArcLend) rather than a packed atomic because a
     /// [`MeterMap`] is a `Vec`, not a scalar. The node holds that cell itself
     /// (taken when it is built) and reads it once per block, never per
     /// sample; the control side reads the [`ProjectMeter`]'s own mirror.

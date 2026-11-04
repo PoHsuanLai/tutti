@@ -221,7 +221,7 @@ pub fn finish(state: LoudnessState) -> Loudness {
 /// [`Loudness::gain_to`], which subtracts it into a `NaN` — the same hazard the
 /// `-70` LUFS gate guards against.
 ///
-/// Not routed through [`Amplitude`], which is `f32`: converting first narrows
+/// Not routed through [`tutti_types::Amplitude`], which is `f32`: converting first narrows
 /// the input before the `log10`, defeating the reason this path is `f64`. The
 /// arithmetic is [`Db::from_amplitude`]'s, at the width this boundary holds.
 #[inline]

@@ -89,7 +89,7 @@ fn make_audio_bus(num_channels: ChannelLayout) -> vst3::Steinberg::Vst::AudioBus
 ///
 /// Parameterized by the committed sample format `T`, which decides the
 /// `channelBuffers32`/`64` union member written for every bus (see
-/// [`set_channel_buffers`]). The two members alias the same machine pointer, so
+/// [`Vst3Sample::set_channel_buffers`]). The two members alias the same machine pointer, so
 /// `T` only selects *which* member the code names — not the bytes stored.
 ///
 /// The `aux` block stays `Vec<f64>` regardless of `T`: it's the wider of the two

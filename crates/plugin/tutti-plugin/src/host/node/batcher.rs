@@ -376,7 +376,7 @@ impl Batcher {
     /// bridge alone would not notice in time: it learns of a dead peer only
     /// when it next reads the socket, which it does for a command, and this
     /// wait sends none. So the wait also asks the process itself
-    /// ([`ForkWatch::server_died`]), every [`PROCESS_POLL`].
+    /// ([`ForkWatch::server_died`]), every `PROCESS_POLL`.
     fn await_output(&mut self, bridge: &PluginBridge) {
         const PROCESS_POLL: Duration = Duration::from_millis(5);
         let (Some(wait), Some(seq)) = (&self.offline_wait, self.expect_seq) else {

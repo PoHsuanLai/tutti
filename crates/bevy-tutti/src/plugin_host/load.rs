@@ -13,7 +13,7 @@
 //! that already exists. A load has neither property: it spans frames, and it can
 //! arrive before the catalog is scanned or the engine is up. A one-shot queued
 //! closure has no frame-to-frame residency, so it cannot retry — **the component
-//! is the retry state**. This mirrors [`PlaySoundFont`], for the same reason.
+//! is the retry state**. This mirrors `PlaySoundFont` (the `soundfont` feature), for the same reason.
 //!
 //! There is deliberately no second entry point: two ways to name one thing
 //! drift, and reconciling them costs more than the convenience is worth.
@@ -24,8 +24,6 @@
 //! fields, machinery) → `AudioNode` + [`PluginEmitter`], with
 //! [`PluginLoadDone`] triggered on the entity either way and
 //! [`PluginLoadTerminated`] marking the attempt as spent.
-//!
-//! [`PlaySoundFont`]: crate::soundfont::PlaySoundFont
 
 use bevy_ecs::prelude::*;
 use bevy_log::{error, info};

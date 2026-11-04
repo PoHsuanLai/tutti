@@ -4,11 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "VST3 plugin hosting library for Rust"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-vst3-host"
+readme = "README.md"
 keywords = ["vst3", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
-readme = "README.md"
 # Not a native library in the usual sense — this exists so `build.rs` can pass
 # `cargo:probe-dir=…` to dependents as `DEP_TUTTI_VST3_PROBE_DIR`. `rustc-env`
 # does not propagate across a package boundary, and the reference plugin this
@@ -134,3 +135,4 @@ harness = false
 # feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

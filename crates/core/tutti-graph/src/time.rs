@@ -14,7 +14,7 @@
 //! stamped with an absolute frame lands (or is refused) wherever that number
 //! happens to fall, and an offset treated as a frame schedules something at
 //! the start of the session. Both are separate types, and the only
-//! conversions are through the block's [`Env`](crate::Env):
+//! conversions are through the block's [`Env`]:
 //! [`offset_of`](crate::Env::offset_of) (checked — a frame outside the block
 //! has no offset) and [`frame_at`](crate::Env::frame_at).
 //!

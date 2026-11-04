@@ -388,7 +388,7 @@ impl VbapPanner {
     /// gains **once**, at the block's last frame.
     ///
     /// The smoother advances `frames` steps in one analytic move
-    /// ([`ExponentialSmoother::advance`](crate::ExponentialSmoother::advance)),
+    /// ([`ExponentialSmoother::advance`](crate::smoothing::ExponentialSmoother::advance)),
     /// so the 50 ms ramp keeps its timing. The frames in between are not
     /// solved: the node ramps linearly towards this set instead, which saves
     /// two VBAP solves per frame.

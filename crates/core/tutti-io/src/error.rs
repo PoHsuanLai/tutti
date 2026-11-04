@@ -1,6 +1,6 @@
 //! What the live I/O edge can fail with.
 //!
-//! One [`Error`] for the crate. The variant that earns it a type of its own is
+//! One [`Error`](enum@Error) for the crate. The variant that earns it a type of its own is
 //! [`ChannelWidthMismatch`](Error::ChannelWidthMismatch): [`Recorder::start`]'s
 //! refusal is the release-build half of the width-agreement invariant (the
 //! debug half is [`pump`]'s `debug_assert_eq!`), and a safety net a caller may

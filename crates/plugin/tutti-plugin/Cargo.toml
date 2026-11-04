@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Plugin hosting for Tutti: loads VST3, CLAP and AU plugins in isolated subprocesses (VST2 in-process) as audio-graph nodes"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-plugin"
+readme = "README.md"
+keywords = ["audio", "plugin", "vst3", "clap", "host"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -180,6 +184,7 @@ thread-priority = "1.1"
 # the feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[bench]]
 name = "vst2_in_process"

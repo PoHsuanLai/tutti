@@ -1002,7 +1002,7 @@ fn registered_controller_expression(
 
 /// Decodes a [`Vst3Event`] into a Tutti UMP [`MidiEvent`].
 ///
-/// Notes and poly-pressure go through [`tutti_midi_types::encode`], so the
+/// Notes and poly-pressure go through [`tutti_midi_types::convert`], so the
 /// plugin's `f32` velocity / pressure is preserved at MIDI-2's full bit width
 /// instead of being squashed to 7 bits. A [`Vst3Event::Data`] carrying SysEx is
 /// rebuilt as a UMP SysEx7 packet; other Data events decode from their raw

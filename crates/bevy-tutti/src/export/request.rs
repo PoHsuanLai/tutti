@@ -261,7 +261,7 @@ impl ExportInFlight {
     /// `Phase::Collect` (the frame's commit), on the main thread, where a
     /// forked in-process VST2 plugin in it must close. The export's token
     /// goes with the task, so the next frame's
-    /// [`plugin_render_mode`](crate::plugin_host::plugin_render_mode) tells
+    /// `plugin_render_mode` (the `plugin` feature) tells
     /// the hosted plugins `Realtime`.
     ///
     /// **At shutdown**, an export still in flight when the world (and its

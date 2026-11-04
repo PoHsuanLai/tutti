@@ -4,8 +4,10 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Offline audio export and rendering for Tutti audio engine"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-export"
+readme = "README.md"
 keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
 categories = ["multimedia::audio"]
 
@@ -74,3 +76,7 @@ symphonia = { version = "0.5.5", default-features = false, features = ["wav", "p
 [[bench]]
 name = "offline_render"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

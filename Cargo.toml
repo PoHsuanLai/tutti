@@ -74,10 +74,13 @@ members = [
 
 # The edition every member inherits with `edition.workspace = true`, vendored
 # members included, and the minimum Rust they build with (`rust-version`, the
-# pinned toolchain's minor; let chains need 1.88). Pinned here once.
+# pinned toolchain's minor; let chains need 1.88), and the licence and
+# repository the published members share. Pinned here once.
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
 
 # Lints every member inherits with `[lints] workspace = true`.
 #
@@ -96,9 +99,11 @@ private_intra_doc_links = "deny"
 # `cfg(loom)` is set from the command line (`RUSTFLAGS="--cfg loom"`) to run the
 # loom models, so rustc cannot know it is intended and warns on every `#[cfg]`
 # that names it. Declared once here for every member; `tutti-shm-model` declares
-# it for itself because it cannot take the workspace table.
+# it for itself because it cannot take the workspace table. `cfg(docsrs)` is
+# the same: docs.rs sets it (`rustdoc-args` in each crate's
+# `[package.metadata.docs.rs]`) for the `doc_cfg` feature badges.
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(docsrs)'] }
 
 # A system's argument list IS its dependency declaration, and a query filter is
 # the query specification — aliasing either behind a type or a SystemParam bundle

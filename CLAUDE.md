@@ -85,6 +85,8 @@ scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
 scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
 scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
+scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
+just check-loom                    # clippy under --cfg loom (arc-lend, tutti-types, tutti-shm-model)
 ```
 
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,

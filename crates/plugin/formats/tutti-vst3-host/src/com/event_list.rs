@@ -110,7 +110,7 @@ struct Inner {
     sysex: SysExAssembler,
     /// The bytes of the SysEx messages a plugin `addEvent`ed to an output
     /// list, which a [`Vst3Event::SysEx`] there indexes. The plugin's pointer
-    /// is valid only for the call, and [`DataEvent`]'s inline bytes hold 16,
+    /// is valid only for the call, and [`DataEvent`](crate::types::DataEvent)'s inline bytes hold 16,
     /// so the message is copied here. Reserved on the output list only,
     /// never grown, and cleared with `events`.
     sysex_out: Vec<u8>,
@@ -145,7 +145,7 @@ impl Inner {
     }
 
     /// Takes in a SysEx message a plugin `addEvent`ed: copied into
-    /// `sysex_out` (all of it, not [`DataEvent`]'s 16 inline bytes) and
+    /// `sysex_out` (all of it, not [`DataEvent`](crate::types::DataEvent)'s 16 inline bytes) and
     /// staged as a [`Vst3Event::SysEx`] over it. Dropped whole, counted in
     /// `dropped`, when the arena has no room: never truncated. The caller has
     /// checked the list's room (`addEvent` refuses a full list first).

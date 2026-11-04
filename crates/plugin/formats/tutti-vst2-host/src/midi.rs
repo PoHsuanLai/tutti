@@ -165,7 +165,7 @@ fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> vst::api::MidiE
 /// Pre-allocated, reusable storage for a VST2 `api::Events` flexible-
 /// array struct.
 ///
-/// One instance lives on each [`MidiIo`]; [`Self::stage`]
+/// One instance lives on each [`MidiIo`]; [`Self::stage_piece`]
 /// rebuilds the contents in place for the next process call. Every list is
 /// reserved at construction for a block's whole MIDI cap
 /// ([`MIDI_STACK_CAPACITY`]: no caller hands it more) and never grows: an
@@ -265,8 +265,8 @@ impl MidiSendBuffer {
     /// the caller skips dispatch entirely).
     ///
     /// # Safety
-    /// The returned pointer is valid until [`Self::reset`] runs or a
-    /// subsequent [`Self::stage`] call. Caller must hand it to
+    /// The returned pointer is valid until the next
+    /// [`Self::stage_piece`] call. Caller must hand it to
     /// `vst::plugin::Plugin::process_events` and not retain it past
     /// that call.
     pub(crate) fn stage_piece(

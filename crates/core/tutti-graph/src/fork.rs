@@ -717,7 +717,7 @@ impl Editor {
     /// Once a unit is inserted it belongs to the executor, so the graph keeps
     /// no copy of it. A node that can be forked hands the editor a
     /// [`ForkSource`] when it is inserted
-    /// ([`IntoNode::into_parts`](crate::IntoNode::into_parts)): a
+    /// ([`IntoNode::into_parts`]): a
     /// control-side object that produces a fresh unit on demand. The sources
     /// this crate provides are [`ForkByClone`] (a clone taken at insert, for
     /// a node whose `Clone` shares nothing) and

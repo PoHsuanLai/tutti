@@ -12,7 +12,7 @@
 //!
 //! Ungated: the floor, with [`Curve`]. The lane that evaluates it is
 //! `tutti-nodes`' `ControlLaneNode`; the compiler that builds it from routes
-//! is [`compile`](crate::compile).
+//! is [`compile`](fn@crate::compile).
 
 use std::fmt;
 use std::sync::Arc;

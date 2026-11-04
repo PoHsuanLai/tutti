@@ -5,7 +5,7 @@
 //!
 //! That search is wrapped in a [`ServerLocator`] value rather than performed by
 //! a bare function, because "which binary do we spawn?" is a decision two call
-//! sites make ([`launch`](super::launch) and
+//! sites make ([`launch`](fn@super::launch) and
 //! [`probe_metadata`](super::probe_metadata)) and a test needs to answer
 //! differently. Reading the environment inside the search made the answer
 //! **process-global**: the only way to point a test at a stand-in server was

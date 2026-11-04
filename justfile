@@ -366,10 +366,27 @@ check-windows:
 
 # The rustdoc gate. The workspace sets broken_intra_doc_links and
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this
-# is where that is actually enforced.
+# is where that is actually enforced. `--document-private-items` is on because
+# the crates' internals carry doc comments with links too, and a link that only
+# breaks in a private item rots until someone reads the private docs.
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps \
+    RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps \
         --exclude rustysynth-tutti
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
+    scripts/check-doc-features.sh
+    # The docs.rs build: nightly, `--cfg docsrs`, so `doc_cfg` must parse and
+    # every feature badge must render.
+    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --locked --workspace --no-deps \
+        --exclude rustysynth-tutti
+
+# Clippy with `--cfg loom` on the crates that carry loom models. The flag swaps
+# the atomics and constants those crates use, so code that is clean in a normal
+# build can trip a lint only here (a `% 1` on a constant loom sets to 1). The
+# models run in `loom`; nothing else compiles this configuration.
+check-loom:
+    RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-types -p tutti-shm-model \
+        --all-targets -- -D warnings
 
 # The audio-correctness harnesses: a Rust example renders audio to a directory,
 # and a Python judge grades it.
@@ -394,4 +411,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-adapter check-features test test-features test-editor test-doc doc
+ci: lint check-paths check-bevy-free check-adapter check-features check-loom test test-features test-editor test-doc doc

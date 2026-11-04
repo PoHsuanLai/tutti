@@ -12,7 +12,11 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "The tutti audio engine's Bevy-free API layer: a graph, its engine, its device and the order they run in"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-session"
+keywords = ["audio", "real-time", "engine", "daw"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -95,6 +99,7 @@ tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 # The device-free device tests (`ManualStreamDriver`): `device` is a feature,
 # so this suite runs under it (a workspace run unifies it in through

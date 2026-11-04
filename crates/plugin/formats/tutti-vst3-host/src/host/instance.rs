@@ -221,7 +221,7 @@ struct AudioIO<T: Vst3Sample> {
     output: OutputStaging<T>,
     cc: CcRoute,
     /// RT-side MIDI-learn CC capture, paired with the
-    /// [`Vst3Loaded`](super::loaded::Vst3Loaded)'s consumer. Inert (a single
+    /// [`Vst3Loaded`]'s consumer. Inert (a single
     /// relaxed atomic load) unless learn is armed.
     midi_learn: MidiLearnProducer,
 }
@@ -270,7 +270,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
     /// # Errors
     ///
     /// See [`Vst3Loaded::load`] for load-time errors, plus
-    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) with
+    /// [`Vst3Error::PluginError`] with
     /// [`LoadStage::Setup`] or [`LoadStage::Activation`] if the plugin rejects
     /// the requested sample rate / block size or refuses to activate.
     /// Returns [`Vst3Error::NotSupported`] if `T = f64` and the plugin does

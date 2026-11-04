@@ -170,7 +170,7 @@ otherwise the loader sets a fixed answer.
 | `MIDI_OUT` | Negotiated | ◐ | ◐ | ○ | ◐ |
 | `EDITOR` | Negotiated | ● | ● | ● | ● |
 | `EDITOR_RESIZE` | Negotiated | ◐ | ◐ | ○ | ○ |
-| `TRANSPORT` | Best-effort | ◐ | ● | ○ | ● |
+| `TRANSPORT` | Best-effort | ◐ | ● | ◐ | ● |
 | `PARAM_AUTOMATION` | Best-effort | ● | ● | ○ | ○ |
 | `NOTE_EXPRESSION` | Best-effort | ◐ | ◐ | ✕ | ✕ |
 | `SEQUENCER_CONTEXT` | Best-effort | ◐ | ✕ | ✕ | ✕ |
@@ -179,12 +179,13 @@ otherwise the loader sets a fixed answer.
 | `RENDER_MODE` | Reaction | ● | ◐ | ◐ | ● |
 | `EDITOR_FLOATING` | Negotiated | ✕ | ◐ | ✕ | ✕ |
 
-Notes: the AU loader reports `MIDI_IN`, `EDITOR`, `RENDER_MODE` and the two
-preset bits; its MIDI-output, transport and f64 paths are unimplemented (`○`),
-not spec-impossible. AU's `MIDI_IN` is `◐` off the component type (`aumu` /
+Notes: the AU loader reports `MIDI_IN`, `EDITOR`, `TRANSPORT`, `RENDER_MODE`
+and the two preset bits; its MIDI-output and f64 paths are unimplemented (`○`),
+not spec-impossible. AU's `TRANSPORT` is `◐` because it reports whether the unit
+accepted `kAudioUnitProperty_HostCallbacks`; the loader feeds it every block. AU's `MIDI_IN` is `◐` off the component type (`aumu` /
 `aumf` / `aumi` receive MIDI, `aufx` does not), which is the same predicate the
 process path gates its per-block MIDI on. `MIDI_OUT` is not its mirror: reading
-events back needs a host callback this loader does not install, so it stays
+events back needs a MIDI-output callback this loader does not install, so it stays
 `○`. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally).
 `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
 

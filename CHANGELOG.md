@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — tempo-synced AUs hosted by the plugin server follow the project transport
+
+- **The AU loader never installed the host callbacks**, so a tempo-synced AU
+  (a note-value delay, an LFO sync, an arpeggiator) ran at its own tempo, live
+  and in export. The loader installs `kAudioUnitProperty_HostCallbacks` at load
+  and publishes every block's tempo, beat, time signature, measure downbeat,
+  play/record/cycle state and the distance to the next beat. The AU feature
+  report now declares `TRANSPORT` (`probed::AU` claims it). New in
+  `tutti-plugin-types`: `TransportInfo::samples_to_next_beat` and
+  `PlayheadWatch` (the "transport changed" flag from consecutive blocks).
+- **Before the host publishes a transport, the callbacks answered `noErr`
+  with 120 BPM at beat 0.** They now answer
+  `kAudioUnitErr_CannotDoInCurrentContext` and write nothing, as the header
+  specifies for a host that cannot provide it (`TransportState::is_published`,
+  new). A caller of `install_host_callbacks` that relied on the default must
+  call `set_transport` first. macOS only; the beat distance and the change
+  flag are tested on every platform.
+
 ### Fixed — the AU MIDI-output callback delivers SysEx; `MusicDeviceSysEx` gets framed messages; the server serves a CLAP plugin's rescan and restart requests
 
 - **The AU MIDI-output callback dropped every SysEx.** `Midi1Decoder` (new, in

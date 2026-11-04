@@ -188,13 +188,24 @@ pub struct TransportState {
     /// `swap`, so concurrent reads by two procs in one block cannot both observe
     /// it — see [`take_state_changed`](Self::take_state_changed).
     state_changed: AtomicBool,
+    /// Whether the host has published a snapshot. Until it has, the procs
+    /// answer `kAudioUnitErr_CannotDoInCurrentContext` ("the host cannot provide
+    /// the requested information", per the header) rather than fabricate a
+    /// transport: an AU that is told that falls back to its own defaults and
+    /// asks again next block, one that is handed a made-up 120 BPM locks to it.
+    ///
+    /// `Release` on the store in [`set_transport`](TransportState::set_transport)
+    /// pairs with the `Acquire` load in the procs, so an AU that sees it set
+    /// also sees the snapshot's values.
+    published: AtomicBool,
 }
 
 impl Default for TransportState {
-    /// A stopped transport at 120 BPM, 4/4, beat 0 — the same musical defaults
-    /// [`TransportInfo`] uses, so an AU that pulls before the host has published
-    /// anything sees a coherent stopped transport rather than a 0 BPM one it
-    /// would divide by.
+    /// No transport published yet: the procs answer
+    /// `kAudioUnitErr_CannotDoInCurrentContext` until the first
+    /// [`set_transport`](TransportState::set_transport). The stored values are
+    /// a stopped 120 BPM, 4/4 transport at beat 0, the same musical defaults
+    /// [`TransportInfo`] uses, so the getters never report 0 BPM.
     fn default() -> Self {
         Self {
             tempo_bits: AtomicU64::new(120.0f64.to_bits()),
@@ -210,12 +221,13 @@ impl Default for TransportState {
             recording: AtomicBool::new(false),
             cycling: AtomicBool::new(false),
             state_changed: AtomicBool::new(false),
+            published: AtomicBool::new(false),
         }
     }
 }
 
 impl TransportState {
-    /// A stopped transport at the musical defaults. See [`Default`].
+    /// A state with nothing published yet. See [`Default`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -281,6 +293,13 @@ impl TransportState {
         if changed {
             self.state_changed.store(true, Ordering::Release);
         }
+        self.published.store(true, Ordering::Release);
+    }
+
+    /// Whether [`set_transport`](Self::set_transport) has run at least once,
+    /// which is when the procs start answering with values.
+    pub fn is_published(&self) -> bool {
+        self.published.load(Ordering::Acquire)
     }
 
     /// Sets how many samples remain from the start of the next render buffer to
@@ -424,7 +443,8 @@ unsafe fn write_opt<T>(ptr: *mut T, value: T) {
 /// Unwinding across an `extern "C"` frame is undefined behaviour, so every proc
 /// funnels through here. A caught panic becomes
 /// `kAudioUnitErr_CannotDoInCurrentContext`, which is exactly the status Apple's
-/// header documents for "the host cannot provide this right now" — so a plugin
+/// header documents for "the host cannot provide this right now" — as is the
+/// answer before the host has published any transport — so a plugin
 /// that checks the status falls back to its own defaults rather than consuming
 /// values that were never written.
 ///
@@ -437,6 +457,11 @@ where
     let Some(state) = state_from(user_data) else {
         return K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT;
     };
+    // Nothing published: no out-param is written and the AU is told the host
+    // cannot answer.
+    if !state.is_published() {
+        return K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT;
+    }
     // `AssertUnwindSafe`: the only state reachable is `&TransportState`, whose
     // fields are atomics. A panic between two stores leaves each atomic holding
     // a value that was legal to store — a stale reading, not a broken invariant

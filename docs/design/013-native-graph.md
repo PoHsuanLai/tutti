@@ -6940,6 +6940,20 @@ The scale is sent once, at open: a window moved to a display of another
 scale keeps the editor at the scale it opened at until it is reopened
 (nothing carries a scale to an open editor).
 
+AU pulls instead of being pushed: the plugin-server loader installs
+`kAudioUnitProperty_HostCallbacks` once at load, declares `Features::TRANSPORT`
+when the unit accepts it, and each block's `process` publishes the chunk's
+snapshot into `tutti_au_host::TransportState` (atomics, no lock or
+allocation) before the render in which the AU calls the procs. The tempo,
+beat, time signature, measure downbeat, cycle and play/record state are the
+snapshot's; `TransportInfo::samples_to_next_beat` is the distance to the next
+whole beat (0 on a beat and while stopped); `PlayheadWatch` turns consecutive
+snapshots into `outTransportStateChanged` (a start, a stop, or a beat that is
+not where playing would have put it). Until the first publish the procs answer
+`kAudioUnitErr_CannotDoInCurrentContext`, the header's "host cannot provide",
+so a unit keeps its own tempo rather than lock to a made-up one. A block
+without a transport leaves the last one in place.
+
 Pinned analytically: `transport_source`'s unit tests (project time
 rolling through a tempo change, held through a stop and a start where it
 stood, through a stop and a start inside one chunk and a loop edit,
@@ -6951,7 +6965,7 @@ chunk counted, not re-seated; a NaN beat at a tempo change re-seated;
 a hand-built transport read by the
 playhead's rule through `Cx::transport_at`, and `tutti-graph`'s
 `a_bare_beats_walk_has_no_origin`; the host clock at a chunk's frame, and on the OS clock),
-`Transport::continuity`'s test, `TransportInfo`'s nearest-clock test,
+`Transport::continuity`'s test, `TransportInfo`'s nearest-clock and next-beat tests, `PlayheadWatch`'s tests, the AU loader's `the_loader_installs_host_callbacks_and_feeds_each_blocks_transport` and `tutti-au-host`'s `an_au_pulls_the_published_transport_through_audiotoolbox` (macOS),
 bevy-tutti's resize conversion (`a_window_resize_is_sent_in_the_plugins_units`,
 `the_hosts_write_echoes_as_no_resize_at_a_fractional_scale`), both formats' flag tests,
 the VST2 probe through a live node (`vst2_in_process_transport.rs`) and a

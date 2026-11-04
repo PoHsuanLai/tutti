@@ -221,6 +221,12 @@ impl PluginBridge {
         self.audio.rate_refusal()
     }
 
+    /// See [`AudioBridge::set_rate_timeout`](super::audio::AudioBridge::set_rate_timeout).
+    #[cfg(test)]
+    pub fn set_rate_timeout(&self, timeout: std::time::Duration) {
+        self.audio.set_rate_timeout(timeout);
+    }
+
     pub fn open_editor(
         &self,
         parent_ptr: *mut c_void,

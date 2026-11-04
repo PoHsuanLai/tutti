@@ -1,7 +1,7 @@
 //! Shared running/crashed flags between the audio-bridge handle and the
 //! bridge thread.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -28,6 +28,8 @@ pub(super) struct Lifecycle {
     /// crash: the plugin stays loaded and is retried at every later rate
     /// change, which clears this when it takes one.
     refusal: Arc<Mutex<Option<(f64, String)>>>,
+    /// How long a rate change is waited on, in milliseconds.
+    rate_timeout_ms: Arc<AtomicU64>,
 }
 
 impl Lifecycle {
@@ -37,7 +39,20 @@ impl Lifecycle {
             crashed: Arc::new(AtomicBool::new(false)),
             cause: Arc::new(Mutex::new(None)),
             refusal: Arc::new(Mutex::new(None)),
+            rate_timeout_ms: Arc::new(AtomicU64::new(
+                super::dispatch::RATE_TIMEOUT.as_millis() as u64
+            )),
         }
+    }
+
+    pub(super) fn rate_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.rate_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_rate_timeout(&self, timeout: std::time::Duration) {
+        self.rate_timeout_ms
+            .store(timeout.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// The refused rate (Hz) and the plugin's reason, while one stands.

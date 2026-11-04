@@ -161,7 +161,7 @@ fn pump(
         let result = handle(
             cmd, stream, channels, payloads, &mut owed, &mut inbox, lifecycle,
         );
-        drain_unsolicited(&mut inbox, channels, listener);
+        drain_unsolicited(&mut inbox, channels, listener, lifecycle);
 
         if let Err(e) = result {
             // The error is stringified here, at the only place it exists.
@@ -199,7 +199,15 @@ fn crash(lifecycle: &Lifecycle, listener: &ListenerSlot, cause: String) {
     }
 }
 
-fn drain_unsolicited(inbox: &mut Unsolicited, channels: &Channels, listener: &ListenerSlot) {
+fn drain_unsolicited(
+    inbox: &mut Unsolicited,
+    channels: &Channels,
+    listener: &ListenerSlot,
+    lifecycle: &Lifecycle,
+) {
+    if let Some((rate, error)) = inbox.take_late_rate() {
+        super::dispatch::apply_rate_reply(lifecycle, inbox, rate, error);
+    }
     channels.note_dropped_param_events(inbox.take_dropped());
     let cb = listener.lock().clone();
     for ev in inbox.drain() {
@@ -326,7 +334,7 @@ mod tests {
             for i in 0..(UNSOLICITED_PARAMS + over) as i32 {
                 inbox.param(i, 0.0);
             }
-            drain_unsolicited(&mut inbox, &channels, &listener);
+            drain_unsolicited(&mut inbox, &channels, &listener, &Lifecycle::new());
             assert_eq!(channels.dropped_param_events(), round * over as u64);
         }
         let heard = heard.lock();

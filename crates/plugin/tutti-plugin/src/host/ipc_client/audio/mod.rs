@@ -174,6 +174,13 @@ impl AudioBridge {
         self.lifecycle.rate_refusal()
     }
 
+    /// Shorten the wait for a rate change's answer, for a test that would
+    /// otherwise wait out the production budget.
+    #[cfg(test)]
+    pub fn set_rate_timeout(&self, timeout: Duration) {
+        self.lifecycle.set_rate_timeout(timeout);
+    }
+
     /// How many replies the bridge thread has taken back off the socket after
     /// abandoning the blocks that asked for them.
     ///

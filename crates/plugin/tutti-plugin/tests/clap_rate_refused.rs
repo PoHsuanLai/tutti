@@ -100,6 +100,8 @@ fn assert_silent(unit: &mut Rig, what: &str) {
     }
 }
 
+/// (The dropout count is pinned inside the cycle below.)
+///
 /// The whole cycle on one plugin: running, refused (silent, visible, not
 /// dead, an invalidation raised), refused again, revived by a rate it takes,
 /// and a drop during a refusal that returns promptly.
@@ -111,7 +113,9 @@ fn assert_silent(unit: &mut Rig, what: &str) {
 /// old rate and the silence assertion fails. The bridge never clears the
 /// refusal on a success reply → the status stays `RateRefused` after the
 /// accepted rate → fails. The server keeps `rate_refused` after a success →
-/// the plugin stays silent → fails.
+/// the plugin stays silent → fails. `collect` counts a missed chunk while the
+/// refusal is latched (drop the `rate_refusal().is_none()` condition) → the
+/// dropout count rises → fails.
 #[test]
 fn a_refused_rate_is_silent_visible_and_retried() {
     let _lock = exclusive();
@@ -133,7 +137,13 @@ fn a_refused_rate_is_silent_visible_and_retried() {
     let status = wait_for(&mut unit, &handle, |s| *s != PluginStatus::Alive);
     assert!(refused_at(&status, REFUSED_RATE), "{status:?}");
     assert!(!status.is_dead() && !handle.is_crashed());
+    let missed = unit.controls.missed_chunks();
     assert_silent(&mut unit, "refused");
+    assert_eq!(
+        unit.controls.missed_chunks(),
+        missed,
+        "a refused plugin's silence is deliberate, not a dropout"
+    );
     assert!(
         events.lock().unwrap().iter().any(
             |e| matches!(e, PluginInvalidation::RateRefused { rate, .. } if rate.0 == REFUSED_RATE)

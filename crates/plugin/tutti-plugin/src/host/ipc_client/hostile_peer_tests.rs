@@ -933,6 +933,51 @@ fn a_refused_rate_is_reported_without_crashing_the_bridge() {
     assert!(!mock.bridge.is_crashed());
 }
 
+/// **A rate change that is not answered in time is a refusal, not a crash, and
+/// its late answer settles it.** The wait is shortened to 300 ms; the server
+/// answers (accepted) after 800 ms. In between the bridge reports the refusal
+/// ("did not answer") and stays healthy; the late reply is taken off the stream
+/// and clears it.
+///
+/// Mutation (run): the expiry returns `BridgeError::Timeout` (the old fatal
+/// path) → the bridge crashes → fails. Drop `expect_late_rate_reply` → the late
+/// reply is read as another request's → `UnexpectedMessage` crash or a refusal
+/// that never clears → fails.
+#[test]
+fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
+    let mock = MockServer::start("late_rate", |msg| match msg {
+        HostMessage::SetSampleRate { rate } => Action::ReplyManySlowly {
+            msgs: vec![BridgeMessage::SampleRateSet { rate, error: None }],
+            gap: Duration::from_millis(800),
+        },
+        HostMessage::GetParameter { .. } => {
+            Action::Reply(Box::new(BridgeMessage::ParameterValue { value: Some(0.5) }))
+        }
+        _ => Action::Silent,
+    });
+    mock.bridge.set_rate_timeout(Duration::from_millis(300));
+    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
+    let (rate, reason) = mock.bridge.rate_refusal().unwrap();
+    assert_eq!(rate, 96_000.0);
+    assert!(reason.contains("did not answer"), "{reason}");
+    assert!(
+        !mock.bridge.is_crashed(),
+        "an unanswered rate is not a crash"
+    );
+
+    // The bridge reads the stream when it has something to do: the next
+    // command finds the late answer ahead of its own reply and applies it.
+    std::thread::sleep(Duration::from_millis(1_000));
+    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    assert_eq!(value, Some(0.5), "the reply is its own, not the late one");
+    assert!(
+        wait_until(|| mock.bridge.rate_refusal().is_none()),
+        "the late answer clears the refusal"
+    );
+    assert!(!mock.bridge.is_crashed());
+}
+
 /// **Dropping the bridge ends a wait for a rate change that never answers.**
 /// The bridge thread waits up to `RATE_TIMEOUT` (10 s) for the reply, and the
 /// drop joins it: the wait must notice the shutdown, not run out.

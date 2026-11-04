@@ -397,8 +397,9 @@ pub enum BridgeMessage {
     /// A refusal is not "keep the old rate": the plugin may have rolled back to
     /// the rate it had or been left deactivated, and the host's blocks are
     /// already at the new one, so neither renders the audio the host asked for.
-    /// The host treats the plugin as dead rather than hear it at the wrong
-    /// pitch.
+    /// The server renders silence for a refused plugin rather than let it be
+    /// heard at the wrong pitch, and the host retries it at every later rate
+    /// change.
     SampleRateSet {
         /// The rate that was asked for, echoed so a reply read late is never
         /// attributed to a later request.

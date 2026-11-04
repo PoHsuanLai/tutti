@@ -152,6 +152,7 @@ impl Session {
             } => self.handle_load(path, sample_rate, block_size, preferred_format),
             M::UnloadPlugin => {
                 self.plugin = None;
+                self.rate_refused = None;
                 self.shm = None;
                 Ok(Reaction::None)
             }
@@ -419,6 +420,7 @@ impl Session {
             ParameterQueue::chunk_room(block_size),
         );
         self.plugin = Some(plugin);
+        self.rate_refused = None;
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
             loaded,

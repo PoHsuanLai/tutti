@@ -253,6 +253,11 @@ pub(super) struct Unsolicited {
     latency: Option<Samples>,
     tail: Option<PluginTail>,
     rate: Option<Option<(f64, String)>>,
+    /// Rate changes the bridge stopped waiting for, whose answers have not
+    /// arrived.
+    late_rate_owed: u32,
+    /// The latest such answer, until the thread applies it.
+    late_rate: Option<(f64, Option<String>)>,
     reloaded: bool,
     io: bool,
     param_titles: bool,
@@ -268,6 +273,8 @@ impl Unsolicited {
             latency: None,
             tail: None,
             rate: None,
+            late_rate_owed: 0,
+            late_rate: None,
             reloaded: false,
             io: false,
             param_titles: false,
@@ -294,6 +301,27 @@ impl Unsolicited {
     /// The plugin's new tail, replacing one already held.
     pub(super) fn tail(&mut self, tail: PluginTail) {
         self.tail = Some(tail);
+    }
+
+    /// A rate change was given up on; its answer is still to come.
+    pub(super) fn expect_late_rate_reply(&mut self) {
+        self.late_rate_owed = self.late_rate_owed.saturating_add(1);
+    }
+
+    /// Take `SampleRateSet` as a late answer if one is owed (`true`), keeping
+    /// the latest; `false` when it answers the request being waited on.
+    pub(super) fn late_rate_reply(&mut self, rate: f64, error: Option<String>) -> bool {
+        if self.late_rate_owed == 0 {
+            return false;
+        }
+        self.late_rate_owed -= 1;
+        self.late_rate = Some((rate, error));
+        true
+    }
+
+    /// The late answer held, if any.
+    pub(super) fn take_late_rate(&mut self) -> Option<(f64, Option<String>)> {
+        self.late_rate.take()
     }
 
     /// A rate refusal, or its clearing, replacing one already held.

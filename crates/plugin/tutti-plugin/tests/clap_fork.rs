@@ -1209,3 +1209,48 @@ fn midi_past_the_chunks_capacity_is_counted() {
         (300 - MIDI_STACK_CAPACITY) as u64
     );
 }
+
+/// **An offline fork of a plugin that refuses its rate renders silence at
+/// once, and says why.** The fork's server (only: the switch is armed after
+/// the live one loaded) refuses the 96 kHz the fork is prepared at. Each chunk
+/// is collected without waiting out the budget, and the forked editor reports
+/// `Failed` with a `PluginRenderFault::RateRefused` cause, not `TimedOut`.
+///
+/// Mutation: drop the refusal check in `Batcher::await_output` → every chunk
+/// waits its budget (the first one latches `TimedOut`, 5 s) → the kind and the
+/// time bound fail. Drop `latch_refusal`'s use in `ForkWatch::fault` → the
+/// fork is reported healthy → fails.
+#[test]
+fn a_fork_of_a_refused_rate_is_silent_at_once_and_a_failed_fault() {
+    let _lock = exclusive();
+    let _env = env();
+    let probe = load_probe(SAMPLE_RATE);
+    let _refuse = ProbeEnv::new().refuse_rate(96_000.0);
+
+    let prepare = Prepare::new(SampleRate(96_000.0), Samples(BLOCK));
+    let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let key = NodeKey(3);
+    let _controls = editor.insert(key, "plugin", probe.client.bind());
+    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let (fork_ed, fork_exec) = editor
+        .fork(ForkTarget::Node(key), ForkMode::Offline, prepare)
+        .expect("forks");
+    let mut renderer = Renderer::new(fork_ed, fork_exec);
+    let started = Instant::now();
+    let out = renderer.render(BLOCK * 20);
+    let took = started.elapsed();
+    assert!(out[0].iter().all(|&s| s == 0.0), "silence");
+    let (fork_ed, _exec) = renderer.into_parts();
+    let fault = fork_ed
+        .fork_health()
+        .expect_err("the fork refused its rate");
+    assert_eq!(fault.kind, ForkFaultKind::Failed, "{fault}");
+    assert!(
+        matches!(
+            fault.cause.downcast_ref::<PluginRenderFault>(),
+            Some(PluginRenderFault::RateRefused { rate, .. }) if *rate == 96_000.0
+        ),
+        "{fault:?}"
+    );
+    assert!(took < Duration::from_secs(3), "the render took {took:?}");
+}

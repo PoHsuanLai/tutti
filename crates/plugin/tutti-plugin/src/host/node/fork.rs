@@ -163,6 +163,8 @@ pub(super) struct ForkWatch {
     gave_up: AtomicBool,
     /// Latched, with its exit status, when the server was found dead.
     died: Mutex<Option<String>>,
+    /// Latched when the fork's plugin was found refusing its rate.
+    refusal: Mutex<Option<(f64, String)>>,
     budget: Duration,
 }
 
@@ -188,6 +190,15 @@ impl ForkWatch {
         let mut died = lock(&self.died);
         if died.is_none() {
             *died = Some(cause.unwrap_or_else(|| "no cause latched".to_string()));
+        }
+    }
+
+    /// Latch a rate refusal: the fork renders silence, at once, for the rest
+    /// of the render.
+    pub(super) fn latch_refusal(&self, refusal: (f64, String)) {
+        let mut slot = lock(&self.refusal);
+        if slot.is_none() {
+            *slot = Some(refusal);
         }
     }
 
@@ -255,6 +266,10 @@ impl ForkHealth for ForkWatch {
                         .unwrap_or_else(|| "no cause latched".to_string()),
                 ));
             }
+        }
+        if let Some((rate, reason)) = lock(&self.refusal).clone() {
+            let cause = PluginRenderFault::RateRefused { rate, reason };
+            return Some((ForkFaultKind::Failed, ForkCause::new(cause)));
         }
         self.latency_moved().map(|(planned, now)| {
             let cause = PluginRenderFault::LatencyChanged { planned, now };
@@ -381,6 +396,7 @@ impl Capture {
             bridge: Arc::downgrade(&fork.bridge),
             server: Arc::downgrade(&fork.process_guard),
             gave_up: AtomicBool::new(false),
+            refusal: Mutex::new(None),
             died: Mutex::new(None),
             budget: timeout,
         });
@@ -539,6 +555,7 @@ mod tests {
             bridge: Weak::new(),
             server: Weak::new(),
             gave_up: AtomicBool::new(false),
+            refusal: Mutex::new(None),
             died: Mutex::new(None),
             budget: Duration::from_secs(1),
         };

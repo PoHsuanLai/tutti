@@ -399,6 +399,15 @@ impl PluginClient<Unbound> {
                 ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),
                 ResyncClass::Invalidate(i) => listener_invalidate_sink.fire(i),
             },
+            BridgeEvent::RateRefusal(Some((rate, reason))) => {
+                listener_invalidate_sink.fire(PluginInvalidation::RateRefused {
+                    rate: SampleRate(rate),
+                    reason,
+                });
+            }
+            BridgeEvent::RateRefusal(None) => {
+                listener_invalidate_sink.fire(PluginInvalidation::RateRestored);
+            }
             // Structural and terminal. No cell is updated alongside it the
             // way latency and tail are: there is no new value to cache, and the
             // crash flag this mirrors was already set by the bridge thread

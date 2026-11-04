@@ -94,6 +94,7 @@ fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
             format: AudioFormat::Wav,
             bit_depth,
             channels,
+            topology: None,
         },
         dither: Dither::Off,
         ..Default::default()

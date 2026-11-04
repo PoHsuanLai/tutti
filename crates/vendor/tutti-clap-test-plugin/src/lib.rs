@@ -403,7 +403,7 @@ unsafe extern "C" fn plugin_process(
     }
     let p = &*process;
 
-    // OUT-OF-PROCESS: abort or park, per the environment switches. First,
+    // OUT-OF-PROCESS: die or park, per the environment switches. First,
     // before any capture: a test that asks for a crash on block N wants the
     // process gone at the top of block N, not after it has recorded a block it
     // never finished.

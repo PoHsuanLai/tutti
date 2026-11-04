@@ -5,17 +5,25 @@
 //! `0xF0`, and two short dumps can share one buffer. [`Sysex7ByteAssembler`]
 //! absorbs that and yields complete payloads as UMP SysEx7 packets.
 //!
-//! # Why this survives the move to native UMP
+//! # Where it applies
 //!
-//! It looks like MIDI-1.0-only code, and it is not. Two live sources still
-//! deliver `F0 … F7` runs to a UMP-era engine:
+//! Neither backend uses it: ALSA's sequencer and CoreMIDI both deliver UMP, with
+//! SysEx already fragmented. It is for a byte-stream source (a DIN or serial
+//! port, a legacy driver), and for **MIDI-CI (M2-101)**, which is Universal
+//! SysEx by design and so reaches a UMP-era engine as `F0 … F7` from such a
+//! source.
 //!
-//! - **ALSA's kernel converter.** A legacy seq client bridged to a UMP client
-//!   emits MIDI-1.0 byte runs; the kernel converts channel-voice messages but
-//!   SysEx still arrives as a byte stream to be fragmented.
-//! - **MIDI-CI (M2-101) is Universal SysEx *by design*** — it is how two devices
-//!   negotiate *before* either knows the other speaks MIDI 2.0. So it arrives
-//!   this way even on an endpoint that will go on to speak MIDI 2.0.
+//! # Byte rules (MIDI 1.0 detailed specification, 4.2)
+//!
+//! - A System Realtime byte (`0xF8..=0xFF`) may appear anywhere, inside a SysEx
+//!   too. It is emitted at once as its own event and does not touch the run.
+//! - `0xF7` ends the run in flight. With none in flight it is ignored.
+//! - `0xF0` starts a run. Inside a run it means the previous one lost its `0xF7`.
+//! - Any other status byte also ends the run, and the run is **discarded**, not
+//!   emitted truncated: a SysEx cut short is not a message, which is also how
+//!   the overflow and restart cases are treated. The status byte itself is not
+//!   a SysEx byte; the caller owns the channel and common messages.
+//! - Data bytes with no run in flight are not SysEx and are ignored.
 //!
 //! # OS-free on purpose
 //!
@@ -47,9 +55,10 @@ const MAX_SYSEX_BYTES: usize = SYSEX7_MAX_PAYLOAD;
 /// interleaving into one assembler would splice their dumps together.
 #[derive(Debug, Default)]
 pub struct Sysex7ByteAssembler {
-    /// Bytes of the run currently in flight, excluding any leading `0xF0`.
-    /// Non-empty ⇒ mid-SysEx.
+    /// Payload of the run in flight, excluding the `0xF0` and `0xF7`.
     buf: Vec<u8>,
+    /// Between an `0xF0` and the byte that ends the run.
+    active: bool,
     /// True once the in-flight run has overflowed [`MAX_SYSEX_BYTES`]. The run is
     /// then discarded up to its terminating `0xF7`, so a fault costs one message
     /// rather than desynchronising every message after it.
@@ -67,15 +76,16 @@ impl Sysex7ByteAssembler {
     /// The caller uses this to decide whether a buffer with no leading `0xF0` is
     /// a SysEx continuation or an ordinary channel-voice message.
     pub fn in_flight(&self) -> bool {
-        !self.buf.is_empty() || self.overflowed
+        self.active
     }
 
-    /// Feeds one transport buffer and appends every completed run's UMP SysEx7
-    /// packets to `out`.
+    /// Feeds one transport buffer and appends to `out` every completed run's UMP
+    /// SysEx7 packets and every System Realtime message met on the way (see the
+    /// module docs for the byte rules).
     ///
     /// Returns the number of *runs* completed by this call — normally 0 (still
     /// buffering) or 1, but genuinely more when a buffer carries several short
-    /// dumps.
+    /// dumps. Realtime events are not counted.
     ///
     /// `out` is caller-owned and reused across calls, so buffering a run in
     /// flight allocates nothing once warm — which matters because this runs on
@@ -89,60 +99,69 @@ impl Sysex7ByteAssembler {
     /// documents the part that is not.
     pub fn push(&mut self, message: &[u8], out: &mut Vec<MidiEvent>) -> usize {
         let mut completed = 0;
-        let mut rest = message;
-
-        while !rest.is_empty() {
-            // `0xF7` terminates the run in flight. Anything before it belongs to
-            // that run; anything after it is the next message and must be
-            // re-examined rather than dropped.
-            let Some(end) = rest.iter().position(|&b| b == 0xF7) else {
-                // No terminator in this buffer: the whole remainder is payload.
-                self.extend(rest);
-                return completed;
-            };
-
-            self.extend(&rest[..end]);
-            rest = &rest[end + 1..];
-
-            if self.overflowed {
-                // The run was abandoned; its terminator just arrived, so resync
-                // and emit nothing for it.
-                self.buf.clear();
-                self.overflowed = false;
-            } else {
-                MidiEvent::sysex7_fragments(MidiGroup::FIRST, &self.buf, out);
-                self.buf.clear();
-                completed += 1;
+        let mut i = 0;
+        while i < message.len() {
+            let b = message[i];
+            if b < 0x80 {
+                // A stretch of data bytes: payload when a run is in flight,
+                // otherwise somebody else's message.
+                let end = message[i..]
+                    .iter()
+                    .position(|&b| b >= 0x80)
+                    .map_or(message.len(), |n| i + n);
+                if self.active {
+                    self.extend(&message[i..end]);
+                }
+                i = end;
+                continue;
+            }
+            i += 1;
+            match b {
+                0xF8..=0xFF => {
+                    if let Some(ev) = MidiEvent::from_midi1_bytes(0, &[b]) {
+                        out.push(ev);
+                    }
+                }
+                0xF0 => {
+                    if self.active && !self.overflowed && !self.buf.is_empty() {
+                        warn!("SysEx restart (0xF0) mid-run — the previous run lost its 0xF7");
+                    }
+                    self.buf.clear();
+                    self.overflowed = false;
+                    self.active = true;
+                }
+                0xF7 => {
+                    if self.active && !self.overflowed {
+                        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &self.buf, out);
+                        completed += 1;
+                    }
+                    self.end_run();
+                }
+                _ => {
+                    if self.active {
+                        warn!(
+                            status = b,
+                            "status byte inside a SysEx run — discarding the run"
+                        );
+                    }
+                    self.end_run();
+                }
             }
         }
-
         completed
     }
 
-    /// Append payload bytes to the in-flight run, handling a `0xF0` start and
-    /// enforcing [`MAX_SYSEX_BYTES`].
+    fn end_run(&mut self) {
+        self.buf.clear();
+        self.active = false;
+        self.overflowed = false;
+    }
+
+    /// Append payload bytes to the in-flight run, enforcing [`MAX_SYSEX_BYTES`].
     fn extend(&mut self, bytes: &[u8]) {
         if self.overflowed {
             return;
         }
-        // A `0xF0` **restarts** the run rather than joining it as payload.
-        //
-        // SysEx7 payload bytes are 7-bit by definition, and `sysex7_fragments`
-        // enforces that with `b & 0x7F` — so a retained `0xF0` would silently
-        // become `0x70` and corrupt the message. Arriving mid-run it means the
-        // previous dump lost its `0xF7` (device unplugged, dropped buffer), and
-        // the honest reading is "that run is gone, this is a new one" rather
-        // than splicing a truncated dump onto a good one.
-        let bytes = match bytes.iter().rposition(|&b| b == 0xF0) {
-            Some(start) => {
-                if !self.buf.is_empty() {
-                    warn!("SysEx restart (0xF0) mid-run — the previous run lost its 0xF7");
-                    self.buf.clear();
-                }
-                &bytes[start + 1..]
-            }
-            None => bytes,
-        };
         if self.buf.len() + bytes.len() > MAX_SYSEX_BYTES {
             warn!(
                 limit = MAX_SYSEX_BYTES,
@@ -281,6 +300,70 @@ mod tests {
             vec![0x02],
             "the truncated run is dropped; only the restarted one is emitted"
         );
+    }
+
+    fn rt_status(ev: &MidiEvent) -> u8 {
+        ((ev.data_words()[0] >> 16) & 0xFF) as u8
+    }
+
+    // Mutations: treat `0xF8..=0xFF` as data (drop the arm) and the clock is
+    // folded into the payload as 0x78, or lost; emit before the run ends vs
+    // after is pinned by the order assert.
+    #[test]
+    fn realtime_inside_a_run_is_passed_through_not_data() {
+        let mut asm = Sysex7ByteAssembler::new();
+        let mut out = Vec::new();
+        assert_eq!(asm.push(&[0xF0, 0x01, 0xF8, 0x02, 0xF7], &mut out), 1);
+        assert_eq!(rt_status(&out[0]), 0xF8, "the clock comes out at once");
+        assert_eq!(
+            payload_of(&out[1..]),
+            vec![0x01, 0x02],
+            "payload is unbroken"
+        );
+        // Across a buffer boundary, and for a byte that is its own buffer.
+        let mut out = Vec::new();
+        assert_eq!(asm.push(&[0xF0, 0x01], &mut out), 0);
+        assert_eq!(asm.push(&[0xFA], &mut out), 0);
+        assert!(asm.in_flight(), "a realtime byte does not end the run");
+        assert_eq!(asm.push(&[0x02, 0xF7], &mut out), 1);
+        assert_eq!(rt_status(&out[0]), 0xFA);
+        assert_eq!(payload_of(&out[1..]), vec![0x01, 0x02]);
+        // An undefined realtime byte is dropped, not data.
+        let mut out = Vec::new();
+        assert_eq!(asm.push(&[0xF0, 0x01, 0xF9, 0xF7], &mut out), 1);
+        assert_eq!(payload_of(&out), vec![0x01]);
+    }
+
+    // Mutation: make the catch-all arm a no-op (as before): the Note On is
+    // swallowed into the payload and the F7 completes `[01, 02, 10, 3C, 40]`.
+    #[test]
+    fn a_status_byte_discards_the_run() {
+        let mut asm = Sysex7ByteAssembler::new();
+        let mut out = Vec::new();
+        assert_eq!(asm.push(&[0xF0, 0x01, 0x02, 0x90, 0x3C, 0x40], &mut out), 0);
+        assert!(!asm.in_flight());
+        assert_eq!(asm.push(&[0xF7], &mut out), 0, "the late F7 is a lone one");
+        assert!(out.is_empty(), "nothing truncated is emitted");
+        // The next run is clean.
+        assert_eq!(asm.push(&[0xF0, 0x05, 0xF7], &mut out), 1);
+        assert_eq!(payload_of(&out), vec![0x05]);
+        // Common messages end a run too.
+        assert_eq!(asm.push(&[0xF0, 0x01, 0xF1, 0x20, 0xF7], &mut out), 0);
+        assert_eq!(payload_of(&out), vec![0x05]);
+    }
+
+    // Mutation: emit on every F7 regardless of `active`: a lone F7 emits an
+    // empty SINGLE, and `90 3C 40 F7` emits `[10, 3C, 40]` (data bytes taken
+    // as payload when nothing is in flight).
+    #[test]
+    fn a_lone_f7_and_stray_data_are_ignored() {
+        let mut asm = Sysex7ByteAssembler::new();
+        let mut out = Vec::new();
+        assert_eq!(asm.push(&[0xF7], &mut out), 0);
+        assert_eq!(asm.push(&[0x90, 0x3C, 0x40, 0xF7], &mut out), 0);
+        assert_eq!(asm.push(&[0x12, 0x34], &mut out), 0);
+        assert!(out.is_empty());
+        assert!(!asm.in_flight());
     }
 
     /// The MIDI-1 wire → MIDI-CI seam, end to end.

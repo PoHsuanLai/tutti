@@ -173,8 +173,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
         // with `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
         // device's SysEx arrives already fragmented into UMP SysEx7 packets,
         // which `Sysex7PacketReassembler` (one layer up) rejoins. The byte-run
-        // assembler is for transports that deliver raw `F0 … F7`; ALSA's legacy
-        // bridge is one, which is where it is needed.
+        // assembler is for a transport that delivers raw `F0 … F7` bytes.
         let mut port = client
             .input_port_with_protocol("tutti-in", CmProtocol::Midi20, move |event_list, _ctx| {
                 let now = std::time::Instant::now();

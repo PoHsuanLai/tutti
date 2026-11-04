@@ -102,6 +102,7 @@ fn base(format: AudioFormat, bit_depth: BitDepth, channels: ChannelLayout) -> Ex
             format,
             bit_depth,
             channels,
+            topology: None,
         },
         dither: Dither::Off,
         ..Default::default()

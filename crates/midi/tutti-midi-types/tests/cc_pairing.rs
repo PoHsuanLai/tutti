@@ -13,9 +13,7 @@
 //! assert [`MidiMessage`] field values and the raw UMP words against M2-104.
 
 use tutti_midi_types::cc;
-use tutti_midi_types::convert::{
-    midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi2_pitch_bend_to_midi1,
-};
+use tutti_midi_types::convert::{midi1_pitch_bend_to_midi2, midi2_pitch_bend_to_midi1};
 use tutti_midi_types::{
     CCNumber, ControllerNamespace, Midi1ToMidi2Translator, MidiEvent, MidiMessage,
 };
@@ -26,8 +24,6 @@ const UMP_MT_CV2: u32 = 0x4;
 const UMP_STATUS_REGISTERED: u8 = 0x2;
 /// Assignable Controller status nibble (M2-104 §7.4.8).
 const UMP_STATUS_ASSIGNABLE: u8 = 0x3;
-/// Control Change status nibble (M2-104 §7.4.6).
-const UMP_STATUS_CC: u8 = 0xB;
 
 /// Spec LSB offset for the continuous-controller block: CC *n*+32 holds the
 /// low 7 bits of the 14-bit pair whose MSB is CC *n* (n in 0..=31).
@@ -113,44 +109,32 @@ fn fourteen_bit_cc_pairs_are_thirty_two_apart() {
     assert_eq!(cc::DATA_ENTRY_LSB.get(), 38);
 }
 
-/// Bank Select / Mod Wheel stay two independent 7-bit CCs: there is no
-/// general 14-bit assembler for CC *n* / *n*+32. Only Data Entry is packed.
+/// Bank Select is not a pairing of two CCs into one write and not a CC at
+/// all once translated: CC 0 and CC 32 are latched and ride on the channel's
+/// next Program Change (M2-104 Appendix D; Linux `ump_convert.c`, JUCE), so
+/// they no longer promote as plain CCs. Mod Wheel still does.
 ///
-/// Mutation: none on production (no general assembler exists to mutate). A
-/// combiner of CC 0+32 into one 14-bit write would fail the separate-index
-/// assertions below.
+/// Mutation: let CC 0 / CC 32 fall through to `normalize` and the `is_none`
+/// assertions fail; a combiner that wrote the pair as one CC fails the bank
+/// value.
 #[test]
-fn bank_select_and_mod_wheel_promote_as_separate_seven_bit_ccs() {
+fn bank_select_is_latched_for_the_next_program_change_and_mod_wheel_promotes() {
     let mut t = Midi1ToMidi2Translator::new();
 
-    let msb = t
-        .translate(&cc_ev(0, cc::BANK_SELECT, 0x7F))
-        .expect("plain CC promotes");
-    match msb.message() {
-        MidiMessage::ControlChange { index, value, .. } => {
-            assert_eq!(index, cc::BANK_SELECT.get());
-            assert_eq!(value, midi1_cc_to_midi2(0x7F));
-        }
-        other => panic!("expected ControlChange for CC 0, got {other:?}"),
-    }
+    assert!(t.translate(&cc_ev(0, cc::BANK_SELECT, 0x7F)).is_none());
+    assert!(t.translate(&cc_ev(0, CCNumber::new(32), 0x01)).is_none());
+    let pc = t
+        .translate(&MidiEvent::from_midi1_bytes(0, &[0xC0, 9]).unwrap())
+        .expect("program change promotes");
     assert_eq!(
-        msb.data_words(),
-        [
-            spec_cv2_word0(UMP_STATUS_CC, 0, cc::BANK_SELECT.get(), 0),
-            midi1_cc_to_midi2(0x7F)
-        ]
+        pc,
+        MidiEvent::program_change(
+            tutti_midi_types::MidiGroup::FIRST,
+            tutti_midi_types::MidiChannel::FIRST,
+            9,
+            Some((0x7F << 7) | 0x01)
+        )
     );
-
-    let lsb = t
-        .translate(&cc_ev(0, CCNumber::new(32), 0x01))
-        .expect("plain CC promotes");
-    match lsb.message() {
-        MidiMessage::ControlChange { index, value, .. } => {
-            assert_eq!(index, 32);
-            assert_eq!(value, midi1_cc_to_midi2(0x01));
-        }
-        other => panic!("expected ControlChange for CC 32, got {other:?}"),
-    }
 
     let mod_wheel = t
         .translate(&cc_ev(0, cc::MOD_WHEEL, 0x40))

@@ -149,6 +149,7 @@ fn config(format: AudioFormat) -> ExportConfig {
             format,
             bit_depth: BitDepth::Float32,
             channels: ChannelLayout::STEREO,
+            topology: None,
         },
         // Float32 never dithers anyway; stated so the intent is on the page.
         dither: Dither::Off,

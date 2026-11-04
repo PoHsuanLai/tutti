@@ -126,6 +126,12 @@ pub trait HostParams: Send + Sync {
         None
     }
 
+    /// The sample rate (Hz) the plugin refused and its reason, while it is
+    /// refused. Defaults to `None`: an in-process backend cannot refuse.
+    fn rate_refusal(&self) -> Option<(f64, String)> {
+        None
+    }
+
     /// How many parameter-change events the plugin sent that the host lost,
     /// over the backend's life. Monotonic.
     ///

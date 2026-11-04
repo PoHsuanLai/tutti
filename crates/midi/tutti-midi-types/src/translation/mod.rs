@@ -31,4 +31,4 @@ pub mod wire;
 
 pub use promote::normalize;
 pub use rpn::Midi1ToMidi2Translator;
-pub use wire::MidiParseError;
+pub use wire::{Midi1Messages, MidiParseError};

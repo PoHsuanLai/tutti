@@ -78,7 +78,12 @@ fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> MidiEvent {
                 MidiEvent::note_on(g, ch, note, midi1_velocity_to_midi2(vel))
             }
         }
-        ChannelVoice1::NoteOff(m) => MidiEvent::note_off(g, ch, u8::from(m.note_number()), 0),
+        ChannelVoice1::NoteOff(m) => MidiEvent::note_off(
+            g,
+            ch,
+            u8::from(m.note_number()),
+            midi1_velocity_to_midi2(u8::from(m.velocity())),
+        ),
         ChannelVoice1::ControlChange(m) => MidiEvent::cc(
             g,
             ch,
@@ -126,6 +131,15 @@ mod tests {
             assert_eq!(u8::from(m.channel()), 3);
             assert_eq!(u8::from(m.note_number()), 60);
             assert_eq!(m.velocity(), midi1_velocity_to_midi2(100)); // widened, not <<9
+        });
+    }
+
+    // Mutation: pass 0 instead of the scaled velocity and this fails.
+    #[test]
+    fn cv1_note_off_keeps_release_velocity() {
+        let norm = normalize(&MidiEvent::from_midi1_bytes(0, &[0x80, 60, 64]).unwrap());
+        expect_cv2!(norm, ChannelVoice2::NoteOff(m) => {
+            assert_eq!(m.velocity(), 0x8000);
         });
     }
 

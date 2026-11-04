@@ -35,6 +35,7 @@ pub mod latency;
 pub mod meter;
 pub mod pcm;
 pub mod tail;
+pub mod wav;
 
 // RT-callback primitives.
 pub use rt::{

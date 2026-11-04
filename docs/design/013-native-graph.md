@@ -641,6 +641,18 @@ place that loses precision to be written out explicitly:
      change restarts the segment at the next one due, rescaled to the same
      wall-clock time), where it used to carry a phase by adding a
      quarter-frame's length each time.
+   - **One MTC cycle carries one timecode.** A restarted grid puts its first
+     piece 0 on the next even frame of the timeline (`mtc_align`), and the
+     eight nibbles are computed there (`timecode_at`: the nearest frame count,
+     `position × num / (den × rate)`, on an even frame; drop-frame labels by
+     `SmpteTimecode::from_frame_count`) and cached for pieces 1 to 7. The grid
+     runs in frames from the restart, so at a steady tempo every piece 0 sits
+     on its label's frame; a tempo change moves the timeline under it and the
+     label follows within a frame.
+     Per-piece float seconds had put pieces 4 to 7 a frame later than 0 to 3, so
+     a rollover between them assembled a torn or out-of-range value
+     (`00:00:02:31`, `00:01:11:24` for 59.98 s). `Fps2997Ndf` goes out with the
+     29.97 code, as MTC has no non-drop one.
    - **One rule for "which frame".** `first_frame_at_or_after(frames_ahead)
      = ceil(frames_ahead - FRAME_TOLERANCE)`, the first frame at or after a
      beat within a millionth of a frame, is the one beat→frame conversion
@@ -5507,7 +5519,7 @@ under both.
   `ensure_processing` then return `ClapError::NotActive` on one flag read,
   with no FFI call, and the port layout and the scratch agree on every path
   out of `reconfigure`. `PluginAudio::set_sample_rate` returns a `Result`
-  now: the session moves its clock only when the plugin took the rate, and
+  now: the session's clock follows the host's rate and the plugin is silent until it takes one (below), and
   the CLAP loader renders silence for a deactivated instance. It does not
   rebuild a dropped-f64 instance as 32-bit, because the session's wire
   format was negotiated at load and would not match. The CLAP loader
@@ -5519,9 +5531,40 @@ under both.
   and `a_failed_reconfiguration_with_a_new_layout_refuses_blocks_of_any_width`,
   the server's `a_rate_change_that_changes_the_layout_raises_io_changed`,
   `a_deactivated_instance_renders_silence_and_tells_the_host` and the
-  session's `the_clock_follows_the_rate_the_plugin_accepted`. Not covered:
+  session's `a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin`. Not covered:
   a refused rollback (the reference plugin refuses one configuration, not
   the same one twice).
+- **A plugin that refuses the engine's rate is silent, visibly, and retried
+  at the next rate.** (As JUCE's AU host and the CLAP example host do; no spec
+  defines it.) The rate change is a request: the server answers
+  `SampleRateSet { rate, error }` (wire version 20). The server's clock follows
+  the host's rate whatever the plugin said, so a plugin that takes a later rate
+  is at the right one. While refused the server publishes nothing for a block
+  (the host reads an unpublished block as silence), drops its MIDI and never
+  calls the plugin, so a plugin that rolled back to its old rate cannot render
+  at it. The bridge latches the refusal beside, not as, a crash:
+  `PluginStatus::RateRefused { rate, reason }`, and `PluginInvalidation::
+  RateRefused` / `RateRestored` for the host to hear it. Every later
+  `SetSampleRate` (each re-prepare sends one) tries the plugin again; a rate it
+  takes clears the error and the plugin renders. `ClapLoaded::deactivate_plugin`
+  does nothing for an inactive plugin, so a retry on an instance a refused
+  rollback left deactivated does not deactivate it again. **Latency stays as
+  declared**: the node keeps its figure while refused, so the compiled plan and
+  PDC do not move, and the plugin's own `LatencyChanged` after a revival goes
+  through the existing path. The wait for the reply is sliced and ends when the
+  bridge shuts down; one that expires (10 s) is a refusal too ("did not answer"),
+  and the late answer, taken off the stream when it comes, settles the state.
+  An offline export or fork of a refused plugin collects silence at once (no
+  budget wait, no missed-chunk count) and its health reports
+  `PluginRenderFault::RateRefused` (`ForkFaultKind::Failed`); a reload clears
+  the server's refusal. Pinned by `clap_rate_refused` (a real server and a probe
+  refusing one rate, `TUTTI_CLAP_PROBE_REFUSE_RATE`: refused, refused again,
+  revived, dropped while refused), the bridge's
+  `a_refused_rate_is_reported_without_crashing_the_bridge` and
+  `dropping_the_bridge_ends_a_hung_rate_change`, the session's
+  `a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin` and
+  `clap_ports_rescan`'s count of `deactivate` calls on an inactive plugin. An
+  in-process VST2 plugin cannot refuse.
 - **A CLAP plugin's rescan and restart requests are served.** The host
   records `audio-ports.rescan` and `request_restart`; between blocks, on the
   thread that loaded the plugin, `ClapInstance::service_requests` (called by

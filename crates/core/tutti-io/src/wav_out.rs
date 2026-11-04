@@ -32,11 +32,12 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
-use tutti_core::ChannelLayout;
+use tutti_core::wav::{self, DataLimitExceeded};
 use tutti_core::SampleRate;
+use tutti_core::{ChannelLayout, ChannelTopology};
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
 ///
@@ -59,6 +60,22 @@ pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 /// failure (a full disk, say) stops the sink and is reported from
 /// [`finalize`](AudioOut::finalize), which must run for the file to be
 /// readable: it back-patches the header's lengths.
+///
+/// # Limits
+///
+/// A WAV file's sizes are 32-bit, so a file holds at most
+/// [`wav::max_data_frames`] frames (just under 4 GiB: about 62 minutes of
+/// 8-channel 24-bit audio at 48 kHz). The write that would cross it stops the
+/// sink like any other failure: [`finalize`](AudioOut::finalize) closes the
+/// file at the last whole frame under the limit, which stays readable, and
+/// returns a [`DataLimitExceeded`] inside its `io::Error`. RF64 is not written.
+///
+/// A header with more than two channels also declares which speakers they
+/// are. Given only a width the sink uses the engine's SMPTE order
+/// ([`wav::default_channel_mask`]): mono, stereo and 5.1 (FL FR C LFE SL SR)
+/// are named, and every other width (4 may be quad or B-format; tutti's 7.1 is
+/// not in WAVE's order) is written unassigned. A caller that knows its 4
+/// channels are quad says so with [`with_topology`](Self::with_topology).
 ///
 /// # Examples
 ///
@@ -91,6 +108,15 @@ pub struct WavOut {
     /// the *first* one is what makes the report meaningful: later failures are
     /// usually the same cause repeated.
     first_error: Option<std::io::Error>,
+    /// The speakers the caller declared; `None` means the width's SMPTE order.
+    topology: Option<ChannelTopology>,
+    /// Where the file is, to patch the speaker mask into once `hound` has
+    /// finalized it.
+    path: PathBuf,
+    /// Whole frames written so far.
+    frames_written: u64,
+    /// The frames the file may hold: [`wav::max_data_frames`], lowered by tests.
+    max_frames: u64,
 }
 
 // Hand-rolled: `hound::WavWriter` isn't `Debug`. Print the channel count +
@@ -135,7 +161,8 @@ impl WavOut {
             sample_format,
         };
 
-        let file = File::create(file_path)?;
+        let path = file_path.as_ref().to_path_buf();
+        let file = File::create(&path)?;
         let buf_writer = BufWriter::new(file);
         // Same `hound::Error` -> io error carry as `finalize`: the message is
         // the only part a caller can act on, and dropping it here would be the
@@ -148,7 +175,40 @@ impl WavOut {
             depth,
             sample_rate,
             first_error: None,
+            topology: None,
+            path,
+            frames_written: 0,
+            max_frames: wav::max_data_frames(layout, depth),
         })
+    }
+
+    /// Declares which speaker each channel feeds, for the file's speaker mask
+    /// (see [`wav::channel_mask`]: `0`, unassigned, when WAVE cannot state the
+    /// order). The samples are written as given, never reordered.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if `topology`'s width is not this sink's.
+    pub fn with_topology(mut self, topology: ChannelTopology) -> std::io::Result<Self> {
+        if topology.layout() != self.layout {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "a topology of {:?} cannot describe a sink of {:?}",
+                    topology.layout(),
+                    self.layout
+                ),
+            ));
+        }
+        self.topology = Some(topology);
+        Ok(self)
+    }
+
+    /// The mask the finished file declares.
+    fn mask(&self) -> u32 {
+        self.topology
+            .as_ref()
+            .map_or_else(|| wav::default_channel_mask(self.layout), wav::channel_mask)
     }
 
     /// A sink whose next loud write is guaranteed to fail, for tests that need
@@ -174,14 +234,31 @@ impl WavOut {
             bits_per_sample: 8,
             sample_format: SampleFormat::Int,
         };
-        let file = File::create(file_path).expect("create");
+        let file = File::create(file_path.as_ref()).expect("create");
         Self {
             writer: WavWriter::new(BufWriter::new(file), spec).expect("header"),
             layout: ChannelLayout::STEREO,
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
+            path: file_path.as_ref().to_path_buf(),
+            frames_written: 0,
+            max_frames: u64::MAX,
         }
+    }
+
+    #[cfg(test)]
+    fn write_interleaved_and_finish_for_test(mut self) {
+        self.write_interleaved(&vec![0.25; 5 * self.stride()]);
+        self.finalize().unwrap();
+    }
+
+    /// Lowers the frame limit so a test reaches it without writing 4 GiB.
+    #[cfg(test)]
+    pub(crate) fn with_max_frames_for_test(mut self, max_frames: u64) -> Self {
+        self.max_frames = max_frames;
+        self
     }
 
     /// Returns the declared channel layout — what the WAV header says, and
@@ -235,12 +312,33 @@ impl WavOut {
         // Derived ONCE, above the loop. See `stride`.
         let ch = self.stride();
         for frame in samples.chunks_exact(ch) {
+            if !self.begin_frame() {
+                return;
+            }
             for &s in frame {
                 if !self.emit(s) {
                     return;
                 }
             }
         }
+    }
+
+    /// Admits one more whole frame, or latches [`DataLimitExceeded`] and
+    /// returns `false` when the file holds [`max_frames`](Self::max_frames)
+    /// already. Called once per frame, before its first sample, so the file
+    /// always ends on a frame boundary under the limit.
+    fn begin_frame(&mut self) -> bool {
+        if self.first_error.is_some() {
+            return false;
+        }
+        if self.frames_written >= self.max_frames {
+            self.first_error = Some(std::io::Error::other(DataLimitExceeded {
+                limit_frames: self.max_frames,
+            }));
+            return false;
+        }
+        self.frames_written += 1;
+        true
     }
 
     /// Quantize and write one sample, returning `false` once the sink has
@@ -296,6 +394,9 @@ impl WavOut {
 
         let mut frame = [0.0f32; MAX_WAV_FOLD_CHANNELS];
         for chunk in src.chunks_exact(src_ch) {
+            if !self.begin_frame() {
+                return;
+            }
             tutti_core::fold_frame(chunk, &mut frame[..folded]);
             for &s in &frame[..folded] {
                 if !self.emit(s) {
@@ -331,22 +432,34 @@ impl AudioOut for WavOut {
     }
 
     fn finalize(self) -> std::io::Result<()> {
+        let mask = self.mask();
+        let Self {
+            writer,
+            first_error,
+            path,
+            ..
+        } = self;
         // A write that failed mid-stream is reported here, ahead of the
         // finalize itself: the header may well back-patch cleanly over a
         // truncated recording, so finalizing `Ok` would hide the real fault. The
         // caller learns the take is short, which is the whole point of keeping
         // it.
-        if let Some(error) = self.first_error {
+        if let Some(error) = first_error {
             // Still finalize, so the bytes that did land are readable.
-            let _ = self.writer.finalize();
+            if writer.finalize().is_ok() {
+                let _ = wav::patch_channel_mask_at(&path, mask);
+            }
             return Err(error);
         }
         // `hound::Error` -> io error: finalize flushes the sample buffer and
         // back-patches the RIFF/data chunk sizes. On failure the file is left
         // with a stale header and is unreadable — a real integrity loss.
-        self.writer
+        writer
             .finalize()
-            .map_err(|e| std::io::Error::other(e.to_string()))
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        // `hound` writes the lowest-N-bits speaker mask and has no way to
+        // change it; the right one goes in over the finished header.
+        wav::patch_channel_mask_at(&path, mask)
     }
 }
 
@@ -613,6 +726,10 @@ mod tests {
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
+            path: path.clone(),
+            frames_written: 0,
+            max_frames: u64::MAX,
         };
 
         // Full scale at Int16 is 32767 — far too wide for the 8-bit stream.
@@ -678,6 +795,10 @@ mod tests {
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
+            path: path.clone(),
+            frames_written: 0,
+            max_frames: u64::MAX,
         };
 
         // Quiet enough to fit in 8 bits: these land.
@@ -725,5 +846,161 @@ mod tests {
         let samples: Vec<i32> = reader.samples::<i32>().map(|s| s.unwrap()).collect();
         // Full scale through the shared `f32_to_i24`, not a local copy.
         assert_eq!(samples, vec![8_388_607, -8_388_607, 0, 0]);
+    }
+
+    /// The speaker mask of a multichannel file is the one for tutti's order, not
+    /// `hound`'s lowest-N-bits, and the rest of the header is untouched.
+    ///
+    /// Read back from the bytes at offset 40, the `dwChannelMask` of the
+    /// `WAVE_FORMAT_EXTENSIBLE` header. Manual check (not run here): `ffprobe`
+    /// names the 4-channel file `quad`, the 6-channel one `5.1(side)`, and the
+    /// 8-channel one `8 channels` (unassigned).
+    ///
+    /// Mutation: removing the `patch_channel_mask_at` call from `finalize`
+    /// leaves `0xF`, `0x3F`, `0xFF` and fails every row (run); the limit test
+    /// asserts the mask on the error path too.
+    #[test]
+    fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for (channels, depth, mask) in [
+            (4u16, BitDepth::Float32, 0u32),
+            (6, BitDepth::Float32, 0x60F),
+            (6, BitDepth::Int24, 0x60F),
+            (8, BitDepth::Float32, 0),
+            (3, BitDepth::Int16, 0),
+            // Extensible because of the depth; hound would write 0x1.
+            (1, BitDepth::Int24, 0x4),
+            (2, BitDepth::Float32, 0x3),
+        ] {
+            let path = dir
+                .path()
+                .join(format!("mask_{channels}_{}.wav", depth.bits()));
+            let mut sink = WavOut::create(&path, 48_000.0, channels, depth).unwrap();
+            sink.write_interleaved(&vec![0.25; 5 * channels as usize]);
+            sink.finalize().unwrap();
+
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(&bytes[20..22], &0xFFFEu16.to_le_bytes(), "extensible");
+            assert_eq!(
+                u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+                mask,
+                "{channels} channels at {depth:?}"
+            );
+            // The patch left the file readable and whole.
+            let reader = hound::WavReader::open(&path).unwrap();
+            assert_eq!(reader.len() as usize, 5 * channels as usize);
+        }
+    }
+
+    /// Quad is declared only by a caller that says it is quad: the same four
+    /// channels with `ChannelTopology::quad()` carry `0x33`, and a topology of
+    /// another width is refused.
+    ///
+    /// Mutation: ignoring `self.topology` in `mask` leaves `0` and fails the
+    /// quad assertion; deleting the width check in `with_topology` fails the
+    /// refusal.
+    #[test]
+    fn a_declared_quad_topology_sets_the_quad_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quad.wav");
+        let sink = WavOut::create(&path, 48_000.0, 4u16, BitDepth::Float32)
+            .unwrap()
+            .with_topology(ChannelTopology::quad())
+            .unwrap();
+        sink.write_interleaved_and_finish_for_test();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x33);
+
+        let err = WavOut::create(dir.path().join("x.wav"), 48_000.0, 2u16, BitDepth::Float32)
+            .unwrap()
+            .with_topology(ChannelTopology::quad())
+            .expect_err("a quad topology is not stereo");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// A header with no mask (stereo, 16 bit) is not touched.
+    ///
+    /// Mutation: dropping the format-tag check in `patch_channel_mask` writes
+    /// four bytes into the `fmt ` chunk's tail and the data length, and fails
+    /// the readback.
+    #[test]
+    fn a_plain_header_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.wav");
+        let mut sink = WavOut::create(&path, 44_100.0, 2u16, BitDepth::Int16).unwrap();
+        sink.write_interleaved(&[0.5, -0.5, 0.25, -0.25]);
+        sink.finalize().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[20..22], &1u16.to_le_bytes());
+        assert_eq!(hound::WavReader::open(&path).unwrap().len(), 4);
+    }
+
+    /// The write that would pass the frame limit stops the sink; `finalize`
+    /// reports a typed [`DataLimitExceeded`] and the file holds exactly the
+    /// frames under the limit, with correct header sizes and mask. Later writes
+    /// are ignored, and a folded write is limited the same way.
+    ///
+    /// The limit is lowered through `with_max_frames_for_test`; the real one,
+    /// `wav::max_data_frames`, is pinned in `tutti-types`.
+    ///
+    /// Mutation: changing `>=` to `>` in `begin_frame` writes four frames and
+    /// fails the length assertion; deleting the `begin_frame` call in
+    /// `write_interleaved` writes all eight and fails it too; deleting the one
+    /// in `write_folding` fails the folded half.
+    #[test]
+    fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        for folded in [false, true] {
+            let path = dir.path().join(format!("limit_{folded}.wav"));
+            let mut sink = WavOut::create(&path, 48_000.0, 6u16, BitDepth::Int24)
+                .unwrap()
+                .with_max_frames_for_test(3);
+            // Eight frames, in two writes, the limit falling in the first.
+            let block: Vec<f32> = (0..5 * 6).map(|i| i as f32 * 0.001).collect();
+            if folded {
+                sink.write_folding(&block, ChannelLayout::from(6u16));
+                sink.write_folding(&block[..3 * 6], ChannelLayout::from(6u16));
+            } else {
+                sink.write_interleaved(&block);
+                sink.write_interleaved(&block[..3 * 6]);
+            }
+            assert!(sink.first_error.is_some());
+
+            let err = sink.finalize().expect_err("the limit must be reported");
+            let limit = err
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<DataLimitExceeded>())
+                .expect("the typed error rides out of finalize");
+            assert_eq!(limit.limit_frames, 3);
+
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(
+                u32::from_le_bytes(bytes[64..68].try_into().unwrap()),
+                3 * 6 * 3,
+                "data chunk holds three whole frames"
+            );
+            assert_eq!(bytes.len(), 68 + 3 * 6 * 3);
+            assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x60F);
+            let mut reader = hound::WavReader::open(&path).unwrap();
+            assert_eq!(reader.len(), 18);
+            let first: i32 = reader.samples::<i32>().next().unwrap().unwrap();
+            assert_eq!(first, 0, "the prefix is the start of the take");
+        }
+    }
+
+    /// A take that ends exactly at the limit is not an error.
+    ///
+    /// Mutation: erroring when `frames_written == max_frames` after the last
+    /// frame (checking after the write instead of before) fails this.
+    #[test]
+    fn a_take_that_ends_at_the_limit_is_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.wav");
+        let mut sink = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+            .unwrap()
+            .with_max_frames_for_test(4);
+        sink.write_interleaved(&[0.1; 8]);
+        sink.finalize().expect("exactly the limit is fine");
+        assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
     }
 }

@@ -23,3 +23,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clap-sys = "0.5"
+
+# `kill(getpid(), SIGKILL)`: how the probe dies on unix (`die`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

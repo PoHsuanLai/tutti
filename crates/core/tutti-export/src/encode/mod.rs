@@ -131,9 +131,12 @@ pub(crate) fn encode_to_file(
 
     match config.encode.format {
         #[cfg(feature = "wav")]
-        AudioFormat::Wav => {
-            wav::WavEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::Wav => wav::WavEncoder::create(path, config, source_rate, plan)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+        )?,
         #[cfg(not(feature = "wav"))]
         AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
 

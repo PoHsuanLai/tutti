@@ -60,7 +60,13 @@ pinned frames moved by at most 2.9e-4 (chorus, 7 ms deep with 0.45 feedback), 1.
 (flanger) and 1.6e-4 (6-wide chorus). The delay-time trajectory is checked
 analytically (inside the declared depth, equal to the exact sine at control
 points, within the chord bound between them, period preserved), not against a
-reference render. `LfoDrive::fill_block` now returns the increment it ran at.
+reference render. A rate change at a block boundary reaches the delay at that block's first
+sample: when the block's step differs from the one that stepped on the pending
+control point, the segment's two points are solved again from the block's own phases (at a
+constant rate nothing is re-solved, so those renders are unchanged). The chord
+also kinks the delay's slope every 16 samples, about 0.05 samples/sample^2 at
+20 Hz and 10 ms: a small ripple on the pitch modulation.
+`LfoDrive::fill_block` now returns the increment it ran at.
 Measured on one core (`taskset -c 0`), median of three interleaved runs, main
 to branch, one 64-frame block of `cargo bench -p tutti-nodes --bench
 width_generic -- chorus`: 2 channels 6.12 to 4.28 us (1.43x), 6 channels 17.08

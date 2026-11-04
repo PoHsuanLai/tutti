@@ -165,6 +165,9 @@ pub struct ModDelayNode {
     /// Whether `points` hold the sines of the current segment: false until the
     /// first block and after `reset` or `prepare`.
     points_valid: bool,
+    /// The step the last block ran at, which stepped on the pending control
+    /// point; `None` before the first block and after `reset` or `prepare`.
+    last_inc: Option<PhaseIncrement>,
 }
 
 impl ModDelayNode {
@@ -199,6 +202,7 @@ impl ModDelayNode {
             points: vec![[0.0; 2]; n],
             seg_pos: 0,
             points_valid: false,
+            last_inc: None,
             config,
         }
     }
@@ -332,6 +336,9 @@ impl ModDelayNode {
             points: &mut self.points,
             seg_pos: self.seg_pos,
             primed: self.points_valid,
+            // A rate change since the last block: the pending control point
+            // was stepped on at the old step.
+            restep: self.points_valid && self.last_inc.is_some_and(|last| last != inc),
             after: self.lfo.phase,
             inc,
             delays: &mut self.delays,
@@ -352,6 +359,7 @@ impl ModDelayNode {
         }
         self.seg_pos = (self.seg_pos + size) % COEFF_INTERVAL;
         self.points_valid = true;
+        self.last_inc = Some(inc);
         self.last = Some(target);
     }
 }
@@ -368,6 +376,9 @@ struct SweptLines<'a> {
     seg_pos: usize,
     /// `points` already hold the current segment's sines.
     primed: bool,
+    /// This block's step differs from the one that stepped on the pending
+    /// control point, so it is solved again from the block's own phases.
+    restep: bool,
     /// The drive's phase after the block, and the step it ran at: the control
     /// point a segment ends on may lie past the block.
     after: Phase,
@@ -402,6 +413,17 @@ impl SweptLines<'_> {
     /// depth at 5 Hz and 48 kHz and 2.2e-4 at 20 Hz. Against the deepest
     /// chorus sweep (40 ms) the worst delay error is then 0.03 samples at
     /// 5 Hz (0.6 us), and at the default 5 ms depth 0.003 samples.
+    ///
+    /// A segment's end point past a block's edge is stepped on at the
+    /// block's own rate. When the next block's rate differs, a segment it
+    /// begins in the middle of has both its points solved again from that
+    /// block's phases (`restep`), so a rate change reaches the delay at its
+    /// first sample and not at the next control point; at a constant rate
+    /// nothing is re-solved.
+    ///
+    /// The chord also kinks the delay's slope at every control point, a
+    /// step of about 0.05 samples/sample^2 at 20 Hz and 10 ms: a small
+    /// ripple on the pitch modulation.
     #[inline(always)]
     fn run(
         self,
@@ -424,6 +446,14 @@ impl SweptLines<'_> {
             let mut valid = self.primed;
             let mut pos = self.seg_pos;
             let mut i = 0;
+            if self.restep && pos != 0 {
+                // The block starts mid-segment at a new rate: both of the
+                // segment's points move to where the new rate puts them, the
+                // start by stepping back from the block's first phase.
+                let back = PhaseIncrement(-self.inc.get() * pos as f32);
+                prev = sine(self.phase_at(0).advance(back));
+                next = sine(self.phase_at(COEFF_INTERVAL - pos));
+            }
             while i < n {
                 if pos == 0 {
                     prev = if valid { next } else { sine(self.phase_at(i)) };
@@ -481,6 +511,7 @@ impl Node for ModDelayNode {
         self.phases = vec![Phase::START; p.max_block().get()];
         self.seg_pos = 0;
         self.points_valid = false;
+        self.last_inc = None;
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -512,6 +543,7 @@ impl Node for ModDelayNode {
         self.lfo.reset_phase();
         self.seg_pos = 0;
         self.points_valid = false;
+        self.last_inc = None;
         self.last = None;
     }
 
@@ -571,6 +603,7 @@ impl Clone for ModDelayNode {
             points: self.points.clone(),
             seg_pos: self.seg_pos,
             points_valid: self.points_valid,
+            last_inc: self.last_inc,
         }
     }
 }
@@ -668,12 +701,28 @@ mod tests {
     /// interpolated read of a ramp is exact, so `n - y[n]` is the delay the
     /// read used, up to the line's fixed read offset.
     fn delay_trace(depth: f32, len: usize, pieces: &[usize]) -> Vec<f64> {
+        delay_trace_stepped(depth, len, pieces, None)
+    }
+
+    /// [`delay_trace`] with the rate set to `.1` Hz before the block that
+    /// starts at frame `.0` (which the cut must put on a block boundary).
+    fn delay_trace_stepped(
+        depth: f32,
+        len: usize,
+        pieces: &[usize],
+        step: Option<(usize, f32)>,
+    ) -> Vec<f64> {
         let mut node = trajectory_node(depth);
         let x: Vec<f32> = (0..len).map(|n| n as f32).collect();
         let mut y = Vec::with_capacity(len);
         let (mut at, mut k) = (0, 0);
         while at < len {
             let n = pieces[k % pieces.len()].min(len - at);
+            if let Some((frame, hz)) = step {
+                if at == frame {
+                    node.set_rate(hz);
+                }
+            }
             let xs = &x[at..at + n];
             let o = tutti_graph::contract::drive(&mut node, SampleRate(48_000.0), &[xs], &[]);
             y.extend_from_slice(&o[0]);
@@ -696,10 +745,21 @@ mod tests {
     /// LFO's own phase, which accumulates in f32 (`Phase::advance`) and so
     /// runs a little off the ideal `rate * n / sr` over a long render.
     fn exact_delays(len: usize, depth: f32) -> Vec<f64> {
+        exact_delays_stepped(len, depth, None)
+    }
+
+    /// [`exact_delays`] with the rate changed to `.1` Hz from frame `.0`.
+    fn exact_delays_stepped(len: usize, depth: f32, step: Option<(usize, f32)>) -> Vec<f64> {
         let inc = PhaseIncrement::per_sample(Hz(TRAJ_RATE), SampleRate(TRAJ_SR));
         let mut phase = Phase::START;
         (0..len)
-            .map(|_| {
+            .map(|n| {
+                let inc = match step {
+                    Some((frame, hz)) if n >= frame => {
+                        PhaseIncrement::per_sample(Hz(hz), SampleRate(TRAJ_SR))
+                    }
+                    _ => inc,
+                };
                 let turns = f64::from(phase.get());
                 phase = phase.advance(inc);
                 TRAJ_BASE + f64::from(depth) * TRAJ_SR * (std::f64::consts::TAU * turns).sin()
@@ -765,6 +825,9 @@ mod tests {
             worst = worst.max((trace[n] - off - exact[n]).abs());
         }
         assert!(worst <= bound + 0.05, "worst {worst} over bound {bound}");
+        // The render itself, not only the constant: at 20 Hz and 10 ms the
+        // delay is off the sine by about a tenth of a sample.
+        assert!(worst < 0.2, "worst {worst} samples off the exact sine");
         // The spacing itself: at this worst-case rate and a 480-sample sweep
         // the delay is off by a tenth of a sample (2 us) at most.
         assert!(
@@ -773,6 +836,94 @@ mod tests {
         );
         // Not vacuous: the chord does miss, by most of the bound.
         assert!(worst > bound * 0.5, "worst {worst}, bound {bound}");
+    }
+
+    /// A rate change at a block boundary mid-segment reaches the delay at the
+    /// block's first sample: the segment it begins in ends on a control point
+    /// stepped at the new rate, not the old one (and starts on the new
+    /// rate's sine).
+    ///
+    /// Frame 2500 is 4 samples into a segment and the sweep is near a zero
+    /// crossing there (the delay moves fastest), so a point stepped at the
+    /// old rate (20 Hz, not 30) is several samples off.
+    ///
+    /// Mutation (run): make `restep` always false → the delay is several
+    /// samples off the new-rate sine over the segment and the assertion
+    /// fails; drop only the `prev` line → 1.8 samples off.
+    #[test]
+    fn a_rate_change_at_a_block_boundary_reaches_the_delay_at_once() {
+        let depth = 0.01f32;
+        let (frame, hz, len) = (2_500, 30.0f32, 4_000);
+        assert_ne!(frame % COEFF_INTERVAL, 0, "mid-segment");
+        let off = read_offset();
+        let trace = delay_trace_stepped(depth, len, &[100], Some((frame, hz)));
+        let exact = exact_delays_stepped(len, depth, Some((frame, hz)));
+        // The chord bound at the faster of the two rates.
+        let h = std::f64::consts::TAU * f64::from(hz) * COEFF_INTERVAL as f64 / TRAJ_SR;
+        let bound = f64::from(depth) * TRAJ_SR * h * h / 8.0;
+        let mut worst = 0.0f64;
+        for n in frame..len {
+            worst = worst.max((trace[n] - off - exact[n]).abs());
+        }
+        assert!(worst <= bound + 0.05, "worst {worst} over bound {bound}");
+    }
+
+    /// `reset` and `prepare` re-prime the segment count and the control
+    /// points: a node that rendered some frames, then was reset (or
+    /// prepared again for a different maximum block), renders ragged blocks
+    /// exactly as a fresh node does. The comparison is an invariant of the
+    /// node against itself, not a reference render.
+    ///
+    /// Mutation (run): delete `self.seg_pos = 0` and `self.points_valid =
+    /// false` from `reset` (or from `prepare`) → the first segment starts
+    /// mid-count on stale points and the renders differ.
+    #[test]
+    fn reset_and_prepare_reprime_the_control_points() {
+        let x = noise(9, 700);
+        let pieces = [5usize, 17, 40, 1, 64];
+        let render = |node: &mut ModDelayNode| {
+            let mut out = vec![Vec::new(), Vec::new()];
+            let (mut at, mut k) = (0, 0);
+            while at < x.len() {
+                let n = pieces[k % pieces.len()].min(x.len() - at);
+                let xs = &x[at..at + n];
+                let o = tutti_graph::contract::drive(node, SampleRate(48_000.0), &[xs, xs], &[]);
+                for (w, o) in out.iter_mut().zip(o) {
+                    w.extend(o);
+                }
+                at += n;
+                k += 1;
+            }
+            out
+        };
+        let fresh = |max_block: usize| {
+            let node = tutti_graph::contract::prepared(
+                ModDelayNode::chorus(ChannelLayout::STEREO),
+                SampleRate(48_000.0),
+                max_block,
+            );
+            node.set_rate(7.0);
+            node
+        };
+        // 37 frames leaves the count at 5 of 16, with points solved.
+        let warm = |node: &mut ModDelayNode| {
+            let ones = [0.5f32; 37];
+            tutti_graph::contract::drive(node, SampleRate(48_000.0), &[&ones, &ones], &[]);
+        };
+        let want = render(&mut fresh(64));
+
+        let mut reset = fresh(64);
+        warm(&mut reset);
+        Node::reset(&mut reset);
+        assert_eq!(render(&mut reset), want, "after reset");
+
+        // `prepare` rebuilds the lines and keeps the LFO's phase, so the
+        // phase goes back by hand: what is left to differ is the priming.
+        let mut again = fresh(128);
+        warm(&mut again);
+        again.prepare(&Prepare::new(SampleRate(48_000.0), tutti_core::Samples(64)));
+        again.lfo.reset_phase();
+        assert_eq!(render(&mut again), want, "after prepare at another block");
     }
 
     /// The sweep keeps its period: successive upward crossings of the centre

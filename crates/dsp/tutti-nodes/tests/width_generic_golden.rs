@@ -4,9 +4,9 @@
 //! The held cases pin renders checked bit-identical against separate
 //! mono and stereo reference implementations. The `*_swept`, `*_automated`,
 //! ring-routed and phaser cases pin behaviour those references did not have
-//! (coefficient interpolation every 16 samples, which the chorus and flanger
-//! apply to the LFO's sine too; control changes ramped across
-//! a block; the cross-feedback matrix).
+//! (the phaser interpolates its coefficients every 16 samples, and the
+//! chorus and flanger do the same to the LFO's sine; control changes ramped
+//! across a block; the cross-feedback matrix).
 //!
 //! Captured with `cargo nextest run -p tutti-nodes -E 'test(print_goldens)'
 //! --run-ignored only --no-capture`.

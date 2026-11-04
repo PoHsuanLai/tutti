@@ -873,7 +873,7 @@ mod tests {
             ExportRequest::new(
                 ExportSource::Mix,
                 ExportTarget::Buffers,
-                config,
+                config.clone(),
                 ExportClock::frozen(),
             )
             .with_reported_tail(Samples(48_000))

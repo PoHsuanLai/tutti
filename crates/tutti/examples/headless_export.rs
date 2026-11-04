@@ -78,6 +78,7 @@ fn config(seconds: f64, channels: ChannelLayout) -> ExportConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Float32,
             channels,
+            topology: None,
         },
         ..Default::default()
     }

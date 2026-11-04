@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — WAV files declare the right speaker mask, and a file past 4 GiB is an error, not a wrapped header
+
+**Speaker mask.** `hound` writes a `WAVE_FORMAT_EXTENSIBLE` `dwChannelMask` of the
+lowest N bits and cannot be told otherwise, so a mask-honouring reader (checked
+with `ffprobe`) took tutti's quad as 3.1, its 5.1 (FL FR C LFE SL SR) as back 5.1,
+and its 8 channels as 7.1 wide. `WavOut` and the export WAV encoder now patch the
+mask over the finished header. It is `tutti_types::wav::channel_mask` of a
+`ChannelTopology` (each `Speaker` to its `ksmedia.h` `SPEAKER_*` bit; `0`,
+unassigned, if a speaker has no bit or the order is not ascending, the only
+order WAVE can state). Given only a width, the writers use
+`wav::default_channel_mask`, which follows `ChannelTopology::smpte` and so never
+guesses where the engine declines to: mono `0x4`, stereo `0x3`, 5.1 `0x60F`, and
+`0` for 4 (quad or B-format) and 8 (tutti's 7.1 is SL SR BL BR, WAVE's would be
+BL BR SL SR). Samples are never reordered. Mono at 24 bit or float was `0x1`
+(front left) and is now front centre.
+Migration: to get quad's `0x33`, call `WavOut::with_topology(ChannelTopology::quad())?`
+or set `EncodeConfig::topology = Some(ChannelTopology::quad())`. `EncodeConfig`
+has a new field (`topology: None` for the old behaviour) and, because of it,
+`EncodeConfig` and `ExportConfig` are no longer `Copy`: clone them. A test or
+tool that pinned the old `0x3F` for 5.1 should expect `0x60F`.
+
+**4 GiB.** A WAV's sizes are 32-bit, and `hound` counted bytes in a `u32` with
+no guard: a longer file wrapped its header in release and panicked in debug.
+`WavOut` now stops at the last whole frame under the limit
+(`tutti_core::wav::max_data_frames`); `finalize` closes a valid, readable file
+and returns an `io::Error` wrapping `tutti_core::wav::DataLimitExceeded`, the
+same way a failed write surfaces (a `Recorder` reports it from its finalize).
+The export encoder refuses a plan that cannot fit before it creates the file
+(an existing file at the path is left alone), and otherwise fails at the
+crossing frame and removes the partial file, with the new `Error::WavTooLarge
+{ limit_frames }` (`Error` is `#[non_exhaustive]`; add an arm or a wildcard).
+Not done: RF64 (EBU Tech 3306) output, which would lift the limit; `hound`
+cannot write it, so it is a writer of our own.
+
 ### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 
 A hosted plugin that refused a rate change (CLAP `activate` returning false)

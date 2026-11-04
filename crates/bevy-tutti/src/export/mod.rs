@@ -32,6 +32,7 @@
 //!         format: AudioFormat::Wav,
 //!         bit_depth: BitDepth::Float32,
 //!         channels: ChannelLayout::STEREO,
+//!         topology: None,
 //!     },
 //!     ..Default::default()
 //! };

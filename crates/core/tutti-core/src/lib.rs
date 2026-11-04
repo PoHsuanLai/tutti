@@ -108,9 +108,15 @@ pub use tutti_types::io::{self, pump, AudioIn, AudioOut, OnEmpty};
 // Float→PCM quantization, homed in `tutti-types` and surfaced here so codecs and
 // sinks reach it via the engine root.
 pub use tutti_types::pcm::{self, f32_to_i16, f32_to_i24};
+// The WAV container facts both WAV writers share (speaker mask, 4 GiB limit).
+pub use tutti_types::wav::{
+    self, channel_mask, default_channel_mask, max_data_frames, DataLimitExceeded,
+};
 // The unified channel-layout enum, homed in `tutti-types` and surfaced here so
 // consumers (incl. `bevy-tutti`) reach it via the engine root.
 pub use tutti_types::ChannelLayout;
+// Which speaker each channel feeds, for a writer that declares it (WAV's mask).
+pub use tutti_types::{ChannelTopology, Speaker};
 // The general N→device-width surround fold, surfaced so the live host (the CPAL
 // callback in `bevy-tutti`) can fold the graph-root buffer to the device width.
 // The named-width variants come along: a DSP node that needs one mono sample out

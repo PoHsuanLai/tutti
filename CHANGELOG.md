@@ -27,14 +27,16 @@ is unchanged (within noise).
 Output bits change for a moving source, and the new position is the closer to
 the exact one-pole response: the per-frame loop's f32 rounding, injected every
 step and shrunk by `1 - coeff` after, leaves it within `1.5 * 2^-24 * R *
-min(steps, 1/coeff)` of the exact recurrence (`R` the range: 0.03 degrees of
+min(steps, 1/coeff)` of the exact recurrence (`R` the range: 0.04 degrees of
 bearing at 48 kHz), and the loop also stalls short of the target by up to
 `ulp / (2 * coeff)` (about 0.02 degrees); the advance does neither. The gains
 at a block's last frame moved by at most 2.5e-6 on the pinned renders
-(`EDGE_TOL` in `tests/vbap_block_gains.rs` is now the 2.5e-4 bound at the
-gains' slope, not 1e-6). A source with a fixed target still converges to it, and
-the ramp keeps its timing. `AngleSmoother::step`, which HRTF uses once per
-convolution frame, is unchanged. The quad digest in `tutti-export`'s `graph_source` test was re-recorded (its folded stereo and mono renders are still checked against it bit for bit). No API break and no migration.
+(`EDGE_TOL` in `tests/vbap_block_gains.rs` is now 1e-5, about 4x the
+measured error, not 1e-6). A source with a fixed target still converges to it,
+and the ramp keeps its timing. `AngleSmoother::step`, which HRTF uses once per
+convolution frame, is unchanged. The quad digest in `tutti-export`'s
+`graph_source` test was re-recorded (its folded stereo and mono renders are
+still checked against it bit for bit). No API break and no migration.
 
 ### Changed — the lookahead limiter's threshold drives its input; with the ceiling above the threshold the output changes
 

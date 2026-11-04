@@ -99,10 +99,10 @@ impl ExponentialSmoother {
     /// The loop injects an f32 rounding error of about 1.5 ulp of the range
     /// per step that the next steps then shrink by `1 - coeff`, so it sits
     /// within `1.5 * 2^-24 * R * min(steps, 1/coeff)` of the exact recurrence
-    /// (`R` the range of the quantity: 0.03 degrees of bearing at 48 kHz and
-    /// a 50 ms time constant, where `1/coeff` is 2400 steps). This form carries one rounding of its own,
-    /// so it is the closer of the two to the exact answer; the two differ by
-    /// at most that bound.
+    /// (`R` the range of the quantity: 0.04 degrees of bearing at 48 kHz and
+    /// a 50 ms time constant, where `1/coeff` is 2400 steps). This form
+    /// carries one rounding of its own, so it is the closer of the two to the
+    /// exact answer; the two differ by at most that bound.
     #[inline]
     pub fn advance(&mut self, target: Elevation, steps: usize) -> Elevation {
         if steps > 0 {

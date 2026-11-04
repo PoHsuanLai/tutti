@@ -576,6 +576,75 @@ mod tests {
         assert!((az.get() + 60.0).abs() < 0.001 && (el.get() - 10.0).abs() < 0.001);
     }
 
+    /// `solve_block` for `frames` frames, and whether it left the smoother
+    /// where an advance that is never skipped puts it. Panics unless that
+    /// advance would have moved the state (else a stale skip is invisible).
+    fn solve_matches_an_unconditional_advance(
+        panner: &mut VbapPanner,
+        target: (Azimuth, Elevation),
+        frames: usize,
+    ) {
+        let mut want = panner.smoother.clone();
+        let before = want.current();
+        let want = want.advance(target.0, target.1, frames);
+        assert!(
+            !same_bits(want, before),
+            "the premise: this advance must move the state"
+        );
+        panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, frames);
+        assert!(
+            same_bits(panner.smoother.current(), want),
+            "skipped an advance that moves: {:?} vs {want:?}",
+            panner.smoother.current()
+        );
+    }
+
+    /// Settle `panner` on `target` at `frames`-frame blocks.
+    fn settle(panner: &mut VbapPanner, target: (Azimuth, Elevation), frames: usize) {
+        for _ in 0..20_000 {
+            panner.solve_block(target, StereoWidth::NATURAL, Spread::POINT, frames);
+            if panner.settled_at.is_some() {
+                return;
+            }
+        }
+        panic!("never settled");
+    }
+
+    /// **A settled source is released by anything that changes what an
+    /// advance does**: a new sample rate, a reseed, a different block length.
+    /// Each case settles, changes one thing, and checks the next block
+    /// against an advance that is never skipped.
+    ///
+    /// Mutations (each run, each fails its case): dropping `frames` from the
+    /// `settled_at` key in `solve_block` (`frames` case: a settled 64-frame
+    /// source skips the 1024-frame block that still moves); dropping
+    /// `self.settled_at = None` from `set_sample_rate` (`rate` case: settled
+    /// at 192 kHz, retuned to 8 kHz, the retuned advance is skipped);
+    /// dropping it from `reset_state` (`reset` case: reseeded off the target,
+    /// the first advance back is skipped).
+    #[test]
+    fn a_settled_source_is_released_by_a_retune_a_reseed_or_a_new_block_length() {
+        let target = (Azimuth(40.0), Elevation(10.0));
+
+        // rate: the larger coefficient moves a state the smaller one held.
+        let mut panner = VbapPanner::stereo().unwrap();
+        panner.set_sample_rate(SampleRate(192_000.0));
+        settle(&mut panner, target, 64);
+        panner.set_sample_rate(SampleRate(8_000.0));
+        solve_matches_an_unconditional_advance(&mut panner, target, 64);
+
+        // reset: reseeded away from a target it had settled on.
+        let mut panner = VbapPanner::stereo().unwrap();
+        settle(&mut panner, target, 64);
+        panner.reset_state(Azimuth(-20.0), Elevation::LEVEL);
+        solve_matches_an_unconditional_advance(&mut panner, target, 64);
+
+        // frames: stalled at 64-frame blocks, still moving at 1024.
+        let mut panner = VbapPanner::stereo().unwrap();
+        settle(&mut panner, target, 64);
+        solve_matches_an_unconditional_advance(&mut panner, target, 1024);
+    }
+
     /// **A bearing across the seam takes the short way**, in one big block
     /// too: from 170 to -170 the value passes 180, never near 0.
     ///

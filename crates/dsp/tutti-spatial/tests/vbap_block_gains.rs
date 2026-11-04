@@ -17,13 +17,15 @@
 //! Two tolerances, and why they differ:
 //!
 //! - **The last frame of every block is on the per-frame solve to within
-//!   the smoother's rounding** (`EDGE_TOL`, 2.5e-4). The smoother advances a
+//!   the smoother's rounding** (`EDGE_TOL`, 1e-5). The smoother advances a
 //!   block in one analytic move where the reference stepped it per frame, so
-//!   the two positions differ by the reference's accumulated f32 rounding,
-//!   at most `1.5 * 2^-24 * 180°` per frame (≈ 1.6e-5° a frame, 6e-3° over
-//!   these six blocks). At the slope bound of 2 per radian that is 2.5e-4 on
-//!   a ±1 input; measured 2.5e-6 on the sweep. The ramp is written so its
-//!   last sample *is* the solve at the advanced position.
+//!   the two positions differ by the reference's accumulated f32 rounding.
+//!   The worst case (at most `1.5 * 2^-24 * 180°` per frame, 6e-3° over these
+//!   six blocks, at the slope bound of 2 per radian) is 2.5e-4 on a ±1 input,
+//!   but the measured edge error on the sweep is 2.5e-6, and `EDGE_TOL` is
+//!   1e-5: about 4x over the measurement, and the drift of libm or `powi`
+//!   across platforms is far below that. The ramp is
+//!   written so its last sample *is* the solve at the advanced position.
 //! - **Frames inside a block are within `RAMP_TOL`**. They lie on a chord of
 //!   the gain curve where the reference sat on the curve itself, so the error
 //!   is bounded by how far the source travels in one block. The 50 ms
@@ -52,10 +54,10 @@ use tutti_spatial::VbapPannerNode;
 
 const BLOCK: usize = 64;
 const BLOCKS: usize = 6;
-/// Frame indices pinned per block. 63 is the block edge (exact), the others
+/// Frame indices pinned per block. 63 is the block edge (within `EDGE_TOL`), the others
 /// sit inside the ramp.
 const PINNED: [usize; 3] = [0, 31, 63];
-const EDGE_TOL: f32 = 2.5e-4;
+const EDGE_TOL: f32 = 1e-5;
 const RAMP_TOL: f32 = 0.06;
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -1017,11 +1019,18 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 
 /// A position written between blocks takes effect in the next block, ramped:
 /// the block starts one ramp step from where the previous block ended, and
-/// its last frame is exactly the per-frame solve at that frame.
+/// its last frame is the per-frame solve at that frame, within `EDGE_TOL`.
 ///
-/// The reference is the same scenario driven one frame at a time, which is
-/// therefore the per-frame solver itself (see
-/// `tick_matches_the_per_sample_solver`).
+/// The reference is the same scenario driven one frame at a time (one-frame
+/// blocks, so one 1-step advance per frame), compared within `EDGE_TOL`.
+///
+/// What this pins: a one-block advance of the smoother equals the same 64
+/// steps taken one at a time, to within `EDGE_TOL`; the block starts one ramp
+/// step from the previous end; a moved target takes effect in the next block.
+/// What it no longer pins: that the last frame is the *exact* per-frame
+/// solve, and the smoother's timing and coefficient. Those are covered by
+/// `process_matches_the_per_sample_solver`, `tick_matches_the_per_sample_solver`
+/// and the analytic panner test `solve_block_follows_the_exact_one_pole_response`.
 ///
 /// Mutation: solving at the block's *first* frame (stepping the smoother after
 /// the solve) fails the last-frame equality; holding the end gains across the

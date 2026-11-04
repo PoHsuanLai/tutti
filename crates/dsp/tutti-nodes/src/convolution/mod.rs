@@ -1,7 +1,8 @@
 //! FFT-based convolution reverb.
 //!
-//! A uniformly partitioned FFT convolution ([`Convolver`], over an IR's
-//! shared [`IrSpectra`]) as a graph node ([`ConvolverNode`]), so a
+//! A partitioned FFT convolution ([`Convolver`], over an IR's shared
+//! [`IrSpectra`]: uniform partitions for a short IR, a head and larger tail
+//! partitions for a long one) as a graph node ([`ConvolverNode`]), so a
 //! convolution reverb lives in a graph alongside the built-in delay,
 //! modulation, dynamics, and spatial nodes.
 //!

@@ -1,33 +1,66 @@
-//! Mono FFT convolver primitive: a uniformly partitioned FFT convolution
-//! whose transformed impulse response is **stored once**, in an [`IrSpectra`]
+//! Mono FFT convolver primitive: a partitioned FFT convolution whose
+//! transformed impulse response is **stored once**, in an [`IrSpectra`]
 //! behind an `Arc`, and shared by every convolver built from it.
 //!
-//! The partitioned convolution is the one `fft-convolver` 0.3 runs (its
-//! `FFTConvolver`), with the same arithmetic in the same order, over
-//! [`RealFft`], the engine's CPU-independent real FFT (rustfft's scalar
-//! planner, where `fft-convolver`'s `realfft` picks SIMD at run time). An
-//! output is therefore bit-identical across CPUs on one OS and libm, and equal
-//! to `fft-convolver`'s up to the transforms' rounding. It is written here
-//! rather than depended on because
-//! `fft-convolver` keeps the IR's spectra inside each convolver with no way to
-//! share them, so every channel of a shared-IR node and every fork of a node
-//! would hold its own copy — megabytes for a long reverb. Here a channel, a
-//! clone and a fork hold one `Arc` to the spectra, which nothing writes after
-//! they are built; each keeps only its own running state (the input spectra
-//! history, the overlap, the FFT scratch).
+//! Each level of the convolution is the uniformly partitioned overlap-add
+//! convolution `fft-convolver` 0.3 runs (its `FFTConvolver`), with the same
+//! arithmetic in the same order, over [`RealFft`], the engine's
+//! CPU-independent real FFT (rustfft's scalar planner, where
+//! `fft-convolver`'s `realfft` picks SIMD at run time). An output is
+//! therefore bit-identical across CPUs on one OS and libm. It is written here
+//! rather than depended on because `fft-convolver` keeps the IR's spectra
+//! inside each convolver with no way to share them, so every channel of a
+//! shared-IR node and every fork of a node would hold its own copy:
+//! megabytes for a long reverb. Here a channel, a clone and a fork hold one
+//! `Arc` to the spectra, which nothing writes after they are built; each
+//! keeps only its own running state (the input spectra history, the overlap,
+//! the FFT scratch).
 //!
-//! **The work is spread across the blocks of a partition.** Only the newest
-//! partition's multiply, the two transforms and the overlap-add need the
-//! input that completes a partition; the products of the older partitions with
-//! the older history do not, and they are fixed as soon as the previous
-//! partition's transform is done. [`Convolver::process_block`] therefore
-//! sums them a few partitions per call, in proportion to the samples
-//! consumed, finishing a call's length before the boundary, so a call costs
-//! about the same wherever in the cycle it falls and the peak is no longer
-//! one call in `partition / block` paying for the whole IR. Each bin still
-//! adds its partitions in ascending order from zero, so the output has the
-//! same bits as summing everything at the boundary, and the latency is
-//! unchanged (one partition).
+//! # Non-uniform partitions
+//!
+//! The latency is the head partition `B` (the `block_size` given to
+//! [`Convolver::new`]): the output at frame `n` is the convolution at frame
+//! `n - B`. A long IR is cut into **levels**, each a uniform partitioned
+//! convolver with its own partition `P` (a power-of-two multiple of `B`) and
+//! FFT size `2P`: the head level has `P = B`, and the tail levels have larger
+//! ones, up to four times `B` and 4096 frames, so the IR's late part is
+//! covered by far fewer, longer partitions. A partition costs one complex
+//! multiply-accumulate per bin per `P` frames, so with `L` taps a level costs
+//! `L / P` per frame: a tail four times the partition is four times cheaper,
+//! and the transforms it adds are a small fixed overhead per level.
+//!
+//! A level covers the IR taps `start..start + count * P`. It is a uniform
+//! convolver of latency `P` followed by a delay of `start + B - P` frames,
+//! which is never negative because a tail level starts at `start = P` (one of
+//! its own partitions in): the total is `B` on every level, so the node's
+//! declared latency is the same as the uniform convolver's. That delay is
+//! **slack**: once a block of `P` input frames is complete the level's output
+//! is not due for `start + B - P` frames (`B` for a tail level), and the
+//! level's two transforms run at fixed offsets inside it, one at a host
+//! block and the other at another, at offsets no other level uses, so no
+//! host block of up to a third to a fifth of `B` carries more than one
+//! tail transform. Every level's output is summed into one ring at the frame
+//! it is due, in the order of the transforms' frames, which does not depend
+//! on how the host splits its calls.
+//!
+//! A cost model picks the levels (`plan_levels`): the layout with the lowest
+//! modelled cost per frame wins, the single uniform level included, and only
+//! if it costs at most 0.7 of the uniform one. A short IR (where an extra
+//! level's transforms cost about what they save) is the uniform convolver it
+//! always was, as is any IR when `B` is 4096 or more.
+//!
+//! **Each level's partition sum is spread across the blocks of its
+//! partition.** Only the newest partition's multiply, the inverse transform
+//! and the overlap-add need the input that completes a block; the products of
+//! the older partitions with the older history are fixed as soon as the
+//! previous block's transform is done. [`Convolver::process_block`] therefore
+//! sums them a few partitions per call, in proportion to the frames consumed,
+//! finishing a call's length before the next block's transform. Each bin adds
+//! its partitions in ascending order from zero, so any split of the work into
+//! calls gives the same bits.
+//!
+//! No allocation happens after construction, and the render is bit-identical
+//! for any split of the input into calls, including one frame at a time.
 
 use std::sync::Arc;
 
@@ -37,118 +70,111 @@ use tutti_types::{Complex32, RealFft};
 /// as every partition size here is.
 pub(crate) const DEFAULT_BLOCK_SIZE: usize = 512;
 
-/// Linear scratch blocks the partitioned-FFT convolver drains/fills
-/// once per `block_size` samples.
-///
-/// Not a ring — the input block fills linearly, gets passed wholesale
-/// to [`Partitioned::process`], and resets. The output block is read
-/// once per sample and rewritten in full on the next FFT cycle. This
-/// shape is distinct enough from [`crate::buffer::CircularBuffer`]
-/// that reusing the ring would be a forced fit.
-#[derive(Clone)]
-struct FftPartitionState {
-    block_size: usize,
-    input: Vec<f32>,
-    input_fill: usize,
-    output: Vec<f32>,
-    output_cursor: usize,
+/// A tail level's partition is at most this many times the head's, and at
+/// most [`MAX_PARTITION`] frames: its two transforms (`2 * P` points) are the
+/// biggest unit of work one host block can be handed, and this keeps that no
+/// bigger than a few of the head's own.
+const MAX_TAIL_RATIO: usize = 4;
+const MAX_PARTITION: usize = 4096;
+
+/// A non-uniform layout replaces the uniform one only when its modelled cost
+/// is at most this fraction of it: the model leaves out each level's
+/// bookkeeping, and an IR short enough for the two to be close measures
+/// slightly worse split than whole.
+const MIN_GAIN: f64 = 0.7;
+
+/// The cost model's figures, in nanoseconds, measured on a desktop core: one
+/// complex multiply-accumulate of a bin (spectra read from memory), and one
+/// real transform per `n * log2(n)`. They decide between layouts and nothing
+/// else, so only their ratio matters.
+const MAC_NS: f64 = 0.7;
+const FFT_NS: f64 = 0.29;
+
+/// One level of a layout: `count` partitions of `part` frames covering the
+/// IR taps from `start`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Plan {
+    part: usize,
+    start: usize,
+    count: usize,
 }
 
-impl FftPartitionState {
-    fn new(block_size: usize) -> Self {
-        Self {
-            block_size,
-            input: vec![0.0; block_size],
-            input_fill: 0,
-            output: vec![0.0; block_size],
-            // Start drained — first `block_size` samples read zero (fill-up
-            // latency).
-            output_cursor: block_size,
+/// The modelled cost per frame of `plan`, in nanoseconds: the multiply-
+/// accumulates of every partition and the two transforms of every block.
+fn plan_cost(plan: &[Plan]) -> f64 {
+    plan.iter()
+        .map(|l| {
+            let p = l.part as f64;
+            let n = 2.0 * p;
+            l.count as f64 * (p + 1.0) * MAC_NS / p + 2.0 * FFT_NS * n * n.log2() / p
+        })
+        .sum()
+}
+
+/// The levels for partitions `parts` (ascending, `parts[0]` the head) over an
+/// IR of `ir_len` taps. A level starts at its own partition size, which is
+/// what leaves a tail level `B` frames of slack: the head takes `parts[1] / B`
+/// partitions, and each later level the number that reaches the next one.
+fn build_plan(ir_len: usize, parts: &[usize]) -> Vec<Plan> {
+    let mut plan = Vec::new();
+    let mut start = 0;
+    for (j, &part) in parts.iter().enumerate() {
+        if start >= ir_len {
+            break;
         }
+        let want = match parts.get(j + 1) {
+            Some(&next) if j == 0 => next / part,
+            Some(&next) => next / part - 1,
+            None => usize::MAX,
+        };
+        let count = want.min((ir_len - start).div_ceil(part));
+        plan.push(Plan { part, start, count });
+        start += count * part;
     }
-
-    /// Next sample from the already-computed output block, or `0.0` if
-    /// the block has been drained.
-    #[inline]
-    fn next_output(&mut self) -> f32 {
-        if self.output_cursor < self.block_size {
-            let s = self.output[self.output_cursor];
-            self.output_cursor += 1;
-            s
-        } else {
-            0.0
-        }
-    }
-
-    /// Write `sample` into the input-accumulation block. Returns `true`
-    /// when the block is full and `drain` must be run.
-    #[inline]
-    fn push_input(&mut self, sample: f32) -> bool {
-        self.input[self.input_fill] = sample;
-        self.input_fill += 1;
-        self.input_fill >= self.block_size
-    }
-
-    /// Hand the filled input block to `fft`, overwrite the output
-    /// block with the result, and reset both cursors.
-    #[inline]
-    fn drain_through(&mut self, fft: &mut Partitioned) {
-        fft.process(&self.input, &mut self.output);
-        self.input_fill = 0;
-        self.output_cursor = 0;
-    }
-
-    fn clear(&mut self) {
-        self.input.fill(0.0);
-        self.input_fill = 0;
-        self.output.fill(0.0);
-        self.output_cursor = self.block_size;
-    }
+    plan
 }
 
-/// An impulse response, transformed: one spectrum per `block_size`-long
-/// partition, and the two transforms of `2 × block_size` that produced them
-/// and that every convolver over it runs. Built once, read-only after that:
-/// nothing on the audio thread (or anywhere) writes it, so any number of
-/// convolvers — a node's channels, a clone, a fork — share one behind an
-/// `Arc`.
-pub struct IrSpectra {
-    block_size: usize,
-    ir_len: usize,
-    /// `ceil(ir_len / block_size)` spectra of `block_size + 1` bins; empty
-    /// for an empty IR, whose convolution is silence.
-    segments: Vec<Vec<Complex32>>,
-    /// Both directions, `2 × block_size` points.
-    fft: RealFft,
-}
-
-impl IrSpectra {
-    /// Partition and transform `ir` at `block_size`, which must be a power
-    /// of two. Allocates; control thread.
-    fn new(ir: &[f32], block_size: usize) -> Self {
-        debug_assert!(block_size.is_power_of_two());
-        let seg_size = 2 * block_size;
-        let fft = RealFft::new(seg_size);
-        let bins = seg_size / 2 + 1;
-        let seg_count = ir.len().div_ceil(block_size);
-        let mut scratch = fft.make_scratch();
-        let mut buffer = vec![0.0f32; seg_size];
-        let segments = (0..seg_count)
-            .map(|i| {
-                let part = &ir[i * block_size..ir.len().min((i + 1) * block_size)];
-                copy_and_pad(&mut buffer, part);
-                let mut spectrum = vec![Complex32::new(0.0, 0.0); bins];
-                fft.forward(&buffer, &mut spectrum, &mut scratch);
-                spectrum
-            })
+/// The layout with the lowest modelled cost: the uniform one (a single
+/// head level), or the head and tail levels whose partitions are powers of
+/// two up to [`MAX_TAIL_RATIO`] times the head's, if that costs at most
+/// [`MIN_GAIN`] of the uniform. Empty for an empty IR.
+fn plan_levels(ir_len: usize, head: usize) -> Vec<Plan> {
+    if ir_len == 0 {
+        return Vec::new();
+    }
+    let uniform = vec![Plan {
+        part: head,
+        start: 0,
+        count: ir_len.div_ceil(head),
+    }];
+    let uniform_cost = plan_cost(&uniform);
+    let mut best = (uniform_cost * MIN_GAIN, None);
+    let reach = MAX_PARTITION.min(head.saturating_mul(MAX_TAIL_RATIO));
+    let sizes: Vec<usize> = std::iter::successors(head.checked_mul(2), |p| p.checked_mul(2))
+        .take_while(|&p| p <= reach)
+        .collect();
+    for mask in 1u32..(1 << sizes.len()) {
+        let parts: Vec<usize> = std::iter::once(head)
+            .chain(
+                sizes
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| mask >> k & 1 == 1)
+                    .map(|(_, &p)| p),
+            )
             .collect();
-        Self {
-            block_size,
-            ir_len: ir.len(),
-            segments,
-            fft,
+        let cand = build_plan(ir_len, &parts);
+        let cost = plan_cost(&cand);
+        if cost < best.0 {
+            best = (cost, Some(cand));
         }
     }
+    best.1.unwrap_or(uniform)
+}
+
+/// Zeroed complex spectrum of `bins` bins.
+fn zeros(bins: usize) -> Vec<Complex32> {
+    vec![Complex32::new(0.0, 0.0); bins]
 }
 
 /// `dst[..src.len()] = src`, the rest zero.
@@ -169,192 +195,321 @@ fn complex_multiply_accumulate(result: &mut [Complex32], a: &[Complex32], b: &[C
     }
 }
 
-/// One convolver's running state over shared [`IrSpectra`]: the uniformly
-/// partitioned overlap-add convolution, one `block_size` block per
-/// [`process`](Self::process). Everything here is this convolver's own; the
-/// spectra are only read.
-struct Partitioned {
-    spectra: Arc<IrSpectra>,
-    /// The input's spectra, one per IR partition: a ring whose head is
-    /// `current`.
-    history: Vec<Vec<Complex32>>,
-    current: usize,
-    /// `2 × block_size`: the padded input going in, the product coming out.
-    buffer: Vec<f32>,
-    /// Both transforms' scratch.
-    scratch: Vec<Complex32>,
-    /// The older partitions' products, summed a few partitions at a time
-    /// between two boundaries ([`accumulate_to`](Self::accumulate_to)):
-    /// partitions `1..=accumulated` are in, and `begun` says the sum was
-    /// zeroed for this block.
-    pre_multiplied: Vec<Complex32>,
-    accumulated: usize,
-    begun: bool,
-    conv: Vec<Complex32>,
-    /// The second half of the last block's product, added to the next.
-    overlap: Vec<f32>,
+/// One level of an impulse response, transformed: `segments.len()` spectra of
+/// `part` frames each, and the two transforms of `2 × part` points that
+/// produced them and that every convolver over it runs.
+struct Level {
+    part: usize,
+    /// Frames from the level's uniform output (latency `part`) to its due
+    /// time (latency `B`): `start + B - part`. Zero for the head.
+    delay: usize,
+    /// Frames after a block of `part` inputs is complete at which its forward
+    /// transform runs, and at which the multiply and inverse transform run:
+    /// `fwd_at <= inv_at <= delay`, and `inv_at < part`.
+    fwd_at: usize,
+    inv_at: usize,
+    /// `part + 1` bins each.
+    segments: Vec<Vec<Complex32>>,
+    /// Both directions, `2 × part` points.
+    fft: RealFft,
 }
 
-impl Partitioned {
-    /// A convolver over `spectra` in its freshly built state. Allocates its
-    /// own state (never the spectra's).
-    fn new(spectra: Arc<IrSpectra>) -> Self {
-        let bs = spectra.block_size;
-        let bins = bs + 1;
-        let zero = Complex32::new(0.0, 0.0);
+/// An impulse response, transformed: its levels, built once and
+/// read-only after that. Nothing on the audio thread (or anywhere) writes it,
+/// so any number of convolvers (a node's channels, a clone, a fork) share one
+/// behind an `Arc`.
+pub struct IrSpectra {
+    block_size: usize,
+    ir_len: usize,
+    levels: Vec<Level>,
+    /// Power-of-two lengths of the input ring (the newest `part + fwd_at`
+    /// frames of every level) and the output ring (the furthest frame a level
+    /// writes ahead of the read cursor).
+    input_ring: usize,
+    output_ring: usize,
+}
+
+impl IrSpectra {
+    /// Partition and transform `ir` at `block_size`, which must be a power
+    /// of two. Allocates; control thread.
+    fn new(ir: &[f32], block_size: usize) -> Self {
+        debug_assert!(block_size.is_power_of_two());
+        Self::from_plan(ir, block_size, &plan_levels(ir.len(), block_size))
+    }
+
+    /// `ir` cut into the levels of `plan`.
+    fn from_plan(ir: &[f32], block_size: usize, plan: &[Plan]) -> Self {
+        // The tail levels' offsets in the head partition's cycle: the head's
+        // transforms are at its start, and the two of each tail level at
+        // slots that no other transform uses, spaced evenly through the
+        // `block_size` frames of slack, so that a host block no longer than
+        // one slot (a third to a fifth of the head partition) holds at most
+        // one of them.
+        let slot = (block_size / (2 * plan.len().saturating_sub(1) + 1)).max(1);
+        let levels: Vec<Level> = plan
+            .iter()
+            .enumerate()
+            .map(|(j, l)| {
+                let fft = RealFft::new(2 * l.part);
+                let mut scratch = fft.make_scratch();
+                let mut buffer = vec![0.0f32; 2 * l.part];
+                let segments = (0..l.count)
+                    .map(|i| {
+                        let lo = l.start + i * l.part;
+                        let hi = ir.len().min(lo + l.part);
+                        copy_and_pad(&mut buffer, &ir[lo..hi]);
+                        let mut spectrum = zeros(l.part + 1);
+                        fft.forward(&buffer, &mut spectrum, &mut scratch);
+                        spectrum
+                    })
+                    .collect();
+                let delay = l.start + block_size - l.part;
+                let inv_at = (2 * j * slot).min(delay);
+                let fwd_at = ((2 * j).saturating_sub(1) * slot).min(inv_at);
+                Level {
+                    part: l.part,
+                    delay,
+                    fwd_at,
+                    inv_at,
+                    segments,
+                    fft,
+                }
+            })
+            .collect();
+        let input_ring = levels
+            .iter()
+            .map(|l| l.part + l.fwd_at)
+            .max()
+            .unwrap_or(1)
+            .next_power_of_two();
+        let output_ring =
+            (levels.iter().map(|l| l.delay + l.part).max().unwrap_or(0) + 1).next_power_of_two();
         Self {
-            history: vec![vec![zero; bins]; spectra.segments.len()],
-            current: 0,
-            buffer: vec![0.0; 2 * bs],
-            scratch: spectra.fft.make_scratch(),
-            pre_multiplied: vec![zero; bins],
-            accumulated: 0,
-            begun: false,
-            conv: vec![zero; bins],
-            overlap: vec![0.0; bs],
-            spectra,
+            block_size,
+            ir_len: ir.len(),
+            levels,
+            input_ring,
+            output_ring,
         }
     }
 
-    /// The older partitions' products for the next block, partitions
-    /// `1..=upto` of them summed into `pre_multiplied`. Everything they read
-    /// (the spectra, and the history slots other than `current`, which the
-    /// next block overwrites) is fixed between two blocks, and each bin sums
-    /// its partitions in ascending order from zero, as one whole-block pass
-    /// would, so any split of the partitions into calls gives the same bits.
-    fn accumulate_to(&mut self, upto: usize) {
-        let spectra = &*self.spectra;
-        let count = spectra.segments.len();
+    /// The partition size and partition count of each level, head first.
+    #[cfg(test)]
+    pub(super) fn shape(&self) -> Vec<(usize, usize)> {
+        self.levels
+            .iter()
+            .map(|l| (l.part, l.segments.len()))
+            .collect()
+    }
+}
+
+/// One convolver's running state for one [`Level`]: everything here is this
+/// convolver's own; the spectra are only read.
+#[derive(Clone)]
+struct LevelState {
+    /// The input's spectra, one per partition: a ring whose write slot is
+    /// `current`; the block before is at `current + 1`.
+    history: Vec<Vec<Complex32>>,
+    current: usize,
+    /// `2 × part`: the padded input going in, the product coming out.
+    buffer: Vec<f32>,
+    /// Both transforms' scratch.
+    scratch: Vec<Complex32>,
+    /// The older partitions' products for the *next* block, summed a few
+    /// partitions at a time ([`accumulate_to`](Self::accumulate_to)):
+    /// partitions `1..=accumulated` are in, and `begun` says the sum was
+    /// zeroed for this block.
+    building: Vec<Complex32>,
+    accumulated: usize,
+    begun: bool,
+    /// The finished sum for the block whose multiply is pending.
+    ready: Vec<Complex32>,
+    conv: Vec<Complex32>,
+    /// The second half of the last block's product, added to the next.
+    overlap: Vec<f32>,
+    /// The frame (frames pushed so far) at which the next forward transform
+    /// and the next multiply/inverse run.
+    next_fwd: u64,
+    next_inv: u64,
+    /// The frame of the last forward transform, once there is one: the
+    /// spread of the sum is measured from it.
+    last_fwd: Option<u64>,
+    /// A forward transform ran in the current call.
+    crossed: bool,
+}
+
+impl LevelState {
+    /// A level's state in its freshly built state. Allocates.
+    fn new(lv: &Level) -> Self {
+        let zero = Complex32::new(0.0, 0.0);
+        Self {
+            history: vec![vec![zero; lv.part + 1]; lv.segments.len()],
+            current: 0,
+            buffer: vec![0.0; 2 * lv.part],
+            scratch: lv.fft.make_scratch(),
+            building: zeros(lv.part + 1),
+            accumulated: 0,
+            begun: false,
+            ready: zeros(lv.part + 1),
+            conv: zeros(lv.part + 1),
+            overlap: vec![0.0; lv.part],
+            next_fwd: (lv.part + lv.fwd_at) as u64,
+            next_inv: (lv.part + lv.inv_at) as u64,
+            last_fwd: None,
+            crossed: false,
+        }
+    }
+
+    /// Partitions `1..=upto` of the older products summed into `building`.
+    /// Everything they read (the spectra, and the history slots other than
+    /// `current`, which the next forward transform overwrites) is fixed
+    /// between two blocks, and each bin sums its partitions in ascending
+    /// order from zero, as one whole-block pass would, so any split of the
+    /// partitions into calls gives the same bits.
+    fn accumulate_to(&mut self, lv: &Level, upto: usize) {
+        let count = lv.segments.len();
         if !self.begun {
-            self.pre_multiplied.fill(Complex32::new(0.0, 0.0));
+            self.building.fill(Complex32::new(0.0, 0.0));
             self.begun = true;
         }
-        let upto = upto.min(count.saturating_sub(1));
+        let upto = upto.min(count - 1);
         for i in self.accumulated + 1..=upto {
             let slot = (self.current + i) % count;
-            complex_multiply_accumulate(
-                &mut self.pre_multiplied,
-                &spectra.segments[i],
-                &self.history[slot],
-            );
+            complex_multiply_accumulate(&mut self.building, &lv.segments[i], &self.history[slot]);
         }
         self.accumulated = self.accumulated.max(upto);
     }
 
-    /// Convolve one block: `input` and `output` are `block_size` long.
-    /// Allocation-free. Sums whatever of the older partitions' products
-    /// [`accumulate_to`](Self::accumulate_to) has not, so a caller that never
-    /// calls it pays the whole sum here.
-    fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        self.accumulate_to(usize::MAX);
+    /// The block's forward transform: finish the sum for the block, take the
+    /// block of `part` frames that ended `fwd_at` frames ago from the input
+    /// ring, and transform it into the write slot.
+    fn forward(&mut self, lv: &Level, input: &[f32]) {
+        if self.last_fwd.is_some() {
+            self.accumulate_to(lv, usize::MAX);
+            std::mem::swap(&mut self.building, &mut self.ready);
+        }
         self.accumulated = 0;
         self.begun = false;
-        let spectra = &*self.spectra;
-        let (bs, count) = (spectra.block_size, spectra.segments.len());
-        if count == 0 {
-            output.fill(0.0);
-            return;
+        let mask = input.len() - 1;
+        let first = (self.next_fwd as usize).wrapping_sub(lv.fwd_at + lv.part);
+        for (r, b) in self.buffer[..lv.part].iter_mut().enumerate() {
+            *b = input[first.wrapping_add(r) & mask];
         }
-        copy_and_pad(&mut self.buffer, input);
-        spectra.fft.forward(
+        self.buffer[lv.part..].fill(0.0);
+        lv.fft.forward(
             &self.buffer,
             &mut self.history[self.current],
             &mut self.scratch,
         );
-        self.conv.copy_from_slice(&self.pre_multiplied);
-        complex_multiply_accumulate(
-            &mut self.conv,
-            &self.history[self.current],
-            &spectra.segments[0],
-        );
+        self.current = if self.current > 0 {
+            self.current - 1
+        } else {
+            lv.segments.len() - 1
+        };
+        self.last_fwd = Some(self.next_fwd);
+        self.next_fwd += lv.part as u64;
+    }
+
+    /// The block's product: the older partitions' sum plus the newest
+    /// partition, inverse-transformed, added to the overlap, and summed into
+    /// the output ring where the level's output is due.
+    fn inverse(&mut self, lv: &Level, output: &mut [f32]) {
+        let count = lv.segments.len();
+        let newest = (self.current + 1) % count;
+        self.conv.copy_from_slice(&self.ready);
+        complex_multiply_accumulate(&mut self.conv, &self.history[newest], &lv.segments[0]);
         // A non-zero imaginary part at DC or Nyquist, which the spectrum of a
         // real input has only when the input held NaN or ±∞, is ignored by
         // the inverse and the transform completes, so the block is used as
         // computed: a non-finite input propagates as through any linear
         // filter, the same in debug and release, and leaves with the
         // partition that carried it.
-        spectra
-            .fft
+        lv.fft
             .inverse(&mut self.conv, &mut self.buffer, &mut self.scratch);
         // The inverse is unnormalised.
         let len = self.buffer.len() as f32;
         for x in &mut self.buffer {
             *x /= len;
         }
-        for ((o, &y), &v) in output.iter_mut().zip(&self.buffer[..bs]).zip(&self.overlap) {
-            *o = y + v;
+        let mask = output.len() - 1;
+        let due = (self.next_inv as usize)
+            .wrapping_sub(lv.inv_at)
+            .wrapping_add(lv.delay);
+        for (r, (&y, &v)) in self.buffer[..lv.part].iter().zip(&self.overlap).enumerate() {
+            output[due.wrapping_add(r) & mask] += y + v;
         }
-        self.overlap.copy_from_slice(&self.buffer[bs..]);
-        self.current = if self.current > 0 {
-            self.current - 1
-        } else {
-            count - 1
-        };
+        self.overlap.copy_from_slice(&self.buffer[lv.part..]);
+        self.next_inv += lv.part as u64;
     }
 
     /// Clear the running state; the spectra stay.
-    fn reset(&mut self) {
+    fn reset(&mut self, lv: &Level) {
         let zero = Complex32::new(0.0, 0.0);
         self.buffer.fill(0.0);
         for h in &mut self.history {
             h.fill(zero);
         }
-        self.pre_multiplied.fill(zero);
+        self.building.fill(zero);
+        self.ready.fill(zero);
+        self.conv.fill(zero);
         self.accumulated = 0;
         self.begun = false;
-        self.conv.fill(zero);
         self.overlap.fill(0.0);
         self.current = 0;
-    }
-}
-
-impl Clone for Partitioned {
-    /// Shares the spectra; copies the running state.
-    fn clone(&self) -> Self {
-        Self {
-            spectra: Arc::clone(&self.spectra),
-            history: self.history.clone(),
-            current: self.current,
-            buffer: self.buffer.clone(),
-            scratch: self.scratch.clone(),
-            pre_multiplied: self.pre_multiplied.clone(),
-            accumulated: self.accumulated,
-            begun: self.begun,
-            conv: self.conv.clone(),
-            overlap: self.overlap.clone(),
-        }
+        self.next_fwd = (lv.part + lv.fwd_at) as u64;
+        self.next_inv = (lv.part + lv.inv_at) as u64;
+        self.last_fwd = None;
+        self.crossed = false;
     }
 }
 
 /// Real-time-safe mono convolver.
 ///
-/// Composes two pieces:
-/// - the partitioned FFT convolution over the IR's [`IrSpectra`], which it
-///   shares (a `Clone` shares them, and so does [`fresh`](Self::fresh));
-/// - a `FftPartitionState` scratch block sized at construction.
-///
-/// The hot path (`process_sample`, `process_block`) never allocates.
+/// Composes the levels of the IR's [`IrSpectra`], which it shares (a `Clone`
+/// shares them, and so does [`fresh`](Self::fresh)), with its own running
+/// state, all sized at construction. The hot path (`process_sample`,
+/// `process_block`) never allocates.
 #[derive(Clone)]
 pub struct Convolver {
-    fft: Partitioned,
-    partition: FftPartitionState,
+    spectra: Arc<IrSpectra>,
+    levels: Vec<LevelState>,
+    /// The newest input frames, a ring of `spectra.input_ring`.
+    input: Vec<f32>,
+    /// The output not yet read: every level's blocks summed at the frames they
+    /// are due, a ring of `spectra.output_ring`, zeroed as it is read.
+    output: Vec<f32>,
+    /// Frames consumed since construction or the last reset.
+    pushed: u64,
 }
 
 impl Convolver {
     /// Creates a new convolver from an impulse response.
     ///
-    /// `block_size` is rounded up to the next power of two.
+    /// `block_size` is rounded up to the next power of two; it is the head
+    /// partition and the latency.
     pub fn new(ir: &[f32], block_size: usize) -> Self {
         let block_size = block_size.next_power_of_two().max(2);
         Self::over(Arc::new(IrSpectra::new(ir, block_size)))
     }
 
+    /// A convolver over `ir` at `block_size` (a power of two) cut by `parts`
+    /// (the partition of each level, ascending, the head first) rather than
+    /// by the cost model.
+    #[cfg(test)]
+    fn with_parts(ir: &[f32], block_size: usize, parts: &[usize]) -> Self {
+        assert_eq!(parts[0], block_size);
+        let plan = build_plan(ir.len(), parts);
+        Self::over(Arc::new(IrSpectra::from_plan(ir, block_size, &plan)))
+    }
+
     /// A convolver over `spectra`, in its freshly built state.
     fn over(spectra: Arc<IrSpectra>) -> Self {
-        let block_size = spectra.block_size;
         Self {
-            fft: Partitioned::new(spectra),
-            partition: FftPartitionState::new(block_size),
+            levels: spectra.levels.iter().map(LevelState::new).collect(),
+            input: vec![0.0; spectra.input_ring],
+            output: vec![0.0; spectra.output_ring],
+            pushed: 0,
+            spectra,
         }
     }
 
@@ -362,12 +517,12 @@ impl Convolver {
     /// a freshly built one: nothing of this one's running state is copied.
     /// Allocates the new state (the spectra are not copied).
     pub fn fresh(&self) -> Self {
-        Self::over(Arc::clone(&self.fft.spectra))
+        Self::over(Arc::clone(&self.spectra))
     }
 
     /// The IR's spectra this convolver reads, shared.
     pub fn spectra(&self) -> &Arc<IrSpectra> {
-        &self.fft.spectra
+        &self.spectra
     }
 
     /// Creates a convolver with the default block size (`512`).
@@ -377,90 +532,115 @@ impl Convolver {
 
     /// IR length in samples.
     pub fn ir_length(&self) -> usize {
-        self.fft.spectra.ir_len
+        self.spectra.ir_len
     }
 
     /// Latency introduced by the partitioned FFT (== block size).
     pub fn latency(&self) -> usize {
-        self.partition.block_size
+        self.spectra.block_size
     }
 
     /// Produces one convolved sample. Returns `0.0` for the first
     /// `block_size` samples (fill-up latency).
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
-        let out = self.partition.next_output();
-        if self.partition.push_input(input) {
-            self.partition.drain_through(&mut self.fft);
-        }
-        out
+        let mut out = [0.0f32];
+        self.process_block(&[input], &mut out);
+        out[0]
     }
 
     /// Convolve a block: `output[i]` is what `process_sample(input[i])` would
-    /// have returned, for every `i`. `input` and `output` must be the same
-    /// length.
+    /// have returned, for every `i`, bit for bit, and the same for any split
+    /// of the input into calls. `input` and `output` must be the same length,
+    /// which may be anything.
     ///
-    /// The same FFT runs on the same data at the same frame as the per-sample
-    /// path, so the two are bit-identical; this one moves whole runs with
-    /// `copy_from_slice` instead of paying a branch and two index bumps per
-    /// sample. A run ends at the partition boundary, which is where the FFT has
-    /// to fire before the next sample's output exists.
-    ///
-    /// The run arithmetic leans on one invariant of `FftPartitionState`: once
-    /// the first partition has drained, the output cursor and the input fill
-    /// advance in lockstep, so a run that fits in the input block also fits in
-    /// the output block. Before that first drain the cursor sits at
-    /// `block_size` (the fill-up latency) and the run reads silence.
-    #[inline]
+    /// The call is cut into runs at the frames where a level has a transform
+    /// to run, which it does as soon as its frame is reached, so each runs
+    /// before the output frame that needs it. A call costs the transforms
+    /// whose frames it contains, the share of every level's older partitions
+    /// its length is due, and the copy.
     pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
         debug_assert_eq!(input.len(), output.len());
-        let p = &mut self.partition;
+        let Self {
+            spectra,
+            levels,
+            input: ring,
+            output: out_ring,
+            pushed,
+        } = self;
+        let (in_mask, out_mask) = (ring.len() - 1, out_ring.len() - 1);
         let mut done = 0;
-        let mut crossed = false;
         while done < input.len() {
-            let run = (p.block_size - p.input_fill).min(input.len() - done);
-            let out = &mut output[done..done + run];
-            if p.output_cursor < p.block_size {
-                debug_assert!(p.output_cursor + run <= p.block_size);
-                out.copy_from_slice(&p.output[p.output_cursor..p.output_cursor + run]);
-                p.output_cursor += run;
-            } else {
-                out.fill(0.0);
+            // The frames to the next transform, or the end of the call.
+            let next = levels
+                .iter()
+                .map(|st| st.next_fwd.min(st.next_inv))
+                .min()
+                .unwrap_or(u64::MAX);
+            let run = (next - *pushed).min((input.len() - done) as u64) as usize;
+            let at = *pushed as usize;
+            for (r, o) in output[done..done + run].iter_mut().enumerate() {
+                let slot = &mut out_ring[at.wrapping_add(r) & out_mask];
+                *o = *slot;
+                *slot = 0.0;
             }
-            p.input[p.input_fill..p.input_fill + run].copy_from_slice(&input[done..done + run]);
-            p.input_fill += run;
-            if p.input_fill >= p.block_size {
-                p.drain_through(&mut self.fft);
-                crossed = true;
-            } else if !crossed {
-                // Spread the older partitions' sum over the block: by the
-                // time `horizon` samples are in, every partition is in. The
-                // horizon stops short of the boundary by this call's length
-                // (at most half a partition), so the call that crosses the
-                // boundary pays for the transforms and the newest partition
-                // only. A call that has crossed does no spread work for the
-                // next cycle: a later call or the next boundary does it.
-                let horizon = (p.block_size - input.len().min(p.block_size / 2)).max(1);
-                let older = self.fft.spectra.segments.len().saturating_sub(1);
-                self.fft.accumulate_to(older * p.input_fill / horizon);
+            for (r, &x) in input[done..done + run].iter().enumerate() {
+                ring[at.wrapping_add(r) & in_mask] = x;
             }
+            *pushed += run as u64;
             done += run;
+            for (lv, st) in spectra.levels.iter().zip(levels.iter_mut()) {
+                // What is due at this frame, in the order of the frames and,
+                // at one frame, a level's forward transform before its
+                // inverse and the levels in order: the sums into the output
+                // ring add in an order that does not depend on the calls.
+                while st.next_fwd <= *pushed || st.next_inv <= *pushed {
+                    if st.next_fwd <= st.next_inv {
+                        st.forward(lv, ring);
+                        st.crossed = true;
+                    } else {
+                        st.inverse(lv, out_ring);
+                    }
+                }
+                // Spread the older partitions' sum over the block: by the
+                // time `horizon` frames have passed since the level's last
+                // forward transform every partition is in. The horizon stops
+                // short of the next transform by this call's length (at most
+                // half a partition), so the call that holds it pays for the
+                // transforms and the newest partition only. A call that has
+                // crossed does no spread work for the next block: a later
+                // call or the next transform does it.
+                let older = lv.segments.len() - 1;
+                if let (Some(last), true) = (st.last_fwd, older > 0 && !st.crossed) {
+                    let horizon = (lv.part - input.len().min(lv.part / 2)).max(1) as u64;
+                    let target = older as u64 * (*pushed - last) / horizon;
+                    st.accumulate_to(lv, target.min(older as u64) as usize);
+                }
+            }
+        }
+        for st in levels.iter_mut() {
+            st.crossed = false;
         }
     }
 
     /// Zeros the working buffers without discarding the IR. Safe to
     /// call on a stream discontinuity.
     ///
-    /// **Both** halves of the state have to be cleared. Clearing only
-    /// `partition` — the local scratch — leaves the convolution's own
-    /// partition buffers holding the previous signal's tail, which then bleeds
-    /// into whatever plays next: with an 8-tap IR the first sample after a
-    /// reset comes back at 3.5 instead of silence. `reset` is called precisely
-    /// at stream discontinuities (a seek, a region change), so that leak lands
-    /// exactly where a ghost of the previous audio is most audible.
+    /// **Everything** that holds signal has to be cleared: the input ring,
+    /// the output ring, and every level's history, sums and overlap. Clearing
+    /// only the input leaves the convolution's own partition buffers holding
+    /// the previous signal's tail, which then bleeds into whatever plays
+    /// next: with an 8-tap IR the first sample after a reset comes back at
+    /// 3.5 instead of silence. `reset` is called precisely at stream
+    /// discontinuities (a seek, a region change), so that leak lands exactly
+    /// where a ghost of the previous audio is most audible.
     pub fn reset(&mut self) {
-        self.partition.clear();
-        self.fft.reset();
+        self.input.fill(0.0);
+        self.output.fill(0.0);
+        self.pushed = 0;
+        for (lv, st) in self.spectra.levels.iter().zip(&mut self.levels) {
+            st.reset(lv);
+        }
     }
 }
 
@@ -730,7 +910,7 @@ mod tests {
         let patterns: [&[usize]; 6] = [&[1], &[7], &[64], &[33, 5, 64, 9, 200], &[100], &[300, 17]];
         for part in [32usize, 64, 128] {
             for lens in patterns {
-                let mut c = Convolver::new(&ir, part);
+                let mut c = Convolver::with_parts(&ir, part, &[part]);
                 let lat = c.latency();
                 assert_eq!(lat, part);
                 let mut padded = x.clone();
@@ -789,9 +969,13 @@ mod tests {
             .map(|i| ((i as f32) * 0.31).sin() * 0.7 + if i % 53 == 0 { 0.3 } else { 0.0 })
             .collect();
         for part in [16usize, 64, 256] {
-            let mut per_sample = Convolver::new(&ir, part);
+            let mut per_sample = Convolver::with_parts(&ir, part, &[part]);
             let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
-            let got = run_blocks(&mut Convolver::new(&ir, part), &x, &[9, 64, 1, 31, 128, 70]);
+            let got = run_blocks(
+                &mut Convolver::with_parts(&ir, part, &[part]),
+                &x,
+                &[9, 64, 1, 31, 128, 70],
+            );
             assert!(
                 got.iter()
                     .zip(&want)
@@ -811,17 +995,22 @@ mod tests {
     #[test]
     fn accumulation_is_spread_across_the_calls_of_a_partition() {
         let part = 64;
-        let mut c = Convolver::new(&long_ir(1000), part);
-        let older = c.fft.spectra.segments.len() - 1;
+        let mut c = Convolver::with_parts(&long_ir(1000), part, &[part]);
+        let older = c.spectra.levels[0].segments.len() - 1;
         let x = vec![0.5f32; 8];
         let mut out = vec![0.0f32; 8];
         let share = older * 8 / (part - 8) + 1;
+        // Nothing is summed before the first block's transform: the history
+        // is zero, so the first cycle is not measured.
+        for _ in 0..8 {
+            c.process_block(&x, &mut out);
+        }
         for cycle in 0..4 {
             let mut last = 0;
             for call in 0..8 {
                 c.process_block(&x, &mut out);
                 if call < 7 {
-                    let now = c.fft.accumulated;
+                    let now = c.levels[0].accumulated;
                     assert!(
                         now - last <= share,
                         "cycle {cycle} call {call}: {last}->{now}"
@@ -831,7 +1020,7 @@ mod tests {
                         assert_eq!(now, older, "done before the boundary call");
                     }
                 } else {
-                    assert_eq!(c.fft.accumulated, 0, "the boundary call drained");
+                    assert_eq!(c.levels[0].accumulated, 0, "the boundary call drained");
                 }
             }
         }
@@ -851,8 +1040,8 @@ mod tests {
     #[test]
     fn the_spread_sum_is_the_ascending_sum() {
         let part = 16;
-        let mut c = Convolver::new(&long_ir(300), part);
-        let count = c.fft.spectra.segments.len();
+        let mut c = Convolver::with_parts(&long_ir(300), part, &[part]);
+        let count = c.spectra.levels[0].segments.len();
         assert!(count > 8);
         let x: Vec<f32> = (0..part * 12)
             .map(|i| ((i as f32) * 0.29).sin() + if i % 5 == 0 { 0.4 } else { 0.0 })
@@ -861,20 +1050,21 @@ mod tests {
         let mut checked = 0;
         for (n, call) in x.chunks(4).enumerate() {
             c.process_block(call, &mut out);
-            if n % 4 != 2 {
+            // Nothing is summed before the first block's transform.
+            if n % 4 != 2 || n < 4 {
                 continue;
             }
-            assert_eq!(c.fft.accumulated, count - 1, "sum complete, call {n}");
+            assert_eq!(c.levels[0].accumulated, count - 1, "sum complete, call {n}");
             let mut want = vec![Complex32::new(0.0f32, 0.0); part + 1];
             for i in 1..count {
-                let seg = &c.fft.spectra.segments[i];
-                let hist = &c.fft.history[(c.fft.current + i) % count];
+                let seg = &c.spectra.levels[0].segments[i];
+                let hist = &c.levels[0].history[(c.levels[0].current + i) % count];
                 for ((w, a), b) in want.iter_mut().zip(seg).zip(hist) {
                     w.re += a.re * b.re - a.im * b.im;
                     w.im += a.re * b.im + a.im * b.re;
                 }
             }
-            for (bin, (g, w)) in c.fft.pre_multiplied.iter().zip(&want).enumerate() {
+            for (bin, (g, w)) in c.levels[0].building.iter().zip(&want).enumerate() {
                 assert!(
                     g.re.to_bits() == w.re.to_bits() && g.im.to_bits() == w.im.to_bits(),
                     "call {n} bin {bin}: {g:?} want {w:?}"
@@ -882,7 +1072,7 @@ mod tests {
             }
             checked += 1;
         }
-        assert_eq!(checked, 12);
+        assert_eq!(checked, 11);
     }
 
     /// A call that crosses a boundary leaves the next cycle's sum untouched
@@ -896,7 +1086,7 @@ mod tests {
     #[test]
     fn a_call_that_crosses_a_boundary_leaves_the_next_cycle_unstarted() {
         let part = 64;
-        let mut c = Convolver::new(&long_ir(1000), part);
+        let mut c = Convolver::with_parts(&long_ir(1000), part, &[part]);
         let lens = [20usize, 20, 20, 50];
         let mut out = [0.0f32; 50];
         let (mut fill, mut crossings) = (0usize, 0);
@@ -906,8 +1096,8 @@ mod tests {
             c.process_block(&x, &mut out[..n]);
             if fill + n > part {
                 crossings += 1;
-                assert_eq!(c.fft.accumulated, 0, "call {k} crossed");
-                assert!(!c.fft.begun, "call {k} crossed");
+                assert_eq!(c.levels[0].accumulated, 0, "call {k} crossed");
+                assert!(!c.levels[0].begun, "call {k} crossed");
             }
             fill = (fill + n) % part;
         }
@@ -941,5 +1131,451 @@ mod tests {
                  the previous signal's tail survived the reset"
             );
         }
+    }
+
+    // ---- Non-uniform layouts ------------------------------------------------
+
+    /// A noise-like signal, not periodic in any block length used here.
+    fn noise(len: usize) -> Vec<f32> {
+        let mut state = 0x2545_f491u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 8) as f32 / (1 << 23) as f32 - 1.0
+            })
+            .collect()
+    }
+
+    /// An IR of `len` taps that does not decay, so a late partition carries
+    /// as much as an early one and dropping it cannot hide in the tolerance.
+    fn flat_ir(len: usize) -> Vec<f32> {
+        noise(len + 5)[5..].iter().map(|v| v * 0.5).collect()
+    }
+
+    /// The round-off tolerance of an FFT convolution of `x` with `ir` through
+    /// transforms of at most `n` points.
+    ///
+    /// One output is a sum of products, computed as the inverse of a product
+    /// of transforms. A transform's rounding error is `~ eps * log2(n)` of its
+    /// input's norm, so an output differs from the exact sum by a small
+    /// multiple of `eps * log2(n) * |h|_2 * |x|_2` (the norms of the whole IR
+    /// and the whole input, which bound every partition's and every block's;
+    /// the partitions' roundings are independent and add in quadrature, which
+    /// the bound ignores). The constant 2 is about nine times the worst error
+    /// measured over the layouts below, and `the_tolerance_is_tight_enough`
+    /// pins that ratio so the bound cannot drift loose: a wrong or missing
+    /// partition is an error of order `|h_k| |x|`, thousands of times more.
+    fn tolerance(ir: &[f32], x: &[f32], n: usize) -> f32 {
+        let norm = |v: &[f32]| v.iter().map(|a| a * a).sum::<f32>().sqrt();
+        2.0 * f32::EPSILON * (n as f32).log2() * norm(ir) * norm(x)
+    }
+
+    /// The layouts the tests force: head partition, then the partitions of the
+    /// tail levels.
+    const LAYOUTS: [(usize, &[usize]); 5] = [
+        (16, &[16, 64]),
+        (16, &[16, 32, 128]),
+        (8, &[8, 16, 32, 64]),
+        (32, &[32, 128]),
+        (4, &[4, 16]),
+    ];
+
+    /// The IR lengths that sit on and around every level's first and last tap.
+    fn boundary_lengths(head: usize, parts: &[usize]) -> Vec<usize> {
+        let plan = build_plan(1 << 20, parts);
+        let mut lens = vec![1, head - 1, head, head + 1];
+        for l in &plan[1..] {
+            lens.extend([l.start - 1, l.start, l.start + 1]);
+            lens.extend([l.start + l.part - 1, l.start + l.part, l.start + l.part + 1]);
+        }
+        let last = plan.last().unwrap();
+        lens.push(last.start + 2 * last.part + 7);
+        lens.retain(|&l| l >= 1);
+        lens.sort_unstable();
+        lens.dedup();
+        lens
+    }
+
+    /// The convolver's output for `x` then enough silence for the whole tail,
+    /// fed in `lens`-cycled calls, with the latency dropped.
+    fn render(c: &mut Convolver, x: &[f32], lens: &[usize]) -> Vec<f32> {
+        let lat = c.latency();
+        let mut padded = x.to_vec();
+        padded.extend(std::iter::repeat_n(0.0, lat + c.ir_length()));
+        let mut got = run_blocks(c, &padded, lens);
+        assert!(
+            got[..lat].iter().all(|&s| s == 0.0),
+            "the fill-up is exact silence"
+        );
+        got.drain(..lat);
+        got
+    }
+
+    /// Every layout, at IR lengths that end exactly on, one short of and one
+    /// past each level's first and last tap, equals the direct convolution
+    /// (the definition) within round-off, through the whole tail, for call
+    /// lengths that divide a partition, ones that do not, ones that straddle
+    /// the transforms' frames and ones longer than the longest partition.
+    ///
+    /// The tolerance is [`tolerance`]'s. Mutations (run): `inverse` summing
+    /// into the output ring with `delay` left out, or with `delay + 1`, puts
+    /// a tail level's block at the wrong frame → fails at every length that
+    /// reaches a tail level; `build_plan` giving the last level one partition
+    /// fewer fails the lengths that end in it.
+    #[test]
+    fn non_uniform_output_equals_direct_convolution() {
+        let x = noise(900);
+        let patterns: [&[usize]; 5] = [&[1], &[7, 13], &[61], &[64, 3, 127], &[5000]];
+        for (head, parts) in LAYOUTS {
+            for len in boundary_lengths(head, parts) {
+                let ir = flat_ir(len);
+                let want = direct_convolve(&x, &ir);
+                let tol = tolerance(&ir, &x, 2 * parts[parts.len() - 1]);
+                for lens in patterns {
+                    let mut c = Convolver::with_parts(&ir, head, parts);
+                    let got = render(&mut c, &x, lens);
+                    for (i, w) in want.iter().enumerate() {
+                        assert!(
+                            (got[i] - w).abs() <= tol,
+                            "parts {parts:?}, {len} taps, calls {lens:?}: frame {i} is {} want {w} (tol {tol})",
+                            got[i]
+                        );
+                    }
+                    let rest = got[want.len()..]
+                        .iter()
+                        .fold(0.0f32, |a, &s| a.max(s.abs()));
+                    assert!(
+                        rest <= tol,
+                        "parts {parts:?}, {len} taps: ringing after the tail {rest}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The tolerance is within a small factor of the error the layouts
+    /// actually make, so it cannot be so loose that a wrong partition passes.
+    ///
+    /// Mutation (run): `tolerance`'s constant 2 raised to 4096 fails.
+    #[test]
+    fn the_tolerance_is_tight_enough() {
+        let x = noise(900);
+        let mut worst_ratio = 0.0f32;
+        for (head, parts) in LAYOUTS {
+            let ir = flat_ir(700);
+            let want = direct_convolve(&x, &ir);
+            let mut c = Convolver::with_parts(&ir, head, parts);
+            let got = render(&mut c, &x, &[61]);
+            let err = want
+                .iter()
+                .zip(&got)
+                .fold(0.0f32, |a, (w, g)| a.max((w - g).abs()));
+            worst_ratio = worst_ratio.max(err / tolerance(&ir, &x, 2 * parts[parts.len() - 1]));
+        }
+        assert!(
+            (0.02..0.5).contains(&worst_ratio),
+            "the measured error is {worst_ratio} of the tolerance"
+        );
+    }
+
+    /// An impulse in gives the IR out, at exactly the declared latency: exact
+    /// silence for the `latency` frames, then the IR's taps in order from the
+    /// impulse's frame.
+    ///
+    /// Mutation (run): `delay` computed as `start + block_size - part + 1`
+    /// shifts every tail tap by one frame → fails at the first tap of the
+    /// first tail level.
+    #[test]
+    fn an_impulse_gives_the_ir_at_the_declared_latency() {
+        for (head, parts) in LAYOUTS {
+            let last = parts[parts.len() - 1];
+            let ir = flat_ir(boundary_lengths(head, parts).into_iter().max().unwrap());
+            let mut x = vec![0.0f32; 11];
+            x[3] = 1.0;
+            let mut c = Convolver::with_parts(&ir, head, parts);
+            assert_eq!(c.latency(), head);
+            let lat = c.latency();
+            let mut padded = x.clone();
+            padded.extend(std::iter::repeat_n(0.0, lat + ir.len()));
+            let got = run_blocks(&mut c, &padded, &[9, 1, 40]);
+            assert!(
+                got[..lat].iter().all(|&s| s == 0.0),
+                "parts {parts:?}: the fill-up is exact silence"
+            );
+            let tol = tolerance(&ir, &x, 2 * last);
+            // Before the impulse (inside its block, where the transforms'
+            // rounding is) the output is within round-off of silence.
+            assert!(
+                got[lat..lat + 3].iter().all(|&s| s.abs() <= tol),
+                "parts {parts:?}: {:?}",
+                &got[lat..lat + 3]
+            );
+            for (k, &h) in ir.iter().enumerate() {
+                assert!(
+                    (got[lat + 3 + k] - h).abs() <= tol,
+                    "parts {parts:?}: tap {k} is {} want {h}",
+                    got[lat + 3 + k]
+                );
+            }
+        }
+    }
+
+    /// The IR's last tap reaches the output, in the last level, whether the
+    /// tap is the level's first or last or the IR ends part-way through a
+    /// partition: a unit impulse through an IR of zeros but for its last tap
+    /// comes out as a single unit at `latency + len - 1`.
+    ///
+    /// Mutations (run): `build_plan` leaving the last level's last partition
+    /// out, or `inverse` summing its block at the wrong frame (no `delay`),
+    /// fails: the unit never comes out.
+    #[test]
+    fn the_tail_reaches_the_output() {
+        for (head, parts) in LAYOUTS {
+            let plan = build_plan(1 << 20, parts);
+            let last = plan[plan.len() - 1];
+            assert!(parts.len() > 1);
+            for len in [
+                last.start + 1,
+                last.start + last.part / 2,
+                last.start + last.part,
+                last.start + last.part + 1,
+            ] {
+                let mut ir = vec![0.0f32; len];
+                ir[len - 1] = 1.0;
+                let mut c = Convolver::with_parts(&ir, head, parts);
+                let spectra = Arc::clone(c.spectra());
+                assert_eq!(spectra.levels.len(), parts.len(), "the tail level exists");
+                let mut x = vec![0.0f32; 1];
+                x[0] = 1.0;
+                let got = render(&mut c, &x, &[3, 50]);
+                for (n, &s) in got.iter().enumerate() {
+                    let want = if n == len - 1 { 1.0 } else { 0.0 };
+                    assert!(
+                        (s - want).abs() < 1e-4,
+                        "parts {parts:?}, {len} taps: frame {n} is {s} want {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The render does not depend on how the host cuts its calls: odd
+    /// lengths, one frame, a call longer than the longest partition, and the
+    /// per-sample path all give the same bits, through every level.
+    ///
+    /// Mutation (run): `accumulate_to` ignoring `accumulated` (re-adding the
+    /// partitions already in, as often as there are calls) fails the bitwise
+    /// comparison.
+    #[test]
+    fn the_render_is_independent_of_the_call_lengths() {
+        let x = noise(2500);
+        for (head, parts) in LAYOUTS {
+            let ir = flat_ir(700);
+            let mut per_sample = Convolver::with_parts(&ir, head, parts);
+            let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
+            let patterns: [&[usize]; 7] = [
+                &[3],
+                &[7, 13, 1],
+                &[head - 1, head + 1],
+                &[61, 64, 127],
+                &[509],
+                &[1000, 1, 2],
+                &[5000],
+            ];
+            for lens in patterns {
+                let got = run_blocks(&mut Convolver::with_parts(&ir, head, parts), &x, lens);
+                assert!(
+                    got.iter()
+                        .zip(&want)
+                        .all(|(g, w)| g.to_bits() == w.to_bits()),
+                    "parts {parts:?}, calls {lens:?}"
+                );
+            }
+        }
+        // The layout the cost model picks for a long IR, at odd calls.
+        let ir = flat_ir(6000);
+        let mut per_sample = Convolver::new(&ir, 32);
+        assert!(per_sample.spectra().levels.len() > 1);
+        let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
+        let got = run_blocks(&mut Convolver::new(&ir, 32), &x, &[33, 5, 100, 1, 31]);
+        assert!(got
+            .iter()
+            .zip(&want)
+            .all(|(g, w)| g.to_bits() == w.to_bits()));
+    }
+
+    /// The layout of every length and head is well formed: levels are
+    /// contiguous from tap 0 and cover the IR with no empty last partition;
+    /// a tail level starts at its own partition size, which is the slack that
+    /// makes its output due `block_size` frames after its uniform latency;
+    /// the offsets of its two transforms fall in that slack, in order, inside
+    /// one partition; and the rings hold what the levels read and write.
+    ///
+    /// Mutations (run): `next / part` for `next / part - 1` in `build_plan`
+    /// starts the third level of a forced layout past its own partition
+    /// size → fails the start check; `output_ring` sized from the largest
+    /// `part` alone (no `delay`) fails the ring check and the
+    /// direct-convolution test, whose tail blocks then wrap onto frames not
+    /// yet read.
+    #[test]
+    fn layouts_are_contiguous_and_schedule_inside_their_slack() {
+        // Forced layouts of three and four levels follow the same rule.
+        for (head, parts) in LAYOUTS {
+            let plan = build_plan(1 << 20, parts);
+            for (j, p) in plan.iter().enumerate().skip(1) {
+                assert_eq!(p.start, p.part, "{parts:?} level {j}");
+                assert_eq!(
+                    p.start,
+                    plan[j - 1].start + plan[j - 1].count * plan[j - 1].part
+                );
+            }
+            assert_eq!(plan[0].count * head, parts.get(1).copied().unwrap_or(head));
+        }
+        for head in [2usize, 4, 16, 64, 512, 2048, 8192] {
+            for len in [1, 2, 5, 100, 1000, 3000, 24_000, 96_000, 240_000] {
+                let ir = vec![0.25f32; len];
+                let s = IrSpectra::new(&ir, head);
+                let plan = plan_levels(len, head);
+                assert_eq!(plan.len(), s.levels.len());
+                let mut next = 0;
+                for (j, (p, l)) in plan.iter().zip(&s.levels).enumerate() {
+                    assert_eq!(p.start, next, "head {head}, {len} taps: contiguous");
+                    next += p.count * p.part;
+                    assert!(p.start < len, "no level starts past the IR");
+                    assert!(p.part <= MAX_PARTITION.max(head));
+                    assert!(p.part == head || p.part <= MAX_TAIL_RATIO * head);
+                    assert_eq!(l.delay, p.start + head - p.part);
+                    if j > 0 {
+                        assert_eq!(p.start, p.part, "a tail level starts at its own size");
+                        assert!(l.delay >= head, "slack of a head partition");
+                    } else {
+                        assert_eq!((l.delay, l.fwd_at, l.inv_at), (0, 0, 0));
+                    }
+                    assert!(l.fwd_at <= l.inv_at && l.inv_at <= l.delay && l.inv_at < l.part);
+                    assert!(s.input_ring >= l.part + l.fwd_at);
+                    assert!(s.output_ring > l.delay + l.part);
+                    assert!(s.input_ring.is_power_of_two() && s.output_ring.is_power_of_two());
+                }
+                let last = plan.last().unwrap();
+                assert!(
+                    next >= len && next - last.part < len,
+                    "no empty last partition"
+                );
+            }
+        }
+    }
+
+    /// The cost model keeps the uniform layout where an extra level does not
+    /// pay, and cuts a long IR into a head and larger tail partitions at most
+    /// [`MAX_TAIL_RATIO`] times the head; a head of [`MAX_PARTITION`] or more
+    /// has no larger partition to offer. A chosen non-uniform layout costs at
+    /// most [`MIN_GAIN`] of the uniform one.
+    ///
+    /// Mutations (run): `MIN_GAIN` raised to 2.0 sends the 0.5 s IR (modelled
+    /// at 0.81 of the uniform cost, which measures no better) to a split
+    /// layout → fails; lowered to 0.0 keeps every layout uniform → the
+    /// long-IR assertion fails.
+    #[test]
+    fn the_cost_model_picks_uniform_for_short_irs_and_levels_for_long_ones() {
+        let shape =
+            |len: usize, head: usize| Convolver::new(&vec![0.1; len], head).spectra().shape();
+        assert_eq!(shape(0, 512), vec![]);
+        assert_eq!(shape(100, 512), vec![(512, 1)]);
+        assert_eq!(shape(3 * 512, 512), vec![(512, 3)]);
+        assert_eq!(shape(24_000, 512), vec![(512, 47)]);
+        assert_eq!(shape(240_000, 8192), vec![(8192, 30)]);
+        let long = shape(240_000, 512);
+        assert!(long.len() >= 2, "{long:?}");
+        assert_eq!(long[0].0, 512);
+        assert!(long[1..].iter().all(|&(p, _)| p > 512 && p <= 4 * 512));
+        let covered: usize = long.iter().map(|&(p, c)| p * c).sum();
+        assert!(covered >= 240_000);
+        let plan = plan_levels(240_000, 512);
+        let uniform = [Plan {
+            part: 512,
+            start: 0,
+            count: 240_000usize.div_ceil(512),
+        }];
+        assert!(plan_cost(&plan) <= MIN_GAIN * plan_cost(&uniform));
+    }
+
+    /// No host block carries two big transforms. With calls of one slot (the
+    /// head partition over `2 * tail levels + 1`), no call holds both
+    /// transforms of a tail level or transforms of two levels, and the
+    /// head's two (it has no slack) share a call with nothing else.
+    ///
+    /// Mutations (run): `inv_at = fwd_at` for tail levels, or the same `j`
+    /// in every level's slot, puts two transforms in one call → fails.
+    #[test]
+    fn transforms_land_in_different_host_blocks() {
+        for (head, parts) in [
+            (64usize, &[64usize, 128, 256][..]),
+            (64, &[64, 256]),
+            (32, &[32, 64, 128]),
+        ] {
+            let ir = flat_ir(3000);
+            let mut c = Convolver::with_parts(&ir, head, parts);
+            let call = head / (2 * (parts.len() - 1) + 1);
+            let x = vec![0.1f32; call];
+            let mut out = vec![0.0f32; call];
+            let mut busy_calls = 0;
+            for k in 0..20 * 256 / call {
+                let before: Vec<(u64, u64)> =
+                    c.levels.iter().map(|l| (l.next_fwd, l.next_inv)).collect();
+                c.process_block(&x, &mut out);
+                let mut per_level = Vec::new();
+                for (b, l) in before.iter().zip(&c.levels) {
+                    per_level.push(((l.next_fwd - b.0) + (l.next_inv - b.1)) as usize);
+                }
+                let events: Vec<usize> = per_level
+                    .iter()
+                    .zip(&c.spectra.levels)
+                    .map(|(&d, lv)| d / lv.part)
+                    .collect();
+                let total: usize = events.iter().sum();
+                if total > 0 {
+                    busy_calls += 1;
+                }
+                if events[0] > 0 {
+                    assert_eq!(total, 2, "call {k}: the head's pair is alone: {events:?}");
+                } else {
+                    assert!(total <= 1, "call {k}: {events:?}");
+                }
+            }
+            assert!(busy_calls > 20);
+        }
+    }
+
+    /// An empty IR is silence at the declared latency, with no panic.
+    ///
+    /// Mutation (run): `unwrap_or(1)` for the next transform frame of a
+    /// convolver with no level never advances past that frame: the call
+    /// hangs (checked under a timeout).
+    #[test]
+    fn an_empty_ir_is_silence() {
+        let mut c = Convolver::new(&[], 64);
+        let x = noise(300);
+        let got = run_blocks(&mut c, &x, &[7, 100]);
+        assert!(got.iter().all(|&s| s == 0.0));
+        assert_eq!(c.latency(), 64);
+    }
+
+    /// `reset` clears every level, not just the head: after a reset, silence
+    /// in is silence out, with a tail level mid-flight.
+    ///
+    /// Mutation (run): `reset` calling `st.reset` for the first level only
+    /// → the tail level's overlap and history ring out → fails.
+    #[test]
+    fn reset_clears_every_level() {
+        let ir = flat_ir(400);
+        let mut c = Convolver::with_parts(&ir, 16, &[16, 64]);
+        let x = noise(500);
+        run_blocks(&mut c, &x, &[13]);
+        c.reset();
+        let silence = vec![0.0f32; 1000];
+        let got = run_blocks(&mut c, &silence, &[29]);
+        assert!(got.iter().all(|&s| s == 0.0));
     }
 }

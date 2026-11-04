@@ -3173,7 +3173,8 @@ configuration's maximum at 139 and 418 (and the no-reverb scene's at 99),
 the top blocks at scattered indices and cycle positions.
 
 The main scene runs at under a tenth of its budget. Its one structural
-spike is the convolver's: the block that completes each 512 frames
+spike was the convolver's (measured before the partition sum was spread, see
+"The convolver's cost profile since" below): the block that completes each 512 frames
 averages 0.18 against 0.06 for the others at 64 frames, about 0.12 of the
 budget, and absent without the reverb. Its over-budget blocks (0–23 per
 configuration, maxima 0.46–12, the worst on the pool in run A) were not
@@ -3186,6 +3187,77 @@ variance rather than the mean. That tail could not be separated from
 preemption here either, so it neither makes nor rules out a case for
 render-ahead. A device's real-time thread, out-of-process plugins and
 third-party plugins are outside this measurement.
+
+**The convolver's cost profile since.** The spike above, one block in eight
+doing all of a 512-frame partition's work, no longer exists: the older
+partitions' sum is spread over the partition's blocks, and the boundary block
+pays for the newest partition, the two transforms and the overlap-add. A
+uniform partition still costs one multiply-accumulate per bin per frame per
+partition (`L / P` per frame), which for a long IR is nearly all of it (a 5 s
+IR at a 512 partition: 469 partitions against two 1024-point transforms), so
+the convolver is now cut into **levels** (`convolution/convolver.rs`): a
+head of the node's partition `B` and tail levels of larger partitions,
+each a uniform partitioned convolver with its own FFT size.
+
+- **Latency is unchanged, `B`.** A level of partition `P` covering taps
+  `start..` is a uniform convolver of latency `P` delayed by
+  `start + B - P` frames. A tail level starts at `P` (one of its own
+  partitions in), so the delay is `B`: slack in which its transforms can run
+  after its input block completes, and the head's delay is zero.
+- **Transforms land in different host blocks.** A tail level's forward
+  transform runs at one offset in that slack and its multiply and inverse
+  transform at another; the levels' offsets are distinct slots of
+  `B / (2 * tail levels + 1)` frames, none at the head's. A host block of up
+  to a slot holds at most one transform of a tail level (checked by
+  `transforms_land_in_different_host_blocks`). Each level's output is summed
+  into one ring at the frame it is due, in the order of the transforms'
+  frames, so the render is bit-identical for any split of the input into
+  calls (checked down to one frame at a time).
+- **A cost model picks the layout**: per frame, `0.7 ns` a bin
+  multiply-accumulate and `0.29 ns * n * log2(n)` a real transform of `n`
+  points, over every layout of head and tail partitions that are powers of
+  two up to `4B` and 4096 frames. A non-uniform layout is used only when it
+  models at most 0.7 of the uniform cost: the model leaves out each level's
+  bookkeeping, and the 0.5 s IR (0.81 modelled) measures no better split.
+  The layout is the uniform one for an IR of up to about 60 head partitions
+  (0.67 s at a 512 partition), for an empty one, and for a head of 4096 or
+  more.
+- **No thread is added.** The big transforms run in the block that holds
+  their offset, on the audio thread, in the node; the executor still owns
+  parallelism. They are the cost of the peak: a tail of 2048-frame
+  partitions has two 4096-point transforms (about 15 us each on the bench
+  machine), so the peak block of a 2 s IR at a 64-frame host block is not
+  lower than the uniform convolver's (it can be 20% higher), while its mean
+  halves. Splitting a transform across blocks (two half-size transforms and
+  a combine pass) would lower the peak further; it is not done.
+
+`cargo bench -p tutti-nodes --bench convolver_blocks --features convolution`,
+512-frame partition, microseconds per call, best of two interleaved runs
+on a shared four-core container (the maximum is the smallest of 21 passes'
+maxima), uniform convolver (before) to levels (after):
+
+| IR | host block | mean | p99 | max |
+|---|---|---|---|---|
+| 0.5 s | 64 | 2.7 → 2.8 | 9.4 → 8.6 | 22.9 → 17.8 |
+| 0.5 s | 128 | 5.5 → 5.4 | 12.2 → 12.3 | 28.0 → 23.6 |
+| 0.5 s | 512 | 22.1 → 22.8 | 41.1 → 41.9 | 41.0 → 47.0 |
+| 2 s | 64 | 7.9 → 4.5 | 20.4 → 28.3 | 29.7 → 34.5 |
+| 2 s | 128 | 15.4 → 8.2 | 32.6 → 29.7 | 46.4 → 41.9 |
+| 2 s | 512 | 64.8 → 36.2 | 100.4 → 94.4 | 99.7 → 74.9 |
+| 5 s | 64 | 19.5 → 7.1 | 45.0 → 26.7 | 53.4 → 39.8 |
+| 5 s | 128 | 41.9 → 13.9 | 97.9 → 42.1 | 82.6 → 60.0 |
+| 5 s | 512 | 165.4 → 57.4 | 273.8 → 127.9 | 256.6 → 125.3 |
+| 2 s, calls 64, 64, 64, 500 | | 26.5 → 14.7 | 107.2 → 77.7 | 89.0 → 102.2 |
+
+The 0.5 s rows are the same layout (uniform) and show the run-to-run noise.
+The mean falls to 0.4 to 0.6 of the uniform at 2 s and to 0.3 to 0.4 at 5 s;
+the p99 and maximum fall at 5 s and at 128 frames and above, and rise at 2 s
+and a 64-frame block (p99 20 to 28 us), where the 2048-frame level's
+transform is the biggest unit of work. Tests: a direct (time-domain)
+convolution for layouts of two to four levels at IR lengths on and around
+each level's first and last tap, an impulse at the declared latency, the IR's
+last tap through the last level, bit-identical renders at odd call lengths,
+the layout's slack and offsets, and the allocation gate over a 5 s IR.
 
 `RtPublish` (now `arc-lend`'s `ArcLend`; the concern below no longer
 applies, since each registered reader owns its own cache line) under the parallel executor: its eight reader slots per cell share
@@ -7118,7 +7190,7 @@ plugin at the width it supports. None offers a per-node pin.
 A throwaway bench (not in the tree) ports each kernel once, generic over
 the sample type, with the production loop: the strip's channel-major
 `render`, `ChannelSumNode`'s frame-major sum, the SVF's `held_group::<2>`
-with `svf_step`, the partitioned convolver's `Partitioned::process`, and
+with `svf_step`, the partitioned convolver's per-block process, and
 the memory voice's tap gather and `hermite_lanes`. `T = f32` is the
 shipped arithmetic. Each case runs about 20 ms per timing; the figure is
 the median of 21 timings, the cases interleaved, pinned to one core.

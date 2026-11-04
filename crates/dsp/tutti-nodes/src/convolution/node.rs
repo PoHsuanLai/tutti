@@ -626,6 +626,68 @@ mod tests {
         );
     }
 
+    /// An IR long enough to be cut into levels, through the node at call
+    /// lengths that are not a multiple of anything: the wet output is the
+    /// direct convolution, `latency_samples` late, within round-off, and the
+    /// same bits at every call length.
+    ///
+    /// The tolerance is 2 eps log2(n) |h|_2 |x|_2 (see the convolver's
+    /// `tolerance`), about 3e-4 here; 1e-3 is used.
+    ///
+    /// Mutation (run): `shape()` declaring `2 * latency_samples` fails the
+    /// alignment check; `Convolver::latency` returning 0 does too.
+    #[test]
+    fn a_long_ir_cut_into_levels_convolves_at_any_block_size() {
+        let ir: Vec<f32> = crate::test_support::noise(1, 6000)
+            .iter()
+            .map(|v| v * 0.1)
+            .collect();
+        let x = crate::test_support::noise(2, 2500);
+        let node = ConvolverNode::new(&ir, 32);
+        assert!(
+            node.convolvers[0].spectra().shape().len() > 1,
+            "the IR is cut into levels"
+        );
+        let lat = node.latency_samples().0;
+        assert_eq!(lat, 32);
+        let mut want = vec![0.0f64; x.len() + lat];
+        for (n, &xn) in x.iter().enumerate() {
+            for (k, &h) in ir.iter().enumerate() {
+                if n + k + lat < want.len() {
+                    want[n + k + lat] += f64::from(xn) * f64::from(h);
+                }
+            }
+        }
+        let mut renders = Vec::new();
+        for lens in [&[1usize][..], &[7, 61, 64, 127], &[1000, 3]] {
+            let mut node = prepared(ConvolverNode::new(&ir, 32));
+            node.set_mix(1.0);
+            let (mut at, mut k) = (0, 0);
+            let mut out = Vec::new();
+            while at < x.len() {
+                let n = lens[k % lens.len()].min(x.len() - at);
+                out.extend(drive_block(&mut node, &[&x[at..at + n]]).remove(0));
+                at += n;
+                k += 1;
+            }
+            for (i, (&g, &w)) in out.iter().zip(&want).enumerate() {
+                assert!(
+                    (f64::from(g) - w).abs() < 1e-3,
+                    "calls {lens:?}: frame {i} is {g} want {w}"
+                );
+            }
+            renders.push(out);
+        }
+        for r in &renders[1..] {
+            assert!(
+                r.iter()
+                    .zip(&renders[0])
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "the render depends on the call lengths"
+            );
+        }
+    }
+
     #[test]
     fn mix_is_clamped() {
         let ir = vec![1.0; 64];

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the convolver cuts a long IR into a head and larger tail partitions: 2 to 3x cheaper on a 2 to 5 s IR, same latency, output bits change
+
+**`Convolver` (so `ConvolverNode`) no longer uses one partition size for the
+whole IR.** The node's `block_size` is still the latency and the head
+partition; an IR long enough to pay for it is cut into tail levels of larger
+partitions (up to four times the head and 4096 frames, each with its own FFT
+size), so the late part of the IR costs a quarter of the multiply-accumulates.
+A level's two transforms run at offsets in the slack its larger partition
+leaves (the output is due `B` frames after it could be computed), at
+frames no other level uses, so a host block holds at most one big transform.
+A cost model picks between the uniform layout and the split ones and keeps the
+uniform one unless the split models at most 0.7 of its cost, so an IR of up
+to about 60 head partitions (0.67 s at a 512 partition, 0.3 s at 256), an empty
+IR and a head of 4096 or more are the convolver they were, **bit for bit**. Declared latency and tail
+are unchanged. The render is bit-identical for any split of the input into
+calls, down to one frame at a time.
+
+Per call at a 512 partition, 64-frame host blocks, 48 kHz, mean (us), main to
+branch: 2 s IR 7.9 to 4.5, 5 s IR 19.5 to 7.1; at 128 frames 15.4 to 8.2 and
+41.9 to 13.9. The p99 falls with it at 5 s (45 to 27 us at 64 frames, 98 to 42
+at 128) and rises at 2 s and 64 frames (20 to 28 us): the tail's 4096-point
+transform is the biggest unit of work a block can hold. The full table is in
+doc 013 ("The convolver's cost profile since").
+
+**Output bits change** for an IR that takes the split layout: partitions of
+different sizes round differently, to about 1e-7 of the output's norm
+(`tests`: equal to a direct convolution within `2 eps log2(n) |h| |x|`).
+Migration: a pinned golden digest of a convolver render over an IR of more than
+about 60 head partitions must be re-recorded; one over a shorter IR does not
+change. API: `IrSpectra` no longer exposes a single partition size (it had no
+public accessor); nothing else changes.
+
 ### Changed — `tutti-export`'s resampler is tutti's own FFT resampler on `RealFft`; `rubato` is gone; resampled bits change
 
 `rubato`'s `FftFixedIn` runs `realfft`'s auto planner, which picks AVX, SSE or

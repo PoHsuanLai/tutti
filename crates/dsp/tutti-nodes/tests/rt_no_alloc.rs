@@ -54,7 +54,7 @@ fn stereo_convolver_process_is_allocation_free() {
 /// boundaries, so it is gated at host blocks that divide the partition, ones
 /// that do not (37, 100) and one longer than a partition (1000 against 256).
 ///
-/// Mutation (run): a `vec!` inside `Partitioned::accumulate_to` fails
+/// Mutation (run): a `vec!` inside `LevelState::accumulate_to` fails
 /// these.
 #[cfg(feature = "convolution")]
 #[test]
@@ -88,6 +88,36 @@ fn convolver_ragged_calls_are_allocation_free() {
     }
     assert_no_alloc::assert_no_alloc(|| {
         for k in 0..3_000 {
+            let n = lens[k % lens.len()];
+            c.process_block(&x[..n], &mut y[..n]);
+        }
+    });
+}
+
+/// A 5 s IR at a 512 head, which the cost model cuts into a head and tail
+/// levels with their own transforms, under ragged calls from 1 frame to past
+/// the longest tail partition, over a signal that is not silent. The run is
+/// long enough for every level to complete many blocks, and it lands calls on
+/// and across each level's forward and inverse frames.
+///
+/// Mutation (run): a `vec!` inside `LevelState::forward` or
+/// `LevelState::inverse` fails it.
+#[cfg(feature = "convolution")]
+#[test]
+fn convolver_tail_levels_are_allocation_free() {
+    use tutti_nodes::{generate_test_ir, Convolver};
+
+    let ir = generate_test_ir(240_000, 1.0, 48_000.0);
+    let mut c = Convolver::new(&ir, 512);
+    let x: Vec<f32> = (0..5000).map(|i| ((i as f32) * 0.31).sin()).collect();
+    let mut y = vec![0.0f32; 5000];
+    let lens = [1usize, 64, 64, 64, 333, 512, 700, 2049, 4999, 64, 127, 3];
+    for k in 0..60 {
+        let n = lens[k % lens.len()];
+        c.process_block(&x[..n], &mut y[..n]);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for k in 0..1_500 {
             let n = lens[k % lens.len()];
             c.process_block(&x[..n], &mut y[..n]);
         }

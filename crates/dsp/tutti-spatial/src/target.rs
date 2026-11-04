@@ -146,6 +146,21 @@ impl AngleSmoother {
         )
     }
 
+    /// Advance `steps` steps toward the target in one move (see
+    /// [`ExponentialSmoother::advance`]) and return the smoothed pair.
+    #[inline]
+    pub(crate) fn advance(
+        &mut self,
+        azimuth: Azimuth,
+        elevation: Elevation,
+        steps: usize,
+    ) -> (Azimuth, Elevation) {
+        (
+            self.azimuth.advance_angle(azimuth, steps),
+            self.elevation.advance(elevation, steps),
+        )
+    }
+
     /// Advance one step toward the target and return the smoothed pair.
     #[inline]
     pub(crate) fn step(&mut self, azimuth: Azimuth, elevation: Elevation) -> (Azimuth, Elevation) {

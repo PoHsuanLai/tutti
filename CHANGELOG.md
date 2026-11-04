@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — WAV files declare the right speaker mask, and a file past 4 GiB is an error, not a wrapped header
+
+**Speaker mask.** `hound` writes a `WAVE_FORMAT_EXTENSIBLE` `dwChannelMask` of the
+lowest N bits and cannot be told otherwise, so a mask-honouring reader (checked
+with `ffprobe`) took tutti's quad as 3.1, its 5.1 (FL FR C LFE SL SR) as back 5.1,
+and its 8 channels as 7.1 wide. `WavOut` and the export WAV encoder now patch the
+mask over the finished header, from the new `tutti_types::wav::channel_mask`
+(re-exported as `tutti_core::wav`): mono `0x4`, stereo `0x3`, quad `0x33`, 5.1
+`0x60F` (`KSAUDIO_SPEAKER_*`, from the mingw-w64 `ksmedia.h`). 7.1 and every
+other width are written with mask `0` (unassigned), because tutti's 7.1 order
+(SL SR BL BR) is not WAVE's ascending-bit order (BL BR SL SR) and the samples
+are not reordered. Mono at 24 bit or float was `0x1` (front left) and is now
+front centre. Migration: none for callers; a test or tool that pinned the
+old `0x3F` for 5.1 should expect `0x60F`.
+
+**4 GiB.** A WAV's sizes are 32-bit, and `hound` counted bytes in a `u32` with
+no guard: a longer file wrapped its header in release and panicked in debug.
+`WavOut` now stops at the last whole frame under the limit
+(`tutti_core::wav::max_data_frames`); `finalize` closes a valid, readable file
+and returns an `io::Error` wrapping `tutti_core::wav::DataLimitExceeded`, the
+same way a failed write surfaces (a `Recorder` reports it from its finalize).
+The export encoder refuses a plan that cannot fit before rendering, and
+otherwise fails at the crossing frame, with the new `Error::WavTooLarge
+{ limit_frames }` (`Error` is `#[non_exhaustive]`; add an arm or a wildcard).
+Not done: RF64 (EBU Tech 3306) output, which would lift the limit; `hound`
+cannot write it, so it is a writer of our own.
+
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 
 The paced `clap_live` tests allow one contiguous silent run, no longer than

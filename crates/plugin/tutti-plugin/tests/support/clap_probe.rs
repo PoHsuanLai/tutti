@@ -418,6 +418,13 @@ impl ProbeEnv {
         self
     }
 
+    /// Make `activate` refuse this sample rate (Hz), so a host that asks the
+    /// plugin to run at it is refused, and any other rate is accepted.
+    pub fn refuse_rate(mut self, hz: f64) -> Self {
+        self.set("TUTTI_CLAP_PROBE_REFUSE_RATE", hz.to_string());
+        self
+    }
+
     /// Apply `kParamGain`-equivalent gain to the rendered output.
     pub fn gain_enabled(mut self, on: bool) -> Self {
         self.set("TUTTI_CLAP_PROBE_APPLY_GAIN", u8::from(on).to_string());

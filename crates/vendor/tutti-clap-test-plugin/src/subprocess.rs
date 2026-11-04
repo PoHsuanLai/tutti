@@ -27,7 +27,7 @@
 //! each is about what the host does when the plugin stops cooperating and the
 //! plugin is in another process:
 //!
-//! - `crash_on_block` aborts the subprocess. In
+//! - `crash_on_block` kills the subprocess (`die`). In
 //!   process that would take the test runner down with it.
 //! - `block_from` parks `process()` indefinitely. In
 //!   process that would deadlock the caller, since the caller *is* the audio
@@ -159,6 +159,16 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
         REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
+    // Refuse activation at this rate (Hz, matched bit for bit), as
+    // `tutti_test_plugin_set_activate_refusal` does in-process: an
+    // out-of-process test cannot reach that switch.
+    if let Some(hz) = std::env::var("TUTTI_CLAP_PROBE_REFUSE_RATE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+    {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::refusal::tutti_test_plugin_set_activate_refusal(hz.to_bits(), 0) };
+    }
     // The render mode has an `extern "C"` switch too, and this is the same
     // static — not a second copy. An out-of-process test cannot call that
     // switch (the plugin is in another process), and the mode is what decides
@@ -203,6 +213,36 @@ pub(crate) fn refuse_state_load() -> bool {
     REFUSE_STATE_LOAD.load(Ordering::SeqCst)
 }
 
+/// Kill this process the way a crashing plugin does: abruptly, mid-`process()`,
+/// holding its sockets, so the host learns of it as an EOF.
+///
+/// Not `panic!`: a panic across an `extern "C"` boundary is undefined, and the
+/// host is meant to see a dead subprocess rather than an unwind the server
+/// might catch and report as a tidy error.
+///
+/// Not `abort()` on unix: `SIGABRT` dumps core, and where `core_pattern` pipes
+/// to a handler (`systemd-coredump` on CI's Ubuntu runners) the kernel keeps
+/// the dying process's descriptors open until the handler has taken the dump,
+/// so the host sees no EOF meanwhile. Measured on such a runner, 60 runs of
+/// `dropping_a_crashed_plugin_is_clean` (death on the first block) took 0.09 s
+/// to 1.68 s, 36 of them over 1.2 s, against 0.1 s where `core_pattern` is
+/// `core`; the loop that waits for the death gives up at 60 blocks (1.6 s).
+/// `SIGKILL` is never a core-dumping signal, so the descriptors close with the
+/// process.
+///
+/// Mutation: `std::process::abort()` in place of the `kill` → the runner's
+/// death is noticed late again, and now and then past `clap_crash_recovery`'s
+/// `DRIVE_TO_DEATH_MAX`.
+fn die() -> ! {
+    #[cfg(unix)]
+    // SAFETY: `kill` and `getpid` take no pointers.
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGKILL);
+    }
+    // Without `SIGKILL`; on unix the signal lands before `kill` returns.
+    std::process::abort()
+}
+
 /// Run the per-block switches. Called first thing in `process()`.
 ///
 /// Returns after any park has been released, so the caller resumes rendering
@@ -213,11 +253,7 @@ pub(crate) fn on_process_entry() {
 
     let crash_at = CRASH_ON_BLOCK.load(Ordering::SeqCst);
     if crash_at != 0 && block == u64::from(crash_at) {
-        // `abort`, not `panic!`: a panic across an `extern "C"` boundary is
-        // undefined, and the host is meant to see a *dead subprocess* — the
-        // thing a real plugin segfault presents as — rather than an unwind the
-        // server might catch and report as a tidy error.
-        std::process::abort();
+        die();
     }
 
     let park_from = BLOCK_FROM.load(Ordering::SeqCst);

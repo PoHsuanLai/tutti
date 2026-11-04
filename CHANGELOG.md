@@ -41,6 +41,40 @@ crossing frame and removes the partial file, with the new `Error::WavTooLarge
 Not done: RF64 (EBU Tech 3306) output, which would lift the limit; `hound`
 cannot write it, so it is a writer of our own.
 
+### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
+
+A hosted plugin that refused a rate change (CLAP `activate` returning false)
+rolled back to its old rate or stayed deactivated, while the host's blocks
+and transport were at the new rate: the audio was pitch-shifted or silent
+and nothing said why. The server now answers `HostMessage::SetSampleRate`
+with the new `BridgeMessage::SampleRateSet { rate, error }` and follows the
+host's rate in its clock. While the plugin is refused the server renders
+silence for it (no block reaches the plugin), `PluginHandle::status()` is the
+new `PluginStatus::RateRefused { rate, reason }` (not `Dead`; the plugin stays
+loaded and keeps its declared latency) and `PluginInvalidation::RateRefused` /
+`RateRestored` are raised. Every later rate change tries the plugin again, and
+one it takes clears the error. This is what JUCE's AU host and the CLAP example
+host do. `ClapLoaded::deactivate_plugin` no longer calls `deactivate` on an
+inactive plugin.
+
+Migration: `PROTOCOL_VERSION` is 20 (rebuild `plugin-server` with the host).
+`PluginStatus` and `PluginInvalidation` gain variants and lose `Eq`
+(`SampleRate` is a float): add a `RateRefused` arm to an exhaustive `match`.
+A host that matched `BridgeMessage` exhaustively adds `SampleRateSet`.
+`HostParams` gains the defaulted `rate_refusal`. `TUTTI_CLAP_PROBE_REFUSE_RATE`
+makes the reference plugin refuse one rate out of process.
+
+### Fixed — `clap_crash_recovery` measured the core dump, not the host
+
+The reference CLAP probe now dies of `SIGKILL` on unix (`crash_on_block`), not
+`SIGABRT`. An abort dumps core, and where `core_pattern` pipes to a handler
+(`systemd-coredump` on CI's Ubuntu runners) the kernel holds the dying
+server's socket open until the handler is done, so the host's EOF came late.
+On such a runner, over 120 runs per mode, the host noticed the death after up
+to 47 calls (idle) or 59 (with four spinners and a disk writer) where the
+suite waits at most 60, against exactly 37 or 1 with `SIGKILL`. Test-fixture
+change: `tutti-clap-test-plugin` gains a unix `libc` dependency.
+
 ### Fixed — VST2 host protocol (spec audit): block size, precision, start/stop, latency re-reads, `canDo`, `effEditIdle`
 
 The VST2 references used (JUCE, vestige, vst-rs) are open re-implementations of

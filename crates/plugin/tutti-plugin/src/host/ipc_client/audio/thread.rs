@@ -143,7 +143,7 @@ fn pump(
     let mut owed = Owed::default();
     // Unsolicited events read while a command waited for its reply. One
     // buffer for the connection, handed to the listener after each command.
-    let mut inbox = Unsolicited::new();
+    let mut inbox = Unsolicited::with_lifecycle(lifecycle.clone());
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
             // Park rather than sleep: `push_command` unparks us the instant a
@@ -158,7 +158,9 @@ fn pump(
             continue;
         };
 
-        let result = handle(cmd, stream, channels, payloads, &mut owed, &mut inbox);
+        let result = handle(
+            cmd, stream, channels, payloads, &mut owed, &mut inbox, lifecycle,
+        );
         drain_unsolicited(&mut inbox, channels, listener);
 
         if let Err(e) = result {

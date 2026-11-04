@@ -99,6 +99,10 @@ pub(crate) struct Session {
     /// Sample rate + negotiated format. Written on load and on an explicit
     /// `SetSampleRate`; read by every block.
     pub(crate) clock: Clock,
+    /// Why the plugin is not running at the rate the host asked for, while it
+    /// is not. A refused plugin renders silence (no block reaches it) and the
+    /// next `SetSampleRate` retries it.
+    pub(crate) rate_refused: Option<String>,
     /// Partially-received `LoadStateChunk` sequence, or `None` between loads.
     ///
     /// On the session rather than threaded through `handle` because a chunk
@@ -119,6 +123,7 @@ impl Session {
             pipeline: AudioPipeline::new(clock.format),
             editor: EditorState::Closed,
             clock,
+            rate_refused: None,
             state_in: None,
         }
     }
@@ -147,6 +152,7 @@ impl Session {
             } => self.handle_load(path, sample_rate, block_size, preferred_format),
             M::UnloadPlugin => {
                 self.plugin = None;
+                self.rate_refused = None;
                 self.shm = None;
                 Ok(Reaction::None)
             }
@@ -270,18 +276,24 @@ impl Session {
                 Ok(Reaction::None)
             }
             M::SetSampleRate { rate } => {
-                // The clock follows the rate the plugin runs at: a refusal
-                // leaves both where they were, and the reason is said here
-                // because a silent discard is how a refused rate becomes an
-                // unexplained pitch shift.
-                match self.plugin.as_mut() {
+                // The clock follows the rate the host runs at, so a plugin
+                // that takes a later rate is on the right one. A refusal
+                // leaves it silent (`handle_process` publishes nothing) and
+                // the host is told, because a rolled-back plugin would
+                // otherwise render at its old rate against the host's blocks.
+                self.clock.sample_rate = rate;
+                let error = match self.plugin.as_mut() {
                     Some(plugin) => match plugin.instance_mut().set_sample_rate(rate) {
-                        Ok(()) => self.clock.sample_rate = rate,
-                        Err(e) => tracing::warn!(requested = rate, "sample rate not applied: {e}"),
+                        Ok(()) => None,
+                        Err(e) => {
+                            tracing::warn!(requested = rate, "sample rate not applied: {e}");
+                            Some(e.to_string())
+                        }
                     },
-                    None => self.clock.sample_rate = rate,
-                }
-                Ok(Reaction::None)
+                    None => None,
+                };
+                self.rate_refused.clone_from(&error);
+                Ok(BridgeMessage::SampleRateSet { rate, error }.into())
             }
             M::SetRenderMode { mode } => {
                 // The plugin's answer is deliberately not returned to the host:
@@ -408,6 +420,7 @@ impl Session {
             ParameterQueue::chunk_room(block_size),
         );
         self.plugin = Some(plugin);
+        self.rate_refused = None;
         Ok(BridgeMessage::PluginLoaded {
             descriptor: Box::new(descriptor),
             loaded,
@@ -434,6 +447,18 @@ impl Session {
             }
             .into());
         };
+        // A plugin that refused the rate renders silence: no block reaches it
+        // and nothing is published (the host reads an unpublished block as
+        // silence). Its MIDI is dropped; the host cut any open SysEx when it
+        // re-prepared.
+        if self.rate_refused.is_some() {
+            return Ok(BridgeMessage::AudioProcessed {
+                latency_us: 0,
+                seq,
+                midi_out: IpcMidiEventVec::new(),
+            }
+            .into());
+        }
         // Neither the no-slab return just below nor a block the plugin's host
         // refuses before staging its MIDI (CLAP's `BlockTooLarge`) can drop
         // MIDI past a SysEx open in the reassembler, leaving a gap, from
@@ -733,8 +758,12 @@ mod tests {
         let mut s = Session::new();
         let r = s
             .handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
-        assert_none(r);
+            .unwrap()
+            .into_reply();
+        assert!(matches!(
+            r,
+            BridgeMessage::SampleRateSet { rate, error: None } if rate == 96000.0
+        ));
         assert_eq!(s.clock.sample_rate, 96000.0);
     }
 
@@ -847,40 +876,117 @@ mod tests {
         (s, shm_guard)
     }
 
-    /// **The session's clock follows the rate the plugin runs at.** A rate the
-    /// plugin accepts moves it; one it cannot run at (here, a 64-bit instance
-    /// whose plugin dropped its 64-bit ports, which is left deactivated) leaves
-    /// it, and the host is told through `PluginIoChanged`.
+    /// Run one block of `input` on both channels through `s`'s slab.
+    #[cfg(feature = "clap")]
+    fn process_block(s: &mut Session, shm: &AudioSlab, seq: u64, input: f64) {
+        for ch in 0..2 {
+            shm.write_input::<f64>(seq, ch, &[input; F64_FRAMES])
+                .unwrap();
+        }
+        shm.publish_input(seq);
+        let reply = s
+            .handle(HostMessage::ProcessAudio(Box::new(
+                tutti_plugin::server::ProcessAudioData {
+                    seq,
+                    num_samples: F64_FRAMES,
+                    ..Default::default()
+                },
+            )))
+            .unwrap()
+            .into_reply();
+        assert!(
+            matches!(reply, BridgeMessage::AudioProcessed { .. }),
+            "{reply:?}"
+        );
+    }
+
+    /// **A refused rate is answered, silent, and retried by the next rate.**
+    /// The clock follows the host's rate throughout. The plugin here drops
+    /// its 64-bit ports, so the refusal leaves it deactivated; it publishes
+    /// nothing while refused (the host reads silence), refuses again at the
+    /// same rate, and a later rate it can take revives it, with audio at the
+    /// right rate and no `deactivate` of the inactive instance.
     ///
-    /// Mutation (run): set `self.clock.sample_rate = rate` before the
-    /// `set_sample_rate` call in `Session::handle` → the second assertion sees
-    /// 48 kHz → fails. Make the `Ok` arm skip the assignment → the first
-    /// assertion fails.
+    /// Mutations (run): drop the `rate_refused` early return in
+    /// `handle_process` → the refused block is published (or fails to be
+    /// silent) → fails. Never clear `rate_refused` on success → the revived
+    /// block is not published → fails. Move the clock assignment into the
+    /// `Ok` arm → the clock stays 48 kHz after the refusal → fails. (The
+    /// `deactivate` guard is pinned by `clap_ports_rescan`.)
     #[test]
     #[cfg(feature = "clap")]
-    fn the_clock_follows_the_rate_the_plugin_accepted() {
+    fn a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin() {
         let _lock = crate::test_utils::plugin_load_lock();
         let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
         let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
-        let (mut s, _shm) = load_clap("clock_follows_rate", SampleFormat::Float64);
+        let _render = crate::test_utils::clap_probe_render_mode(
+            tutti_clap_test_plugin::RenderMode::TagPassthrough as u32,
+        );
+        let (mut s, shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
+        let set = |s: &mut Session, rate: f64| {
+            s.handle(HostMessage::SetSampleRate { rate })
+                .unwrap()
+                .into_reply()
+        };
 
-        s.handle(HostMessage::SetSampleRate { rate: 48000.0 })
-            .unwrap();
-        assert_eq!(s.clock.sample_rate, 48000.0, "accepted");
+        let accepted = set(&mut s, 48000.0);
+        assert!(
+            matches!(accepted, BridgeMessage::SampleRateSet { error: None, .. }),
+            "{accepted:?}"
+        );
+        assert_eq!(s.clock.sample_rate, 48000.0);
         assert!(s.drain_async_events().is_empty(), "nothing changed");
+        process_block(&mut s, &shm, 1, 0.5);
+        assert!(shm.has_output(1), "a running plugin publishes");
 
-        let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
-        s.handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
-        assert_eq!(s.clock.sample_rate, 48000.0, "refused: the clock stays");
+        // The plugin drops its 64-bit ports: the next rate is refused.
+        let dropped = crate::test_utils::clap_probe_ports_64bit(0);
+        let refused = set(&mut s, 96000.0);
+        assert!(
+            matches!(
+                &refused,
+                BridgeMessage::SampleRateSet { rate, error: Some(e) }
+                    if *rate == 96000.0 && !e.is_empty()
+            ),
+            "the host is told, with a reason: {refused:?}"
+        );
+        assert_eq!(s.clock.sample_rate, 96000.0, "the clock follows the host");
+        assert!(s.rate_refused.is_some());
         assert!(
             s.drain_async_events()
                 .iter()
                 .any(|m| matches!(m, BridgeMessage::PluginIoChanged)),
             "the host is told the instance can no longer run"
         );
+        process_block(&mut s, &shm, 2, 0.5);
+        assert!(!shm.has_output(2), "a refused plugin publishes nothing");
+
+        // Refused again at the same rate: still silent.
+        assert!(matches!(
+            set(&mut s, 96000.0),
+            BridgeMessage::SampleRateSet { error: Some(_), .. }
+        ));
+        process_block(&mut s, &shm, 3, 0.5);
+        assert!(!shm.has_output(3), "still silent");
+
+        // The ports come back: the next rate revives it.
+        drop(dropped);
+        let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
+        let revived = set(&mut s, 88200.0);
+        assert!(
+            matches!(revived, BridgeMessage::SampleRateSet { error: None, .. }),
+            "{revived:?}"
+        );
+        assert!(s.rate_refused.is_none());
+        assert_eq!(s.clock.sample_rate, 88200.0);
+        process_block(&mut s, &shm, 4, 0.5);
+        assert!(shm.has_output(4), "a revived plugin publishes again");
+        let mut out = vec![0.0f64; F64_FRAMES];
+        shm.read_output_into::<f64>(4, 0, &mut out).unwrap();
+        let want = 0.5 + f64::from(tutti_clap_test_plugin::probe_tag(0, 0));
+        assert!(out.iter().all(|&x| x == want), "{:?}", &out[..4]);
     }
 
     /// An f64 session with a plugin that advertises no 64-bit port runs in
@@ -1311,8 +1417,12 @@ mod tests {
         let (mut s, _shm) = load_clap("set_sr_clap", SampleFormat::Float32);
         let r = s
             .handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
-        assert_none(r);
+            .unwrap()
+            .into_reply();
+        assert!(matches!(
+            r,
+            BridgeMessage::SampleRateSet { error: None, .. }
+        ));
         assert_eq!(s.clock.sample_rate, 96000.0);
     }
 

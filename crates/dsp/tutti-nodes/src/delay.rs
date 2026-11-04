@@ -137,11 +137,7 @@ impl DelayLine {
                 let s0 = self.read_at(floor);
                 let s1 = self.read_at(floor + 1);
                 let s2 = self.read_at(floor + 2);
-                let c0 = s0;
-                let c1 = 0.5 * (s1 - sm1);
-                let c2 = sm1 - 2.5 * s0 + 2.0 * s1 - 0.5 * s2;
-                let c3 = 0.5 * (s2 - sm1) + 1.5 * (s0 - s1);
-                ((c3 * frac + c2) * frac + c1) * frac + c0
+                tutti_types::cubic_hermite(sm1, s0, s1, s2, frac)
             }
         }
     }

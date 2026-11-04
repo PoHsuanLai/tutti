@@ -1882,7 +1882,7 @@ mod tests {
     /// wrap not marking the cursor `looped` → the same → fails.
     #[test]
     fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
-        use super::super::interp::cubic_hermite;
+        use tutti_types::cubic_hermite;
         let wave = ramp_wave(64, 44_100.0);
         let mut u = MemorySource::new(wave);
         u.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(20.0), 0);

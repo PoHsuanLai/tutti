@@ -1,10 +1,11 @@
-//! Shared, zero-alloc interpolation kernel for the sampler playback units.
+//! Shared, zero-alloc interpolation for the sampler playback units.
 //!
 //! Both the in-memory [`MemorySource`](super::memory_source::MemorySource) and the
 //! disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice)
 //! read fractional sample positions, so both must interpolate the same way or
-//! the same source sounds different on the two tiers. Shared here: one
-//! `cubic_hermite` kernel and one transport-placement gate, used by both.
+//! the same source sounds different on the two tiers. Both call one kernel,
+//! [`tutti_types::cubic_hermite`]; shared here are its block form and one
+//! transport-placement gate.
 //!
 //! `read_frame` is the in-memory reader only — the streaming tier pulls from the
 //! butler ring rather than an indexable `Wave`, so it feeds the same kernel from
@@ -25,6 +26,7 @@ use tutti_core::{
     SampleRate, Samples, TimelineSegment,
 };
 use tutti_io::Wave;
+use tutti_types::cubic_hermite;
 
 use super::clock::{BlockClock, Run};
 use super::loop_span::{blend, LoopSpan};
@@ -261,20 +263,6 @@ pub(crate) fn past_window(clock: &BlockClock<'_>, range: Range<usize>, gate: Gat
     clock.runs_in(range).last().is_some_and(|run| {
         run.rolling() && gate.reached(run.beat_at(last), run.tempo(), gate.window.start + duration)
     })
-}
-
-/// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
-///
-/// `y1` is the sample at the integer position, `y0`/`y2`/`y3` its neighbours
-/// (`y0` one behind, `y2`/`y3` ahead); `t` is the fractional offset in
-/// `[0, 1)` between `y1` and `y2`.
-#[inline]
-pub fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c0 = y1;
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + c0
 }
 
 /// [`cubic_hermite`] along time: `out[i]` is the cubic through `y[0][i]` ..

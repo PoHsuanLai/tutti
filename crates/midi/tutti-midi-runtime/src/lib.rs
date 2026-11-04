@@ -6,12 +6,14 @@
 // `MpeIngest::translate` yields nothing for an event it drops. The MIDI parse errors live one crate
 // down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
+mod gather;
 mod live;
 mod negotiate;
 mod outbound;
 mod schedule;
 mod sysex;
 
+pub use gather::gather_midi;
 pub use live::{
     compile_routes, input_port_of, input_ports, MidiInputControls, MidiInputNode, MidiMailbox,
     MidiOutControls, MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,

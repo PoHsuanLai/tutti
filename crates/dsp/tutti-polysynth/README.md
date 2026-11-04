@@ -12,7 +12,7 @@ tunings and MPE / MIDI 2.0 per-note expression.
 Wire a clip node, a keyboard's `MidiQueueNode` or the hardware input node (all
 `tutti-midi-runtime`) to the event input; each event is applied on its own
 frame. The rest of the crate is configuration: `SynthConfig` with its
-`OscillatorType`, `FilterType`, `EnvelopeConfig` and `FilterModConfig`; voice
+`OscillatorType`, `FilterType`, `Adsr` and `FilterModConfig`; voice
 allocation (`VoiceMode`, `AllocationStrategy`); `UnisonConfig`;
 `PortamentoConfig`; and `Tuning`.
 
@@ -25,7 +25,7 @@ from the values last set through it.
 
 ```rust
 use tutti_polysynth::{
-    EnvelopeConfig, FilterType, OscillatorType, PolySynth, SynthConfig,
+    Adsr, FilterType, OscillatorType, PolySynth, SynthConfig,
 };
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{Amplitude, Hz, NodeKey, Resonance, SampleRate, Samples, Seconds, UnitParam};
@@ -39,7 +39,7 @@ let synth = PolySynth::new(SynthConfig {
         cutoff: Hz(2000.0),
         resonance: Resonance(0.7),
     },
-    envelope: EnvelopeConfig {
+    envelope: Adsr {
         attack: Seconds(0.01),
         decay: Seconds(0.2),
         sustain: Amplitude(0.6),

@@ -128,7 +128,7 @@ use tutti_core::{
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_nodes::{BusStripNode, ChannelSumNode, ConvolverNode, LimiterNode};
-use tutti_polysynth::{EnvelopeConfig, FilterType, OscillatorType, PolySynth, SynthConfig};
+use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_session::{EventSource, GraphSource, Session};
 
@@ -223,12 +223,7 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
                 cutoff: Hz(1_200.0),
                 resonance: Resonance(0.3),
             },
-            envelope: EnvelopeConfig::new(
-                Seconds(0.005),
-                Seconds(0.2),
-                Amplitude(0.7),
-                Seconds(0.3),
-            ),
+            envelope: Adsr::new(Seconds(0.005), Seconds(0.2), Amplitude(0.7), Seconds(0.3)),
             ..Default::default()
         })
         .expect("synth builds");

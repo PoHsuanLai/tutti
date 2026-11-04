@@ -57,7 +57,7 @@ mod tests {
     use tutti_graph::{Event, Offset, ParamFork};
     use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
-    use crate::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+    use crate::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -66,7 +66,7 @@ mod tests {
         PolySynth::new(SynthConfig {
             sample_rate: RATE,
             oscillator: OscillatorType::Saw,
-            envelope: EnvelopeConfig {
+            envelope: Adsr {
                 attack: Seconds(0.0),
                 ..Default::default()
             },

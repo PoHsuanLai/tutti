@@ -12,7 +12,7 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
+use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;
@@ -21,7 +21,7 @@ fn saw() -> PolySynth {
     PolySynth::new(SynthConfig {
         sample_rate: SampleRate(RATE),
         oscillator: OscillatorType::Saw,
-        envelope: EnvelopeConfig {
+        envelope: Adsr {
             attack: Seconds(0.0),
             ..Default::default()
         },
@@ -89,7 +89,7 @@ fn lead() -> usize {
 /// note at frame 0. A block late (the mailbox path's delivery) or at the
 /// block's start both miss.
 ///
-/// Mutation: apply the event input's events at offset 0 (`gather_events`
+/// Mutation: apply the event input's events at offset 0 (`tutti_midi_runtime::gather_midi`
 /// ignoring the offset) → the onset moves to 768 → fails. Mutation: read no
 /// event input (only the port) → silence → fails.
 #[test]

@@ -8,33 +8,10 @@
 
 use tutti_core::ChannelLayout;
 use tutti_graph::{
-    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
-    Ump,
+    Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
 };
-use tutti_midi_types::ump::MidiEvent;
 
 use crate::SoundFontUnit;
-
-impl SoundFontUnit {
-    /// The block's MIDI from `events` into the scratch, in their (sorted)
-    /// order; returns how many it holds.
-    fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
-        let mut n = 0;
-        for e in events {
-            if n == self.midi_buffer.len() {
-                break;
-            }
-            if let EventKind::Midi(Ump(data)) = e.kind {
-                self.midi_buffer[n] = MidiEvent {
-                    frame_offset: e.offset.get(),
-                    data,
-                };
-                n += 1;
-            }
-        }
-        n
-    }
-}
 
 impl Node for SoundFontUnit {
     /// No audio in, stereo out, one MIDI event input, placed to the 8-frame
@@ -77,7 +54,7 @@ impl Node for SoundFontUnit {
         } else {
             SortedEvents::EMPTY
         };
-        let count = self.gather_events(events);
+        let count = tutti_midi_runtime::gather_midi(events, &mut self.midi_buffer);
         self.render_events(size, count);
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();

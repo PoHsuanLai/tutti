@@ -9,7 +9,7 @@
 //! one frame after its onset: a constant lead of one frame
 //! (`Row::with_lead`), the same on every path.
 //!
-//! Mutations (run): `gather_events` writing every event at offset 0 (the
+//! Mutations (run): `tutti_midi_runtime::gather_midi` writing every event at offset 0 (the
 //! `frame_offset: e.offset.get()` replaced by `0`) → the note sounds at its
 //! block's start → the paths that see a non-zero offset fail; the row without its
 //! lead → every path fails one frame late.
@@ -18,7 +18,7 @@ use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::{EventKind, Ump};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
+use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
 
 fn synth_row() -> Row {
     let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 69, 0xFFFF);
@@ -29,7 +29,7 @@ fn synth_row() -> Row {
                 PolySynth::new(SynthConfig {
                     sample_rate: SAMPLE_RATE,
                     oscillator: OscillatorType::Square { pulse_width: 0.5 },
-                    envelope: EnvelopeConfig {
+                    envelope: Adsr {
                         attack: tutti_core::Seconds(0.0),
                         ..Default::default()
                     },

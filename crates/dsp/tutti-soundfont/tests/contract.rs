@@ -10,7 +10,7 @@
 //! frames: what `tests/soundfont_unit_audio.rs` measures at 44.1 kHz too).
 //!
 //! Mutations (run): the row without its lead → every path fails ("puts it at
-//! 512", the response at 553); `gather_events` writing every event at offset 0
+//! 512", the response at 553); `tutti_midi_runtime::gather_midi` writing every event at offset 0
 //! → the paths that see a non-zero offset (behind PDC, the recompiles) fail
 //! past the 7-frame tolerance.
 

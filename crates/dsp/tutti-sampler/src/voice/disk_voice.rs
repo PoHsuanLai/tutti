@@ -731,7 +731,8 @@ impl DiskVoice {
         true
     }
 
-    /// Render live frames `range`, frame `i - range.start` handed to `emit`:
+    /// Render live frames `range` without the silent-block skip (the
+    /// callers that always render), frame `i - range.start` handed to `emit`:
     /// the placed positions, less the channel's preroll, read from the ring,
     /// one ring read per run (its generation the read's segment, so a jump
     /// is crossfaded). `positions` is scratch, at least `range.len()` long.
@@ -2528,9 +2529,9 @@ mod tests {
     /// Also pins that the skip is taken (300 + 50 blocks) and not taken with
     /// it off.
     ///
-    /// Mutation (run): `LiveRead::silence` not calling `reader.idle()` →
-    /// the reader's last claim holds the butler back across the seek and
-    /// the resumed blocks differ in underruns/bits → fails. Mutation (run):
+    /// The `reader.idle()` release is pinned by
+    /// `a_skipped_block_releases_the_ring_to_the_writer`, not here: this
+    /// script's butler is never held off by a stale claim. Mutation (run):
     /// `silence` leaving `st.last` set → the resume after the seek is read
     /// as a continuation, not a jump (no crossfade) → bits differ → fails.
     #[test]

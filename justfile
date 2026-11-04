@@ -97,9 +97,11 @@ check-features:
     cargo clippy --locked -p bevy-tutti --features sampler --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features full,plugin --all-targets -- -D warnings
     cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-session --features clap,export,modulation --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 # The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and
@@ -112,9 +114,11 @@ test-features:
     cargo nextest run --locked -p bevy-tutti --features soundfont
     cargo nextest run --locked -p bevy-tutti --features sampler
     cargo nextest run --locked -p bevy-tutti --features full,plugin
-    cargo nextest run --locked -p tutti-session --features clap,export,modulation
+    cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
+    cargo nextest run --locked -p tutti-clap-host --features clap-extras
+    cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
     # The plugin host on a threaded executor and pool (see ci.yml): every

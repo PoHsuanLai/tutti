@@ -108,8 +108,12 @@ just test-all                      # both
   (`--features full,plugin`) fail with that exact command. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.
-- **Feature-gated suites** (for example `tutti-nodes --features convolution`)
-  are only covered by a workspace run. Name the feature when testing one crate.
+- **Feature-gated suites** run only where a feature is on. A workspace run
+  enables just what some member's dependency edge turns on (for example
+  `tutti-nodes/convolution`), not a crate's own optional features. The rest
+  (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
+  `dark features` job and `just test-features`. Name the feature when testing
+  one crate, and add a new gated suite to both lists, or it never runs.
 
 ### Setup
 

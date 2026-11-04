@@ -142,8 +142,10 @@ impl Vst2Instance {
     fn begin_piece(&mut self, ctx: &Vst2ProcessContext, start: usize, len: usize, total: usize) {
         if start == 0 {
             self.update_transport(ctx);
-        } else {
-            // Every earlier piece was a full `block_size`.
+        } else if ctx.transport.is_some() {
+            // Every earlier piece was a full `block_size`. Not without a
+            // transport: nothing was published for this block, and advancing
+            // the last block's snapshot would accumulate a stale one.
             self.advance_transport(self.block_size.max(1), ctx.sample_rate);
         }
         self.dispatch_midi(ctx.midi, start, len, total);
@@ -178,8 +180,9 @@ impl Vst2Instance {
 
     /// Advances the published snapshot by `frames` for the next piece of a
     /// split block: sample position, host time and (while rolling) the
-    /// musical position move on; `kVstTransportChanged` was an edge of the
-    /// block's first piece and does not repeat. The bar start is the block's.
+    /// musical position move on, and the bar start moves to the last bar line
+    /// the position has passed; `kVstTransportChanged` was an edge of the
+    /// block's first piece and does not repeat.
     fn advance_transport(&mut self, frames: usize, sample_rate: f64) {
         use vst::api::TimeInfoFlags as F;
         let Some(mut t) = self.host_link.time_info.last() else {
@@ -196,6 +199,14 @@ impl Vst2Instance {
             && flags.contains(F::TEMPO_VALID)
         {
             t.ppq_pos += secs * t.tempo / 60.0;
+            // A bar line inside the piece: the bar is `numerator` beats of
+            // `4 / denominator` quarters.
+            if flags.contains(F::BARS_VALID) && t.time_sig_denominator > 0 {
+                let bar = f64::from(t.time_sig_numerator) * 4.0 / f64::from(t.time_sig_denominator);
+                if bar > 0.0 && t.ppq_pos >= t.bar_start_pos + bar {
+                    t.bar_start_pos += ((t.ppq_pos - t.bar_start_pos) / bar).floor() * bar;
+                }
+            }
         }
         t.flags &= !F::TRANSPORT_CHANGED.bits();
         self.host_link.time_info.write(t);

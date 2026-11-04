@@ -20,6 +20,7 @@
 use crate::types::{MidiEvent, MidiEventVec};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
+use tutti_midi_types::UmpMessageType;
 use tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, MIDI_STACK_CAPACITY};
 
 /// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
@@ -36,6 +37,11 @@ pub(crate) struct MidiIo {
     pub(crate) out_rx: Arc<ArrayQueue<MidiEvent>>,
     /// Pooled drain of `out_rx`, refilled and borrowed back each block.
     pub(crate) out: MidiEventVec,
+    /// What `out` was reserved for: the inbox's capacity. A block's pieces all
+    /// drain into it, so a split block could ask for more; it never grows.
+    room: usize,
+    /// Events dropped because `out` was full, since load.
+    out_overflow: u64,
 }
 
 impl MidiIo {
@@ -49,9 +55,17 @@ impl MidiIo {
         let out = MidiEventVec::with_capacity(out_rx.capacity());
         Self {
             send: MidiSendBuffer::new(),
+            room: out.capacity(),
             out_rx,
             out,
+            out_overflow: 0,
         }
+    }
+
+    /// Plugin MIDI-out events dropped because a split block's pieces filled
+    /// the block's list (reserved for one inbox's worth).
+    pub(crate) fn out_overflow(&self) -> u64 {
+        self.out_overflow
     }
 }
 
@@ -64,6 +78,12 @@ impl MidiIo {
     pub(crate) fn drain_from(&mut self, start: usize) {
         let start = u32::try_from(start).unwrap_or(u32::MAX);
         while let Some(ev) = self.out_rx.pop() {
+            // Never past the reservation: a split block drains once a piece,
+            // and growing here would allocate on the audio thread.
+            if self.out.len() >= self.room {
+                self.out_overflow += 1;
+                continue;
+            }
             self.out
                 .push(ev.with_frame_offset(ev.frame_offset.saturating_add(start)));
         }
@@ -164,6 +184,11 @@ pub(crate) struct MidiSendBuffer {
     /// Reassembles SysEx7 packets and owns the bytes a `SysExEvent` points
     /// at. Reserved at construction; an open message carries across blocks.
     sysex: SysExAssembler,
+    /// The SysEx messages the block completed, each with the frame (clamped
+    /// to the block) it lands on, filled once at the block's first piece and
+    /// selected from by every piece. A message is assembled once per block: a
+    /// run is open across blocks, not pieces.
+    completed: Vec<(usize, SysExRef)>,
     /// Pointer table — one `*mut api::Event` per event, laid out into
     /// the trailing flexible-array region of `header`.
     event_ptrs: Vec<*mut vst::api::Event>,
@@ -204,6 +229,7 @@ impl MidiSendBuffer {
             sysex_events: Vec::with_capacity(events),
             order: Vec::with_capacity(events),
             sysex: SysExAssembler::reserved(),
+            completed: Vec::with_capacity(events),
             event_ptrs: Vec::with_capacity(events),
             header: Vec::with_capacity(header_words(events)),
         };
@@ -216,9 +242,12 @@ impl MidiSendBuffer {
     /// Stage the events of `midi_events` that fall in the piece of a block
     /// `start..start + len` (of `total` frames) into the reusable buffers and
     /// return a raw pointer to the populated `api::Events` header. Never
-    /// allocates: an event past the buffer's room is refused and counted
-    /// (every SysEx packet still reaches the assembler, so a message is never
-    /// spliced).
+    /// allocates: an event past the buffer's room is refused and counted.
+    ///
+    /// A block's pieces are staged in order, the first (`start == 0`) first:
+    /// it runs every SysEx packet of the block through the assembler once, so
+    /// a message is never spliced and one whose `END` falls in a later piece
+    /// is delivered in that piece.
     ///
     /// What the plugin is handed is the VST2 contract, enforced here rather
     /// than trusted of the caller: each event's `deltaFrames` is clamped to
@@ -266,35 +295,54 @@ impl MidiSendBuffer {
         self.api_events.clear();
         self.sysex_events.clear();
         self.order.clear();
-        self.sysex.begin_block();
-        for ev in midi_events {
-            let step = self.sysex.push(ev);
-            let full = self.order.len() == self.room;
-            match step {
-                SysExStep::NotSysEx => {
-                    let Some(delta) = delta_in_piece(ev.frame_offset) else {
-                        continue;
-                    };
-                    if let Some(mut api) = from_midi(ev) {
-                        if full {
-                            self.events_dropped += 1;
-                            continue;
-                        }
-                        api.delta_frames = delta;
-                        self.order.push(Staged::Midi(self.api_events.len()));
-                        self.api_events.push(api);
+        // The block's SysEx is assembled once, at its first piece: every packet
+        // reaches the assembler exactly once, in order, so a message whose
+        // `END` falls in a later piece is still completed (and a message left
+        // open at the block's end is counted dropped at most once). The later
+        // pieces select the completed messages that fall in them.
+        if start == 0 {
+            self.sysex.begin_block();
+            self.completed.clear();
+            for ev in midi_events {
+                if let SysExStep::Complete(message) = self.sysex.push(ev) {
+                    if self.completed.len() == self.completed.capacity() {
+                        self.events_dropped += 1;
+                    } else {
+                        let at = (ev.frame_offset as usize).min(last);
+                        self.completed.push((at, message));
                     }
                 }
-                SysExStep::Held => {}
-                SysExStep::Complete(_) if delta_in_piece(ev.frame_offset).is_none() => {}
-                SysExStep::Complete(_) if full => self.events_dropped += 1,
-                SysExStep::Complete(message) => {
-                    let delta = delta_in_piece(ev.frame_offset).unwrap_or(0);
-                    let event = self.sysex_event(delta, message);
-                    self.order.push(Staged::SysEx(self.sysex_events.len()));
-                    self.sysex_events.push(event);
-                }
             }
+        }
+        for ev in midi_events {
+            if ev.message_type() == UmpMessageType::Sysex7 {
+                continue;
+            }
+            let Some(delta) = delta_in_piece(ev.frame_offset) else {
+                continue;
+            };
+            if let Some(mut api) = from_midi(ev) {
+                if self.order.len() == self.room {
+                    self.events_dropped += 1;
+                    continue;
+                }
+                api.delta_frames = delta;
+                self.order.push(Staged::Midi(self.api_events.len()));
+                self.api_events.push(api);
+            }
+        }
+        for i in 0..self.completed.len() {
+            let (at, message) = self.completed[i];
+            if !(start..start + len).contains(&at) {
+                continue;
+            }
+            if self.order.len() == self.room {
+                self.events_dropped += 1;
+                continue;
+            }
+            let event = self.sysex_event((at - start) as i32, message);
+            self.order.push(Staged::SysEx(self.sysex_events.len()));
+            self.sysex_events.push(event);
         }
         if self.order.is_empty() {
             return None;
@@ -422,6 +470,31 @@ mod tests {
             assert_eq!(io.out[255].frame_offset, 255, "in order");
         }
     }
+    /// **A split block's pieces cannot grow the MIDI-out list**: each piece
+    /// drains a full inbox, the list holds one inbox's worth, and what does not
+    /// fit is counted, not pushed. Inside the no-alloc gate.
+    ///
+    /// Mutation (run): drop the `self.out.len() >= self.room` guard -> the
+    /// second piece grows the list inside the gate -> aborts.
+    #[test]
+    fn a_split_block_with_full_inboxes_does_not_grow_the_out_list() {
+        let inbox = Arc::new(ArrayQueue::new(256));
+        let mut io = MidiIo::new(Arc::clone(&inbox));
+        for _ in 0..2 {
+            io.out.clear();
+            for piece in 0..2usize {
+                for i in 0..inbox.capacity() as u32 {
+                    inbox
+                        .push(MidiEvent::from_ump(i, &[0x2090_3C40]))
+                        .expect("room");
+                }
+                assert_no_alloc::assert_no_alloc(|| io.drain_from(piece * 64));
+            }
+            assert_eq!(io.out.len(), 256, "capped at the reservation");
+        }
+        assert_eq!(io.out_overflow(), 2 * 256, "the second piece's, counted");
+    }
+
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
@@ -715,6 +788,48 @@ mod tests {
         assert_eq!(piece(&mut buf, 0), [(10, 60)]);
         assert_eq!(piece(&mut buf, 64), [(6, 61)]);
         assert_eq!(piece(&mut buf, 128), [(2, 62)]);
+    }
+
+    /// **A SysEx message open at a block's end is completed by an `END` that
+    /// falls in a later piece of the next, split block**: delivered once, at
+    /// the rebased frame, with nothing counted dropped.
+    ///
+    /// Each piece used to run the whole block through the assembler: piece 0
+    /// completed the run and discarded it as out-of-piece, piece 1 then saw
+    /// the `END` with no run open, and a run still open at the block's end
+    /// was counted dropped once per extra piece.
+    ///
+    /// Mutation (run): assemble in every piece (`begin_block` and the feed
+    /// outside the `start == 0` guard) -> piece 1 delivers nothing -> fails.
+    #[test]
+    fn a_sysex_ending_in_a_later_piece_is_delivered_once() {
+        let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
+        let packets = sysex_packets(&body, 0);
+        assert!(packets.len() >= 3, "fixture: START, CONTINUE.., END");
+        let (open, end) = packets.split_at(packets.len() - 1);
+        let mut buf = MidiSendBuffer::new();
+
+        // Block N-1: START and CONTINUE, no END. One piece.
+        assert!(buf.stage_piece(open, 0, 64, 64).is_none());
+
+        // Block N, 128 frames in two pieces of 64: the END at frame 100.
+        let end = [end[0].with_frame_offset(100)];
+        assert!(
+            buf.stage_piece(&end, 0, 64, 128).is_none(),
+            "the END is not in the first piece"
+        );
+        let staged = read_staged(buf.stage_piece(&end, 64, 64, 128).expect("END's piece"));
+        assert_eq!(staged, vec![(36, framed(&body))], "once, rebased: 100 - 64");
+        assert_eq!(buf.sysex_dropped(), 0);
+
+        // A block that leaves a run open, split in three, counts it at most
+        // once (at the next START), not once per piece.
+        let (start, _) = packets.split_at(1);
+        for piece_start in [0, 64, 128] {
+            let _ = buf.stage_piece(start, piece_start, 64, 192);
+        }
+        let _ = buf.stage_piece(&packets[..1], 0, 64, 64);
+        assert_eq!(buf.sysex_dropped(), 1, "the one abandoned run");
     }
 
     fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {

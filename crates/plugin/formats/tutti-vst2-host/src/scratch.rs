@@ -162,11 +162,6 @@ impl RenderScratch {
         self.copy_out_f64_from_f32_range(caller_outputs, 0, num_samples);
     }
 
-    /// Pointers into the Vecs can become stale after any mutation — refresh
-    /// them before each `vst_buffer.from_raw` call.
-    ///
-    /// In practice the Vec never reallocates (same shape, same capacity),
-    /// so this is paranoia. Cheap paranoia.
     /// [`prepare_f32`](Self::prepare_f32) for the piece of the caller's block
     /// `start..start + len`, staged at the front of the scratch.
     pub fn prepare_f32_range(&mut self, caller_inputs: &[&[f32]], start: usize, len: usize) {
@@ -188,7 +183,10 @@ impl RenderScratch {
     pub fn prepare_f64_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs_f64.len() {
-                self.inputs_f64[i][..len].copy_from_slice(&src[start..start + len]);
+                let piece = &src[start.min(src.len())..(start + len).min(src.len())];
+                for (d, &s) in self.inputs_f64[i][..len].iter_mut().zip(piece) {
+                    *d = s;
+                }
             }
         }
         for i in caller_inputs.len()..self.inputs_f64.len() {
@@ -268,6 +266,11 @@ impl RenderScratch {
         }
     }
 
+    /// Pointers into the Vecs can become stale after any mutation — refresh
+    /// them before each `vst_buffer.from_raw` call.
+    ///
+    /// In practice the Vec never reallocates (same shape, same capacity),
+    /// so this is paranoia. Cheap paranoia.
     fn refresh_ptrs(&mut self) {
         for (ptr, ch) in self.input_ptrs.iter_mut().zip(&self.inputs) {
             *ptr = ch.as_ptr();

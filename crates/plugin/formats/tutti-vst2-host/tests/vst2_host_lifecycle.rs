@@ -587,3 +587,41 @@ fn a_later_piece_sees_the_transport_advanced() {
         cap.time_ppq_pos
     );
 }
+
+/// A bar line inside a later piece moves the bar start; a block with no
+/// transport does not advance the previous block's snapshot.
+///
+/// 4/4 at 120 BPM, 48 kHz: a 64-frame piece is 0.002667 quarters, so a block
+/// starting at 3.995 crosses the bar line at 4.0 in its third piece (start
+/// 128), whose bar start is then 4.0, not the block's 0.0.
+///
+/// Mutation (run): drop the bar-line step in `advance_transport` -> the last
+/// piece still reads bar start 0.0 -> fails. Mutation (run): the
+/// `ctx.transport.is_some()` guard removed -> the transport-less block's
+/// later pieces advance the old snapshot, so its sample position moves ->
+/// fails.
+#[test]
+fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
+    let _guard = lock_probe();
+    let mut instance = load(BLOCK);
+    let mut scratch = RenderScratch::new(
+        instance.metadata().num_inputs,
+        instance.metadata().num_outputs,
+        256,
+    );
+    let transport = TransportInfo::new()
+        .with_playing(true)
+        .with_position_quarters(3.995)
+        .with_position_samples(1_000)
+        .with_tempo(120.0)
+        .with_time_signature(TimeSignature::default())
+        .with_bar(0.0, Default::default());
+    render_f32(&mut instance, &mut scratch, 200, &[], Some(&transport), 0.0);
+    let cap = read_capture();
+    assert_eq!(cap.time_bar_start_pos, 4.0);
+
+    // No transport on the next block: the snapshot stays the last piece's.
+    let before = cap.time_sample_pos;
+    render_f32(&mut instance, &mut scratch, 200, &[], None, 0.0);
+    assert_eq!(read_capture().time_sample_pos, before);
+}

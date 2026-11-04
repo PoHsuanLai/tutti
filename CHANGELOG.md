@@ -29,6 +29,14 @@ the protocol. Changes:
   **New:** `Vst2Instance::poll_changes` -> `Vst2Changes`; the server raises
   `LatencyChanged`, `TailChanged` and `IoChanged`; the in-process handle
   raises `PluginInvalidation` on its editor pump.
+- **Limit:** in process, the parked rate change and the latency, tail and pin
+  re-reads run on the editor pump (`PluginHandle::editor_idle`), which
+  bevy-tutti ticks only while an editor is open. Without an editor, call
+  `editor_idle` on a tick of your own; the session does not.
+- A SysEx message is assembled once per block, so one whose `END` falls in a
+  later piece of a split block is delivered there; the plugin's MIDI-out list
+  never grows past its reservation (the overflow counts in
+  `dropped_midi_out`); a later piece's bar start follows the bar lines.
 - `audioMasterCanDo`, `effEditIdle`, `audioMasterGetSampleRate` /
   `GetBlockSize` after a change, counts read after `effOpen`, and
   `deltaFrames` clamped and ordered in `MidiSendBuffer`.

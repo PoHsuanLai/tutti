@@ -30,16 +30,19 @@ use crate::{render_to_buffers, write_buffers, Result, Written};
 ///
 /// Both variants measure with the same EBU R128 meter, so both cost the same
 /// second pass; they differ only in what they aim at. In particular `Peak`
-/// targets **true** peak (4× oversampled, per BS.1770), not sample peak — an
+/// targets **true** peak, not sample peak — an
 /// inter-sample peak a sample-peak reading misses is exactly what clips on a
-/// consumer DAC after resampling.
+/// consumer DAC after resampling. The meter oversamples 4× below 96 kHz and 2×
+/// from 96 kHz to below 192 kHz; at 192 kHz and above it reads the sample peak.
 ///
 /// # Above six channels
 ///
-/// [`Lufs`](Self::Lufs) is measured through R128's standard channel map, which
-/// weights the first six channels (L, R, C, LFE, Ls, Rs) and leaves any beyond
-/// them unweighted. A 7.1 or 7.1.4 export is therefore normalized on its first
-/// six channels: content that lives only in the rear surrounds or the height
+/// [`Lufs`](Self::Lufs) is measured through R128's standard channel map. For
+/// six or more channels it weights L, R, C, Ls and Rs (slots 0, 1, 2, 4, 5),
+/// ignores the LFE (slot 3) and leaves any channel beyond the sixth unweighted;
+/// four channels read as L, R, Ls, Rs and five as L, R, C, Ls, Rs. A 5.1 mix
+/// with only the LFE active reads -70 LUFS. A 7.1 or 7.1.4 export is therefore
+/// normalized on its first six channels: content that lives only in the rear surrounds or the height
 /// layer does not raise the reading, so the gain lands higher than that mix's
 /// true loudness warrants — the ceiling is what stops it.
 ///

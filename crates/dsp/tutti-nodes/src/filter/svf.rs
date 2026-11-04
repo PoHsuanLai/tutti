@@ -73,6 +73,8 @@ pub enum SvfType {
 #[derive(Debug, Clone, Copy)]
 pub struct SvfCoeffs {
     /// `1 / (1 + g*(g + k))`, with `g = tan(pi * fc / sr)` and `k = 1 / Q`.
+    /// A bell uses `k = 1 / (Q * A)`; a low (high) shelf divides (multiplies)
+    /// `g` by `sqrt(A)`, `A = 10^(dB / 40)`.
     pub a1: f64,
     /// `g * a1`.
     pub a2: f64,
@@ -104,14 +106,26 @@ pub fn compute_svf_coeffs(
     let sample_rate = sample_rate.into();
     // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
     let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
-    let g = (core::f64::consts::PI * fc / sample_rate.get()).tan();
-    let k = 1.0 / (q as f64).max(0.01);
+    let g0 = (core::f64::consts::PI * fc / sample_rate.get()).tan();
+    let q = (q as f64).max(0.01);
+    let a = 10.0_f64.powf(gain_db as f64 / 40.0);
+
+    // RBJ cookbook shapes: a bell's damping is `1/(Q*A)`, and a shelf's
+    // midpoint (half the dB gain) sits at `fc`, so its prototype is tuned
+    // `sqrt(A)` away.
+    let k = match filter_type {
+        SvfType::Bell => 1.0 / (q * a),
+        _ => 1.0 / q,
+    };
+    let g = match filter_type {
+        SvfType::LowShelf => g0 / a.sqrt(),
+        SvfType::HighShelf => g0 * a.sqrt(),
+        _ => g0,
+    };
 
     let a1 = 1.0 / (1.0 + g * (g + k));
     let a2 = g * a1;
     let a3 = g * a2;
-
-    let a = 10.0_f64.powf(gain_db as f64 / 40.0);
 
     let (m0, m1, m2) = match filter_type {
         SvfType::LowPass => (0.0, 0.0, 1.0),
@@ -918,6 +932,105 @@ mod tests {
         let c = compute_svf_coeffs(SvfType::HighPass, 1000.0, 0.707, 0.0, 44100.0);
         assert!((c.m0 - 1.0).abs() < 1e-10);
         assert!((c.m2 - (-1.0)).abs() < 1e-10);
+    }
+
+    /// The RBJ cookbook biquad's magnitude (dB) at `f`, closed form.
+    fn rbj_db(ty: SvfType, fc: f64, q: f64, gain_db: f64, rate: f64, f: f64) -> f64 {
+        let a = 10f64.powf(gain_db / 40.0);
+        let w0 = 2.0 * core::f64::consts::PI * fc / rate;
+        let (sn, cs) = w0.sin_cos();
+        let al = sn / (2.0 * q);
+        let sa = 2.0 * a.sqrt() * al;
+        let (b, d) = match ty {
+            SvfType::Bell => (
+                [1.0 + al * a, -2.0 * cs, 1.0 - al * a],
+                [1.0 + al / a, -2.0 * cs, 1.0 - al / a],
+            ),
+            SvfType::LowShelf => (
+                [
+                    a * ((a + 1.0) - (a - 1.0) * cs + sa),
+                    2.0 * a * ((a - 1.0) - (a + 1.0) * cs),
+                    a * ((a + 1.0) - (a - 1.0) * cs - sa),
+                ],
+                [
+                    (a + 1.0) + (a - 1.0) * cs + sa,
+                    -2.0 * ((a - 1.0) + (a + 1.0) * cs),
+                    (a + 1.0) + (a - 1.0) * cs - sa,
+                ],
+            ),
+            SvfType::HighShelf => (
+                [
+                    a * ((a + 1.0) + (a - 1.0) * cs + sa),
+                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cs),
+                    a * ((a + 1.0) + (a - 1.0) * cs - sa),
+                ],
+                [
+                    (a + 1.0) - (a - 1.0) * cs + sa,
+                    2.0 * ((a - 1.0) - (a + 1.0) * cs),
+                    (a + 1.0) - (a - 1.0) * cs - sa,
+                ],
+            ),
+            _ => unreachable!(),
+        };
+        let w = 2.0 * core::f64::consts::PI * f / rate;
+        let mag = |c: [f64; 3]| {
+            let re = c[0] + c[1] * w.cos() + c[2] * (2.0 * w).cos();
+            let im = -(c[1] * w.sin() + c[2] * (2.0 * w).sin());
+            (re * re + im * im).sqrt()
+        };
+        20.0 * (mag(b) / mag(d)).log10()
+    }
+
+    /// Steady-state gain (dB) of a unit sine at `f` through the filter's own
+    /// recurrence, projected on the last whole second.
+    fn measured_db(ty: SvfType, fc: f64, q: f64, gain_db: f64, rate: f64, f: f64) -> f64 {
+        let c = SvfCoefficients::<f64>::solve(
+            ty,
+            Hz(fc as f32),
+            Q(q as f32),
+            Db(gain_db as f32),
+            SampleRate::new(rate),
+        );
+        let mut st = [0.0f64; 2];
+        let n = rate as usize;
+        let (mut re, mut im) = (0.0, 0.0);
+        for i in 0..2 * n {
+            let ph = 2.0 * core::f64::consts::PI * f * i as f64 / rate;
+            let y = svf_step(&c, &mut st, ph.sin());
+            if i >= n {
+                re += y * ph.sin();
+                im += y * ph.cos();
+            }
+        }
+        20.0 * (2.0 * (re * re + im * im).sqrt() / n as f64).log10()
+    }
+
+    /// Bell and both shelves follow the RBJ cookbook response at fc/2, fc and
+    /// 2fc, for +-12 dB and Q 0.7, 1, 4; the shelf gain at fc is half the dB
+    /// gain.
+    ///
+    /// Mutations (run): Bell `k = 1/q`, shelf `g = g0`; each fails here.
+    #[test]
+    fn bell_and_shelves_match_the_rbj_cookbook() {
+        let (rate, fc) = (48000.0, 1000.0);
+        for ty in [SvfType::Bell, SvfType::LowShelf, SvfType::HighShelf] {
+            for gain in [12.0, -12.0] {
+                for q in [0.7, 1.0, 4.0] {
+                    for f in [fc / 2.0, fc, 2.0 * fc] {
+                        let want = rbj_db(ty, fc, q, gain, rate, f);
+                        let got = measured_db(ty, fc, q, gain, rate, f);
+                        assert!(
+                            (got - want).abs() < 0.05,
+                            "{ty:?} {gain} dB Q {q} at {f} Hz: got {got:.3}, RBJ {want:.3}"
+                        );
+                    }
+                }
+            }
+        }
+        for ty in [SvfType::LowShelf, SvfType::HighShelf] {
+            let at_fc = measured_db(ty, fc, core::f64::consts::FRAC_1_SQRT_2, 12.0, rate, fc);
+            assert!((at_fc - 6.0).abs() < 0.05, "{ty:?} at fc: {at_fc}");
+        }
     }
 
     #[test]

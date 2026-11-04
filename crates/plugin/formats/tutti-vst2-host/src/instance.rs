@@ -27,6 +27,40 @@ use crate::parameters::SendParams;
 use crate::transport_cell::TransportWriter;
 use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category};
 
+/// The width a plugin is told it will be processed at, by
+/// `effSetProcessPrecision`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Precision {
+    /// 32-bit float: [`Vst2Instance::process_f32`] enters `processReplacing`.
+    #[default]
+    Single,
+    /// 64-bit float: [`Vst2Instance::process_f64`] enters
+    /// `processReplacingF64`. Honoured only for a plugin declaring
+    /// `effFlagsCanDoubleReplacing`; any other is told 32.
+    Double,
+}
+
+/// What a plugin changed about itself since the last
+/// [`Vst2Instance::poll_changes`]. VST2 has no notification for any of it
+/// except `audioMasterIOChanged`, so every field is a re-read the host did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Vst2Changes {
+    /// The new latency, when `initialDelay` moved.
+    pub latency: Option<Samples>,
+    /// The new tail, when `effGetTailSize` moved.
+    pub tail: Option<PluginTail>,
+    /// The plugin reported `audioMasterIOChanged`: its pin counts (now in
+    /// [`Vst2Instance::metadata`]) or its latency may differ.
+    pub io: bool,
+}
+
+impl Vst2Changes {
+    /// Whether nothing changed.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Maps the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
 /// A free fn rather than a `From` impl: both `Category` (from `vst`) and
 /// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
@@ -142,14 +176,15 @@ pub struct Vst2Instance {
     /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
     pub(crate) midi: MidiIo,
     metadata: PluginInfo,
-    /// Whether the last `effMainsChanged` dispatched carried `value=1`.
-    ///
-    /// Tracked because `effMainsChanged` is not documented as idempotent and real
-    /// plugins reallocate rate-dependent buffers on every `resume(1)`. The
-    /// reconfigure pair reads this to make both transitions edge-triggered; an
-    /// unconditional `suspend(); set(); resume()` would churn those buffers on
-    /// every setter call.
-    resumed: bool,
+    /// The maximum block the plugin was last told (`effSetBlockSize`). A block
+    /// longer than this is split before it reaches the plugin
+    /// ([`process_f32`](Self::process_f32)).
+    pub(crate) block_size: usize,
+    /// Whether the plugin was told `effSetProcessPrecision(64)`: the width
+    /// [`process_f64`](Self::process_f64) enters it at.
+    double_precision: bool,
+    /// What changed since the last [`poll_changes`](Self::poll_changes).
+    changes: Vst2Changes,
 }
 
 // SAFETY: every field is either `Send` or its non-`Send`-ness has been
@@ -186,6 +221,24 @@ impl Vst2Instance {
     /// Main thread only. In debug builds, panics if called off the thread
     /// registered with [`tutti_plugin_types::mark_main_thread`].
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+        Self::load_with_precision(path, sample_rate, block_size, Precision::Single)
+    }
+
+    /// [`load`](Self::load), telling the plugin it will be processed at
+    /// `precision`. Pass [`Precision::Double`] only when the caller will enter
+    /// it through [`process_f64`](Self::process_f64): the opcode states the
+    /// width the host WILL use, and a plugin told 64 that is then called at 32
+    /// may route `processReplacing` to a stub.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load).
+    pub fn load_with_precision(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        precision: Precision,
+    ) -> Result<Self> {
         // Loading runs the plugin's init/resume sequence and probes its
         // editor — VST2 requires this happen on the host main thread. A
         // no-op until `mark_main_thread()` has been called (headless tests
@@ -243,16 +296,20 @@ impl Vst2Instance {
         // buffers `effMainsChanged` does — so it goes here, between
         // `effSetBlockSize` and the first resume.
         //
-        // Announcing what the plugin declared, rather than a fixed width: this
-        // host renders through whichever entry point the caller asks for, and
-        // `process_f64` narrows to f32 exactly when the plugin cannot do f64
-        // (see `process.rs`). So the widest width the plugin will ever be
-        // entered at is the one its own `effFlagsCanDoubleReplacing` claims.
-        // Declaring 64-bit to a plugin that cannot do it would configure it for
-        // a call it never receives.
-        instance.set_precision(info.f64_precision);
+        // The opcode states the width the host WILL call the plugin at, as
+        // JUCE sends it (`isUsingDoublePrecision() ? 64 : 32`). So 64 goes
+        // only to a plugin that declared `effFlagsCanDoubleReplacing` and only
+        // when the caller said it will use `process_f64`; every other plugin
+        // is told 32 explicitly, which is also the default a plugin assumes.
+        let double_precision = precision == Precision::Double && info.f64_precision;
+        instance.set_precision(double_precision);
 
         instance.resume();
+        // The bracket every reconfigure repeats: `effStartProcess` after
+        // `effMainsChanged(1)`, `effStopProcess` before `effMainsChanged(0)`.
+        // A plugin that arms its DSP on the start edge would otherwise render
+        // dry until the first reconfigure.
+        instance.start_process();
 
         // MIDI classification. Pin count / category is the primary signal, but
         // MIDI-effect plugins routinely declare 0 MIDI pins and advertise
@@ -312,13 +369,11 @@ impl Vst2Instance {
             receives_midi,
             emits_midi,
             has_editor: false, // overwritten below, once the handle is asked
-            // Read live, not from `info`. `get_info()` returns a snapshot taken
-            // in `PluginInstance::new` — before `effOpen`, `effSetSampleRate`
-            // and `effMainsChanged` — and a plugin sets its latency during
-            // those: a linear-phase EQ does not know its filter length until it
-            // knows the sample rate. So `info.initial_delay` reads 0 for
-            // exactly the plugins that have latency, and PDC silently
-            // compensated nothing for them.
+            // Read live, after the plugin was told its rate and resumed: a
+            // plugin sets its latency during those (a linear-phase EQ does not
+            // know its filter length until it knows the sample rate), so the
+            // construction-time field reads 0 for exactly the plugins that
+            // have latency, and PDC silently compensated nothing for them.
             latency_samples: Samples(instance.read_initial_delay().max(0) as usize),
             // Read live for the same reason as the latency above, and decoded
             // here rather than through `PluginTail::from_vst3_samples` because VST2
@@ -336,7 +391,9 @@ impl Vst2Instance {
         let initial_values: Vec<f32> = (0..info.parameters)
             .map(|i| params.get_parameter(i).unwrap_or(0.0))
             .collect();
-        let handle = Vst2Handle::new(instance);
+        let mut handle = Vst2Handle::new(instance);
+        // `load` dispatched `resume()` and `start_process()` above.
+        handle.resumed = true;
         let mut metadata = metadata;
         metadata.has_editor = handle.has_editor();
 
@@ -351,19 +408,28 @@ impl Vst2Instance {
             },
             midi: MidiIo::new(midi_out_q),
             metadata,
-            // `load` dispatched `resume()` above.
-            resumed: true,
+            block_size,
+            double_precision,
+            changes: Vst2Changes::default(),
         })
     }
 
-    /// Returns the plugin metadata captured at load time.
+    /// Whether the plugin was told `effSetProcessPrecision(64)`, which is what
+    /// makes [`process_f64`](Self::process_f64) enter `processReplacingF64`.
+    pub fn is_double_precision(&self) -> bool {
+        self.double_precision
+    }
+
+    /// Returns the plugin metadata: read at load, and updated by
+    /// [`poll_changes`](Self::poll_changes) and by the rate and block-size
+    /// setters when the plugin's latency, tail or pin counts moved.
     pub fn metadata(&self) -> &PluginInfo {
         &self.metadata
     }
 
     /// Returns `true` while the plugin is resumed (processing enabled).
     pub fn is_resumed(&self) -> bool {
-        self.resumed
+        self.handle.resumed
     }
 
     /// Takes the plugin out of the processing state, returning whether a
@@ -381,7 +447,7 @@ impl Vst2Instance {
     ///
     /// Idempotent for the same reason as [`suspend`](Self::suspend).
     pub fn resume(&mut self) -> bool {
-        if self.resumed {
+        if self.handle.resumed {
             return false;
         }
         self.restore_after_reconfigure(true);
@@ -427,14 +493,14 @@ impl Vst2Instance {
     /// Returns whether a suspend was actually issued, so the caller can restore
     /// exactly the state it found rather than assuming it was resumed.
     fn suspend_for_reconfigure(&mut self) -> bool {
-        if !self.resumed {
+        if !self.handle.resumed {
             return false;
         }
         // Only legal while resumed, per `Plugin::start_process`'s contract —
         // hence inside this branch, not above it.
         self.handle.instance.stop_process();
         self.handle.instance.suspend();
-        self.resumed = false;
+        self.handle.resumed = false;
         true
     }
 
@@ -444,11 +510,11 @@ impl Vst2Instance {
     /// `was_resumed` is that function's return value. Passing `false` leaves the
     /// plugin suspended — a reconfigure must not start a stopped plugin.
     fn restore_after_reconfigure(&mut self, was_resumed: bool) {
-        if !was_resumed || self.resumed {
+        if !was_resumed || self.handle.resumed {
             return;
         }
         self.handle.instance.resume();
-        self.resumed = true;
+        self.handle.resumed = true;
         self.handle.instance.start_process();
     }
 
@@ -461,8 +527,8 @@ impl Vst2Instance {
     /// stays suspended on exit.
     ///
     /// The rate reaches the plugin as a C `float`, so it is narrowed to `f32`.
-    /// The plugin may change its latency in response; re-read
-    /// [`latency`](Self::latency) afterwards.
+    /// The plugin may change its latency in response; the host re-reads it and
+    /// reports a move through [`poll_changes`](Self::poll_changes).
     ///
     /// # Panics
     ///
@@ -472,8 +538,13 @@ impl Vst2Instance {
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
+        // Before the dispatch: a plugin asking `audioMasterGetSampleRate` from
+        // inside `effSetSampleRate` must read the rate being set.
+        self.host_link.state.set_sample_rate(sample_rate);
         self.handle.instance.set_sample_rate(sample_rate as f32);
         self.restore_after_reconfigure(was_resumed);
+        // A plugin sizes its latency (and tail) from the rate it is told.
+        self.refresh_declared();
     }
 
     /// Sets whether the host reports itself as rendering offline.
@@ -501,10 +572,23 @@ impl Vst2Instance {
     /// buffer sizing), with the same edge-triggered semantics. A
     /// [`RenderScratch`](crate::RenderScratch) sized for the old block size
     /// must be rebuilt if the new one is larger.
+    ///
+    /// Blocks longer than the size set here are split before they reach the
+    /// plugin ([`process_f32`](Self::process_f32)), so the plugin is never
+    /// called with more frames than it was told.
+    ///
+    /// # Panics
+    ///
+    /// Main thread only, as for [`set_sample_rate`](Self::set_sample_rate).
     pub fn set_block_size(&mut self, block_size: usize) {
+        tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
+        // Before the dispatch, for `audioMasterGetBlockSize` from inside it.
+        self.block_size = block_size;
+        self.host_link.state.set_block_size(block_size);
         self.handle.instance.set_block_size(block_size as i64);
         self.restore_after_reconfigure(was_resumed);
+        self.refresh_declared();
     }
 
     /// Returns whether the plugin has asked the host to refresh what it
@@ -523,20 +607,62 @@ impl Vst2Instance {
         self.host_link.state.take_display_stale()
     }
 
-    /// Returns the plugin's current latency, in samples.
+    /// Returns the plugin's current latency, in samples, read from the live
+    /// `AEffect` rather than from the load-time metadata.
     ///
-    /// Re-read from the live `AEffect` rather than returned from the load-time
-    /// metadata, because VST2 gives a plugin no way to announce a change: there
-    /// is no latency-changed callback in the ABI. `audioMasterIOChanged` is the
-    /// nearest thing and is about I/O configuration; a plugin that alters
-    /// `initialDelay` on a sample-rate change may not send anything at all.
-    ///
-    /// So the host has to ask. [`set_sample_rate`](Self::set_sample_rate) and
-    /// [`set_block_size`](Self::set_block_size) both suspend and resume, which
-    /// is exactly when a plugin recomputes a filter length — call this after
-    /// either and re-plan compensation if the answer moved.
+    /// VST2 has no latency-changed callback: `audioMasterIOChanged` is the
+    /// nearest thing, and a plugin that alters `initialDelay` on a sample-rate
+    /// change may send nothing at all. So the host asks again after every
+    /// event that lets a plugin recompute one (a resume, a rate or block
+    /// change, an `audioMasterIOChanged`) and reports a move through
+    /// [`poll_changes`](Self::poll_changes); this is the read it makes.
     pub fn latency(&self) -> Samples {
         Samples(self.handle.instance.read_initial_delay().max(0) as usize)
+    }
+
+    /// Re-reads latency and tail from the plugin, updates
+    /// [`metadata`](Self::metadata), and records a move for the next
+    /// [`poll_changes`](Self::poll_changes). Main thread: `effGetTailSize` is
+    /// a dispatch.
+    fn refresh_declared(&mut self) {
+        let latency = self.latency();
+        if latency != self.metadata.latency_samples {
+            self.metadata.latency_samples = latency;
+            self.changes.latency = Some(latency);
+        }
+        let tail = decode_tail(self.handle.instance.read_tail_size());
+        if tail != self.metadata.tail {
+            self.metadata.tail = tail;
+            self.changes.tail = Some(tail);
+        }
+    }
+
+    /// What the plugin changed about itself since the last call, and the
+    /// moment to act on it.
+    ///
+    /// Re-reads on `audioMasterIOChanged` (the plugin's own signal: its pin
+    /// counts and latency may both have moved), and reports what the host's
+    /// own re-reads found after a resume, a rate change or a block-size change
+    /// ([`latency`](Self::latency)). [`metadata`](Self::metadata) holds the
+    /// new figures. Poll it from the main thread on a tick the caller already
+    /// has; an empty result is the common case and costs one atomic swap.
+    ///
+    /// # Panics
+    ///
+    /// Main thread only: the re-read dispatches `effGetTailSize`. In debug
+    /// builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
+    pub fn poll_changes(&mut self) -> Vst2Changes {
+        tutti_plugin_types::assert_main_thread();
+        if self.host_link.state.take_io_changed() {
+            self.handle.instance.refresh_effect_fields();
+            let info = self.handle.instance.get_info();
+            self.metadata.num_inputs = ChannelLayout::from(info.inputs.max(0) as u16);
+            self.metadata.num_outputs = ChannelLayout::from(info.outputs.max(0) as u16);
+            self.refresh_declared();
+            self.changes.io = true;
+        }
+        std::mem::take(&mut self.changes)
     }
 
     /// Returns the plugin's programs as `(index, name)` pairs.

@@ -236,9 +236,11 @@ impl Editor for ProbeEditor {
     }
 
     fn open(&mut self, _parent: *mut std::os::raw::c_void) -> bool {
-        // Refuse rather than pretend: a host that reads this as success and
-        // sizes a window around a nonexistent surface is a finding.
-        false
+        // Refuses by default, rather than pretending: a host that reads this as
+        // success and sizes a window around a nonexistent surface is a finding.
+        // A test that wants an open editor (to watch `effEditIdle` arrive)
+        // flips `tutti_vst2_probe_set_editor_opens`.
+        switches::editor_opens()
     }
 
     fn close(&mut self) {}
@@ -304,6 +306,7 @@ impl ProbePlugin {
             cap.valid = true;
             cap.process_calls = cap.process_calls.saturating_add(1);
             cap.block_size = samples as i32;
+            cap.largest_block = cap.largest_block.max(samples as i32);
             cap.input_count = self.config.inputs;
             cap.output_count = self.config.outputs;
             cap.entry = entry;
@@ -423,10 +426,33 @@ impl Plugin for ProbePlugin {
 
     fn init(&mut self) {
         capture::with_capture(|cap| cap.initialized = true);
+        // A plugin that settles its pin and parameter counts in `effOpen`
+        // (a shell plugin choosing which effect it is): the `AEffect` was built
+        // with the construction-time counts, and this rewrites them.
+        let effect = self.host.raw_effect();
+        if !effect.is_null() {
+            // SAFETY: the host holds the `AEffect` for as long as the plugin is
+            // loaded, and dispatches `effOpen` on the thread that owns it.
+            unsafe {
+                if let Some(inputs) = self.config.open_inputs {
+                    (*effect).numInputs = inputs;
+                }
+                if let Some(params) = self.config.open_params {
+                    (*effect).numParams = params;
+                }
+            }
+        }
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         capture::with_capture(|cap| cap.sample_rate = rate);
+        // What the host answers to a query made from inside the setter. Asked
+        // outside the capture lock: the host's callback never touches it.
+        if let (Some(callback), effect) = (self.host.raw_callback(), self.host.raw_effect()) {
+            // SAFETY: `audioMasterGetSampleRate` (16) takes no pointer.
+            let answered = unsafe { callback(effect, 16, 0, 0, std::ptr::null_mut(), 0.0) };
+            capture::with_capture(|cap| cap.host_rate_in_set_rate = answered as i64);
+        }
         // From here on `get_info().initial_delay` reports the late figure — see
         // `switches::late_latency`. The dispatch writes it back into the
         // `AEffect` after this returns.
@@ -435,6 +461,11 @@ impl Plugin for ProbePlugin {
 
     fn set_block_size(&mut self, size: i64) {
         capture::with_capture(|cap| cap.max_block_size = size);
+        if let (Some(callback), effect) = (self.host.raw_callback(), self.host.raw_effect()) {
+            // SAFETY: `audioMasterGetBlockSize` (17) takes no pointer.
+            let answered = unsafe { callback(effect, 17, 0, 0, std::ptr::null_mut(), 0.0) };
+            capture::with_capture(|cap| cap.host_block_in_set_block = answered as i64);
+        }
     }
 
     fn set_precision(&mut self, double: bool) {
@@ -631,6 +662,15 @@ static mut RAW_TAIL_SIZE: Option<isize> = None;
 /// dispatched effClose" from "the host merely dropped its handle", which is a
 /// difference nothing else in the probe can report.
 const EFF_CLOSE: i32 = 1;
+
+/// The lifecycle opcodes the trace records (`switches::record_lifecycle`).
+const EFF_SET_SAMPLE_RATE: i32 = 10;
+const EFF_SET_BLOCK_SIZE: i32 = 11;
+const EFF_MAINS_CHANGED: i32 = 12;
+const EFF_EDIT_IDLE: i32 = 19;
+const EFF_START_PROCESS: i32 = 71;
+const EFF_STOP_PROCESS: i32 = 72;
+const EFF_SET_PROCESS_PRECISION: i32 = 77;
 
 const EFF_GET_TAIL_SIZE: i32 = 52;
 
@@ -874,6 +914,19 @@ extern "C" fn probe_dispatch(
         switches::record_close();
     }
 
+    if matches!(
+        opcode,
+        EFF_SET_SAMPLE_RATE
+            | EFF_SET_BLOCK_SIZE
+            | EFF_MAINS_CHANGED
+            | EFF_EDIT_IDLE
+            | EFF_START_PROCESS
+            | EFF_STOP_PROCESS
+            | EFF_SET_PROCESS_PRECISION
+    ) {
+        switches::record_lifecycle(opcode, value);
+    }
+
     if opcode == EFF_GET_TAIL_SIZE {
         if let Some(tail) = unsafe { RAW_TAIL_SIZE } {
             return tail;
@@ -948,6 +1001,7 @@ pub extern "C" fn VSTPluginMain(callback: HostCallbackProc) -> *mut AEffect {
     if effect.is_null() {
         return effect;
     }
+    switches::remember_host(callback as usize, effect as usize);
 
     let config = ProbeConfig::from_env();
 

@@ -1575,7 +1575,14 @@ impl RefPlayhead {
     /// Whether continuous playback went through `beat` before this block —
     /// and this pass of a loop will not reach it again (a beat ahead of the
     /// playhead inside the loop is reached again, so it is not crossed).
+    /// A beat at or ahead of the playhead is never crossed, even where the
+    /// history went past it: a run continues through a step back of up to a
+    /// frame (a seek that small is indistinguishable from a host's `f32`
+    /// beat jitter), and playback reaches that beat again.
     fn crossed(&self, beat: f64) -> bool {
+        if self.now.is_none_or(|t| beat >= t.beat().get()) {
+            return false;
+        }
         let traversed = self
             .history
             .iter()

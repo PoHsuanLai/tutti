@@ -34,10 +34,25 @@ pub struct Vst2Instance {
 }
 
 impl Vst2Instance {
-    pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+    /// `prefer_f64` is the caller's request for 64-bit blocks: the plugin is told
+    /// `effSetProcessPrecision(64)` only when it also declared
+    /// `effFlagsCanDoubleReplacing` (the same condition that negotiates
+    /// `SampleFormat::Float64` with the host), so the width announced is the
+    /// width `process` is entered at.
+    pub fn load(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+    ) -> Result<Self> {
         #[cfg(feature = "vst2")]
         {
-            let inner = Vst2Host::load(path, sample_rate, block_size)
+            let precision = if prefer_f64 {
+                tutti_vst2_host::Precision::Double
+            } else {
+                tutti_vst2_host::Precision::Single
+            };
+            let inner = Vst2Host::load_with_precision(path, sample_rate, block_size, precision)
                 .map_err(|e| translate_error(e, path))?;
 
             let host_meta = inner.metadata().clone();
@@ -105,7 +120,7 @@ impl Vst2Instance {
 
         #[cfg(not(feature = "vst2"))]
         {
-            let _ = block_size;
+            let _ = (block_size, prefer_f64);
             Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: tutti_plugin::LoadStage::Opening,
@@ -116,6 +131,24 @@ impl Vst2Instance {
 
     pub fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
+    }
+
+    /// What the plugin changed about itself since the last poll: its latency,
+    /// tail and pin counts, as the host re-read them (after a resume, a rate
+    /// change, or an `audioMasterIOChanged`). The loaded snapshot the host
+    /// reports is brought up to date. Called by
+    /// `crate::plugin::Plugin::poll_async_events`, on the main thread.
+    #[cfg(feature = "vst2")]
+    pub fn poll_changes(&mut self) -> tutti_vst2_host::Vst2Changes {
+        let changes = self.inner.poll_changes();
+        let meta = self.inner.metadata();
+        self.meta.loaded.latency_samples = meta.latency_samples;
+        self.meta.loaded.tail = meta.tail;
+        if changes.io {
+            self.meta.loaded.inputs = single_bus(meta.num_inputs);
+            self.meta.loaded.outputs = single_bus(meta.num_outputs);
+        }
+        changes
     }
 
     /// Drain plugin-internal parameter changes (e.g., GUI knob movement).
@@ -532,12 +565,68 @@ mod tests {
             unsafe { std::env::set_var(k, v) };
         }
         let path = crate::test_utils::vst2_probe_path();
-        let loaded = Vst2Instance::load(Path::new(path), 48_000.0, 512);
+        let loaded = Vst2Instance::load(Path::new(path), 48_000.0, 512, false);
         clear_probe_env();
         (
             loaded.unwrap_or_else(|e| panic!("loading the VST2 probe at {path} failed: {e:?}")),
             lock,
         )
+    }
+
+    /// A VST2 plugin's `audioMasterIOChanged` reaches the host as the events a
+    /// CLAP or AU change does: its new latency, its new tail, and an I/O
+    /// change, with the loaded snapshot brought up to date.
+    ///
+    /// The plugin writes a new `initialDelay` and pin count into its `AEffect`
+    /// and calls the host, through the probe's export (a plugin does this on
+    /// its own initiative; there is no host call that provokes it).
+    ///
+    /// Mutation (run): drop the `Plugin::Vst2` arm's `poll_changes` -> no
+    /// events -> fails. Mutation (run): `HostState::io_changed` returning
+    /// `false`/not latching (in `tutti-vst2-host`) -> no `IoChanged` -> fails.
+    #[test]
+    fn an_io_changed_callback_raises_latency_and_io_events() {
+        use crate::plugin::{AsyncEvent, Plugin};
+
+        let (p, _lock) = load_probe(&[]);
+        let mut plugin = Plugin::Vst2(p);
+        assert!(
+            plugin.poll_async_events().is_empty(),
+            "nothing was reported yet"
+        );
+
+        let path = crate::test_utils::vst2_probe_path();
+        // SAFETY: the path is the cdylib the dev-dependency built; the symbol
+        // is the probe's `#[no_mangle]` export.
+        let lib = unsafe { libloading::Library::new(path) }.expect("re-open the probe");
+        let answered = unsafe {
+            let f: libloading::Symbol<extern "C" fn(i32, i32) -> isize> = lib
+                .get(b"tutti_vst2_probe_fire_io_changed\0")
+                .expect("probe export");
+            f(777, 4)
+        };
+        // Leaked, as the other suites do: the image must stay mapped.
+        std::mem::forget(lib);
+        assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
+
+        let events = plugin.poll_async_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AsyncEvent::LatencyChanged { samples } if samples.get() == 777
+            )),
+            "the new latency was not reported: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, AsyncEvent::IoChanged)),
+            "the I/O change was not reported: {events:?}"
+        );
+        let Plugin::Vst2(p) = &plugin else {
+            unreachable!("constructed as Vst2")
+        };
+        assert_eq!(p.loaded().latency_samples.get(), 777);
+        assert_eq!(p.loaded().inputs[0].count(), 4);
+        assert!(plugin.poll_async_events().is_empty(), "consumed");
     }
 
     /// The declared channel counts reach `LoadedPlugin` as one bus per side.
@@ -718,6 +807,7 @@ mod tests {
             Path::new("/nonexistent/tutti-not-a-plugin.so"),
             48_000.0,
             512,
+            false,
         ) {
             Err(BridgeError::LoadFailed { .. }) => {}
             Err(other) => panic!("expected LoadFailed, got {other:?}"),

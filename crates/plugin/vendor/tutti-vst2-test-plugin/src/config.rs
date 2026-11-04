@@ -95,6 +95,11 @@ pub struct ProbeConfig {
     /// a test names another: the same file then loads as a different plugin
     /// (the host's id is `vst2.<unique_id>`), as one replaced on disk does.
     pub unique_id: i32,
+    /// `numInputs` the plugin rewrites into its `AEffect` during `effOpen`, or
+    /// `None` to leave the construction-time count.
+    pub open_inputs: Option<i32>,
+    /// `numParams` the plugin rewrites into its `AEffect` during `effOpen`.
+    pub open_params: Option<i32>,
 }
 
 impl Default for ProbeConfig {
@@ -118,6 +123,8 @@ impl Default for ProbeConfig {
             effect_name: None,
             state_dc: false,
             unique_id: crate::PROBE_UNIQUE_ID,
+            open_inputs: None,
+            open_params: None,
         }
     }
 }
@@ -156,6 +163,12 @@ impl ProbeConfig {
             effect_name: env::var("TUTTI_VST2_PROBE_EFFECT_NAME").ok(),
             state_dc: env_flag("TUTTI_VST2_PROBE_STATE_DC"),
             unique_id: env_or("TUTTI_VST2_PROBE_UNIQUE_ID", d.unique_id),
+            open_inputs: env::var("TUTTI_VST2_PROBE_OPEN_INPUTS")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            open_params: env::var("TUTTI_VST2_PROBE_OPEN_PARAMS")
+                .ok()
+                .and_then(|v| v.parse().ok()),
         }
     }
 }

@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{ClapError, ClapLoaded};
+use tutti_clap_host::{AudioBuffer32, ClapError, ClapLoaded, ClapProcessContext, LoadStage};
 use tutti_clap_test_plugin::{PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, REPORTED_TAIL_SAMPLES};
 
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
@@ -29,7 +29,11 @@ struct Probe {
     _lib: libloading::Library,
     set_ports_64bit: unsafe extern "C" fn(u32),
     set_tail_extension: unsafe extern "C" fn(u32),
+    set_port_layout: unsafe extern "C" fn(u32),
 }
+
+/// The reference plugin's `[2, 1]` input and output layout.
+const LAYOUT_ASYMMETRIC_AUX: u32 = 1;
 
 impl Probe {
     fn acquire() -> Self {
@@ -42,19 +46,28 @@ impl Probe {
             let set_tail_extension = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_tail_extension\0")
                 .expect("set_tail_extension symbol present");
+            let set_port_layout = *lib
+                .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_port_layout\0")
+                .expect("set_port_layout symbol present");
             set_ports_64bit(0);
             set_tail_extension(1);
+            set_port_layout(0);
             Probe {
                 _lock: lock,
                 _lib: lib,
                 set_ports_64bit,
                 set_tail_extension,
+                set_port_layout,
             }
         }
     }
 
     fn ports_64bit(&self, mask: u32) {
         unsafe { (self.set_ports_64bit)(mask) }
+    }
+
+    fn port_layout(&self, mode: u32) {
+        unsafe { (self.set_port_layout)(mode) }
     }
 
     fn tail_extension(&self, present: bool) {
@@ -73,6 +86,7 @@ impl Drop for Probe {
         unsafe {
             (self.set_ports_64bit)(0);
             (self.set_tail_extension)(1);
+            (self.set_port_layout)(0);
         }
     }
 }
@@ -130,8 +144,9 @@ fn activation_rereads_the_f64_flag() {
 
 /// **No `clap.tail` is an absent answer, not a tail of 0.**
 ///
-/// Mutation (run): make `get_tail` return `Some(0)` for a null extension →
-/// the first assertion fails.
+/// Mutation (run): in `ClapLoaded::get_tail`, replace the `return None;` under
+/// `if self.extensions.system.tail.is_null()` with `return Some(0);` → the
+/// first assertion fails.
 #[test]
 fn a_plugin_without_clap_tail_has_no_answer() {
     let probe = Probe::acquire();
@@ -141,4 +156,106 @@ fn a_plugin_without_clap_tail_has_no_answer() {
 
     probe.tail_extension(true);
     assert_eq!(probe.load().get_tail(), Some(REPORTED_TAIL_SAMPLES));
+}
+
+/// **A rescan of an active plugin is refused.** CLAP lets a plugin change its
+/// ports only while deactivated, so a layout read under an active plugin would
+/// pair with buffers sized for the old one. `ClapActive` derefs mutably to
+/// `ClapLoaded`, so the call is reachable.
+///
+/// Mutation (run): change the guard in `ClapLoaded::rescan_audio_ports` to
+/// `if false && self.flags.active` → the call succeeds → `expect_err` fails.
+#[test]
+fn a_rescan_of_an_active_plugin_is_refused() {
+    let probe = Probe::acquire();
+    let mut active = probe
+        .load()
+        .activate::<f32>()
+        .map_err(|(_, e)| e)
+        .expect("activates");
+
+    probe.ports_64bit(BOTH_SIDES);
+    let err = active
+        .rescan_audio_ports()
+        .expect_err("the plugin is active");
+    assert!(matches!(err, ClapError::NotSupported(_)), "got {err}");
+    assert!(
+        !active.supports_f64(),
+        "a refused rescan reads nothing: the flag stays what activation read"
+    );
+}
+
+/// **An in-place re-activation reads the ports again and sizes its buffers
+/// from them.** `set_sample_rate` deactivates and activates the plugin, which
+/// may have changed its layout in between; the old layout would pair a
+/// `[2, 1]` plugin with scratch for one stereo bus.
+///
+/// Mutation (run): delete the `self.loaded.rescan_audio_ports()?;` line in
+/// `ClapActive::reconfigure` → the port count stays 1 → the first assertion
+/// fails.
+#[test]
+fn a_rate_change_rereads_the_port_layout() {
+    let probe = Probe::acquire();
+    let mut active = probe
+        .load()
+        .activate::<f32>()
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    assert_eq!(active.audio_port_count(true), 1, "fixture: one input port");
+    assert_eq!(active.info().audio_inputs, 2);
+
+    probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
+    active.set_sample_rate(44_100.0).expect("re-activates");
+
+    assert_eq!(active.audio_port_count(true), 2, "the plugin's new layout");
+    assert_eq!(active.info().audio_inputs, 3, "stereo main + mono aux");
+
+    // The scratch fits the new layout: a block of 3 channels in and out runs.
+    const FRAMES: usize = 64;
+    let ins = vec![vec![0.5f32; FRAMES]; 3];
+    let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
+    let mut outs = vec![vec![0.0f32; FRAMES]; 3];
+    let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
+    let mut buffer = AudioBuffer32 {
+        inputs: &in_refs,
+        outputs: &mut out_refs,
+        num_samples: FRAMES,
+        sample_rate: 44_100.0,
+    };
+    active
+        .process(&mut buffer, &ClapProcessContext::default())
+        .expect("a block in the new layout processes");
+}
+
+/// **A 64-bit instance whose plugin drops its flags is not re-activated for
+/// 64-bit audio.** The refusal is the activation error, and the instance stays
+/// deactivated, as after a refused rollback.
+///
+/// Mutation (run): delete the `T::requires_f64() && ...` check in
+/// `ClapActive::reconfigure` → the plugin is re-activated for 64-bit audio on
+/// ports that do not take it → `expect_err` fails.
+#[test]
+fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
+    let probe = Probe::acquire();
+    probe.ports_64bit(BOTH_SIDES);
+    let mut active = probe
+        .load()
+        .activate::<f64>()
+        .map_err(|(_, e)| e)
+        .expect("flagged, so 64-bit activation is allowed");
+
+    probe.ports_64bit(0);
+    let err = active
+        .set_sample_rate(44_100.0)
+        .expect_err("the flags are gone");
+    assert!(
+        matches!(
+            err,
+            ClapError::LoadFailed {
+                stage: LoadStage::Activation,
+                ..
+            }
+        ),
+        "got {err}"
+    );
 }

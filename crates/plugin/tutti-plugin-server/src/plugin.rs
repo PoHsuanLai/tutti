@@ -439,6 +439,59 @@ mod tests {
         }
     }
 
+    /// **A tail change from a plugin without `clap.tail` reports an unknown
+    /// tail, not none.** The plugin signals `tail.changed` and the host has no
+    /// extension to ask, so the event carries `Unknown`.
+    ///
+    /// Mutation (run): in `poll_async_events`, map `get_tail() == None` to
+    /// `PluginTail::None` → the assertion sees `None` → fails.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_tail_change_without_the_extension_is_an_unknown_tail() {
+        use crate::loaders::clap::ClapInstance;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let instance = {
+            let _without = crate::test_utils::clap_probe_without_tail();
+            ClapInstance::load(
+                Path::new(crate::test_utils::clap_probe_path()),
+                44100.0,
+                512,
+                false,
+            )
+            .expect("failed to load the CLAP test plugin")
+        };
+        let mut plugin = Plugin::Clap(instance);
+        #[cfg_attr(
+            not(any(
+                feature = "vst2",
+                feature = "vst3",
+                all(feature = "au", target_os = "macos")
+            )),
+            allow(irrefutable_let_patterns)
+        )]
+        let Plugin::Clap(clap) = &mut plugin
+        else {
+            unreachable!("constructed as Clap immediately above")
+        };
+        clap.clap_loaded()
+            .host_state()
+            .processing
+            .tail_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let events = plugin.poll_async_events();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AsyncEvent::TailChanged {
+                    tail: PluginTail::Unknown
+                }
+            )),
+            "got {events:?}"
+        );
+    }
+
     /// A CLAP tail change must reach the drained event list.
     ///
     /// The flag-clearing half of this was already covered

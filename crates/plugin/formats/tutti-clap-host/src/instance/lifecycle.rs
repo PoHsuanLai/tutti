@@ -427,6 +427,11 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// instance is genuinely inactive and the `Err` is
     /// [`ClapError::LoadFailed`] with [`LoadStage::Activation`], distinct from
     /// the plain refusal. `Drop` still tears it down safely.
+    ///
+    /// The ports are read again after the deactivation, as at
+    /// [`ClapLoaded::activate`], and the scratch is sized from what the plugin
+    /// now declares. A `ClapActive<f64>` whose plugin has dropped its 64-bit
+    /// flags is left deactivated with the same `LoadFailed`.
     fn reconfigure(&mut self, sample_rate: f64, max_frames: u32) -> Result<()> {
         self.loaded.assert_main_thread();
 
@@ -438,11 +443,27 @@ impl<T: super::ClapSample> ClapActive<T> {
         // A re-activation forgets the plugin's input, as a reset does.
         self.scratch.input_events.reset_sysex();
 
+        // The plugin may have changed its ports while it was deactivated, and
+        // the scratch below is sized from them, so read them before sizing.
+        // Control thread only (`assert_main_thread` above), so the layout's
+        // allocation is fine.
+        self.loaded.rescan_audio_ports()?;
+        if T::requires_f64() && !self.loaded.audio.supports_f64 {
+            // Activating would hand 64-bit buffers to ports that no longer
+            // take them. The instance stays deactivated, as after a refused
+            // rollback.
+            return Err(ClapError::LoadFailed {
+                path: PathBuf::new(),
+                stage: LoadStage::Activation,
+                reason: format!(
+                    "Plugin '{}' no longer advertises 64-bit audio on its ports",
+                    self.loaded.info.name
+                ),
+            });
+        }
+
         self.loaded.audio.sample_rate = sample_rate;
         self.loaded.audio.max_frames = max_frames;
-        // Port layout and channel counts are unchanged; only per-channel length
-        // tracks `max_frames`. A pure rate change passes the same value back
-        // in, so this is a no-op there.
         self.resize_scratch(max_frames);
 
         if self.loaded.activate_plugin().is_ok() {
@@ -465,8 +486,8 @@ impl<T: super::ClapSample> ClapActive<T> {
         )))
     }
 
-    /// Re-size the RT channel scratch for `max_frames`; the port layout is
-    /// fixed at load. The rollback path calls this a second time, paying a
+    /// Re-size the RT channel scratch for the current port layout and
+    /// `max_frames`. The rollback path calls this a second time, paying a
     /// second allocation off the audio thread — worth it, since scratch sized
     /// for a ceiling the plugin is *not* activated at would let `process`
     /// accept a block the plugin never agreed to.

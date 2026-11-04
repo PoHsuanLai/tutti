@@ -198,6 +198,15 @@ macro_rules! clap_dispatch_mut {
     };
 }
 
+/// A plugin that is open and not yet active: what [`ClapInstance::open`]
+/// reads before activation.
+#[cfg(feature = "clap")]
+struct Opened {
+    loaded: ClapLoaded,
+    descriptor: PluginDescriptor,
+    features: Features,
+}
+
 pub struct ClapInstance {
     #[cfg(feature = "clap")]
     inner: ClapInner,
@@ -239,11 +248,16 @@ impl ClapInstance {
     /// Load and activate a CLAP plugin.
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support on
-    /// every port, the instance is activated as `ClapActive<f64>`; otherwise
-    /// `f32`. The chosen format is what `metadata().features` reports as
-    /// [`Features::F64_AUDIO`], so the session's negotiated format and the
-    /// activation agree: the session sends the buffer width it negotiated, and
-    /// an instance activated in the other width would refuse every block.
+    /// every port at activation, the instance is activated as
+    /// `ClapActive<f64>`; otherwise `f32`. The chosen format is what
+    /// `metadata().features` reports as [`Features::F64_AUDIO`], so the
+    /// session's negotiated format and the activation agree: the session sends
+    /// the buffer width it negotiated, and an instance activated in the other
+    /// width would refuse every block.
+    ///
+    /// Activation re-reads the plugin's audio ports, so the buses and the
+    /// 64-bit answer in the metadata are the ones the plugin has when it is
+    /// activated, not the ones it had when it was opened.
     pub fn load(
         path: &Path,
         sample_rate: f64,
@@ -252,139 +266,7 @@ impl ClapInstance {
     ) -> Result<Self> {
         #[cfg(feature = "clap")]
         {
-            let resolved = tutti_plugin::server::resolve_bundle(path)?;
-            let library_path = if resolved != path {
-                Some(resolved.as_path())
-            } else {
-                None
-            };
-            let mut loaded =
-                ClapLoaded::load_with_library(path, library_path, sample_rate, block_size as u32)
-                    .map_err(|e| BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    // Host and bridge LoadStage are now the same shared type
-                    // (tutti-plugin-types); pass the stage through unchanged.
-                    stage: match e {
-                        tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
-                        _ => LoadStage::Opening,
-                    },
-                    reason: e.to_string(),
-                })?;
-
-            if loaded.supports_thread_pool() {
-                loaded.set_thread_pool(thread_pool());
-            }
-
-            // Read metadata off the loaded (pre-activation) instance.
-            let info = loaded.info();
-            let supports_f64 = loaded.supports_f64();
-            // Two questions, not one — see [`editor_bits`].
-            let embeddable = loaded.has_editor();
-            let EditorBits {
-                has_editor,
-                resize_allowed,
-                floating,
-            } = editor_bits(embeddable, loaded.has_floating_editor());
-            let editor_resizable = resize_allowed && loaded.editor_capabilities().resize.resizable;
-            let has_note_in = loaded.note_port_count(true) > 0;
-            let has_note_out = loaded.note_port_count(false) > 0;
-            // Real per-port bus layout (main + any sidechain/aux), read off the
-            // `audio-ports` extension before `activate` consumes `loaded`.
-            let input_buses = per_bus_channels(&loaded, true);
-            let output_buses = per_bus_channels(&loaded, false);
-            let descriptor = clap_descriptor(info, EditorPresence::measured(has_editor));
-
-            let mut features = Features::empty();
-            features.set(Features::MIDI_IN, has_note_in);
-            features.set(Features::MIDI_OUT, has_note_out);
-            features.set(Features::EDITOR, has_editor);
-            features.set(Features::EDITOR_RESIZE, editor_resizable);
-            features.set(Features::EDITOR_FLOATING, floating);
-            // CLAP always carries transport, sample-accurate param automation, and
-            // the full note-expression dimension set (see build_clap_transport /
-            // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
-            // (the CLAP spec defines no chord/scale events).
-            features.insert(Features::TRANSPORT);
-            features.insert(Features::PARAM_AUTOMATION);
-            features.set(Features::NOTE_EXPRESSION, has_note_in);
-            // `PRESET_LIST` stays out of `probed::CLAP` — enumeration lives in
-            // the preset-discovery extension, which is factory-level and
-            // unbound here — so only the load half is answered.
-            features.set(Features::PRESET_LOAD, loaded.supports_preset_load());
-            let probed = tutti_plugin::server::probed::CLAP;
-
-            // CLAP reports aggregate audio port channel counts; carry them as a
-            // Per-bus channel counts, main bus first (e.g. [2, 1] = stereo main
-            // + mono sidechain). Falls back to a single aggregate main bus for
-            // plugins that don't implement the `audio-ports` extension.
-            // Per port, from `clap.surround`. `None` for a port the plugin
-            // will not answer for — no extension, or no `get_channel_map`.
-            let port_topology = |is_input: bool, count: usize| {
-                (0..count)
-                    .map(|i| loaded.surround_topology(is_input, i as u32))
-                    .collect()
-            };
-            let input_topology = port_topology(true, input_buses.len());
-            let output_topology = port_topology(false, output_buses.len());
-
-            let mut loaded_meta = LoadedPlugin {
-                inputs: input_buses,
-                outputs: output_buses,
-                input_topology,
-                output_topology,
-                latency_samples: Samples::ZERO,
-                // Both filled in after activation, below.
-                tail: PluginTail::Unknown,
-                features,
-                probed,
-            };
-
-            // Activate in the format the session will process. 64-bit only
-            // when it was asked for: the session's wire format follows its
-            // preference (f32 by default), not the plugin's capability.
-            let inner = if prefer_f64 && supports_f64 {
-                ClapInner::F64(loaded.activate::<f64>().map_err(|(_, e)| {
-                    BridgeError::LoadFailed {
-                        path: path.to_path_buf(),
-                        stage: LoadStage::Activation,
-                        reason: format!("activate failed: {e}"),
-                    }
-                })?)
-            } else {
-                ClapInner::F32(loaded.activate::<f32>().map_err(|(_, e)| {
-                    BridgeError::LoadFailed {
-                        path: path.to_path_buf(),
-                        stage: LoadStage::Activation,
-                        reason: format!("activate failed: {e}"),
-                    }
-                })?)
-            };
-
-            // The format actually activated, as VST3 reports it.
-            loaded_meta
-                .features
-                .set(Features::F64_AUDIO, matches!(inner, ClapInner::F64(_)));
-
-            // Latency and tail are queryable after activation.
-            loaded_meta.latency_samples = Samples(match &inner {
-                ClapInner::F32(i) => i.get_latency(),
-                ClapInner::F64(i) => i.get_latency(),
-            } as usize);
-            // A plugin without `clap.tail` has not answered: its tail is
-            // unknown, which is not the `None` a plugin answering 0 gives.
-            loaded_meta.tail = match &inner {
-                ClapInner::F32(i) => i.get_tail(),
-                ClapInner::F64(i) => i.get_tail(),
-            }
-            .map_or(PluginTail::Unknown, PluginTail::from_clap_samples);
-
-            Ok(Self {
-                inner,
-                meta: Meta {
-                    descriptor,
-                    loaded: loaded_meta,
-                },
-            })
+            Self::activate(Self::open(path, sample_rate, block_size)?, path, prefer_f64)
         }
 
         #[cfg(not(feature = "clap"))]
@@ -396,6 +278,157 @@ impl ClapInstance {
                 reason: "CLAP support not compiled (enable 'clap' feature)".to_string(),
             })
         }
+    }
+
+    /// Opens the plugin, without activating it: the instance, its descriptor
+    /// and the features that do not depend on its audio ports.
+    #[cfg(feature = "clap")]
+    fn open(path: &Path, sample_rate: f64, block_size: usize) -> Result<Opened> {
+        let resolved = tutti_plugin::server::resolve_bundle(path)?;
+        let library_path = if resolved != path {
+            Some(resolved.as_path())
+        } else {
+            None
+        };
+        let mut loaded =
+            ClapLoaded::load_with_library(path, library_path, sample_rate, block_size as u32)
+                .map_err(|e| BridgeError::LoadFailed {
+                    path: path.to_path_buf(),
+                    // Host and bridge LoadStage are now the same shared type
+                    // (tutti-plugin-types); pass the stage through unchanged.
+                    stage: match e {
+                        tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
+                        _ => LoadStage::Opening,
+                    },
+                    reason: e.to_string(),
+                })?;
+
+        if loaded.supports_thread_pool() {
+            loaded.set_thread_pool(thread_pool());
+        }
+
+        // Two questions, not one — see [`editor_bits`].
+        let embeddable = loaded.has_editor();
+        let EditorBits {
+            has_editor,
+            resize_allowed,
+            floating,
+        } = editor_bits(embeddable, loaded.has_floating_editor());
+        let editor_resizable = resize_allowed && loaded.editor_capabilities().resize.resizable;
+        let has_note_in = loaded.note_port_count(true) > 0;
+        let has_note_out = loaded.note_port_count(false) > 0;
+        let descriptor = clap_descriptor(loaded.info(), EditorPresence::measured(has_editor));
+
+        let mut features = Features::empty();
+        features.set(Features::MIDI_IN, has_note_in);
+        features.set(Features::MIDI_OUT, has_note_out);
+        features.set(Features::EDITOR, has_editor);
+        features.set(Features::EDITOR_RESIZE, editor_resizable);
+        features.set(Features::EDITOR_FLOATING, floating);
+        // CLAP always carries transport, sample-accurate param automation, and
+        // the full note-expression dimension set (see build_clap_transport /
+        // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
+        // (the CLAP spec defines no chord/scale events).
+        features.insert(Features::TRANSPORT);
+        features.insert(Features::PARAM_AUTOMATION);
+        features.set(Features::NOTE_EXPRESSION, has_note_in);
+        // `PRESET_LIST` stays out of `probed::CLAP` — enumeration lives in
+        // the preset-discovery extension, which is factory-level and
+        // unbound here — so only the load half is answered.
+        features.set(Features::PRESET_LOAD, loaded.supports_preset_load());
+
+        Ok(Opened {
+            loaded,
+            descriptor,
+            features,
+        })
+    }
+
+    /// Activates an opened plugin in the format the session will process, and
+    /// builds the metadata from the plugin as activated.
+    #[cfg(feature = "clap")]
+    fn activate(opened: Opened, path: &Path, prefer_f64: bool) -> Result<Self> {
+        let Opened {
+            loaded,
+            descriptor,
+            features,
+        } = opened;
+        let activation_failed = |e: tutti_clap_host::ClapError| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Activation,
+            reason: format!("activate failed: {e}"),
+        };
+
+        // 64-bit only when it was asked for: the session's wire format
+        // follows its preference (f32 by default), not the plugin's
+        // capability. Activation re-reads the 64-bit flag, so a plugin that
+        // dropped it since it was opened is refused here, and 32-bit is the
+        // clean fallback (the refused instance comes back untouched).
+        let inner = if prefer_f64 {
+            match loaded.activate::<f64>() {
+                Ok(active) => ClapInner::F64(active),
+                Err((loaded, tutti_clap_host::ClapError::NotSupported(_))) => ClapInner::F32(
+                    loaded
+                        .activate::<f32>()
+                        .map_err(|(_, e)| activation_failed(e))?,
+                ),
+                Err((_, e)) => return Err(activation_failed(e)),
+            }
+        } else {
+            ClapInner::F32(
+                loaded
+                    .activate::<f32>()
+                    .map_err(|(_, e)| activation_failed(e))?,
+            )
+        };
+
+        // Everything below is read off the activated instance, so it is what
+        // the plugin declares now.
+        let active_loaded: &ClapLoaded = match &inner {
+            ClapInner::F32(i) => i,
+            ClapInner::F64(i) => i,
+        };
+
+        // Real per-port bus layout (main + any sidechain/aux), and per port
+        // what `clap.surround` says (`None` for a port the plugin will not
+        // answer for: no extension, or no `get_channel_map`).
+        let input_buses = per_bus_channels(active_loaded, true);
+        let output_buses = per_bus_channels(active_loaded, false);
+        let port_topology = |is_input: bool, count: usize| {
+            (0..count)
+                .map(|i| active_loaded.surround_topology(is_input, i as u32))
+                .collect()
+        };
+        let input_topology = port_topology(true, input_buses.len());
+        let output_topology = port_topology(false, output_buses.len());
+
+        let mut features = features;
+        // The format actually activated, as VST3 reports it.
+        features.set(Features::F64_AUDIO, matches!(inner, ClapInner::F64(_)));
+
+        let loaded_meta = LoadedPlugin {
+            inputs: input_buses,
+            outputs: output_buses,
+            input_topology,
+            output_topology,
+            // Latency and tail are queryable after activation. A plugin
+            // without `clap.tail` has not answered: its tail is unknown,
+            // which is not the `None` a plugin answering 0 gives.
+            latency_samples: Samples(active_loaded.get_latency() as usize),
+            tail: active_loaded
+                .get_tail()
+                .map_or(PluginTail::Unknown, PluginTail::from_clap_samples),
+            features,
+            probed: tutti_plugin::server::probed::CLAP,
+        };
+
+        Ok(Self {
+            inner,
+            meta: Meta {
+                descriptor,
+                loaded: loaded_meta,
+            },
+        })
     }
 
     /// Returns true if the plugin requested a latency change since the last poll.
@@ -969,9 +1002,10 @@ mod tests {
     /// from it cut off every such plugin's decay. A plugin that does answer
     /// keeps its figure.
     ///
-    /// Mutation (run): in the load, map a missing extension to
-    /// `PluginTail::None` instead of `Unknown` → the first assertion sees
-    /// `None` → fails.
+    /// Mutation (run): in `ClapInstance::activate`, change
+    /// `.map_or(PluginTail::Unknown, PluginTail::from_clap_samples)` to
+    /// `.map_or(PluginTail::None, PluginTail::from_clap_samples)` → the first
+    /// assertion sees `None` → fails.
     #[test]
     fn a_plugin_without_the_tail_extension_has_an_unknown_tail() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -988,6 +1022,55 @@ mod tests {
                 tutti_clap_test_plugin::REPORTED_TAIL_SAMPLES as usize
             ))
         );
+    }
+
+    /// **The metadata follows the plugin's ports at activation, not at open.**
+    /// The buses were read before `activate` and never refreshed, so a plugin
+    /// that changed its layout in between was described by the old one.
+    ///
+    /// Mutation (run): read the input buses in `ClapInstance::open`
+    /// (`per_bus_channels(&loaded, true)`), carry them in `Opened`, and use
+    /// them in `ClapInstance::activate` → the one-port layout of the open →
+    /// the assertions fail.
+    #[test]
+    fn the_buses_are_those_the_plugin_has_at_activation() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let opened = ClapInstance::open(path, 44100.0, 512).expect("open");
+
+        let _layout = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
+        );
+        let instance = ClapInstance::activate(opened, path, false).expect("activate");
+
+        let loaded = instance.loaded();
+        assert_eq!(loaded.inputs.len(), 2, "stereo main + mono aux");
+        assert_eq!(loaded.total_inputs(), 3);
+        assert_eq!(loaded.total_outputs(), 3);
+    }
+
+    /// **A plugin that withdraws its 64-bit flags after it was opened loads as
+    /// 32-bit.** The session asked for 64-bit on the answer the plugin gave at
+    /// open; activation asks again, and the refusal is not a failed load.
+    ///
+    /// Mutation (run): in `ClapInstance::activate`, turn the
+    /// `ClapError::NotSupported` fallback arm into `return Err(..)` → the load
+    /// fails → the `expect` fails.
+    #[test]
+    fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
+        let opened = ClapInstance::open(path, 44100.0, 512).expect("open");
+        assert!(opened.loaded.supports_f64(), "fixture: flagged at open");
+
+        let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
+        let instance =
+            ClapInstance::activate(opened, path, true).expect("falls back to 32-bit audio");
+        assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
+        assert!(matches!(instance.inner, ClapInner::F32(_)));
     }
 
     #[test]

@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, Transport};
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
+use tutti_plugin::server::RING_SLOTS;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{NodeKey, SampleRate, Samples, Tail};
 
@@ -58,15 +59,20 @@ struct Run {
     declared: Samples,
     /// Blocks after warm-up.
     blocks: usize,
-    /// Of those, entirely silent.
-    silent: usize,
+    /// Of those, entirely silent (block indices).
+    silent: Vec<usize>,
     /// Of those, neither silent nor the input delayed by `declared`.
     wrong: Vec<usize>,
 }
 
+/// Callbacks a [`run_live`] burst makes back to back.
+const BURST: usize = 3;
+
 /// Render `blocks` callbacks of `quantum` frames at `rate`, paced to real
-/// time, through an engine whose graph is the ramp into the probe.
-fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
+/// time, through an engine whose graph is the ramp into the probe. With
+/// `burst_at`, the callbacks from that block (counted after warm-up) on run
+/// [`BURST`] in a row with no pause, as a device does when it catches up.
+fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -> Run {
     let probe = load_probe(rate);
     let inputs = probe.client.inputs();
     let prepare = Prepare::new(SampleRate(rate), Samples(quantum)).with_quantum(Samples(quantum));
@@ -92,7 +98,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
     let period = Duration::from_secs_f64(quantum as f64 / rate);
     let warm_up = 8 + declared.get().div_ceil(quantum);
     let mut buf = vec![0.0f32; quantum];
-    let (mut silent, mut wrong) = (0, Vec::new());
+    let (mut silent, mut wrong) = (Vec::new(), Vec::new());
     let mut next = Instant::now();
     for b in 0..warm_up + blocks {
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
@@ -100,7 +106,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
         if b >= warm_up {
             let first = (b * quantum) as u64;
             if buf.iter().all(|&s| s == 0.0) {
-                silent += 1;
+                silent.push(b - warm_up);
             } else if buf
                 .iter()
                 .enumerate()
@@ -108,6 +114,9 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
             {
                 wrong.push(b);
             }
+        }
+        if burst_at.is_some_and(|at| (warm_up + at..warm_up + at + BURST - 1).contains(&b)) {
+            continue;
         }
         // A device's callbacks stay a period apart: one that oversleeps (a
         // loaded machine) is not followed by a burst of catch-up calls, which
@@ -133,19 +142,19 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
 }
 
 fn assert_live(rate: f64, quantum: usize) {
-    let run = run_live(rate, quantum, 200);
+    let run = run_live(rate, quantum, 200, None);
     eprintln!(
         "{quantum}-frame callbacks: declared {:?}, {} of {} blocks silent, {} wrong",
         run.declared,
-        run.silent,
+        run.silent.len(),
         run.blocks,
         run.wrong.len()
     );
     assert!(
-        run.silent * 100 <= run.blocks,
+        run.silent.len() * 100 <= run.blocks,
         "{quantum}-frame callbacks: {} of {} blocks were silent — the server was \
          not given the device period to answer",
-        run.silent,
+        run.silent.len(),
         run.blocks
     );
     assert!(
@@ -192,4 +201,51 @@ fn a_441_frame_device_hears_its_plugin() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     assert_live(44_100.0, 441);
+}
+
+/// **A burst of catch-up callbacks costs blocks, never correctness.** The
+/// paced runs above no longer exercise back-to-back calls, which hand the
+/// server no period to answer in. The slab ring is `RING_SLOTS` (2) deep and a
+/// block more than `MAX_BEHIND` (`RING_SLOTS - 1`, 1) behind the newest is
+/// dropped by design, so a burst of [`BURST`] callbacks may lose blocks as
+/// silence, and the loss is bounded by the burst and its ring: the
+/// [`BURST`] callbacks plus `RING_SLOTS` more while the pipeline refills.
+/// Asserted: no block is ever neither silent nor the delayed input (a dropped
+/// block must not surface stale or torn data), and outside that window the
+/// stream is as sound as a paced run (at most 1% silent). How many blocks the
+/// burst itself drops depends on how fast the server answers, so that number
+/// is not asserted.
+///
+/// Mutation (run): in `run_live`, make the burst condition
+/// `burst_at.is_some_and(|at| b >= warm_up + at)` (the burst never ends: free
+/// running) → every block after it is silent → the second assertion fails.
+/// Not caught (tried): `is_stale` always false in `dispatch.rs`, and an empty
+/// window (two dropped blocks fit the 1% allowance). The mechanism of the drop
+/// is pinned by `dispatch`'s unit tests; this pins the outcome a device sees.
+#[test]
+fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
+    const QUANTUM: usize = 480;
+    const BLOCKS: usize = 200;
+    const BURST_AT: usize = 60;
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::LATENCY);
+
+    let run = run_live(48_000.0, QUANTUM, BLOCKS, Some(BURST_AT));
+
+    assert!(
+        run.wrong.is_empty(),
+        "blocks {:?} are neither silent nor the input delayed by {:?}: a block \
+         the ring dropped surfaced as data",
+        run.wrong,
+        run.declared
+    );
+    eprintln!("burst at {BURST_AT}: silent blocks {:?}", run.silent);
+    let window = BURST_AT..BURST_AT + BURST + RING_SLOTS;
+    let outside = run.silent.iter().filter(|&&b| !window.contains(&b)).count();
+    assert!(
+        outside * 100 <= BLOCKS,
+        "{outside} blocks outside the burst window {window:?} were silent \
+         (silent: {:?})",
+        run.silent
+    );
 }

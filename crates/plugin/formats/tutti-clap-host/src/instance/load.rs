@@ -29,8 +29,11 @@ impl ClapLoaded {
     /// were read at load and which the plugin can change (a
     /// `clap.audio-ports` rescan, see
     /// [`poll_audio_ports_rescan`](Self::poll_audio_ports_rescan)).
-    /// [`activate`](Self::activate) calls it, so a plugin brought back through
-    /// `deactivate` and `activate` is read afresh without asking.
+    /// [`activate`](Self::activate) and the in-place re-activation of a
+    /// rate or block-size change call it, so a plugin brought back through
+    /// either is read afresh without asking. A host calls it directly to
+    /// see the new layout while deactivated, before choosing what to activate
+    /// it as (a rescan request from the plugin is the occasion).
     ///
     /// # Errors
     /// [`ClapError::NotSupported`] while the plugin is active: CLAP lets it

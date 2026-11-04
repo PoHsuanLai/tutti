@@ -5385,9 +5385,15 @@ under both.
   re-reads its audio ports.** `ClapLoaded::get_tail` is `None` for a plugin
   without the extension, which the server loads as `PluginTail::Unknown` (a
   plugin that answers 0 is `None`). The CLAP host re-reads a plugin's audio
-  ports, the 64-bit flag included, at every `activate` and through
-  `ClapLoaded::rescan_audio_ports`. Pinned by `clap_ports_rescan` and
-  `a_plugin_without_the_tail_extension_has_an_unknown_tail`.
+  ports, the 64-bit flag included, at every `activate` (the in-place
+  re-activation of a rate or block-size change too, which re-sizes its
+  buffers from them) and through `ClapLoaded::rescan_audio_ports`. The server
+  derives the buses and the sample format from the activated instance, and
+  loads as 32-bit a plugin that withdrew its 64-bit flags since it was
+  opened. Pinned by `clap_ports_rescan`,
+  `a_plugin_without_the_tail_extension_has_an_unknown_tail`,
+  `the_buses_are_those_the_plugin_has_at_activation` and
+  `a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit`.
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,
   bevy-tutti's `EventSources`) own only the sources they put on a sink's

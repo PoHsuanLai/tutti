@@ -22,11 +22,19 @@ changes. Stretched voices and offline forks still render.
 
 - **`ClapLoaded::get_tail` returns `Option<u32>`**: `None` when the plugin has
   no `clap.tail`, which the server loads as `PluginTail::Unknown` where it
-  loaded `None` (no tail). Migration: `get_tail()` callers match the `Option`
-  (`.map_or(Tail::Unknown, Tail::from_clap_samples)`).
+  loaded `None` (no tail). **A plugin without the `clap.tail` extension now
+  has an unknown tail and is never parked (it runs every block), which costs
+  CPU; before, its decay could be cut off.** Migration: `get_tail()` callers
+  match the `Option` (`.map_or(Tail::Unknown, Tail::from_clap_samples)`).
 - **The CLAP host read the plugin's ports once, at load.** `ClapLoaded::activate`
-  now re-reads them (layout, channel totals, the 64-bit flag), and the new
-  `ClapLoaded::rescan_audio_ports` does it on demand while deactivated.
+  and the in-place re-activation of a rate or block-size change now re-read
+  them (layout, channel totals, the 64-bit flag) and size their buffers from
+  the result, and the new `ClapLoaded::rescan_audio_ports` does it on demand
+  while deactivated. A 64-bit instance whose plugin drops its flags across a
+  rate change is left deactivated with a `LoadFailed` activation error.
+- **The server describes a CLAP plugin as activated.** Its buses and 64-bit
+  format come from the post-activation state, and a plugin that withdrew its
+  64-bit flags since it was opened loads as 32-bit rather than failing.
 - **The `clap_live` test paced its callbacks with catch-up bursts** after any
   oversleep, so a loaded machine gave the server no period to answer and
   rendered runs of silence. It now keeps callbacks a period apart.

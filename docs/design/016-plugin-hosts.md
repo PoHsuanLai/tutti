@@ -36,8 +36,9 @@ Controller, and leaves each host crate an interpreter of effects over its FFI.
   and is tested against a `FakePlugin`. The client protocol becomes a transition
   function (§2.7). Discovery is `FileFacts` in and `classify` out (§2.8).
 - **Safety is folded in.** Both halves reach one plugin instance; the spec rule
-  that makes that legal is stated per format, and VST2, which has none, is
-  serialized by a wait-free gate (§2.2). A safe `Editor` API, `Send`/`Sync` argued
+  that makes that legal is stated per format. VST2 has none, so it follows the
+  host convention, and a per-plugin quirk serializes state loads by swapping in
+  a shadow instance (§2.2, §2.10). A safe `Editor` API, `Send`/`Sync` argued
   per type, a safe AU surface, panics caught in callbacks, no raw FFI in public
   modules (§2.9).
 
@@ -182,7 +183,8 @@ pub enum Event {
     Tick,
     /// What the shell found when it interpreted the last `Effect`.
     Replied(Reply),
-    /// The Processor is back from the realtime thread after a `Recall`.
+    /// The Processor is back from the realtime thread after a `Recall`, or, in
+    /// `SwapPhase::Fading`, the outgoing Processor of a swap.
     Returned,
     /// The process hosting the plugin is gone.
     Died,
@@ -193,6 +195,9 @@ pub enum HostOp {
     /// A new rate, block size, format or mode: deactivate and activate again.
     Reconfigure(Prepare),
     Deactivate,
+    /// Apply the state staged in the shell (`Staged` names it; the bytes never
+    /// enter the core). Direct on the Controller, or through a shadow (§2.10).
+    LoadState(Staged),
 }
 
 /// What the plugin called on the host.
@@ -226,6 +231,17 @@ pub enum Effect {
     Recall,
     /// Give the Processor to the realtime thread.
     Lend,
+    /// `Loaded::load_state` on the Controller, in place (§2.10).
+    ApplyLoad(Staged),
+    /// Load a second instance, apply the staged state to it, activate it at the
+    /// live `Prepare` (§2.10). Main thread.
+    LoadShadow(Staged),
+    /// Hand the shadow's Processor to the realtime thread as a swap: a `Lend`
+    /// while the seat is already `Lent`. The shadow's Controller becomes the
+    /// live one; the old one waits for the old Processor.
+    SwapTo,
+    /// The old Processor is back: `deactivate` the old pair and drop the plugin.
+    Retire,
     ReadLatency,
     ReadTail,
     ReadLayout,
@@ -250,6 +266,11 @@ pub enum Reply {
     Returned,
     /// `Recall`: the Processor is on the realtime thread; `Event::Returned` follows.
     Lent,
+    /// `LoadShadow`: the shadow is active and holds the state.
+    ShadowReady,
+    /// `LoadShadow`: the second instance would not load, take the state or
+    /// activate. The live pair is untouched.
+    ShadowFailed(PluginError),
     /// `CallDeactivate`: the plugin would not stop. Both halves are intact.
     Stuck(PluginError),
     Done,
@@ -265,6 +286,8 @@ pub enum Notice {
     Reloaded,
     Refused { rate: SampleRate, reason: PluginError },
     Stuck { reason: PluginError },
+    /// A state load did not take; the plugin is as it was.
+    LoadFailed { reason: PluginError },
 }
 
 /// What `activate` needs, and what a change of any field costs: a deactivate
@@ -277,7 +300,10 @@ pub struct Prepare {
 }
 
 pub struct State { /* stage, last Prepare, latency, tail, layout, pending requests,
-                     the plan parked behind a recall */ }
+                     the plan parked behind a recall, `shadow_loads`, `swap` */ }
+
+/// Where a shadow load is. `Idle` is every state but a load in flight.
+pub enum SwapPhase { Idle, Loading, Fading }
 
 pub enum Stage { Loaded, Active, Refused { rate: SampleRate }, Poisoned }
 
@@ -345,6 +371,21 @@ returns as `Event::Replied`. The loop is `Lifecycle::drive` (§2.3).
 10. `Replied(Stuck)` leaves the plugin `Active`, abandons the rest of the plan,
     emits `Notify(Stuck)` and `Lend`.
 
+11. `Op(LoadState(s))` emits `ApplyLoad(s)` unless the stage is `Active` and
+    `shadow_loads` is set (from `Loaded::shadow_loads`, §2.10), in which case it
+    emits `LoadShadow(s)` and moves to `SwapPhase::Loading`. A second `LoadState`
+    while `Loading` or `Fading` replaces the staged one and emits nothing: the
+    latest state wins, and it is loaded once the swap in flight has retired.
+12. `Replied(ShadowReady)` emits `SwapTo`, `ReadLatency`, `ReadTail`, and moves to
+    `Fading`; the reads answer the swapped-in instance exactly as rule 2 does,
+    so a state that changes latency reaches PDC through `Notify`.
+    `Replied(ShadowFailed(e))` emits `Notify(LoadFailed)` and returns to `Idle`.
+13. `Event::Returned` in `Fading` emits `Retire` and returns to `Idle`, not the
+    parked-plan tail of rule 9. A plan raised meanwhile (`Reconfigure`,
+    `Deactivate`, a restart bit) parks behind `Retire`, so a rejoin never sees
+    two pairs. `Retire` is answered `Done`, then the parked tail runs.
+14. `Died` in `Loading` or `Fading` poisons as rule 8 does.
+
 **Properties** (`proptest`, over arbitrary event sequences, no plugin loaded):
 
 - Every `Replied(Activated)` is answered, in the same step, by `ReadLatency`,
@@ -362,6 +403,11 @@ returns as `Event::Replied`. The loop is `Lifecycle::drive` (§2.3).
 - No `CallDeactivate` or `Rebuild` on an `Active` plugin is emitted unless a
   `Recall` earlier in the same plan was answered `Returned` or followed by
   `Event::Returned`, and none is emitted between `Replied(Lent)` and `Returned`.
+- With `shadow_loads` unset no sequence emits `LoadShadow`, `SwapTo` or
+  `Retire`. With it set, every `SwapTo` is followed by exactly one `Retire`, a
+  `SwapTo` is never emitted without a `ShadowReady` before it, no
+  `CallDeactivate` or `Rebuild` lies between a `SwapTo` and its `Retire`, and the
+  `Lend` of rule 2 is never emitted during a swap.
 - A parked plan runs once: `Returned` emits it, and a second `Returned` emits
   nothing.
 - A restart that ends in `Refused` emits `Notify(Refused)` once and no
@@ -432,6 +478,16 @@ pub trait Loaded: Control + Sized + Send {
 
     /// Rebuilds the instance from its load parameters (VST3 `kReloadComponent`).
     fn rebuild(self) -> Result<Self, Refused<Self>> { Ok(self) }
+
+    /// Whether state loads on this instance go through a shadow (§2.10). `false`
+    /// for every format but a VST2 plugin carrying `Vst2Quirks::serialize`.
+    fn shadow_loads(&self) -> bool { false }
+
+    /// Loads a second, unactivated instance from the controller's load
+    /// parameters (the ones `rebuild` uses). Main thread; may block as a load does.
+    fn load_shadow(controller: &Self::Controller) -> Result<Self, PluginError> {
+        Err(PluginError::Unsupported)
+    }
 }
 
 /// The realtime half. `Send` to move to the realtime thread, not `Sync`.
@@ -548,41 +604,37 @@ the realtime thread.
 |---|---|---|---|
 | CLAP | `start_processing`, `process`, `stop_processing`, `reset`, `params.flush` while active (`plugin.h:77-95`, `ext_params.h:303`) | `params.get_value`, `info`, text conversions, `state.save/load`, `gui`, `latency.get`, `tail.get`, `on_main_thread` (`[main-thread]`) | Every entry point carries a thread annotation, `[audio-thread]` or `[main-thread]`, and the two sets are the ones a host calls concurrently. The entries with `active` or `!active` in the annotation (`activate`, `deactivate`) are the rejoin and need both halves. |
 | VST3 | `IAudioProcessor::process` (`[processing-thread & Processing]`), `setProcessing` (UI or processing thread) | `IEditController` (`[UI-thread]`), `IComponent::getState/setState` (`[UI-thread & ... Processing]`, `ivstcomponent.h:199-203`), `IUnitInfo`, `IConnectionPoint::notify` | The SDK states the thread of each interface and lists `Processing` as a legal state for the state calls. The component/controller split exists for this: a plugin with a separate controller shares nothing between the two sets but messages, and a single-component plugin that implements both interface sets in one object is bound by the same annotations. Parameter edits do not call across: they reach the processor as `IParameterChanges` in `ProcessData`, from the `EditRing`. `setActive`, `setupProcessing` and `getLatencySamples` are `[UI-thread & Setup Done]` and run only while the Processor is held. |
-| VST2 | `process` / `processReplacing`, `processDoubleReplacing`, the `effStartProcess` / `effStopProcess` pair | `getParameter`, parameter display, the editor opcodes (`effEditOpen`, `effEditIdle`, `effEditGetRect`, `effEditClose`) | Not the spec: VST2 has none. See below. |
+| VST2 | `process` / `processReplacing`, `processDoubleReplacing`, the `effStartProcess` / `effStopProcess` pair | The whole dispatcher but the rejoin opcodes: chunks, programs, parameter get, set and display, the editor opcodes | Not the spec: VST2 has none. The host convention (below). |
 | AU | `AudioUnitRender`, `MusicDeviceMIDIEvent` from the render thread (`MusicDevice.h:195-200`) | `AudioUnitGetParameter`, `AudioUnitSetParameter`, `AudioUnitGetProperty` / `SetProperty` (class info, latency, tail), the view | `AudioUnitRender` is the one realtime-safe call; parameters are documented as callable from any thread; property access beside render is how AUv2 and AUv3 are hosted (`AUBase` guards properties, never the render path). `AudioUnitInitialize`, `AudioUnitUninitialize` and stream-format changes are the rejoin. |
 
 **VST2 gives no guarantee, and the host does not pretend one.** The SDK says the
 dispatcher is called from the UI thread and `process` from the audio thread, that
 `setParameter` and `getParameter` may be called from either, and nothing about any
-other opcode against `process`. Plugins in practice race `effGetChunk`,
-`effSetChunk` and program changes against `process`, because they mutate the same
-buffers; the well-known crashes live there. The split does not remove that, so
-`Vst2Controller` separates what is concurrent by the SDK's text or by a GUI that
-could not otherwise work from everything else:
+other opcode against `process`. What every major DAW does, and what VST2 plugins
+are written and tested against, is the Controller's thread rule: dispatcher calls
+on the main thread, concurrent with `process` on the audio thread. That
+convention is the de facto contract, not a specified one, and a plugin that
+breaks it misbehaves in every host. `Vst2Controller` follows it:
 
-- **Concurrent set**, no gate: `getParameter` and the parameter display and name
-  opcodes, and the editor opcodes (an editor open beside a running plugin is the
-  normal case, and no VST2 editor works otherwise). Parameter writes go through
-  the `EditRing` and `process` applies them, as in the other three formats.
-- **Exclusive set**, everything else on the dispatcher: chunks, programs, speaker
-  arrangement, `effCanDo`. A default-deny list: a new opcode is exclusive until it
-  is argued into the concurrent set.
-- **A `ProcessGate`, three states** (`Idle`, `Processing`, `Control`) in one atomic.
-  `Vst2Processor::process` does `Idle -> Processing` with one compare-exchange; if
-  it fails the Controller holds the gate, and the block is skipped (outputs
-  silence, one counter incremented) rather than waited for. It stores `Idle` after
-  the block. The Controller does `Idle -> Control` for an exclusive call, retrying
-  for at most two block periods, and returns `Busy` if the Processor never
-  yielded the gate. The audio thread never takes a lock and never waits; the
-  control side waits, bounded. The price is that an exclusive call made during
-  playback can drop the blocks it spans, and the Controller's doc says so. The
-  gate is new lock-free structure in `tutti-types` with a loom model beside the
-  others (a block and a control call never overlap; the block never waits), and
-  a mutation record.
-- **Rejected: no split for VST2.** The server's realtime thread would then
-  special-case one format, and `Lifecycle` would grow a second shape. The split by
-  ownership has the same shape for all four; the gate is what the VST2 Processor
-  does inside `process`.
+- **Concurrent, the default.** Every dispatcher call runs on the Controller
+  beside a running `process`: `effGetChunk` / `effSetChunk`, program get, set and
+  name, parameter display and name, `getParameter` / `setParameter`, and the
+  editor opcodes. There is no gate, no dropped block and no VST2 case in
+  `Processor`, `Controller` or `Lifecycle`.
+- **The rejoin.** Only what the plugin cannot take while processing:
+  `effSetSampleRate`, `effSetBlockSize`, `effSetProcessPrecision`,
+  `effSetSpeakerArrangement` and `effMainsChanged`. They are `Prepare` fields or
+  `suspend` / `resume` themselves, so they are `deactivate` then `activate`, with
+  the Processor recalled first (rule 9).
+- **A per-plugin quirk, off by default** (§2.10). A plugin that races state loads
+  against `process` can be marked, by the user or from a known-plugin list; its
+  cheap calls then run at the head of a block and its state loads go through a
+  shadow instance. The convention stays the default because the quirk costs an
+  instance per load and resets the plugin's tails.
+- **Rejected: a gate that skips blocks during exclusive calls, and no split for
+  VST2.** The first drops audible blocks on every program change; the second makes
+  the server's realtime thread special-case one format and grows `Lifecycle` a
+  second shape.
 
 **The invariant the unsafe code relies on.** Each host crate has one private
 `Shell` per activation, `unsafe impl Sync`, whose `// SAFETY:` says:
@@ -594,9 +646,11 @@ could not otherwise work from everything else:
    Controller only the main-side column. Every method on either takes `&mut self`,
    so each column runs on one thread at a time.
 3. *Only concurrent-legal entries run on the Controller while the Processor is
-   lent.* Every other entry is either the rejoin (reachable only with both halves
-   in hand: `Loaded::activate`, `deactivate`, `rebuild`) or, on VST2, behind the
-   `ProcessGate`.
+   lent.* Every other entry is the rejoin, reachable only with both halves in
+   hand (`Loaded::activate`, `deactivate`, `rebuild`). For VST2 "concurrent-legal"
+   is the host convention above, not a rule the format states: that clause is
+   argued from what hosts do, and a `Vst2Quirks::serialize` plugin keeps even
+   that off the live instance (§2.10).
 4. *The plugin is destroyed on the main thread only.* By dropping the `Loaded` that
    `deactivate` returned, or the Controller, whichever ends the shell's use. A
    dropped Processor releases its `Arc` and calls nothing in the plugin. If the
@@ -610,8 +664,8 @@ could not otherwise work from everything else:
 
 `unsafe` stays in the host crates: the shell, the FFI calls and the `unsafe impl
 Send` and `Sync`, each with a `// SAFETY:` naming the clause above it leans on.
-The traits, `Lifecycle` and the pure core add none, and `Handoff`, `EditRing` and
-`ProcessGate` carry their own in `tutti-types` under loom.
+The traits, `Lifecycle` and the pure core add none, and `Handoff` and
+`EditRing` carry their own in `tutti-types` under loom.
 
 ### 2.3 `Lifecycle`
 
@@ -619,7 +673,7 @@ The traits, `Lifecycle` and the pure core add none, and `Handoff`, `EditRing` an
 pub enum Lifecycle<L: Loaded> {
     Loaded(L),
     /// The Controller is here; the Processor is held or lent.
-    Active { controller: L::Controller, seat: Seat<L::Processor> },
+    Active { controller: L::Controller, seat: Seat<L::Processor>, swap: Swap<L> },
     /// The plugin refused `rate`; it is loaded, and renders nothing.
     Refused { plugin: L, rate: SampleRate },
     /// A transition failed and left no plugin, or the process died.
@@ -670,6 +724,11 @@ object-safe, not an erased plugin; the typestate stays in the enum.
 - `Lend`: `Held(p)` goes to the hand and the seat becomes `Lent`.
 - `Recall`: `Held` replies `Returned`. `Lent` asks the realtime thread for it and
   replies `Lent`.
+- `ApplyLoad`: `Control::load_state` on the Controller, in place. `LoadShadow`,
+  `SwapTo` and `Retire` move a `Swap<L>` (§2.10): `LoadShadow` fills `Ready`,
+  `SwapTo` exchanges the Controllers and lends the shadow's Processor over the
+  `Lent` seat, `Retire` runs `L::deactivate` on the old pair and drops it. They
+  are never emitted for a plugin whose `shadow_loads` is false.
 - A panic out of a transition leaves `Poisoned`, not a half-moved plugin.
 - The reads (`ReadLatency`, `ReadTail`, `ReadLayout`) go to the Controller and
   reply `NotActive` when the stage is not `Active`, which is CLAP's rule that
@@ -799,11 +858,15 @@ thread holds the Processor, and it holds nothing else of the plugin.
 into an `EditRing`, a bounded single-producer single-consumer ring in
 `tutti-types` (new lock-free structure: loom model and mutation record, like
 `RequestWord`). The Processor drains it at the head of each block into the
-format's own channel: CLAP `PARAM_VALUE` events, VST3 `IParameterChanges`, VST2
-`setParameter`, AU `AudioUnitSetParameter`. A full ring refuses the edit and counts it; the
-Controller keeps the latest value per parameter and retries on its next tick. Nothing on the audio thread allocates or waits,
-and no format's parameter write is called from the main thread while the
-Processor runs, so none needs an argument for that.
+format's own channel: CLAP `PARAM_VALUE` events, VST3 `IParameterChanges`, AU
+`AudioUnitSetParameter`, and for a VST2 plugin carrying the quirk `setParameter`.
+(A VST2 plugin without it takes `setParameter` on the Controller, which the SDK
+allows from either thread, and the drain is idle.) A full ring refuses the edit and counts it; the
+Controller keeps the latest value per parameter and retries on its next tick. Nothing on the audio thread allocates or waits.
+Apart from VST2 without the quirk, no format's parameter write is called from the
+main thread while the Processor runs. The ring's entry is an enum, `Edit::Param`
+or `Edit::Cheap(CheapCall)`, a fixed-size `Copy` value, so the quirk's calls
+(§2.10) share the ring and its loom model.
 
 **The server's main and realtime threads.** The plugin server renders and
 services requests on one thread today. The split is the types' own: the main
@@ -833,6 +896,12 @@ mutation record).
   never blocks on it either, so a plugin hung inside `process` keeps the main
   thread serving requests, and the server's existing stall detection turns the
   hang into `Event::Died`, which poisons and drops the parked plan.
+- **Swap.** A shadow's Processor reaches the realtime thread through the same
+  slot while the first is still there (`Lend` with the seat `Lent`); `Rt` sees it
+  is holding one and runs both through a fade (§2.10), then returns the old one
+  through the slot as a recall does. The slot is one move per direction, so the
+  loom model adds one case: an offer taken while a Processor is held, and the
+  old one returned exactly once.
 - **A rate change or restart** is therefore: `Recall`, the realtime thread returns
   the Processor (one block of latency), `CallDeactivate` rejoins, `CallActivate`
   splits again, the reads run, `Lend`. The client's rate-change reply is sent when
@@ -964,6 +1033,120 @@ copy (fp-edge F5, F6).
   and `as_raw` / `as_raw_mut` are `pub(crate)`. `raw_unit` is `pub(crate)` in
   `tutti-au-host`.
 
+### 2.10 The VST2 quirk: serialized exclusive calls
+
+`Vst2Quirks`, in `tutti-vst2-host`, is a value on the load path
+(`Vst2Loaded::load(path, Vst2Quirks)`), default all off:
+
+```rust
+pub struct Vst2Quirks {
+    /// Cheap exclusive calls run at the head of a block; state loads go through
+    /// a shadow instance.
+    pub serialize: bool,
+    /// `effSetProgram` also goes through the shadow, for a plugin that loads
+    /// samples or allocates on a program change. Meaningful only with `serialize`.
+    pub heavy_programs: bool,
+}
+```
+
+The user sets it per plugin, or `Vst2Quirks::known(unique_id)` does from a table
+keyed by the plugin's VST2 unique ID. The table ships empty; an entry needs a
+reproduction that crashes or corrupts in a host that follows the convention.
+`Vst2Loaded::shadow_loads` returns `quirks.serialize`. Nothing else in the
+traits, `Lifecycle` or the core names VST2; the core sees a `bool` in `State`.
+
+**Cheap calls: the `EditRing`.** `Edit::Cheap(CheapCall)` carries opcodes whose
+whole payload is a scalar or a short fixed string and whose effect is a table
+index or a flag, so the plugin has nothing to allocate or wait on:
+
+| Opcode | Why it is cheap |
+|---|---|
+| `effSetProgram` | an index into the plugin's in-memory program table (unless `heavy_programs`) |
+| `effSetProgramName` | at most `kVstMaxProgNameLen` (24) bytes copied inline into the entry |
+| `effBeginSetProgram`, `effEndSetProgram` | no payload; they bracket `effSetProgram` |
+| `effSetBypass` | one int |
+| `setParameter` | one float; the ordinary parameter edit |
+
+The Processor makes each call at the head of the next block, before `process`,
+from the thread that is already calling into the plugin, so the plugin sees no
+concurrency. The list is default-deny: a new opcode is not cheap until it is
+argued onto it, and nothing that takes a pointer to a buffer, loads a file or
+resizes a table (`effSetChunk`, `effBeginLoadBank`, `effBeginLoadProgram`) is
+on it. Opcodes on neither list (editor, display, `effCanDo`) stay concurrent
+as in the default. Reads (`getParameter`, `effGetProgram`,
+`effGetProgramName`) need a reply and stay on the Controller.
+
+**State loads: a shadow.** `effSetChunk` (bank and program) is a
+`HostOp::LoadState`. Under `shadow_loads` the core plans it as rules 11 to 14:
+
+1. `LoadShadow(s)`: `apply` calls `L::load_shadow(&controller)`, then
+   `load_state(s)` on the new instance while it is `Loaded`, then `activate` at
+   the live `Prepare`, and parks the new `(Processor, Controller)` in
+   `Active { swap: Swap::Ready { .. } }`. All of it is on the main thread, off the
+   audio thread, which keeps rendering the old instance. Any failure drops the
+   shadow, replies `ShadowFailed`, and leaves the live pair as it was. With
+   `heavy_programs`, `effSetProgram(i)` is staged as a chunk the same way: the
+   shadow takes the live `effGetChunk` first, then the program index.
+2. `SwapTo`: `apply` replays the parameter edits made since `LoadShadow` began
+   onto the shadow's ring (they are newer than the state), moves the shadow's
+   Controller into `controller` and the old one into `Swap::Retiring`, and does
+   `Lend` of the shadow's Processor. The seat is `Lent`, so the Handoff slot
+   carries a swap. From here `Control` calls reach the new instance.
+3. The realtime thread, at the head of the next block, takes the offer,
+   crossfades, and returns the old Processor through the slot.
+4. `Event::Returned` in `Fading` emits `Retire`: `apply` rejoins the old pair
+   with `L::deactivate`, which gives back the old `Loaded`, and drops it on the
+   main thread.
+
+```rust
+pub enum Swap<L: Loaded> {
+    Idle,
+    Ready { processor: L::Processor, controller: L::Controller },
+    /// Between `SwapTo` and `Retire`: the old half waiting for its Processor.
+    Retiring { controller: L::Controller },
+}
+// Lifecycle::Active { controller, seat, swap: Swap<L> }
+```
+
+The swap is an ordinary handoff: `LoadShadow` is `activate` on a second
+`Loaded`, `SwapTo` is `Lend`, `Retire` is `deactivate`. No new trait method
+beyond `shadow_loads` and `load_shadow` is needed, and both default to refusing.
+The quirk is a `bool` the core reads and an `Effect` pair it plans.
+
+**The crossfade.** The graph already has the machinery in `tutti-graph`:
+`CrossfadeCurve::gains` (re-exported by `tutti-core`, which `tutti-plugin-server`
+depends on) and `Fade`. `Graph::crossfade_plugin` in `tutti-session` swaps a
+whole `PluginClient`, which means a second server process; it does not reach one
+plugin's Processors inside a server, and a swap through it would lose the
+node's identity and cost IPC and a process per load. The swap therefore reuses the
+curve and not the node-level swap. `Rt`, holding old and new Processors, mixes
+`old * g_out + new * g_in` per frame with `CrossfadeCurve::EqualPower` over
+5 ms (`Seconds`, converted with `Seconds::to_samples`). Equal power, because the
+two instances' tails differ after the reset and sum as independent signals. The
+fade table and the old instance's output scratch (`max_block` frames per channel)
+are built on the main thread per `Prepare` and ride in the offer, so the audio
+thread allocates nothing. A fade longer than a block runs over several; both
+Processors receive the block's input and events until it ends, and then only the
+new one does.
+
+**Costs.** One extra instance of the plugin exists from `LoadShadow` until
+`Retire`: memory, a second `load` (which for a sample-based plugin can take
+seconds, on the main thread, with the old instance still sounding), and CPU
+for both Processors during the fade. The old instance's internal tails (reverb,
+delay lines, filter state, ringing voices) are not carried to the new one; they
+fade out within the 5 ms, and the new instance starts from silence. If the new
+state reports a different latency the read after `SwapTo` updates PDC through
+`Notice::LatencyChanged`, and the fade itself is not latency-aligned.
+
+**`effGetChunk` under the quirk stays on the Controller, concurrent.** Not on the
+ring: a chunk's size is the plugin's, `getChunk` commonly allocates and
+serializes under locks, and the ring runs on the audio thread. Not from a shadow:
+a shadow has only the state it was handed, so it cannot produce the live one.
+The remaining race, a torn read against `process`, produces a bad save, not
+a crashed host or a corrupted plugin, which is what the quirk exists to prevent.
+Rejected: recalling the Processor for the call, which is the dropped-block gate
+again.
+
 ## 3. What each format maps to
 
 Existing items cite their file and line. "New" means it does not exist today.
@@ -1010,21 +1193,22 @@ and which toggles `suspend` / `resume` (`instance.rs:441,449`). **It splits**:
 `Vst2Loaded` is the instance after `effOpen`, `effSetSampleRate`,
 `effSetBlockSize` and `effSetProcessPrecision` and before the first
 `effMainsChanged(1)` (parameters, programs, state, editor, `metadata`).
-`activate` is `resume` and splits it: `Vst2Processor` holds the process scratch,
-the `ProcessGate` and `process`; `Vst2Controller` is the control surface, whose
-exclusive opcodes go through the gate (§2.2). `deactivate` is `suspend`; the existing
+`activate` is `resume` and splits it: `Vst2Processor` holds the process scratch
+and `process`; `Vst2Controller` is the control surface, whose dispatcher calls
+run concurrently with `process` by the host convention (§2.2), or through the
+ring and a shadow under `Vst2Quirks::serialize` (§2.10). `deactivate` is `suspend`; the existing
 `suspend_for_reconfigure` bracket (`instance.rs:495`) is what `Reconfigure` plans.
 
 | Today | Becomes |
 |---|---|
 | `Vst2Instance` (`instance.rs:155`) | `Vst2Loaded`, `Vst2Processor` (holds the `RenderScratch` the server loader keeps today) and `Vst2Controller`, all new; the module-private fields move with the state they serve |
-| `Vst2Instance::load(&Path, f64, usize)`, `load_with_precision` | `Vst2Loaded::load(path)`; precision and rate are `Prepare` |
+| `Vst2Instance::load(&Path, f64, usize)`, `load_with_precision` | `Vst2Loaded::load(path, Vst2Quirks)`; precision and rate are `Prepare` |
 | `suspend`, `resume`, `suspend_for_reconfigure`, `set_sample_rate`, `set_block_size`, `reset_processing_state` | `activate` / `deactivate`; the rest are deleted |
 | `process_f32(&mut self, inputs, outputs, num_samples, &Vst2ProcessContext, &mut RenderScratch)`, `process_f64` (`process.rs:51,102`) | `Processor::process(&mut PluginIo)` |
 | `latency() -> Samples` (`instance.rs:619`), the tail in `poll_changes` (`:655`) | `Controller::latency`, `Controller::tail` |
 | `get_parameter(i32) -> Option<f32>`, `get_parameter_list` (`parameters.rs`) | `parameter(ParamId) -> Option<Normalized>`, `parameters`; the `i32` index converts here |
-| `get_state`, `set_state(&self, ..)` (`state.rs:106,168`) | `save_state`, `load_state(&mut self, ..)`, exclusive-set calls through the gate |
-| `unsafe impl Send + Sync for Vst2Instance` (`instance.rs:196-197`) | `Send` only, on each of the three types; the shell's `Sync` rests on §2.2's invariant and the gate |
+| `get_state`, `set_state(&self, ..)` (`state.rs:106,168`) | `save_state`, `load_state(&mut self, ..)`; direct on the Controller, or a shadow under the quirk |
+| `unsafe impl Send + Sync for Vst2Instance` (`instance.rs:196-197`) | `Send` only, on each of the three types; the shell's `Sync` rests on §2.2's invariant, which for VST2 is the host convention |
 | `poll_changes`, `Vst2Changes` (`instance.rs:655,47`), server `Vst2Instance` (`loaders/vst2.rs:26`) | the host's `audioMasterIOChanged` is a `RequestBit`; the loader is deleted |
 
 ### 3.4 AU (`tutti-au-host`)
@@ -1091,10 +1275,14 @@ makes it.
 - `RequestWord::raise` is a single `fetch_or` and is the whole of a host
   callback's work on the audio thread, where a plugin calls one from inside
   `process`. It never allocates or locks. The `EditRing` drain, the `Handoff` poll
-  and (VST2) the `ProcessGate` compare-exchange are atomic loads and exchanges
-  with no retry loop: a lost gate costs the block, not a wait.
+  are atomic loads and exchanges with no retry loop. Under the VST2 quirk the
+  drain also makes the cheap calls (§2.10), which are table writes by contract; a
+  plugin that blocks in one is a plugin that blocks in `setParameter`, and goes
+  on `heavy_programs` or off the list.
 - The Processor crosses threads only at a block boundary, by a move through the
-  `Handoff`. The main thread never waits for it; the audio thread never waits for
+  `Handoff`. A swap is two moves, the shadow in and the old one out; the fade runs
+  on tables and scratch allocated on the main thread, and the old Processor is
+  retired (`deactivate`, drop) on the main thread, never on the audio thread. The main thread never waits for it; the audio thread never waits for
   the main thread. A rejoin (`CallDeactivate`, `Rebuild`) never overlaps a block,
   because it runs only after `Event::Returned`.
 - Nothing the audio thread reads is published through the core. If a later step
@@ -1135,18 +1323,36 @@ makes it.
   `clap_crash_recovery` and `real_stall_tests`, `tutti-session`'s `plugin` suite
   and `bevy-tutti`'s plugin tests still need `cargo build -p
   tutti-plugin-server` first.
-- **`RequestWord`, `Handoff`, `EditRing` and `ProcessGate`** each have a loom
+- **`RequestWord`, `Handoff` and `EditRing`** each have a loom
   model that runs the shipped code and a mutation record (`Handoff`: a Processor
-  is never in both slots and never lost; `ProcessGate`: a block and a control call
-  never overlap and the block side never waits); threaded stress tests stay out
-  of miri.
+  is never in both slots and never lost, and an offer taken while one is held
+  returns the old one exactly once; `EditRing`: an edit is applied once, in
+  order); threaded stress tests stay out of miri.
+- **The quirk, against a `FakePlugin` configured with it** (`shadow_loads` true,
+  `load_shadow` building a second `FakeLoaded` that logs its calls). A
+  `load_state` on an active plugin reaches the live `FakeController` zero times
+  and the shadow once, before its `activate`; the realtime thread then renders
+  through the swap, the live pair's `deactivate` runs once after it, and no block
+  between the call and the retire is dropped (every `process` call returns
+  `Ok` with the block's frames written, the call log shows one `process` per
+  block throughout). A second `load_state` during the fade loads once after the
+  retire. A failing `load_shadow` leaves the live pair, sends one
+  `Notice::LoadFailed`, and drops no block. The fade is asserted by invariant, not
+  by a render comparison: gains sum to one in power at every frame, and the output
+  equals the old output before the offer and the new one after the fade. With the
+  quirk off, the same `load_state` reaches the live Controller and `load_shadow`
+  is never called. Mutation: skip `Retire` and the retire assertion fails; load
+  on the live Controller and the zero-calls assertion fails; drop a block during
+  the swap and the block count fails. The cheap calls are tested the same way:
+  `effSetProgram` is seen only between blocks, on the Processor's thread.
 - **The split against a real plugin.** One live test per format runs `process` on
   one thread while another calls the Controller's main-side set (parameter reads,
   state save, editor calls), under the format's own sanitizer-free harness, and a
   gated run puts the Processor's participants inside `assert_no_alloc`. The test
   asserts the call sequence and the absence of a crash, not a render; the VST2
-  case also asserts that an exclusive call during playback drops at most the
-  blocks it spans.
+  case runs the dispatcher calls beside `process` as the convention has it, and a
+  second run with `Vst2Quirks::serialize` asserts the state load went through the
+  shadow and the call log shows no overlap on the live instance.
 - **Discovery** classification and parsing are in-memory table tests; the
   directory-walking scanner tests that test the walk stay, with temp dirs.
 - **The client transition** is table-driven over `Msg` sequences; the hostile-peer
@@ -1170,7 +1376,7 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    the impls plus a probe, and `Lifecycle::drive` replaces `service_requests` and
    `poll_restart`.
 3. **The VST2 and AU impls.** The `Vst2Loaded` / `Vst2Processor` / `Vst2Controller`
-   split and its `ProcessGate` with loom model; the `AuProcessor` / `AuController`
+   split, the dispatcher on the Controller by the host convention; the `AuProcessor` / `AuController`
    split; AU's façade
    deleted and its editor and SysEx state moved; `AuComponentRef` and the borrowed
    listener, since AU's `activate` takes a safe component; the VST2 and AU loaders
@@ -1190,7 +1396,12 @@ Each step is reviewable in one sitting and leaves `just ci` green.
 8. **The server's main and realtime threads.** The `Handoff` and its loom model;
    `Render<AnyProcessor>` moves to the realtime thread and the `Controller` and
    `Lifecycle::drive` run on a main thread, with the recall posted through the
-   existing request loop (§2.6).
+   existing request loop (§2.6). The `Handoff`'s swap case and its loom case
+   land here.
+9. **The VST2 quirk.** `Vst2Quirks`, `Edit::Cheap`, `Loaded::shadow_loads` and
+   `load_shadow`, `HostOp::LoadState` with `LoadShadow`, `SwapTo`, `Retire` and
+   rules 11 to 14 with their properties, `Swap`, the `Rt` fade, and the quirk test
+   of §6. After step 8, since the swap needs the realtime thread's handoff.
 
 The renames of §2.5 land with step 2, 3 and 5 for the crates each touches. The
 API carries no compatibility commitment: each step changes the signature it

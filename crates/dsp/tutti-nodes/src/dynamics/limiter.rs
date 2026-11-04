@@ -353,6 +353,13 @@ impl LimiterNode {
     }
 }
 
+/// The linked-peak fold: `max` returns the other operand for a NaN, so a NaN
+/// sample never reaches the peak.
+#[inline]
+fn fold_peak(peak: f32, x: f32) -> f32 {
+    peak.max(x.abs())
+}
+
 impl Node for LimiterNode {
     /// `channels` in and out, ceiling, threshold and release modulatable
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
@@ -415,7 +422,7 @@ impl Node for LimiterNode {
             gains.fill(0.0);
             for c in 0..self.channels {
                 for (p, &x) in gains.iter_mut().zip(&inputs.get(c)[start..end]) {
-                    *p = p.max(x.abs());
+                    *p = fold_peak(*p, x);
                 }
             }
 
@@ -1595,5 +1602,44 @@ mod tests {
             );
         }
         assert!(lim.envelope.is_finite());
+    }
+
+    /// A NaN fed to the peak fold yields a non-NaN peak. Separate from the
+    /// `LimiterCurve::gain` guard, which has its own test in `utils.rs`.
+    ///
+    /// Mutation (run): `if x.is_nan() { x } else { peak.max(x.abs()) }` in
+    /// `fold_peak` -> the peak is NaN -> fails.
+    #[test]
+    fn a_nan_fed_to_the_peak_fold_is_ignored() {
+        assert_eq!(fold_peak(0.5, f32::NAN), 0.5);
+        assert_eq!(fold_peak(0.0, f32::NAN), 0.0);
+        assert_eq!(fold_peak(0.5, -0.75), 0.75);
+    }
+
+    /// Silence, a burst, silence, at thresholds so low that `10^((ceiling -
+    /// threshold)/20)` overflows `f32` without the clamp in
+    /// `LimiterCurve::new`: `0 * inf` would put a NaN on every silent sample.
+    ///
+    /// Mutation (run): in `LimiterCurve::new`, `gap = ceiling - threshold`
+    /// (drop the `.min(MAX_GAP_DB)`) -> `below` is inf at -inf and -800 dB ->
+    /// NaN output -> fails.
+    #[test]
+    fn a_very_low_threshold_never_produces_a_nan() {
+        for threshold in [f32::NEG_INFINITY, -800.0, -150.0] {
+            let mut lim = prepared_at(
+                LimiterNode::new(Db(threshold), Db(-6.0)).with_release(0.001),
+                RATE_44K,
+            );
+            let mut x = vec![0.0f32; 1024];
+            x[300..400].fill(2.0);
+            x[400..500].fill(-0.001);
+            let mut output = Vec::new();
+            for _ in 0..4 {
+                output.extend(drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0));
+            }
+            for (i, &y) in output.iter().enumerate() {
+                assert!(y.is_finite(), "threshold {threshold}: frame {i} is {y}");
+            }
+        }
     }
 }

@@ -16,14 +16,55 @@ threshold the gain is `10^(cap/20) * threshold_lin / peak` (the dB form
 computed once per block, so a frame is a compare and a divide. The release
 smoothing was already linear (`envelope += coeff * (target - envelope)` on
 the gain) and is untouched, as is the path with a fed threshold or ceiling.
-Gains differ from the old ones by at most 5e-7 relative (a few f32 ulps; over
-a million random peaks, more than half of the gains differ in the last bits), and the old figure carried the larger rounding of `log10` and
-`powf`. Only a threshold under -144 dB can change a result by more than that:
-silence was pinned to a -144 dB floor in the dB form and is now simply under
-the threshold. The golden digest in `bevy-tutti`'s `scene_render` was
-re-recorded. `LimiterCurve::gain` now takes the linear peak, not dB.
+Gains differ from the old ones by about 1e-6 relative (up to 5e-6 at extreme
+peaks), which is main's dB rounding in `log10` and `powf`; the linear form is
+the more accurate against an f64 reference. Only a threshold under -144 dB
+changes more: main pinned an exact-zero peak at -144 dB, which sent silence
+down the "over" branch, and now, for thresholds below -144 dB, exact digital
+silence takes the `below` boost `10^((ceiling - threshold)/20)` (at exactly
+-144 dB main already did). Real (nonzero) signals are unaffected. That boost is
+kept finite by clamping the `ceiling - threshold` gap to 760 dB and the
+threshold amplitude to `f32::MIN_POSITIVE`, so a threshold of -inf or under
+-770 dB gives no NaN; no threshold at or above -144 dB is affected. The golden
+digest in `bevy-tutti`'s `scene_render` was re-recorded.
+`LimiterCurve::gain` now takes the linear peak, not dB.
 Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
 64 frames 1.86 to 1.03 us, 1024 frames 30.0 to 12.1 us.
+
+### Changed — `GateNode` compares its threshold in the linear domain; boundary decisions can move
+
+**`GateNode` no longer takes a `log10` of the sidechain level every sample.**
+The block's threshold is converted once per block with `Db::to_amplitude` and
+the level is compared against it as an amplitude. A silent level is still pinned
+at `Db::FLOOR`, so a threshold at or under -144 dB opens on silence as before.
+The range's linear gain was already converted once per block; that is unchanged.
+A threshold fed per sample (the modulated path) still compares in dB, because it
+changes every frame. `NaN` on the detector still reads as closed and leaves the
+state finite (a test pins it).
+Measured on `node_kernels`' gate cases, `taskset -c 0`, interleaved base/branch
+runs, median of 3 (ns per block):
+
+| case | main | branch | change |
+| --- | --- | --- | --- |
+| `gate/2/64` | 800 | 385 | -52% |
+| `gate/2/1024` | 12180 | 3941 | -68% |
+| `gate/6/64` | 888 | 493 | -45% |
+| `gate/6/1024` | 12447 | 5504 | -56% |
+| `gate/2_fed/64` | 777 | 794 | +2% (noise; path unchanged) |
+| `gate/2_fed/1024` | 10806 | 10950 | +1% (noise; path unchanged) |
+
+**The output bits change, but only for a level within rounding of the
+threshold.** `20*log10(a) >= t` and `a >= 10^(t/20)` round differently, so a
+sample whose level sits within about 26 f32 ulps (3e-6 relative, 3e-5 dB) of the
+threshold can land on the other side. The 26 holds for thresholds above about
+-140 dB; the window scales with |threshold| (the reviewer measured up to about
+55-60 ulps near -300 dB). Probing 7,602 thresholds from -140 to
++20 dB against levels within 200 ulps of each, 16,073 of 3,048,402 pairs
+(0.5%, all within 26 ulps) decide differently. Away from that window the
+decision, and so every output sample, is identical. No golden digest in the
+tree moved. The tests are analytic: a steady level 0.1% over/under the
+threshold opens/closes the gate, the hold lasts exactly `floor(hold * rate)`
+frames, and the closed gain is `10^(range/20)`.
 
 ### Changed — one implementation each for the cubic Hermite, MIDI event gather, ADSR and Q7.25 conversion, renders unchanged
 

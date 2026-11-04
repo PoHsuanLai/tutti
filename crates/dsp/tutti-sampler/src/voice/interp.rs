@@ -1,10 +1,11 @@
-//! Shared, zero-alloc interpolation kernel for the sampler playback units.
+//! Shared, zero-alloc interpolation for the sampler playback units.
 //!
 //! Both the in-memory [`MemorySource`](super::memory_source::MemorySource) and the
 //! disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice)
 //! read fractional sample positions, so both must interpolate the same way or
-//! the same source sounds different on the two tiers. Shared here: one
-//! `cubic_hermite` kernel and one transport-placement gate, used by both.
+//! the same source sounds different on the two tiers. Both call one kernel,
+//! [`tutti_types::cubic_hermite`]; shared here are its block form and one
+//! transport-placement gate.
 //!
 //! `read_frame` is the in-memory reader only — the streaming tier pulls from the
 //! butler ring rather than an indexable `Wave`, so it feeds the same kernel from

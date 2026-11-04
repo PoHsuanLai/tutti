@@ -31,16 +31,16 @@ pub use crate::protocol::audio::{
 };
 
 pub use crate::protocol::{
-    midi_from_wire, AuComponentType, AutomationMode, BridgeMessage, BusChannels, ChannelLayout,
-    ChordChanges, ChordValue, ClapFeature, EditorPresence, Features, HostMessage, IpcMidiEvent,
-    IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, Normalized, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
-    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParamAddress, ParamFlags,
-    ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
-    ParameterQueue, PluginClass, PluginDescriptor, PluginTail, PointBuf, Preset, PresetId,
-    ProcessAudioData, SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout, TimeSignature,
-    TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, MAX_FRAME_BYTES, MAX_STATE_BYTES,
-    MIDI_STACK_CAPACITY, PROTOCOL_VERSION, STATE_CHUNK_BYTES,
+    midi_from_wire, AuComponentType, AutomationMode, BridgeMessage, BusChannels, BusTopologies,
+    ChannelLayout, ChordChanges, ChordValue, ClapFeature, EditorPresence, Features, HostMessage,
+    IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, Normalized,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
+    ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
+    ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail, PointBuf, Preset,
+    PresetId, ProcessAudioData, SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout,
+    TimeSignature, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories, MAX_FRAME_BYTES,
+    MAX_STATE_BYTES, MIDI_STACK_CAPACITY, PROTOCOL_VERSION, STATE_CHUNK_BYTES,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

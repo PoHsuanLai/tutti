@@ -150,6 +150,7 @@ fn assert_live(rate: f64, quantum: usize) {
         run.blocks,
         run.wrong.len()
     );
+    eprintln!("silent blocks {:?}", run.silent);
     assert!(
         run.silent.len() * 100 <= run.blocks,
         "{quantum}-frame callbacks: {} of {} blocks were silent — the server was \
@@ -212,13 +213,17 @@ fn a_441_frame_device_hears_its_plugin() {
 /// [`BURST`] callbacks plus `RING_SLOTS` more while the pipeline refills.
 /// Asserted: no block is ever neither silent nor the delayed input (a dropped
 /// block must not surface stale or torn data), and outside that window the
-/// stream is as sound as a paced run (at most 1% silent). How many blocks the
-/// burst itself drops depends on how fast the server answers, so that number
-/// is not asserted.
+/// stream is as sound as a paced run (at most 1% silent), counted from
+/// `SETTLE` blocks after the run's warm-up: a loaded machine can still be
+/// starting the server's pipeline then, which says nothing about the burst.
+/// How many blocks the burst itself drops depends on how fast the server
+/// answers, so that number is not asserted.
 ///
 /// Mutation (run): in `run_live`, make the burst condition
 /// `burst_at.is_some_and(|at| b >= warm_up + at)` (the burst never ends: free
 /// running) → every block after it is silent → the second assertion fails.
+/// Make `SETTLE` 0 → the start-up silence of a loaded machine (blocks 0 to 2,
+/// seen once in 45 runs) counts against the allowance and fails the run.
 /// Not caught (tried): `is_stale` always false in `dispatch.rs`, and an empty
 /// window (two dropped blocks fit the 1% allowance). The mechanism of the drop
 /// is pinned by `dispatch`'s unit tests; this pins the outcome a device sees.
@@ -227,6 +232,8 @@ fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     const QUANTUM: usize = 480;
     const BLOCKS: usize = 200;
     const BURST_AT: usize = 60;
+    /// Blocks after the run's warm-up that may still be start-up silence.
+    const SETTLE: usize = 10;
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
 
@@ -241,10 +248,14 @@ fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     );
     eprintln!("burst at {BURST_AT}: silent blocks {:?}", run.silent);
     let window = BURST_AT..BURST_AT + BURST + RING_SLOTS;
-    let outside = run.silent.iter().filter(|&&b| !window.contains(&b)).count();
+    let outside = run
+        .silent
+        .iter()
+        .filter(|&&b| b >= SETTLE && !window.contains(&b))
+        .count();
     assert!(
         outside * 100 <= BLOCKS,
-        "{outside} blocks outside the burst window {window:?} were silent \
+        "{outside} blocks from {SETTLE} outside the burst window {window:?} were silent \
          (silent: {:?})",
         run.silent
     );

@@ -270,9 +270,16 @@ impl Session {
                 Ok(Reaction::None)
             }
             M::SetSampleRate { rate } => {
-                self.clock.sample_rate = rate;
-                if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_sample_rate(rate);
+                // The clock follows the rate the plugin runs at: a refusal
+                // leaves both where they were, and the reason is said here
+                // because a silent discard is how a refused rate becomes an
+                // unexplained pitch shift.
+                match self.plugin.as_mut() {
+                    Some(plugin) => match plugin.instance_mut().set_sample_rate(rate) {
+                        Ok(()) => self.clock.sample_rate = rate,
+                        Err(e) => tracing::warn!(requested = rate, "sample rate not applied: {e}"),
+                    },
+                    None => self.clock.sample_rate = rate,
                 }
                 Ok(Reaction::None)
             }
@@ -838,6 +845,42 @@ mod tests {
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
         (s, shm_guard)
+    }
+
+    /// **The session's clock follows the rate the plugin runs at.** A rate the
+    /// plugin accepts moves it; one it cannot run at (here, a 64-bit instance
+    /// whose plugin dropped its 64-bit ports, which is left deactivated) leaves
+    /// it, and the host is told through `PluginIoChanged`.
+    ///
+    /// Mutation (run): set `self.clock.sample_rate = rate` before the
+    /// `set_sample_rate` call in `Session::handle` → the second assertion sees
+    /// 48 kHz → fails. Make the `Ok` arm skip the assignment → the first
+    /// assertion fails.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn the_clock_follows_the_rate_the_plugin_accepted() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
+        let (mut s, _shm) = load_clap("clock_follows_rate", SampleFormat::Float64);
+        assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
+
+        s.handle(HostMessage::SetSampleRate { rate: 48000.0 })
+            .unwrap();
+        assert_eq!(s.clock.sample_rate, 48000.0, "accepted");
+        assert!(s.drain_async_events().is_empty(), "nothing changed");
+
+        let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
+        s.handle(HostMessage::SetSampleRate { rate: 96000.0 })
+            .unwrap();
+        assert_eq!(s.clock.sample_rate, 48000.0, "refused: the clock stays");
+        assert!(
+            s.drain_async_events()
+                .iter()
+                .any(|m| matches!(m, BridgeMessage::PluginIoChanged)),
+            "the host is told the instance can no longer run"
+        );
     }
 
     /// An f64 session with a plugin that advertises no 64-bit port runs in

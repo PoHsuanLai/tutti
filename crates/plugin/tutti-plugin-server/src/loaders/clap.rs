@@ -2,10 +2,11 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, ClapFeature, ContentScale, EditorPresence, EditorSize, Features, LoadedPlugin,
-    Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio,
-    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
+    BusChannels, BusTopologies, ClapFeature, ContentScale, EditorPresence, EditorSize, Features,
+    LoadedPlugin, Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo,
+    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples,
+    WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -211,6 +212,40 @@ pub struct ClapInstance {
     #[cfg(feature = "clap")]
     inner: ClapInner,
     meta: Meta,
+    /// The layout (or the instance's ability to run) changed since the host
+    /// last heard; see [`take_io_changed`](Self::take_io_changed).
+    #[cfg(feature = "clap")]
+    io_changed: bool,
+}
+
+/// What the plugin declares on its audio ports: the buses and, per port,
+/// what `clap.surround` says (`None` for a port the plugin will not answer
+/// for: no extension, or no `get_channel_map`).
+#[cfg(feature = "clap")]
+struct BusLayout {
+    inputs: BusChannels,
+    outputs: BusChannels,
+    input_topology: BusTopologies,
+    output_topology: BusTopologies,
+}
+
+#[cfg(feature = "clap")]
+impl BusLayout {
+    fn read(loaded: &ClapLoaded) -> Self {
+        let inputs = per_bus_channels(loaded, true);
+        let outputs = per_bus_channels(loaded, false);
+        let topology = |is_input: bool, count: usize| {
+            (0..count)
+                .map(|i| loaded.surround_topology(is_input, i as u32))
+                .collect()
+        };
+        Self {
+            input_topology: topology(true, inputs.len()),
+            output_topology: topology(false, outputs.len()),
+            inputs,
+            outputs,
+        }
+    }
 }
 
 // Safety: the inner host instances are Send.
@@ -389,28 +424,17 @@ impl ClapInstance {
             ClapInner::F64(i) => i,
         };
 
-        // Real per-port bus layout (main + any sidechain/aux), and per port
-        // what `clap.surround` says (`None` for a port the plugin will not
-        // answer for: no extension, or no `get_channel_map`).
-        let input_buses = per_bus_channels(active_loaded, true);
-        let output_buses = per_bus_channels(active_loaded, false);
-        let port_topology = |is_input: bool, count: usize| {
-            (0..count)
-                .map(|i| active_loaded.surround_topology(is_input, i as u32))
-                .collect()
-        };
-        let input_topology = port_topology(true, input_buses.len());
-        let output_topology = port_topology(false, output_buses.len());
+        let layout = BusLayout::read(active_loaded);
 
         let mut features = features;
         // The format actually activated, as VST3 reports it.
         features.set(Features::F64_AUDIO, matches!(inner, ClapInner::F64(_)));
 
         let loaded_meta = LoadedPlugin {
-            inputs: input_buses,
-            outputs: output_buses,
-            input_topology,
-            output_topology,
+            inputs: layout.inputs,
+            outputs: layout.outputs,
+            input_topology: layout.input_topology,
+            output_topology: layout.output_topology,
             // Latency and tail are queryable after activation. A plugin
             // without `clap.tail` has not answered: its tail is unknown,
             // which is not the `None` a plugin answering 0 gives.
@@ -428,7 +452,38 @@ impl ClapInstance {
                 descriptor,
                 loaded: loaded_meta,
             },
+            io_changed: false,
         })
+    }
+
+    /// Re-reads the bus layout after the plugin was reconfigured, refreshing
+    /// the metadata and raising [`take_io_changed`](Self::take_io_changed)
+    /// when it differs from what the host was last given. A plugin may change
+    /// it while deactivated, which a rate change does.
+    #[cfg(feature = "clap")]
+    fn note_layout_change(&mut self) {
+        let now = BusLayout::read(clap_dispatch!(self, i => i));
+        let meta = &mut self.meta.loaded;
+        if now.inputs != meta.inputs
+            || now.outputs != meta.outputs
+            || now.input_topology != meta.input_topology
+            || now.output_topology != meta.output_topology
+        {
+            meta.inputs = now.inputs;
+            meta.outputs = now.outputs;
+            meta.input_topology = now.input_topology;
+            meta.output_topology = now.output_topology;
+            self.io_changed = true;
+        }
+    }
+
+    /// Whether the bus layout, the 64-bit answer or the instance's ability to
+    /// run changed since the last call, which clears it. The host re-reads the
+    /// instance on the [`IoChanged`](crate::plugin::AsyncEvent::IoChanged) it
+    /// becomes.
+    #[cfg(feature = "clap")]
+    pub fn take_io_changed(&mut self) -> bool {
+        std::mem::take(&mut self.io_changed)
     }
 
     /// Returns true if the plugin requested a latency change since the last poll.
@@ -534,6 +589,18 @@ impl PluginAudio for ClapInstance {
         out: &mut ProcessOutput,
     ) -> PluginResult<()> {
         use tutti_plugin::server::AudioBufferMut;
+        // A rate change that could not bring the plugin back left it
+        // deactivated (the host raised `IoChanged` when it happened). CLAP
+        // allows `process` only while active, so the block is silence and the
+        // plugin is not touched.
+        if !clap_dispatch!(self, i => i.is_active()) {
+            out.clear();
+            match buffer {
+                AudioBufferMut::F32(mut buf) => buf.clear_outputs(),
+                AudioBufferMut::F64(mut buf) => buf.clear_outputs(),
+            }
+            return Ok(());
+        }
         // The buffer format must match the format the instance was activated
         // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
         // surface it rather than silently mis-cast.
@@ -592,22 +659,33 @@ impl PluginAudio for ClapInstance {
         clap_dispatch_mut!(self, i => i.set_render_mode(offline))
     }
 
-    fn set_sample_rate(&mut self, rate: f64) {
-        clap_dispatch_mut!(self, i => {
-            // `PluginAudio::set_sample_rate` is infallible across every format,
-            // so a CLAP plugin's refusal cannot be propagated from here. It must
-            // still be *said*: the host rolls the instance back to the rate the
-            // plugin already accepted and stays active there, so the session
-            // keeps running — but at a rate the caller did not ask for, and a
-            // silent discard is how that becomes an unexplained pitch shift.
-            if let Err(e) = i.set_sample_rate(rate) {
-                tracing::warn!(
-                    requested = rate,
-                    running_at = i.sample_rate(),
-                    "CLAP plugin refused the sample rate: {e}"
-                );
-            }
+    /// A refusal rolls the instance back to the rate the plugin already
+    /// accepted and it stays active there. A plugin that cannot be brought
+    /// back, or that drops the 64-bit audio its instance runs, is left
+    /// deactivated: `process` renders silence and the host is told through
+    /// [`take_io_changed`](Self::take_io_changed). That instance is not
+    /// rebuilt as 32-bit, because the session's wire format was negotiated at
+    /// load and a 32-bit instance would refuse every 64-bit block instead.
+    ///
+    /// The plugin may also change its bus layout across the re-activation;
+    /// the metadata follows it and the host is told the same way.
+    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        let outcome = clap_dispatch_mut!(self, i => {
+            i.set_sample_rate(rate)
+                .map_err(|e| (e, i.sample_rate(), i.is_active()))
         });
+        self.note_layout_change();
+        outcome.map_err(|(e, running_at, active)| {
+            if !active {
+                // Nothing else will reach the host: the instance now renders
+                // silence, so it re-reads this one.
+                self.io_changed = true;
+            }
+            PluginError::Other(format!(
+                "CLAP plugin refused sample rate {rate} (running at {running_at}, {}): {e}",
+                if active { "active" } else { "deactivated" }
+            ))
+        })
     }
 }
 
@@ -1071,6 +1149,112 @@ mod tests {
             ClapInstance::activate(opened, path, true).expect("falls back to 32-bit audio");
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
         assert!(matches!(instance.inner, ClapInner::F32(_)));
+    }
+
+    /// **A rate change that changes the plugin's bus layout tells the host
+    /// and refreshes the metadata.** Only VST3 raised `IoChanged`; a CLAP
+    /// plugin that re-declared its ports across a re-activation left the host
+    /// with the layout it was loaded with.
+    ///
+    /// Mutations (run): delete `self.note_layout_change();` in
+    /// `ClapInstance::set_sample_rate` → the first assertion fails. Delete the
+    /// `if clap.take_io_changed()` block in `Plugin::poll_async_events` → the
+    /// polled-event assertion fails. Make
+    /// `note_layout_change` compare nothing → the first assertion fails.
+    #[test]
+    fn a_rate_change_that_changes_the_layout_raises_io_changed() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        assert_eq!(instance.loaded().inputs.len(), 1, "fixture: one input bus");
+        assert!(!instance.take_io_changed(), "nothing changed at load");
+
+        let _layout = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
+        );
+        instance.set_sample_rate(48000.0).expect("accepted");
+
+        assert_eq!(instance.loaded().inputs.len(), 2, "stereo main + mono aux");
+        assert_eq!(instance.loaded().total_inputs(), 3);
+        let mut plugin = crate::plugin::Plugin::Clap(instance);
+        assert!(
+            plugin
+                .poll_async_events()
+                .iter()
+                .any(|e| matches!(e, crate::plugin::AsyncEvent::IoChanged)),
+            "the host is told"
+        );
+        assert!(
+            !plugin
+                .poll_async_events()
+                .iter()
+                .any(|e| matches!(e, crate::plugin::AsyncEvent::IoChanged)),
+            "once"
+        );
+    }
+
+    /// **A rate change that changes nothing about the layout is silent.**
+    ///
+    /// Mutation (run): set `self.io_changed = true` unconditionally in
+    /// `note_layout_change` → the assertion fails.
+    #[test]
+    fn a_rate_change_that_keeps_the_layout_does_not_raise_io_changed() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        instance.set_sample_rate(48000.0).expect("accepted");
+        assert!(!instance.take_io_changed());
+    }
+
+    /// **A 64-bit instance that cannot be re-activated renders silence without
+    /// reaching the plugin, reports the failure, and tells the host.** The
+    /// plugin drops its 64-bit flags; the rate change fails and leaves it
+    /// deactivated, and the session kept calling `process` on it.
+    ///
+    /// Mutations (run): delete the `!is_active()` early return in
+    /// `ClapInstance::process` → the block reaches `ClapActive::process`, which
+    /// refuses it with an error → `expect("silence")` fails.
+    /// Delete the `self.io_changed = true` in `set_sample_rate`'s error arm →
+    /// the `take_io_changed` assertion fails (the layout alone is unchanged in
+    /// this fixture).
+    #[test]
+    fn a_deactivated_instance_renders_silence_and_tells_the_host() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
+        let mut instance = ClapInstance::load(path, 44100.0, 512, true).expect("load");
+        assert!(matches!(instance.inner, ClapInner::F64(_)), "fixture");
+
+        let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
+        let err = instance
+            .set_sample_rate(48000.0)
+            .expect_err("the 64-bit flags are gone");
+        assert!(err.to_string().contains("deactivated"), "got {err}");
+        assert!(instance.take_io_changed(), "the host is told");
+
+        let input = vec![vec![0.25f64; 64]; 2];
+        let input_slices: Vec<&[f64]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut output = vec![vec![0.5f64; 64]; 2];
+        let mut output_slices: Vec<&mut [f64]> =
+            output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let buffer = tutti_plugin::server::AudioBuffer {
+            inputs: &input_slices,
+            outputs: &mut output_slices,
+            num_samples: 64,
+            sample_rate: 44100.0,
+        };
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        instance
+            .process(
+                tutti_plugin::server::AudioBufferMut::F64(buffer),
+                &ProcessContext::new(),
+                &mut out,
+            )
+            .expect("silence");
+        assert!(output.iter().flatten().all(|&s| s == 0.0), "silent");
+        assert!(!instance.is_processing(), "the plugin was not started");
     }
 
     #[test]
@@ -2274,7 +2458,7 @@ mod tests {
             .expect("Failed to load");
 
         // Change sample rate — this deactivates, updates, and requires reactivation
-        instance.set_sample_rate(48000.0);
+        instance.set_sample_rate(48000.0).expect("rate accepted");
 
         // Process should still work (auto-reactivates)
         let num_samples = 512;
@@ -2308,7 +2492,7 @@ mod tests {
 
         // Cycle through several sample rates
         for &rate in &[48000.0, 96000.0, 44100.0, 22050.0] {
-            instance.set_sample_rate(rate);
+            instance.set_sample_rate(rate).expect("rate accepted");
 
             let num_samples = 512;
             let input_data = vec![vec![0.0f32; num_samples]; 2];

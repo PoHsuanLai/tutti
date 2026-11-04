@@ -234,6 +234,13 @@ impl ClapLoaded {
         Ok(())
     }
 
+    /// Whether the plugin is active. False for an instance a failed
+    /// reconfiguration left deactivated ([`ClapError::Deactivated`]), which
+    /// refuses every `process` with [`ClapError::NotActive`].
+    pub fn is_active(&self) -> bool {
+        self.flags.active
+    }
+
     /// Calls the plugin's `deactivate` FFI. Shared by `ClapActive::deactivate`
     /// and the in-place re-activation path.
     pub(crate) fn deactivate_plugin(&mut self) {
@@ -323,6 +330,11 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// `do_process` path takes the lock **once** per block and covers both
     /// `start_processing` and `process` with a single claim.
     pub(crate) fn ensure_processing(&mut self, _claim: &AudioThreadClaim<'_>) -> Result<()> {
+        // `start_processing` is `[active]`: a reconfiguration that left the
+        // plugin deactivated must not reach it. One flag read, no FFI.
+        if !self.loaded.flags.active {
+            return Err(ClapError::NotActive);
+        }
         if self.loaded.flags.processing {
             return Ok(());
         }
@@ -384,8 +396,10 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// # Errors
     /// [`ClapError::NotSupported`] if the plugin refuses `activate` at the new
     /// ceiling; the instance is **rolled back** to the previous `max_frames`
-    /// and left active there. [`ClapError::LoadFailed`] if the rollback also
-    /// fails.
+    /// and left active there. [`ClapError::Deactivated`] if the rollback also
+    /// fails, or the plugin no longer takes 64-bit audio on an `f64` instance:
+    /// the instance is then left deactivated and `process` refuses every
+    /// block with [`ClapError::NotActive`].
     pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
         if max_frames <= self.loaded.audio.max_frames {
             return Ok(());
@@ -425,13 +439,19 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// [`block_size`](ClapLoaded::block_size) for what it is still running at.
     /// If the rollback also fails there is nothing left to fall back to: the
     /// instance is genuinely inactive and the `Err` is
-    /// [`ClapError::LoadFailed`] with [`LoadStage::Activation`], distinct from
-    /// the plain refusal. `Drop` still tears it down safely.
+    /// [`ClapError::Deactivated`], distinct from the plain refusal.
+    /// `process` on such an instance returns [`ClapError::NotActive`] without
+    /// calling the plugin, and `Drop` still tears it down safely.
     ///
     /// The ports are read again after the deactivation, as at
     /// [`ClapLoaded::activate`], and the scratch is sized from what the plugin
-    /// now declares. A `ClapActive<f64>` whose plugin has dropped its 64-bit
-    /// flags is left deactivated with the same `LoadFailed`.
+    /// now declares, on every path out, so the port layout and the scratch
+    /// never disagree. A `ClapActive<f64>` whose plugin has dropped its 64-bit
+    /// flags is left deactivated with the same [`ClapError::Deactivated`]. A
+    /// host that wants to know the layout changed compares its own copy of the
+    /// description with [`audio_port_info`](ClapLoaded::audio_port_info) (the
+    /// plugin's live answer) after the call, and the channel totals in
+    /// [`info`](ClapLoaded::info) before and after.
     fn reconfigure(&mut self, sample_rate: f64, max_frames: u32) -> Result<()> {
         self.loaded.assert_main_thread();
 
@@ -451,15 +471,12 @@ impl<T: super::ClapSample> ClapActive<T> {
         if T::requires_f64() && !self.loaded.audio.supports_f64 {
             // Activating would hand 64-bit buffers to ports that no longer
             // take them. The instance stays deactivated, as after a refused
-            // rollback.
-            return Err(ClapError::LoadFailed {
-                path: PathBuf::new(),
-                stage: LoadStage::Activation,
-                reason: format!(
-                    "Plugin '{}' no longer advertises 64-bit audio on its ports",
-                    self.loaded.info.name
-                ),
-            });
+            // rollback, with the scratch sized for the ports just read.
+            self.resize_scratch(prev_frames);
+            return Err(ClapError::Deactivated(format!(
+                "plugin '{}' no longer advertises 64-bit audio on its ports",
+                self.loaded.info.name
+            )));
         }
 
         self.loaded.audio.sample_rate = sample_rate;
@@ -476,8 +493,15 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.resize_scratch(prev_frames);
 
         // A refused rollback is a different (and worse) fact than the
-        // `NotSupported` below, so it propagates rather than folding into it.
-        self.loaded.activate_plugin()?;
+        // `NotSupported` below, so it is its own error rather than folding into
+        // it. The scratch above already fits the ports this instance holds.
+        if self.loaded.activate_plugin().is_err() {
+            return Err(ClapError::Deactivated(format!(
+                "plugin '{}' refused activation at sample_rate {sample_rate} / \
+                 max_frames {max_frames} and again at the previous {prev_rate} / {prev_frames}",
+                self.loaded.info.name
+            )));
+        }
 
         Err(ClapError::NotSupported(format!(
             "Plugin '{}' refused activation at sample_rate {sample_rate} / \

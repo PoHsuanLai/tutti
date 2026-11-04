@@ -330,6 +330,11 @@ impl Plugin {
                         samples: Samples(clap.get_latency() as usize),
                     });
                 }
+                // A rate change re-reads the ports, and the plugin may have
+                // changed them, or been left unable to run.
+                if clap.take_io_changed() {
+                    out.push(AsyncEvent::IoChanged);
+                }
                 // The tail twin of the latency poll above. Without it a plugin
                 // whose decay is raised after load keeps reporting the tail it
                 // had at load, and a bounce sized from that truncates the

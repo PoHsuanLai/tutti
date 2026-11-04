@@ -70,6 +70,14 @@ pub enum ClapError {
     #[error("Processing error: plugin refused to start processing")]
     StartProcessingFailed,
 
+    /// An in-place reconfiguration (`set_sample_rate`, `set_max_block_size`)
+    /// deactivated the plugin and could not activate it again, so the
+    /// instance is left deactivated: `process` refuses every block with
+    /// [`ClapError::NotActive`] until it is dropped or replaced. The text says
+    /// why.
+    #[error("Plugin left deactivated: {0}")]
+    Deactivated(String),
+
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]
     StateError(String),

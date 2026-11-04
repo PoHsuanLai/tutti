@@ -5397,6 +5397,28 @@ under both.
   `a_plugin_without_the_tail_extension_has_an_unknown_tail`,
   `the_buses_are_those_the_plugin_has_at_activation` and
   `a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit`.
+- **A CLAP instance a rate change cannot bring back is refused, not
+  processed, and the host is told.** `reconfigure` leaves the plugin
+  deactivated when the rollback fails or an `f64` instance's plugin dropped
+  its 64-bit flags (`ClapError::Deactivated`); `ClapActive::process` and
+  `ensure_processing` then return `ClapError::NotActive` on one flag read,
+  with no FFI call, and the port layout and the scratch agree on every path
+  out of `reconfigure`. `PluginAudio::set_sample_rate` returns a `Result`
+  now: the session moves its clock only when the plugin took the rate, and
+  the CLAP loader renders silence for a deactivated instance. It does not
+  rebuild a dropped-f64 instance as 32-bit, because the session's wire
+  format was negotiated at load and would not match. The CLAP loader
+  re-reads the bus layout after a rate change and raises `IoChanged` (as
+  VST3 does) when it differs from the metadata the host holds, or when the
+  instance can no longer run; the host answers it as it does VST3's
+  (`PluginInvalidation::Io`). Pinned by `clap_ports_rescan`'s
+  `a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags`
+  and `a_failed_reconfiguration_with_a_new_layout_refuses_blocks_of_any_width`,
+  the server's `a_rate_change_that_changes_the_layout_raises_io_changed`,
+  `a_deactivated_instance_renders_silence_and_tells_the_host` and the
+  session's `the_clock_follows_the_rate_the_plugin_accepted`. Not covered:
+  a refused rollback (the reference plugin refuses one configuration, not
+  the same one twice).
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,
   bevy-tutti's `EventSources`) own only the sources they put on a sink's

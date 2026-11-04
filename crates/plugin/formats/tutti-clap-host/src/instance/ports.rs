@@ -112,7 +112,8 @@ impl ClapLoaded {
 
     /// Whether notes to the first input note port go out as `clap_event_midi`:
     /// the port takes the MIDI dialect and not CLAP's own note events (or
-    /// prefers MIDI, see [`NotePortInfo::dialect_to_send`]). A plugin with no
+    /// prefers MIDI, see [`NotePortInfo::dialect_to_send`]). Only input note
+    /// port 0 decides. A plugin with no
     /// note port gets CLAP note events, as before.
     pub fn sends_midi_notes(&self) -> bool {
         self.note_port_info(0, true)

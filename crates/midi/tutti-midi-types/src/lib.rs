@@ -57,7 +57,7 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use traits::{MidiIn, MidiOut};
-pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
+pub use translation::{normalize, Midi1Messages, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,

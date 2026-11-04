@@ -313,6 +313,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Float32,
             channels: tutti_core::ChannelLayout::STEREO,
+            topology: None,
         },
         ..Default::default()
     };

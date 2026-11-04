@@ -52,6 +52,7 @@ fn config(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportCon
             format,
             bit_depth: bd,
             channels: layout,
+            topology: None,
         },
         ..Default::default()
     }

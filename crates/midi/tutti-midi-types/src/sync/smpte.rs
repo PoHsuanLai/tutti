@@ -75,6 +75,28 @@ impl SmpteFrameRate {
         }
     }
 
+    /// The rate as an exact fraction of frames over seconds, `(num, den)`:
+    /// `24/1`, `25/1`, `30000/1001` for both 29.97 rates, `30/1`. Integer
+    /// frame arithmetic at a position in samples uses this, not [`fps`](Self::fps).
+    pub const fn ratio(&self) -> (u64, u64) {
+        match self {
+            Self::Fps24 => (24, 1),
+            Self::Fps25 => (25, 1),
+            Self::Fps2997Df | Self::Fps2997Ndf => (30_000, 1001),
+            Self::Fps30 => (30, 1),
+        }
+    }
+
+    /// Frame labels per second: the count the `FF` field wraps at (24, 25, 30,
+    /// 30, 30 for the two 29.97 rates).
+    pub const fn labels_per_second(&self) -> u64 {
+        match self {
+            Self::Fps24 => 24,
+            Self::Fps25 => 25,
+            Self::Fps2997Df | Self::Fps2997Ndf | Self::Fps30 => 30,
+        }
+    }
+
     /// Reports whether frame *numbers* are skipped to track wall-clock time.
     ///
     /// True only for [`Fps2997Df`](Self::Fps2997Df). A renderer that ignores this

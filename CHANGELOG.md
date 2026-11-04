@@ -19,9 +19,63 @@ core events only, so it no longer hands out ids it cannot serve.
 Notes went to a plugin as CLAP note events whatever its input note port took, so
 a MIDI-only synth heard nothing. At activation and every re-activation the host
 reads input note port 0 and, when `NotePortInfo::dialect_to_send` is MIDI, sends
-notes as `clap_event_midi` (per-note expression has no MIDI 1.0 form and is
-dropped). New: `ClapLoaded::sends_midi_notes`, `ClapActive::sends_midi_notes`,
+notes as `clap_event_midi` (poly pressure goes as its MIDI 1.0 bytes; other
+per-note expression has no MIDI 1.0 form and is dropped). Only port 0 decides,
+and only at (re)activation: an embedder that sees `poll_note_ports_changed`
+must re-activate. Refused foreign-space or undersized events now count in
+`events_refused`. New: `ClapLoaded::sends_midi_notes`, `ClapActive::sends_midi_notes`,
 `InputEventList::{set_midi_notes, midi_notes}`.
+
+### Fixed — MIDI against the specs: Flex Set Tempo, outbound MTC, Note Off velocity, SysEx bytes, bank select, RPN, Song Position
+
+- **Flex Data Set Tempo** was 10x too fast on the wire (`6e8` for `6e9` ten-nanosecond units a minute): 120 BPM is now `0x02FAF080`. Clip files and Flex metadata written before this carry the old field and read back 10x slow, and clips from other tools now read back right.
+- **`MtcDecoder::feed`** no longer overflows when the first quarter-frame is not piece 0.
+- **Outbound MTC** (`ClockMaster`) sends one timecode per 8-piece cycle, placed on an even frame of the timeline and labelled with that frame, so an assembled frame is always below the rate and never torn across a rollover. Drop-frame labels skip `;00` and `;01` each minute but the tenth. `Fps2997Ndf` goes out with the 29.97 rate code (MTC has no other).
+- **MIDI 1.0 Note Off velocity** survives promotion (`[0x80, 60, 64]` gives `0x8000`); it was 0.
+- **`Sysex7ByteAssembler`**: realtime bytes inside SysEx come out as their own events; any other status byte discards the run; a lone `F7` and stray data bytes are ignored.
+- **`Midi1ToMidi2Translator`**: CC 0 / CC 32 are latched and attached to the channel's next Program Change (bank valid; the last values are kept, as in Linux `ump_convert.c`), no longer promoted as CCs; an RPN/NRPN value is emitted once per Data Entry (the select that ends a run no longer repeats it, and a CC 38 before any CC 6 waits for it); RPN and NRPN keep separate numbers.
+- **`MidiClockDecoder`** honours Song Position Pointer (`song_position_msg`, and `feed` on `0xF2`): Continue resumes at `SPP × 6` ticks.
+
+Migration (API changes):
+- `SmpteTimecode::to_seconds` now maps drop-frame labels to elapsed frames (it counted labels). New: `frame_count`, `from_frame_count`, `SmpteFrameRate::{ratio, labels_per_second}`.
+- New `MidiEvent::to_midi1_messages` returns the three messages (CC 0, CC 32, Program Change) of a 2.0 Program Change with a bank. `to_midi1_bytes` still returns one message, the Program Change alone: move a caller that needs the bank to `to_midi1_messages`. The VST2, VST3 and CLAP hosts stage a banked Program Change as three MIDI events at one offset (all three or none; CLAP counts a refusal, for a banked or a plain event past its reserved room, in the new `InputEventList::midi_dropped`, read through `ClapActive::midi_dropped`).
+- `SmpteTimecode::frame_count` counts an invalid drop-frame label (`;00`, `;01` at a minute not divisible by ten) as `;02`.
+- Code that read CC 0 / CC 32 out of `Midi1ToMidi2Translator::translate` now gets `None` for them and the bank on the next Program Change.
+- `MidiMessage` is documented as group-agnostic (a re-encode lands on group 0); route on `MidiEvent::group`.
+
+### Fixed — WAV files declare the right speaker mask, and a file past 4 GiB is an error, not a wrapped header
+
+**Speaker mask.** `hound` writes a `WAVE_FORMAT_EXTENSIBLE` `dwChannelMask` of the
+lowest N bits and cannot be told otherwise, so a mask-honouring reader (checked
+with `ffprobe`) took tutti's quad as 3.1, its 5.1 (FL FR C LFE SL SR) as back 5.1,
+and its 8 channels as 7.1 wide. `WavOut` and the export WAV encoder now patch the
+mask over the finished header. It is `tutti_types::wav::channel_mask` of a
+`ChannelTopology` (each `Speaker` to its `ksmedia.h` `SPEAKER_*` bit; `0`,
+unassigned, if a speaker has no bit or the order is not ascending, the only
+order WAVE can state). Given only a width, the writers use
+`wav::default_channel_mask`, which follows `ChannelTopology::smpte` and so never
+guesses where the engine declines to: mono `0x4`, stereo `0x3`, 5.1 `0x60F`, and
+`0` for 4 (quad or B-format) and 8 (tutti's 7.1 is SL SR BL BR, WAVE's would be
+BL BR SL SR). Samples are never reordered. Mono at 24 bit or float was `0x1`
+(front left) and is now front centre.
+Migration: to get quad's `0x33`, call `WavOut::with_topology(ChannelTopology::quad())?`
+or set `EncodeConfig::topology = Some(ChannelTopology::quad())`. `EncodeConfig`
+has a new field (`topology: None` for the old behaviour) and, because of it,
+`EncodeConfig` and `ExportConfig` are no longer `Copy`: clone them. A test or
+tool that pinned the old `0x3F` for 5.1 should expect `0x60F`.
+
+**4 GiB.** A WAV's sizes are 32-bit, and `hound` counted bytes in a `u32` with
+no guard: a longer file wrapped its header in release and panicked in debug.
+`WavOut` now stops at the last whole frame under the limit
+(`tutti_core::wav::max_data_frames`); `finalize` closes a valid, readable file
+and returns an `io::Error` wrapping `tutti_core::wav::DataLimitExceeded`, the
+same way a failed write surfaces (a `Recorder` reports it from its finalize).
+The export encoder refuses a plan that cannot fit before it creates the file
+(an existing file at the path is left alone), and otherwise fails at the
+crossing frame and removes the partial file, with the new `Error::WavTooLarge
+{ limit_frames }` (`Error` is `#[non_exhaustive]`; add an arm or a wildcard).
+Not done: RF64 (EBU Tech 3306) output, which would lift the limit; `hound`
+cannot write it, so it is a writer of our own.
 
 ### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 

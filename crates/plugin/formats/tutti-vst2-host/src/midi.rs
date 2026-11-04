@@ -113,11 +113,17 @@ pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
 /// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
 /// controllers, per-note management (Detach/Reset), and any resolution beyond
 /// 7/14 bits.
+#[cfg(test)]
 pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
+    let (midi_data, len) = event.to_midi1_bytes()?;
+    Some(midi_event(event.frame_offset, midi_data, len))
+}
+
+/// One MIDI-1 message as a VST2 event at `frame_offset`.
+fn midi_event(frame_offset: u32, midi_data: [u8; 3], len: u8) -> vst::api::MidiEvent {
     use std::mem;
     use vst::api;
 
-    let (midi_data, len) = event.to_midi1_bytes()?;
     // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
     // zero-pads shorter messages into that fixed array, so `midi_data` is
     // wire-ready as-is and `len` is redundant here. The assert guards the
@@ -131,9 +137,9 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     // with it — an out-of-bounds access inside the plugin, out of reach of any
     // check on this side. Saturating keeps it in range; the inbound mirror
     // (`to_midi`) guards the same hazard with `.max(0)`.
-    let delta_frames = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
+    let delta_frames = i32::try_from(frame_offset).unwrap_or(i32::MAX);
 
-    Some(api::MidiEvent {
+    api::MidiEvent {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
         delta_frames,
@@ -153,7 +159,7 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
         note_off_velocity: 0,
         _reserved1: 0,
         _reserved2: 0,
-    })
+    }
 }
 
 /// Pre-allocated, reusable storage for a VST2 `api::Events` flexible-
@@ -341,11 +347,18 @@ impl MidiSendBuffer {
             let Some(delta) = delta_in_piece(ev.frame_offset) else {
                 continue;
             };
-            if let Some(mut api) = from_midi(ev) {
-                if self.order.len() == self.room {
-                    self.events_dropped += 1;
-                    continue;
-                }
+            // One UMP can be several MIDI-1 messages (a Program Change with a
+            // bank is CC 0, CC 32, PC): each takes a slot at the same frame,
+            // and all of them fit or none is staged (a bank is not sent
+            // without its program).
+            let messages = ev.to_midi1_messages();
+            let n = messages.len();
+            if self.order.len() + n > self.room {
+                self.events_dropped += n as u64;
+                continue;
+            }
+            for (bytes, len) in messages {
+                let mut api = midi_event(ev.frame_offset, bytes, len);
                 api.delta_frames = delta;
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
@@ -897,6 +910,57 @@ mod tests {
         v.extend_from_slice(payload);
         v.push(0xF7);
         v
+    }
+
+    /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
+    /// offset, in that order, each in its own slot. With room for fewer than
+    /// three, none is staged and all three are counted.
+    ///
+    /// Mutation (run): `stage_piece` sending the event through `from_midi` (one
+    /// message) → only the PC → fails; staging each message on its own room
+    /// check (the old per-message loop) → a partial bank → fails.
+    #[test]
+    fn a_banked_program_change_stages_as_three_events() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage_piece(&[pc], 0, 64, 64).expect("events staged"));
+        assert_eq!(
+            staged,
+            vec![
+                (5, vec![0xB1, 0, 1]),
+                (5, vec![0xB1, 32, 5]),
+                (5, vec![0xC1, 9, 0]),
+            ]
+        );
+        // Room for two: none of the three is staged, and all three are counted.
+        let mut small = MidiSendBuffer::with_capacity(2);
+        assert!(small.stage_piece(&[pc], 0, 64, 64).is_none());
+        assert_eq!(small.events_dropped(), 3);
+        // Room for the note and one more: the note stays, the bank does not.
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let mut tight = MidiSendBuffer::with_capacity(3);
+        let staged = read_staged(tight.stage_piece(&[note, pc], 0, 64, 64).expect("the note"));
+        assert_eq!(staged, vec![(0, vec![0x91, 60, 100])]);
+        assert_eq!(tight.events_dropped(), 3);
+        // In a later piece every message of the bank takes that piece's
+        // rebased frame (offset 70 of a 128-frame block, piece 64..128: 6).
+        let late = pc.with_frame_offset(70);
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage_piece(&[late], 64, 64, 128).expect("staged"));
+        assert_eq!(
+            staged,
+            vec![
+                (6, vec![0xB1, 0, 1]),
+                (6, vec![0xB1, 32, 5]),
+                (6, vec![0xC1, 9, 0]),
+            ]
+        );
     }
 
     /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in

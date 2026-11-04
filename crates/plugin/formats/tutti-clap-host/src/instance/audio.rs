@@ -326,6 +326,14 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.input_events.sysex_dropped()
     }
 
+    /// MIDI events not handed to the plugin since this instance was activated,
+    /// for lack of the room reserved at activation (a Program Change with a
+    /// bank counts its three, all dropped together). Read on this instance
+    /// only, like [`sysex_dropped`](Self::sysex_dropped).
+    pub fn midi_dropped(&self) -> u64 {
+        self.scratch.input_events.midi_dropped()
+    }
+
     /// Parameter points the plugin emitted past the room this instance was
     /// activated for (one queue per parameter, each with room for a block of
     /// [`block_size`](super::ClapLoaded::block_size)'s points): each replaced

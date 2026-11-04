@@ -93,7 +93,8 @@ pub struct BarAccents {
 
 /// 10-nanosecond units in one minute — the numerator relating BPM to the Flex
 /// Data Set Tempo wire field (60 s = 6e9 × 10 ns). `bpm × ten_ns_per_qn = 6e9`.
-const TEN_NS_UNITS_PER_MINUTE: f64 = 600_000_000.0;
+/// The field is `u32`, so tempi below about 1.4 BPM saturate.
+const TEN_NS_UNITS_PER_MINUTE: f64 = 6_000_000_000.0;
 
 /// Beats-per-minute → the Set Tempo wire field (10-ns units per quarter note).
 /// `0` (an invalid rate) maps to `0`, which the inverse reports as "no tempo".
@@ -489,6 +490,23 @@ mod tests {
         // An invalid rate maps to the "no tempo" sentinel, both directions.
         assert_eq!(bpm_to_ten_ns_per_quarter(0.0), 0);
         assert_eq!(ten_ns_per_quarter_to_bpm(0), None);
+    }
+
+    // Fixed values: a round trip cancels the constant, so these pin it.
+    // Mutation: TEN_NS_UNITS_PER_MINUTE = 6e8 fails the first two.
+    #[test]
+    fn tempo_wire_field_is_ten_ns_per_quarter() {
+        assert_eq!(bpm_to_ten_ns_per_quarter(120.0), 50_000_000);
+        assert_eq!(bpm_to_ten_ns_per_quarter(60.0), 100_000_000);
+        let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0);
+        assert_eq!(ev.data_words(), &[0xD010_0000, 0x02FA_F080, 0, 0]);
+    }
+
+    #[test]
+    fn external_set_tempo_packet_decodes_to_120_bpm() {
+        let ev = MidiEvent::from_ump(0, &[0xD010_0000, 0x02FA_F080, 0, 0]);
+        assert_eq!(flex_tempo_bpm(&ev), Some(120.0));
+        assert_eq!(ten_ns_per_quarter_to_bpm(100_000_000), Some(60.0));
     }
 
     #[test]

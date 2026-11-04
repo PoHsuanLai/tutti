@@ -78,6 +78,7 @@ fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: AudioFormat)
             format,
             bit_depth: BitDepth::Float32,
             channels,
+            topology: None,
         },
         dither: Dither::Off,
         ..Default::default()

@@ -344,18 +344,23 @@ impl ClapEvent {
     }
 
     /// Re-encodes a note event as `clap_event_midi`, for a note port that takes
-    /// the MIDI dialect only. `None` for per-note expression, which that
-    /// dialect cannot carry. Other events pass through.
+    /// the MIDI dialect only. Per-note expression has no CLAP-side form there,
+    /// so it falls back to `event`'s own MIDI 1.0 bytes (poly pressure is
+    /// `0xAn`); `None` when it has none (per-note pitch bend, controllers).
+    /// Other events pass through.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "velocity is clamped to 0..=127 before the cast"
     )]
-    fn into_midi_dialect(self) -> Option<Self> {
+    fn into_midi_dialect(self, event: &MidiEvent) -> Option<Self> {
         let (status, e) = match self {
             ClapEvent::NoteOn(e) => (0x90, e),
             ClapEvent::NoteOff(e) => (0x80, e),
-            ClapEvent::NoteExpression(_) => return None,
+            ClapEvent::NoteExpression(_) => {
+                let (bytes, _len) = event.to_midi1_bytes()?;
+                return Some(ClapEvent::midi(event.frame_offset, 0, bytes));
+            }
             other => return Some(other),
         };
         // A note-on at velocity 0 is a note-off in MIDI 1.0, so the lowest
@@ -738,6 +743,12 @@ pub struct InputEventList {
     /// Parameter points not handed on whole since the list was built: see
     /// [`param_points_dropped`](Self::param_points_dropped).
     param_points_dropped: u64,
+    /// MIDI messages a banked Program Change could not stage for lack of
+    /// room: see [`midi_dropped`](Self::midi_dropped).
+    midi_dropped: u64,
+    /// Set by [`reserve`](Self::reserve): MIDI then stays within the reserved
+    /// room, where an unreserved list (a test, an off-RT build) just grows.
+    bounded: bool,
     /// Each channel's per-note pitch-bend range, as the MIDI added so far
     /// set it. Kept across blocks ([`EventList::clear`] leaves it): it is
     /// the stream's state.
@@ -764,6 +775,8 @@ impl InputEventList {
             order: StableOrder::default(),
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
+            bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
             midi_notes: false,
@@ -772,8 +785,15 @@ impl InputEventList {
 
     /// Sets the note dialect of the plugin's input note port: `true` sends
     /// notes as `clap_event_midi` (a port that takes MIDI but not CLAP note
-    /// events), `false` as CLAP note events. Per-note expression has no MIDI
-    /// 1.0 form and is dropped while set. Takes effect for events added after.
+    /// events), `false` as CLAP note events. While set, a MIDI event's per-note
+    /// expression is sent as its MIDI 1.0 bytes where it has them (poly
+    /// pressure), and [`add_note_expressions`](Self::add_note_expressions)
+    /// adds nothing. Takes effect for events added after.
+    ///
+    /// The dialect is read from input note port 0 only, and only at
+    /// activation and re-activation: a plugin that changes its note ports
+    /// (`poll_note_ports_changed`) is not heard differently until the
+    /// embedder re-activates it.
     pub fn set_midi_notes(&mut self, midi_notes: bool) {
         self.midi_notes = midi_notes;
     }
@@ -798,6 +818,8 @@ impl InputEventList {
             events,
             param_room: usize::MAX,
             param_points_dropped: 0,
+            midi_dropped: 0,
+            bounded: false,
             bend_ranges: PerNoteBendRanges::default(),
             sysex: SysExAssembler::default(),
             midi_notes: false,
@@ -808,6 +830,7 @@ impl InputEventList {
     /// once during plugin activation so steady-state `add_*` calls don't
     /// touch the allocator. `clear()` keeps the reserved capacity.
     pub fn reserve(&mut self, n: usize) {
+        self.bounded = true;
         self.events.reserve(n);
         self.order.reserve(self.events.capacity());
     }
@@ -824,6 +847,26 @@ impl InputEventList {
     /// ([`ParameterQueue::chunk_room`](tutti_plugin_types::ParameterQueue::chunk_room)).
     pub fn set_param_point_room(&mut self, points: usize) {
         self.param_room = points;
+    }
+
+    /// Whether `n` more MIDI events fit without growing a reserved list: its
+    /// room less what is set aside for parameter points.
+    fn has_midi_room(&self, n: usize) -> bool {
+        if !self.bounded {
+            return true;
+        }
+        let aside = if self.param_room == usize::MAX {
+            0
+        } else {
+            self.param_room
+        };
+        self.events.len() + n <= self.events.capacity().saturating_sub(aside)
+    }
+
+    /// MIDI events refused since the list was built, for lack of reserved
+    /// room (a Program Change with a bank counts its three).
+    pub fn midi_dropped(&self) -> u64 {
+        self.midi_dropped
     }
 
     /// Parameter points [`add_param_changes`](Self::add_param_changes) could
@@ -882,14 +925,30 @@ impl InputEventList {
                 if self.bend_ranges.observe(event) {
                     return self;
                 }
-                let converted = ClapEvent::from_midi(event, &self.bend_ranges);
-                let converted = if self.midi_notes {
-                    converted.and_then(ClapEvent::into_midi_dialect)
+                // A Program Change with a bank is three MIDI-1 messages (CC 0,
+                // CC 32, PC), each its own event at the same time. All of
+                // them or none, so a bank is not sent without its program.
+                let messages = event.to_midi1_messages();
+                let n = messages.len().max(1);
+                if !self.has_midi_room(n) {
+                    self.midi_dropped += n as u64;
+                    return self;
+                }
+                if messages.len() > 1 {
+                    for (bytes, _) in messages {
+                        self.events
+                            .push(ClapEvent::midi(event.frame_offset, 0, bytes));
+                    }
                 } else {
-                    converted
-                };
-                if let Some(clap_event) = converted {
-                    self.events.push(clap_event);
+                    let converted = ClapEvent::from_midi(event, &self.bend_ranges);
+                    let converted = if self.midi_notes {
+                        converted.and_then(|c| c.into_midi_dialect(event))
+                    } else {
+                        converted
+                    };
+                    if let Some(clap_event) = converted {
+                        self.events.push(clap_event);
+                    }
                 }
             }
             SysExStep::Held => {}
@@ -1251,7 +1310,8 @@ impl OutputEventList {
     /// than `PARAM_VALUE` past the room set with [`reserve`](Self::reserve),
     /// or a `PARAM_VALUE` past the room set with
     /// [`set_param_room`](Self::set_param_room) whose id is not one of the
-    /// plugin's parameters (a listed one keeps its latest value instead).
+    /// plugin's parameters (a listed one keeps its latest value instead), or
+    /// an event of another space or smaller than its type's struct.
     /// Counted since the list was built; zero while the plugin stays within
     /// the room.
     pub fn events_refused(&self) -> u64 {
@@ -1637,6 +1697,7 @@ unsafe extern "C" fn output_events_try_push(
     if header.space_id != CLAP_CORE_EVENT_SPACE_ID
         || core_event_size(header.type_).is_none_or(|min| header.size < min)
     {
+        output_list.refused += 1;
         return false;
     }
 
@@ -1831,6 +1892,68 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![(9, 600.0), (5, 2.5)]);
+    }
+
+    /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
+    /// time, in that order.
+    ///
+    /// Mutation (run): `add_midi` converting the event with `from_midi` alone
+    /// → only the PC → fails; `has_midi_room` always true → the all-or-none
+    /// and the plain-event bound fail.
+    #[test]
+    fn a_banked_program_change_is_three_midi_events() {
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+            .with_frame_offset(5);
+        let mut list = InputEventList::new();
+        list.reserve(8);
+        list.add_midi(&pc);
+        let got: Vec<(u32, [u8; 3])> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => (m.header.time, m.data),
+                _ => panic!("not a MIDI event"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![(5, [0xB1, 0, 1]), (5, [0xB1, 32, 5]), (5, [0xC1, 9, 0])]
+        );
+        // Room for two: none of the three is staged, and all are counted.
+        let mut tight = InputEventList::new();
+        tight.reserve(2);
+        let room = tight.events.capacity();
+        for _ in 0..room.saturating_sub(1) {
+            tight.add_midi(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000,
+            ));
+        }
+        let before = tight.events().len();
+        tight.add_midi(&pc);
+        assert_eq!(tight.events().len(), before, "all or none");
+        assert_eq!(tight.midi_dropped(), 3);
+        // A plain event past the room is refused too, never grown into.
+        let cap = tight.events.capacity();
+        while tight.events().len() < cap {
+            tight.add_midi(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                61,
+                0x8000,
+            ));
+        }
+        tight.add_midi(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            62,
+            0x8000,
+        ));
+        assert_eq!(tight.events().len(), cap);
+        assert_eq!(tight.events.capacity(), cap, "did not grow");
+        assert_eq!(tight.midi_dropped(), 4);
     }
 
     /// **A dense block sorts without allocating, and ties keep their
@@ -2811,7 +2934,8 @@ mod tests {
     /// full-parameter-room path (`coalesce_param`) read the struct.
     ///
     /// Mutation (run): delete the `space_id` test in `output_events_try_push` →
-    /// both pushes are accepted and the assertions fail.
+    /// both pushes are accepted and the assertions fail; drop the
+    /// `refused += 1` there → the count assertion fails.
     #[test]
     fn output_events_refuse_a_foreign_space() {
         let mut output = OutputEventList::new();
@@ -2839,6 +2963,7 @@ mod tests {
         output.param_room = 0;
         assert!(!unsafe { push(list_ptr, &param.header) });
         assert!(output.events().is_empty());
+        assert_eq!(output.events_refused(), 2);
     }
 
     /// A `size` under the type's struct would read past the plugin's event.
@@ -2865,31 +2990,44 @@ mod tests {
     }
 
     /// A note goes out as `clap_event_midi` when the port takes the MIDI
-    /// dialect only; per-note expression has no such form and is dropped.
+    /// dialect only; per-note expression adds nothing.
     ///
     /// Mutations (run): ignore `midi_notes` in `add_midi` → the first
     /// assertions fail; ignore it in `add_note_expressions` → the last fails;
-    /// drop the velocity floor of 1 → the zero-velocity case fails.
+    /// drop the velocity floor of 1 → the zero-velocity case fails; clamp
+    /// `velocity * 127` without `round` or scale by 128 → the 64 → 64 case
+    /// fails; drop `channel & 0x0F` for a fixed channel 0 → channel 9 fails;
+    /// send port 1 instead of 0 → the port assertion fails.
     #[test]
     fn midi_dialect_sends_notes_as_midi_events() {
-        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 60, 0xFFFF);
-        let quiet = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 61, 1);
-        let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(2), 60, 0);
+        let ch = MidiChannel::new(9);
+        let on = MidiEvent::note_on(MidiGroup::FIRST, ch, 60, 0xFFFF);
+        let mid = MidiEvent::note_on_7bit(MidiGroup::FIRST, ch, 62, 64);
+        let quiet = MidiEvent::note_on(MidiGroup::FIRST, ch, 61, 1);
+        let off = MidiEvent::note_off(MidiGroup::FIRST, ch, 60, 0);
 
         let mut list = InputEventList::new();
         list.set_midi_notes(true);
-        list.add_midi(&on).add_midi(&quiet).add_midi(&off);
-        let bytes: Vec<[u8; 3]> = list
+        list.add_midi(&on)
+            .add_midi(&mid)
+            .add_midi(&quiet)
+            .add_midi(&off);
+        let sent: Vec<(u16, [u8; 3])> = list
             .events()
             .iter()
             .map(|e| match e {
-                ClapEvent::Midi(m) => m.data,
+                ClapEvent::Midi(m) => (m.port_index, m.data),
                 other => panic!("expected a MIDI event, got {:?}", other.header().type_),
             })
             .collect();
         assert_eq!(
-            bytes,
-            [[0x92, 60, 127], [0x92, 61, 1], [0x82, 60, 0]],
+            sent,
+            [
+                (0, [0x99, 60, 127]),
+                (0, [0x99, 62, 64]),
+                (0, [0x99, 61, 1]),
+                (0, [0x89, 60, 0])
+            ],
             "note-on never rounds to velocity 0, which would be a note-off"
         );
 
@@ -2910,6 +3048,180 @@ mod tests {
         list.set_midi_notes(true);
         list.add_note_expressions(&expr);
         assert!(list.events().is_empty());
+    }
+
+    /// Poly pressure (`0xAn`) is a per-note expression to a CLAP-dialect port
+    /// and raw MIDI to a MIDI-dialect one.
+    ///
+    /// Mutation (run): return `None` for `NoteExpression` in
+    /// `into_midi_dialect` (the old behaviour) → the MIDI-dialect assertion
+    /// fails; take the fallback regardless of `midi_notes` → the CLAP-dialect
+    /// assertion fails.
+    #[test]
+    fn midi_dialect_keeps_poly_pressure_as_midi_bytes() {
+        let event = MidiEvent::from_midi1_bytes(0, &[0xA3, 60, 90]).expect("poly pressure");
+
+        let mut list = InputEventList::new();
+        list.set_midi_notes(true);
+        list.add_midi(&event);
+        assert_eq!(list.events().len(), 1);
+        let ClapEvent::Midi(m) = &list.events()[0] else {
+            panic!("expected a MIDI event");
+        };
+        assert_eq!((m.port_index, m.data), (0, [0xA3, 60, 90]));
+
+        let mut list = InputEventList::new();
+        list.add_midi(&event);
+        assert!(matches!(list.events()[0], ClapEvent::NoteExpression(_)));
+    }
+
+    /// Every core type a plugin may push is refused one byte short of its
+    /// struct and taken at its exact size: this pins `core_event_size`.
+    ///
+    /// Mutations (run): return a size one larger for a type → its exact-size
+    /// push is refused; one smaller → its short push is taken; drop a type
+    /// from the table → both its pushes are refused.
+    #[test]
+    fn output_events_take_every_core_type_only_at_its_struct_size() {
+        let note = *match ClapEvent::note_on(0, 0, 60, 0.5) {
+            ClapEvent::NoteOn(e) => Box::new(e),
+            _ => unreachable!(),
+        };
+        let midi = *match ClapEvent::midi(0, 0, [0x90, 60, 64]) {
+            ClapEvent::Midi(e) => Box::new(e),
+            _ => unreachable!(),
+        };
+        let expr = *match ClapEvent::note_expression(0, NoteExpressionType::Volume, 1, 0.5) {
+            Some(ClapEvent::NoteExpression(e)) => Box::new(e),
+            _ => unreachable!(),
+        };
+        let param = *match ClapEvent::param_value(0, 1, 0.5) {
+            ClapEvent::ParamValue(e) => Box::new(e),
+            _ => unreachable!(),
+        };
+        let pmod = clap_event_param_mod {
+            header: clap_event_header {
+                size: header_size::<clap_event_param_mod>(),
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_MOD,
+                flags: 0,
+            },
+            param_id: 1,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            amount: 0.0,
+        };
+        let gesture = clap_event_param_gesture {
+            header: clap_event_header {
+                size: header_size::<clap_event_param_gesture>(),
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_GESTURE_BEGIN,
+                flags: 0,
+            },
+            param_id: 1,
+        };
+        let data = [0xF0u8, 0x7E, 0xF7];
+        let sysex = clap_event_midi_sysex {
+            header: clap_event_header {
+                size: header_size::<clap_event_midi_sysex>(),
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_MIDI_SYSEX,
+                flags: 0,
+            },
+            port_index: 0,
+            buffer: data.as_ptr(),
+            size: data.len() as u32,
+        };
+
+        // (type, header, its struct's size)
+        let mut cases: Vec<(u16, clap_event_header)> = Vec::new();
+        for type_ in [
+            CLAP_EVENT_NOTE_ON,
+            CLAP_EVENT_NOTE_OFF,
+            CLAP_EVENT_NOTE_CHOKE,
+            CLAP_EVENT_NOTE_END,
+        ] {
+            let mut h = note.header;
+            h.type_ = type_;
+            cases.push((type_, h));
+        }
+        cases.push((CLAP_EVENT_MIDI, midi.header));
+        cases.push((CLAP_EVENT_NOTE_EXPRESSION, expr.header));
+        cases.push((CLAP_EVENT_PARAM_VALUE, param.header));
+        cases.push((CLAP_EVENT_PARAM_MOD, pmod.header));
+        cases.push((CLAP_EVENT_PARAM_GESTURE_BEGIN, gesture.header));
+        let mut end = gesture.header;
+        end.type_ = CLAP_EVENT_PARAM_GESTURE_END;
+        cases.push((CLAP_EVENT_PARAM_GESTURE_END, end));
+        cases.push((CLAP_EVENT_MIDI_SYSEX, sysex.header));
+
+        for (type_, header) in cases {
+            let exact = core_event_size(type_).expect("a core type");
+            assert_eq!(exact, header.size, "type {type_}: the table is its struct");
+
+            // Each push gets a struct whose header `size` is what is varied;
+            // the body is the real, full-size one, so the exact push is read
+            // soundly.
+            let push_with = |size: u32| -> bool {
+                let mut output = OutputEventList::new();
+                output.reserve(4);
+                let list_ptr = output.as_raw_mut();
+                let push = unsafe { (*list_ptr).try_push.unwrap() };
+                let mut h = header;
+                h.size = size;
+                let accepted = match type_ {
+                    CLAP_EVENT_NOTE_ON..=CLAP_EVENT_NOTE_END => {
+                        let mut e = note;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_MIDI => {
+                        let mut e = midi;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_NOTE_EXPRESSION => {
+                        let mut e = expr;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_PARAM_VALUE => {
+                        let mut e = param;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_PARAM_MOD => {
+                        let mut e = pmod;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_PARAM_GESTURE_BEGIN | CLAP_EVENT_PARAM_GESTURE_END => {
+                        let mut e = gesture;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    CLAP_EVENT_MIDI_SYSEX => {
+                        let mut e = sysex;
+                        e.header = h;
+                        unsafe { push(list_ptr, &e.header) }
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(output.events().len(), usize::from(accepted));
+                accepted
+            };
+            assert!(
+                !push_with(exact - 1),
+                "type {type_}: one byte short is refused"
+            );
+            assert!(push_with(exact), "type {type_}: the exact size is taken");
+        }
     }
 
     #[test]

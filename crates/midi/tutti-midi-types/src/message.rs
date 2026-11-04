@@ -77,6 +77,14 @@ pub type NoteAttribute = midi2::channel_voice2::NoteAttribute;
 /// carry the note `attribute`. Unmodeled families keep their whole source event
 /// in [`Other`](Self::Other), so [`MidiEvent::try_from`] can reconstruct any
 /// message this view produced.
+///
+/// # Group
+///
+/// The view is **group-agnostic**: decoding drops the UMP group and
+/// [`MidiEvent::try_from`] re-encodes onto [`MidiGroup::FIRST`]. Only
+/// [`Other`](Self::Other) keeps its event, group included. A stream spanning
+/// several groups must route on the [`MidiEvent`] (its
+/// [`group`](MidiEvent::group)), not on this view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MidiMessage {
@@ -111,7 +119,7 @@ pub enum MidiMessage {
         channel: MidiChannel,
         /// Note number, 0..=127.
         note: u8,
-        /// **16-bit** release velocity. Zero for a folded MIDI 1.0 note-off.
+        /// **16-bit** release velocity. Zero for a folded velocity-0 MIDI 1.0 note-on.
         velocity: u16,
         /// MIDI 2.0 note attribute, if the source carried one.
         attribute: Option<NoteAttribute>,

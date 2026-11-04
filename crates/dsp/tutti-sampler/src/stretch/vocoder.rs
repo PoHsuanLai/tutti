@@ -206,7 +206,7 @@ impl Vocoder {
 
         // 2. Forward transform into the `size / 2 + 1` bins. DC and Nyquist
         //    come out real.
-        self.fft.forward(&mut self.fft_buffer, &mut self.spectrum);
+        self.fft.forward(&self.fft_buffer, &mut self.spectrum);
 
         // 3. Per-bin phase advance, re-accumulated at the synthesis rate.
         let hop_ratio = synthesis_hop as f32 / analysis_hop as f32;

@@ -103,9 +103,9 @@ fn fft_roundtrip_is_the_identity() {
         .collect();
 
     let mut fft = Fft::new(n);
-    let mut buf = orig.clone();
+    let buf = orig.clone();
     let mut spectrum = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-    fft.forward(&mut buf, &mut spectrum);
+    fft.forward(&buf, &mut spectrum);
     // A real frame's DC and Nyquist bins are real.
     assert_eq!(spectrum[0].im, 0.0);
     assert_eq!(spectrum[n / 2].im, 0.0);
@@ -170,9 +170,9 @@ fn the_forward_transform_is_the_dft_for_every_even_size() {
             .map(|i| ((i * 7 + 3) % 11) as f32 * 0.25 - 1.0)
             .collect();
         let mut fft = Fft::new(n);
-        let mut real = frame.clone();
+        let real = frame.clone();
         let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-        fft.forward(&mut real, &mut bins);
+        fft.forward(&real, &mut bins);
         for (k, bin) in bins.iter().enumerate() {
             let (mut re, mut im) = (0.0f64, 0.0f64);
             for (t, &x) in frame.iter().enumerate() {
@@ -200,11 +200,10 @@ fn the_forward_transform_is_the_dft_for_every_even_size() {
 /// The scratch is shared by both directions, so it must cover the larger of
 /// the two plans' needs, at every window the vocoder can be built with.
 ///
-/// Mutation (run): size the scratch from `forward.scratch_len()` alone in
-/// `Fft::from_plans`. The scalar plans need the same scratch in both
-/// directions at every size, so this mutation survives here (the test is
-/// the guard for a plan whose two directions differ, which is not the case
-/// today); sizing it as `0` fails at every size.
+/// Not mutation-covered: rustfft 6.4's scalar out-of-place scratch length is 0
+/// at every size, so sizing the scratch as `0` or from one direction alone
+/// still passes. This is a cheap guard for a future rustfft whose scratch is
+/// nonzero or differs by direction; it cannot fail today.
 #[test]
 fn the_scratch_covers_both_plans_at_every_fft_size() {
     let mut size = FftSize::MIN.size().get();
@@ -254,9 +253,9 @@ fn the_fft_is_scalar_so_renders_match_across_cpus() {
         })
         .collect();
     let mut fft = Fft::new(n);
-    let mut real = frame.clone();
+    let real = frame.clone();
     let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
-    fft.forward(&mut real, &mut bins);
+    fft.forward(&real, &mut bins);
     let mut back = vec![0.0f32; n];
     fft.inverse(&mut bins.clone(), &mut back);
 

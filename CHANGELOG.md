@@ -57,26 +57,31 @@ mirrored. The plans are built in `Vocoder::new` and shared by a unit's
 channels and clones (scratch is per vocoder), so `tick` and `process` still
 allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`, and
 `rustfft` joins it.
-**The FFT is forced scalar so renders are bit-identical across CPUs.**
+**The FFT is forced scalar, so its arithmetic is CPU-independent.**
 `realfft`'s planners always use rustfft's auto planner, which picks AVX, SSE or
-NEON at run time and differs bitwise from scalar in about 97% of bins, so a
-render would differ between machines. `realfft` cannot be given a planner, so
-`stretch::fft` carries its even-length real-FFT passes over
-`rustfft::FftPlannerScalar` (a test pins the scalar choice on Linux/glibc, and
-another checks the transforms against the textbook DFT). The inverse zeroes the
+NEON at run time and differs bitwise from scalar in about 97% of bins. `realfft`
+cannot be given a planner, so `stretch::fft` carries its even-length real-FFT
+passes over `rustfft::FftPlannerScalar` (adapted from realfft 3.5.0 by Henrik
+Enquist, MIT; the notice is `stretch/LICENSE-realfft`). A test pins the scalar
+choice on Linux/glibc, and another checks the transforms against the textbook
+DFT. The twiddles and the vocoder's phase math still use the C library's
+sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS
+and libm, not across libms. The tutti-nodes convolver, tutti-analysis and the
+tutti-spatial HRTF still use SIMD-dispatching FFTs.
+The inverse zeroes the
 imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
 so non-finite input there cannot panic the audio path; the state after a
 non-finite frame is as before (the phase history stays non-finite until
 `reset`).
 Measured on the new `stretch` bench (stereo, 512-frame blocks, stretch 1.5,
-+200 cents), `taskset -c 0`, interleaved main/branch runs, median of 3 (us per
-block):
++200 cents), `taskset -c 0`, interleaved main/branch runs, median of 3, against
+main at #175 (us per block):
 
 | window | main | branch | change |
 | --- | --- | --- | --- |
-| 1024 | 202.3 | 177.8 | -12% |
-| 2048 | 216.5 | 193.6 | -11% |
-| 4096 | 218.8 | 203.7 | -7% |
+| 1024 | 191.8 | 174.7 | -9% |
+| 2048 | 206.4 | 181.3 | -12% |
+| 4096 | 217.5 | 191.3 | -12% |
 
 **The output bits change, by rounding only.** A different FFT algorithm rounds
 every bin differently, and the `1 / size` scale is now a separate exact

@@ -818,7 +818,7 @@ below). What each item became:
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
   - `real_fft`/`inverse_fft`: the sampler's vocoder plans a real-input
     pair at construction (realfft's even-length passes over rustfft's
-    *scalar* planner, so a render is bit-identical on every CPU) and
+    *scalar* planner, so the FFT arithmetic is CPU-independent; renders are bit-identical across CPUs on one OS and libm, not across libms. The convolver, tutti-analysis and the HRTF still use SIMD FFTs) and
     shares the plans across its channels and clones (`stretch/fft.rs`).
   - `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,
     re-exported by `tutti-core` (whose `net_fade` converted it for

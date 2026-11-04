@@ -7,13 +7,19 @@
 //!
 //! **The inner FFT is rustfft's scalar one, on purpose.** Its auto planner
 //! (what `realfft` always uses) picks AVX, SSE or NEON at run time, and those
-//! round differently from scalar in most bins, so a render would differ
-//! between CPUs. A render is bit-identical on every CPU only if the arithmetic
-//! is. `realfft` cannot be given a planner, so the even-length real-FFT
-//! passes (the algorithm of `realfft::RealToComplexEven` and
-//! `ComplexToRealEven`, MIT) are written out here over
+//! round differently from scalar in most bins. `realfft` cannot be given a
+//! planner, so the even-length real-FFT passes are written out here over
 //! [`FftPlannerScalar`](rustfft::FftPlannerScalar). Everything else is plain
-//! `f32` Rust, which the compiler does not contract into FMAs.
+//! `f32` Rust, which the compiler does not contract into FMAs. The FFT
+//! arithmetic is therefore CPU-independent. The twiddles and the vocoder's
+//! phase math still call the C library's sin/cos/atan2/hypot, so a render is
+//! bit-identical across CPUs on the same OS and libm, not across libms. The
+//! tutti-nodes convolver, tutti-analysis and the tutti-spatial HRTF still use
+//! SIMD-dispatching FFTs.
+//!
+//! **Licence.** The `RealToComplexEven` and `ComplexToRealEven` passes and the
+//! twiddle construction are adapted from realfft 3.5.0 by Henrik Enquist
+//! (MIT); the full notice and permission text is in `LICENSE-realfft`.
 //!
 //! The plans and the scratch they need are built in [`Fft::new`], on the
 //! control thread. The plans are immutable and shared between clones; the
@@ -122,9 +128,8 @@ impl Fft {
     }
 
     /// `real` (`size` samples) to `bins` (`size / 2 + 1`), `DC..=Nyquist`.
-    /// `real` is left as it was; callers treat its contents as unspecified. DC's
-    /// and Nyquist's imaginary parts are zero.
-    pub(super) fn forward(&mut self, real: &mut [f32], bins: &mut [Complex32]) {
+    /// DC's and Nyquist's imaginary parts are zero.
+    pub(super) fn forward(&mut self, real: &[f32], bins: &mut [Complex32]) {
         let half = self.size / 2;
         assert_eq!(real.len(), self.size, "BUG: frame is one window");
         assert_eq!(bins.len(), half + 1, "BUG: spectrum is size / 2 + 1 bins");

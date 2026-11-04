@@ -57,11 +57,15 @@ impl MidiIo {
 
 impl MidiIo {
     /// Moves everything in the plugin→host inbox into [`out`](Self::out), in
-    /// order. Allocation-free: `out` is reserved for the inbox's whole
+    /// order, for the piece of a block that starts `start` frames into it: the
+    /// plugin's offsets are relative to its call, the returned ones to the
+    /// block. Allocation-free: `out` is reserved for the inbox's whole
     /// capacity at construction, so draining a full inbox cannot grow it.
-    pub(crate) fn drain(&mut self) {
+    pub(crate) fn drain_from(&mut self, start: usize) {
+        let start = u32::try_from(start).unwrap_or(u32::MAX);
         while let Some(ev) = self.out_rx.pop() {
-            self.out.push(ev);
+            self.out
+                .push(ev.with_frame_offset(ev.frame_offset.saturating_add(start)));
         }
     }
 }
@@ -209,10 +213,18 @@ impl MidiSendBuffer {
         buf
     }
 
-    /// Stage `midi_events` into the reusable buffers and return a raw
-    /// pointer to the populated `api::Events` header. Never allocates: an
-    /// event past the buffer's room is refused and counted (every SysEx
-    /// packet still reaches the assembler, so a message is never spliced).
+    /// Stage the events of `midi_events` that fall in the piece of a block
+    /// `start..start + len` (of `total` frames) into the reusable buffers and
+    /// return a raw pointer to the populated `api::Events` header. Never
+    /// allocates: an event past the buffer's room is refused and counted
+    /// (every SysEx packet still reaches the assembler, so a message is never
+    /// spliced).
+    ///
+    /// What the plugin is handed is the VST2 contract, enforced here rather
+    /// than trusted of the caller: each event's `deltaFrames` is clamped to
+    /// the block (`0..total`, as JUCE clamps with `jlimit(0, numSamples - 1,
+    /// ..)`), rebased to the piece, and the events are delivered in
+    /// `deltaFrames` order (stable among equals), whatever order they came in.
     ///
     /// Returns `None` if no events convert successfully (in which case
     /// the caller skips dispatch entirely).
@@ -222,12 +234,30 @@ impl MidiSendBuffer {
     /// subsequent [`Self::stage`] call. Caller must hand it to
     /// `vst::plugin::Plugin::process_events` and not retain it past
     /// that call.
-    pub(crate) fn stage(&mut self, midi_events: &[MidiEvent]) -> Option<*mut vst::api::Events> {
+    pub(crate) fn stage_piece(
+        &mut self,
+        midi_events: &[MidiEvent],
+        start: usize,
+        len: usize,
+        total: usize,
+    ) -> Option<*mut vst::api::Events> {
         use vst::api;
 
         if midi_events.is_empty() {
             return None;
         }
+
+        // The frame, in this piece, an event at `offset` of the block lands on;
+        // `None` for one that belongs to another piece. The clamp is to the
+        // block, so an event past its end lands on its last frame, in the last
+        // piece.
+        let last = total.saturating_sub(1);
+        let delta_in_piece = |offset: u32| {
+            let at = (offset as usize).min(last);
+            (start..start + len)
+                .contains(&at)
+                .then(|| (at - start) as i32)
+        };
 
         // Reuse the storage. `clear()` doesn't drop the backing
         // allocation; the pushes below reuse it as long as capacity holds.
@@ -242,19 +272,25 @@ impl MidiSendBuffer {
             let full = self.order.len() == self.room;
             match step {
                 SysExStep::NotSysEx => {
-                    if let Some(api) = from_midi(ev) {
+                    let Some(delta) = delta_in_piece(ev.frame_offset) else {
+                        continue;
+                    };
+                    if let Some(mut api) = from_midi(ev) {
                         if full {
                             self.events_dropped += 1;
                             continue;
                         }
+                        api.delta_frames = delta;
                         self.order.push(Staged::Midi(self.api_events.len()));
                         self.api_events.push(api);
                     }
                 }
                 SysExStep::Held => {}
+                SysExStep::Complete(_) if delta_in_piece(ev.frame_offset).is_none() => {}
                 SysExStep::Complete(_) if full => self.events_dropped += 1,
                 SysExStep::Complete(message) => {
-                    let event = self.sysex_event(ev, message);
+                    let delta = delta_in_piece(ev.frame_offset).unwrap_or(0);
+                    let event = self.sysex_event(delta, message);
                     self.order.push(Staged::SysEx(self.sysex_events.len()));
                     self.sysex_events.push(event);
                 }
@@ -262,6 +298,16 @@ impl MidiSendBuffer {
         }
         if self.order.is_empty() {
             return None;
+        }
+
+        // In `deltaFrames` order, stably: an in-order list (the common case)
+        // costs one comparison per event and no moves.
+        {
+            let (midi, sysex) = (&self.api_events, &self.sysex_events);
+            tutti_plugin_types::insertion_sort_by_key(&mut self.order, |staged| match *staged {
+                Staged::Midi(i) => midi[i].delta_frames,
+                Staged::SysEx(i) => sysex[i].delta_frames,
+            });
         }
 
         let num_events = self.order.len();
@@ -322,14 +368,13 @@ impl MidiSendBuffer {
     }
 
     /// The `SysExEvent` for a reassembled message, at `end`'s frame.
-    fn sysex_event(&self, end: &MidiEvent, message: SysExRef) -> vst::api::SysExEvent {
+    fn sysex_event(&self, delta_frames: i32, message: SysExRef) -> vst::api::SysExEvent {
         let bytes = self.sysex.message(message);
         vst::api::SysExEvent {
             event_type: vst::api::EventType::SysEx,
             byte_size: std::mem::size_of::<vst::api::SysExEvent>() as i32,
-            // Saturating, as `from_midi` does: a wrapped offset is an
-            // out-of-bounds index inside the plugin.
-            delta_frames: i32::try_from(end.frame_offset).unwrap_or(i32::MAX),
+            // Already clamped to the block and rebased to the piece.
+            delta_frames,
             _flags: 0,
             data_size: bytes.len() as i32,
             _reserved1: 0,
@@ -372,7 +417,7 @@ mod tests {
                     .push(MidiEvent::from_ump(i, &[0x2090_3C40]))
                     .expect("room");
             }
-            assert_no_alloc::assert_no_alloc(|| io.drain());
+            assert_no_alloc::assert_no_alloc(|| io.drain_from(0));
             assert_eq!(io.out.len(), 256);
             assert_eq!(io.out[255].frame_offset, 255, "in order");
         }
@@ -609,7 +654,7 @@ mod tests {
             .collect();
 
         // Warm up.
-        let _ = buf.stage(&evs);
+        let _ = buf.stage_piece(&evs, 0, 4096, 4096);
         let api_cap = buf.api_events.capacity();
         let ptr_cap = buf.event_ptrs.capacity();
         let hdr_cap = buf.header.capacity();
@@ -617,7 +662,7 @@ mod tests {
         // Subsequent stages of equal-or-smaller event sets must not
         // reallocate any of the three Vecs.
         for _ in 0..16 {
-            let _ = buf.stage(&evs);
+            let _ = buf.stage_piece(&evs, 0, 4096, 4096);
             assert_eq!(buf.api_events.capacity(), api_cap);
             assert_eq!(buf.event_ptrs.capacity(), ptr_cap);
             assert_eq!(buf.header.capacity(), hdr_cap);
@@ -627,6 +672,51 @@ mod tests {
     /// What the plugin reads from a staged `api::Events`: per event, its
     /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
     /// through the pointers it is handed.
+    fn note(frame: u32, key: u8) -> MidiEvent {
+        use tutti_midi_types::{MidiChannel, MidiGroup};
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0x4000)
+            .with_frame_offset(frame)
+    }
+
+    /// The plugin is handed `deltaFrames` inside the block, in order,
+    /// whatever the caller gave: an offset past the block is clamped to its
+    /// last frame (as JUCE clamps with `jlimit`) and out-of-order events are
+    /// delivered sorted, stably.
+    ///
+    /// Mutation (run): drop the `insertion_sort_by_key` -> delivered in input
+    /// order -> fails. Mutation (run): `delta_in_piece` without the `.min(last)`
+    /// -> the event at 9000 is dropped as out of the block -> fails.
+    #[test]
+    fn stage_clamps_and_sorts_delta_frames() {
+        let mut buf = MidiSendBuffer::new();
+        let midi = [note(30, 62), note(9_000, 64), note(5, 60), note(30, 63)];
+        let staged = read_staged(buf.stage_piece(&midi, 0, 64, 64).expect("events staged"));
+        let got: Vec<(i32, u8)> = staged.iter().map(|(d, b)| (*d, b[1])).collect();
+        assert_eq!(got, [(5, 60), (30, 62), (30, 63), (63, 64)]);
+    }
+
+    /// A piece of a split block gets the events that fall in it, rebased to
+    /// the piece, and each event is delivered in exactly one piece.
+    ///
+    /// Mutation (run): rebase by nothing (`at` for `at - start`) -> the second
+    /// piece reads 70 -> fails.
+    #[test]
+    fn stage_piece_delivers_each_event_once_rebased() {
+        let mut buf = MidiSendBuffer::new();
+        let midi = [note(10, 60), note(70, 61), note(130, 62)];
+        let piece = |buf: &mut MidiSendBuffer, start| {
+            buf.stage_piece(&midi, start, 64, 200)
+                .map(read_staged)
+                .unwrap_or_default()
+                .iter()
+                .map(|(d, b)| (*d, b[1]))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(piece(&mut buf, 0), [(10, 60)]);
+        assert_eq!(piece(&mut buf, 64), [(6, 61)]);
+        assert_eq!(piece(&mut buf, 128), [(2, 62)]);
+    }
+
     fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {
         use vst::api;
         let mut out = Vec::new();
@@ -687,7 +777,10 @@ mod tests {
         midi.extend(sysex_packets(&body, 3));
         midi.push(note.with_frame_offset(4));
         let mut buf = MidiSendBuffer::new();
-        let staged = read_staged(buf.stage(&midi).expect("events staged"));
+        let staged = read_staged(
+            buf.stage_piece(&midi, 0, 4096, 4096)
+                .expect("events staged"),
+        );
         assert_eq!(
             staged,
             vec![
@@ -700,8 +793,14 @@ mod tests {
         let long: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
         let packets = sysex_packets(&long, 0);
         let (first, second) = packets.split_at(10);
-        assert!(buf.stage(first).is_none(), "nothing before END");
-        let staged = read_staged(buf.stage(second).expect("events staged"));
+        assert!(
+            buf.stage_piece(first, 0, 4096, 4096).is_none(),
+            "nothing before END"
+        );
+        let staged = read_staged(
+            buf.stage_piece(second, 0, 4096, 4096)
+                .expect("events staged"),
+        );
         assert_eq!(staged, vec![(0, framed(&long))]);
         assert_eq!(buf.sysex_dropped(), 0);
     }
@@ -731,7 +830,9 @@ mod tests {
         let mut buf = MidiSendBuffer::new();
         let mut staged = 0;
         assert_no_alloc::assert_no_alloc(|| {
-            let events = buf.stage(&midi).expect("events staged");
+            let events = buf
+                .stage_piece(&midi, 0, 4096, 4096)
+                .expect("events staged");
             staged = unsafe { (*events).num_events } as usize;
         });
         assert_eq!(staged, MIDI_STACK_CAPACITY);
@@ -751,7 +852,10 @@ mod tests {
         midi.truncate(2);
         midi.extend(sysex_packets(&[1, 2, 3, 4, 5, 6, 7], 2));
         let mut buf = MidiSendBuffer::new();
-        let staged = read_staged(buf.stage(&midi).expect("events staged"));
+        let staged = read_staged(
+            buf.stage_piece(&midi, 0, 4096, 4096)
+                .expect("events staged"),
+        );
         assert_eq!(staged, vec![(2, framed(&[1, 2, 3, 4, 5, 6, 7]))]);
         assert_eq!(buf.sysex_dropped(), 1);
     }

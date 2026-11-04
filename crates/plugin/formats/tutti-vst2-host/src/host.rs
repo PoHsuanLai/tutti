@@ -30,22 +30,28 @@
 //! callbacks *answerable*: the plugin gets a real response rather than a silent
 //! 0. Of them:
 //!
-//! - `get_sample_rate` and `get_process_level` return **real data**
-//!   (the live transport rate, and realtime for the live audio path).
-//! - `size_window`, `io_changed`, `get_input_latency`,
-//!   `get_output_latency`, `get_automation_state` return honest neutral
-//!   defaults — the wiring exists, but `HostState` has no reference to
-//!   the value each would need (see each method's note). The fork owns the
-//!   answer rather than falling through to vst-rs's swallowed 0.
+//! - `get_sample_rate`, `get_block_size` and `get_process_level` return **real
+//!   data**: the rate and maximum block the plugin was last told, and
+//!   realtime or offline for the render mode. The first two are written
+//!   before the opcode that tells the plugin, so a query from inside
+//!   `effSetSampleRate` reads the new figure.
+//! - `io_changed` latches for the main thread to re-read the plugin's pins and
+//!   latency, and answers 1; `can_do` answers what the host really supports.
+//! - `size_window`, `get_input_latency`, `get_output_latency`,
+//!   `get_automation_state` return honest neutral defaults — the wiring
+//!   exists, but `HostState` has no reference to the value each would need
+//!   (see each method's note). The fork owns the answer rather than falling
+//!   through to vst-rs's swallowed 0.
 
 use crate::midi::to_midi;
 use crate::transport_cell::{TransportReader, TransportWriter};
 use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tutti_midi_types::MidiGroup;
 use tutti_plugin_types::unframed;
+use vst::api::Supported;
 use vst::host::Host;
 
 /// `(parameter_index, normalized_value)` reported by the plugin's
@@ -127,14 +133,18 @@ pub(crate) struct HostState {
     /// merely a stale readout.
     dropped_midi_out: AtomicU64,
     time_info: TransportReader,
-    /// Maximum block size the host will render, in samples. Served back
-    /// through `audioMasterGetBlockSize` for plugins that poll it rather
-    /// than caching the `effSetBlockSize` setter value.
-    block_size: isize,
-    /// The rate the plugin was configured with at load. Answers
-    /// `get_sample_rate` before the transport has pushed a `TimeInfo`
-    /// snapshot (its rate is authoritative once present).
-    default_sample_rate: f64,
+    /// The maximum block size the plugin was last told (`effSetBlockSize`), in
+    /// samples. Served back through `audioMasterGetBlockSize`.
+    ///
+    /// Written by [`set_block_size`](Self::set_block_size) *before* the
+    /// opcode is dispatched, so a plugin that asks from inside
+    /// `effSetBlockSize` or the `effMainsChanged(1)` after it reads the new
+    /// figure. Atomic: the plugin asks from whichever thread it likes.
+    block_size: AtomicU64,
+    /// The rate the plugin was last told (`effSetSampleRate`), as `f64` bits.
+    /// Answers `audioMasterGetSampleRate`, and is written before the opcode is
+    /// dispatched for the same reason as [`block_size`](Self::block_size).
+    sample_rate_bits: AtomicU64,
     /// Whether the host is rendering offline, answered back through
     /// `audioMasterGetCurrentProcessLevel`.
     ///
@@ -150,6 +160,15 @@ pub(crate) struct HostState {
     /// is idempotent: ten preset changes between polls need one re-read, not
     /// ten. Drained by [`Vst2Instance::take_display_stale`].
     display_stale: std::sync::atomic::AtomicBool,
+    /// Latched by `audioMasterIOChanged`: the plugin changed its pin counts or
+    /// its latency (VST2 has no separate latency callback, and plugins call
+    /// this for both). Drained by [`Vst2Instance::poll_changes`](crate::Vst2Instance::poll_changes),
+    /// which re-reads them on the main thread.
+    ///
+    /// A latch for the reason `display_stale` is: no payload, idempotent, and
+    /// the plugin may call from its audio thread, where a re-read dispatching
+    /// opcodes would be wrong.
+    io_changed: AtomicBool,
 }
 
 impl HostState {
@@ -166,11 +185,30 @@ impl HostState {
             dropped_param_changes: AtomicU64::new(0),
             dropped_midi_out: AtomicU64::new(0),
             time_info,
-            block_size: block_size as isize,
-            default_sample_rate,
+            block_size: AtomicU64::new(block_size as u64),
+            sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
             display_stale: std::sync::atomic::AtomicBool::new(false),
+            io_changed: AtomicBool::new(false),
         }
+    }
+
+    /// Records the block size the plugin is about to be told, for
+    /// `audioMasterGetBlockSize`.
+    pub(crate) fn set_block_size(&self, block_size: usize) {
+        self.block_size.store(block_size as u64, Ordering::Release);
+    }
+
+    /// Records the rate the plugin is about to be told, for
+    /// `audioMasterGetSampleRate`.
+    pub(crate) fn set_sample_rate(&self, rate: f64) {
+        self.sample_rate_bits
+            .store(rate.to_bits(), Ordering::Release);
+    }
+
+    /// Consumes the `audioMasterIOChanged` latch.
+    pub(crate) fn take_io_changed(&self) -> bool {
+        self.io_changed.swap(false, Ordering::AcqRel)
     }
 
     /// Sets the render mode reported through
@@ -356,7 +394,7 @@ impl Host for HostState {
     /// which mis-signals plugins that poll `audioMasterGetBlockSize` (they
     /// then either allocate for a zero-size block or fall back to a guess).
     fn get_block_size(&self) -> isize {
-        self.block_size
+        self.block_size.load(Ordering::Acquire) as isize
     }
 
     // ── audioMaster query callbacks, answerable via the vst-tutti fork ──
@@ -367,14 +405,13 @@ impl Host for HostState {
     // (sample rate, process level); the rest are honest neutral defaults
     // pending engine plumbing (documented per method below).
 
-    /// Real data: the live transport sample rate from the `TimeInfo`
-    /// snapshot, falling back to the load-time rate before the transport
-    /// has pushed a snapshot.
+    /// The rate the plugin was last told. Not the block's `TimeInfo` rate: that
+    /// is the rate the graph renders at, and the two differ between a rate
+    /// change and the moment the plugin hears of it (the in-process node parks
+    /// the new rate for the main thread). A plugin asking from inside
+    /// `effSetSampleRate` must read the figure being set.
     fn get_sample_rate(&self) -> f32 {
-        match self.time_info.read() {
-            Some(info) => info.sample_rate as f32,
-            None => self.default_sample_rate as f32,
-        }
+        f64::from_bits(self.sample_rate_bits.load(Ordering::Acquire)) as f32
     }
 
     /// Real data: `kVstProcessLevelOffline` (4) while the host is rendering
@@ -414,10 +451,43 @@ impl Host for HostState {
         0
     }
 
-    /// Neutral default: I/O reconfiguration is driven host→plugin here, not
-    /// the reverse, so there is nothing to re-query. Report unhandled.
+    /// `audioMasterIOChanged`: the plugin changed its pin counts or latency.
+    /// Latched for the main thread to re-read
+    /// ([`Vst2Instance::poll_changes`](crate::Vst2Instance::poll_changes)), and
+    /// answered `true` (1, "handled") because the host does act on it: a
+    /// plugin that reads 0 as "host ignores this" may skip the change.
     fn io_changed(&self) -> bool {
-        false
+        self.io_changed.store(true, Ordering::Release);
+        true
+    }
+
+    /// `audioMasterCanDo`: what this host really does, so a plugin that gates a
+    /// feature on the answer is not told "don't know" about everything.
+    ///
+    /// `Yes`: the host sends MIDI events to the plugin (`sendVstEvents`,
+    /// `sendVstMidiEvent`), takes the MIDI it emits (`receiveVstEvents`,
+    /// `receiveVstMidiEvent`), and serves `audioMasterGetTime`
+    /// (`sendVstTimeInfo`).
+    ///
+    /// `No`, because the host does not do it: `sizeWindow` (the callback
+    /// answers 0, [`size_window`](Self::size_window)), `supplyIdle`
+    /// (`audioMasterIdle` is not routed to anything), `supportShell` and
+    /// `shellCategory` (no shell-plugin id enumeration). Everything else is
+    /// `Maybe`, VST 2.4's "don't know".
+    ///
+    /// The strings and the reference set are JUCE's host `canDo` answers
+    /// (`juce_VSTPluginFormat.cpp`), an open re-implementation of the
+    /// protocol, trimmed to what tutti does.
+    fn can_do(&self, can_do: &str) -> Supported {
+        match can_do {
+            "sendVstEvents"
+            | "sendVstMidiEvent"
+            | "sendVstTimeInfo"
+            | "receiveVstEvents"
+            | "receiveVstMidiEvent" => Supported::Yes,
+            "sizeWindow" | "supplyIdle" | "supportShell" | "shellCategory" => Supported::No,
+            _ => Supported::Maybe,
+        }
     }
 
     /// Neutral default: the host does not expose an automation-read/write
@@ -442,20 +512,80 @@ mod tests {
         )
     }
 
+    /// The rate answers what the plugin was last told, not the block's
+    /// `TimeInfo` rate: right after a rate change the two differ until the
+    /// next block, and a plugin querying from inside `effSetSampleRate`
+    /// allocates for whatever it reads.
+    ///
+    /// Mutation (run): `get_sample_rate` reading the `time_info` snapshot
+    /// first (the previous behaviour) -> the 96 kHz snapshot wins over the
+    /// 44.1 kHz just set -> fails.
     #[test]
-    fn get_sample_rate_reflects_time_info_snapshot() {
+    fn get_sample_rate_is_the_rate_the_plugin_was_told() {
         let mut time_info = TransportWriter::new();
         let host = make_host(time_info.reader(), 44_100.0);
+        assert_eq!(host.get_sample_rate(), 44_100.0, "the load-time rate");
 
-        // Before any snapshot: falls back to the load-time rate.
-        assert_eq!(host.get_sample_rate(), 44_100.0);
-
-        // After the transport pushes a snapshot: the snapshot rate wins.
+        // A block's snapshot at another rate does not move the answer.
         time_info.write(vst::api::TimeInfo {
             sample_rate: 96_000.0,
             ..Default::default()
         });
-        assert_eq!(host.get_sample_rate(), 96_000.0);
+        assert_eq!(host.get_sample_rate(), 44_100.0);
+
+        host.set_sample_rate(88_200.0);
+        assert_eq!(host.get_sample_rate(), 88_200.0);
+    }
+
+    /// `audioMasterGetBlockSize` follows `effSetBlockSize`.
+    ///
+    /// Mutation (run): `set_block_size` not storing -> the load-time 512
+    /// stays -> fails.
+    #[test]
+    fn get_block_size_follows_the_announced_block() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(host.get_block_size(), 512);
+        host.set_block_size(8192);
+        assert_eq!(host.get_block_size(), 8192);
+    }
+
+    /// `audioMasterIOChanged` is answered "handled" and latched exactly once
+    /// for the main thread.
+    ///
+    /// Mutation (run): `io_changed` returning `false` (the previous answer)
+    /// -> fails the first assert. Mutation (run): not latching -> the take
+    /// reads `false` -> fails.
+    #[test]
+    fn io_changed_is_handled_and_latched_once() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert!(!host.take_io_changed(), "nothing reported yet");
+        assert!(host.io_changed(), "answered 1: the host acts on it");
+        assert!(host.take_io_changed());
+        assert!(!host.take_io_changed(), "consumed");
+    }
+
+    /// `audioMasterCanDo` claims what tutti does and declines what it does not.
+    ///
+    /// Mutation (run): the `Host::can_do` override removed (the default
+    /// answers `Maybe` to everything) -> `sendVstEvents` reads 0 -> fails.
+    /// Mutation (run): `sizeWindow` moved into the `Yes` arm -> a claim the
+    /// host does not keep -> fails.
+    #[test]
+    fn can_do_claims_what_the_host_supports() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        for yes in [
+            "sendVstEvents",
+            "sendVstMidiEvent",
+            "sendVstTimeInfo",
+            "receiveVstEvents",
+            "receiveVstMidiEvent",
+        ] {
+            assert_eq!(host.can_do(yes), Supported::Yes, "{yes}");
+        }
+        for no in ["sizeWindow", "supplyIdle", "supportShell", "shellCategory"] {
+            assert_eq!(host.can_do(no), Supported::No, "{no}");
+        }
+        assert_eq!(host.can_do("somethingNew"), Supported::Maybe);
     }
 
     /// A plugin polls this callback to decide whether it may spend more per

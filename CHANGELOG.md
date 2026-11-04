@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — VST2 host protocol (spec audit): block size, precision, start/stop, latency re-reads, `canDo`, `effEditIdle`
+
+The VST2 references used (JUCE, vestige, vst-rs) are open re-implementations of
+the protocol. Changes:
+
+- A block longer than the maximum announced with `effSetBlockSize` (4096 in
+  process; the engine renders up to 8192) is split inside
+  `Vst2Instance::process_f32` / `process_f64`, so the plugin is never called
+  with more frames than it was told.
+- `effSetProcessPrecision(64)` is sent only to a plugin that declared
+  `effFlagsCanDoubleReplacing` and was loaded for it. **Migration:**
+  `Vst2Instance::load` now announces 32; use
+  `Vst2Instance::load_with_precision(.., Precision::Double)` to call
+  `process_f64` natively (otherwise it narrows through f32). The server's
+  `Vst2Instance::load` takes a `prefer_f64` argument.
+- `effStartProcess` is sent at load; drop sends `effStopProcess` and
+  `effMainsChanged(0)` only to a resumed plugin.
+- Latency, tail and pin counts are re-read after a resume, a rate or
+  block-size change and `audioMasterIOChanged` (now answered 1).
+  **New:** `Vst2Instance::poll_changes` -> `Vst2Changes`; the server raises
+  `LatencyChanged`, `TailChanged` and `IoChanged`; the in-process handle
+  raises `PluginInvalidation` on its editor pump.
+- `audioMasterCanDo`, `effEditIdle`, `audioMasterGetSampleRate` /
+  `GetBlockSize` after a change, counts read after `effOpen`, and
+  `deltaFrames` clamped and ordered in `MidiSendBuffer`.
+- `get_sample_rate` answers the rate the plugin was last told, not the block's
+  transport rate (the old test pinning the latter was replaced).
+- `vst-tutti`: `Host::can_do`, `PluginInstance::refresh_effect_fields`.
+- The reference plugin records a lifecycle trace and can raise
+  `audioMasterIOChanged` and ask the host `canDo`.
+
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 
 The paced `clap_live` tests allow one contiguous silent run, no longer than

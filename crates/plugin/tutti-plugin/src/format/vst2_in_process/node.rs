@@ -52,14 +52,26 @@ impl Node for InProcessVst2Client {
     /// its latency, so the tail excludes latency as [`Shape::tail`] asks.
     fn shape(&self) -> Shape {
         let midi_out = u16::from(self.features.contains(Features::MIDI_OUT));
-        let latency = Latency::new(self.metadata.latency_samples);
+        // The plugin's figures as the host last re-read them (`poll_changes`
+        // keeps them current), falling back to this node's copy while the
+        // control thread holds the instance.
+        let (latency, tail) = match self.inner.try_lock() {
+            Some(instance) => {
+                let m = instance.metadata();
+                (Latency::new(m.latency_samples), m.tail)
+            }
+            None => (
+                Latency::new(self.metadata.latency_samples),
+                self.metadata.tail,
+            ),
+        };
         Shape::audio(
             ChannelLayout::from_count(self.metadata.num_inputs.count()),
             ChannelLayout::from_count(self.metadata.num_outputs.count()),
         )
         .with_events(1, midi_out)
         .with_latency(latency)
-        .with_tail(self.metadata.tail)
+        .with_tail(tail)
     }
 
     /// The rate (parked for the plugin, dispatched from the main thread; a

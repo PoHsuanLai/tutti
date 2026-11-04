@@ -17,6 +17,7 @@ did (last position and fade forgotten, ring claim released), so the render is
 bit-identical, the butler is not held back, and the clip resumes at the frame
 the clock names. `pool64/disk-silent/64`: 21.8 to 11.4 us. No public API
 changes. Stretched voices and offline forks still render.
+
 ### Fixed — CLAP reports an unknown tail for a plugin without `clap.tail` and re-reads its ports on activation; `clap_live` no longer flakes
 
 - **`ClapLoaded::get_tail` returns `Option<u32>`**: `None` when the plugin has

@@ -152,13 +152,12 @@ impl Unit {
         let width = crate::nonempty(channels.into());
         // Stride derived once, here on the construction path.
         let n = width.count() as usize;
-        Self::from_vocoders(
-            (0..n).map(|_| Vocoder::new(geometry)).collect(),
-            width,
-            StretchFactor::UNITY,
-            Cents(0.0),
-            true,
-        )
+        // One channel plans and builds the shared tables; the rest are fresh
+        // vocoders on them.
+        let first = Vocoder::new(geometry);
+        let mut vocoders: Vec<Vocoder> = (1..n).map(|_| first.clone_fresh()).collect();
+        vocoders.push(first);
+        Self::from_vocoders(vocoders, width, StretchFactor::UNITY, Cents(0.0), true)
     }
 
     /// A unit over `vocoders` (one per channel of `width`), its block scratch

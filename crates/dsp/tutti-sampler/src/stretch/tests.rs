@@ -3,7 +3,7 @@
 //! beneath it.
 
 use super::buffers::*;
-use super::fft::{inverse_fft, real_fft, Complex32};
+use super::fft::{Complex32, Fft};
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
@@ -84,41 +84,73 @@ fn wrap_phase_maps_into_a_single_turn() {
     }
 }
 
-/// The fact `COLA_GAIN` depends on: microfft's inverse transform already
-/// normalizes, so a forward/inverse pair is the identity and synthesis must
-/// NOT divide by the FFT size again.
+/// The scale `Vocoder::process_frame` relies on: the inverse transform is
+/// unnormalized (`size` times the signal), and the vocoder applies the one
+/// `1 / size`. A forward/inverse pair divided by `size` is the identity.
 ///
-/// The original code did divide, attenuating stretched audio by 60–78 dB
-/// depending on window. If a future FFT backend returns an unnormalized
-/// inverse, this fails loudly here rather than showing up as a quiet
-/// stretcher.
+/// The original code divided twice, attenuating stretched audio by 60-78 dB
+/// depending on window. If an FFT backend normalized its inverse, this fails
+/// loudly here rather than showing up as a quiet stretcher.
+///
+/// Mutation (run): drop the `* norm` in `Vocoder::process_frame` and
+/// `vocoder_reconstructs_its_input_at_unity` fails (an unnormalized inverse in
+/// the output); changing the `/ n` below to `/ 1.0` fails this test.
 #[test]
 fn fft_roundtrip_is_the_identity() {
     let n = 1024usize;
     let orig: Vec<f32> = (0..n)
-        .map(|i| (Radians::TAU.get() * 5.0 * i as f32 / n as f32).sin() * 0.5)
+        .map(|i| (Radians::TAU.get() * 5.0 * i as f32 / n as f32).sin() * 0.5 + 0.1)
         .collect();
 
+    let mut fft = Fft::new(n);
     let mut buf = orig.clone();
-    let packed = real_fft(&mut buf);
-    let bins = n / 2 + 1;
-    let mut spectrum = vec![Complex32::new(0.0, 0.0); n];
-    spectrum[..packed.len()].copy_from_slice(packed);
-    let (dc, nyquist) = (spectrum[0].re, spectrum[0].im);
-    spectrum[0] = Complex32::new(dc, 0.0);
-    spectrum[bins - 1] = Complex32::new(nyquist, 0.0);
-    for i in 1..bins - 1 {
-        spectrum[n - i] = spectrum[i].conj();
-    }
-    inverse_fft(&mut spectrum);
+    let mut spectrum = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
+    fft.forward(&mut buf, &mut spectrum);
+    // A real frame's DC and Nyquist bins are real.
+    assert_eq!(spectrum[0].im, 0.0);
+    assert_eq!(spectrum[n / 2].im, 0.0);
+    // The 5-cycle tone lands in bin 5 with magnitude n/4 (amplitude 0.5).
+    assert!((spectrum[5].norm() - n as f32 / 4.0).abs() < 1e-2);
 
+    let mut out = vec![0.0f32; n];
+    fft.inverse(&mut spectrum, &mut out);
     for (i, &want) in orig.iter().enumerate() {
-        let got = spectrum[i].re;
+        let got = out[i] / n as f32;
         assert!(
             (got - want).abs() < 1e-4,
-            "sample {i}: {got} != {want} — inverse_fft normalization changed"
+            "sample {i}: {got} != {want} — the inverse's normalization changed"
         );
     }
+}
+
+/// A non-zero imaginary DC or Nyquist makes `realfft` return
+/// `Err(InputValues)` after writing the output; the inverse must neither
+/// panic nor let those parts reach the signal. NaN is the same variant.
+///
+/// Mutation (run): replace the `Ok(()) | Err(FftError::InputValues(..))` arm
+/// in `Fft::inverse` with a bare `.expect(..)` -> this test panics.
+#[test]
+fn the_inverse_ignores_dc_and_nyquist_imaginary_parts() {
+    let n = 64usize;
+    let mut fft = Fft::new(n);
+    let mut tone = |im_dc: f32, im_ny: f32| {
+        let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
+        bins[0] = Complex32::new(1.0, im_dc);
+        bins[3] = Complex32::new(2.0, -1.0);
+        bins[n / 2] = Complex32::new(0.5, im_ny);
+        let mut out = vec![0.0f32; n];
+        fft.inverse(&mut bins, &mut out);
+        out
+    };
+    let clean = tone(0.0, 0.0);
+    let dirty = tone(0.25, -0.75);
+    assert_eq!(clean, dirty);
+    // The DC bin alone contributes 1.0 to every sample's mean.
+    let mean = clean.iter().sum::<f32>() / n as f32;
+    assert!((mean - 1.0).abs() < 1e-5, "{mean}");
+
+    let nan = tone(f32::NAN, f32::INFINITY);
+    assert!(nan.iter().all(|x| x.is_finite()));
 }
 
 #[test]
@@ -1759,4 +1791,45 @@ fn a_rate_change_keeps_a_non_default_fft_size() {
             "{size}: wanted 880 Hz an octave up at the new rate, got {got:.1} Hz"
         );
     }
+}
+
+/// A non-finite sample in the source must not panic the audio path, and a
+/// `reset` must bring the unit back: the poisoned frame leaves NaN in the
+/// phase history (the vocoder does not scrub it, as before the real-input
+/// FFT), and a flush clears that.
+///
+/// Mutation (run): in `Fft::inverse`, replace the `Ok(()) |
+/// Err(FftError::InputValues(..))` arm with `Ok(())` only -> a NaN spectrum
+/// reaches the `unreachable!` and the first loop panics.
+#[test]
+fn a_nan_source_does_not_panic_and_a_reset_recovers() {
+    let sr = 48_000.0f32;
+    let u = Unit::with_channels(sr as f64, 1usize);
+    u.set_stretch_factor(StretchFactor::new(1.5));
+    u.set_pitch_cents(Cents::new(300.0));
+    let mut au = u.clone();
+    let mut o = [0.0f32];
+    let tone = |i: usize| (Radians::TAU.get() * 440.0 * i as f32 / sr).sin() * 0.5;
+
+    for i in 0..4096 {
+        au.tick(&[tone(i)], &mut o);
+    }
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for _ in 0..4096 {
+            au.tick(&[bad], &mut o);
+        }
+    }
+
+    au.reset();
+    let mut out = Vec::new();
+    for i in 0..16_384 {
+        au.tick(&[tone(i)], &mut o);
+        out.push(o[0]);
+    }
+    assert!(out.iter().all(|x| x.is_finite()), "reset did not recover");
+    assert!(
+        rms(&out[8192..]) > 0.05,
+        "recovered output is silent: {}",
+        rms(&out[8192..])
+    );
 }

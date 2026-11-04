@@ -69,8 +69,8 @@ use tutti_core::{SampleRate, Samples, Seconds};
 /// Two invariants hold for every instance, and both are enforced in `new`
 /// rather than argued about at the use site:
 ///
-/// - **A power of two between 4 and 32768**, because `real_fft` (the private
-///   `fft` module) dispatches on exactly those lengths and panics otherwise.
+/// - **A power of two between 4 and 32768**, because the vocoder's FFT
+///   plans (the private `fft` module) are built for exactly those lengths.
 /// - **Divisible by 4**, so [`hop`](Self::hop) is `size / 4` exactly — 75%
 ///   overlap, the minimum Hann² constant-overlap-add requires. Any power of two
 ///   ≥ 4 satisfies this; it is stated because the hop, not the window, is what
@@ -88,9 +88,9 @@ impl FftSize {
     /// 8192 samples — ~186 ms at 44.1 kHz. Extreme stretching (Paulstretch).
     pub const N8192: Self = Self(8192);
 
-    /// Smallest window `real_fft` can transform that still admits a `/4` hop.
+    /// Smallest window the vocoder's FFT admits that still admits a `/4` hop.
     pub const MIN: Self = Self(4);
-    /// Largest window `real_fft` can transform.
+    /// Largest window the vocoder's FFT admits.
     pub const MAX: Self = Self(32768);
 
     /// Every preset, for tests and for enumerating a UI.
@@ -100,8 +100,8 @@ impl FftSize {
     /// [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
     ///
     /// Fallible rather than clamping: silently rounding 1000 up to 1024 would
-    /// hand back a unit whose latency is not the one the caller asked for, and
-    /// `real_fft` panics on the un-rounded value — so the caller has to know.
+    /// hand back a unit whose latency is not the one the caller asked for — so the
+    /// caller has to know.
     pub const fn new(size: usize) -> Option<Self> {
         if size.is_power_of_two() && size >= Self::MIN.0 && size <= Self::MAX.0 {
             Some(Self(size))

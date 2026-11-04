@@ -31,6 +31,38 @@ digest in `bevy-tutti`'s `scene_render` was re-recorded.
 Two-channel `limiter` bench, `taskset -c 0`, median of 3 interleaved runs:
 64 frames 1.86 to 1.03 us, 1024 frames 30.0 to 12.1 us.
 
+### Changed — the sampler's phase vocoder inverts with a real-input FFT; stretched output bits change
+
+**`stretch::Unit` runs `realfft`'s real-input pair instead of `microfft`.**
+The forward transform was already real-input; the inverse was a full
+`size`-point complex transform over a rebuilt conjugate half, and is now a
+`size / 2 + 1`-bin complex-to-real transform, so the half-spectrum is never
+mirrored. The plans are built in `Vocoder::new` and shared by a unit's
+channels and clones (scratch is per vocoder), so `tick` and `process` still
+allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`.
+The inverse tolerates only `FftError::InputValues` (a non-zero or NaN
+imaginary DC or Nyquist, which `realfft` reports after writing the output), as
+`tutti-analysis` does, so non-finite input cannot panic the audio path; the
+state after it is as before (the phase history stays non-finite until `reset`).
+Measured on the new `stretch` bench (stereo, 512-frame blocks, stretch 1.5,
++200 cents), `taskset -c 0`, interleaved main/branch runs, median of 3 (us per
+block):
+
+| window | main | branch | change |
+| --- | --- | --- | --- |
+| 1024 | 195.3 | 163.2 | -16% |
+| 2048 | 218.0 | 172.2 | -21% |
+| 4096 | 231.3 | 184.4 | -20% |
+
+**The output bits change, by rounding only.** A different FFT algorithm rounds
+every bin differently (about 1e-7 relative), and the `1 / size` scale now
+rides on the synthesis window. The transform pair is the same mathematically,
+so nothing audible moves; the unity-reconstruction, level, pitch and
+frequency tests hold at their existing tolerances, and no golden digest in the
+sampler suite changes. Migration: none for callers; a test that compared a
+stretched render bit for bit against a recording from before this change must
+re-record it.
+
 ### Changed — `GateNode` compares its threshold in the linear domain; boundary decisions can move
 
 **`GateNode` no longer takes a `log10` of the sidechain level every sample.**

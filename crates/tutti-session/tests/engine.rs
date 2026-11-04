@@ -259,7 +259,7 @@ fn a_voice_plays_in_time(block: usize) {
     let frames = 24_000;
     // The dry voice is pinned to the tone itself; only the pitched one,
     // which has no closed form, carries a digest.
-    for (cents, want) in [(0.0f32, None), (700.0, Some(0x5681_b9dc_0fbe_0695u64))] {
+    for (cents, want) in [(0.0f32, None), (700.0, Some(0x567c_661a_61d4_1865u64))] {
         let rendered = render_voice(cents, frames, block);
         let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
@@ -299,6 +299,9 @@ fn a_voice_plays_in_time(block: usize) {
                 );
             }
         }
+        // The digest is the vocoder's FFT rounding (`realfft`) over the
+        // portable figures above, which are the oracle: it moves only when
+        // that rounding does.
         if let Some(want) = want {
             assert_golden(&format!("voice, {cents} cents"), digest(&rendered), want);
         }

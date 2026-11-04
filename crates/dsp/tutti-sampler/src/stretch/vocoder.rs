@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use super::buffers::{OverlapAdd, SampleFifo};
-use super::fft::{inverse_fft, real_fft, Complex32};
+use super::fft::{Complex32, Fft};
 #[allow(
     unused_imports,
     reason = "`Unit` is referenced only by the intra-doc link on `clone_fresh` below; rustdoc needs the name in scope to resolve it"
@@ -32,10 +32,13 @@ pub(super) struct Vocoder {
     /// calls. Sharing turns that into a refcount bump.
     pub(super) window: Arc<Vec<f32>>,
 
-    /// Real scratch handed to [`real_fft`], which transforms it in place.
+    /// The real-input transform pair and its scratch.
+    pub(super) fft: Fft,
+    /// The frame in, and the synthesized frame out (the forward transform
+    /// clobbers it, the inverse fills it).
     pub(super) fft_buffer: Vec<f32>,
-    /// Full spectrum: `DC..=Nyquist` written by analysis, the conjugate half
-    /// rebuilt before the inverse transform.
+    /// Half spectrum, `DC..=Nyquist` (`size / 2 + 1` bins): written by
+    /// analysis, rewritten with the synthesis phases before the inverse.
     pub(super) spectrum: Vec<Complex32>,
     /// Per-bin synthesis phase, accumulated across frames.
     pub(super) phase_accumulator: Vec<Radians>,
@@ -98,8 +101,9 @@ impl Vocoder {
         Self {
             geometry,
             window: Arc::new(geometry.window_coefficients()),
+            fft: Fft::new(size),
             fft_buffer: vec![0.0; size],
-            spectrum: vec![Complex32::new(0.0, 0.0); size],
+            spectrum: vec![Complex32::new(0.0, 0.0); bins],
             phase_accumulator: vec![Radians(0.0); bins],
             last_phase: vec![Radians(0.0); bins],
             phase_per_sample: Arc::new(phase_per_sample),
@@ -133,8 +137,9 @@ impl Vocoder {
         Self {
             geometry: self.geometry,
             window: Arc::clone(&self.window),
+            fft: self.fft.clone_fresh(),
             fft_buffer: vec![0.0; size],
-            spectrum: vec![Complex32::new(0.0, 0.0); size],
+            spectrum: vec![Complex32::new(0.0, 0.0); bins],
             phase_accumulator: vec![Radians(0.0); bins],
             last_phase: vec![Radians(0.0); bins],
             phase_per_sample: Arc::clone(&self.phase_per_sample),
@@ -199,16 +204,9 @@ impl Vocoder {
         }
         self.input.consume(analysis_hop);
 
-        // 2. Forward transform. `real_fft` returns size/2 bins and packs
-        //    Nyquist into DC's imaginary part, so unpack both before treating
-        //    any bin as a magnitude/phase pair — reading bin 0 as-is mixes two
-        //    unrelated frequencies into one bogus polar value.
-        let packed = real_fft(&mut self.fft_buffer);
-        self.spectrum[..packed.len()].copy_from_slice(packed);
-        let dc = self.spectrum[0].re;
-        let nyquist = self.spectrum[0].im;
-        self.spectrum[0] = Complex32::new(dc, 0.0);
-        self.spectrum[bins - 1] = Complex32::new(nyquist, 0.0);
+        // 2. Forward transform into the `size / 2 + 1` bins. DC and Nyquist
+        //    come out real.
+        self.fft.forward(&mut self.fft_buffer, &mut self.spectrum);
 
         // 3. Per-bin phase advance, re-accumulated at the synthesis rate.
         let hop_ratio = synthesis_hop as f32 / analysis_hop as f32;
@@ -240,28 +238,20 @@ impl Vocoder {
 
         self.primed = true;
 
-        // 4. Rebuild the conjugate half so the inverse transform is real.
-        for i in 1..bins - 1 {
-            self.spectrum[size - i] = self.spectrum[i].conj();
-        }
-
-        // 5. Inverse transform, then window and overlap-add.
-        //
-        // No `1 / size` here: microfft's inverse already normalizes, so a
-        // forward-then-inverse pair is the identity (pinned by
-        // `fft_roundtrip_is_the_identity`). Dividing again attenuates the
-        // stretched signal by the FFT size — 60 dB at 1024, 66 at 2048 — and
-        // presents as "stretching mutes the voice" rather than as a gain bug.
-        // That is the shape a non-zero-output assertion cannot catch: 0.0004 is
-        // non-zero.
-        inverse_fft(&mut self.spectrum);
+        // 4. Inverse transform, then window and overlap-add. `realfft`'s
+        //    inverse is unnormalized, so the `1 / size` is applied with the
+        //    synthesis window. The conjugate half is implied; DC's and
+        //    Nyquist's imaginary parts (a polar bin at phase pi is not exactly
+        //    real) are ignored.
+        self.fft.inverse(&mut self.spectrum, &mut self.fft_buffer);
+        let norm = 1.0 / size as f32;
         for i in 0..size {
             let w = self.window[i];
             // The windowed sample and the window energy that carried it, summed
             // into the same slot. `drain` divides one by the other, as
             // `tutti_analysis::istft` does; a constant COLA gain would be right
             // for one window at one hop only.
-            self.output.add_at(i, self.spectrum[i].re * w, w * w);
+            self.output.add_at(i, self.fft_buffer[i] * norm * w, w * w);
         }
 
         // Zero the span the next frame will accumulate into, which this one has

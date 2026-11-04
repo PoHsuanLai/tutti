@@ -816,8 +816,9 @@ below). What each item became:
     `tutti-polysynth`'s own `kernel.rs`/`bank.rs` rather than a
     `tutti-nodes::kernel`; moog and the SVF modes are the bank's own ladder
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
-  - `real_fft`/`inverse_fft`: the sampler's vocoder calls
-    `microfft` directly (`stretch/fft.rs`).
+  - `real_fft`/`inverse_fft`: the sampler's vocoder plans `realfft`'s
+    real-input pair at construction and shares the plans across its
+    channels and clones (`stretch/fft.rs`).
   - `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,
     re-exported by `tutti-core` (whose `net_fade` converted it for
     `Net::crossfade` until `Net` went).
@@ -862,7 +863,7 @@ or example.
 | `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`) |
 | `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until `Net` is deleted |
 | `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel when params go through `Controls` |
-| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` |
+| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` (`realfft` now, planned at construction) |
 
 **No tutti equivalent yet.** These must be written or rehomed rather than
 dropped:

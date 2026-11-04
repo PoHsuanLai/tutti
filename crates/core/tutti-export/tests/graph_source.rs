@@ -895,6 +895,9 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// voices rendered 64-frame pieces, each re-seated; the one-piece render
 /// keeps it, because a seat lands where the step would have put it.
 ///
+/// The pitched digest carries the rounding of the vocoder's FFT (`realfft`),
+/// over the portable fifth-up figure below; it moves only when that does.
+///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more — computing the chunk positions a different
 /// way moves the fifth-up voice by 1e-3 at frame 3076.
@@ -913,7 +916,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
     for (cents, want) in [
         (0.0f32, 0xbd52_29c7_8f1d_ca41u64),
-        (700.0, 0xd11e_26e8_e6d8_b81d),
+        (700.0, 0xac8e_e52f_92d2_c14d),
     ] {
         let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

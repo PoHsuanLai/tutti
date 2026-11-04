@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — `clap_crash_recovery` measured the core dump, not the host
+
+The reference CLAP probe now dies of `SIGKILL` on unix (`crash_on_block`), not
+`SIGABRT`. An abort dumps core, and where `core_pattern` pipes to a handler
+(`systemd-coredump` on CI's Ubuntu runners) the kernel holds the dying
+server's socket open until the handler is done, so the host's EOF came late.
+On such a runner, over 120 runs per mode, the host noticed the death after up
+to 47 calls (idle) or 59 (with four spinners and a disk writer) where the
+suite waits at most 60, against exactly 37 or 1 with `SIGKILL`. Test-fixture
+change: `tutti-clap-test-plugin` gains a unix `libc` dependency.
+
 ### Fixed — VST2 host protocol (spec audit): block size, precision, start/stop, latency re-reads, `canDo`, `effEditIdle`
 
 The VST2 references used (JUCE, vestige, vst-rs) are open re-implementations of

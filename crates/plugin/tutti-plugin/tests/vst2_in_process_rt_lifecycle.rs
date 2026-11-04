@@ -549,3 +549,72 @@ fn the_handle_counts_lost_parameter_reports() {
     reset_probe(&loaded.path);
     drop(loaded.handle);
 }
+
+/// **A graph block longer than the plugin was told never reaches it whole.**
+/// The loader announces 4096 (`effSetBlockSize`); the engine renders up to
+/// 8192 (`DEFAULT_BLOCK_CAPACITY`, more with `Engine::with_capacity`). An
+/// 8192-frame block is rendered as two calls of 4096, and the largest call
+/// the plugin saw is the announced maximum.
+///
+/// Mutation (run): `Vst2Instance::process_f32` rendering the block in one call
+/// -> the plugin is entered with 8192 against an announced 4096 -> fails.
+#[test]
+fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
+    let _guard = lock_probe();
+    let mut loaded = load();
+
+    drive_blocks(&mut loaded.unit, 8_192, 8_192);
+
+    let cap = read_capture(&loaded.path);
+    assert!(cap.valid, "the probe observed no render");
+    assert_eq!(cap.max_block_size, 4_096, "the announced maximum");
+    assert_eq!(
+        cap.largest_block, 4_096,
+        "the plugin was entered with more frames than it was told"
+    );
+    assert_eq!(cap.process_calls, 2, "4096 + 4096");
+
+    drop(loaded.handle);
+}
+
+/// A plugin's `audioMasterIOChanged` reaches the host's
+/// `PluginHandle::on_invalidate` as its new latency and an I/O change, on the
+/// next editor pump (the main-thread tick an in-process plugin has), and the
+/// node's shape declares the new latency.
+///
+/// Mutation (run): the pump not calling `Vst2Instance::poll_changes` -> no
+/// invalidation -> fails. Mutation (run): `shape` reading the load-time
+/// `metadata.latency_samples` -> the shape still declares 0 -> fails.
+#[test]
+fn an_io_change_reaches_on_invalidate_and_the_shape() {
+    use std::sync::{Arc, Mutex};
+    use tutti_graph::Node as _;
+    use tutti_plugin::handles::PluginInvalidation;
+
+    let _guard = lock_probe();
+    let loaded = load();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    loaded
+        .handle
+        .on_invalidate(move |e| sink.lock().unwrap().push(e));
+
+    let answered = probe_call(&loaded.path, b"tutti_vst2_probe_fire_io_changed\0", |sym| {
+        let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(*sym) };
+        f(300, 2)
+    });
+    assert_eq!(answered, 1);
+    assert!(seen.lock().unwrap().is_empty(), "nothing before the pump");
+
+    loaded.handle.editor_idle();
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.contains(&PluginInvalidation::Latency {
+            samples: tutti_core::Samples(300)
+        }),
+        "{seen:?}"
+    );
+    assert!(seen.contains(&PluginInvalidation::Io), "{seen:?}");
+    assert_eq!(loaded.unit.shape().latency.samples().get(), 300);
+}

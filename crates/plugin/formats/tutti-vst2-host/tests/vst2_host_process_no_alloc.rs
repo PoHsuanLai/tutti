@@ -70,7 +70,13 @@ fn load_probe_inner(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf
             std::env::remove_var("TUTTI_VST2_PROBE_F64");
         }
     }
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    // Told 64-bit when the probe declares it: this file gates the native f64 path.
+    let precision = if declares_f64 {
+        tutti_vst2_host::Precision::Double
+    } else {
+        tutti_vst2_host::Precision::Single
+    };
+    let instance = Vst2Instance::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     // The AEffect is built; clearing keeps the variable from outliving this load.
     // SAFETY: as above.

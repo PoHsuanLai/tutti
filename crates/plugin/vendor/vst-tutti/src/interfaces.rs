@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_void};
 use std::{mem, slice};
 
 use crate::{
-    api::{self, consts::*, AEffect, TimeInfo},
+    api::{self, consts::*, AEffect, Supported, TimeInfo},
     buffer::AudioBuffer,
     editor::{Key, KeyCode, KnobMode, Rect},
     host::Host,
@@ -448,8 +448,20 @@ pub fn host_dispatch(
         Ok(OpCode::Idle) => host.idle(),
 
         // ...
+        // `audioMasterCanDo`: 1 = yes, -1 = no, 0 = don't know. A null string
+        // is a malformed query and answers "don't know".
         Ok(OpCode::CanDo) => {
-            info!("Plugin is asking if host can: {}.", read_string(ptr));
+            if ptr.is_null() {
+                return 0;
+            }
+            let query = read_string(ptr);
+            info!("Plugin is asking if host can: {}.", query);
+            return match host.can_do(&query) {
+                Supported::Yes => 1,
+                Supported::Maybe => 0,
+                Supported::No => -1,
+                Supported::Custom(n) => n,
+            };
         }
 
         Ok(OpCode::GetVendorVersion) => return host.get_info().0,

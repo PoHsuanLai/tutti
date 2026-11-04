@@ -301,6 +301,51 @@ fn send_midi_decode_does_not_allocate() {
     });
 }
 
+/// A long SysEx must not allocate on the audio thread, and one over the
+/// reserved capacity is dropped whole and counted.
+///
+/// `send_midi` used to reassemble a multi-packet SysEx7 into a local
+/// `Vec::new()`, which grew with every packet: a patch dump of a few
+/// kilobytes was dozens of reallocations inside the render path. The buffer
+/// is now reserved by `initialize`.
+///
+/// AUSampler, not `DLS_SYNTH`: `DLSMusicDevice` traps inside
+/// `MusicDeviceSysEx` (see `au_sysex.rs`).
+///
+/// Mutation (cannot be run on the Linux this was written on; macOS CI runs
+/// it): restore the local `let mut sysex_buf: Vec<u8> = Vec::new()` with
+/// `extend_from_slice` per packet → `assert_no_alloc` aborts in the guarded
+/// region; skip the reservation in `AuInstance::initialize` → every message
+/// is dropped and the first `assert_eq!` fails.
+#[test]
+#[ignore]
+fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
+    use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
+
+    let _lock = lock();
+    let au = corpus::SAMPLER.open(48_000.0, BLOCK);
+
+    // Built before the guarded region: the harness allocates, the host must not.
+    let body: Vec<u8> = (0..3000).map(|i| (i % 0x7F) as u8).collect();
+    let mut long = Vec::new();
+    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &body, &mut long);
+    let oversized_body = vec![1u8; SYSEX7_MAX_PAYLOAD + 10];
+    let mut oversized = Vec::new();
+    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &oversized_body, &mut oversized);
+
+    au.send_midi(&long);
+    au.send_midi(&oversized);
+    assert_eq!(au.sysex_dropped(), 1, "the oversized message, and only it");
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..GUARDED {
+            au.send_midi(&long);
+            au.send_midi(&oversized);
+        }
+    });
+    assert_eq!(au.sysex_dropped(), 1 + GUARDED as u64);
+}
+
 /// Rendering after a factory preset load must not allocate.
 ///
 /// A preset load replaces the AU's whole parameter set at once, which is the

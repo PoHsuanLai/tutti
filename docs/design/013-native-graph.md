@@ -5381,6 +5381,22 @@ under both.
   `vst2_in_process`'s `midi_past_the_*_capacity_is_counted`. The same
   counter takes every event of a chunk lost whole and the rest of a SysEx
   cut by a loss, which is never spliced (doc 004, A-4).
+- **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes
+  UMP SysEx7 packets (`tutti_plugin_types::push_sysex`, on
+  `MidiEvent::sysex7_packets`, which allocates nothing) at the plugin's
+  frame offset, for CLAP (`CLAP_EVENT_MIDI_SYSEX`), VST3 (a `kDataEvent`,
+  copied whole at `addEvent` into the output list's arena instead of the
+  event's 16 inline bytes) and VST2 (a `kVstSysExType` event). It is
+  delivered whole or not at all: a message whose packets do not all fit the
+  block's `RT_MIDI_CAPACITY` pool is dropped and latches the pool's
+  `overflowed` (VST3 also counts it in `EventList::dropped`, VST2 in
+  `dropped_midi_out`), since a `START` without its `END` would corrupt the
+  stream after it. AU's MIDI-output callback still drops SysEx (nothing
+  wires that callback into the server today). The AU input side reassembles
+  with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
+  `send_midi` allocates nothing and counts what it drops
+  (`AuInstance::sysex_dropped`). Pinned by the `a_sysex_from_the_plugin_*`
+  tests of each host.
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,
   bevy-tutti's `EventSources`) own only the sources they put on a sink's

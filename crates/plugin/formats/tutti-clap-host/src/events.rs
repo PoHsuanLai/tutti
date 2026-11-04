@@ -33,8 +33,8 @@ use clap_sys::events::{
 };
 use std::ptr;
 use tutti_plugin_types::{
-    note_id_for, note_id_to_channel_note, Normalized, ParamAddress, RtMidiEvents, StableOrder,
-    SysExAssembler, SysExStep, SYSEX_MESSAGE_CAPACITY,
+    note_id_for, note_id_to_channel_note, push_sysex, unframed, Normalized, ParamAddress,
+    RtMidiEvents, StableOrder, SysExAssembler, SysExStep, SYSEX_MESSAGE_CAPACITY,
 };
 
 use crate::types::RtNoteExpressions;
@@ -532,6 +532,19 @@ impl ClapEvent {
             // CC / channel pitch-bend / channel pressure / program: raw MIDI-1
             // bytes (or dropped when there's no 3-byte form).
             _ => as_generic_midi(),
+        }
+    }
+
+    /// The bytes and frame offset of a plugin-emitted SysEx message, which
+    /// is several UMP packets rather than the one event [`Self::to_midi`]
+    /// returns. `None` for any other event.
+    fn sysex_bytes(&self) -> Option<(&[u8], u32)> {
+        match self {
+            // An input list's event has no `_data` and is never read back.
+            ClapEvent::MidiSysex { inner, _data } if !_data.is_empty() => {
+                Some((_data.as_slice(), inner.header.time))
+            }
+            _ => None,
         }
     }
 
@@ -1289,17 +1302,35 @@ impl OutputEventList {
     /// Extracts MIDI events from the output as UMP [`MidiEvent`]s,
     /// dropping non-MIDI events.
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
-        self.events.iter().filter_map(|e| e.to_midi()).collect()
+        let mut out = Vec::new();
+        for e in &self.events {
+            match e.sysex_bytes() {
+                Some((bytes, time)) => out.extend(
+                    MidiEvent::sysex7_packets(MidiGroup::FIRST, unframed(bytes))
+                        .map(|p| p.with_frame_offset(time)),
+                ),
+                None => out.extend(e.to_midi()),
+            }
+        }
+        out
     }
 
     /// RT-safe variant of [`Self::to_midi_events`] that drains into a
     /// caller-supplied [`RtMidiEvents`]. Clears `out` first. `out` is an
     /// `RtVec`, whose capacity is inline and fixed, so this never allocates:
     /// events past that capacity are dropped and `out` reports the overflow.
+    /// A plugin's SysEx arrives as UMP SysEx7 packets
+    /// ([`push_sysex`](tutti_plugin_types::push_sysex)): any length the pool
+    /// has room for, whole or dropped.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         for e in &self.events {
-            if let Some(midi) = e.to_midi() {
+            if let Some((bytes, time)) = e.sysex_bytes() {
+                // Whole or not at all: a message that does not fit is dropped
+                // (and reported through `overflowed`), and later events
+                // still get the room that is left.
+                push_sysex(out, time, bytes);
+            } else if let Some(midi) = e.to_midi() {
                 if !out.push(midi) {
                     break;
                 }
@@ -2768,9 +2799,66 @@ mod tests {
             }
             _ => panic!("Expected MidiSysex event"),
         }
-        // Sysex is its own event kind, not a generic MIDI byte triple: a
-        // consumer draining `to_midi_events` must not see it a second time.
-        assert!(output.to_midi_events().is_empty());
+        // Sysex is its own event kind, not a generic MIDI byte triple, and it
+        // drains as UMP SysEx7 packets at the plugin's frame offset.
+        let drained = output.to_midi_events();
+        assert_eq!(drained.len(), 1, "a 4-byte payload is one packet");
+        assert_eq!(drained[0].frame_offset, 25);
+        let (status, bytes, n) = drained[0].sysex7_payload().expect("a SysEx7 packet");
+        assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
+        assert_eq!(&bytes[..n], &sysex_data[1..sysex_data.len() - 1]);
+    }
+
+    /// **A long SysEx a plugin emits reaches the host whole.** It used to be
+    /// dropped: `ClapEvent::to_midi` is one event, and a SysEx is many
+    /// packets.
+    ///
+    /// Mutation (run): make `fill_midi_events` skip `sysex_bytes` (the old
+    /// `to_midi` only path) → nothing is drained → fails.
+    #[test]
+    fn a_long_sysex_from_the_plugin_drains_whole() {
+        let body: Vec<u8> = (0..40).map(|i| i as u8).collect();
+        let mut message = vec![0xF0];
+        message.extend_from_slice(&body);
+        message.push(0xF7);
+        let mut output = OutputEventList::new();
+        let list_ptr = output.as_raw_mut();
+        let sysex = clap_event_midi_sysex {
+            header: clap_event_header {
+                size: header_size::<clap_event_midi_sysex>(),
+                time: 7,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_MIDI_SYSEX,
+                flags: 0,
+            },
+            port_index: 0,
+            buffer: message.as_ptr(),
+            size: message.len() as u32,
+        };
+        unsafe {
+            let push_fn = (*list_ptr).try_push.unwrap();
+            assert!(push_fn(
+                list_ptr,
+                &sysex as *const clap_event_midi_sysex as *const clap_event_header,
+            ));
+        }
+        let reassemble = |events: &[MidiEvent]| {
+            let mut asm = SysExAssembler::reserved();
+            let mut done = Vec::new();
+            for e in events {
+                assert_eq!(e.frame_offset, 7);
+                if let SysExStep::Complete(r) = asm.push(e) {
+                    done.push(asm.message(r).to_vec());
+                }
+            }
+            done
+        };
+        assert_eq!(reassemble(&output.to_midi_events()), vec![message.clone()]);
+        let mut pool = RtMidiEvents::new();
+        output.fill_midi_events(&mut pool);
+        assert!(!pool.overflowed());
+        assert_eq!(reassemble(pool.as_slice()), vec![message]);
+        assert_eq!(unframed(&[0xF0, 1, 0xF7]), &[1]);
     }
 
     #[test]

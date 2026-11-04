@@ -86,7 +86,9 @@ pub use parameters::{
 pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
-pub use sysex::{SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY};
+pub use sysex::{
+    push_sysex, unframed, SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY,
+};
 pub use transport::{
     is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
 };

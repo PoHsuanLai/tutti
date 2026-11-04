@@ -18,6 +18,23 @@ bit-identical, the butler is not held back, and the clip resumes at the frame
 the clock names. `pool64/disk-silent/64`: 21.8 to 11.4 us. No public API
 changes. Stretched voices and offline forks still render.
 
+### Fixed — a plugin's SysEx reaches the host whole; the AU SysEx path stops allocating
+
+- **A SysEx a plugin emits was dropped** unless it fitted one UMP packet (VST3,
+  and only up to 6 bytes of the 16 the event held), or altogether (CLAP, VST2).
+  It now arrives as SysEx7 packets, whole or not at all (a message past the
+  block's MIDI pool is dropped and reported through the pool's `overflowed`).
+- **`AuInstance::send_midi` grew a `Vec` on the audio thread** reassembling a
+  long SysEx. It uses a `SysExAssembler` reserved by `initialize`; a message
+  over its capacity is dropped and counted (`AuInstance::sysex_dropped`). A
+  SysEx run open at the end of a block now continues in the next, as for the
+  other formats.
+- **New:** `MidiEvent::sysex7_packets` (allocation-free `sysex7_fragments`),
+  `tutti_plugin_types::{push_sysex, unframed}`, `SysExRef::new`,
+  `RtVec::mark_overflowed`. `Vst3Event::SysEx` is also what a VST3 plugin's
+  output list holds for a SysEx; `Vst3Event::to_midi` still returns `None` for
+  it (the list drains it).
+
 ### Changed — the convolver cuts a long IR into a head and larger tail partitions: about 1.8x cheaper on a 2 s IR and 3x on a 5 s one, same latency, output bits change
 
 **`Convolver` (so `ConvolverNode`) cuts an IR long enough to pay for it into

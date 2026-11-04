@@ -248,13 +248,17 @@ impl MidiSendBuffer {
             let full = self.order.len() == self.room;
             match step {
                 // One UMP can be several MIDI-1 messages (a Program Change
-                // with a bank is CC 0, CC 32, PC); each takes a slot.
+                // with a bank is CC 0, CC 32, PC); each takes a slot, and all
+                // of them fit or none is staged (a bank is not sent without
+                // its program).
                 SysExStep::NotSysEx => {
-                    for (bytes, len) in ev.to_midi1_messages() {
-                        if self.order.len() == self.room {
-                            self.events_dropped += 1;
-                            continue;
-                        }
+                    let messages = ev.to_midi1_messages();
+                    let n = messages.len();
+                    if self.order.len() + n > self.room {
+                        self.events_dropped += n as u64;
+                        continue;
+                    }
+                    for (bytes, len) in messages {
                         self.order.push(Staged::Midi(self.api_events.len()));
                         self.api_events
                             .push(midi_event(ev.frame_offset, bytes, len));
@@ -677,16 +681,13 @@ mod tests {
         v
     }
 
-    /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
-    /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
-    /// arrives in the second.
-    ///
     /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
-    /// offset, in that order, each in its own slot: with room for 2 events the
-    /// third is refused and counted.
+    /// offset, in that order, each in its own slot. With room for fewer than
+    /// three, none is staged and all three are counted.
     ///
     /// Mutation (run): `stage` sending the event through `from_midi` (one
-    /// message) → only the PC → fails.
+    /// message) → only the PC → fails; staging each message on its own room
+    /// check (the old per-message loop) → a partial bank → fails.
     #[test]
     fn a_banked_program_change_stages_as_three_events() {
         let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
@@ -701,12 +702,27 @@ mod tests {
                 (5, vec![0xC1, 9, 0]),
             ]
         );
+        // Room for two: none of the three is staged, and all three are counted.
         let mut small = MidiSendBuffer::with_capacity(2);
-        let staged = read_staged(small.stage(&[pc]).expect("events staged"));
-        assert_eq!(staged.len(), 2);
-        assert_eq!(small.events_dropped(), 1, "the third message is counted");
+        assert!(small.stage(&[pc]).is_none());
+        assert_eq!(small.events_dropped(), 3);
+        // Room for the note and one more: the note stays, the bank does not.
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let mut tight = MidiSendBuffer::with_capacity(3);
+        let staged = read_staged(tight.stage(&[note, pc]).expect("the note"));
+        assert_eq!(staged, vec![(0, vec![0x91, 60, 100])]);
+        assert_eq!(tight.events_dropped(), 3);
     }
 
+    /// **A multi-packet SysEx reaches the plugin as one `SysExEvent`**, in
+    /// order beside the block's MIDI, `0xF0 … 0xF7`; one spanning two blocks
+    /// arrives in the second.
+    ///
     /// Mutation (run): `stage` sending every event through `from_midi` (no
     /// reassembly) → no SysEx event → fails.
     #[test]

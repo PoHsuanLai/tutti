@@ -195,6 +195,12 @@ impl Inner {
                 // CC 32, PC), each its own event at the same offset.
                 let messages = event.to_midi1_messages();
                 if messages.len() > 1 {
+                    // All three or none: a bank is not sent without its
+                    // program.
+                    if self.events.len() + messages.len() > EVENT_CAPACITY {
+                        self.dropped += messages.len() as u64;
+                        return;
+                    }
                     let offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
                     for (bytes, _) in messages {
                         self.push(midi1_data_event(offset, bytes));
@@ -1734,8 +1740,11 @@ mod tests {
     /// A banked Program Change reaches the plugin as CC 0, CC 32 and PC, at one
     /// offset, in that order, as `kDataEvent`s of raw MIDI-1 bytes.
     ///
+    /// With room for fewer than three, none is staged and all three are counted.
+    ///
     /// Mutation (run): `stage_midi` converting the event with
-    /// `vst3_event_from_midi` alone → only the PC → fails.
+    /// `vst3_event_from_midi` alone → only the PC → fails; pushing each message
+    /// without the room check → a partial bank in the full list → fails.
     #[test]
     fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
         let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
@@ -1761,6 +1770,15 @@ mod tests {
                 (5, vec![0xC1, 9, 0]),
             ]
         );
+
+        // Room for two: nothing of the bank is staged, and all three are counted.
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        let mut midi = vec![note; EVENT_CAPACITY - 2];
+        midi.push(pc);
+        let full = EventList::input();
+        full.update_from_midi(&midi);
+        assert_eq!(full.len(), EVENT_CAPACITY - 2);
+        assert_eq!(full.dropped(), 3);
     }
 
     fn sysex_packets(payload: &[u8], frame: u32) -> Vec<MidiEvent> {

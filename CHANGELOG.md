@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Migration (API changes):
 - `SmpteTimecode::to_seconds` now maps drop-frame labels to elapsed frames (it counted labels). New: `frame_count`, `from_frame_count`, `SmpteFrameRate::{ratio, labels_per_second}`.
-- New `MidiEvent::to_midi1_messages` returns the three messages (CC 0, CC 32, Program Change) of a 2.0 Program Change with a bank. `to_midi1_bytes` still returns one message, the Program Change alone: move a caller that needs the bank to `to_midi1_messages`. The VST2, VST3 and CLAP hosts stage a banked Program Change as three MIDI events at one offset (CLAP counts a refusal in the new `InputEventList::midi_dropped`).
+- New `MidiEvent::to_midi1_messages` returns the three messages (CC 0, CC 32, Program Change) of a 2.0 Program Change with a bank. `to_midi1_bytes` still returns one message, the Program Change alone: move a caller that needs the bank to `to_midi1_messages`. The VST2, VST3 and CLAP hosts stage a banked Program Change as three MIDI events at one offset (all three or none; CLAP counts a refusal, for a banked or a plain event past its reserved room, in the new `InputEventList::midi_dropped`, read through `ClapActive::midi_dropped`).
 - `SmpteTimecode::frame_count` counts an invalid drop-frame label (`;00`, `;01` at a minute not divisible by ten) as `;02`.
 - Code that read CC 0 / CC 32 out of `Midi1ToMidi2Translator::translate` now gets `None` for them and the bank on the next Program Change.
 - `MidiMessage` is documented as group-agnostic (a re-encode lands on group 0); route on `MidiEvent::group`.

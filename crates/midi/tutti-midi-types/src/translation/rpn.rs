@@ -46,7 +46,7 @@ struct ParamState {
     rpn: ParamNumber,
     nrpn: ParamNumber,
     /// Data Entry MSB / LSB (CC 6 / 38) accumulated for the current parameter,
-    /// and whether each has arrived since the last emit.
+    /// and whether each has arrived since the last select.
     data_msb: u8,
     data_lsb: u8,
     msb_set: bool,

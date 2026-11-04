@@ -51,10 +51,11 @@ pub use types::ClapNoteExpression;
 // but the public re-export is gated so the default API surface stays lean.
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
-    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, ContentScale,
-    EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects, NoteExpressionType,
-    NoteName, NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
-    StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle,
+    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, AudioPortsRescan, ChannelLayout,
+    ContentScale, EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects,
+    NoteExpressionType, NoteName, NotePortInfo, ParamRescan, ParameterChanges, ParameterPoint,
+    ParameterQueue, PluginInfo, StateContext, SurroundChannel, TransportInfo, VoiceInfo,
+    WindowHandle,
 };
 #[cfg(feature = "clap-extras")]
 pub use types::{

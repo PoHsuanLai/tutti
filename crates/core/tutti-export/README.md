@@ -118,7 +118,8 @@ run *while* rendering), take `Loudness::gain_to`, apply it with
 - `aiff` (default) — AIFF / AIFF-C encoding, via aifc.
 - `ogg` (default) — OGG Vorbis encoding, via vorbis_rs.
 
-Resampling (rubato) is unconditional — it is not a codec, so it is not gated.
+Resampling (an FFT resampler on `tutti_types::RealFft`) is unconditional:
+it is not a codec, so it is not gated.
 
 ## License
 

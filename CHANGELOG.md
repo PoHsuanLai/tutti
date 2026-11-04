@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `tutti-export`'s resampler is tutti's own FFT resampler on `RealFft`; `rubato` is gone; resampled bits change
+
+`rubato`'s `FftFixedIn` runs `realfft`'s auto planner, which picks AVX, SSE or
+NEON at run time, so a resampled export differed in the last bits between CPUs.
+The stage now runs `FftFixedIn` in `tutti-export/src/process/fft_resample.rs`,
+the same algorithm (overlap-add; `fft_size_in`/`fft_size_out` from
+`gcd(source, target)`; the squared Blackman-Harris windowed-sinc anti-alias
+filter at rubato's fitted cutoff) over `tutti_types::RealFft`, rustfft's scalar
+planner. The adapted code is MIT, from rubato 0.16.2 by Henrik Enquist; the
+notice is `tutti-export/src/process/LICENSE-rubato`. Latency, chunking and the
+documented lengths are unchanged (`output_delay()` is `fft_size_out / 2`, 320
+frames at 44.1 to 48 kHz with the default `ChunkSize`). Output is
+bit-identical across CPUs on the same OS, libm and rustfft version, not across
+libms (the window and twiddles call the C library's `sin` and `cos`).
+
+**Output bits change:** every resampled export differs from the `rubato` one at
+f32 rounding level (the scalar FFT rounds differently from AVX/SSE/NEON).
+Cost: the resampler alone is about 2.7x slower (60 s of stereo 44.1 to 48 kHz,
+release: 56 ms to 150 ms), the end-to-end `resample-normalized` bench about 37%
+slower.
+
+Migration: the `rubato` dependency and `Error::Resample`'s `From<rubato::...>`
+impls are removed (build the variant from a message); a pinned golden digest of
+a resampled file must be re-recorded.
+
 ### Changed — the binaural panner runs on `tutti_types::RealFft`: CPU-independent, output bits change
 
 `HrtfBinauralNode` ran rustfft's auto planner (AVX, SSE or NEON picked at run
@@ -30,7 +55,7 @@ while the source moves).
 - The `hrtf` feature of `tutti-spatial` no longer pulls `rustfft` directly
   (`hrtf = []`; the FFT is `tutti-types`'). No public type changes.
 
-### Changed — every FFT user but the export resampler is CPU-independent: `tutti_types::RealFft`; convolver, analysis and binaural output bits change
+### Changed — every FFT user is CPU-independent: `tutti_types::RealFft`; convolver, analysis and binaural output bits change
 
 **One real-input FFT, on rustfft's scalar planner, serves the convolver, the
 analysis kernels and the time-stretch vocoder.** `realfft`'s planners use
@@ -45,7 +70,7 @@ untouched. An odd size, which tutti-analysis accepts, runs a full-length
 complex transform on the same scalar planner. The guarantee is
 CPU-independent arithmetic: results are bit-identical across CPUs on the same
 OS, libm and rustfft version, not across libms (the twiddles call the C library's `sin` and
-`cos`). `tutti-export`'s `rubato` resampler still uses SIMD-dispatching FFTs.
+`cos`).
 
 **Output bits change** in `ConvolverNode`/`Convolver`, `FftScratch`
 (so `stft`, `istft`, `detect_onsets`) and `yin`/`yin_track`: the scalar inner
@@ -189,9 +214,7 @@ the notice is `tutti-types/src/LICENSE-realfft`). A test pins the scalar choice
 on Linux/glibc, and another checks the transforms against the textbook DFT.
 The twiddles and the vocoder's phase math still use the C library's
 sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS,
-libm and rustfft version, not across libms. The `tutti-export`
-resampler (`rubato`'s FFT resampler, which runs `realfft`) still uses
-SIMD-dispatching FFTs.
+libm and rustfft version, not across libms.
 The inverse zeroes the
 imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
 so non-finite input there cannot panic the audio path; the state after a

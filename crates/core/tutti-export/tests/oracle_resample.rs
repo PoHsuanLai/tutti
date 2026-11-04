@@ -9,13 +9,12 @@
 //! implementation in the strongest available sense — there is no second library
 //! that could share a bug with the first.
 //!
-//! # Why this is not a comparison against `rubato`
+//! # Why this is not a comparison against another resampler
 //!
-//! `rubato` **is** the implementation (`process/resample.rs` wraps
-//! `FftFixedIn`), so running rubato beside it would compare tutti's chunking
-//! and carry bookkeeping against rubato, and nothing else — it could not
-//! disagree about filter quality, because both sides would be the same filter.
-//! That makes rubato a regression harness, not an oracle.
+//! The implementation is tutti's own FFT resampler (`process/fft_resample.rs`),
+//! so running a second library beside it would compare chunking and carry
+//! bookkeeping, not filter quality, and a render compared with a render pins
+//! nothing. The figures below are sampling theory.
 //!
 //! Deriving the standard from first principles is the same stance the Python
 //! judges take — see `verify_export.py`'s note about an 18 kHz tone not folding

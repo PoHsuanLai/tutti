@@ -927,41 +927,65 @@ fn system_common_clears_running_status() {
     assert_eq!(split[1], (0, vec![0xF6]));
 }
 
-/// SysEx is dropped on the **inbound** path, and the messages around it survive.
+/// SysEx a plugin emits reaches the sink whole, and the messages around it
+/// survive.
 ///
-/// `MidiEvent::from_midi1_bytes` has no single-message SysEx form: UMP requires
-/// fragmenting into 6-byte packets, which allocates, and this runs on the
-/// CoreMIDI read thread where that is forbidden.
+/// The decoder reassembles the bytes and hands the sink UMP SysEx7 packets in
+/// the list's order. The logic is unit-tested in `tutti-plugin-types`
+/// (`Midi1Decoder`); this pins the wiring from the packet walk.
 ///
-/// Do **not** read this as symmetry with `send_midi`. The outbound path
-/// reassembles SysEx7 and sends it through `MusicDeviceSysEx`, because nothing
-/// there is allocation-constrained. The two directions differ because their
-/// constraints differ, not because dropping is intended behaviour.
+/// Mutation (not run here, macOS only): in `decode_packet_list_for_test`,
+/// skip `Midi1Message::SysEx` → the SysEx7 packets are missing → fails.
 #[test]
-fn sysex_is_dropped_without_derailing_the_rest() {
+fn sysex_is_delivered_whole_between_its_neighbours() {
+    use tutti_plugin_types::{SysExAssembler, SysExStep};
+
     let list =
         PacketListBuf::from_raw(&[(0, &[0x90, 60, 100, 0xF0, 0x7E, 0x00, 0xF7, 0x80, 60, 0])]);
-    let split = list.split();
-    let statuses: Vec<u8> = split.iter().map(|(_, b)| b[0]).collect();
-    assert!(
-        statuses.contains(&0x90),
-        "the note-on before the SysEx must survive, got {split:?}"
-    );
-    assert!(
-        statuses.contains(&0x80),
-        "the note-off after the SysEx must survive, got {split:?}"
-    );
-    assert!(
-        !statuses.contains(&0xF0),
-        "SysEx has no single-message form here and must not be emitted"
-    );
+    let events = list.decode();
+    assert_eq!(events.len(), 3, "note-on, one SysEx7 packet, note-off");
+    assert!(events[0].is_note_on());
+    assert!(events[2].is_note_off());
+    let mut assembler = SysExAssembler::reserved();
+    let SysExStep::Complete(done) = assembler.push(&events[1]) else {
+        panic!("a SINGLE packet completes");
+    };
+    assert_eq!(assembler.message(done), [0xF0, 0x7E, 0x00, 0xF7]);
+}
+
+/// A SysEx split across packets, with a long body, arrives as one message at
+/// the offset of the packet that held its `0xF0`.
+///
+/// Mutation (not run here, macOS only): construct the decoder per packet in
+/// `decode_packet_list_for_test` → the tail packets are stray data → fails.
+#[test]
+fn a_sysex_spanning_packets_is_delivered_once() {
+    use tutti_plugin_types::{SysExAssembler, SysExStep};
+
+    let body: Vec<u8> = (0..40u8).collect();
+    let mut message = vec![0xF0];
+    message.extend_from_slice(&body);
+    message.push(0xF7);
+    let (a, rest) = message.split_at(5);
+    let (b, c) = rest.split_at(20);
+    let list = PacketListBuf::from_raw(&[(7, a), (8, b), (9, c)]);
+    let events = list.decode();
+    assert!(events.iter().all(|e| e.frame_offset == 7));
+    let mut assembler = SysExAssembler::reserved();
+    let mut done = Vec::new();
+    for e in &events {
+        if let SysExStep::Complete(r) = assembler.push(e) {
+            done.push(assembler.message(r).to_vec());
+        }
+    }
+    assert_eq!(done, vec![message]);
 }
 
 /// A large packet list is delivered in full, in batches, with nothing dropped.
 ///
 /// The decoder flushes a fixed-size stack batch to the sink and refills it, rather
 /// than truncating — and truncation is the failure that matters: a dropped note-off
-/// is a voice that never releases. Driving 300 messages through a 64-event batch
+/// is a voice that never releases. Driving 300 messages through a 256-event batch
 /// exercises the refill path several times over.
 #[test]
 fn a_list_longer_than_the_batch_is_delivered_in_full() {
@@ -987,7 +1011,7 @@ fn a_list_longer_than_the_batch_is_delivered_in_full() {
          leave voices stuck"
     );
     // The timestamps prove nothing was reordered or duplicated across batch
-    // boundaries — the 64/128/192/256 crossings are where a refill bug would show.
+    // boundaries — the 256 crossing is where a refill bug would show.
     for (i, ev) in events.iter().enumerate() {
         assert_eq!(
             ev.frame_offset, i as u32,

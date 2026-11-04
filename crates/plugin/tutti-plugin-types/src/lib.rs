@@ -15,6 +15,7 @@ mod load_stage;
 mod main_thread;
 mod metadata;
 mod midi;
+mod midi1_decoder;
 mod note_expression;
 mod note_id;
 mod order;
@@ -74,6 +75,9 @@ pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
 pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
+pub use midi1_decoder::{
+    note_on_velocity_midi1, Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY,
+};
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use note_expression::{
@@ -87,7 +91,8 @@ pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use sysex::{
-    push_sysex, unframed, SysExAssembler, SysExRef, SysExStep, SYSEX_MESSAGE_CAPACITY,
+    is_framed, push_sysex, push_sysex_stack, unframed, SysExAssembler, SysExRef, SysExStep,
+    SYSEX_MESSAGE_CAPACITY,
 };
 pub use transport::{
     is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,

@@ -477,6 +477,45 @@ impl ClapInstance {
         }
     }
 
+    /// Acts on what the plugin asked of the host since the last call: an
+    /// `audio-ports.rescan` with a flag that needs the plugin deactivated
+    /// (anything but `NAMES`, which the host's description does not carry),
+    /// or a `request_restart`. Both are served the one way CLAP has for them:
+    /// deactivate, re-read the ports, activate again, then compare the layout
+    /// with what the host was last given.
+    ///
+    /// Call it between blocks, on the thread that loaded the plugin
+    /// (`deactivate` and `activate` are `[main-thread]` and never overlap a
+    /// `process`). It allocates, as a rate change does. A request is consumed
+    /// whether or not the plugin can be brought back: a plugin left
+    /// deactivated renders silence and raises [`take_io_changed`], and a later
+    /// request tries it again.
+    ///
+    /// [`take_io_changed`]: Self::take_io_changed
+    #[cfg(feature = "clap")]
+    pub fn service_requests(&mut self) {
+        let (ports, restart) = clap_dispatch!(self, i => (
+            i.poll_audio_ports_rescan(),
+            i.poll_restart_requested(),
+        ));
+        if !(ports.needs_deactivate() || restart) {
+            return;
+        }
+        let was_active = clap_dispatch!(self, i => i.is_active());
+        let outcome = clap_dispatch_mut!(self, i => i.reactivate());
+        let active = clap_dispatch!(self, i => i.is_active());
+        self.note_layout_change();
+        if let Err(e) = outcome {
+            tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
+        }
+        // A plugin left deactivated, or brought back after a failed rate
+        // change, is a different instance to the host than the one it last
+        // read, whatever its layout.
+        if active != was_active {
+            self.io_changed = true;
+        }
+    }
+
     /// Whether the bus layout, the 64-bit answer or the instance's ability to
     /// run changed since the last call, which clears it. The host re-reads the
     /// instance on the [`IoChanged`](crate::plugin::AsyncEvent::IoChanged) it
@@ -1255,6 +1294,183 @@ mod tests {
             .expect("silence");
         assert!(output.iter().flatten().all(|&s| s == 0.0), "silent");
         assert!(!instance.is_processing(), "the plugin was not started");
+    }
+
+    /// The `audio-ports.rescan` flags that need the plugin deactivated.
+    ///
+    /// The values are `ext/audio-ports.h`'s `CLAP_AUDIO_PORTS_RESCAN_*`.
+    const RESCAN_NAMES: u32 = 1 << 0;
+    const RESCAN_FLAGS: u32 = 1 << 1;
+    const RESCAN_LIST_AND_CHANNELS: u32 = (1 << 5) | (1 << 2);
+
+    /// **A rescan the plugin asks for is served: the instance is
+    /// re-activated, its ports are read afresh and the host is told.** The
+    /// request was recorded by the host and nothing acted on it, so a plugin
+    /// that changed its ports left the host with the layout it was loaded
+    /// with.
+    ///
+    /// Mutations (run): delete the `ports.needs_deactivate()` arm of the
+    /// early return in `service_requests` → a request is consumed and
+    /// nothing happens → the activation count stays 0 → the second assertion
+    /// fails. Replace `i.reactivate()` with `Ok(())` → the layout stays at one
+    /// bus → the layout assertion fails. Delete `self.note_layout_change()`
+    /// → the host copy stays stale and `take_io_changed` is false → fails.
+    #[test]
+    fn a_ports_rescan_the_plugin_asks_for_is_served() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        assert_eq!(instance.loaded().inputs.len(), 1, "fixture: one input bus");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        let _layout = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
+        );
+        let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
+        instance.loaded_mut().on_main_thread();
+        assert_eq!(
+            instance.loaded().inputs.len(),
+            1,
+            "nothing is acted on until the server serves it"
+        );
+
+        instance.service_requests();
+
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            1,
+            "one re-activation"
+        );
+        assert!(instance.clap_loaded().is_active());
+        assert_eq!(instance.loaded().inputs.len(), 2, "stereo main + mono aux");
+        assert_eq!(instance.loaded().total_inputs(), 3);
+        assert!(instance.take_io_changed(), "the host is told");
+
+        instance.service_requests();
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            1,
+            "the request was consumed: not served twice"
+        );
+    }
+
+    /// **The request reaches the host as `IoChanged` through the server's
+    /// between-blocks poll.**
+    ///
+    /// Mutation (run): delete the `clap.service_requests()` call in
+    /// `Plugin::poll_async_events` → no event → fails.
+    #[test]
+    fn a_served_ports_rescan_is_polled_as_io_changed() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        let _layout = crate::test_utils::clap_probe_port_layout(
+            tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
+        );
+        let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
+        instance.loaded_mut().on_main_thread();
+
+        let mut plugin = crate::plugin::Plugin::Clap(instance);
+        let io_changed = |plugin: &mut crate::plugin::Plugin| {
+            plugin
+                .poll_async_events()
+                .iter()
+                .any(|e| matches!(e, crate::plugin::AsyncEvent::IoChanged))
+        };
+        assert!(io_changed(&mut plugin), "the host is told");
+        assert_eq!(plugin.instance().loaded().total_inputs(), 3);
+        assert!(!io_changed(&mut plugin), "once");
+    }
+
+    /// **A rescan that re-activates but leaves the layout as it was is
+    /// silent**, and a `NAMES`-only rescan, which the host's description does
+    /// not carry, does not re-activate at all.
+    ///
+    /// Mutations (run): set `self.io_changed = true` unconditionally in
+    /// `service_requests` → the first `take_io_changed` assertion fails.
+    /// Make `needs_deactivate` true for `NAMES` (in `AudioPortsRescan`) → the
+    /// names-only count assertion fails.
+    #[test]
+    fn a_rescan_that_changes_nothing_is_silent() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
+        instance.loaded_mut().on_main_thread();
+        instance.service_requests();
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        assert!(!instance.take_io_changed(), "same layout, same instance");
+
+        let _names = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_NAMES);
+        instance.loaded_mut().on_main_thread();
+        instance.service_requests();
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            1,
+            "names are safe live: no re-activation"
+        );
+        assert!(!instance.take_io_changed());
+        assert!(
+            !instance.clap_loaded().poll_audio_ports_rescan().requested,
+            "consumed"
+        );
+    }
+
+    /// **A `request_restart` is served the same way**: the plugin is
+    /// deactivated and activated again, between blocks, and keeps running.
+    ///
+    /// Mutation (run): drop `|| restart` from the early return in
+    /// `service_requests` → the count stays 0 → fails.
+    #[test]
+    fn a_restart_the_plugin_asks_for_is_served() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let mut instance = ClapInstance::load(path, 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        let _asked = crate::test_utils::clap_probe_request_restart();
+        process_blocks(&mut instance, 1);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+
+        instance.service_requests();
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        assert!(!instance.take_io_changed(), "same layout, same instance");
+        process_blocks(&mut instance, 1);
+        assert!(instance.is_processing(), "it runs again");
+
+        instance.service_requests();
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            1,
+            "consumed"
+        );
+    }
+
+    /// **A 64-bit instance whose plugin drops its flags and asks for a rescan
+    /// is left deactivated, and the host is told** even though the layout it
+    /// holds did not change.
+    ///
+    /// Mutation (run): delete the `if active != was_active` block in
+    /// `service_requests` → `take_io_changed` is false → fails.
+    #[test]
+    fn a_rescan_that_leaves_the_instance_unable_to_run_tells_the_host() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(clap_plugin());
+        let both = tutti_clap_test_plugin::PORTS_64BIT_INPUTS
+            | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
+        let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
+        let mut instance = ClapInstance::load(path, 44100.0, 512, true).expect("load");
+        assert!(matches!(instance.inner, ClapInner::F64(_)), "fixture");
+
+        let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
+        let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_FLAGS);
+        instance.loaded_mut().on_main_thread();
+        instance.service_requests();
+
+        assert!(!instance.clap_loaded().is_active(), "left deactivated");
+        assert!(instance.take_io_changed(), "the host is told");
     }
 
     #[test]

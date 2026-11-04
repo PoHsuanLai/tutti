@@ -46,6 +46,35 @@ the protocol. Changes:
 - The reference plugin records a lifecycle trace and can raise
   `audioMasterIOChanged` and ask the host `canDo`.
 
+### Fixed — the AU MIDI-output callback delivers SysEx; `MusicDeviceSysEx` gets framed messages; the server serves a CLAP plugin's rescan and restart requests
+
+- **The AU MIDI-output callback dropped every SysEx.** `Midi1Decoder` (new, in
+  `tutti-plugin-types`, with `Midi1Splitter`, `Midi1Message`,
+  `SYSEX_OUT_CAPACITY`, `push_sysex_stack`) reassembles it, across packets and
+  calls, in a buffer reserved at `install`, and the sink gets it as SysEx7
+  packets in one slice. A message over 1538 bytes, or cut by another status
+  byte, is dropped whole and counted (`AuMidiOutput::sysex_dropped`, new). The
+  sink's batch is now `MIDI_STACK_CAPACITY` (256) events, was 64. macOS only;
+  the logic is tested on every platform.
+- **`AuInstance::send_midi` stripped `0xF0` and `0xF7`** before
+  `MusicDeviceSysEx`, which wants the complete message. It sends it framed
+  (`tutti_plugin_types::is_framed`). A MIDI 2.0 note-on velocity of
+  `0x0001..=0x01FF` mapped to MIDI 1.0 velocity 0, a note-off; it now maps to
+  at least 1 (`note_on_velocity_midi1`). Poly pressure was dropped; it is sent.
+- **A CLAP plugin's `audio-ports.rescan` (any flag but `NAMES`) and
+  `request_restart` were recorded and never acted on.** The server now
+  re-activates the plugin between blocks (`ClapActive::reactivate`, new),
+  re-reads its ports and raises `IoChanged` when the layout changed or the
+  instance can no longer run. `tutti_clap_host::AudioPortsRescan` and
+  `ParamRescan` are exported at the crate root. The reference plugin gained
+  `tutti_test_plugin_request_ports_rescan`.
+- **A plugin left deactivated was deactivated again** by a later rate change
+  or `reactivate`, which CLAP allows only while active; the host now skips
+  the call. A SysEx that goes on into a later MIDI-output callback is stamped
+  at offset 0 (`Midi1Decoder::begin_list`, replacing `discard_staged`), and a
+  status byte among a short message's data ends that message (a real-time
+  byte is delivered and the message goes on).
+
 ### Fixed — SVF Bell and shelves and the ladder high-passes follow their specifications; Ogg export no longer dithers
 
 Audible change in `SvfFilterNode` and `EqBandNode`'s SVF, and in

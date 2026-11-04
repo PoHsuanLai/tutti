@@ -601,7 +601,7 @@ impl AuInstance {
     pub fn send_midi(&self, events: &[MidiEvent]) {
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
         use tutti_midi_types::MidiMessage;
-        use tutti_plugin_types::{unframed, SysExStep};
+        use tutti_plugin_types::{is_framed, SysExStep};
 
         /// Hands a complete SysEx message to the AU.
         ///
@@ -644,10 +644,14 @@ impl AuInstance {
                     velocity,
                     ..
                 } => {
-                    let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
                     // A zero-velocity note-on is a note-off; keep it as note-on
                     // 0x90 with velocity 0 (a legal legacy note-off encoding).
-                    (0x90 | channel.get(), note & 0x7F, vel & 0x7F)
+                    // Any other velocity stays at least 1.
+                    (
+                        0x90 | channel.get(),
+                        note & 0x7F,
+                        tutti_plugin_types::note_on_velocity_midi1(velocity),
+                    )
                 }
                 MidiMessage::NoteOff {
                     channel,
@@ -658,6 +662,16 @@ impl AuInstance {
                     let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
                     (0x80 | channel.get(), note & 0x7F, vel & 0x7F)
                 }
+                MidiMessage::PolyPressure {
+                    channel,
+                    note,
+                    pressure,
+                    ..
+                } => (
+                    0xA0 | channel.get(),
+                    note & 0x7F,
+                    midi2_cc_to_midi1(pressure) & 0x7F,
+                ),
                 MidiMessage::ControlChange {
                     channel,
                     index,
@@ -688,9 +702,11 @@ impl AuInstance {
                 // longer than that arrives as START/CONTINUE.../END.
                 MidiMessage::Other(_) => {
                     if let SysExStep::Complete(message) = sysex.push(ev) {
-                        // The bytes between `0xF0` and `0xF7`, as this call
-                        // has always sent them.
-                        send_sysex(unit, unframed(sysex.message(message)));
+                        // `MusicDeviceSysEx` takes the complete message,
+                        // `0xF0` and `0xF7` included (`MusicDevice.h`).
+                        let bytes = sysex.message(message);
+                        debug_assert!(is_framed(bytes));
+                        send_sysex(unit, bytes);
                     }
                     continue;
                 }

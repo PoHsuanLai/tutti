@@ -14,7 +14,7 @@ use tutti_midi_types::ump::{
 };
 use tutti_midi_types::MidiGroup;
 
-use crate::{MidiEvent, RtMidiEvents, MIDI_STACK_CAPACITY};
+use crate::{MidiEvent, MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer
@@ -41,6 +41,14 @@ pub fn unframed(message: &[u8]) -> &[u8] {
     payload.strip_suffix(&[0xF7]).unwrap_or(payload)
 }
 
+/// Whether `message` is a complete SysEx message as `MusicDeviceSysEx` wants it
+/// (`MusicDevice.h`: "including the F0 and F7 start and termination bytes").
+/// [`SysExAssembler`] hands over messages in this form; the AU host checks
+/// what it sends with this.
+pub fn is_framed(message: &[u8]) -> bool {
+    message.len() >= 2 && message[0] == 0xF0 && message[message.len() - 1] == 0xF7
+}
+
 /// Pushes one complete SysEx message a plugin emitted onto `out` as UMP
 /// SysEx7 packets (a lone `SINGLE`, or `START`, `CONTINUE`*, `END`), every
 /// packet at `frame_offset`, the inverse of what [`SysExAssembler`] does on
@@ -57,6 +65,21 @@ pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> 
     let packets = MidiEvent::sysex7_packet_count(payload.len());
     if packets > out.remaining() {
         out.mark_overflowed();
+        return false;
+    }
+    for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
+        out.push(packet.with_frame_offset(frame_offset));
+    }
+    true
+}
+
+/// [`push_sysex`] for an inline [`MidiEventVec`] (a stack batch), with the
+/// same whole-or-nothing rule: a message whose packets do not all fit in
+/// `out`'s remaining room is dropped and `false` is returned. Never allocates.
+pub fn push_sysex_stack(out: &mut MidiEventVec, frame_offset: u32, message: &[u8]) -> bool {
+    let payload = unframed(message);
+    let packets = MidiEvent::sysex7_packet_count(payload.len());
+    if packets > out.remaining_capacity() {
         return false;
     }
     for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
@@ -739,5 +762,25 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(push_sysex(&mut out, 0, &payload((room - 1) * 6)));
         assert_eq!(out.len(), room);
+    }
+
+    /// **A message the assembler completes is framed, `0xF0` to `0xF7`**,
+    /// as `MusicDeviceSysEx` takes it; an unframed payload is not.
+    ///
+    /// Mutation (run): hand `unframed(message)` on instead of the message (as
+    /// the AU host did) → `is_framed` is false → fails.
+    #[test]
+    fn an_assembled_message_is_framed_for_the_au() {
+        let mut asm = SysExAssembler::reserved();
+        for len in [0, 3, 6, 7, 40] {
+            let body = payload(len);
+            let done = feed(&mut asm, &packets(MidiGroup::FIRST, &body));
+            assert_eq!(done.len(), 1);
+            assert!(is_framed(&done[0]), "{len} bytes");
+            assert!(!is_framed(unframed(&done[0])));
+        }
+        assert!(!is_framed(&[]));
+        assert!(!is_framed(&[0xF0]));
+        assert!(is_framed(&[0xF0, 0xF7]));
     }
 }

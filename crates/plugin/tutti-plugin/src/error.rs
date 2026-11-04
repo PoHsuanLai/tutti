@@ -249,6 +249,15 @@ pub enum PluginRenderFault {
         /// What the bridge latched when it noticed.
         cause: String,
     },
+    /// The fork's plugin refused the sample rate it renders at, so it renders
+    /// silence: the whole export is wrong from the first block.
+    #[error("the forked instance refused its sample rate ({rate} Hz): {reason}")]
+    RateRefused {
+        /// The rate it refused, in Hz.
+        rate: f64,
+        /// The plugin's reason.
+        reason: String,
+    },
     /// The fork's server did not publish a block within the budget
     /// (`BridgeConfig::timeout_ms`). The fork stopped waiting: every later
     /// block is silence, at once.

@@ -61,6 +61,18 @@ pub enum Error {
     #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
     UnsupportedChannels(u16),
 
+    /// The WAV file would exceed what its 32-bit sizes can describe (just under
+    /// 4 GiB; RF64 is not written). `limit_frames` is the most frames a file of
+    /// this width and depth holds. Raised before the file is created when the plan shows
+    /// it, otherwise at the frame that crosses the limit, and the partial file
+    /// is removed. Choose another format (FLAC, Ogg) or a shorter
+    /// span.
+    #[error("The export does not fit a WAV file (more than {limit_frames} frames; 32-bit sizes, just under 4 GiB)")]
+    WavTooLarge {
+        /// The frames a WAV of this width and depth can hold.
+        limit_frames: u64,
+    },
+
     /// A loudness measurement was asked for and could not be taken — EBU R128
     /// accepts 1–64 channels at 16 Hz–2.8 MHz.
     ///

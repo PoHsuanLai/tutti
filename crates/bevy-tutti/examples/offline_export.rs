@@ -204,6 +204,7 @@ fn config() -> ExportConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Int24,
             channels: ChannelLayout::STEREO,
+            topology: None,
         },
         ..Default::default()
     }

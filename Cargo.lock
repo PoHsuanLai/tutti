@@ -4284,6 +4284,7 @@ name = "tutti-clap-test-plugin"
 version = "0.1.0"
 dependencies = [
  "clap-sys",
+ "libc",
 ]
 
 [[package]]

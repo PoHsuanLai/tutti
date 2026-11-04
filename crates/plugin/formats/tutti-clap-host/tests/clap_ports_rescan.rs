@@ -36,6 +36,7 @@ struct Probe {
     set_ports_64bit: unsafe extern "C" fn(u32),
     set_tail_extension: unsafe extern "C" fn(u32),
     set_port_layout: unsafe extern "C" fn(u32),
+    inactive_deactivations: unsafe extern "C" fn() -> u32,
 }
 
 /// The reference plugin's `[2, 1]` input and output layout.
@@ -55,17 +56,30 @@ impl Probe {
             let set_port_layout = *lib
                 .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_port_layout\0")
                 .expect("set_port_layout symbol present");
+            let reset_activation = *lib
+                .get::<unsafe extern "C" fn()>(b"tutti_test_plugin_reset_activation\0")
+                .expect("reset_activation symbol present");
+            let inactive_deactivations = *lib
+                .get::<unsafe extern "C" fn() -> u32>(b"tutti_test_plugin_inactive_deactivations\0")
+                .expect("inactive_deactivations symbol present");
             set_ports_64bit(0);
             set_tail_extension(1);
             set_port_layout(0);
+            reset_activation();
             Probe {
                 _lock: lock,
                 _lib: lib,
                 set_ports_64bit,
                 set_tail_extension,
                 set_port_layout,
+                inactive_deactivations,
             }
         }
+    }
+
+    /// How often the host called `deactivate` on a plugin that was inactive.
+    fn inactive_deactivations(&self) -> u32 {
+        unsafe { (self.inactive_deactivations)() }
     }
 
     fn ports_64bit(&self, mask: u32) {
@@ -270,7 +284,9 @@ fn process_f64_block(
 /// test green: the second is the one that guards the FFI call. Drop the
 /// `self.loaded.flags.active &&` from `set_sample_rate`'s same-rate early
 /// return → the retry at the old rate returns `Ok` on a deactivated instance →
-/// the retry's `expect_err` fails.
+/// the retry's `expect_err` fails. Remove the `flags.active` guard in
+/// `ClapLoaded::deactivate_plugin` → the two retries deactivate an inactive
+/// plugin → the final count assertion fails.
 #[test]
 fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
     let probe = Probe::acquire();
@@ -305,6 +321,11 @@ fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
         .set_sample_rate(48_000.0)
         .expect("the flags are back, so the same rate re-activates");
     assert!(active.is_active(), "re-activated at the old rate");
+    assert_eq!(
+        probe.inactive_deactivations(),
+        0,
+        "a retry on a deactivated plugin must not call `deactivate` again"
+    );
 }
 
 /// **A failed reconfiguration that also changed the port layout leaves the

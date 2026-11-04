@@ -139,8 +139,8 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_activation() {
     REFUSE_RATE.store(ACTIVATE_REFUSE_NONE, Ordering::SeqCst);
     REFUSE_FRAMES.store(0, Ordering::SeqCst);
     REFUSALS.store(0, Ordering::SeqCst);
-    ACCEPTS.store(0, Ordering::SeqCst);
     INACTIVE_DEACTIVATIONS.store(0, Ordering::SeqCst);
+    ACCEPTS.store(0, Ordering::SeqCst);
     LAST_RATE.store(0, Ordering::SeqCst);
     LAST_FRAMES.store(0, Ordering::SeqCst);
     // Not `ACTIVE`: that mirrors the plugin's real state, which a test cannot

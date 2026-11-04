@@ -1,6 +1,7 @@
 //! Per-command IPC choreography for the bridge thread.
 
 use super::channels::Channels;
+use super::lifecycle::Lifecycle;
 use super::messages::{AudioResponse, Command, ResyncKind, Unsolicited};
 use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
@@ -49,6 +50,15 @@ const MIN_PROCESS_TIMEOUT: Duration = Duration::from_millis(2);
 const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the bridge waits for a plugin to re-activate at a new rate.
+/// Longer than [`PARAM_TIMEOUT`]: it tears down and rebuilds the plugin's
+/// processing, which a large instrument can take seconds to do.
+pub(super) const RATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The slice [`RATE_TIMEOUT`] is waited in, between checks that the bridge is
+/// still running.
+const RATE_SLICE: Duration = Duration::from_millis(100);
 
 /// How long [`Owed::settle`] waits to find out whether an owed reply has
 /// *started* arriving.
@@ -349,6 +359,7 @@ pub(super) fn handle(
     payloads: &PayloadPool,
     owed: &mut Owed,
     inbox: &mut Unsolicited,
+    lifecycle: &Lifecycle,
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
@@ -506,6 +517,72 @@ pub(super) fn handle(
         }
         Command::SetSampleRate { rate } => {
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
+            // Wait for the answer: the plugin's re-activation is the slowest
+            // thing the bridge asks of it, and what it says decides whether
+            // the next block may be sent.
+            //
+            // Replies owed from abandoned blocks can still be ahead of the
+            // answer on the stream; they are taken as `settle` takes them.
+            //
+            // Waited in slices, so a shutdown (dropping the node joins this
+            // thread) ends the wait within one slice rather than after
+            // `RATE_TIMEOUT`. A slice that expires part-way through a frame
+            // resumes it (`owed.partial`), so slicing never unframes the stream.
+            let budget = lifecycle.rate_timeout();
+            let deadline = std::time::Instant::now() + budget;
+            loop {
+                let reply = match recv_reply(stream, inbox, RATE_SLICE, &mut owed.partial) {
+                    Err(BridgeError::Timeout { .. }) => {
+                        if !lifecycle.is_running() {
+                            return Ok(());
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            // No answer is a refusal, not a dead connection: the
+                            // plugin may still be re-activating. Its late reply
+                            // is taken off the stream when it arrives
+                            // (`recv_reply`) and settles the state.
+                            inbox.expect_late_rate_reply();
+                            apply_rate_reply(
+                                lifecycle,
+                                inbox,
+                                rate,
+                                Some(format!(
+                                    "the plugin did not answer the rate change within {budget:?}"
+                                )),
+                            );
+                            break;
+                        }
+                        continue;
+                    }
+                    other => other?,
+                };
+                match reply {
+                    BridgeMessage::AudioProcessed { seq, midi_out, .. } if owed.count > 0 => {
+                        owed.count -= 1;
+                        let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
+                        channels
+                            .push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
+                        channels.note_settled(1);
+                    }
+                    BridgeMessage::Error { .. } if owed.count > 0 => {
+                        owed.count -= 1;
+                        channels.note_settled(1);
+                    }
+                    // A refusal is not a failure of the connection: the plugin
+                    // stays loaded, the server renders silence for it, and the
+                    // next rate change retries it.
+                    BridgeMessage::SampleRateSet { rate, error } => {
+                        apply_rate_reply(lifecycle, inbox, rate, error);
+                        break;
+                    }
+                    other => {
+                        return Err(BridgeError::UnexpectedMessage {
+                            expected: "SampleRateSet",
+                            got: format!("{other:?}"),
+                        })
+                    }
+                }
+            }
         }
         Command::SetRenderMode { mode } => {
             ipc::send(stream, &HostMessage::SetRenderMode { mode })?;
@@ -756,6 +833,28 @@ fn recv_state_reply(
     }
 }
 
+/// Record the plugin's answer to a rate change: the refusal while it refuses,
+/// cleared (and heard, if there was one) when it takes the rate.
+pub(super) fn apply_rate_reply(
+    lifecycle: &Lifecycle,
+    inbox: &mut Unsolicited,
+    rate: f64,
+    error: Option<String>,
+) {
+    match error {
+        Some(reason) => {
+            lifecycle.set_rate_refusal(Some((rate, reason.clone())));
+            inbox.rate_refusal(Some((rate, reason)));
+        }
+        None => {
+            if lifecycle.rate_refusal().is_some() {
+                lifecycle.set_rate_refusal(None);
+                inbox.rate_refusal(None);
+            }
+        }
+    }
+}
+
 /// Drain unsolicited events into `inbox`, returning the next reply-type message.
 fn recv_reply(
     stream: &mut ControlStream,
@@ -785,6 +884,14 @@ fn recv_reply(
             }
             BridgeMessage::PluginReloaded => {
                 inbox.resync(ResyncKind::Reloaded);
+            }
+            // The answer to a rate change the bridge stopped waiting for: it
+            // belongs to no request now, so it is held for the thread to
+            // apply, and never read as another request's reply.
+            BridgeMessage::SampleRateSet { rate, error } => {
+                if !inbox.late_rate_reply(rate, error.clone()) {
+                    return Ok(BridgeMessage::SampleRateSet { rate, error });
+                }
             }
             msg => return Ok(msg),
         }

@@ -218,9 +218,9 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
     export(g, ChannelLayout::from(6u16), 0.3, &path);
 
     // The 6-channel file must declare WAVEFORMATEXTENSIBLE (0xfffe) with the
-    // standard 5.1 dwChannelMask 0x3F (FL|FR|FC|LFE|BL|BR), so other tools read
-    // the speaker assignment correctly. hound emits this automatically for
-    // channels > 2 — this guards that our surround files stay interoperable.
+    // dwChannelMask 0x60F (FL|FR|FC|LFE|SL|SR, KSAUDIO_SPEAKER_5POINT1_SURROUND),
+    // which is the engine's channel order. `hound` writes the lowest six bits
+    // (0x3F, back surrounds); the encoder patches the right mask in.
     {
         let bytes = std::fs::read(&path).unwrap();
         let fmt = bytes.windows(4).position(|w| w == b"fmt ").unwrap();
@@ -232,7 +232,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
             bytes[fmt + 30],
             bytes[fmt + 31],
         ]);
-        assert_eq!(mask, 0x3f, "5.1 channel mask must be FL|FR|FC|LFE|BL|BR");
+        assert_eq!(mask, 0x60f, "5.1 channel mask must be FL|FR|FC|LFE|SL|SR");
     }
 
     let reader = hound::WavReader::open(&path).unwrap();

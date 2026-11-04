@@ -21,6 +21,9 @@
 mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, Transport};
@@ -66,6 +69,62 @@ struct Run {
     wrong: Vec<usize>,
 }
 
+/// Keeps every CPU but one out of idle for the length of a paced run.
+///
+/// Measured on an idle 4-vCPU VM: a thread woken from an idle CPU is
+/// sometimes 10 to 28 ms late (a bare `sleep(1 ms)` loop with no tutti code
+/// oversleeps by more than 10 ms about once in 4000 calls), at any thread
+/// priority, and the late thread is the host's bridge thread or the server's
+/// about once in 1000 blocks. The plugin gets one period to answer, so such a
+/// wake-up costs the block and its successors up to the next fresh one: the
+/// source of the stalls `judge_stall` tolerates. With the other CPUs spinning
+/// at the lowest priority (they yield to any waking thread) the late wake-ups
+/// fell from 8 in 5249 blocks to 1 in 8399 and runs with a silent block from
+/// 4 in 25 to 1 in 40. A device's callback is woken by an interrupt, not from
+/// an idle CPU, so this keeps the run closer to one.
+///
+/// Mutation: spawn no spinners (`(1..cpus)` to `(1..1)`) → 17 of 120 paced
+/// runs had a silent block instead of 8 of 135, and 3 of 40 binary runs failed
+/// instead of 0 of 45 (measured; the stalls are rarer, not gone, which is what
+/// `judge_stall` is for).
+struct KeepAwake {
+    stop: Arc<AtomicBool>,
+    spinners: Vec<JoinHandle<()>>,
+}
+
+impl KeepAwake {
+    fn new() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let spinners = (1..cpus)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    // The calling thread's nice value on Linux; elsewhere the
+                    // spinners run at normal priority.
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+                    }
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        Self { stop, spinners }
+    }
+}
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for t in self.spinners.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Callbacks a [`run_live`] burst makes back to back.
 const BURST: usize = 3;
 
@@ -75,6 +134,7 @@ const BURST: usize = 3;
 /// [`BURST`] in a row with no pause, as a device does when it catches up.
 fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -> Run {
     let probe = load_probe(rate);
+    let _awake = KeepAwake::new();
     let inputs = probe.client.inputs();
     let prepare = Prepare::new(SampleRate(rate), Samples(quantum)).with_quantum(Samples(quantum));
     let (mut ed, exec) = Editor::new(prepare);

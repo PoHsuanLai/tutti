@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — `clap_live` tolerates one bounded scheduler stall
+### Changed — `clap_live` tolerates one bounded scheduler stall and keeps the idle CPUs awake
 
-The paced `clap_live` tests allowed 1% silent blocks (2 of 200), so one
-scheduler stall (a run of about 3 silent blocks) failed about one run in
-seven on an idle 4-core machine. They now allow one contiguous silent run, no
-longer than 36 ms of block periods plus the pipeline's `RING_SLOTS` refill;
-a second run, a longer one or any wrong block still fails. Test-only change.
+The paced `clap_live` tests allowed 1% silent blocks (2 of 200), and about one
+run in seven failed on an idle 4-vCPU VM. Cause, measured per block: the
+plugin answers in about 0.3 ms, but about one cross-thread wake-up in 1000 (the
+host's bridge thread, or the server's) arrives 10 to 28 ms late, at any thread
+priority, and the plugin has one period to answer. A plain `sleep(1 ms)` loop
+shows the same tail. The tests now run niced spinner threads on the other CPUs
+(late wake-ups 8 in 5249 blocks to 1 in 8399) and allow one contiguous silent
+run, no longer than 36 ms of block periods plus the pipeline's `RING_SLOTS`
+refill; a second run, a longer one or any wrong block still fails. Test-only
+change. Remaining flakes: 0 of 45 binary runs, 8 of 135 paced runs with one stall.
 
 ### Changed — golden digests gate on the recorded glibc, not on "Linux/glibc"
 

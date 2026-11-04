@@ -358,7 +358,11 @@ unsafe extern "C" fn plugin_activate(
 
 unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
     if let Some(state) = plugin_state(plugin) {
-        state.active.store(false, Ordering::SeqCst);
+        // `deactivate` is `[main-thread & active]`: count a host calling it on
+        // an inactive plugin.
+        if !state.active.swap(false, Ordering::SeqCst) {
+            refusal::note_inactive_deactivation();
+        }
     }
 }
 

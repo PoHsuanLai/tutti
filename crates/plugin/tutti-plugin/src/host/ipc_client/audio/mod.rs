@@ -167,6 +167,13 @@ impl AudioBridge {
         self.lifecycle.crash_cause()
     }
 
+    /// The sample rate (Hz) the plugin refused and its reason, while it is
+    /// refused: it is loaded, renders silence, and is retried at the next
+    /// rate change. `None` once it takes a rate.
+    pub fn rate_refusal(&self) -> Option<(f64, String)> {
+        self.lifecycle.rate_refusal()
+    }
+
     /// How many replies the bridge thread has taken back off the socket after
     /// abandoning the blocks that asked for them.
     ///

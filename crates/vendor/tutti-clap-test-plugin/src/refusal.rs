@@ -50,6 +50,23 @@ static REFUSE_RATE: AtomicU64 = AtomicU64::new(ACTIVATE_REFUSE_NONE);
 /// call `process`. No real host asks for it.
 static REFUSE_FRAMES: AtomicU32 = AtomicU32::new(0);
 
+/// `deactivate` calls on a plugin that was not active, since the last reset.
+static INACTIVE_DEACTIVATIONS: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn note_inactive_deactivation() {
+    INACTIVE_DEACTIVATIONS.fetch_add(1, Ordering::SeqCst);
+}
+
+/// `deactivate` calls the host made on an inactive plugin (which CLAP does not
+/// allow) since the last [`tutti_test_plugin_reset_activation`].
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_inactive_deactivations() -> u32 {
+    INACTIVE_DEACTIVATIONS.load(Ordering::SeqCst)
+}
+
 /// Refused-`activate` count since the last [`reset`].
 static REFUSALS: AtomicU32 = AtomicU32::new(0);
 
@@ -121,6 +138,7 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_activation() {
     REFUSE_RATE.store(ACTIVATE_REFUSE_NONE, Ordering::SeqCst);
     REFUSE_FRAMES.store(0, Ordering::SeqCst);
     REFUSALS.store(0, Ordering::SeqCst);
+    INACTIVE_DEACTIVATIONS.store(0, Ordering::SeqCst);
     ACCEPTS.store(0, Ordering::SeqCst);
     LAST_RATE.store(0, Ordering::SeqCst);
     LAST_FRAMES.store(0, Ordering::SeqCst);

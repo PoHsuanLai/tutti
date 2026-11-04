@@ -215,6 +215,12 @@ impl PluginBridge {
         self.audio.crash_cause()
     }
 
+    /// The refused rate and reason, while the plugin is refused. See
+    /// [`AudioBridge::rate_refusal`](super::audio::AudioBridge::rate_refusal).
+    pub fn rate_refusal(&self) -> Option<(f64, String)> {
+        self.audio.rate_refusal()
+    }
+
     pub fn open_editor(
         &self,
         parent_ptr: *mut c_void,
@@ -528,6 +534,10 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 
     fn crash_cause(&self) -> Option<String> {
         self.bridge.crash_cause()
+    }
+
+    fn rate_refusal(&self) -> Option<(f64, String)> {
+        self.bridge.rate_refusal()
     }
 
     fn dropped_parameter_events(&self) -> u64 {

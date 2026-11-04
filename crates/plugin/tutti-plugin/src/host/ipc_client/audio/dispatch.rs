@@ -519,10 +519,7 @@ pub(super) fn handle(
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
             // Wait for the answer: the plugin's re-activation is the slowest
             // thing the bridge asks of it, and what it says decides whether
-            // the next block may be sent. A refusal is connection-level on
-            // purpose: the plugin is not running at `rate`, so it is dead to
-            // the host exactly as a crashed one is, with the reason as its
-            // cause (`crash` latches it).
+            // the next block may be sent.
             //
             // Replies owed from abandoned blocks can still be ahead of the
             // answer on the stream; they are taken as `settle` takes them.
@@ -561,11 +558,24 @@ pub(super) fn handle(
                         owed.count -= 1;
                         channels.note_settled(1);
                     }
-                    BridgeMessage::SampleRateSet { error: None, .. } => break,
+                    // A refusal is not a failure of the connection: the plugin
+                    // stays loaded, the server renders silence for it, and the
+                    // next rate change retries it.
+                    BridgeMessage::SampleRateSet { error: None, .. } => {
+                        if lifecycle.rate_refusal().is_some() {
+                            lifecycle.set_rate_refusal(None);
+                            inbox.rate_refusal(None);
+                        }
+                        break;
+                    }
                     BridgeMessage::SampleRateSet {
                         rate,
                         error: Some(reason),
-                    } => return Err(BridgeError::SampleRateRefused { rate, reason }),
+                    } => {
+                        lifecycle.set_rate_refusal(Some((rate, reason.clone())));
+                        inbox.rate_refusal(Some((rate, reason)));
+                        break;
+                    }
                     other => {
                         return Err(BridgeError::UnexpectedMessage {
                             expected: "SampleRateSet",

@@ -5475,24 +5475,32 @@ under both.
   session's `the_clock_follows_the_rate_the_plugin_accepted`. Not covered:
   a refused rollback (the reference plugin refuses one configuration, not
   the same one twice).
-- **A plugin that refuses the engine's rate is dead to the host.** A refused
-  rate leaves the server's plugin at its old rate (pitch-shifted against the
-  host's blocks and transport) or deactivated, and the host's graph is
-  already at the new rate, so no state keeps both sides right. The rate
-  change is a request now: the server answers `SampleRateSet { rate, error }`
-  (wire version 20), and the bridge thread, which waits for it ahead of any
-  later block, answers a refusal as a connection-level failure
-  (`BridgeError::SampleRateRefused`), the path a crash takes: the cause is
-  latched (`PluginStatus::Dead`, `PluginInvalidation::Crashed`), the
-  node renders silence, and recovery is loading a replacement, as for a
-  crash. The server's clock stays at the rate the plugin runs at and the
-  host stops sending blocks, so the two never disagree about a rendered
-  block. Not a new state: a rate refusal is as terminal as a crash for a
-  node whose graph will not go back to the old rate. Pinned by
-  `clap_rate_refused` (a real server and a probe that refuses one rate,
-  `TUTTI_CLAP_PROBE_REFUSE_RATE`) and the session's
-  `the_clock_follows_the_rate_the_plugin_accepted`. An in-process VST2
-  plugin cannot refuse (`effSetSampleRate` returns nothing).
+- **A plugin that refuses the engine's rate is silent, visibly, and retried
+  at the next rate.** (As JUCE's AU host and the CLAP example host do; no spec
+  defines it.) The rate change is a request: the server answers
+  `SampleRateSet { rate, error }` (wire version 20). The server's clock follows
+  the host's rate whatever the plugin said, so a plugin that takes a later rate
+  is at the right one. While refused the server publishes nothing for a block
+  (the host reads an unpublished block as silence), drops its MIDI and never
+  calls the plugin, so a plugin that rolled back to its old rate cannot render
+  at it. The bridge latches the refusal beside, not as, a crash:
+  `PluginStatus::RateRefused { rate, reason }`, and `PluginInvalidation::
+  RateRefused` / `RateRestored` for the host to hear it. Every later
+  `SetSampleRate` (each re-prepare sends one) tries the plugin again; a rate it
+  takes clears the error and the plugin renders. `ClapLoaded::deactivate_plugin`
+  does nothing for an inactive plugin, so a retry on an instance a refused
+  rollback left deactivated does not deactivate it again. **Latency stays as
+  declared**: the node keeps its figure while refused, so the compiled plan and
+  PDC do not move, and the plugin's own `LatencyChanged` after a revival goes
+  through the existing path. The wait for the reply is sliced and ends when the
+  bridge shuts down. Pinned by `clap_rate_refused` (a real server and a probe
+  refusing one rate, `TUTTI_CLAP_PROBE_REFUSE_RATE`: refused, refused again,
+  revived, dropped while refused), the bridge's
+  `a_refused_rate_is_reported_without_crashing_the_bridge` and
+  `dropping_the_bridge_ends_a_hung_rate_change`, the session's
+  `a_refused_rate_is_silent_and_a_later_rate_revives_the_plugin` and
+  `clap_ports_rescan`'s count of `deactivate` calls on an inactive plugin. An
+  in-process VST2 plugin cannot refuse.
 - **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes
   UMP SysEx7 packets (`tutti_plugin_types::push_sysex`, on
   `MidiEvent::sysex7_packets`, which allocates nothing) at the plugin's

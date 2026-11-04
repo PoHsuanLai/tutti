@@ -243,7 +243,14 @@ impl ClapLoaded {
 
     /// Calls the plugin's `deactivate` FFI. Shared by `ClapActive::deactivate`
     /// and the in-place re-activation path.
+    ///
+    /// A plugin that is not active is left alone: `deactivate` is
+    /// `[main-thread & active]`, and a refused re-activation leaves one
+    /// inactive.
     pub(crate) fn deactivate_plugin(&mut self) {
+        if !self.flags.active {
+            return;
+        }
         let plugin_ref = unsafe { self.plugin.as_ref() };
         if let Some(deactivate_fn) = plugin_ref.deactivate {
             unsafe { deactivate_fn(self.plugin.as_ptr()) };

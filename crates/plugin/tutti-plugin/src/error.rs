@@ -149,19 +149,6 @@ pub enum BridgeError {
         partial: bool,
     },
 
-    /// The plugin could not run at the engine's sample rate.
-    ///
-    /// Latched as the bridge's crash cause: a plugin that rolled back to its
-    /// old rate renders pitch-shifted audio and one that stayed deactivated
-    /// renders silence, so the host stops it instead.
-    #[error("Plugin cannot run at {rate} Hz: {reason}")]
-    SampleRateRefused {
-        /// The rate the host asked for, in Hz.
-        rate: f64,
-        /// The plugin's reason, formatted subprocess-side.
-        reason: String,
-    },
-
     /// The subprocess died. Any plugin state it held is gone.
     #[error("Bridge process crashed")]
     ProcessCrashed,

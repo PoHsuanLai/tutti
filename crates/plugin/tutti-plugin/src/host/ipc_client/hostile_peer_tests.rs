@@ -900,6 +900,39 @@ fn a_silent_server_is_bounded_by_the_timeout() {
     );
 }
 
+/// **A refusal is not a crash.** The server refuses the first rate and takes
+/// the second: the bridge reports the refusal (rate and reason) while it
+/// stands, stays healthy, and clears it when a later rate is taken.
+///
+/// Mutation (run): the bridge returns an error from the refusal arm of the
+/// `SetSampleRate` reply (the crash path) → `is_crashed` is true → fails.
+/// The success arm without `set_rate_refusal(None)` → the refusal stays → fails.
+#[test]
+fn a_refused_rate_is_reported_without_crashing_the_bridge() {
+    let calls = std::sync::atomic::AtomicU32::new(0);
+    let mock = MockServer::start("refused_rate", move |msg| match msg {
+        HostMessage::SetSampleRate { rate } => {
+            let first = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            Action::Reply(Box::new(BridgeMessage::SampleRateSet {
+                rate,
+                error: first.then(|| "no".to_string()),
+            }))
+        }
+        _ => Action::Silent,
+    });
+    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
+    assert_eq!(
+        mock.bridge.rate_refusal(),
+        Some((96_000.0, "no".to_string()))
+    );
+    assert!(!mock.bridge.is_crashed(), "a refusal is not a crash");
+
+    assert!(mock.bridge.set_sample_rate_rt(48_000.0));
+    assert!(wait_until(|| mock.bridge.rate_refusal().is_none()));
+    assert!(!mock.bridge.is_crashed());
+}
+
 /// **Dropping the bridge ends a wait for a rate change that never answers.**
 /// The bridge thread waits up to `RATE_TIMEOUT` (10 s) for the reply, and the
 /// drop joins it: the wait must notice the shutdown, not run out.

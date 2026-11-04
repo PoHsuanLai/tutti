@@ -7,24 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — a plugin that refuses the engine's sample rate is stopped and reported dead, not left rendering at the wrong rate
+### Fixed — a plugin that refuses the engine's sample rate is silent, reported, and retried at the next rate
 
 A hosted plugin that refused a rate change (CLAP `activate` returning false)
 rolled back to its old rate or stayed deactivated, while the host's blocks
 and transport were at the new rate: the audio was pitch-shifted or silent
 and nothing said why. The server now answers `HostMessage::SetSampleRate`
-with the new `BridgeMessage::SampleRateSet { rate, error }`; a refusal makes
-the bridge latch `BridgeError::SampleRateRefused` as the crash cause, so
-`PluginHandle::status()` is `PluginStatus::Dead { cause }` (the cause names
-the rate and the plugin's reason), `PluginInvalidation::Crashed` fires and
-the node renders silence, as for a plugin that aborted. Recovery is loading a
-replacement, as after a crash.
+with the new `BridgeMessage::SampleRateSet { rate, error }` and follows the
+host's rate in its clock. While the plugin is refused the server renders
+silence for it (no block reaches the plugin), `PluginHandle::status()` is the
+new `PluginStatus::RateRefused { rate, reason }` (not `Dead`; the plugin stays
+loaded and keeps its declared latency) and `PluginInvalidation::RateRefused` /
+`RateRestored` are raised. Every later rate change tries the plugin again, and
+one it takes clears the error. This is what JUCE's AU host and the CLAP example
+host do. `ClapLoaded::deactivate_plugin` no longer calls `deactivate` on an
+inactive plugin.
 
 Migration: `PROTOCOL_VERSION` is 20 (rebuild `plugin-server` with the host).
-A host that matched `BridgeMessage` exhaustively adds `SampleRateSet`; one
-that matched `BridgeError` adds `SampleRateRefused`. `PluginClient`'s
-`set_sample_rate_rt` is unchanged. `TUTTI_CLAP_PROBE_REFUSE_RATE` makes the
-reference plugin refuse one rate out of process.
+`PluginStatus` and `PluginInvalidation` gain variants and lose `Eq`
+(`SampleRate` is a float): add a `RateRefused` arm to an exhaustive `match`.
+A host that matched `BridgeMessage` exhaustively adds `SampleRateSet`.
+`HostParams` gains the defaulted `rate_refusal`. `TUTTI_CLAP_PROBE_REFUSE_RATE`
+makes the reference plugin refuse one rate out of process.
 
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 

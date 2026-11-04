@@ -4125,6 +4125,53 @@ most plugins map nothing. The VST3
 event list's text arena reserves its room once and refuses (and counts) a
 text past it, since the plugin holds pointers into it for the block.
 
+#### VST2 host protocol from the spec audit
+
+The VST2 sources the audit leaned on (JUCE, vestige, vst-rs) are open
+re-implementations of the protocol, not the SDK; each rule below names the
+behaviour tutti now has.
+
+- **A block is never longer than the maximum the plugin was told.** The
+  in-process loader announces 4096 (`effSetBlockSize`) and the engine renders
+  up to 8192 (`DEFAULT_BLOCK_CAPACITY`, more with `Engine::with_capacity`), so
+  a plugin sizing buffers to the announcement was overrun. `Vst2Instance`
+  keeps the announced maximum and `process_f32` / `process_f64` split a longer
+  block into calls of at most that length: MIDI is delivered in the piece its
+  frame falls in (rebased), the plugin's MIDI out is rebased the other way,
+  and each later piece's transport snapshot is the block's advanced by the
+  frames before it. Splitting, not re-announcing: the announcement is an
+  `effMainsChanged` bracket, which reaches a live in-process node only through
+  the editor pump, so it cannot be relied on before the first block. The
+  out-of-process server announces the host's `max_buffer_size` and its chunks
+  never exceed it (`MAX_CHUNK`), so it never splits.
+- **`effSetProcessPrecision` states the width the host will use.** 64 goes
+  only to a plugin that declared `effFlagsCanDoubleReplacing` and a caller
+  that loaded it with `Precision::Double` (the server, when `SampleFormat::
+  Float64` is preferred); every other plugin is told 32. `process_f64`
+  enters `processReplacingF64` only for a plugin told 64, and narrows
+  through f32 otherwise.
+- **The processing bracket is balanced.** Load ends with `effMainsChanged(1)`
+  and `effStartProcess`; every reconfigure is stop, suspend, set, resume,
+  start; drop stops and suspends only a plugin that is resumed.
+- **Latency, tail and pins are re-read.** After a resume, a rate or block
+  change, and `audioMasterIOChanged` (answered 1 and latched), the host
+  re-reads `initialDelay`, `effGetTailSize` and the pin counts;
+  `Vst2Instance::poll_changes` reports a move. The server raises
+  `LatencyChanged`, `TailChanged` and `IoChanged` from it; the in-process
+  backend raises `PluginInvalidation::{Latency, Tail, Io}` on its editor pump
+  and its node's `shape` declares the current figures. The in-process pump is
+  the editor's: with no editor open, nothing polls (the session does not tick
+  an in-process plugin's handle), the same limit the parked rate has.
+- **`audioMasterGetSampleRate` / `GetBlockSize`** answer the figure being
+  set, written before the opcode. **`audioMasterCanDo`** answers 1 for
+  `sendVstEvents`, `sendVstMidiEvent`, `sendVstTimeInfo`, `receiveVstEvents`
+  and `receiveVstMidiEvent`, -1 for `sizeWindow`, `supplyIdle`,
+  `supportShell` and `shellCategory`, 0 for the rest.
+- **`effEditIdle`** reaches an open editor (`EditorInstance::idle`).
+- **Counts are read after `effOpen`** (`PluginInstance::init` refreshes the
+  `AEffect` snapshot), and `MidiSendBuffer` clamps `deltaFrames` to the block
+  and delivers events in order.
+
 #### One-thread queues, a double copy and the VST2 seqlock
 
 From the collections and channels audit of `9f397d3d`.
@@ -5487,6 +5534,20 @@ under both.
   session's `the_clock_follows_the_rate_the_plugin_accepted`. Not covered:
   a refused rollback (the reference plugin refuses one configuration, not
   the same one twice).
+- **A CLAP plugin's rescan and restart requests are served.** The host
+  records `audio-ports.rescan` and `request_restart`; between blocks, on the
+  thread that loaded the plugin, `ClapInstance::service_requests` (called by
+  `Plugin::poll_async_events`) acts on a rescan with any flag but `NAMES`
+  (the host's description carries no names), or on a restart, with
+  `ClapActive::reactivate`: deactivate, re-read the ports, activate at the
+  same rate and block size. It then compares the layout with the host's copy
+  (`note_layout_change`) and raises `IoChanged` when it differs, or when the
+  instance's ability to run changed (left deactivated, or brought back). A
+  request is consumed whether or not it succeeds; a plugin left deactivated
+  renders silence and a later request tries it again. Pinned by the
+  `a_ports_rescan_the_plugin_asks_for_is_served`, `a_restart_*` and
+  `a_rescan_*` tests of `loaders::clap`, on the reference plugin's
+  `tutti_test_plugin_request_ports_rescan`.
 - **A plugin's SysEx reaches the host whole.** A SysEx a plugin emits becomes
   UMP SysEx7 packets (`tutti_plugin_types::push_sysex`, on
   `MidiEvent::sysex7_packets`, which allocates nothing) at the plugin's
@@ -5500,11 +5561,19 @@ under both.
   arena at `addEvent` or the pool at `fill_midi_events` refused it; VST2 in
   `dropped_midi_out`), since a `START` without its `END` would corrupt the
   stream after it. VST2's check assumes one producer, as
-  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback still drops SysEx (nothing
-  wires that callback into the server today). The AU input side reassembles
+  `audioMasterProcessEvents` being an audio-thread callback gives it. AU's MIDI-output callback delivers it too: `tutti_plugin_types::Midi1Decoder`
+  reassembles the bytes (a message may span packets and calls) in a buffer
+  reserved at `install` and hands the sink UMP SysEx7 packets contiguous in
+  one batch, at the frame offset of the packet holding its `0xF0`; a message
+  past `SYSEX_OUT_CAPACITY` (1538 bytes, 256 packets: one batch) or ended by
+  another status byte is dropped whole and counted
+  (`AuMidiOutput::sysex_dropped`). The decoder is platform independent and
+  unit-tested; the macOS code only walks the `MIDIPacketList`. Nothing wires
+  that callback into the server today. The AU input side reassembles
   with the `SysExAssembler`, reserved by `AuInstance::initialize`, so
   `send_midi` allocates nothing and counts what it drops
-  (`AuInstance::sysex_dropped`). Pinned by the `a_sysex_from_the_plugin_*`
+  (`AuInstance::sysex_dropped`); it hands `MusicDeviceSysEx` the complete
+  message, `0xF0` and `0xF7` included, as `MusicDevice.h` asks. Pinned by the `a_sysex_from_the_plugin_*`
   tests of each host.
 - **The event feeds are partial, as audio's declarations are.** The
   session's feeds (the sequencer, the route rules, a live input,

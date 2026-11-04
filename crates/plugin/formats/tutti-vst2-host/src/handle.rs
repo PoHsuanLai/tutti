@@ -37,6 +37,14 @@ pub(crate) struct Vst2Handle {
     /// what stays loaded, not the instance — see the module docs.
     pub(crate) instance: PluginInstance,
     pub(crate) editor: Option<SendEditor>,
+    /// Whether the last `effMainsChanged` dispatched carried `value=1`.
+    ///
+    /// Tracked because `effMainsChanged` is not documented as idempotent and real
+    /// plugins reallocate rate-dependent buffers on every `resume(1)`. The
+    /// reconfigure pair reads this to make both transitions edge-triggered, and
+    /// `Drop` reads it so a plugin that is not resumed is not suspended or
+    /// stopped a second time. Lives here, with the instance it describes.
+    pub(crate) resumed: bool,
 }
 
 /// Wrapper to make `Box<dyn Editor>` `Send`.
@@ -56,7 +64,11 @@ impl Vst2Handle {
         // None on subsequent calls. Probed once here so callers can ask
         // `has_editor()` later without re-entering the plugin.
         let editor = instance.get_editor().map(SendEditor);
-        Self { instance, editor }
+        Self {
+            instance,
+            editor,
+            resumed: false,
+        }
     }
 
     pub(crate) fn has_editor(&self) -> bool {
@@ -79,9 +91,17 @@ impl Drop for Vst2Handle {
             editor.0.close();
         }
 
-        // Suspend audio processing so the plugin releases any RT-allocated
-        // resources before it is closed.
-        self.instance.suspend();
+        // Stop and suspend audio processing so the plugin releases any
+        // RT-allocated resources before it is closed, in the SDK's teardown
+        // order (`effStopProcess`, `effMainsChanged(0)`). Only a plugin that is
+        // resumed: both opcodes are legal only there, and a plugin already
+        // suspended (a failed reconfigure left it so) would see a second
+        // `effMainsChanged(0)` with no start before it.
+        if self.resumed {
+            self.instance.stop_process();
+            self.instance.suspend();
+            self.resumed = false;
+        }
 
         // `self.instance` is then dropped normally, which dispatches
         // `effClose`. The shared module is *not* unloaded — that leak lives in

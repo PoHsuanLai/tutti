@@ -275,6 +275,16 @@ pub trait Host {
         0
     }
 
+    /// Answer the plugin's `audioMasterCanDo` query for the capability named
+    /// `can_do` (`"sendVstEvents"`, `"sendVstTimeInfo"`, ...).
+    ///
+    /// `Supported::Yes` for what the host does, `Supported::No` for what it
+    /// declines, `Supported::Maybe` for a name it does not know: VST 2.4's
+    /// `1`, `-1` and `0`. The default answers `Maybe` to everything.
+    fn can_do(&self, can_do: &str) -> Supported {
+        Supported::Maybe
+    }
+
     /// Refresh UI after the plugin's parameters changed.
     ///
     /// Note: some hosts will call some `PluginParameters` methods from within the `update_display`
@@ -487,6 +497,20 @@ impl Editor for EditorInstance {
     fn is_open(&mut self) -> bool {
         self.is_open
     }
+
+    /// Dispatch `effEditIdle` while the editor is open.
+    ///
+    /// The host calls this on a timer (about 30 Hz) from its main thread;
+    /// editors that animate or flush UI work do it here. Never before
+    /// `effEditOpen` or after `effEditClose`: the opcode has no meaning for a
+    /// window that does not exist.
+    fn idle(&mut self) {
+        if !self.is_open {
+            return;
+        }
+        self.params
+            .dispatch(plugin::OpCode::EditorIdle, 0, 0, ptr::null_mut(), 0.0);
+    }
 }
 
 impl<T: Host> PluginLoader<T> {
@@ -599,6 +623,23 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
+    /// Re-read the counts and delay [`Info`] snapshots from the
+    /// live `AEffect`: `numInputs`, `numOutputs`, `numParams`, `numPrograms`
+    /// and `initialDelay`. The snapshot is taken before `effOpen`, so
+    /// [`init`](Plugin::init) calls this once it returns; a host calls it again
+    /// after `audioMasterIOChanged`, which is the plugin saying the pin counts
+    /// moved.
+    pub fn refresh_effect_fields(&mut self) {
+        // SAFETY: `self.params` owns the `*mut AEffect` for this instance's
+        // lifetime; these are plain `i32` fields, not calls into the plugin.
+        let effect = unsafe { &*self.params.get_effect() };
+        self.info.inputs = effect.numInputs;
+        self.info.outputs = effect.numOutputs;
+        self.info.parameters = effect.numParams;
+        self.info.presets = effect.numPrograms;
+        self.info.initial_delay = effect.initialDelay;
+    }
+
     /// Read `AEffect::numPrograms` as it stands *now*.
     ///
     /// [`get_info`](Plugin::get_info) returns the snapshot taken in
@@ -1236,8 +1277,14 @@ impl Plugin for PluginInstance {
         unreachable!()
     }
 
+    /// Dispatch `effOpen`, then re-read the `AEffect` fields the plugin may
+    /// have finalised in it (pin and parameter counts, program count,
+    /// `initialDelay`): a plugin, a shell plugin above all, settles on which
+    /// effect it is during init, and [`get_info`](Plugin::get_info) and the
+    /// process entry points' channel-count checks read this snapshot.
     fn init(&mut self) {
         self.opcode(plugin::OpCode::Initialize);
+        self.refresh_effect_fields();
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2055,6 +2102,105 @@ mod tests {
             "an editor whose open was refused is not open, so closing it must \
              not reach the plugin"
         );
+    }
+
+    /// `Editor::idle` dispatches `effEditIdle` while the editor is open, and
+    /// only then.
+    ///
+    /// The trait default is an empty body, so before `EditorInstance`
+    /// overrode it a host's periodic idle call reached nothing and editors
+    /// that animate in `effEditIdle` froze.
+    ///
+    /// Mutation (run): delete the override (the default no-op) -> the open
+    /// editor's idle dispatches nothing -> fails. Mutation (run): drop the
+    /// `is_open` guard -> an idle before open or after close reaches the
+    /// plugin -> fails.
+    #[test]
+    fn idle_dispatches_effeditidle_only_while_the_editor_is_open() {
+        use crate::api::DispatcherProc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static IDLES: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _effect: *mut AEffect,
+            opcode: i32,
+            _index: i32,
+            _value: isize,
+            _ptr: *mut c_void,
+            _opt: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::EditorOpen as i32 {
+                return 1;
+            }
+            if opcode == plugin::OpCode::EditorIdle as i32 {
+                IDLES.fetch_add(1, Ordering::SeqCst);
+            }
+            0
+        }
+
+        let mut effect: AEffect = unsafe { std::mem::zeroed() };
+        effect.dispatcher = Some(dispatch as DispatcherProc);
+        let params = Arc::new(PluginParametersInstance {
+            effect: UnsafeCell::new(&mut effect as *mut AEffect),
+        });
+        let mut ed = EditorInstance {
+            params,
+            is_open: false,
+        };
+
+        IDLES.store(0, Ordering::SeqCst);
+        ed.idle();
+        assert_eq!(IDLES.load(Ordering::SeqCst), 0, "idle before open");
+
+        assert!(ed.open(ptr::null_mut()));
+        ed.idle();
+        ed.idle();
+        assert_eq!(IDLES.load(Ordering::SeqCst), 2, "one effEditIdle per idle");
+
+        ed.close();
+        ed.idle();
+        assert_eq!(IDLES.load(Ordering::SeqCst), 2, "idle after close");
+    }
+
+    /// `audioMasterCanDo` reaches `Host::can_do` with the plugin's string, and
+    /// the three VST 2.4 answers come back as `1`, `0` and `-1`.
+    ///
+    /// Before the arm existed the opcode logged the query and fell through to
+    /// `0`, so a plugin gating a feature on `canDo("sendVstEvents")` was told
+    /// "don't know" for everything.
+    ///
+    /// Mutation (run): the arm back to a log and fall-through -> all three
+    /// answers read `0` -> fails. Mutation (run): `Supported::No => 0` ->
+    /// the refusal reads as "don't know" -> fails.
+    #[test]
+    fn host_can_do_reaches_the_host_and_maps_to_the_three_answers() {
+        struct Answers;
+        impl Host for Answers {
+            fn can_do(&self, can_do: &str) -> Supported {
+                match can_do {
+                    "sendVstEvents" => Supported::Yes,
+                    "openFileSelector" => Supported::No,
+                    _ => Supported::Maybe,
+                }
+            }
+        }
+
+        let ask = |name: &str| {
+            let name = CString::new(name).unwrap();
+            interfaces::host_dispatch(
+                &Answers,
+                ptr::null_mut(),
+                OpCode::CanDo as i32,
+                0,
+                0,
+                name.as_ptr() as *mut c_void,
+                0.0,
+            )
+        };
+        assert_eq!(ask("sendVstEvents"), 1);
+        assert_eq!(ask("openFileSelector"), -1);
+        assert_eq!(ask("somethingElse"), 0);
     }
 
     /// The answer a plugin's `effSetChunk` gives must reach the caller.

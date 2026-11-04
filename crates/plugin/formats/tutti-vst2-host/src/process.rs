@@ -27,6 +27,15 @@ impl Vst2Instance {
     /// passed to [`load`](Self::load). A zero-length block returns immediately
     /// without entering the plugin.
     ///
+    /// A block longer than the maximum the plugin was told
+    /// ([`load`](Self::load)'s `block_size`, or the last
+    /// [`set_block_size`](Self::set_block_size)) is rendered as several calls
+    /// of at most that length, in order: a plugin sizes its buffers to the
+    /// announced maximum. MIDI events keep their frames across the pieces
+    /// (each is delivered in the piece it falls in, with its offset rebased),
+    /// the plugin's MIDI out keeps its frames the same way, and each piece's
+    /// transport snapshot is the block's advanced by the frames before it.
+    ///
     /// The returned events live in a buffer owned by the instance and are
     /// replaced on the next `process_*` call; copy out what you need to keep.
     ///
@@ -36,8 +45,9 @@ impl Vst2Instance {
     ///
     /// # Panics
     ///
-    /// Panics if `num_samples` exceeds the block size `scratch` was created
-    /// with, or if an input slice is shorter than `num_samples`.
+    /// Panics if a piece (`num_samples`, or the announced maximum block if
+    /// that is shorter) exceeds the block size `scratch` was created with, or
+    /// if an input slice is shorter than `num_samples`.
     pub fn process_f32(
         &mut self,
         inputs: &[&[f32]],
@@ -51,24 +61,31 @@ impl Vst2Instance {
             return &self.midi.out;
         }
 
-        self.update_transport(ctx);
-        self.dispatch_midi(ctx.midi);
-        scratch.prepare_f32(inputs, num_samples);
-        self.process_block(scratch, num_samples);
-        scratch.copy_out_f32(outputs, num_samples);
-
-        self.drain_midi_out();
+        // A block longer than the maximum the plugin was told is rendered in
+        // pieces no longer than it: a plugin sizes its internal buffers to the
+        // announced maximum, so a longer call overruns them.
+        let mut start = 0;
+        while start < num_samples {
+            let len = (num_samples - start).min(self.block_size.max(1));
+            self.begin_piece(ctx, start, len, num_samples);
+            scratch.prepare_f32_range(inputs, start, len);
+            self.process_block(scratch, len);
+            scratch.copy_out_f32_range(outputs, start, len);
+            self.midi.drain_from(start);
+            start += len;
+        }
         &self.midi.out
     }
 
     /// Renders one block of `num_samples` f64 frames and returns the MIDI the
     /// plugin emitted during it.
     ///
-    /// A plugin declaring `effFlagsCanDoubleReplacing` is entered through
+    /// A plugin told 64-bit at load ([`Precision::Double`](crate::Precision),
+    /// which needs `effFlagsCanDoubleReplacing`) is entered through
     /// `processReplacingF64`, so the samples never pass through f32. One that
-    /// does not declare it has no f64 entry point at all — VST 2.4 defines no
-    /// accumulating counterpart — so the block is staged down to f32, rendered,
-    /// and widened back. That fallback is lossy and deliberate: the alternative
+    /// was told 32 (loaded with [`load`](Self::load), or without the flag) is
+    /// not entered at 64, and VST 2.4 defines no accumulating counterpart, so
+    /// the block is staged down to f32, rendered, and widened back. That fallback is lossy and deliberate: the alternative
     /// is silence (what the vendor's `process_f64` returns on a null
     /// `processReplacingF64`), which would turn an f64 master chain into a mute
     /// for every plugin that only speaks f32. Callers wanting to avoid the
@@ -80,8 +97,8 @@ impl Vst2Instance {
     ///
     /// # Panics
     ///
-    /// Panics if `num_samples` exceeds the block size `scratch` was created
-    /// with.
+    /// Panics if a piece (`num_samples`, or the announced maximum block if
+    /// that is shorter) exceeds the block size `scratch` was created with.
     pub fn process_f64(
         &mut self,
         inputs: &[&[f64]],
@@ -95,27 +112,43 @@ impl Vst2Instance {
             return &self.midi.out;
         }
 
-        self.update_transport(ctx);
-        self.dispatch_midi(ctx.midi);
-        let native_f64 = self.metadata().supports_f64;
-        if native_f64 {
-            scratch.prepare_f64(inputs, num_samples);
-            self.process_block_f64(scratch, num_samples);
-            scratch.copy_out_f64(outputs, num_samples);
-        } else {
-            scratch.prepare_f64_as_f32(inputs, num_samples);
-            self.process_block(scratch, num_samples);
-            scratch.copy_out_f64_from_f32(outputs, num_samples);
+        // Native only when the plugin was told 64-bit at load
+        // (`Precision::Double` and `effFlagsCanDoubleReplacing`): a plugin told
+        // 32 is not entered at 64.
+        let native_f64 = self.is_double_precision();
+        let mut start = 0;
+        while start < num_samples {
+            let len = (num_samples - start).min(self.block_size.max(1));
+            self.begin_piece(ctx, start, len, num_samples);
+            if native_f64 {
+                scratch.prepare_f64_range(inputs, start, len);
+                self.process_block_f64(scratch, len);
+                scratch.copy_out_f64_range(outputs, start, len);
+            } else {
+                scratch.prepare_f64_as_f32_range(inputs, start, len);
+                self.process_block(scratch, len);
+                scratch.copy_out_f64_from_f32_range(outputs, start, len);
+            }
+            self.midi.drain_from(start);
+            start += len;
         }
-
-        self.drain_midi_out();
         &self.midi.out
     }
 
-    /// Drains the plugin's MIDI-out queue into the pooled `midi_out` list
-    /// ([`MidiIo::drain`](crate::midi::MidiIo::drain)).
-    fn drain_midi_out(&mut self) {
-        self.midi.drain();
+    /// Sets up one piece of a block, `len` frames from `start` of `total`:
+    /// the transport snapshot the plugin reads, then the MIDI events that fall
+    /// in the piece. The piece's first call publishes `ctx`'s transport; each
+    /// later piece advances the last snapshot by the frames before it.
+    fn begin_piece(&mut self, ctx: &Vst2ProcessContext, start: usize, len: usize, total: usize) {
+        if start == 0 {
+            self.update_transport(ctx);
+        } else if ctx.transport.is_some() {
+            // Every earlier piece was a full `block_size`. Not without a
+            // transport: nothing was published for this block, and advancing
+            // the last block's snapshot would accumulate a stale one.
+            self.advance_transport(self.block_size.max(1), ctx.sample_rate);
+        }
+        self.dispatch_midi(ctx.midi, start, len, total);
     }
 
     /// Refreshes the snapshot the plugin reads back via `audioMasterGetTime`.
@@ -145,12 +178,46 @@ impl Vst2Instance {
         }
     }
 
-    fn dispatch_midi(&mut self, midi: &[MidiEvent]) {
-        if let Some(events_ptr) = self.midi.send.stage(midi) {
-            // SAFETY: `stage` returns a pointer valid until the next `stage`
-            // call or `drop`. It is used immediately and never retained. The
-            // VST2 spec requires the plugin to copy any event data it needs
-            // before `process_events` returns.
+    /// Advances the published snapshot by `frames` for the next piece of a
+    /// split block: sample position, host time and (while rolling) the
+    /// musical position move on, and the bar start moves to the last bar line
+    /// the position has passed; `kVstTransportChanged` was an edge of the
+    /// block's first piece and does not repeat.
+    fn advance_transport(&mut self, frames: usize, sample_rate: f64) {
+        use vst::api::TimeInfoFlags as F;
+        let Some(mut t) = self.host_link.time_info.last() else {
+            return;
+        };
+        let flags = F::from_bits_truncate(t.flags);
+        let secs = frames as f64 / sample_rate;
+        t.sample_pos += frames as f64;
+        if flags.contains(F::NANOSECONDS_VALID) {
+            t.nanoseconds += secs * 1e9;
+        }
+        if flags.contains(F::TRANSPORT_PLAYING)
+            && flags.contains(F::PPQ_POS_VALID)
+            && flags.contains(F::TEMPO_VALID)
+        {
+            t.ppq_pos += secs * t.tempo / 60.0;
+            // A bar line inside the piece: the bar is `numerator` beats of
+            // `4 / denominator` quarters.
+            if flags.contains(F::BARS_VALID) && t.time_sig_denominator > 0 {
+                let bar = f64::from(t.time_sig_numerator) * 4.0 / f64::from(t.time_sig_denominator);
+                if bar > 0.0 && t.ppq_pos >= t.bar_start_pos + bar {
+                    t.bar_start_pos += ((t.ppq_pos - t.bar_start_pos) / bar).floor() * bar;
+                }
+            }
+        }
+        t.flags &= !F::TRANSPORT_CHANGED.bits();
+        self.host_link.time_info.write(t);
+    }
+
+    fn dispatch_midi(&mut self, midi: &[MidiEvent], start: usize, len: usize, total: usize) {
+        if let Some(events_ptr) = self.midi.send.stage_piece(midi, start, len, total) {
+            // SAFETY: `stage_piece` returns a pointer valid until the next
+            // `stage` call or `drop`. It is used immediately and never
+            // retained. The VST2 spec requires the plugin to copy any event
+            // data it needs before `process_events` returns.
             unsafe {
                 self.handle.instance.process_events(&*events_ptr);
             }

@@ -135,7 +135,7 @@ impl Plugin {
             "component" => AuInstance::probe(path),
             #[cfg(feature = "vst2")]
             "vst" | "dll" | "so" => {
-                let vst = Vst2Instance::load(path, 44100.0, 512)?;
+                let vst = Vst2Instance::load(path, 44100.0, 512, false)?;
                 Ok(vst.descriptor().clone())
             }
             _ => Err(BridgeError::LoadFailed {
@@ -189,9 +189,12 @@ impl Plugin {
             }
 
             #[cfg(feature = "vst2")]
-            "vst" | "dll" | "so" => {
-                Plugin::Vst2(Vst2Instance::load(path, sample_rate, block_size)?)
-            }
+            "vst" | "dll" | "so" => Plugin::Vst2(Vst2Instance::load(
+                path,
+                sample_rate,
+                block_size,
+                preferred_format == SampleFormat::Float64,
+            )?),
 
             #[cfg(feature = "clap")]
             "clap" => Plugin::Clap(ClapInstance::load(
@@ -289,8 +292,9 @@ impl Plugin {
     /// surfaces runtime latency via `restartComponent(kLatencyChanged)`, CLAP
     /// via `clap_host_latency.changed`, and AU via an `AUEventListener` watching
     /// the three properties whose load-time values would otherwise be frozen.
-    /// VST2 has no such mechanism for latency at all — `effIdle`/`initialDelay`
-    /// carry no change signal — so its load-time figure is the whole answer.
+    /// VST2 has `audioMasterIOChanged` and nothing finer, so the host re-reads
+    /// latency, tail and pins after it and after every resume, and reports a
+    /// move here.
     pub(crate) fn poll_async_events(&mut self) -> Vec<AsyncEvent> {
         #[allow(unused_mut)] // only mutated under vst2/clap/vst3 features
         let mut out = Vec::new();
@@ -299,6 +303,16 @@ impl Plugin {
             Plugin::Vst2(vst2) => {
                 for (index, value) in vst2.poll_parameter_changes() {
                     out.push(AsyncEvent::ParameterChanged { index, value });
+                }
+                let changes = vst2.poll_changes();
+                if let Some(samples) = changes.latency {
+                    out.push(AsyncEvent::LatencyChanged { samples });
+                }
+                if let Some(tail) = changes.tail {
+                    out.push(AsyncEvent::TailChanged { tail });
+                }
+                if changes.io {
+                    out.push(AsyncEvent::IoChanged);
                 }
             }
             #[cfg(feature = "vst3")]
@@ -330,8 +344,11 @@ impl Plugin {
                         samples: Samples(clap.get_latency() as usize),
                     });
                 }
-                // A rate change re-reads the ports, and the plugin may have
-                // changed them, or been left unable to run.
+                // Serve a rescan or restart the plugin asked for (this is
+                // between blocks, on the loading thread), then tell the host
+                // if that, or a rate change, altered the ports or left the
+                // plugin unable to run.
+                clap.service_requests();
                 if clap.take_io_changed() {
                     out.push(AsyncEvent::IoChanged);
                 }

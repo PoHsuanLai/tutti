@@ -24,6 +24,74 @@ Migration (API changes):
 - Code that read CC 0 / CC 32 out of `Midi1ToMidi2Translator::translate` now gets `None` for them and the bank on the next Program Change.
 - `MidiMessage` is documented as group-agnostic (a re-encode lands on group 0); route on `MidiEvent::group`.
 
+### Fixed — VST2 host protocol (spec audit): block size, precision, start/stop, latency re-reads, `canDo`, `effEditIdle`
+
+The VST2 references used (JUCE, vestige, vst-rs) are open re-implementations of
+the protocol. Changes:
+
+- A block longer than the maximum announced with `effSetBlockSize` (4096 in
+  process; the engine renders up to 8192) is split inside
+  `Vst2Instance::process_f32` / `process_f64`, so the plugin is never called
+  with more frames than it was told.
+- `effSetProcessPrecision(64)` is sent only to a plugin that declared
+  `effFlagsCanDoubleReplacing` and was loaded for it. **Migration:**
+  `Vst2Instance::load` now announces 32; use
+  `Vst2Instance::load_with_precision(.., Precision::Double)` to call
+  `process_f64` natively (otherwise it narrows through f32). The server's
+  `Vst2Instance::load` takes a `prefer_f64` argument.
+- `effStartProcess` is sent at load; drop sends `effStopProcess` and
+  `effMainsChanged(0)` only to a resumed plugin.
+- Latency, tail and pin counts are re-read after a resume, a rate or
+  block-size change and `audioMasterIOChanged` (now answered 1).
+  **New:** `Vst2Instance::poll_changes` -> `Vst2Changes`; the server raises
+  `LatencyChanged`, `TailChanged` and `IoChanged`; the in-process handle
+  raises `PluginInvalidation` on its editor pump.
+- **Limit:** in process, the parked rate change and the latency, tail and pin
+  re-reads run on the editor pump (`PluginHandle::editor_idle`), which
+  bevy-tutti ticks only while an editor is open. Without an editor, call
+  `editor_idle` on a tick of your own; the session does not.
+- A SysEx message is assembled once per block, so one whose `END` falls in a
+  later piece of a split block is delivered there; the plugin's MIDI-out list
+  never grows past its reservation (the overflow counts in
+  `dropped_midi_out`); a later piece's bar start follows the bar lines.
+- `audioMasterCanDo`, `effEditIdle`, `audioMasterGetSampleRate` /
+  `GetBlockSize` after a change, counts read after `effOpen`, and
+  `deltaFrames` clamped and ordered in `MidiSendBuffer`.
+- `get_sample_rate` answers the rate the plugin was last told, not the block's
+  transport rate (the old test pinning the latter was replaced).
+- `vst-tutti`: `Host::can_do`, `PluginInstance::refresh_effect_fields`.
+- The reference plugin records a lifecycle trace and can raise
+  `audioMasterIOChanged` and ask the host `canDo`.
+
+### Fixed — the AU MIDI-output callback delivers SysEx; `MusicDeviceSysEx` gets framed messages; the server serves a CLAP plugin's rescan and restart requests
+
+- **The AU MIDI-output callback dropped every SysEx.** `Midi1Decoder` (new, in
+  `tutti-plugin-types`, with `Midi1Splitter`, `Midi1Message`,
+  `SYSEX_OUT_CAPACITY`, `push_sysex_stack`) reassembles it, across packets and
+  calls, in a buffer reserved at `install`, and the sink gets it as SysEx7
+  packets in one slice. A message over 1538 bytes, or cut by another status
+  byte, is dropped whole and counted (`AuMidiOutput::sysex_dropped`, new). The
+  sink's batch is now `MIDI_STACK_CAPACITY` (256) events, was 64. macOS only;
+  the logic is tested on every platform.
+- **`AuInstance::send_midi` stripped `0xF0` and `0xF7`** before
+  `MusicDeviceSysEx`, which wants the complete message. It sends it framed
+  (`tutti_plugin_types::is_framed`). A MIDI 2.0 note-on velocity of
+  `0x0001..=0x01FF` mapped to MIDI 1.0 velocity 0, a note-off; it now maps to
+  at least 1 (`note_on_velocity_midi1`). Poly pressure was dropped; it is sent.
+- **A CLAP plugin's `audio-ports.rescan` (any flag but `NAMES`) and
+  `request_restart` were recorded and never acted on.** The server now
+  re-activates the plugin between blocks (`ClapActive::reactivate`, new),
+  re-reads its ports and raises `IoChanged` when the layout changed or the
+  instance can no longer run. `tutti_clap_host::AudioPortsRescan` and
+  `ParamRescan` are exported at the crate root. The reference plugin gained
+  `tutti_test_plugin_request_ports_rescan`.
+- **A plugin left deactivated was deactivated again** by a later rate change
+  or `reactivate`, which CLAP allows only while active; the host now skips
+  the call. A SysEx that goes on into a later MIDI-output callback is stamped
+  at offset 0 (`Midi1Decoder::begin_list`, replacing `discard_staged`), and a
+  status byte among a short message's data ends that message (a real-time
+  byte is delivered and the message goes on).
+
 ### Fixed — SVF Bell and shelves and the ladder high-passes follow their specifications; Ogg export no longer dithers
 
 Audible change in `SvfFilterNode` and `EqBandNode`'s SVF, and in

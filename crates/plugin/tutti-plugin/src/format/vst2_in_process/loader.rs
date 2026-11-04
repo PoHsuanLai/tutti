@@ -17,9 +17,14 @@ use crate::protocol::{
     EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor, PluginTail,
 };
 
-/// Maximum block size we pre-size the plugin's render scratch for.
-/// Plugins are told this is the upper bound; per-call sizes may be
-/// smaller.
+/// The maximum block size the plugin is told (`effSetBlockSize`). A graph block
+/// longer than this (the engine renders up to 8192, more with
+/// `Engine::with_capacity`) is split by `Vst2Instance::process_f32` into calls
+/// of at most this length, so the plugin is never entered with more frames than
+/// it was told. Splitting rather than re-announcing the graph's maximum: the
+/// announcement is an `effMainsChanged` bracket that belongs on the main thread
+/// and reaches a live node only through the editor pump, so it cannot be relied
+/// on to have happened before the first block.
 const MAX_BLOCK_SIZE: usize = 4096;
 
 /// Loads a VST2 plugin in the host process, returning its graph node and
@@ -121,16 +126,26 @@ pub fn load_client(
     let inner = Arc::new(Mutex::new(inner));
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
+    let invalidate_sink = crate::host::node::InvalidateSink::new();
 
     // Built here rather than inside the node so the node's producer end and the
     // backend's drain end are the same cell: the audio thread parks a rate in
     // it, `editor_idle` dispatches from it.
+    //
+    // **Limit:** `editor_idle` is the only main-thread tick an in-process
+    // plugin has, and bevy-tutti calls it only while an editor is open. So a
+    // parked rate change, and the re-reads of latency, tail and pin counts
+    // (`Vst2Instance::poll_changes`, raised as `PluginInvalidation` through the
+    // handle's `on_invalidate`), happen only while the editor pump runs. The
+    // session does not tick an in-process plugin's handle; a host that wants
+    // them without an editor calls `PluginHandle::editor_idle` on its own tick.
     let pending_sample_rate = Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE));
 
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),
         param_sink: param_sink.clone(),
         pending_sample_rate: Arc::clone(&pending_sample_rate),
+        invalidate_sink: invalidate_sink.clone(),
     });
 
     // `loaded.features`, not the local `features`, so the node gates its
@@ -162,7 +177,8 @@ pub fn load_client(
         descriptor,
         loaded,
         param_sink,
-    );
+    )
+    .with_invalidate_sink(invalidate_sink);
 
     Ok((client, handle))
 }

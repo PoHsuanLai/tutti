@@ -62,6 +62,9 @@ pub struct ProcessCapture {
     pub process_calls: u32,
     /// `samples` argument of the most recent render call.
     pub block_size: i32,
+    /// The longest render call since the capture was reset: what a plugin that
+    /// sized its buffers to `effSetBlockSize` is overrun by.
+    pub largest_block: i32,
     /// Channel count the host's input pointer table was read at — what the
     /// probe declared via `numInputs`, since `AudioBuffer::from_raw` is built
     /// from the AEffect. A mismatch shows up as reads of channels the host
@@ -90,6 +93,12 @@ pub struct ProcessCapture {
     /// `value` of the last `effSetProcessPrecision`: `0` = 32-bit, `1` =
     /// 64-bit. Meaningless while `set_precision_count` is 0.
     pub set_precision_value: i32,
+    /// What the host answered to `audioMasterGetSampleRate`, asked from inside
+    /// `effSetSampleRate`; `0` until asked.
+    pub host_rate_in_set_rate: i64,
+    /// What the host answered to `audioMasterGetBlockSize`, asked from inside
+    /// `effSetBlockSize`; `0` until asked.
+    pub host_block_in_set_block: i64,
 
     /// Count of `audioMasterGetCurrentProcessLevel` queries the probe made.
     /// Separate from the value below for the same reason
@@ -143,6 +152,7 @@ impl ProcessCapture {
             valid: false,
             process_calls: 0,
             block_size: 0,
+            largest_block: 0,
             input_count: 0,
             output_count: 0,
             entry: ProcessEntry::None,
@@ -153,6 +163,8 @@ impl ProcessCapture {
             initialized: false,
             set_precision_count: 0,
             set_precision_value: 0,
+            host_rate_in_set_rate: 0,
+            host_block_in_set_block: 0,
             process_level_queries: 0,
             process_level: 0,
             time_info_present: false,

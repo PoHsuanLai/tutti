@@ -277,10 +277,10 @@ pub(crate) fn on_process_entry() {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         while BLOCKED.load(Ordering::SeqCst) {
-            if let Some(path) = release_file.as_deref() {
-                if path.exists() {
-                    break;
-                }
+            if let Some(path) = release_file.as_deref()
+                && path.exists()
+            {
+                break;
             }
             parked = true;
             std::hint::spin_loop();
@@ -306,7 +306,7 @@ pub(crate) fn on_process_entry() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so a test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_apply_gain(on: u32) {
     APPLY_GAIN.store(on != 0, Ordering::SeqCst);
 }
@@ -318,7 +318,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_apply_gain(on: u32) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so a host can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_release_block() {
     BLOCKED.store(false, Ordering::SeqCst);
 }
@@ -331,7 +331,7 @@ pub unsafe extern "C" fn tutti_test_plugin_release_block() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so a host can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_parked_blocks() -> u64 {
     PARKED_BLOCKS.load(Ordering::SeqCst)
 }
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn tutti_test_plugin_parked_blocks() -> u64 {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so a host can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_blocks_seen() -> u64 {
     BLOCKS_SEEN.load(Ordering::SeqCst)
 }

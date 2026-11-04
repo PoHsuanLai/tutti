@@ -114,7 +114,7 @@ Changes:
   units rule; carry a `UnitTag` or make `NodeSpec.params` a typed map. (Stays a
   value — live params still go through `Param<U>`.)
 - **`Replace { key, fade: Seconds }`** is expressed as a unit *generation* on
-  the node (`NodeSpec.gen: u32`), so a rebind is a visible value change. This
+  the node (`Topology::generations`, a `u32` per node), so a rebind is a visible value change. This
   deletes the `rebound` exception in `wire.rs`.
 - **One topological sort.** `graph.rs::acyclic_order`, `latency.rs:269` and
   `tail.rs:288` are three Kahn sorts (the latency one seeded from `HashMap`).

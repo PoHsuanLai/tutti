@@ -249,13 +249,13 @@ static CAPTURE: Mutex<ProcessCapture> = Mutex::new(ProcessCapture {
 ///
 /// # Safety
 /// `out` must point to a valid, writable `ProcessCapture`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_capture(out: *mut ProcessCapture) -> bool {
     if out.is_null() {
         return false;
     }
     let guard = CAPTURE.lock().unwrap_or_else(|p| p.into_inner());
-    *out = *guard;
+    unsafe { *out = *guard };
     guard.valid
 }
 
@@ -292,7 +292,9 @@ static AUDIO_PORTS: clap_plugin_audio_ports = clap_plugin_audio_ports {
 
 unsafe extern "C" fn plugin_init(plugin: *const clap_plugin) -> bool {
     // THREADING: `[main-thread]`.
-    threading::record_thread_roles(threading::Site::Init, plugin_host(plugin));
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { threading::record_thread_roles(threading::Site::Init, plugin_host(plugin)) };
     true
 }
 
@@ -309,11 +311,11 @@ pub(crate) unsafe fn plugin_host(plugin: *const clap_plugin) -> *const clap_host
     if plugin.is_null() {
         return ptr::null();
     }
-    let data = (*plugin).plugin_data as *const PluginState;
+    let data = unsafe { (*plugin).plugin_data } as *const PluginState;
     if data.is_null() {
         return ptr::null();
     }
-    (*data).host
+    unsafe { (*data).host }
 }
 
 /// The instance's own state, or `None` for a null / uninitialised pointer.
@@ -327,16 +329,18 @@ unsafe fn plugin_state<'a>(plugin: *const clap_plugin) -> Option<&'a PluginState
     if plugin.is_null() {
         return None;
     }
-    ((*plugin).plugin_data as *const PluginState).as_ref()
+    unsafe { ((*plugin).plugin_data as *const PluginState).as_ref() }
 }
 
 unsafe extern "C" fn plugin_destroy(plugin: *const clap_plugin) {
     if plugin.is_null() {
         return;
     }
-    let data = (*plugin).plugin_data as *mut PluginState;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let data = unsafe { (*plugin).plugin_data } as *mut PluginState;
     if !data.is_null() {
-        drop(Box::from_raw(data));
+        drop(unsafe { Box::from_raw(data) });
     }
 }
 
@@ -347,10 +351,12 @@ unsafe extern "C" fn plugin_activate(
     max_frames: u32,
 ) -> bool {
     // THREADING: `[main-thread]`.
-    threading::record_thread_roles(threading::Site::Activate, plugin_host(plugin));
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { threading::record_thread_roles(threading::Site::Activate, plugin_host(plugin)) };
     // REFUSAL: a plugin may legally reject a rate or block size it cannot run.
     // Off unless a test armed it — see `refusal`.
-    let accepted = match plugin_state(plugin) {
+    let accepted = match unsafe { plugin_state(plugin) } {
         Some(state) => refusal::on_activate(&state.active, sample_rate, max_frames),
         None => false,
     };
@@ -360,21 +366,22 @@ unsafe extern "C" fn plugin_activate(
         LATENCY_ACTIVE_EXTRA.store(LATENCY_NEXT_EXTRA.load(Ordering::SeqCst), Ordering::SeqCst);
         // `clap.latency` lets a plugin announce its figure from inside
         // `activate`, which is where it settled on it.
-        if LATENCY_CHANGED_IN_ACTIVATE.load(Ordering::SeqCst) {
-            if let Some(ext) =
+        if LATENCY_CHANGED_IN_ACTIVATE.load(Ordering::SeqCst)
+            && let Some(ext) = unsafe {
                 threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
-            {
-                if let Some(changed) = ext.changed {
-                    changed(plugin_host(plugin));
-                }
             }
+            && let Some(changed) = ext.changed
+        {
+            unsafe { changed(plugin_host(plugin)) };
         }
     }
     accepted
 }
 
 unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
-    if let Some(state) = plugin_state(plugin) {
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    if let Some(state) = unsafe { plugin_state(plugin) } {
         // `deactivate` is `[main-thread & active]`: a call while inactive is a
         // host bug, counted for the test to read.
         if !state.active.swap(false, Ordering::SeqCst) {
@@ -386,12 +393,16 @@ unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
 unsafe extern "C" fn plugin_start_processing(plugin: *const clap_plugin) -> bool {
     // THREADING: `[audio-thread]` — so `is_main` must read false here even
     // though the host's test harness drives it from the OS main thread.
-    threading::record_thread_roles(threading::Site::StartProcessing, plugin_host(plugin));
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe {
+        threading::record_thread_roles(threading::Site::StartProcessing, plugin_host(plugin))
+    };
     // CLAP tags this `[audio-thread & active & !processing]`. Enforce the
     // `active` half rather than assume it: a host that lost track of activation
     // does its damage precisely here, and a probe that returns `true` regardless
     // makes such a host look correct.
-    match plugin_state(plugin) {
+    match unsafe { plugin_state(plugin) } {
         Some(state) => state.active.load(Ordering::SeqCst),
         None => false,
     }
@@ -402,7 +413,9 @@ unsafe extern "C" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
 unsafe extern "C" fn plugin_reset(plugin: *const clap_plugin) {
     // THREADING: `[audio-thread & active]` — so `is_main` must read false here
     // even though the host's test harness drives it from the OS main thread.
-    threading::record_thread_roles(threading::Site::Reset, plugin_host(plugin));
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { threading::record_thread_roles(threading::Site::Reset, plugin_host(plugin)) };
     // Clear the cross-block processing state, which for this probe is the
     // latency-mode delay line. A test feeds an impulse, resets, and asserts the
     // tail no longer emerges — the observable that distinguishes a host which
@@ -418,7 +431,9 @@ unsafe extern "C" fn plugin_process(
     if process.is_null() {
         return CLAP_PROCESS_CONTINUE;
     }
-    let p = &*process;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let p = unsafe { &*process };
 
     // OUT-OF-PROCESS: die or park, per the environment switches. First,
     // before any capture: a test that asks for a crash on block N wants the
@@ -436,13 +451,13 @@ unsafe extern "C" fn plugin_process(
 
     // Input bus 0 geometry.
     if p.audio_inputs_count > 0 && !p.audio_inputs.is_null() {
-        let in0: &clap_audio_buffer = &*p.audio_inputs;
+        let in0: &clap_audio_buffer = unsafe { &*p.audio_inputs };
         cap.in0_channels = in0.channel_count;
     }
 
     // Output bus 0 geometry + which sample-format pointer table is live.
     if p.audio_outputs_count > 0 && !p.audio_outputs.is_null() {
-        let out0: &clap_audio_buffer = &*p.audio_outputs;
+        let out0: &clap_audio_buffer = unsafe { &*p.audio_outputs };
         cap.out0_channels = out0.channel_count;
         cap.out0_data32_present = !out0.data32.is_null();
         cap.out0_data64_present = !out0.data64.is_null();
@@ -450,7 +465,7 @@ unsafe extern "C" fn plugin_process(
 
     // Transport.
     if !p.transport.is_null() {
-        let t: &clap_event_transport = &*p.transport;
+        let t: &clap_event_transport = unsafe { &*p.transport };
         cap.transport_present = true;
         cap.transport_tempo = t.tempo;
     }
@@ -458,25 +473,25 @@ unsafe extern "C" fn plugin_process(
     // Walk the input event list in the order the host presents it.
     if !p.in_events.is_null() {
         let list = p.in_events;
-        let size_fn = (*list).size;
-        let get_fn = (*list).get;
+        let size_fn = unsafe { (*list).size };
+        let get_fn = unsafe { (*list).get };
         if let (Some(size_fn), Some(get_fn)) = (size_fn, get_fn) {
-            let n = size_fn(list);
+            let n = unsafe { size_fn(list) };
             cap.event_count = n;
             let stored = n.min(MAX_CAPTURED_EVENTS as u32);
             for i in 0..stored {
-                let hdr_ptr = get_fn(list, i);
+                let hdr_ptr = unsafe { get_fn(list, i) };
                 if hdr_ptr.is_null() {
                     continue;
                 }
-                let hdr: &clap_event_header = &*hdr_ptr;
+                let hdr: &clap_event_header = unsafe { &*hdr_ptr };
                 let mut ev = CapturedEvent {
                     time: hdr.time,
                     event_type: hdr.type_,
                     ..CapturedEvent::default()
                 };
                 if hdr.type_ == CLAP_EVENT_PARAM_VALUE {
-                    let pv = &*(hdr_ptr as *const clap_event_param_value);
+                    let pv = unsafe { &*(hdr_ptr as *const clap_event_param_value) };
                     ev.param_id = pv.param_id;
                     ev.value = pv.value;
                 }
@@ -486,7 +501,7 @@ unsafe extern "C" fn plugin_process(
     }
 
     *CAPTURE.lock().unwrap_or_else(|p| p.into_inner()) = cap;
-    record_sysex_input(p);
+    unsafe { record_sysex_input(p) };
 
     // AUDIO-CORRECTNESS: write the closed-form output the routing oracle
     // asserts against. Runs after the capture so a panic-free structural
@@ -497,46 +512,50 @@ unsafe extern "C" fn plugin_process(
     // only `data64` is live.
     let f64_block = p.audio_outputs_count > 0
         && !p.audio_outputs.is_null()
-        && (*p.audio_outputs).data32.is_null()
-        && !(*p.audio_outputs).data64.is_null();
+        && unsafe { (*p.audio_outputs).data32.is_null() }
+        && !unsafe { (*p.audio_outputs).data64.is_null() };
     if f64_block {
-        render_output::<f64>(p);
+        unsafe { render_output::<f64>(p) };
     } else {
-        render_output::<f32>(p);
+        unsafe { render_output::<f32>(p) };
     }
 
     // Exercise one host callback so the test can assert the host received
     // it (host records the flag in its HostState). `request_callback` is
     // audio-thread-safe per the CLAP spec.
-    let host = plugin_host(plugin);
-    if !host.is_null() {
-        if let Some(req) = (*host).request_callback {
-            req(host);
-        }
+    let host = unsafe { plugin_host(plugin) };
+    if !host.is_null()
+        && let Some(req) = unsafe { (*host).request_callback }
+    {
+        unsafe { req(host) };
     }
 
     // THREADING: `[audio-thread]`. Recorded after `request_callback` so the
     // roles reflect the same context the callback was made from, and any
     // latched `request_restart` / `request_process` command runs here.
-    threading::record_thread_roles(threading::Site::Process, host);
-    threading::run_pending_command(threading::Site::Process, host);
+    unsafe {
+        threading::record_thread_roles(threading::Site::Process, host);
+        threading::run_pending_command(threading::Site::Process, host);
+    }
 
     // RT-HAZARD: push any configured SysEx output events. Done here, inside the
     // host's `process`, because that is the only context in which CLAP permits
     // `out_events.try_push` — and it is the host's audio thread, which is the
     // whole point.
-    rt_probe::emit_sysex_output(p);
-    rt_probe::emit_param_output(p);
-    echo_notes(p);
+    unsafe {
+        rt_probe::emit_sysex_output(p);
+        rt_probe::emit_param_output(p);
+        echo_notes(p);
+    }
 
     // RT-HAZARD: log through `clap.log` from inside the host's `process`. CLAP
     // marks that callback `[thread-safe]`, so this is legal plugin behaviour —
     // and it is the only way a plugin can report something it only discovers
     // while rendering.
-    rt_probe::emit_audio_thread_logs(host);
+    unsafe { rt_probe::emit_audio_thread_logs(host) };
 
     // THREAD-POOL: ask the host to run this block's tasks, if a test armed it.
-    thread_pool::on_process(plugin, host);
+    unsafe { thread_pool::on_process(plugin, host) };
 
     // RT-HAZARD: the status is the last thing decided, so the block counter the
     // alternating modes read advances exactly once per block regardless of
@@ -551,7 +570,9 @@ unsafe extern "C" fn plugin_get_extension(
     if id.is_null() {
         return ptr::null();
     }
-    let id = CStr::from_ptr(id);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let id = unsafe { CStr::from_ptr(id) };
     if id == CLAP_EXT_AUDIO_PORTS {
         return &AUDIO_PORTS as *const _ as *const c_void;
     }
@@ -572,20 +593,20 @@ unsafe extern "C" fn plugin_get_extension(
         return &RENDER as *const _ as *const c_void;
     }
     // THREADING extensions (`clap.timer-support`) — see `threading.rs`.
-    let threading_ext = threading::get_extension(id);
+    let threading_ext = unsafe { threading::get_extension(id) };
     if !threading_ext.is_null() {
         return threading_ext;
     }
     // PARAMS + STATE extensions (`clap.params`, `clap.state`,
     // `clap.state-context/2`) — see `params_state.rs`.
-    let params_ext = params_state::get_extension(id);
+    let params_ext = unsafe { params_state::get_extension(id) };
     if !params_ext.is_null() {
         return params_ext;
     }
     // GUI extension (`clap.gui`) — see `gui.rs`. Null unless the test selected
     // a GUI mode before load, so suites that never touch the editor keep
     // seeing the no-editor plugin they were written against.
-    let gui_ext = gui::get_extension(id);
+    let gui_ext = unsafe { gui::get_extension(id) };
     if !gui_ext.is_null() {
         return gui_ext;
     }
@@ -602,15 +623,17 @@ unsafe extern "C" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     // CLAP marks main-thread-only (timer register/unregister, log) run, because
     // this is the callback the host invokes in response to `request_callback` —
     // the only main-thread re-entry a plugin can ask for.
-    let host = plugin_host(plugin);
-    threading::record_thread_roles(threading::Site::OnMainThread, host);
-    threading::run_pending_command(threading::Site::OnMainThread, host);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let host = unsafe { plugin_host(plugin) };
+    unsafe { threading::record_thread_roles(threading::Site::OnMainThread, host) };
+    unsafe { threading::run_pending_command(threading::Site::OnMainThread, host) };
     // PARAMS: `clap_host_params::rescan` / `request_flush` / `clear` are all
     // `[main-thread]`, so the latched command runs here rather than wherever
     // the test happened to latch it.
-    params_state::run_pending_param_command(host);
+    unsafe { params_state::run_pending_param_command(host) };
     // AUDIO PORTS: `clap_host_audio_ports::rescan` is `[main-thread]` too.
-    run_pending_ports_rescan(host);
+    unsafe { run_pending_ports_rescan(host) };
 }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +687,9 @@ unsafe extern "C" fn audio_ports_get(
         }
     };
 
-    let info = &mut *info;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let info = unsafe { &mut *info };
     // Port ids are deliberately NOT equal to the port index: a host that
     // confuses the two passes with 0,1 and fails here.
     info.id = PORT_ID_BASE + index;
@@ -781,7 +806,7 @@ pub const CLAP_VERSION_TARGET_DESCRIPTOR: u32 = 1;
 /// # Safety
 /// Not synchronized: the caller must hold whatever lock serializes its suite,
 /// and must not be racing a host load of this image.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_clap_version(
     target: u32,
     major: u32,
@@ -794,8 +819,8 @@ pub unsafe extern "C" fn tutti_test_plugin_set_clap_version(
         revision,
     };
     match target {
-        CLAP_VERSION_TARGET_ENTRY => (*CLAP_ENTRY_CELL.0.get()).clap_version = v,
-        CLAP_VERSION_TARGET_DESCRIPTOR => (*SYNC_DESCRIPTOR.0.get()).clap_version = v,
+        CLAP_VERSION_TARGET_ENTRY => unsafe { (*CLAP_ENTRY_CELL.0.get()).clap_version = v },
+        CLAP_VERSION_TARGET_DESCRIPTOR => unsafe { (*SYNC_DESCRIPTOR.0.get()).clap_version = v },
         _ => {}
     }
 }
@@ -804,10 +829,10 @@ pub unsafe extern "C" fn tutti_test_plugin_set_clap_version(
 ///
 /// # Safety
 /// Same as [`tutti_test_plugin_set_clap_version`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_clap_version() {
-    (*CLAP_ENTRY_CELL.0.get()).clap_version = CLAP_VERSION;
-    (*SYNC_DESCRIPTOR.0.get()).clap_version = CLAP_VERSION;
+    unsafe { (*CLAP_ENTRY_CELL.0.get()).clap_version = CLAP_VERSION };
+    unsafe { (*SYNC_DESCRIPTOR.0.get()).clap_version = CLAP_VERSION };
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +862,9 @@ unsafe extern "C" fn factory_create_plugin(
     if plugin_id.is_null() {
         return ptr::null();
     }
-    let requested = CStr::from_ptr(plugin_id);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let requested = unsafe { CStr::from_ptr(plugin_id) };
     // Both ids build the same probe state: which descriptor a host selected is
     // what these tests observe, not a second set of DSP behaviour.
     let desc = if requested == PLUGIN_ID {
@@ -901,7 +928,9 @@ unsafe extern "C" fn entry_get_factory(factory_id: *const c_char) -> *const c_vo
     if factory_id.is_null() {
         return ptr::null();
     }
-    if CStr::from_ptr(factory_id) == CLAP_PLUGIN_FACTORY_ID {
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    if unsafe { CStr::from_ptr(factory_id) } == CLAP_PLUGIN_FACTORY_ID {
         return &FACTORY as *const _ as *const c_void;
     }
     ptr::null()
@@ -911,7 +940,7 @@ unsafe extern "C" fn entry_get_factory(factory_id: *const c_char) -> *const c_vo
 /// `clap_plugin_entry` at that address; the `repr(transparent)` [`SyncCell`]
 /// wrapper exists only so [`tutti_test_plugin_set_clap_version`] can rewrite
 /// the `clap_version` field in place.
-#[export_name = "clap_entry"]
+#[unsafe(export_name = "clap_entry")]
 pub static CLAP_ENTRY_CELL: SyncCell<clap_plugin_entry> =
     SyncCell(std::cell::UnsafeCell::new(clap_plugin_entry {
         clap_version: CLAP_VERSION,
@@ -1045,7 +1074,7 @@ fn port_layout() -> PortLayoutMode {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_port_layout(mode: u32) {
     PORT_LAYOUT.store(mode, Ordering::SeqCst);
 }
@@ -1067,7 +1096,7 @@ static PENDING_PORTS_RESCAN: AtomicU32 = AtomicU32::new(0);
 /// # Safety
 /// Safe to call from any thread; `extern "C"` only so the test can reach it
 /// across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_request_ports_rescan(flags: u32) {
     PENDING_PORTS_RESCAN.store(flags, Ordering::Release);
 }
@@ -1081,12 +1110,14 @@ unsafe fn run_pending_ports_rescan(host: *const clap_host) {
     if flags == 0 {
         return;
     }
-    let ext = threading::host_ext::<clap_sys::ext::audio_ports::clap_host_audio_ports>(
-        host,
-        CLAP_EXT_AUDIO_PORTS,
-    );
+    let ext = unsafe {
+        threading::host_ext::<clap_sys::ext::audio_ports::clap_host_audio_ports>(
+            host,
+            CLAP_EXT_AUDIO_PORTS,
+        )
+    };
     if let Some(rescan) = ext.and_then(|e| e.rescan) {
-        rescan(host, flags);
+        unsafe { rescan(host, flags) };
     }
 }
 
@@ -1123,7 +1154,7 @@ fn ports_64bit(is_input: bool) -> bool {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_ports_64bit(mask: u32) {
     PORTS_64BIT.store(mask, Ordering::SeqCst);
 }
@@ -1214,7 +1245,7 @@ static RENDER_MODE: AtomicU32 = AtomicU32::new(RenderMode::Inert as u32);
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_render_mode(mode: u32) {
     RENDER_MODE.store(mode, Ordering::SeqCst);
 }
@@ -1287,22 +1318,22 @@ unsafe fn note_event(p: &clap_process, index: usize) -> Option<(u32, NoteChange)
     if list.is_null() {
         return None;
     }
-    let (size_fn, get_fn) = ((*list).size?, (*list).get?);
+    let (size_fn, get_fn) = (unsafe { (*list).size }?, unsafe { (*list).get }?);
     let mut seen = 0;
-    for i in 0..size_fn(list) {
-        let hdr_ptr = get_fn(list, i);
+    for i in 0..unsafe { size_fn(list) } {
+        let hdr_ptr = unsafe { get_fn(list, i) };
         if hdr_ptr.is_null() {
             continue;
         }
-        let hdr: &clap_event_header = &*hdr_ptr;
+        let hdr: &clap_event_header = unsafe { &*hdr_ptr };
         let change = match hdr.type_ {
             CLAP_EVENT_NOTE_ON => {
-                let note = &*(hdr_ptr as *const clap_event_note);
+                let note = unsafe { &*(hdr_ptr as *const clap_event_note) };
                 NoteChange::On(note.velocity as f32)
             }
             CLAP_EVENT_NOTE_OFF => NoteChange::Off,
             CLAP_EVENT_MIDI => {
-                let midi = &*(hdr_ptr as *const clap_event_midi);
+                let midi = unsafe { &*(hdr_ptr as *const clap_event_midi) };
                 match (midi.data[0] & 0xF0, midi.data[2]) {
                     (0x90, 0) | (0x80, _) => NoteChange::Off,
                     (0x90, velocity) => NoteChange::On(f32::from(velocity) / 127.0),
@@ -1334,20 +1365,22 @@ unsafe fn echo_notes(p: &clap_process) {
         return;
     }
     let (Some(size_fn), Some(get_fn), Some(try_push)) =
-        ((*list).size, (*list).get, (*out).try_push)
+        (unsafe { (*list).size }, unsafe { (*list).get }, unsafe {
+            (*out).try_push
+        })
     else {
         return;
     };
-    for i in 0..size_fn(list) {
-        let hdr = get_fn(list, i);
+    for i in 0..unsafe { size_fn(list) } {
+        let hdr = unsafe { get_fn(list, i) };
         if hdr.is_null() {
             continue;
         }
         if matches!(
-            (*hdr).type_,
+            unsafe { (*hdr).type_ },
             CLAP_EVENT_NOTE_ON | CLAP_EVENT_NOTE_OFF | CLAP_EVENT_MIDI
         ) {
-            try_push(out, hdr);
+            unsafe { try_push(out, hdr) };
         }
     }
 }
@@ -1383,24 +1416,24 @@ unsafe fn record_sysex_input(p: &clap_process) {
     if list.is_null() {
         return;
     }
-    let (Some(size_fn), Some(get_fn)) = ((*list).size, (*list).get) else {
+    let (Some(size_fn), Some(get_fn)) = (unsafe { (*list).size }, unsafe { (*list).get }) else {
         return;
     };
     let mut capture = SYSEX_IN.lock().unwrap_or_else(|p| p.into_inner());
-    for i in 0..size_fn(list) {
-        let hdr = get_fn(list, i);
-        if hdr.is_null() || (*hdr).type_ != CLAP_EVENT_MIDI_SYSEX {
+    for i in 0..unsafe { size_fn(list) } {
+        let hdr = unsafe { get_fn(list, i) };
+        if hdr.is_null() || unsafe { (*hdr).type_ } != CLAP_EVENT_MIDI_SYSEX {
             continue;
         }
-        let e = &*(hdr as *const clap_event_midi_sysex);
+        let e = unsafe { &*(hdr as *const clap_event_midi_sysex) };
         let len = e.size as usize;
         let kept = len.min(SYSEX_CAPTURE_BYTES);
         if !e.buffer.is_null() {
-            let bytes = std::slice::from_raw_parts(e.buffer, kept);
+            let bytes = unsafe { std::slice::from_raw_parts(e.buffer, kept) };
             capture.bytes[..kept].copy_from_slice(bytes);
         }
         capture.count += 1;
-        capture.time = (*hdr).time;
+        capture.time = unsafe { (*hdr).time };
         capture.len = len;
     }
 }
@@ -1412,7 +1445,7 @@ unsafe fn record_sysex_input(p: &clap_process) {
 /// # Safety
 /// `out` must be valid for `cap` bytes, and `time` and `len` for one write
 /// each.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_take_sysex_input(
     out: *mut u8,
     cap: usize,
@@ -1421,9 +1454,9 @@ pub unsafe extern "C" fn tutti_test_plugin_take_sysex_input(
 ) -> u32 {
     let mut capture = SYSEX_IN.lock().unwrap_or_else(|p| p.into_inner());
     let n = capture.len.min(cap).min(SYSEX_CAPTURE_BYTES);
-    std::ptr::copy_nonoverlapping(capture.bytes.as_ptr(), out, n);
-    *time = capture.time;
-    *len = capture.len;
+    unsafe { std::ptr::copy_nonoverlapping(capture.bytes.as_ptr(), out, n) };
+    unsafe { *time = capture.time };
+    unsafe { *len = capture.len };
     let count = capture.count;
     capture.count = 0;
     capture.len = 0;
@@ -1444,7 +1477,7 @@ fn clear_delay_lines() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_delay() {
     clear_delay_lines();
 }
@@ -1492,27 +1525,27 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
     let gate_start = *NOTE_GATE.lock().unwrap_or_else(|e| e.into_inner());
 
     for port in 0..p.audio_outputs_count {
-        let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
+        let out: &clap_audio_buffer = unsafe { &*p.audio_outputs.add(port as usize) };
         let table = T::table(out);
         if table.is_null() {
             continue;
         }
         for ch in 0..out.channel_count {
-            let dst = *table.add(ch as usize);
+            let dst = unsafe { *table.add(ch as usize) };
             if dst.is_null() {
                 continue;
             }
-            let dst = std::slice::from_raw_parts_mut(dst, frames);
+            let dst = unsafe { std::slice::from_raw_parts_mut(dst, frames) };
 
             // The matching input slot, when the host presented one. Absent
             // (fewer input ports/channels than output) reads as silence —
             // which is what the host's own zero-pad would have supplied.
             let src: Option<&[T]> = if port < p.audio_inputs_count && !p.audio_inputs.is_null() {
-                let inb: &clap_audio_buffer = &*p.audio_inputs.add(port as usize);
+                let inb: &clap_audio_buffer = unsafe { &*p.audio_inputs.add(port as usize) };
                 let in_table = T::table(inb);
                 if !in_table.is_null() && ch < inb.channel_count {
-                    let sp = *in_table.add(ch as usize);
-                    (!sp.is_null()).then(|| std::slice::from_raw_parts(sp, frames))
+                    let sp = unsafe { *in_table.add(ch as usize) };
+                    (!sp.is_null()).then(|| unsafe { std::slice::from_raw_parts(sp, frames) })
                 } else {
                     None
                 }
@@ -1535,7 +1568,7 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
                 RenderMode::Transport => {
                     dst.fill(T::ZERO);
                     if !p.transport.is_null() && frames >= TRANSPORT_ECHO_FRAMES {
-                        let t: &clap_event_transport = &*p.transport;
+                        let t: &clap_event_transport = unsafe { &*p.transport };
                         let beats = |b: i64| (b as f64 / CLAP_BEATTIME_FACTOR as f64) as f32;
                         let flag = |bit: u32, v: f32| if t.flags & bit != 0 { v } else { 0.0 };
                         dst[0] = T::from_f32(beats(t.song_pos_beats));
@@ -1556,7 +1589,7 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
                     let mut gate = gate_start;
                     let mut next = 0;
                     for (i, sample) in dst.iter_mut().enumerate() {
-                        while let Some((time, change)) = note_event(p, next) {
+                        while let Some((time, change)) = unsafe { note_event(p, next) } {
                             if time as usize > i {
                                 break;
                             }
@@ -1598,7 +1631,7 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
     if mode == RenderMode::Notes {
         let mut gate = gate_start;
         let mut next = 0;
-        while let Some((_, change)) = note_event(p, next) {
+        while let Some((_, change)) = unsafe { note_event(p, next) } {
             gate.apply(change);
             next += 1;
         }
@@ -1624,19 +1657,19 @@ unsafe fn render_output<T: ProbeSample>(p: &clap_process) {
     // different waveform and not a rounding difference.
     if gain_on {
         for port in 0..p.audio_outputs_count {
-            let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
+            let out: &clap_audio_buffer = unsafe { &*p.audio_outputs.add(port as usize) };
             let table = T::table(out);
             if table.is_null() {
                 continue;
             }
             for ch in 0..out.channel_count {
-                let dst = *table.add(ch as usize);
+                let dst = unsafe { *table.add(ch as usize) };
                 if dst.is_null() {
                     continue;
                 }
-                let dst = std::slice::from_raw_parts_mut(dst, frames);
+                let dst = unsafe { std::slice::from_raw_parts_mut(dst, frames) };
                 for (i, sample) in dst.iter_mut().enumerate() {
-                    params_state::apply_param_events_through(p.in_events, i as u32);
+                    unsafe { params_state::apply_param_events_through(p.in_events, i as u32) };
                     *sample = *sample * T::from_f32(params_state::gain_amplitude());
                 }
             }
@@ -1713,7 +1746,7 @@ static PREFERRED_DIALECT_OVERRIDE: AtomicU32 = AtomicU32::new(PREFERRED_DIALECT_
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_preferred_dialect(raw: u32) {
     PREFERRED_DIALECT_OVERRIDE.store(raw, Ordering::SeqCst);
 }
@@ -1735,11 +1768,13 @@ unsafe extern "C" fn note_ports_get(
     if info.is_null() {
         return false;
     }
-    let count = note_ports_count(_plugin, is_input);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let count = unsafe { note_ports_count(_plugin, is_input) };
     if index >= count {
         return false;
     }
-    let info = &mut *info;
+    let info = unsafe { &mut *info };
     // Again: id != index, and the two sides use disjoint id ranges so a
     // host that mixes them up cannot land on a valid-looking value.
     info.id = if is_input { 800 + index } else { 900 + index };
@@ -1792,7 +1827,7 @@ static LATENCY_CHANGED_IN_ACTIVATE: AtomicBool = AtomicBool::new(false);
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_latency_changed_in_activate(on: u32) {
     LATENCY_CHANGED_IN_ACTIVATE.store(on != 0, Ordering::SeqCst);
 }
@@ -1804,7 +1839,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_latency_changed_in_activate(on: u
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_latency_at_activation(extra: u32) {
     LATENCY_NEXT_EXTRA.store(extra, Ordering::SeqCst);
 }
@@ -1832,7 +1867,7 @@ static TAIL_EXTENSION: AtomicBool = AtomicBool::new(true);
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_tail_extension(present: u32) {
     TAIL_EXTENSION.store(present != 0, Ordering::SeqCst);
 }
@@ -1874,12 +1909,13 @@ unsafe extern "C" fn render_set(plugin: *const clap_plugin, mode: clap_plugin_re
         // the host is told, as `clap.latency` asks of a plugin whose latency
         // moved.
         clear_delay_lines();
-        if let Some(ext) =
+        // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+        // arguments valid per the CLAP ABI.
+        if let Some(ext) = unsafe {
             threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
+        } && let Some(changed) = ext.changed
         {
-            if let Some(changed) = ext.changed {
-                changed(plugin_host(plugin));
-            }
+            unsafe { changed(plugin_host(plugin)) };
         }
     }
     true
@@ -1891,7 +1927,7 @@ unsafe extern "C" fn render_set(plugin: *const clap_plugin, mode: clap_plugin_re
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_last_render_mode() -> u32 {
     RENDER_MODE_SET.load(Ordering::SeqCst)
 }

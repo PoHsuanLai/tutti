@@ -842,10 +842,8 @@ impl DiskVoice {
             }
             emit(i, &frame[..w]);
         }
-        if past {
-            if let Some(read) = offline.read.as_mut() {
-                read.close();
-            }
+        if past && let Some(read) = offline.read.as_mut() {
+            read.close();
         }
     }
 

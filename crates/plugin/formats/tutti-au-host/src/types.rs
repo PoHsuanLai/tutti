@@ -534,7 +534,7 @@ pub unsafe fn cfstring_to_string(cf_str: sys::CFStringRef) -> String {
     // `coreaudio-sys` and `core-foundation-sys` each declare their own opaque
     // `__CFString`; the pointers are ABI-identical, so cast across.
     let cf_str = cf_str as core_foundation_sys::string::CFStringRef;
-    let s: CFString = TCFType::wrap_under_get_rule(cf_str);
+    let s: CFString = unsafe { TCFType::wrap_under_get_rule(cf_str) };
     s.to_string()
 }
 
@@ -608,12 +608,12 @@ pub unsafe fn cfstring_to_string_checked(cf_str: sys::CFStringRef) -> Option<Str
     use core_foundation::base::TCFType;
     use core_foundation::string::CFString;
     let cf_str = cf_str as core_foundation_sys::string::CFStringRef;
-    if core_foundation_sys::base::CFGetTypeID(cf_str as *const std::os::raw::c_void)
-        != core_foundation_sys::string::CFStringGetTypeID()
+    if unsafe { core_foundation_sys::base::CFGetTypeID(cf_str as *const std::os::raw::c_void) }
+        != unsafe { core_foundation_sys::string::CFStringGetTypeID() }
     {
         return None;
     }
-    let s: CFString = TCFType::wrap_under_get_rule(cf_str);
+    let s: CFString = unsafe { TCFType::wrap_under_get_rule(cf_str) };
     Some(s.to_string())
 }
 

@@ -309,15 +309,15 @@ impl FrameClock {
         looping: Option<LoopRange>,
     ) -> Option<Samples> {
         let (from, target) = (self.at, self.at + frames);
-        if let Some(region) = looping {
-            if self.segment.frames_per_beat().is_some() && self.beat() < region.end() {
-                if let Some(wrap) = self.wrap_frame(region.end(), target) {
-                    let reached = self.segment.beat_at(wrap);
-                    self.at = wrap;
-                    self.restart(region.wrap(reached));
-                    return Some(Samples((wrap.get() - from.get()) as usize));
-                }
-            }
+        if let Some(region) = looping
+            && self.segment.frames_per_beat().is_some()
+            && self.beat() < region.end()
+            && let Some(wrap) = self.wrap_frame(region.end(), target)
+        {
+            let reached = self.segment.beat_at(wrap);
+            self.at = wrap;
+            self.restart(region.wrap(reached));
+            return Some(Samples((wrap.get() - from.get()) as usize));
         }
         self.at = target;
         None

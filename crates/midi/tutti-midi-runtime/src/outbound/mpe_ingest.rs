@@ -409,27 +409,26 @@ impl MpeIngest {
                 );
                 let zone = self.get_zone_info(ch)?;
                 if vel > 0 {
-                    if zone.is_member {
-                        if let Some(map) = self.voice_map_mut(zone.is_lower_zone) {
-                            map.bind_channel(ch, note);
-                        }
+                    if zone.is_member
+                        && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
+                    {
+                        map.bind_channel(ch, note);
                     }
-                } else if zone.is_member {
-                    if let Some(map) = self.voice_map_mut(zone.is_lower_zone) {
-                        map.unbind_channel(ch, note);
-                    }
+                } else if zone.is_member
+                    && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
+                {
+                    map.unbind_channel(ch, note);
                 }
                 // The note itself always flows through unchanged.
                 Some(*event)
             }
             ChannelVoice2::NoteOff(m) => {
                 let (ch, note) = (u8::from(m.channel()), u8::from(m.note_number()));
-                if let Some(zone) = self.get_zone_info(ch) {
-                    if zone.is_member {
-                        if let Some(map) = self.voice_map_mut(zone.is_lower_zone) {
-                            map.unbind_channel(ch, note);
-                        }
-                    }
+                if let Some(zone) = self.get_zone_info(ch)
+                    && zone.is_member
+                    && let Some(map) = self.voice_map_mut(zone.is_lower_zone)
+                {
+                    map.unbind_channel(ch, note);
                 }
                 Some(*event)
             }

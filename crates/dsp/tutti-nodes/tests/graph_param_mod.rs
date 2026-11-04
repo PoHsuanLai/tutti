@@ -831,7 +831,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let mut out = r.render_input(&[&tone]).remove(0);
     let plan = r.executor().plan().expect("a plan");
     assert!(plan.param_ports().is_empty(), "no param step at all");
-    let gen = plan.unit(n).expect("the distortion").gen;
+    let generation = plan.unit(n).expect("the distortion").generation;
 
     let at = ParamIn {
         node: n,
@@ -853,8 +853,8 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 
     let plan = r.executor().plan().expect("a plan");
     assert_eq!(
-        plan.unit(n).expect("the distortion").gen,
-        gen,
+        plan.unit(n).expect("the distortion").generation,
+        generation,
         "never rebuilt"
     );
     assert!(plan.param_ports().is_empty(), "and nothing left behind");

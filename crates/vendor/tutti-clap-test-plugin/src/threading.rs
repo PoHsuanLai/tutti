@@ -224,7 +224,7 @@ pub const CMD_REQUEST_PROCESS: u32 = 5;
 /// # Safety
 /// Safe to call from any thread; this is a single relaxed swap. Declared
 /// `extern "C"` only so the test can reach it across the dlopen seam.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_test_plugin_thread_command(cmd: u32) -> u32 {
     THREADING.command.swap(cmd, Ordering::AcqRel)
 }
@@ -233,7 +233,7 @@ pub extern "C" fn tutti_test_plugin_thread_command(cmd: u32) -> u32 {
 ///
 /// # Safety
 /// `out` must point to a valid, writable [`ThreadCapture`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_thread_capture(out: *mut ThreadCapture) -> bool {
     if out.is_null() {
         return false;
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn tutti_test_plugin_thread_capture(out: *mut ThreadCaptur
     for (dst, src) in cap.sites.iter_mut().zip(THREADING.sites.iter()) {
         *dst = src.snapshot();
     }
-    *out = cap;
+    unsafe { *out = cap };
     true
 }
 
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn tutti_test_plugin_thread_capture(out: *mut ThreadCaptur
 /// Does **not** clear `timer_id`: a timer registered in one scenario is still
 /// registered with the host, and the test needs the id to assert on the
 /// `on_timer` routing afterwards.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_test_plugin_thread_reset() {
     for site in THREADING.sites.iter() {
         site.reset();
@@ -286,11 +286,17 @@ pub unsafe fn record_thread_roles(site: Site, host: *const clap_host) {
     let slot = &THREADING.sites[site as usize];
     slot.visits.fetch_add(1, Ordering::AcqRel);
 
-    let tc = host_ext::<clap_host_thread_check>(host, CLAP_EXT_THREAD_CHECK);
+    let tc = unsafe { host_ext::<clap_host_thread_check>(host, CLAP_EXT_THREAD_CHECK) };
     if let Some(tc) = tc {
         slot.ext_present.store(true, Ordering::Release);
-        let is_main = tc.is_main_thread.map(|f| f(host)).unwrap_or(false);
-        let is_audio = tc.is_audio_thread.map(|f| f(host)).unwrap_or(false);
+        let is_main = tc
+            .is_main_thread
+            .map(|f| unsafe { f(host) })
+            .unwrap_or(false);
+        let is_audio = tc
+            .is_audio_thread
+            .map(|f| unsafe { f(host) })
+            .unwrap_or(false);
         slot.is_main.store(is_main, Ordering::Release);
         slot.is_audio.store(is_audio, Ordering::Release);
     } else {
@@ -339,17 +345,17 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
     }
 
     match cmd {
-        CMD_REGISTER_TIMER => register_timer(host),
-        CMD_UNREGISTER_TIMER => unregister_timer(host),
-        CMD_LOG_ALL_SEVERITIES => log_all_severities(host),
+        CMD_REGISTER_TIMER => unsafe { register_timer(host) },
+        CMD_UNREGISTER_TIMER => unsafe { unregister_timer(host) },
+        CMD_LOG_ALL_SEVERITIES => unsafe { log_all_severities(host) },
         CMD_REQUEST_RESTART => {
-            if let Some(f) = (*host).request_restart {
-                f(host);
+            if let Some(f) = unsafe { (*host).request_restart } {
+                unsafe { f(host) };
             }
         }
         CMD_REQUEST_PROCESS => {
-            if let Some(f) = (*host).request_process {
-                f(host);
+            if let Some(f) = unsafe { (*host).request_process } {
+                unsafe { f(host) };
             }
         }
         _ => {}
@@ -380,15 +386,20 @@ unsafe extern "C" fn plugin_on_timer(plugin: *const clap_plugin, timer_id: u32) 
     THREADING
         .last_fired_timer_id
         .store(timer_id, Ordering::Release);
-    let host = crate::plugin_host(plugin);
-    record_thread_roles(Site::OnTimer, host);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let host = unsafe { crate::plugin_host(plugin) };
+    unsafe { record_thread_roles(Site::OnTimer, host) };
 }
 
 unsafe fn register_timer(host: *const clap_host) {
-    let Some(ts) = host_ext::<clap_sys::ext::timer_support::clap_host_timer_support>(
-        host,
-        CLAP_EXT_TIMER_SUPPORT,
-    ) else {
+    // SAFETY: `host` is the live `clap_host` the plugin was given.
+    let Some(ts) = (unsafe {
+        host_ext::<clap_sys::ext::timer_support::clap_host_timer_support>(
+            host,
+            CLAP_EXT_TIMER_SUPPORT,
+        )
+    }) else {
         THREADING.timer_ext_present.store(false, Ordering::Release);
         return;
     };
@@ -398,23 +409,26 @@ unsafe fn register_timer(host: *const clap_host) {
     };
     let mut id: u32 = 0;
     // Period 0: due on every host poll, so the test never waits on a clock.
-    let ok = register(host, 0, &mut id);
+    let ok = unsafe { register(host, 0, &mut id) };
     THREADING.timer_id.store(id, Ordering::Release);
     THREADING.timer_registered.store(ok, Ordering::Release);
 }
 
 unsafe fn unregister_timer(host: *const clap_host) {
-    let Some(ts) = host_ext::<clap_sys::ext::timer_support::clap_host_timer_support>(
-        host,
-        CLAP_EXT_TIMER_SUPPORT,
-    ) else {
+    // SAFETY: `host` is the live `clap_host` the plugin was given.
+    let Some(ts) = (unsafe {
+        host_ext::<clap_sys::ext::timer_support::clap_host_timer_support>(
+            host,
+            CLAP_EXT_TIMER_SUPPORT,
+        )
+    }) else {
         return;
     };
     let Some(unregister) = ts.unregister_timer else {
         return;
     };
     let id = THREADING.timer_id.load(Ordering::Acquire);
-    let ok = unregister(host, id);
+    let ok = unsafe { unregister(host, id) };
     THREADING.timer_unregistered.store(ok, Ordering::Release);
 }
 
@@ -443,7 +457,8 @@ const LOG_LINES: [(i32, &CStr); 7] = [
 ];
 
 unsafe fn log_all_severities(host: *const clap_host) {
-    let Some(log_ext) = host_ext::<clap_host_log>(host, CLAP_EXT_LOG) else {
+    // SAFETY: `host` is the live `clap_host` the plugin was given.
+    let Some(log_ext) = (unsafe { host_ext::<clap_host_log>(host, CLAP_EXT_LOG) }) else {
         THREADING.log_ext_present.store(false, Ordering::Release);
         return;
     };
@@ -452,7 +467,7 @@ unsafe fn log_all_severities(host: *const clap_host) {
         return;
     };
     for (severity, msg) in LOG_LINES {
-        log(host, severity, msg.as_ptr());
+        unsafe { log(host, severity, msg.as_ptr()) };
         THREADING.log_emitted.fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -477,11 +492,11 @@ pub(crate) unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Optio
     if host.is_null() {
         return None;
     }
-    let get_ext = (*host).get_extension?;
-    let ptr = get_ext(host, id.as_ptr() as *const c_char);
+    let get_ext = unsafe { (*host).get_extension }?;
+    let ptr = unsafe { get_ext(host, id.as_ptr() as *const c_char) };
     if ptr.is_null() {
         None
     } else {
-        Some(&*(ptr as *const T))
+        Some(unsafe { &*(ptr as *const T) })
     }
 }

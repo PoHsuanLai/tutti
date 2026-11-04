@@ -190,7 +190,7 @@ fn dispatch_inner(
         }
 
         Ok(OpCode::EditorGetRect) => {
-            if let Some(ref mut editor) = get_editor() {
+            if let Some(editor) = get_editor() {
                 let size = editor.size();
                 let pos = editor.position();
 
@@ -235,7 +235,7 @@ fn dispatch_inner(
             }
         }
         Ok(OpCode::EditorOpen) => {
-            if let Some(ref mut editor) = get_editor() {
+            if let Some(editor) = get_editor() {
                 // `ptr` is a window handle to the parent window.
                 // See the documentation for `Editor::open` for details.
                 if editor.open(ptr) {
@@ -244,13 +244,13 @@ fn dispatch_inner(
             }
         }
         Ok(OpCode::EditorClose) => {
-            if let Some(ref mut editor) = get_editor() {
+            if let Some(editor) = get_editor() {
                 editor.close();
             }
         }
 
         Ok(OpCode::EditorIdle) => {
-            if let Some(ref mut editor) = get_editor() {
+            if let Some(editor) = get_editor() {
                 editor.idle();
             }
         }
@@ -366,32 +366,32 @@ fn dispatch_inner(
         Ok(OpCode::GetApiVersion) => return 2400,
 
         Ok(OpCode::EditorKeyDown) => {
-            if let Some(ref mut editor) = get_editor() {
-                if let Ok(key) = Key::try_from(value) {
-                    editor.key_down(KeyCode {
-                        character: index as u8 as char,
-                        key,
-                        modifier: opt.to_bits() as u8,
-                    });
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(key) = Key::try_from(value)
+            {
+                editor.key_down(KeyCode {
+                    character: index as u8 as char,
+                    key,
+                    modifier: opt.to_bits() as u8,
+                });
             }
         }
         Ok(OpCode::EditorKeyUp) => {
-            if let Some(ref mut editor) = get_editor() {
-                if let Ok(key) = Key::try_from(value) {
-                    editor.key_up(KeyCode {
-                        character: index as u8 as char,
-                        key,
-                        modifier: opt.to_bits() as u8,
-                    });
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(key) = Key::try_from(value)
+            {
+                editor.key_up(KeyCode {
+                    character: index as u8 as char,
+                    key,
+                    modifier: opt.to_bits() as u8,
+                });
             }
         }
         Ok(OpCode::EditorSetKnobMode) => {
-            if let Some(ref mut editor) = get_editor() {
-                if let Ok(knob_mode) = KnobMode::try_from(value) {
-                    editor.set_knob_mode(knob_mode);
-                }
+            if let Some(editor) = get_editor()
+                && let Ok(knob_mode) = KnobMode::try_from(value)
+            {
+                editor.set_knob_mode(knob_mode);
             }
         }
 

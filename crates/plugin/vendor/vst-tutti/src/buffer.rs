@@ -31,8 +31,8 @@ impl<'a, T: 'a + Float> AudioBuffer<'a, T> {
         samples: usize,
     ) -> Self {
         Self {
-            inputs: slice::from_raw_parts(inputs_raw, input_count),
-            outputs: slice::from_raw_parts_mut(outputs_raw, output_count),
+            inputs: unsafe { slice::from_raw_parts(inputs_raw, input_count) },
+            outputs: unsafe { slice::from_raw_parts_mut(outputs_raw, output_count) },
             samples,
         }
     }

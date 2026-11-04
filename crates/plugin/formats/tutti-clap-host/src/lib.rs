@@ -16,7 +16,7 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
     if ptr.is_null() {
         String::new()
     } else {
-        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        unsafe { std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned() }
     }
 }
 

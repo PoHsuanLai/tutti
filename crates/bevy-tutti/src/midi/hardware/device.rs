@@ -199,10 +199,10 @@ pub fn midi_device_poll_system(
     let Some(midi_io) = midi_io else { return };
     let now = std::time::Instant::now();
 
-    if let Some(last) = state.last_check {
-        if now.duration_since(last).as_secs() < 2 {
-            return;
-        }
+    if let Some(last) = state.last_check
+        && now.duration_since(last).as_secs() < 2
+    {
+        return;
     }
     state.last_check = Some(now);
 

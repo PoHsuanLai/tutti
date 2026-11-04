@@ -160,7 +160,7 @@ use plugin::{HostCallback, Plugin};
 macro_rules! plugin_main {
     ($t:ty) => {
         #[cfg(target_os = "macos")]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "system" fn main_macho(
             callback: $crate::api::HostCallbackProc,
         ) -> *mut $crate::api::AEffect {
@@ -169,7 +169,7 @@ macro_rules! plugin_main {
 
         #[cfg(target_os = "windows")]
         #[allow(non_snake_case)]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "system" fn MAIN(
             callback: $crate::api::HostCallbackProc,
         ) -> *mut $crate::api::AEffect {
@@ -177,7 +177,7 @@ macro_rules! plugin_main {
         }
 
         #[allow(non_snake_case)]
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "C" fn VSTPluginMain(
             callback: $crate::api::HostCallbackProc,
         ) -> *mut $crate::api::AEffect {

@@ -220,13 +220,13 @@ pub(crate) fn with_capture<R>(f: impl FnOnce(&mut ProcessCapture) -> R) -> R {
 ///
 /// # Safety
 /// `out` must point to a valid, writable [`ProcessCapture`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_vst2_probe_capture(out: *mut ProcessCapture) -> bool {
     if out.is_null() {
         return false;
     }
     with_capture(|cap| {
-        *out = *cap;
+        unsafe { *out = *cap };
         cap.valid
     })
 }
@@ -234,7 +234,7 @@ pub unsafe extern "C" fn tutti_vst2_probe_capture(out: *mut ProcessCapture) -> b
 /// Reset the capture to its starting state, so a test asserting "the host
 /// called `process` exactly once" starts from a known zero. Pair it with the
 /// harness mutex around the whole drive→read sequence.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_reset_capture() {
     with_capture(|cap| *cap = ProcessCapture::empty());
 }

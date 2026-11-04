@@ -224,10 +224,10 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
                 let delay = Samples(MAX_BLOCK + 17 * rng.below(3) as usize);
                 rng.pick(&any_ev).map(|f| EventEdge::feedback(f, delay))
             };
-            if let Some(e) = e {
-                if seen.insert(e.from()) {
-                    sources.push(e);
-                }
+            if let Some(e) = e
+                && seen.insert(e.from())
+            {
+                sources.push(e);
             }
         }
         desc.spec.events.insert(at, sources);
@@ -353,8 +353,8 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
         // PDC ring downstream of it.
         let j = rng.below(d.order.len() as u64) as usize;
         let key = d.order[j];
-        let gen = d.spec.generation(key) + 1;
-        d.spec.generations.insert(key, gen);
+        let generation = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, generation);
         if rng.chance(50) {
             let old = shape(&d.kinds[&key]);
             let kind = random_kind(rng);
@@ -993,10 +993,10 @@ fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
                     continue;
                 }
                 for (at, e) in &d.spec.topology.edges {
-                    if let Edge::Direct(Source::Node(p)) = e {
-                        if p.node == k {
-                            stack.push(at.node);
-                        }
+                    if let Edge::Direct(Source::Node(p)) = e
+                        && p.node == k
+                    {
+                        stack.push(at.node);
                     }
                 }
                 for (at, v) in &d.spec.events {
@@ -1900,8 +1900,8 @@ fn mutate_with_fades(desc: &Desc, rng: &mut Rng) -> (Desc, BTreeMap<NodeKey, tut
                 kind = other;
             }
         }
-        let gen = d.spec.generation(key) + 1;
-        d.spec.generations.insert(key, gen);
+        let generation = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, generation);
         d.spec.topology.nodes.insert(key, spec_for(&kind));
         d.kinds.insert(key, kind);
         fades.insert(key, random_fade(rng));

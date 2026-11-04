@@ -223,8 +223,8 @@ fn a_loop_pass_restates_only_what_changed() {
             2_048,
             Transport::new(true, Bpm(120.0), beat_of(start), lp),
         );
-        let seen = seen.lock().unwrap().clone();
-        seen
+
+        seen.lock().unwrap().clone()
     };
     assert_eq!(
         render(12_000 + SIXTY_FOURTH, 12_000 + 2 * SIXTY_FOURTH),

@@ -626,11 +626,11 @@ impl VoicePool {
         let Some(slot) = self.voices.iter().find(|s| s.id == id) else {
             return;
         };
-        if let LoopRoute::Stream(addr) = slot.voice.loop_route() {
-            if addr.is_none() || addr != forwarded {
-                DrainCounters::bump(&self.counters.loops_not_forwarded);
-                return;
-            }
+        if let LoopRoute::Stream(addr) = slot.voice.loop_route()
+            && (addr.is_none() || addr != forwarded)
+        {
+            DrainCounters::bump(&self.counters.loops_not_forwarded);
+            return;
         }
         self.apply_loop(id, setting);
     }
@@ -651,10 +651,10 @@ impl VoicePool {
         mut voice: Voice,
         stretch: Option<stretch::Unit>,
     ) {
-        if let LoopRoute::Stream(addr) = voice.loop_route() {
-            if !forward_loop(self.butler.as_ref(), addr, voice.play.loop_, &self.counters) {
-                voice.play.loop_ = LoopSetting::Off;
-            }
+        if let LoopRoute::Stream(addr) = voice.loop_route()
+            && !forward_loop(self.butler.as_ref(), addr, voice.play.loop_, &self.counters)
+        {
+            voice.play.loop_ = LoopSetting::Off;
         }
         self.insert_voice_inner(id, Box::new(voice), stretch);
     }

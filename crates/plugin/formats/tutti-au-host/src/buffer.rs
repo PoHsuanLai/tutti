@@ -95,9 +95,9 @@ impl RenderBufferList {
 pub(crate) unsafe fn iter_buffers_mut<'a>(
     abl: *mut AudioBufferList,
 ) -> impl Iterator<Item = &'a mut AudioBuffer> {
-    let count = (*abl).mNumberBuffers as usize;
-    let base = &mut (*abl).mBuffers[0] as *mut AudioBuffer;
-    (0..count).map(move |i| &mut *base.add(i))
+    let count = unsafe { (*abl).mNumberBuffers } as usize;
+    let base = unsafe { &mut (*abl).mBuffers[0] } as *mut AudioBuffer;
+    (0..count).map(move |i| unsafe { &mut *base.add(i) })
 }
 
 /// Render scratch area: output buffers, input buffers, and the sample position

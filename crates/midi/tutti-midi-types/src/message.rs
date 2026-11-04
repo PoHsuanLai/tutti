@@ -464,7 +464,8 @@ impl MidiEvent {
         let cv2 = match UmpMessage::try_from(ev.data_words()) {
             Ok(UmpMessage::ChannelVoice2(cv2)) => cv2,
             Ok(UmpMessage::SystemCommon(sc)) => {
-                return system_common_message(sc, frame_offset).unwrap_or(MidiMessage::Other(*self))
+                return system_common_message(sc, frame_offset)
+                    .unwrap_or(MidiMessage::Other(*self));
             }
             // Preserve the *original* event verbatim so a re-encode is exact.
             _ => return MidiMessage::Other(*self),

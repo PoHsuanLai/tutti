@@ -791,7 +791,7 @@ fn the_delta_moves_only_what_changed() {
     assert_eq!(delta.retire[0].key, B);
     assert_eq!(delta.replace.len(), 1);
     assert_eq!(delta.replace[0].0.key, C);
-    assert_eq!(delta.replace[0].1.gen, 1);
+    assert_eq!(delta.replace[0].1.generation, 1);
     assert_eq!(idx(&second, C), idx(&first, C), "replaced in place");
     assert_eq!(delta.insert.len(), 1);
     assert_eq!(delta.insert[0].key, D);

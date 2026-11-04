@@ -313,7 +313,11 @@ fn a_shape_mismatch_is_refused() {
     );
     ed.commit().expect("nothing changed");
     assert_eq!(
-        exec.plan().expect("applied").unit(NODE).expect("kept").gen,
+        exec.plan()
+            .expect("applied")
+            .unit(NODE)
+            .expect("kept")
+            .generation,
         0
     );
 
@@ -673,7 +677,7 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
     use tutti_types::graph::NodeSpec;
     use tutti_types::Topology;
 
-    let spec_at = |gen: u32, latency: usize| {
+    let spec_at = |generation: u32, latency: usize| {
         let mut t = Topology {
             inputs: ChannelLayout::MONO,
             ..Topology::default()
@@ -695,7 +699,7 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
             port: 0,
         })];
         let mut spec = GraphSpec::new(t);
-        spec.generations.insert(NODE, gen);
+        spec.generations.insert(NODE, generation);
         spec.validate().expect("valid")
     };
     let unit = |g: f32| -> BTreeMap<NodeKey, Box<dyn Node>> {

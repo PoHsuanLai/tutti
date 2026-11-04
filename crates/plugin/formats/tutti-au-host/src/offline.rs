@@ -84,12 +84,14 @@ pub const RENDER_QUALITY_MAX: u32 = 127;
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn is_offline_render(unit: AudioUnit) -> Result<bool> {
-    let value: u32 = get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_OFFLINE_RENDER,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )?;
+    let value: u32 = unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_OFFLINE_RENDER,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }?;
     Ok(value != 0)
 }
 
@@ -152,13 +154,15 @@ pub(crate) unsafe fn is_offline_render(unit: AudioUnit) -> Result<bool> {
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn set_offline_render(unit: AudioUnit, offline: bool) -> Result<()> {
     let value: u32 = u32::from(offline);
-    set_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_OFFLINE_RENDER,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-        &value,
-    )
+    unsafe {
+        set_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_OFFLINE_RENDER,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+            &value,
+        )
+    }
 }
 
 /// Whether the AU is willing to render with input and output aliasing the same
@@ -198,12 +202,14 @@ pub(crate) unsafe fn set_offline_render(unit: AudioUnit, offline: bool) -> Resul
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn supports_in_place(unit: AudioUnit) -> Result<bool> {
-    let value: u32 = get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )?;
+    let value: u32 = unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }?;
     Ok(value != 0)
 }
 
@@ -220,12 +226,14 @@ pub(crate) unsafe fn supports_in_place(unit: AudioUnit) -> Result<bool> {
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn render_quality(unit: AudioUnit) -> Result<u32> {
-    get_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )
+    unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }
 }
 
 /// Sets the AU's render quality, `0` (cheapest) to [`RENDER_QUALITY_MAX`] (best).
@@ -269,13 +277,15 @@ pub(crate) unsafe fn set_render_quality(unit: AudioUnit, quality: u32) -> Result
             "render quality {quality} exceeds the maximum {RENDER_QUALITY_MAX}"
         )));
     }
-    set_property(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-        &quality,
-    )
+    unsafe {
+        set_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+            &quality,
+        )
+    }
 }
 
 /// Pre-allocated buffer lists for the push render path.
@@ -486,7 +496,7 @@ impl PushScratch {
         for bus in 0..self.input_slabs.len() {
             let width = self.input_widths[bus];
             let ptr = self.input_slabs[bus].as_mut_ptr() as *mut AudioBufferList;
-            bind_list(ptr, width, &mut self.input_audio[bus], frames);
+            unsafe { bind_list(ptr, width, &mut self.input_audio[bus], frames) };
         }
     }
 
@@ -498,7 +508,7 @@ impl PushScratch {
         for bus in 0..self.output_slabs.len() {
             let width = self.output_widths[bus];
             let ptr = self.output_slabs[bus].as_mut_ptr() as *mut AudioBufferList;
-            bind_list(ptr, width, &mut self.output_audio[bus], frames);
+            unsafe { bind_list(ptr, width, &mut self.output_audio[bus], frames) };
         }
     }
 
@@ -532,9 +542,9 @@ unsafe fn bind_list(
     frames: u32,
 ) {
     let count = width.count() as usize;
-    (*list).mNumberBuffers = count as u32;
+    unsafe { (*list).mNumberBuffers = count as u32 };
     for (ch, buf) in channels.iter_mut().take(count).enumerate() {
-        let audio_buf = &mut *((&mut (*list).mBuffers[0] as *mut AudioBuffer).add(ch));
+        let audio_buf = unsafe { &mut *((&mut (*list).mBuffers[0] as *mut AudioBuffer).add(ch)) };
         audio_buf.mNumberChannels = 1;
         // Multiply in `usize` then narrow, for the reason `RenderBufferList::bind`
         // spells out: `frames * size_of::<f32>() as u32` binds the cast tighter
@@ -605,18 +615,16 @@ pub unsafe fn process_push(
         ));
     }
 
-    scratch.bind_inputs(frames);
+    unsafe { scratch.bind_inputs(frames) };
     let list = scratch.input_slabs[0].as_mut_ptr() as *mut AudioBufferList;
     let timestamp = AudioTimeStamp::with_sample_time(scratch.advance(frames));
     let mut flags: AudioUnitRenderActionFlags = 0;
 
-    let status = AudioUnitProcess(unit, &mut flags, &timestamp, frames, list);
+    let status = unsafe { AudioUnitProcess(unit, &mut flags, &timestamp, frames, list) };
     if status != NO_ERR {
-        return Err(AuError::render_failed(
-            "AudioUnitProcess",
-            status,
-            last_render_error(unit),
-        ));
+        return Err(AuError::render_failed("AudioUnitProcess", status, unsafe {
+            last_render_error(unit)
+        }));
     }
 
     // `OutputIsSilence` is honoured for the reason `AuActive::process` documents:
@@ -722,8 +730,8 @@ pub unsafe fn process_push_multiple(
         ));
     }
 
-    scratch.bind_inputs(frames);
-    scratch.bind_outputs(frames);
+    unsafe { scratch.bind_inputs(frames) };
+    unsafe { scratch.bind_outputs(frames) };
     let timestamp = AudioTimeStamp::with_sample_time(scratch.advance(frames));
     let mut flags: AudioUnitRenderActionFlags = 0;
 
@@ -731,21 +739,23 @@ pub unsafe fn process_push_multiple(
     // is a field read and nothing on this path allocates.
     let n_in = scratch.input_ptrs.len() as u32;
     let n_out = scratch.output_ptrs.len() as u32;
-    let status = AudioUnitProcessMultiple(
-        unit,
-        &mut flags,
-        &timestamp,
-        frames,
-        n_in,
-        scratch.input_ptrs.as_mut_ptr(),
-        n_out,
-        scratch.output_ptrs.as_mut_ptr(),
-    );
+    let status = unsafe {
+        AudioUnitProcessMultiple(
+            unit,
+            &mut flags,
+            &timestamp,
+            frames,
+            n_in,
+            scratch.input_ptrs.as_mut_ptr(),
+            n_out,
+            scratch.output_ptrs.as_mut_ptr(),
+        )
+    };
     if status != NO_ERR {
         return Err(AuError::render_failed(
             "AudioUnitProcessMultiple",
             status,
-            last_render_error(unit),
+            unsafe { last_render_error(unit) },
         ));
     }
 
@@ -773,14 +783,16 @@ pub unsafe fn process_push_multiple(
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 unsafe fn last_render_error(unit: AudioUnit) -> Option<OSStatus> {
-    get_property::<OSStatus>(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )
-    .ok()
-    .filter(|&e| e != NO_ERR)
+    unsafe {
+        get_property::<OSStatus>(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+        .ok()
+        .filter(|&e| e != NO_ERR)
+    }
 }
 
 /// Every `mDataByteSize` the AU left on the output buses of the last push
@@ -801,7 +813,7 @@ pub unsafe fn output_byte_sizes(scratch: &PushScratch) -> Vec<u32> {
     let mut sizes = Vec::new();
     for slab in scratch.output_slabs.iter() {
         let ptr = slab.as_ptr() as *mut AudioBufferList;
-        sizes.extend(iter_buffers_mut(ptr).map(|b| b.mDataByteSize));
+        sizes.extend(unsafe { iter_buffers_mut(ptr) }.map(|b| b.mDataByteSize));
     }
     sizes
 }

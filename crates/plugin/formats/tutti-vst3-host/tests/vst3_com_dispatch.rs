@@ -81,7 +81,7 @@ impl IRunLoopTrait for TwoInterfaceClass {
 /// `unknown` must be a live `FUnknown` pointer for this object.
 unsafe fn raw_query(unknown: *mut FUnknown, iid: &TUID) -> (tresult, *mut c_void) {
     let mut out: *mut c_void = std::ptr::null_mut();
-    let result = ((*(*unknown).vtbl).queryInterface)(unknown, iid, &mut out);
+    let result = unsafe { ((*(*unknown).vtbl).queryInterface)(unknown, iid, &mut out) };
     (result, out)
 }
 

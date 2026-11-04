@@ -170,10 +170,10 @@ pub fn reconcile(
     let mut bound = HashMap::with_capacity(last.bound.len());
     let mut declared = HashSet::new();
     for (entity, &sink, sources) in &sinks {
-        if let Some(&old) = last.bound.get(&entity) {
-            if old != sink {
-                graph.move_feeds(old, sink);
-            }
+        if let Some(&old) = last.bound.get(&entity)
+            && old != sink
+        {
+            graph.move_feeds(old, sink);
         }
         bound.insert(entity, sink);
         let Some(sources) = sources else {

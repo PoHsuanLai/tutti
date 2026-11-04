@@ -343,16 +343,16 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
 
     let mut close =
         |held: &mut BTreeMap<(u8, u8), Vec<(Beat, u8)>>, channel: u8, key: u8, end: Beat| {
-            if let Some(stack) = held.get_mut(&(channel, key)) {
-                if let Some((start, velocity)) = stack.pop() {
-                    out.push(SmfNote {
-                        channel,
-                        key,
-                        velocity,
-                        start_beats: start,
-                        duration_beats: (end - start).max(BeatDuration(0.0)),
-                    });
-                }
+            if let Some(stack) = held.get_mut(&(channel, key))
+                && let Some((start, velocity)) = stack.pop()
+            {
+                out.push(SmfNote {
+                    channel,
+                    key,
+                    velocity,
+                    start_beats: start,
+                    duration_beats: (end - start).max(BeatDuration(0.0)),
+                });
             }
         };
 

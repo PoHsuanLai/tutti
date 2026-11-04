@@ -1,7 +1,8 @@
 [package]
 name = "tutti-spatial"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "Spatial audio for the Tutti engine — VBAP speaker panning, binaural HRTF rendering, surround mix assembly"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

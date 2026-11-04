@@ -35,10 +35,10 @@ use tutti_plugin_types::EditorSize;
 /// null bundle URL, null class name, bundle that will not load, ObjC class not
 /// found, factory that returns a null view.
 pub(super) unsafe fn create_view(unit: AudioUnit, preferred: EditorSize) -> Result<*mut AnyObject> {
-    let (bundle_url, class_name) = load_cocoa_view_info(unit)?;
-    let bundle = load_bundle(&bundle_url)?;
-    let factory = instantiate_factory(&bundle, &class_name)?;
-    make_view(factory, unit, preferred)
+    let (bundle_url, class_name) = unsafe { load_cocoa_view_info(unit) }?;
+    let bundle = unsafe { load_bundle(&bundle_url) }?;
+    let factory = unsafe { instantiate_factory(&bundle, &class_name) }?;
+    unsafe { make_view(factory, unit, preferred) }
 }
 
 /// Reads `kAudioUnitProperty_CocoaUI` and decode the bundle URL plus the view
@@ -53,12 +53,14 @@ pub(super) unsafe fn create_view(unit: AudioUnit, preferred: EditorSize) -> Resu
 /// struct's fixed head — an emptiness check guards the zero-length case, but a
 /// unit reporting a short non-zero size is trusted.
 unsafe fn load_cocoa_view_info(unit: AudioUnit) -> Result<(CfUrl, CfString)> {
-    let bytes = get_property_bytes(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_COCOA_UI,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    )?;
+    let bytes = unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_COCOA_UI,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    }?;
     if bytes.is_empty() {
         return Err(AuError::OsStatus {
             function: "GetProperty(CocoaUI)",
@@ -67,18 +69,18 @@ unsafe fn load_cocoa_view_info(unit: AudioUnit) -> Result<(CfUrl, CfString)> {
     }
 
     let info_ptr = bytes.as_ptr() as *const AudioUnitCocoaViewInfo;
-    let url_raw = (*info_ptr).mCocoaAUViewBundleLocation;
+    let url_raw = unsafe { (*info_ptr).mCocoaAUViewBundleLocation };
     // LIMITATION (intentional): `AudioUnitCocoaViewInfo` carries a
     // variable-length `mCocoaAUViewClass` array — an AU may advertise several
     // candidate view-factory classes. Only `class[0]` is read — the AU's
     // preferred/first factory. Multi-class AUs are rare in practice; supporting
     // fallback across the remaining classes is deferred until a real plugin is
     // found that requires it (don't build speculative fan-out).
-    let class_raw = (*info_ptr).mCocoaAUViewClass[0];
+    let class_raw = unsafe { (*info_ptr).mCocoaAUViewClass[0] };
 
-    let bundle_url = CfUrl::from_copied(url_raw)
+    let bundle_url = unsafe { CfUrl::from_copied(url_raw) }
         .ok_or_else(|| AuError::InvalidBuffer("CocoaUI info has null bundle URL".into()))?;
-    let class_name = CfString::from_copied(class_raw)
+    let class_name = unsafe { CfString::from_copied(class_raw) }
         .ok_or_else(|| AuError::InvalidBuffer("CocoaUI info has null class name".into()))?;
 
     Ok((bundle_url, class_name))
@@ -98,10 +100,11 @@ unsafe fn load_bundle(url: &CfUrl) -> Result<Retained<NSBundle>> {
     // bundleWithURL`) to avoid round-tripping the CFURL through an
     // owned `NSURL` just to borrow it.
     let ns_url = url.as_raw() as *const AnyObject;
-    let bundle: Option<Retained<NSBundle>> = msg_send![NSBundle::class(), bundleWithURL: ns_url];
+    let bundle: Option<Retained<NSBundle>> =
+        unsafe { msg_send![NSBundle::class(), bundleWithURL: ns_url] };
     let bundle =
         bundle.ok_or_else(|| AuError::InvalidBuffer("Failed to load AU view bundle".into()))?;
-    let _: bool = msg_send![&*bundle, load];
+    let _: bool = unsafe { msg_send![&*bundle, load] };
     Ok(bundle)
 }
 
@@ -131,8 +134,8 @@ unsafe fn instantiate_factory(_bundle: &NSBundle, class_name: &CfString) -> Resu
         AuError::InvalidBuffer(format!("ObjC class '{factory_name}' not found in bundle"))
     })?;
 
-    let factory: *mut AnyObject = msg_send![class, alloc];
-    let factory: *mut AnyObject = msg_send![factory, init];
+    let factory: *mut AnyObject = unsafe { msg_send![class, alloc] };
+    let factory: *mut AnyObject = unsafe { msg_send![factory, init] };
     if factory.is_null() {
         return Err(AuError::InvalidBuffer(
             "Failed to instantiate AU view factory".into(),
@@ -190,9 +193,10 @@ unsafe fn make_view(
     // whichever of the two is not hardcoded, i.e. `AuEditor::open` could
     // never open a custom Cocoa view in a debug build. See Cargo.toml.
     let unit_ptr = unit as *mut c_void;
-    let view: *mut AnyObject = msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size];
+    let view: *mut AnyObject =
+        unsafe { msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size] };
 
-    let _: () = msg_send![factory, release];
+    let _: () = unsafe { msg_send![factory, release] };
 
     if view.is_null() {
         return Err(AuError::InvalidBuffer(
@@ -201,6 +205,6 @@ unsafe fn make_view(
     }
 
     // Retain so ownership is independent of the factory's autorelease pool.
-    let view: *mut AnyObject = msg_send![view, retain];
+    let view: *mut AnyObject = unsafe { msg_send![view, retain] };
     Ok(view)
 }

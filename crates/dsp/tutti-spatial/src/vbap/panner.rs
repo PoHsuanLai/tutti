@@ -336,10 +336,10 @@ impl VbapPanner {
             width.get().to_bits(),
             spread.get().to_bits(),
         ];
-        if let Some((solved_for, gains)) = self.last_solve {
-            if solved_for == key {
-                return gains;
-            }
+        if let Some((solved_for, gains)) = self.last_solve
+            && solved_for == key
+        {
+            return gains;
         }
         let gains = self.solve_frame(azimuth, elevation, width, spread);
         self.last_solve = Some((key, gains));

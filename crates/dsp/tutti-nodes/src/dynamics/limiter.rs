@@ -699,10 +699,10 @@ impl Node for BrickwallLimiterNode {
         let (inputs, mut outputs) = io.split();
         // The cell's ceiling, re-derived once per block: the unmodulated
         // clip, and a fed NaN frame's fallback. A NaN cell keeps the last.
-        if let Some(linear) = linear_ceiling(self.ceiling_db.load()) {
-            if (linear - self.ceiling_linear).abs() > 0.0001 {
-                self.ceiling_linear = linear;
-            }
+        if let Some(linear) = linear_ceiling(self.ceiling_db.load())
+            && (linear - self.ceiling_linear).abs() > 0.0001
+        {
+            self.ceiling_linear = linear;
         }
         // Channel-major: the clip is memoryless, so a sample's value depends
         // only on its input and its frame's ceiling, not on the loop order.

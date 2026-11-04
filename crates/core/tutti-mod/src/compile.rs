@@ -506,10 +506,10 @@ pub fn compile(
     let mut nodes = BTreeMap::new();
     let kept = |k: &SourceKey| prev.and_then(|p| p.nodes.get(k)).map(|n| n.id);
     for (&key, source) in &sources {
-        if let Some(kind) = signal_kind(source) {
-            if let Some(id) = kept(&key) {
-                nodes.insert(key, SourceNode { id, kind });
-            }
+        if let Some(kind) = signal_kind(source)
+            && let Some(id) = kept(&key)
+        {
+            nodes.insert(key, SourceNode { id, kind });
         }
     }
     let mut taken: BTreeSet<SourceId> = nodes.values().map(|n| n.id).collect();

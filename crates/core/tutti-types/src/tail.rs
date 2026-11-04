@@ -325,7 +325,7 @@ fn topological_order<G: TailGraph>(g: &G, tails: &HashMap<G::Node, Tail>) -> (Ve
 
     let mut queue: Vec<G::Node> = in_degree
         .iter()
-        .filter(|(_, &deg)| deg == 0)
+        .filter(|&(_, &deg)| deg == 0)
         .map(|(&n, _)| n)
         .collect();
 

@@ -74,7 +74,7 @@ pub fn attach_child_window(
 
                 const GWL_HWNDPARENT: i32 = -8;
 
-                extern "system" {
+                unsafe extern "system" {
                     fn SetWindowLongPtrW(hwnd: isize, index: i32, new_long: Lparam) -> Lparam;
                 }
 

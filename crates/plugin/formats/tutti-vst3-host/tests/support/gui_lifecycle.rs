@@ -157,7 +157,7 @@ fn build_event_loop() -> Option<winit::event_loop::EventLoop<()>> {
 /// from a thread name.
 #[cfg(target_os = "macos")]
 fn is_main_thread() -> bool {
-    extern "C" {
+    unsafe extern "C" {
         fn pthread_main_np() -> std::os::raw::c_int;
     }
     unsafe { pthread_main_np() == 1 }

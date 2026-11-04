@@ -130,12 +130,12 @@ fn embed_editor_sequence(
     //    before we create. If it does not, degrade gracefully: a plugin that
     //    only supports floating windows has no embedded `create` path, which
     //    the existing create-fails handling already covers.
-    if let Some(is_api_supported_fn) = gui.is_api_supported {
-        if !unsafe { is_api_supported_fn(plugin, api, false) } {
-            return Err(ClapError::EditorError(
-                "GUI embedded window API not supported".to_string(),
-            ));
-        }
+    if let Some(is_api_supported_fn) = gui.is_api_supported
+        && !unsafe { is_api_supported_fn(plugin, api, false) }
+    {
+        return Err(ClapError::EditorError(
+            "GUI embedded window API not supported".to_string(),
+        ));
     }
 
     // 2. create (embedded, is_floating = false).
@@ -241,17 +241,17 @@ unsafe fn floating_editor_sequence(
     // 1. is_api_supported(floating) — the floating question, which is the one
     //    the embed path never asks and the whole reason a floating-only plugin
     //    reported no editor at all.
-    if let Some(is_api_supported_fn) = gui.is_api_supported {
-        if !is_api_supported_fn(plugin, api, true) {
-            return Err(ClapError::EditorError(
-                "GUI floating window API not supported".to_string(),
-            ));
-        }
+    if let Some(is_api_supported_fn) = gui.is_api_supported
+        && !unsafe { is_api_supported_fn(plugin, api, true) }
+    {
+        return Err(ClapError::EditorError(
+            "GUI floating window API not supported".to_string(),
+        ));
     }
 
     // 2. create(floating = true).
     let did_create = if let Some(create_fn) = gui.create {
-        if !create_fn(plugin, api, true) {
+        if !unsafe { create_fn(plugin, api, true) } {
             return Err(ClapError::EditorError(
                 "GUI create (floating) failed".to_string(),
             ));
@@ -269,17 +269,17 @@ unsafe fn floating_editor_sequence(
             api,
             specific: handle,
         };
-        set_transient_fn(plugin, &window);
+        unsafe { set_transient_fn(plugin, &window) };
     }
 
     // 4. suggest_title — the plugin owns its title bar, so this is advisory.
     if let Some(suggest_title_fn) = gui.suggest_title {
-        suggest_title_fn(plugin, title.as_ptr());
+        unsafe { suggest_title_fn(plugin, title.as_ptr()) };
     }
 
     // 5. show.
     if let Some(show_fn) = gui.show {
-        show_fn(plugin);
+        unsafe { show_fn(plugin) };
     }
 
     Ok(did_create)
@@ -300,7 +300,10 @@ unsafe fn query_editor_capabilities(
     gui: &clap_sys::ext::gui::clap_plugin_gui,
     plugin: *const clap_sys::plugin::clap_plugin,
 ) -> EditorCapabilities {
-    let resizable = gui.can_resize.map(|f| f(plugin)).unwrap_or(false);
+    let resizable = gui
+        .can_resize
+        .map(|f| unsafe { f(plugin) })
+        .unwrap_or(false);
     let mut caps = EditorCapabilities {
         resize: tutti_plugin_types::ResizeHints {
             resizable,
@@ -318,7 +321,7 @@ unsafe fn query_editor_capabilities(
             aspect_ratio_width: 0,
             aspect_ratio_height: 0,
         };
-        if get_hints(plugin, &mut hints) {
+        if unsafe { get_hints(plugin, &mut hints) } {
             caps.resize.can_resize_horizontally = hints.can_resize_horizontally;
             caps.resize.can_resize_vertically = hints.can_resize_vertically;
             caps.aspect.preserve = hints.preserve_aspect_ratio;
@@ -593,12 +596,12 @@ impl ClapLoaded {
         let gui = unsafe { &*self.extensions.gui.gui };
         let mut w = requested.width;
         let mut h = requested.height;
-        if let Some(adjust) = gui.adjust_size {
-            if !unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) } {
-                return Err(ClapError::EditorError(
-                    "adjust_size: no usable size fits the request".to_string(),
-                ));
-            }
+        if let Some(adjust) = gui.adjust_size
+            && !unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) }
+        {
+            return Err(ClapError::EditorError(
+                "adjust_size: no usable size fits the request".to_string(),
+            ));
         }
         let set_size = gui
             .set_size
@@ -1416,18 +1419,20 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     item_kind: u32,
     item_data: *const c_void,
 ) -> bool {
-    if builder.is_null() || (*builder).ctx.is_null() {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if builder.is_null() || unsafe { (*builder).ctx.is_null() } {
         return false;
     }
-    let items = &mut *((*builder).ctx as *mut Vec<ContextMenuItem>);
+    let items = unsafe { &mut *((*builder).ctx as *mut Vec<ContextMenuItem>) };
     let item = match item_kind {
         CLAP_CONTEXT_MENU_ITEM_ENTRY => {
             if item_data.is_null() {
                 return false;
             }
-            let entry = &*(item_data as *const clap_context_menu_entry);
+            let entry = unsafe { &*(item_data as *const clap_context_menu_entry) };
             ContextMenuItem::Entry {
-                label: cstr_to_string(entry.label),
+                label: unsafe { cstr_to_string(entry.label) },
                 is_enabled: entry.is_enabled,
                 action_id: entry.action_id,
             }
@@ -1436,9 +1441,9 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
             if item_data.is_null() {
                 return false;
             }
-            let entry = &*(item_data as *const clap_context_menu_check_entry);
+            let entry = unsafe { &*(item_data as *const clap_context_menu_check_entry) };
             ContextMenuItem::CheckEntry {
-                label: cstr_to_string(entry.label),
+                label: unsafe { cstr_to_string(entry.label) },
                 is_enabled: entry.is_enabled,
                 is_checked: entry.is_checked,
                 action_id: entry.action_id,
@@ -1449,9 +1454,9 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
             if item_data.is_null() {
                 return false;
             }
-            let title = &*(item_data as *const clap_context_menu_item_title);
+            let title = unsafe { &*(item_data as *const clap_context_menu_item_title) };
             ContextMenuItem::Title {
-                title: cstr_to_string(title.title),
+                title: unsafe { cstr_to_string(title.title) },
                 is_enabled: title.is_enabled,
             }
         }
@@ -1459,9 +1464,9 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
             if item_data.is_null() {
                 return false;
             }
-            let sub = &*(item_data as *const clap_context_menu_submenu);
+            let sub = unsafe { &*(item_data as *const clap_context_menu_submenu) };
             ContextMenuItem::BeginSubmenu {
-                label: cstr_to_string(sub.label),
+                label: unsafe { cstr_to_string(sub.label) },
                 is_enabled: sub.is_enabled,
             }
         }
@@ -1498,7 +1503,9 @@ mod embed_sequence_tests {
     // through the stub plugin's `plugin_data`, so the test can assert the
     // CLAP-mandated call order.
     unsafe fn log(plugin: *const clap_plugin, name: &'static str) {
-        let vec = &mut *((*plugin).plugin_data as *mut Vec<&'static str>);
+        // SAFETY: `plugin` is the `clap_plugin` pointer the stub was called with, live for this
+        // call.
+        let vec = unsafe { &mut *((*plugin).plugin_data as *mut Vec<&'static str>) };
         vec.push(name);
     }
 
@@ -1507,7 +1514,9 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        log(plugin, "is_api_supported");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "is_api_supported") };
         true
     }
 
@@ -1516,12 +1525,16 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        log(plugin, "create");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "create") };
         true
     }
 
     unsafe extern "C" fn stub_set_scale(plugin: *const clap_plugin, _scale: f64) -> bool {
-        log(plugin, "set_scale");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "set_scale") };
         true
     }
 
@@ -1530,9 +1543,14 @@ mod embed_sequence_tests {
         width: *mut u32,
         height: *mut u32,
     ) -> bool {
-        log(plugin, "get_size");
-        *width = 640;
-        *height = 480;
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "get_size") };
+        // SAFETY: the gui call under test passes out-pointers to live `u32`s.
+        unsafe {
+            *width = 640;
+            *height = 480;
+        }
         true
     }
 
@@ -1540,12 +1558,16 @@ mod embed_sequence_tests {
         plugin: *const clap_plugin,
         _window: *const clap_window,
     ) -> bool {
-        log(plugin, "set_parent");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "set_parent") };
         true
     }
 
     unsafe extern "C" fn stub_show(plugin: *const clap_plugin) -> bool {
-        log(plugin, "show");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "show") };
         true
     }
 
@@ -1554,12 +1576,16 @@ mod embed_sequence_tests {
         _api: *const i8,
         _is_floating: bool,
     ) -> bool {
-        log(plugin, "is_api_supported");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "is_api_supported") };
         false
     }
 
     unsafe extern "C" fn stub_can_resize(plugin: *const clap_plugin) -> bool {
-        log(plugin, "can_resize");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "can_resize") };
         true
     }
 
@@ -1567,10 +1593,15 @@ mod embed_sequence_tests {
         plugin: *const clap_plugin,
         hints: *mut clap_sys::ext::gui::clap_gui_resize_hints,
     ) -> bool {
-        log(plugin, "get_resize_hints");
+        // SAFETY: `plugin` is the test's own `clap_plugin`, handed back unchanged by the gui
+        // call under test; its `plugin_data` is the test's call log.
+        unsafe { log(plugin, "get_resize_hints") };
         if !hints.is_null() {
-            (*hints).can_resize_horizontally = true;
-            (*hints).can_resize_vertically = true;
+            // SAFETY: `hints` is non-null and points to a live `clap_gui_resize_hints`.
+            unsafe {
+                (*hints).can_resize_horizontally = true;
+                (*hints).can_resize_vertically = true;
+            }
         }
         true
     }

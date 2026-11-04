@@ -1590,7 +1590,7 @@ fn six_channel_stretch_reaches_every_channel() {
         "channels {:?} never produced output",
         seen.iter()
             .enumerate()
-            .filter(|(_, &b)| !b)
+            .filter(|&(_, &b)| !b)
             .map(|(c, _)| c)
             .collect::<Vec<_>>()
     );

@@ -499,8 +499,8 @@ impl Reference {
             }
         }
         for (&key, fade) in fades {
-            let gen = graph.generation(key);
-            let changed = self.units.get(&key).is_some_and(|(g, _)| *g != gen);
+            let generation = graph.generation(key);
+            let changed = self.units.get(&key).is_some_and(|(g, _)| *g != generation);
             if fade.duration.is_zero() || !t.nodes.contains_key(&key) || !changed {
                 continue;
             }
@@ -522,7 +522,7 @@ impl Reference {
                 "node {} crossfades between shapes",
                 key.0
             );
-            slot.0 = gen;
+            slot.0 = generation;
             match self.fading.get_mut(&key) {
                 // Behind the running fade; a unit waiting there never ran.
                 Some(running) => running.next = Some((incoming, *fade)),
@@ -541,8 +541,9 @@ impl Reference {
                 }
             }
         }
-        self.units
-            .retain(|k, (gen, _)| t.nodes.contains_key(k) && *gen == graph.generation(*k));
+        self.units.retain(|k, (generation, _)| {
+            t.nodes.contains_key(k) && *generation == graph.generation(*k)
+        });
         // A key swapped or removed takes its crossfade with it.
         let units = &self.units;
         self.fading.retain(|k, _| units.contains_key(k));
@@ -580,10 +581,10 @@ impl Reference {
             }
             let mut best = Latency::ZERO;
             for (at, e) in &g.topology().edges {
-                if at.node == k {
-                    if let Edge::Direct(Source::Node(p)) = e {
-                        best = best.max(arrive(p.node, g, lat, memo) + lat(p.node));
-                    }
+                if at.node == k
+                    && let Edge::Direct(Source::Node(p)) = e
+                {
+                    best = best.max(arrive(p.node, g, lat, memo) + lat(p.node));
                 }
             }
             for (at, sources) in g.events() {
@@ -596,11 +597,11 @@ impl Reference {
                 }
             }
             for (at, m) in g.params() {
-                if at.node == k {
-                    if let Some(from) = m.source {
-                        let n = from.node;
-                        best = best.max(arrive(n, g, lat, memo) + lat(n));
-                    }
+                if at.node == k
+                    && let Some(from) = m.source
+                {
+                    let n = from.node;
+                    best = best.max(arrive(n, g, lat, memo) + lat(n));
                 }
             }
             memo.insert(k, best);
@@ -710,10 +711,10 @@ impl Reference {
         // line and event feedback FIFO is flushed as if it had vanished.
         let reset = std::mem::take(&mut self.reset_time);
         for (k, f) in &self.event_lines {
-            if let DelayKey::Event { at, .. } = *k {
-                if reset || !delays.contains_key(k) {
-                    flush(at, relative(f));
-                }
+            if let DelayKey::Event { at, .. } = *k
+                && (reset || !delays.contains_key(k))
+            {
+                flush(at, relative(f));
             }
         }
         for (k, f) in &self.fb_event {
@@ -1033,10 +1034,10 @@ impl Reference {
                     line.iter().take(frames).copied().collect()
                 }
             };
-            if let Some(&Edge::Direct(from)) = t.edges.get(&at) {
-                if let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from }) {
-                    delay_line(line, &mut buf);
-                }
+            if let Some(&Edge::Direct(from)) = t.edges.get(&at)
+                && let Some(line) = self.audio_lines.get_mut(&DelayKey::Audio { at, from })
+            {
+                delay_line(line, &mut buf);
             }
             ins.push(buf);
         }

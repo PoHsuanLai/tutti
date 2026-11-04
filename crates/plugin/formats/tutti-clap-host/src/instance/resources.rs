@@ -12,10 +12,10 @@ impl ClapLoaded {
         let Some(ext) = (unsafe { ext::opt(self.extensions.system.resource_directory) }) else {
             return;
         };
-        if let Some(f) = ext.set_directory {
-            if let Ok(cstr) = std::ffi::CString::new(path) {
-                unsafe { f(self.plugin.as_ptr(), cstr.as_ptr(), is_shared) };
-            }
+        if let Some(f) = ext.set_directory
+            && let Ok(cstr) = std::ffi::CString::new(path)
+        {
+            unsafe { f(self.plugin.as_ptr(), cstr.as_ptr(), is_shared) };
         }
     }
 

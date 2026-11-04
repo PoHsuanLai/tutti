@@ -576,10 +576,8 @@ impl Midi<'_> {
     /// none.
     pub fn unroute(&mut self, id: MidiRouteId) -> bool {
         let had = self.state.rules.remove(&id).is_some();
-        if had {
-            if let Ok(input) = self.input() {
-                self.compile_own(input);
-            }
+        if had && let Ok(input) = self.input() {
+            self.compile_own(input);
         }
         had
     }

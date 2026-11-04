@@ -354,8 +354,9 @@ fn a_writer_and_a_reader_thread_never_tear() {
     let checked = std::sync::Arc::new(AtomicU64::new(0));
     // A tag: the position, the rewrite generation, the channel — kept
     // under 2^24, where an `f32` holds every integer exactly.
-    let tag =
-        |pos: u64, gen: u64, c: usize| ((pos % 8_192) * 128 + (gen % 32) * 2 + c as u64) as f32;
+    let tag = |pos: u64, generation: u64, c: usize| {
+        ((pos % 8_192) * 128 + (generation % 32) * 2 + c as u64) as f32
+    };
     let reading = {
         let (done, checked) = (
             std::sync::Arc::clone(&done),
@@ -397,7 +398,7 @@ fn a_writer_and_a_reader_thread_never_tear() {
         })
     };
     let mut seed = 0x2545_f491_u64;
-    let mut gen = 0u64;
+    let mut generation = 0u64;
     let mut buf = Vec::new();
     // A bound only for a reader that never runs at all, so that fails
     // rather than hangs.
@@ -418,16 +419,16 @@ fn a_writer_and_a_reader_thread_never_tear() {
         let w = writer.window();
         match seed % 16 {
             0 => {
-                gen += 1;
+                generation += 1;
                 writer.retract_to(w.from + (seed >> 8) % (w.to - w.from + 1));
             }
             1 => {
-                gen += 1;
+                generation += 1;
                 let play = writer.play();
                 writer.reset(play.saturating_sub(2) + (seed >> 8) % 8);
             }
             2 => {
-                gen += 1;
+                generation += 1;
                 writer.raise_from(w.from + (seed >> 8) % (w.to - w.from + 1));
             }
             _ => {
@@ -435,8 +436,8 @@ fn a_writer_and_a_reader_thread_never_tear() {
                 let n = 1 + (seed >> 8) as usize % 16;
                 buf.clear();
                 for i in 0..n as u64 {
-                    buf.push(tag(to + i, gen, 0));
-                    buf.push(tag(to + i, gen, 1));
+                    buf.push(tag(to + i, generation, 0));
+                    buf.push(tag(to + i, generation, 1));
                 }
                 writer.push(&buf);
             }

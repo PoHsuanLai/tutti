@@ -90,14 +90,14 @@ fn search_for_plugin_server() -> Result<PathBuf> {
         tracing::warn!("TUTTI_PLUGIN_SERVER={p} does not exist, falling back to search");
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            if let Some(found) = beside(exe_dir) {
-                return Ok(found);
-            }
-            if let Some(found) = exe_dir.parent().and_then(beside) {
-                return Ok(found);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        if let Some(found) = beside(exe_dir) {
+            return Ok(found);
+        }
+        if let Some(found) = exe_dir.parent().and_then(beside) {
+            return Ok(found);
         }
     }
 

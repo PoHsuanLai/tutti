@@ -415,7 +415,7 @@ impl GridBits {
         self.of(q)
             .iter()
             .enumerate()
-            .find(|(_, &w)| w != 0)
+            .find(|&(_, &w)| w != 0)
             .map(|(i, w)| i * 64 + w.trailing_zeros() as usize)
             .filter(|&k| k < len)
     }

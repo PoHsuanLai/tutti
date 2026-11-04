@@ -67,12 +67,12 @@ impl AuEditor {
         preferred: EditorSize,
     ) -> Result<Self> {
         tutti_plugin_types::assert_main_thread();
-        let view = cocoa::create_view(unit, preferred)?;
+        let view = unsafe { cocoa::create_view(unit, preferred) }?;
 
         if let Some(handle) = parent {
             let parent_obj = handle.as_ptr() as *mut AnyObject;
             if !parent_obj.is_null() {
-                let _: () = msg_send![parent_obj, addSubview: view];
+                let _: () = unsafe { msg_send![parent_obj, addSubview: view] };
             }
         }
 

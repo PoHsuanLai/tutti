@@ -488,11 +488,14 @@ mod enumeration_hole_tests {
             return false;
         }
         let flagged = if is_input { &F64_IN } else { &F64_OUT }.load(Ordering::SeqCst);
-        (*info).channel_count = index + 1;
-        (*info).flags = if flagged & (1 << index) != 0 {
-            CLAP_AUDIO_PORT_SUPPORTS_64BITS
-        } else {
-            0
+        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
+        unsafe { (*info).channel_count = index + 1 };
+        unsafe {
+            (*info).flags = if flagged & (1 << index) != 0 {
+                CLAP_AUDIO_PORT_SUPPORTS_64BITS
+            } else {
+                0
+            }
         };
         true
     }

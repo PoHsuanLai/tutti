@@ -499,7 +499,7 @@ impl IProgressTrait for ComponentHandler {
             description: desc,
         }));
         if !out_id.is_null() {
-            *out_id = id;
+            unsafe { *out_id = id };
         }
         kResultOk
     }

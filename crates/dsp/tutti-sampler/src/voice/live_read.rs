@@ -327,22 +327,21 @@ impl LiveRead {
             });
         }
 
-        if let Out::Lanes { lanes, gather } = out {
-            if jump.is_none()
-                && st.fade.is_none()
-                && st.recover.is_none()
-                && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
+        if let Out::Lanes { lanes, gather } = out
+            && jump.is_none()
+            && st.fade.is_none()
+            && st.recover.is_none()
+            && steady_lanes(&claim, &map, st, positions, gain, lanes, at, gather)
+        {
+            st.last = positions.last().copied().flatten().map(SamplePosition::get);
+            #[cfg(test)]
             {
-                st.last = positions.last().copied().flatten().map(SamplePosition::get);
-                #[cfg(test)]
-                {
-                    for p in positions.iter().flatten() {
-                        st.read_to = st.read_to.max(p.get());
-                    }
-                    st.steady += 1;
+                for p in positions.iter().flatten() {
+                    st.read_to = st.read_to.max(p.get());
                 }
-                return;
+                st.steady += 1;
             }
+            return;
         }
 
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
@@ -575,7 +574,8 @@ impl State {
         // fade) goes to the new side over its last `RAMP_FRAMES`.
         let out_ramp = (left as f32 / RAMP_FRAMES as f32).min(1.0);
         fade.started |= new;
-        let sounded = match (fade.started, old) {
+
+        match (fade.started, old) {
             (true, Some(o)) if fade.k < fade.frames => {
                 let t = Fade::weight(fade.frames, fade.k).max(1.0 - out_ramp);
                 for (n, &o) in frame.iter_mut().zip(o) {
@@ -602,8 +602,7 @@ impl State {
                 self.fade = None;
                 false
             }
-        };
-        sounded
+        }
     }
 }
 

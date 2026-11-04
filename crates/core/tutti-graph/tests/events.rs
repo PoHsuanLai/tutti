@@ -186,8 +186,8 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
             );
         }
     }
-    for (i, &gen) in ph.emitter_gen.iter().enumerate() {
-        g.generations.insert(NodeKey(i as u64), gen);
+    for (i, &generation) in ph.emitter_gen.iter().enumerate() {
+        g.generations.insert(NodeKey(i as u64), generation);
     }
     // A latency change is a shape change, which needs a new unit: without
     // the lag in the generation the reference would keep the old `Lag` (and
@@ -873,8 +873,8 @@ fn wide_fan_in_matches_the_reference() {
                 reference.process(n, &Transport::default(), &[], &mut []);
             }
         }
-        let got = inbox.lock().unwrap().clone();
-        got
+
+        inbox.lock().unwrap().clone()
     };
     let (a, b) = (run(true), run(false));
     assert!(a.len() > width, "the sources fired");

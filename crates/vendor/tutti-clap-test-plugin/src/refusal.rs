@@ -70,7 +70,7 @@ pub(crate) fn note_inactive_deactivation() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_inactive_deactivations() -> u32 {
     INACTIVE_DEACTIVATIONS.load(Ordering::SeqCst)
 }
@@ -117,7 +117,7 @@ pub(crate) fn on_activate(active: &AtomicBool, sample_rate: f64, max_frames: u32
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_activate_refusal(
     refuse_rate_bits: u64,
     refuse_frames: u32,
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_activate_refusal(
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_activation() {
     REFUSE_RATE.store(ACTIVATE_REFUSE_NONE, Ordering::SeqCst);
     REFUSE_FRAMES.store(0, Ordering::SeqCst);
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_activation() {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_activate_refusals() -> u32 {
     REFUSALS.load(Ordering::SeqCst)
 }
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn tutti_test_plugin_activate_refusals() -> u32 {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_activate_accepts() -> u32 {
     ACCEPTS.load(Ordering::SeqCst)
 }
@@ -173,7 +173,7 @@ pub unsafe extern "C" fn tutti_test_plugin_activate_accepts() -> u32 {
 /// # Safety
 /// `rate_bits_out` / `frames_out` must be null or point to valid, writable
 /// `u64` / `u32`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_last_accepted_activation(
     rate_bits_out: *mut u64,
     frames_out: *mut u32,
@@ -182,10 +182,10 @@ pub unsafe extern "C" fn tutti_test_plugin_last_accepted_activation(
         return false;
     }
     if !rate_bits_out.is_null() {
-        *rate_bits_out = LAST_RATE.load(Ordering::SeqCst);
+        unsafe { *rate_bits_out = LAST_RATE.load(Ordering::SeqCst) };
     }
     if !frames_out.is_null() {
-        *frames_out = LAST_FRAMES.load(Ordering::SeqCst);
+        unsafe { *frames_out = LAST_FRAMES.load(Ordering::SeqCst) };
     }
     true
 }
@@ -220,7 +220,7 @@ pub(crate) fn refuse_context_load() -> bool {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_state_context_refusal(
     refuse_save: bool,
     refuse_load: bool,
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_state_context_refusal(
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_state_context_refusal() {
     REFUSE_CONTEXT_SAVE.store(false, Ordering::SeqCst);
     REFUSE_CONTEXT_LOAD.store(false, Ordering::SeqCst);

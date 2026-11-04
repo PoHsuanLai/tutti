@@ -377,10 +377,10 @@ mod tests {
             std::thread::spawn(move || {
                 let mut mixed = 0usize;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    if let Ok(Some(w)) = cell.read(8) {
-                        if w.iter().any(|&x| x != w[0]) {
-                            mixed += 1;
-                        }
+                    if let Ok(Some(w)) = cell.read(8)
+                        && w.iter().any(|&x| x != w[0])
+                    {
+                        mixed += 1;
                     }
                 }
                 mixed

@@ -118,14 +118,14 @@ pub(crate) fn device_fault_poll(
             faults.write(AudioDeviceFault(fault));
         }
     }
-    if let (Some(count), Some(state)) = (count, state.as_mut()) {
-        if count != state.stream_faults {
-            // A restart clears the device's record, and the fault with it.
-            if count < state.stream_faults {
-                state.last_fault.clear();
-            }
-            state.stream_faults = count;
+    if let (Some(count), Some(state)) = (count, state.as_mut())
+        && count != state.stream_faults
+    {
+        // A restart clears the device's record, and the fault with it.
+        if count < state.stream_faults {
+            state.last_fault.clear();
         }
+        state.stream_faults = count;
     }
 }
 

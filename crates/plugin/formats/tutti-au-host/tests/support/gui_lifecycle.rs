@@ -66,7 +66,7 @@ unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
         width: 800,
         height: 600,
     };
-    AuEditor::open(au.raw_unit(), None, preferred)
+    unsafe { AuEditor::open(au.raw_unit(), None, preferred) }
 }
 
 /// Instantiate and initialize `unit`, panicking with its label on failure.

@@ -578,14 +578,14 @@ impl Pair {
                     .as_ref()
                     .and_then(|p| p.unit(now.key))
                     .is_some_and(|was| {
-                        was.gen == now.gen
+                        was.generation == now.generation
                             && was.idx == now.idx
                             && was.shape.latency != now.shape.latency
                     })
             })
             .map(|u| tutti_graph::Placement {
                 key: u.key,
-                gen: u.gen,
+                generation: u.generation,
                 idx: u.idx,
             })
             .collect();
@@ -800,14 +800,14 @@ pub fn test_pool(participants: usize) -> Arc<dyn tutti_graph::Pool> {
     use std::sync::{Mutex, OnceLock};
     static POOLS: OnceLock<Mutex<BTreeMap<usize, Arc<TestPool>>>> = OnceLock::new();
     let pools = POOLS.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let pool = Arc::clone(
+
+    (Arc::clone(
         pools
             .lock()
             .expect("pool map")
             .entry(participants)
             .or_insert_with(|| TestPool::new(participants)),
-    );
-    pool
+    )) as _
 }
 
 /// The worker counts the parallel suites cover: two, three (odd, so a

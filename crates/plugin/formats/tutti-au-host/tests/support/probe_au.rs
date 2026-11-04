@@ -426,14 +426,16 @@ pub fn set_param_count(au: &AuInstance, count: u32) {
 /// # Safety
 /// `id` must be a writable probe property whose value is exactly one `T`.
 unsafe fn write_probe_property<T>(au: &AuInstance, id: u32, value: T) {
-    let status = sys::AudioUnitSetProperty(
-        au.raw_unit(),
-        id,
-        sys::kAudioUnitScope_Global,
-        0,
-        &value as *const T as *const c_void,
-        std::mem::size_of::<T>() as u32,
-    );
+    let status = unsafe {
+        sys::AudioUnitSetProperty(
+            au.raw_unit(),
+            id,
+            sys::kAudioUnitScope_Global,
+            0,
+            &value as *const T as *const c_void,
+            std::mem::size_of::<T>() as u32,
+        )
+    };
     assert_eq!(
         status, 0,
         "the probe refused its own property {id:#x} (OSStatus {status}) — the \
@@ -446,20 +448,22 @@ unsafe fn write_probe_property<T>(au: &AuInstance, id: u32, value: T) {
 unsafe fn read_probe_property<T>(au: &AuInstance, id: u32) -> T {
     let mut out = std::mem::MaybeUninit::<T>::uninit();
     let mut size = std::mem::size_of::<T>() as u32;
-    let status = sys::AudioUnitGetProperty(
-        au.raw_unit(),
-        id,
-        sys::kAudioUnitScope_Global,
-        0,
-        out.as_mut_ptr() as *mut c_void,
-        &mut size,
-    );
+    let status = unsafe {
+        sys::AudioUnitGetProperty(
+            au.raw_unit(),
+            id,
+            sys::kAudioUnitScope_Global,
+            0,
+            out.as_mut_ptr() as *mut c_void,
+            &mut size,
+        )
+    };
     assert_eq!(
         status, 0,
         "the probe refused its own property {id:#x} (OSStatus {status}) — the \
          component answering is not tests/support/probe_au.rs"
     );
-    out.assume_init()
+    unsafe { out.assume_init() }
 }
 
 /// One spec violation a probe AU can commit.
@@ -794,7 +798,7 @@ const ERR_PARAM: sys::OSStatus = -50; // paramErr
 /// # Safety
 /// `self_` must be the `*mut Probe` AudioToolbox was handed by the factory.
 unsafe fn probe_of<'a>(self_: *mut c_void) -> &'a mut Probe {
-    &mut *(self_ as *mut Probe)
+    unsafe { &mut *(self_ as *mut Probe) }
 }
 
 /// # Safety
@@ -806,7 +810,7 @@ unsafe extern "C" fn probe_open(
     guard(|| {
         // Stash the instance handle: it is the only place AudioToolbox hands it
         // over, and a property listener cannot be called back without it.
-        probe_of(self_).instance = inst;
+        unsafe { probe_of(self_).instance = inst };
         0
     })
 }
@@ -816,7 +820,7 @@ unsafe extern "C" fn probe_open(
 unsafe extern "C" fn probe_close(self_: *mut c_void) -> sys::OSStatus {
     // Reclaims the Box the factory leaked. Not wrapped in `guard`: the drop must
     // happen even if it panics, and there is nothing left to report to.
-    drop(Box::from_raw(self_ as *mut Probe));
+    drop(unsafe { Box::from_raw(self_ as *mut Probe) });
     0
 }
 
@@ -824,7 +828,7 @@ unsafe extern "C" fn probe_close(self_: *mut c_void) -> sys::OSStatus {
 /// `self_` must be a live `*mut Probe`.
 unsafe extern "C" fn probe_initialize(self_: *mut c_void) -> sys::OSStatus {
     guard(|| {
-        if probe_of(self_).behaviour == Misbehaviour::FailsInitialize {
+        if unsafe { probe_of(self_) }.behaviour == Misbehaviour::FailsInitialize {
             return ERR_FAILED_INITIALIZATION;
         }
         0
@@ -887,7 +891,7 @@ unsafe extern "C" fn probe_get_property_info(
     out_writable: *mut u8,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         let size = match id {
             x if x == sys::kAudioUnitProperty_StreamFormat => {
                 // Refuses out-of-range elements for the reason
@@ -951,10 +955,10 @@ unsafe extern "C" fn probe_get_property_info(
             _ => return ERR_INVALID_PROPERTY,
         };
         if !out_size.is_null() {
-            *out_size = size;
+            unsafe { *out_size = size };
         }
         if !out_writable.is_null() {
-            *out_writable = 1;
+            unsafe { *out_writable = 1 };
         }
         0
     })
@@ -970,11 +974,11 @@ unsafe fn write_property<T>(data: *mut c_void, io_size: *mut u32, value: T) -> s
     if io_size.is_null() {
         return ERR_PARAM;
     }
-    if *io_size < need || data.is_null() {
+    if unsafe { *io_size } < need || data.is_null() {
         return ERR_INVALID_PROPERTY_VALUE;
     }
-    std::ptr::write_unaligned(data as *mut T, value);
-    *io_size = need;
+    unsafe { std::ptr::write_unaligned(data as *mut T, value) };
+    unsafe { *io_size = need };
     0
 }
 
@@ -989,7 +993,7 @@ unsafe extern "C" fn probe_get_property(
     io_size: *mut u32,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         match id {
             x if x == sys::kAudioUnitProperty_StreamFormat => {
                 // The probe owns exactly ONE element per scope, whatever
@@ -1005,7 +1009,7 @@ unsafe extern "C" fn probe_get_property(
                 {
                     return ERR_INVALID_ELEMENT;
                 }
-                write_property(data, io_size, probe_asbd(p.sample_rate))
+                unsafe { write_property(data, io_size, probe_asbd(p.sample_rate)) }
             }
             x if x == sys::kAudioUnitProperty_ElementCount => {
                 let n: u32 = if p.behaviour == Misbehaviour::OverReportsElementCount {
@@ -1013,17 +1017,17 @@ unsafe extern "C" fn probe_get_property(
                 } else {
                     1
                 };
-                write_property(data, io_size, n)
+                unsafe { write_property(data, io_size, n) }
             }
             x if x == sys::kAudioUnitProperty_MaximumFramesPerSlice => {
                 // Report what the last write left, which for every probe but
                 // `ClampsBlockSize` is exactly what the host asked for. See the
                 // field's docs for what a fixed answer here would hide.
-                write_property(data, io_size, p.max_frames_per_slice)
+                unsafe { write_property(data, io_size, p.max_frames_per_slice) }
             }
-            x if x == sys::kAudioUnitProperty_LastRenderError => {
+            x if x == sys::kAudioUnitProperty_LastRenderError => unsafe {
                 write_property(data, io_size, 0i32)
-            }
+            },
             x if x == sys::kAudioUnitProperty_Latency => {
                 // Refuse before writing anything: an unimplemented property
                 // leaves the host's buffer untouched, so a host that ignored
@@ -1044,11 +1048,11 @@ unsafe extern "C" fn probe_get_property(
                     Misbehaviour::ReportsNegativeLatency => -1.0,
                     _ => p.latency_seconds,
                 };
-                write_property(data, io_size, seconds)
+                unsafe { write_property(data, io_size, seconds) }
             }
-            x if x == sys::kAudioUnitProperty_TailTime => {
+            x if x == sys::kAudioUnitProperty_TailTime => unsafe {
                 write_property(data, io_size, p.tail_seconds)
-            }
+            },
             x if x == sys::kAudioUnitProperty_ParameterInfo => {
                 // `elem` carries the parameter *id* here, not a bus — that is
                 // `kAudioUnitProperty_ParameterInfo`'s addressing, and the host's
@@ -1056,7 +1060,7 @@ unsafe extern "C" fn probe_get_property(
                 if elem >= p.param_count {
                     return ERR_INVALID_PARAMETER;
                 }
-                write_property(data, io_size, probe_param_info(elem))
+                unsafe { write_property(data, io_size, probe_param_info(elem)) }
             }
             x if x == sys::kAudioUnitProperty_ParameterList => {
                 // Ids are `0..param_count`, which is enough for a host to see
@@ -1067,21 +1071,25 @@ unsafe extern "C" fn probe_get_property(
                 if io_size.is_null() {
                     return ERR_PARAM;
                 }
-                if *io_size < need || (data.is_null() && need > 0) {
+                if unsafe { *io_size } < need || (data.is_null() && need > 0) {
                     return ERR_INVALID_PROPERTY_VALUE;
                 }
                 for i in 0..p.param_count {
-                    std::ptr::write_unaligned((data as *mut u32).add(i as usize), i);
+                    unsafe { std::ptr::write_unaligned((data as *mut u32).add(i as usize), i) };
                 }
-                *io_size = need;
+                unsafe { *io_size = need };
                 0
             }
-            x if x == sys::kAudioUnitProperty_BypassEffect => write_property(data, io_size, 0u32),
+            x if x == sys::kAudioUnitProperty_BypassEffect => unsafe {
+                write_property(data, io_size, 0u32)
+            },
             x if x == sys::kAudioUnitProperty_FactoryPresets => match p.behaviour {
                 Misbehaviour::NullFactoryPresets => {
                     // noErr with a NULL value behind it: a success status the
                     // host must not dereference.
-                    write_property(data, io_size, std::ptr::null::<c_void>() as sys::CFArrayRef)
+                    unsafe {
+                        write_property(data, io_size, std::ptr::null::<c_void>() as sys::CFArrayRef)
+                    }
                 }
                 Misbehaviour::GarbageFactoryPresets => {
                     let array = p.garbage_presets.get_or_insert_with(garbage_preset_array);
@@ -1091,7 +1099,7 @@ unsafe extern "C" fn probe_get_property(
                     // release free an array the probe still owns.
                     let raw = array.as_concrete_TypeRef();
                     core_foundation::base::CFRetain(raw as *const c_void);
-                    write_property(data, io_size, raw as sys::CFArrayRef)
+                    unsafe { write_property(data, io_size, raw as sys::CFArrayRef) }
                 }
                 _ => ERR_INVALID_PROPERTY,
             },
@@ -1106,20 +1114,24 @@ unsafe extern "C" fn probe_get_property(
                 >::from_CFType_pairs(&[]);
                 let raw = dict.as_concrete_TypeRef();
                 core_foundation::base::CFRetain(raw as *const c_void);
-                write_property(data, io_size, raw as sys::CFPropertyListRef)
+                unsafe { write_property(data, io_size, raw as sys::CFPropertyListRef) }
             }
             // The two observation properties. Answered by every probe on every
             // behaviour — see `PROBE_PROPERTY_LAST_RENDER_TIME`.
-            PROBE_PROPERTY_LAST_RENDER_TIME => {
+            PROBE_PROPERTY_LAST_RENDER_TIME => unsafe {
                 write_property(data, io_size, p.last_render_sample_time)
-            }
-            PROBE_PROPERTY_RENDER_COUNT => write_property(data, io_size, p.render_count),
+            },
+            PROBE_PROPERTY_RENDER_COUNT => unsafe { write_property(data, io_size, p.render_count) },
             // The setters read back what they last wrote, so a test can assert
             // the probe took the value before asking whether the host noticed.
-            PROBE_PROPERTY_SET_LATENCY => write_property(data, io_size, p.latency_seconds),
-            PROBE_PROPERTY_SET_TAIL => write_property(data, io_size, p.tail_seconds),
-            PROBE_PROPERTY_SET_PARAM_COUNT => write_property(data, io_size, p.param_count),
-            PROBE_PROPERTY_HOST_PULL => write_property(data, io_size, p.host_pull),
+            PROBE_PROPERTY_SET_LATENCY => unsafe {
+                write_property(data, io_size, p.latency_seconds)
+            },
+            PROBE_PROPERTY_SET_TAIL => unsafe { write_property(data, io_size, p.tail_seconds) },
+            PROBE_PROPERTY_SET_PARAM_COUNT => unsafe {
+                write_property(data, io_size, p.param_count)
+            },
+            PROBE_PROPERTY_HOST_PULL => unsafe { write_property(data, io_size, p.host_pull) },
             PROBE_PROPERTY_LAST_PRESENTATION_LATENCY => {
                 // `NAN` for an address never written, so a test can tell "never
                 // told" from "told zero" — see the constant's docs.
@@ -1129,7 +1141,7 @@ unsafe extern "C" fn probe_get_property(
                     .find(|((s, e), _)| *s == scope && *e == elem)
                     .map(|(_, v)| *v)
                     .unwrap_or(f64::NAN);
-                write_property(data, io_size, seen)
+                unsafe { write_property(data, io_size, seen) }
             }
             x if x == sys::kAudioUnitProperty_DependentParameters => {
                 // Same address rule as the `GetPropertyInfo` arm: id in the
@@ -1141,19 +1153,21 @@ unsafe extern "C" fn probe_get_property(
                 if io_size.is_null() {
                     return ERR_PARAM;
                 }
-                if *io_size < need || data.is_null() {
+                if unsafe { *io_size } < need || data.is_null() {
                     return ERR_INVALID_PROPERTY_VALUE;
                 }
                 for (i, &(scope, id)) in PROBE_DEPENDENT_PARAMS.iter().enumerate() {
-                    std::ptr::write_unaligned(
-                        (data as *mut sys::AUDependentParameter).add(i),
-                        sys::AUDependentParameter {
-                            mScope: scope,
-                            mParameterID: id,
-                        },
-                    );
+                    unsafe {
+                        std::ptr::write_unaligned(
+                            (data as *mut sys::AUDependentParameter).add(i),
+                            sys::AUDependentParameter {
+                                mScope: scope,
+                                mParameterID: id,
+                            },
+                        )
+                    };
                 }
-                *io_size = need;
+                unsafe { *io_size = need };
                 0
             }
             // The public property is write-only per Apple's header, and the
@@ -1257,7 +1271,7 @@ unsafe extern "C" fn probe_set_property(
     size: u32,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         if id == sys::kAudioUnitProperty_PresentationLatency {
             // Apple's header types this `Float64`, so a write of any other
             // width is refused rather than reinterpreted. That refusal is what
@@ -1267,7 +1281,7 @@ unsafe extern "C" fn probe_set_property(
             if data.is_null() || (size as usize) != std::mem::size_of::<f64>() {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            let seconds = std::ptr::read_unaligned(data as *const f64);
+            let seconds = unsafe { std::ptr::read_unaligned(data as *const f64) };
             // Recorded per address, so a writer that ignored the bus and put
             // everything on one scope is caught. Last write to an address wins.
             let key = (scope, elem);
@@ -1286,7 +1300,9 @@ unsafe extern "C" fn probe_set_property(
             {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            let asbd = std::ptr::read_unaligned(data as *const sys::AudioStreamBasicDescription);
+            let asbd = unsafe {
+                std::ptr::read_unaligned(data as *const sys::AudioStreamBasicDescription)
+            };
             p.sample_rate = asbd.mSampleRate;
             return 0;
         }
@@ -1294,7 +1310,7 @@ unsafe extern "C" fn probe_set_property(
             if data.is_null() || (size as usize) < std::mem::size_of::<u32>() {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            let requested = std::ptr::read_unaligned(data as *const u32);
+            let requested = unsafe { std::ptr::read_unaligned(data as *const u32) };
             // `noErr` either way — a clamping AU reports success and keeps a
             // smaller figure, which is the whole point of the variant and the
             // reason the host has to read the value back rather than trust this
@@ -1319,7 +1335,7 @@ unsafe extern "C" fn probe_set_property(
             if data.is_null() || (size as usize) < std::mem::size_of::<f64>() {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            let seconds = std::ptr::read_unaligned(data as *const f64);
+            let seconds = unsafe { std::ptr::read_unaligned(data as *const f64) };
             let public = if id == PROBE_PROPERTY_SET_LATENCY {
                 p.latency_seconds = seconds;
                 sys::kAudioUnitProperty_Latency
@@ -1328,15 +1344,20 @@ unsafe extern "C" fn probe_set_property(
                 sys::kAudioUnitProperty_TailTime
             };
             // The `&mut Probe` ends here, before any listener can re-enter.
-            notify_property_listeners(self_ as *mut Probe, public);
+            unsafe { notify_property_listeners(self_ as *mut Probe, public) };
             return 0;
         }
         if id == PROBE_PROPERTY_SET_PARAM_COUNT {
             if data.is_null() || (size as usize) < std::mem::size_of::<u32>() {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            p.param_count = std::ptr::read_unaligned(data as *const u32);
-            notify_property_listeners(self_ as *mut Probe, sys::kAudioUnitProperty_ParameterList);
+            p.param_count = unsafe { std::ptr::read_unaligned(data as *const u32) };
+            unsafe {
+                notify_property_listeners(
+                    self_ as *mut Probe,
+                    sys::kAudioUnitProperty_ParameterList,
+                )
+            };
             return 0;
         }
         if id == tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS {
@@ -1348,7 +1369,8 @@ unsafe extern "C" fn probe_set_property(
             if data.is_null() || (size as usize) != std::mem::size_of::<ProbeHostCallbacks>() {
                 return ERR_INVALID_PROPERTY_VALUE;
             }
-            p.host_callbacks = Some(std::ptr::read_unaligned(data as *const ProbeHostCallbacks));
+            p.host_callbacks =
+                Some(unsafe { std::ptr::read_unaligned(data as *const ProbeHostCallbacks) });
             return 0;
         }
         // Render-callback installs and bypass are accepted silently: neither is
@@ -1382,8 +1404,8 @@ unsafe extern "C" fn probe_add_listener(
         if proc_.is_null() {
             return ERR_PARAM;
         }
-        let p = probe_of(self_);
-        let listener: PropertyListenerProc = std::mem::transmute(proc_);
+        let p = unsafe { probe_of(self_) };
+        let listener: PropertyListenerProc = unsafe { std::mem::transmute(proc_) };
         p.property_listeners.push((id, listener, ud));
         0
     })
@@ -1405,7 +1427,7 @@ unsafe extern "C" fn probe_remove_listener(
     proc_: *mut c_void,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         p.property_listeners
             .retain(|&(lid, lproc, _)| !(lid == id && lproc as *mut c_void == proc_));
         0
@@ -1423,7 +1445,7 @@ unsafe extern "C" fn probe_remove_listener_ud(
     ud: *mut c_void,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         p.property_listeners.retain(|&(lid, lproc, lud)| {
             !(lid == id && lproc as *mut c_void == proc_ && lud == ud)
         });
@@ -1449,8 +1471,8 @@ unsafe extern "C" fn probe_remove_listener_ud(
 /// # Safety
 /// `p` must be a live `*mut Probe` whose `instance` was filled by `probe_open`.
 unsafe fn notify_property_listeners(p: *mut Probe, id: u32) {
-    let listeners = (*p).property_listeners.clone();
-    let instance = (*p).instance;
+    let listeners = unsafe { (*p).property_listeners.clone() };
+    let instance = unsafe { (*p).instance };
     for (lid, proc_, ud) in listeners {
         if lid == id {
             proc_(ud, instance, id, sys::kAudioUnitScope_Global, 0);
@@ -1471,7 +1493,7 @@ unsafe extern "C" fn probe_get_parameter(
         if value.is_null() {
             return ERR_PARAM;
         }
-        *value = 0.0;
+        unsafe { *value = 0.0 };
         0
     })
 }
@@ -1500,7 +1522,7 @@ unsafe extern "C" fn probe_render(
     io_data: *mut sys::AudioBufferList,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         // Record what the host stamped this block with, before any behaviour
         // branch: the timestamp is an observation of the *host*, so a probe
         // that returns early must still have seen it. Recorded before the
@@ -1511,11 +1533,11 @@ unsafe extern "C" fn probe_render(
         // `kAudioTimeStampSampleTimeValid` has no sample time, and reading
         // `mSampleTime` out of one anyway would report whatever the host left
         // in the field as if the host had chosen it.
-        if !ts.is_null() && (*ts).mFlags & sys::kAudioTimeStampSampleTimeValid != 0 {
-            p.last_render_sample_time = (*ts).mSampleTime;
+        if !ts.is_null() && unsafe { (*ts).mFlags } & sys::kAudioTimeStampSampleTimeValid != 0 {
+            p.last_render_sample_time = unsafe { (*ts).mSampleTime };
         }
         p.render_count = p.render_count.saturating_add(1);
-        pull_host_transport(p);
+        unsafe { pull_host_transport(p) };
         if io_data.is_null() {
             return ERR_PARAM;
         }
@@ -1525,9 +1547,9 @@ unsafe extern "C" fn probe_render(
             return 0;
         }
 
-        let abl = &mut *io_data;
+        let abl = unsafe { &mut *io_data };
         let n = abl.mNumberBuffers as usize;
-        let buffers = std::slice::from_raw_parts_mut(abl.mBuffers.as_mut_ptr(), n);
+        let buffers = unsafe { std::slice::from_raw_parts_mut(abl.mBuffers.as_mut_ptr(), n) };
         for b in buffers {
             if b.mData.is_null() {
                 continue;
@@ -1542,7 +1564,7 @@ unsafe extern "C" fn probe_render(
             } else {
                 requested
             };
-            let out = std::slice::from_raw_parts_mut(b.mData as *mut f32, written);
+            let out = unsafe { std::slice::from_raw_parts_mut(b.mData as *mut f32, written) };
             for s in out.iter_mut() {
                 *s = PROBE_RENDER_LEVEL;
             }
@@ -1581,21 +1603,21 @@ unsafe extern "C" fn probe_process(
     io_data: *mut sys::AudioBufferList,
 ) -> sys::OSStatus {
     guard(|| {
-        let p = probe_of(self_);
+        let p = unsafe { probe_of(self_) };
         // Same rule as `probe_render`: record the host's stamp before anything
         // can return early, and only when the host marked it valid.
-        if !ts.is_null() && (*ts).mFlags & sys::kAudioTimeStampSampleTimeValid != 0 {
-            p.last_render_sample_time = (*ts).mSampleTime;
+        if !ts.is_null() && unsafe { (*ts).mFlags } & sys::kAudioTimeStampSampleTimeValid != 0 {
+            p.last_render_sample_time = unsafe { (*ts).mSampleTime };
         }
         p.render_count = p.render_count.saturating_add(1);
-        pull_host_transport(p);
+        unsafe { pull_host_transport(p) };
         if io_data.is_null() {
             return ERR_PARAM;
         }
 
-        let abl = &mut *io_data;
+        let abl = unsafe { &mut *io_data };
         let n = abl.mNumberBuffers as usize;
-        let buffers = std::slice::from_raw_parts_mut(abl.mBuffers.as_mut_ptr(), n);
+        let buffers = unsafe { std::slice::from_raw_parts_mut(abl.mBuffers.as_mut_ptr(), n) };
         for b in buffers {
             if b.mData.is_null() {
                 continue;
@@ -1605,7 +1627,7 @@ unsafe extern "C" fn probe_process(
             // its own bug.
             let capacity = (b.mDataByteSize / 4) as usize;
             let written = capacity.min(frames as usize);
-            let out = std::slice::from_raw_parts_mut(b.mData as *mut f32, written);
+            let out = unsafe { std::slice::from_raw_parts_mut(b.mData as *mut f32, written) };
             for s in out.iter_mut() {
                 *s = PROBE_RENDER_LEVEL;
             }
@@ -1641,78 +1663,118 @@ unsafe extern "C" fn probe_lookup(selector: i16) -> AudioComponentMethod {
     // returns one function-pointer type for every selector, and the caller
     // re-types it per selector.
     match selector {
-        SEL_INITIALIZE => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_initialize)),
-        SEL_UNINITIALIZE => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_uninitialize)),
-        SEL_RESET => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, u32) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_reset)),
-        SEL_GET_PROPERTY_INFO => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut u32, *mut u8) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_get_property_info)),
-        SEL_GET_PROPERTY => Some(std::mem::transmute::<
-            unsafe extern "C" fn(
-                *mut c_void,
-                u32,
-                u32,
-                u32,
-                *mut c_void,
-                *mut u32,
-            ) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_get_property)),
-        SEL_SET_PROPERTY => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, u32, u32, *const c_void, u32) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_set_property)),
-        SEL_ADD_PROP_LISTENER => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_add_listener)),
-        SEL_REMOVE_PROP_LISTENER => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, *mut c_void) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_remove_listener)),
-        SEL_REMOVE_PROP_LISTENER_UD => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_remove_listener_ud)),
-        SEL_RENDER => Some(std::mem::transmute::<
-            unsafe extern "C" fn(
-                *mut c_void,
-                *mut u32,
-                *const sys::AudioTimeStamp,
-                u32,
-                u32,
-                *mut sys::AudioBufferList,
-            ) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_render)),
-        SEL_PROCESS => Some(std::mem::transmute::<
-            unsafe extern "C" fn(
-                *mut c_void,
-                *mut u32,
-                *const sys::AudioTimeStamp,
-                u32,
-                *mut sys::AudioBufferList,
-            ) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_process)),
-        SEL_GET_PARAMETER => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut f32) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_get_parameter)),
-        SEL_SET_PARAMETER => Some(std::mem::transmute::<
-            unsafe extern "C" fn(*mut c_void, u32, u32, u32, f32, u32) -> sys::OSStatus,
-            unsafe extern "C" fn() -> sys::OSStatus,
-        >(probe_set_parameter)),
+        SEL_INITIALIZE => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_initialize)
+        }),
+        SEL_UNINITIALIZE => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_uninitialize)
+        }),
+        SEL_RESET => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, u32) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_reset)
+        }),
+        SEL_GET_PROPERTY_INFO => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    u32,
+                    u32,
+                    u32,
+                    *mut u32,
+                    *mut u8,
+                ) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_get_property_info)
+        }),
+        SEL_GET_PROPERTY => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    u32,
+                    u32,
+                    u32,
+                    *mut c_void,
+                    *mut u32,
+                ) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_get_property)
+        }),
+        SEL_SET_PROPERTY => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    u32,
+                    u32,
+                    u32,
+                    *const c_void,
+                    u32,
+                ) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_set_property)
+        }),
+        SEL_ADD_PROP_LISTENER => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_add_listener)
+        }),
+        SEL_REMOVE_PROP_LISTENER => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, *mut c_void) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_remove_listener)
+        }),
+        SEL_REMOVE_PROP_LISTENER_UD => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_remove_listener_ud)
+        }),
+        SEL_RENDER => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut u32,
+                    *const sys::AudioTimeStamp,
+                    u32,
+                    u32,
+                    *mut sys::AudioBufferList,
+                ) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_render)
+        }),
+        SEL_PROCESS => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut u32,
+                    *const sys::AudioTimeStamp,
+                    u32,
+                    *mut sys::AudioBufferList,
+                ) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_process)
+        }),
+        SEL_GET_PARAMETER => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut f32) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_get_parameter)
+        }),
+        SEL_SET_PARAMETER => Some(unsafe {
+            std::mem::transmute::<
+                unsafe extern "C" fn(*mut c_void, u32, u32, u32, f32, u32) -> sys::OSStatus,
+                unsafe extern "C" fn() -> sys::OSStatus,
+            >(probe_set_parameter)
+        }),
         _ => None,
     }
 }
@@ -1797,7 +1859,7 @@ probe_factories! {
     factory_refuses_host_callbacks => Misbehaviour::RefusesHostCallbacks,
 }
 
-extern "C" {
+unsafe extern "C" {
     /// `AudioComponentRegister` from `AudioComponent.h` (macOS 10.7+).
     ///
     /// Not in `coreaudio-sys`, so it is declared here. Registers a component

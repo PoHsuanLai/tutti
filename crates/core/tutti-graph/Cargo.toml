@@ -1,7 +1,8 @@
 [package]
 name = "tutti-graph"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "The audio graph for the Tutti engine: a graph value, a pure compiler to an immutable plan, and a real-time editor/executor pair that runs it"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

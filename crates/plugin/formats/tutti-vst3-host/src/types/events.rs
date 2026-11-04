@@ -598,7 +598,10 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
 ///
 /// # Safety
 ///
-/// `event.type_` must accurately label the variant stored in `__field0`.
+/// `event.type_` must accurately label the variant stored in `__field0`. For a chord, scale or
+/// note-expression-text event, its text pointer must be null or valid for reads of
+/// `min(text length, MAX_EVENT_TEXT_LEN)` `u16`s (the `intern` closure builds a slice of that
+/// length from it).
 #[allow(
     clippy::unnecessary_cast,
     reason = "the SDK event ordinals are u32 on unix and c_int on Windows; each \
@@ -624,12 +627,13 @@ pub(crate) unsafe fn from_c_event(
         if ptr.is_null() || n == 0 {
             return TextRef::default();
         }
-        arena.intern(std::slice::from_raw_parts(ptr, n))
+        // SAFETY: `ptr` is non-null and valid for `n` `u16`s, by this fn's `# Safety`.
+        arena.intern(unsafe { std::slice::from_raw_parts(ptr, n) })
     };
 
     match event.r#type as u32 {
         t if t == EventTypes_::kNoteOnEvent as u32 => {
-            let e = event.__field0.noteOn;
+            let e = unsafe { event.__field0.noteOn };
             Some(Vst3Event::NoteOn(NoteOnEvent {
                 header,
                 channel: e.channel,
@@ -641,7 +645,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteOffEvent as u32 => {
-            let e = event.__field0.noteOff;
+            let e = unsafe { event.__field0.noteOff };
             Some(Vst3Event::NoteOff(NoteOffEvent {
                 header,
                 channel: e.channel,
@@ -652,11 +656,11 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kDataEvent as u32 => {
-            let e = event.__field0.data;
+            let e = unsafe { event.__field0.data };
             let mut bytes = [0u8; 16];
             if !e.bytes.is_null() && e.size > 0 {
                 let copy_len = (e.size as usize).min(bytes.len());
-                std::ptr::copy_nonoverlapping(e.bytes, bytes.as_mut_ptr(), copy_len);
+                unsafe { std::ptr::copy_nonoverlapping(e.bytes, bytes.as_mut_ptr(), copy_len) };
             }
             Some(Vst3Event::Data(DataEvent {
                 header,
@@ -666,7 +670,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kPolyPressureEvent as u32 => {
-            let e = event.__field0.polyPressure;
+            let e = unsafe { event.__field0.polyPressure };
             Some(Vst3Event::PolyPressure(PolyPressureEvent {
                 header,
                 channel: e.channel,
@@ -676,7 +680,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionValueEvent as u32 => {
-            let e = event.__field0.noteExpressionValue;
+            let e = unsafe { event.__field0.noteExpressionValue };
             Some(Vst3Event::NoteExpression(NoteExpressionValueEvent {
                 header,
                 note_id: e.noteId,
@@ -685,7 +689,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionTextEvent as u32 => {
-            let e = event.__field0.noteExpressionText;
+            let e = unsafe { event.__field0.noteExpressionText };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::NoteExpressionText(NoteExpressionTextEvent {
                 header,
@@ -695,7 +699,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kChordEvent as u32 => {
-            let e = event.__field0.chord;
+            let e = unsafe { event.__field0.chord };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::Chord(ChordEvent {
                 header,
@@ -706,7 +710,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kScaleEvent as u32 => {
-            let e = event.__field0.scale;
+            let e = unsafe { event.__field0.scale };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::Scale(ScaleEvent {
                 header,
@@ -716,7 +720,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionIntValueEvent as u32 => {
-            let e = event.__field0.noteExpressionIntValue;
+            let e = unsafe { event.__field0.noteExpressionIntValue };
             Some(Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
                 header,
                 type_id: e.typeId,
@@ -725,7 +729,7 @@ pub(crate) unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kLegacyMIDICCOutEvent as u32 => {
-            let e = event.__field0.midiCCOut;
+            let e = unsafe { event.__field0.midiCCOut };
             Some(Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
                 header,
                 control_number: e.controlNumber,

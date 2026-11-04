@@ -441,10 +441,10 @@ impl tutti_graph::Node for Probe8 {
     }
 }
 
-/// Lane `k`'s program in generation `gen` (a republish moves its depths):
+/// Lane `k`'s program in generation `generation` (a republish moves its depths):
 /// five kinds in turn, beats, seconds, drawn, random, and automation under
 /// a layer.
-fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
+fn lane_program(k: usize, generation: u32) -> tutti_mod::ControlProgram {
     use std::sync::Arc;
     use tutti_mod::{
         Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, PeriodPoint, Polarity,
@@ -452,7 +452,7 @@ fn lane_program(k: usize, gen: u32) -> tutti_mod::ControlProgram {
     };
     use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint};
     use tutti_types::{BeatDuration, Depth, Hz, Phase, PhaseIncrement};
-    let depth = 0.05 + 0.01 * ((k as u32 + gen) % 7) as f32;
+    let depth = 0.05 + 0.01 * ((k as u32 + generation) % 7) as f32;
     let amount = Amount {
         depth: Depth(depth),
         polarity: Polarity::Bipolar,

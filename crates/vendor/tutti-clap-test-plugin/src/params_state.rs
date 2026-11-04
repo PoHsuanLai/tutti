@@ -171,21 +171,21 @@ pub unsafe fn apply_param_events_through(list: *const clap_input_events, frame: 
     if list.is_null() {
         return;
     }
-    let (Some(size_fn), Some(get_fn)) = ((*list).size, (*list).get) else {
+    let (Some(size_fn), Some(get_fn)) = (unsafe { (*list).size }, unsafe { (*list).get }) else {
         return;
     };
     ensure_values_init();
-    let n = size_fn(list);
+    let n = unsafe { size_fn(list) };
     for i in 0..n {
-        let hdr_ptr = get_fn(list, i);
+        let hdr_ptr = unsafe { get_fn(list, i) };
         if hdr_ptr.is_null() {
             continue;
         }
-        let hdr: &clap_event_header = &*hdr_ptr;
+        let hdr: &clap_event_header = unsafe { &*hdr_ptr };
         if hdr.type_ != CLAP_EVENT_PARAM_VALUE || hdr.time > frame {
             continue;
         }
-        let pv = &*(hdr_ptr as *const clap_event_param_value);
+        let pv = unsafe { &*(hdr_ptr as *const clap_event_param_value) };
         if let Some(idx) = index_of_id(pv.param_id) {
             store_value(idx, pv.value);
         }
@@ -353,13 +353,13 @@ fn with_capture<R>(f: impl FnOnce(&mut ParamStateCapture) -> R) -> R {
 ///
 /// # Safety
 /// `out` must point to a valid, writable [`ParamStateCapture`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_param_capture(out: *mut ParamStateCapture) -> bool {
     if out.is_null() {
         return false;
     }
     with_capture(|cap| {
-        *out = *cap;
+        unsafe { *out = *cap };
     });
     true
 }
@@ -371,7 +371,7 @@ pub unsafe extern "C" fn tutti_test_plugin_param_capture(out: *mut ParamStateCap
 /// # Safety
 /// Safe to call from any thread; provided as `extern "C"` only so the test can
 /// reach it across the `dlopen` seam.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_param_reset() {
     with_capture(|cap| *cap = ParamStateCapture::default());
     VALUES_INIT.store(false, Ordering::Release);
@@ -386,7 +386,7 @@ pub unsafe extern "C" fn tutti_test_plugin_param_reset() {
 ///
 /// # Safety
 /// `out` must point to a valid, writable `f64`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_param_peek(id: u32, out: *mut f64) -> bool {
     if out.is_null() {
         return false;
@@ -394,7 +394,7 @@ pub unsafe extern "C" fn tutti_test_plugin_param_peek(id: u32, out: *mut f64) ->
     ensure_values_init();
     match index_of_id(id) {
         Some(i) => {
-            *out = load_value(i);
+            unsafe { *out = load_value(i) };
             true
         }
         None => false,
@@ -410,7 +410,7 @@ pub unsafe extern "C" fn tutti_test_plugin_param_peek(id: u32, out: *mut f64) ->
 ///
 /// # Safety
 /// Safe to call from any thread.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_queue_output(kind: u32, param_id: u32, value: f64) {
     let mut guard = OUTPUT_QUEUE.lock().unwrap_or_else(|p| p.into_inner());
     let slot = guard.len;
@@ -496,7 +496,9 @@ unsafe extern "C" fn params_get_info(
     };
     ensure_values_init();
 
-    let info = &mut *info;
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let info = unsafe { &mut *info };
     info.id = p.id;
     info.flags = p.flags;
     info.cookie = ptr::null_mut();
@@ -525,7 +527,9 @@ unsafe extern "C" fn params_get_value(
     let Some(i) = index_of_id(param_id) else {
         return false;
     };
-    *out_value = load_value(i);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { *out_value = load_value(i) };
     true
 }
 
@@ -547,9 +551,11 @@ unsafe extern "C" fn params_value_to_text(
     let text = format!("{param_id}:{value:.3}\0");
     let bytes = text.as_bytes();
     let n = bytes.len().min(out_capacity as usize);
-    ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, out_buffer, n);
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, out_buffer, n) };
     // Guarantee termination even if the rendering was truncated.
-    *out_buffer.add(n - 1) = 0;
+    unsafe { *out_buffer.add(n - 1) = 0 };
     true
 }
 
@@ -566,11 +572,13 @@ unsafe extern "C" fn params_text_to_value(
         return false;
     }
     // Inverse of `value_to_text`: take the part after the `id:` tag.
-    let s = CStr::from_ptr(text).to_string_lossy();
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    let s = unsafe { CStr::from_ptr(text) }.to_string_lossy();
     let tail = s.split(':').next_back().unwrap_or("");
     match tail.trim().parse::<f64>() {
         Ok(v) => {
-            *out_value = v;
+            unsafe { *out_value = v };
             true
         }
         Err(_) => false,
@@ -588,22 +596,24 @@ unsafe extern "C" fn params_flush(
     let mut count = 0u32;
 
     if !in_.is_null() {
-        if let (Some(size_fn), Some(get_fn)) = ((*in_).size, (*in_).get) {
-            let n = size_fn(in_);
+        // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+        // arguments valid per the CLAP ABI.
+        if let (Some(size_fn), Some(get_fn)) = (unsafe { (*in_).size }, unsafe { (*in_).get }) {
+            let n = unsafe { size_fn(in_) };
             count = n;
             for i in 0..n.min(MAX_CAPTURED_PARAM_EVENTS as u32) {
-                let hdr_ptr = get_fn(in_, i);
+                let hdr_ptr = unsafe { get_fn(in_, i) };
                 if hdr_ptr.is_null() {
                     continue;
                 }
-                let hdr: &clap_event_header = &*hdr_ptr;
+                let hdr: &clap_event_header = unsafe { &*hdr_ptr };
                 let mut ev = CapturedParamEvent {
                     time: hdr.time,
                     event_type: hdr.type_,
                     ..CapturedParamEvent::default()
                 };
                 if hdr.type_ == CLAP_EVENT_PARAM_VALUE {
-                    let pv = &*(hdr_ptr as *const clap_event_param_value);
+                    let pv = unsafe { &*(hdr_ptr as *const clap_event_param_value) };
                     ev.param_id = pv.param_id;
                     ev.value = pv.value;
                     // Apply it, so a host-driven `set_parameter` is observable
@@ -625,7 +635,7 @@ unsafe extern "C" fn params_flush(
         cap.flush_events = events;
     });
 
-    emit_queued_output(out);
+    unsafe { emit_queued_output(out) };
 }
 
 /// Push every queued output event onto the host's `clap_output_events`,
@@ -634,7 +644,8 @@ pub(crate) unsafe fn emit_queued_output(out: *const clap_output_events) {
     if out.is_null() {
         return;
     }
-    let Some(try_push) = (*out).try_push else {
+    // SAFETY: `out` is the host's `clap_output_events`, live for this process call.
+    let Some(try_push) = (unsafe { (*out).try_push }) else {
         return;
     };
 
@@ -663,7 +674,7 @@ pub(crate) unsafe fn emit_queued_output(out: *const clap_output_events) {
                     },
                     param_id: q.param_id,
                 };
-                try_push(out, &ev.header);
+                unsafe { try_push(out, &ev.header) };
             }
             1 => {
                 let ev = clap_event_param_value {
@@ -682,7 +693,7 @@ pub(crate) unsafe fn emit_queued_output(out: *const clap_output_events) {
                     key: -1,
                     value: q.value,
                 };
-                try_push(out, &ev.header);
+                unsafe { try_push(out, &ev.header) };
             }
             _ => {
                 let ev = clap_event_param_mod {
@@ -701,7 +712,7 @@ pub(crate) unsafe fn emit_queued_output(out: *const clap_output_events) {
                     key: -1,
                     amount: q.value,
                 };
-                try_push(out, &ev.header);
+                unsafe { try_push(out, &ev.header) };
             }
         }
     }
@@ -736,7 +747,7 @@ static PARAM_COMMAND: AtomicU32 = AtomicU32::new(PARAM_CMD_NONE);
 /// # Safety
 /// Safe to call from any thread; a single atomic swap. `extern "C"` only so
 /// the test can reach it across the dlopen seam.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tutti_test_plugin_param_command(cmd: u32) -> u32 {
     PARAM_COMMAND.swap(cmd, Ordering::AcqRel)
 }
@@ -753,38 +764,40 @@ pub(crate) unsafe fn run_pending_param_command(host: *const clap_sys::host::clap
     if cmd == PARAM_CMD_NONE || host.is_null() {
         return;
     }
-    let Some(get_ext) = (*host).get_extension else {
+    let Some(get_ext) = (unsafe { (*host).get_extension }) else {
         return;
     };
-    let ptr = get_ext(host, clap_sys::ext::params::CLAP_EXT_PARAMS.as_ptr());
+    let ptr = unsafe { get_ext(host, clap_sys::ext::params::CLAP_EXT_PARAMS.as_ptr()) };
     if ptr.is_null() {
         return;
     }
-    let ext = &*(ptr as *const clap_sys::ext::params::clap_host_params);
+    let ext = unsafe { &*(ptr as *const clap_sys::ext::params::clap_host_params) };
 
     match cmd {
         PARAM_CMD_RESCAN_VALUES => {
             if let Some(rescan) = ext.rescan {
-                rescan(host, CLAP_PARAM_RESCAN_VALUES);
+                unsafe { rescan(host, CLAP_PARAM_RESCAN_VALUES) };
             }
         }
         PARAM_CMD_RESCAN_ALL => {
             if let Some(rescan) = ext.rescan {
-                rescan(host, clap_sys::ext::params::CLAP_PARAM_RESCAN_ALL);
+                unsafe { rescan(host, clap_sys::ext::params::CLAP_PARAM_RESCAN_ALL) };
             }
         }
         PARAM_CMD_REQUEST_FLUSH => {
             if let Some(request_flush) = ext.request_flush {
-                request_flush(host);
+                unsafe { request_flush(host) };
             }
         }
         PARAM_CMD_CLEAR => {
             if let Some(clear) = ext.clear {
-                clear(
-                    host,
-                    PARAMS[0].id,
-                    clap_sys::ext::params::CLAP_PARAM_CLEAR_ALL,
-                );
+                unsafe {
+                    clear(
+                        host,
+                        PARAMS[0].id,
+                        clap_sys::ext::params::CLAP_PARAM_CLEAR_ALL,
+                    )
+                };
             }
         }
         _ => {}
@@ -859,16 +872,19 @@ unsafe fn write_chunked(
     bytes: &[u8],
     write_calls: &mut u32,
 ) -> Option<usize> {
-    let write_fn = (*stream).write?;
+    // SAFETY: `stream` is the host's `clap_ostream`, live for this call.
+    let write_fn = unsafe { (*stream).write }?;
     const CHUNK: usize = 7; // co-prime with the record size, so chunks straddle fields
     let mut written = 0usize;
     while written < bytes.len() {
         let end = (written + CHUNK).min(bytes.len());
-        let n = write_fn(
-            stream,
-            bytes[written..end].as_ptr() as *const std::ffi::c_void,
-            (end - written) as u64,
-        );
+        let n = unsafe {
+            write_fn(
+                stream,
+                bytes[written..end].as_ptr() as *const std::ffi::c_void,
+                (end - written) as u64,
+            )
+        };
         *write_calls += 1;
         if n <= 0 {
             return None;
@@ -884,15 +900,18 @@ unsafe fn write_chunked(
 /// returned 0 (end) rather than an error — the host's `InputStream` must report
 /// end-of-data as 0 and never as a negative.
 unsafe fn read_all(stream: *const clap_istream) -> Option<(Vec<u8>, bool)> {
-    let read_fn = (*stream).read?;
+    // SAFETY: `stream` is the host's `clap_istream`, live for this call.
+    let read_fn = unsafe { (*stream).read }?;
     let mut out = Vec::with_capacity(MAX_CAPTURED_STATE);
     let mut buf = [0u8; 5]; // small + co-prime, so reads straddle field boundaries
     loop {
-        let n = read_fn(
-            stream,
-            buf.as_mut_ptr() as *mut std::ffi::c_void,
-            buf.len() as u64,
-        );
+        let n = unsafe {
+            read_fn(
+                stream,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                buf.len() as u64,
+            )
+        };
         if n < 0 {
             return Some((out, false));
         }
@@ -916,7 +935,8 @@ unsafe fn save_impl(stream: *const clap_ostream, context: u32) -> bool {
     ensure_values_init();
     let bytes = build_state(context);
     let mut write_calls = 0u32;
-    let written = write_chunked(stream, &bytes, &mut write_calls);
+    // SAFETY: `stream` is the host's `clap_ostream`, live for this call.
+    let written = unsafe { write_chunked(stream, &bytes, &mut write_calls) };
     let ok = written == Some(bytes.len());
     with_capture(|cap| {
         cap.save_calls += 1;
@@ -934,7 +954,8 @@ unsafe fn load_impl(stream: *const clap_istream, context: u32) -> bool {
         return false;
     }
     ensure_values_init();
-    let Some((bytes, clean_eof)) = read_all(stream) else {
+    // SAFETY: `stream` is the host's `clap_istream`, live for this call.
+    let Some((bytes, clean_eof)) = (unsafe { read_all(stream) }) else {
         return false;
     };
 
@@ -981,7 +1002,9 @@ unsafe extern "C" fn state_save(_plugin: *const clap_plugin, stream: *const clap
     if crate::subprocess::refuse_state_save() {
         return false;
     }
-    save_impl(stream, 0)
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { save_impl(stream, 0) }
 }
 
 unsafe extern "C" fn state_load(_plugin: *const clap_plugin, stream: *const clap_istream) -> bool {
@@ -989,7 +1012,9 @@ unsafe extern "C" fn state_load(_plugin: *const clap_plugin, stream: *const clap
     if crate::subprocess::refuse_state_load() {
         return false;
     }
-    load_impl(stream, 0)
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { load_impl(stream, 0) }
 }
 
 unsafe extern "C" fn state_context_save(
@@ -1004,7 +1029,9 @@ unsafe extern "C" fn state_context_save(
     if crate::refusal::refuse_context_save() {
         return false;
     }
-    save_impl(stream, context_type)
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { save_impl(stream, context_type) }
 }
 
 unsafe extern "C" fn state_context_load(
@@ -1018,5 +1045,7 @@ unsafe extern "C" fn state_context_load(
     if crate::refusal::refuse_context_load() {
         return false;
     }
-    load_impl(stream, context_type)
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed and
+    // arguments valid per the CLAP ABI.
+    unsafe { load_impl(stream, context_type) }
 }

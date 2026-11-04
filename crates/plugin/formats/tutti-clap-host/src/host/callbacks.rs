@@ -87,15 +87,17 @@ pub(super) unsafe fn get_host_state<'a>(host: *const ClapHostVtable) -> Option<&
     if host.is_null() {
         return None;
     }
-    let data = (*host).host_data;
+    let data = unsafe { (*host).host_data };
     if data.is_null() {
         return None;
     }
-    Some(&*(data as *const HostState))
+    Some(unsafe { &*(data as *const HostState) })
 }
 
 pub(super) unsafe extern "C" fn host_request_restart(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .lifecycle
             .restart_requested
@@ -104,7 +106,9 @@ pub(super) unsafe extern "C" fn host_request_restart(host: *const ClapHostVtable
 }
 
 pub(super) unsafe extern "C" fn host_request_process(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .lifecycle
             .process_requested
@@ -113,7 +117,9 @@ pub(super) unsafe extern "C" fn host_request_process(host: *const ClapHostVtable
 }
 
 pub(super) unsafe extern "C" fn host_request_callback(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .lifecycle
             .callback_requested
@@ -132,11 +138,15 @@ pub(super) static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_c
 // answer even when the host drove that call from the OS main thread (which the
 // spec explicitly permits — see `HostState::audio_thread_lock`).
 unsafe extern "C" fn host_thread_check_is_main(host: *const ClapHostVtable) -> bool {
-    get_host_state(host).is_some_and(|state| state.is_main_thread())
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    (unsafe { get_host_state(host) }).is_some_and(|state| state.is_main_thread())
 }
 
 unsafe extern "C" fn host_thread_check_is_audio(host: *const ClapHostVtable) -> bool {
-    get_host_state(host).is_some_and(|state| state.is_audio_thread())
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    (unsafe { get_host_state(host) }).is_some_and(|state| state.is_audio_thread())
 }
 
 pub(super) static HOST_LOG: clap_host_log = clap_host_log {
@@ -178,7 +188,9 @@ unsafe extern "C" fn host_log(
     if msg.is_null() {
         return;
     }
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return;
     };
     // Check the thread before touching `msg`: building the `String` is itself
@@ -189,7 +201,9 @@ unsafe extern "C" fn host_log(
         state.log.note_audio_thread_drop();
         return;
     }
-    let msg_str = CStr::from_ptr(msg).to_string_lossy().into_owned();
+    let msg_str = unsafe { CStr::from_ptr(msg) }
+        .to_string_lossy()
+        .into_owned();
     let label = severity_label(severity);
     if label == "UNKNOWN" {
         eprintln!("[clap-plugin ?{severity}] {msg_str}");
@@ -208,7 +222,9 @@ pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {
 };
 
 unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, flags: u32) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.params.rescan_requested.store(true, Ordering::Release);
         // Accumulate the flags (RESCAN_ALL / RESCAN_VALUES / RESCAN_INFO /
         // RESCAN_TEXT) so the consumer can tell a full rescan — which the spec
@@ -222,7 +238,9 @@ unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, flags: u32)
 unsafe extern "C" fn host_params_clear(_host: *const ClapHostVtable, _param_id: u32, _flags: u32) {}
 
 unsafe extern "C" fn host_params_request_flush(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.params.flush_requested.store(true, Ordering::Release);
     }
 }
@@ -232,7 +250,9 @@ pub(super) static HOST_STATE: clap_host_state = clap_host_state {
 };
 
 unsafe extern "C" fn host_state_mark_dirty(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.processing.state_dirty.store(true, Ordering::Release);
     }
 }
@@ -242,7 +262,9 @@ pub(super) static HOST_LATENCY: clap_host_latency = clap_host_latency {
 };
 
 unsafe extern "C" fn host_latency_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .processing
             .latency_changed
@@ -255,7 +277,9 @@ pub(super) static HOST_TAIL: clap_host_tail = clap_host_tail {
 };
 
 unsafe extern "C" fn host_tail_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.processing.tail_changed.store(true, Ordering::Release);
     }
 }
@@ -269,7 +293,9 @@ pub(super) static HOST_GUI: clap_host_gui = clap_host_gui {
 };
 
 unsafe extern "C" fn host_gui_resize_hints_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .gui
             .resize_hints_changed
@@ -282,7 +308,9 @@ unsafe extern "C" fn host_gui_request_resize(
     width: u32,
     height: u32,
 ) -> bool {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .gui
             .request_resize_width
@@ -313,7 +341,9 @@ unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool
 }
 
 unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.gui.closed.store(true, Ordering::Release);
         // `was_destroyed` reports the plugin's *window* is gone. Record it so
         // `close_editor` skips `gui.hide` — there is no window left to hide —
@@ -357,7 +387,9 @@ unsafe extern "C" fn host_audio_ports_is_rescan_flag_supported(
 }
 
 unsafe extern "C" fn host_audio_ports_rescan(host: *const ClapHostVtable, flags: u32) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.audio_ports.changed.store(true, Ordering::Release);
         // Accumulated for the same reason as `params.rescan` above: five of the
         // six flags are `[!active]`, so a consumer must be able to tell a
@@ -381,7 +413,9 @@ unsafe extern "C" fn host_note_ports_supported_dialects(_host: *const ClapHostVt
 }
 
 unsafe extern "C" fn host_note_ports_rescan(host: *const ClapHostVtable, _flags: u32) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.notes.ports_changed.store(true, Ordering::Release);
     }
 }
@@ -399,7 +433,9 @@ unsafe extern "C" fn host_timer_register(
     if timer_id.is_null() {
         return false;
     }
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     let id = state.timer.next_id.fetch_add(1, Ordering::Relaxed);
@@ -413,7 +449,7 @@ unsafe extern "C" fn host_timer_register(
         state
             .timer
             .note_due(now + std::time::Duration::from_millis(u64::from(period_ms)));
-        *timer_id = id;
+        unsafe { *timer_id = id };
         true
     } else {
         false
@@ -421,7 +457,9 @@ unsafe extern "C" fn host_timer_register(
 }
 
 unsafe extern "C" fn host_timer_unregister(host: *const ClapHostVtable, timer_id: u32) -> bool {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     if let Ok(mut timers) = state.timer.timers.lock() {
@@ -438,7 +476,9 @@ pub(super) static HOST_NOTE_NAME: clap_host_note_name = clap_host_note_name {
 };
 
 unsafe extern "C" fn host_note_name_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.notes.names_changed.store(true, Ordering::Release);
     }
 }
@@ -448,7 +488,9 @@ pub(super) static HOST_VOICE_INFO: clap_host_voice_info = clap_host_voice_info {
 };
 
 unsafe extern "C" fn host_voice_info_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .notes
             .voice_info_changed
@@ -477,7 +519,9 @@ unsafe extern "C" fn host_preset_load_loaded(
     _location: *const c_char,
     _load_key: *const c_char,
 ) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .processing
             .preset_loaded
@@ -491,7 +535,9 @@ pub(super) static HOST_AUDIO_PORTS_CONFIG: clap_host_audio_ports_config =
     };
 
 unsafe extern "C" fn host_audio_ports_config_rescan(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .audio_ports
             .config_changed
@@ -505,13 +551,17 @@ pub(super) static HOST_REMOTE_CONTROLS: clap_host_remote_controls = clap_host_re
 };
 
 unsafe extern "C" fn host_remote_controls_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.remote_controls.changed.store(true, Ordering::Release);
     }
 }
 
 unsafe extern "C" fn host_remote_controls_suggest_page(host: *const ClapHostVtable, page_id: u32) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .remote_controls
             .suggested_page
@@ -530,7 +580,9 @@ unsafe extern "C" fn host_track_info_get(
     if info.is_null() {
         return false;
     }
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     let Ok(guard) = state.resources.track_info.lock() else {
@@ -540,14 +592,14 @@ unsafe extern "C" fn host_track_info_get(
         return false;
     };
 
-    let out = &mut *info;
+    let out = unsafe { &mut *info };
     out.flags = 0;
 
     if let Some(ref name) = track.name {
         out.flags |= CLAP_TRACK_INFO_HAS_TRACK_NAME;
         let bytes = name.as_bytes();
         let len = bytes.len().min(out.name.len() - 1);
-        ptr::copy_nonoverlapping(bytes.as_ptr(), out.name.as_mut_ptr() as *mut u8, len);
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), out.name.as_mut_ptr() as *mut u8, len) };
         out.name[len] = 0;
     }
 
@@ -606,7 +658,9 @@ unsafe extern "C" fn host_event_registry_query(
     space_id: *mut u16,
 ) -> bool {
     if !space_id.is_null() {
-        *space_id = u16::MAX;
+        // SAFETY: a CLAP host callback: the plugin passes the `clap_host` it was handed and
+        // arguments valid per the CLAP ABI.
+        unsafe { *space_id = u16::MAX };
     }
     false
 }
@@ -633,41 +687,57 @@ pub(super) static HOST_TRANSPORT_CONTROL: clap_host_transport_control =
 /// non-blocking queue behind this is `TransportState::push`, which carries the
 /// capacity and the drop policy.
 unsafe fn push_transport_request(host: *const ClapHostVtable, req: TransportRequest) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: the callers are the transport-request callbacks, which pass the `host` the plugin was
+    // handed.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.transport.push(req);
     }
 }
 
 unsafe extern "C" fn host_transport_request_start(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::Start);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::Start) };
 }
 
 unsafe extern "C" fn host_transport_request_stop(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::Stop);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::Stop) };
 }
 
 unsafe extern "C" fn host_transport_request_continue(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::Continue);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::Continue) };
 }
 
 unsafe extern "C" fn host_transport_request_pause(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::Pause);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::Pause) };
 }
 
 unsafe extern "C" fn host_transport_request_toggle_play(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::TogglePlay);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::TogglePlay) };
 }
 
 unsafe extern "C" fn host_transport_request_jump(
     host: *const ClapHostVtable,
     position: clap_sys::fixedpoint::clap_beattime,
 ) {
-    push_transport_request(
-        host,
-        TransportRequest::Jump {
-            position_beats: position as f64 / CLAP_BEATTIME_FACTOR as f64,
-        },
-    );
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe {
+        push_transport_request(
+            host,
+            TransportRequest::Jump {
+                position_beats: position as f64 / CLAP_BEATTIME_FACTOR as f64,
+            },
+        )
+    };
 }
 
 unsafe extern "C" fn host_transport_request_loop_region(
@@ -675,35 +745,47 @@ unsafe extern "C" fn host_transport_request_loop_region(
     start: clap_sys::fixedpoint::clap_beattime,
     duration: clap_sys::fixedpoint::clap_beattime,
 ) {
-    push_transport_request(
-        host,
-        TransportRequest::LoopRegion {
-            start_beats: start as f64 / CLAP_BEATTIME_FACTOR as f64,
-            duration_beats: duration as f64 / CLAP_BEATTIME_FACTOR as f64,
-        },
-    );
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe {
+        push_transport_request(
+            host,
+            TransportRequest::LoopRegion {
+                start_beats: start as f64 / CLAP_BEATTIME_FACTOR as f64,
+                duration_beats: duration as f64 / CLAP_BEATTIME_FACTOR as f64,
+            },
+        )
+    };
 }
 
 unsafe extern "C" fn host_transport_request_toggle_loop(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::ToggleLoop);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::ToggleLoop) };
 }
 
 unsafe extern "C" fn host_transport_request_enable_loop(
     host: *const ClapHostVtable,
     is_enabled: bool,
 ) {
-    push_transport_request(host, TransportRequest::EnableLoop(is_enabled));
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::EnableLoop(is_enabled)) };
 }
 
 unsafe extern "C" fn host_transport_request_record(
     host: *const ClapHostVtable,
     is_recording: bool,
 ) {
-    push_transport_request(host, TransportRequest::Record(is_recording));
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::Record(is_recording)) };
 }
 
 unsafe extern "C" fn host_transport_request_toggle_record(host: *const ClapHostVtable) {
-    push_transport_request(host, TransportRequest::ToggleRecord);
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    unsafe { push_transport_request(host, TransportRequest::ToggleRecord) };
 }
 
 pub(super) static HOST_CONTEXT_MENU: clap_host_context_menu = clap_host_context_menu {
@@ -748,7 +830,9 @@ pub(super) static HOST_AMBISONIC: clap_host_ambisonic = clap_host_ambisonic {
 };
 
 unsafe extern "C" fn host_ambisonic_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .audio_ports
             .ambisonic_changed
@@ -761,7 +845,9 @@ pub(super) static HOST_SURROUND: clap_host_surround = clap_host_surround {
 };
 
 unsafe extern "C" fn host_surround_changed(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .audio_ports
             .surround_changed
@@ -786,7 +872,9 @@ unsafe extern "C" fn host_thread_pool_request_exec(
     }
     // Only compared against the installed request's host state, never
     // dereferenced here.
-    let state = (*host).host_data as *const HostState;
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let state = unsafe { (*host).host_data } as *const HostState;
     super::thread_pool::request_exec(state, num_tasks)
 }
 
@@ -796,7 +884,9 @@ pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
 };
 
 unsafe extern "C" fn host_triggers_rescan(host: *const ClapHostVtable, _flags: u32) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .resources
             .triggers_rescan_requested
@@ -838,7 +928,9 @@ unsafe extern "C" fn host_tuning_should_play(
 }
 
 unsafe extern "C" fn host_tuning_get_count(host: *const ClapHostVtable) -> u32 {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return 0;
     };
     state
@@ -857,7 +949,9 @@ unsafe extern "C" fn host_tuning_get_info(
     if info.is_null() {
         return false;
     }
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     let Ok(infos) = state.resources.tuning_infos.lock() else {
@@ -866,12 +960,12 @@ unsafe extern "C" fn host_tuning_get_info(
     let Some(tuning) = infos.get(tuning_index as usize) else {
         return false;
     };
-    let out = &mut *info;
+    let out = unsafe { &mut *info };
     out.tuning_id = tuning.tuning_id;
     out.is_dynamic = tuning.is_dynamic;
     let bytes = tuning.name.as_bytes();
     let len = bytes.len().min(out.name.len() - 1);
-    ptr::copy_nonoverlapping(bytes.as_ptr(), out.name.as_mut_ptr() as *mut u8, len);
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), out.name.as_mut_ptr() as *mut u8, len) };
     out.name[len] = 0;
     true
 }
@@ -886,7 +980,9 @@ unsafe extern "C" fn host_resource_request_directory(
     host: *const ClapHostVtable,
     is_shared: bool,
 ) -> bool {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     let lock = if is_shared {
@@ -898,7 +994,9 @@ unsafe extern "C" fn host_resource_request_directory(
 }
 
 unsafe extern "C" fn host_resource_release_directory(host: *const ClapHostVtable, is_shared: bool) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         let lock = if is_shared {
             &state.resources.directory_shared
         } else {
@@ -920,13 +1018,17 @@ pub(super) static HOST_UNDO: clap_host_undo = clap_host_undo {
 };
 
 unsafe extern "C" fn host_undo_begin_change(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.undo.in_progress.store(true, Ordering::Release);
     }
 }
 
 unsafe extern "C" fn host_undo_cancel_change(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.undo.in_progress.store(false, Ordering::Release);
     }
 }
@@ -938,15 +1040,17 @@ unsafe extern "C" fn host_undo_change_made(
     delta_size: usize,
     delta_can_undo: bool,
 ) {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return;
     };
     state.undo.in_progress.store(false, Ordering::Release);
-    let change_name = crate::cstr_to_string(name);
+    let change_name = unsafe { crate::cstr_to_string(name) };
     let delta_data = if delta.is_null() || delta_size == 0 {
         Vec::new()
     } else {
-        std::slice::from_raw_parts(delta as *const u8, delta_size).to_vec()
+        unsafe { std::slice::from_raw_parts(delta as *const u8, delta_size).to_vec() }
     };
     if let Ok(mut changes) = state.undo.changes.lock() {
         changes.push(UndoChange {
@@ -958,19 +1062,25 @@ unsafe extern "C" fn host_undo_change_made(
 }
 
 unsafe extern "C" fn host_undo_request_undo(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.undo.requested.store(true, Ordering::Release);
     }
 }
 
 unsafe extern "C" fn host_undo_request_redo(host: *const ClapHostVtable) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state.undo.redo_requested.store(true, Ordering::Release);
     }
 }
 
 unsafe extern "C" fn host_undo_set_wants_context(host: *const ClapHostVtable, is_subscribed: bool) {
-    if let Some(state) = get_host_state(host) {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    if let Some(state) = unsafe { get_host_state(host) } {
         state
             .undo
             .wants_context
@@ -991,7 +1101,9 @@ unsafe extern "C" fn host_posix_fd_register(
     fd: i32,
     flags: u32,
 ) -> bool {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     if let Ok(mut fds) = state.resources.posix_fds.lock() {
@@ -1015,7 +1127,9 @@ unsafe extern "C" fn host_posix_fd_modify(
     fd: i32,
     flags: u32,
 ) -> bool {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     if let Ok(mut fds) = state.resources.posix_fds.lock() {
@@ -1032,7 +1146,9 @@ unsafe extern "C" fn host_posix_fd_modify(
 
 #[cfg(unix)]
 unsafe extern "C" fn host_posix_fd_unregister(host: *const ClapHostVtable, fd: i32) -> bool {
-    let Some(state) = get_host_state(host) else {
+    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+    // valid per the CLAP ABI.
+    let Some(state) = (unsafe { get_host_state(host) }) else {
         return false;
     };
     if let Ok(mut fds) = state.resources.posix_fds.lock() {

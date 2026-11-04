@@ -224,11 +224,11 @@ fn pack(
             ops.sort_unstable();
             trial[pack[0]] = Some(ops);
         }
-        if let Some(c) = length(&trial) {
-            if c <= best {
-                best = c;
-                cur = trial;
-            }
+        if let Some(c) = length(&trial)
+            && c <= best
+        {
+            best = c;
+            cur = trial;
         }
     }
     let groups = topological(compact(&cur), succ);

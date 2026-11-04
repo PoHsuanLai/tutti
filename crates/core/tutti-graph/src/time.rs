@@ -282,7 +282,7 @@ impl Env {
     /// frame by frame and stamps what it emits.
     ///
     /// Borrows nothing, so it can drive a loop that writes through the `Io`.
-    pub fn offsets(&self) -> impl Iterator<Item = Offset> + 'static {
+    pub fn offsets(&self) -> impl Iterator<Item = Offset> + 'static + use<> {
         // A block is at most `MaxBlock` long, which `Io` holds to a slice
         // length; `u32` covers any block a node can be handed.
         (0..self.block_len.get() as u32).map(Offset)

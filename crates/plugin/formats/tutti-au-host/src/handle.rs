@@ -47,10 +47,9 @@ impl AuHandle {
         // Read *before* instantiating, because the flags say whether this entry
         // point can instantiate at all.
         let mut desc = AudioComponentDescription::default();
-        check(
-            "AudioComponentGetDescription",
-            AudioComponentGetDescription(component, &mut desc),
-        )
+        check("AudioComponentGetDescription", unsafe {
+            AudioComponentGetDescription(component, &mut desc)
+        })
         .map_err(|e| AuError::load_failed("<undescribed>", LoadStage::Opening, e.to_string()))?;
 
         // `AudioComponent.h:498-502`: `AudioComponentInstantiate` "must be used
@@ -68,10 +67,9 @@ impl AuHandle {
         }
 
         let mut instance: AudioComponentInstance = std::ptr::null_mut();
-        check(
-            "AudioComponentInstanceNew",
-            AudioComponentInstanceNew(component, &mut instance),
-        )
+        check("AudioComponentInstanceNew", unsafe {
+            AudioComponentInstanceNew(component, &mut instance)
+        })
         .map_err(|e| {
             AuError::load_failed(
                 component_triple(&desc),

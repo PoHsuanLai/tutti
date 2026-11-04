@@ -8,7 +8,8 @@
 [package]
 name = "vst-tutti"
 version = "0.3.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 resolver = "2"
 description = "VST 2.4 API implementation in Rust (Tutti fork with host-side audioMaster callbacks). Create plugins or hosts."
 readme = "README.md"

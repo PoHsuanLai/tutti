@@ -1,7 +1,8 @@
 [package]
 name = "tutti-io"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "Tutti's audio I/O edge — mic monitoring and file decode in, WAV out"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

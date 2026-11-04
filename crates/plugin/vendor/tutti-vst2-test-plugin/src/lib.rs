@@ -780,7 +780,7 @@ unsafe fn answer_parameter_properties(index: i32, ptr: *mut std::os::raw::c_void
     if ptr.is_null() {
         return 0;
     }
-    let props = &mut *(ptr as *mut api::ParameterProperties);
+    let props = unsafe { &mut *(ptr as *mut api::ParameterProperties) };
 
     write_numbered_field(&mut props.label, "Probe Param ", index);
     write_numbered_field(&mut props.short_label, "P", index);
@@ -822,7 +822,7 @@ unsafe fn answer_midi_program_name(ptr: *mut std::os::raw::c_void) -> Option<i32
     if ptr.is_null() {
         return None;
     }
-    let name = &mut *(ptr as *mut api::MidiProgramName);
+    let name = unsafe { &mut *(ptr as *mut api::MidiProgramName) };
 
     // The host wrote the query here; the probe honours it rather than always
     // describing program 0, so a host that forgets to write it is detectable.
@@ -864,7 +864,7 @@ unsafe fn answer_midi_program_category(ptr: *mut std::os::raw::c_void) -> isize 
     if ptr.is_null() {
         return 0;
     }
-    let cat = &mut *(ptr as *mut api::MidiProgramCategory);
+    let cat = unsafe { &mut *(ptr as *mut api::MidiProgramCategory) };
     let requested = cat.this_category_index;
     if requested != 0 {
         return 0;
@@ -885,7 +885,7 @@ unsafe fn answer_midi_key_name(ptr: *mut std::os::raw::c_void) -> isize {
     if ptr.is_null() {
         return 0;
     }
-    let key = &mut *(ptr as *mut api::MidiKeyName);
+    let key = unsafe { &mut *(ptr as *mut api::MidiKeyName) };
     if key.this_key_number != PROBE_NAMED_KEY {
         return 0;
     }
@@ -927,10 +927,10 @@ extern "C" fn probe_dispatch(
         switches::record_lifecycle(opcode, value);
     }
 
-    if opcode == EFF_GET_TAIL_SIZE {
-        if let Some(tail) = unsafe { RAW_TAIL_SIZE } {
-            return tail;
-        }
+    if opcode == EFF_GET_TAIL_SIZE
+        && let Some(tail) = unsafe { RAW_TAIL_SIZE }
+    {
+        return tail;
     }
 
     // Parameter properties and the MIDI-metadata family have no `Plugin` trait
@@ -995,7 +995,7 @@ extern "C" fn probe_dispatch(
 /// # Safety
 /// `callback` must be the host's `audioMaster` function pointer.
 #[allow(non_snake_case)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn VSTPluginMain(callback: HostCallbackProc) -> *mut AEffect {
     let effect = vst::main::<ProbePlugin>(callback);
     if effect.is_null() {
@@ -1035,7 +1035,7 @@ pub extern "C" fn VSTPluginMain(callback: HostCallbackProc) -> *mut AEffect {
 /// macOS's historical entry-point name. Kept in step with `VSTPluginMain`
 /// by delegating rather than duplicating.
 #[cfg(target_os = "macos")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn main_macho(callback: HostCallbackProc) -> *mut AEffect {
     VSTPluginMain(callback)
 }
@@ -1043,7 +1043,7 @@ pub extern "system" fn main_macho(callback: HostCallbackProc) -> *mut AEffect {
 /// Windows's historical entry-point name.
 #[cfg(target_os = "windows")]
 #[allow(non_snake_case)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn MAIN(callback: HostCallbackProc) -> *mut AEffect {
     VSTPluginMain(callback)
 }

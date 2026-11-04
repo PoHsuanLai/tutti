@@ -3116,7 +3116,7 @@ mod tests {
     // On Apple Silicon, objc_msgSend must be cast to the correct function
     // pointer type — the variadic extern "C" declaration doesn't work.
     #[cfg(target_os = "macos")]
-    extern "C" {
+    unsafe extern "C" {
         fn objc_getClass(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
         fn sel_registerName(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
         fn objc_msgSend();

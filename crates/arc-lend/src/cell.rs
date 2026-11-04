@@ -266,10 +266,10 @@ impl<T> ArcLend<T> {
         freeable.clear();
         // Never waits: if another publisher holds the lock, this buffer is
         // dropped instead and the next publish allocates one.
-        if let Ok(mut control) = self.control.try_lock() {
-            if control.spare.capacity() < freeable.capacity() {
-                control.spare = freeable;
-            }
+        if let Ok(mut control) = self.control.try_lock()
+            && control.spare.capacity() < freeable.capacity()
+        {
+            control.spare = freeable;
         }
     }
 

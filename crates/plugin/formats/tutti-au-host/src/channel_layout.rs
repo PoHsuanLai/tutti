@@ -335,12 +335,14 @@ pub(crate) unsafe fn supported_layout_tags(
     direction: BusDirection,
     bus: u32,
 ) -> Vec<AuLayoutTag> {
-    let Ok(bytes) = get_property_bytes(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS,
-        direction.scope(),
-        bus,
-    ) else {
+    let Ok(bytes) = (unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS,
+            direction.scope(),
+            bus,
+        )
+    }) else {
         return Vec::new();
     };
     // `chunks_exact` for the reason `bus.rs` uses it: an AU reporting a size
@@ -385,12 +387,14 @@ pub(crate) unsafe fn layout_tag(
     direction: BusDirection,
     bus: u32,
 ) -> Result<AuLayoutTag> {
-    let bytes = get_property_bytes(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
-        direction.scope(),
-        bus,
-    )?;
+    let bytes = unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
+            direction.scope(),
+            bus,
+        )
+    }?;
     // The AU controls this length, and measured sizes differ per unit for the
     // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
     // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayout>`
@@ -476,8 +480,7 @@ pub(crate) unsafe fn set_layout_tag(
     // Not `crate::ffi::set_property`: that helper sends `size_of::<T>()`, which
     // for this flexible-array struct over-reports by one description. See
     // `TAG_ONLY_LAYOUT_SIZE`.
-    check(
-        "AudioUnitSetProperty",
+    check("AudioUnitSetProperty", unsafe {
         AudioUnitSetProperty(
             unit,
             K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
@@ -485,8 +488,8 @@ pub(crate) unsafe fn set_layout_tag(
             bus,
             &layout as *const AudioChannelLayout as *const c_void,
             TAG_ONLY_LAYOUT_SIZE as u32,
-        ),
-    )
+        )
+    })
 }
 
 /// The AU's own name for bus `bus` of `direction` — "Sidechain", "stereo mix".
@@ -557,8 +560,7 @@ pub(crate) unsafe fn element_name(
 ) -> Result<String> {
     let mut raw: CFStringRef = std::ptr::null();
     let mut size = size_of::<CFStringRef>() as u32;
-    check(
-        "AudioUnitGetProperty",
+    check("AudioUnitGetProperty", unsafe {
         AudioUnitGetProperty(
             unit,
             K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME,
@@ -566,8 +568,8 @@ pub(crate) unsafe fn element_name(
             bus,
             &mut raw as *mut CFStringRef as *mut c_void,
             &mut size,
-        ),
-    )?;
+        )
+    })?;
 
     // Take ownership of the +1 FIRST, before anything can return early: the
     // `checked` conversion below can reject the pointer, and an early return
@@ -576,7 +578,7 @@ pub(crate) unsafe fn element_name(
     //
     // `from_copied` is null-tolerant and returns `None`, the honest answer for a
     // unit that reports `noErr` with a null string.
-    let owned = crate::cf::CfString::from_copied(raw);
+    let owned = unsafe { crate::cf::CfString::from_copied(raw) };
     let Some(_owned) = owned else {
         return Err(AuError::OsStatus {
             function: "channel_layout::element_name",
@@ -586,7 +588,7 @@ pub(crate) unsafe fn element_name(
     // Borrow through the raw pointer rather than `_owned.to_string()`: the
     // checked converter is what validates that this really is a CFString, and
     // `CfString::to_string` would dereference first.
-    match cfstring_to_string_checked(raw) {
+    match unsafe { cfstring_to_string_checked(raw) } {
         Some(name) => Ok(name),
         // A non-null value that is not a live CFString. `_owned` still releases
         // on drop, so the retain is not leaked even on this path.

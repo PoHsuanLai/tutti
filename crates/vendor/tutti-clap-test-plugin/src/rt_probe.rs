@@ -155,7 +155,7 @@ static BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_status_mode(mode: u32) {
     STATUS_MODE.store(mode, Ordering::SeqCst);
 }
@@ -203,7 +203,7 @@ static SYSEX_PAYLOAD: [u8; MAX_SYSEX_BYTES] = {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_sysex_output_bytes(count: u32, bytes: u32) {
     SYSEX_COUNT.store(count, Ordering::SeqCst);
     SYSEX_BYTES.store(bytes.min(MAX_SYSEX_BYTES as u32), Ordering::SeqCst);
@@ -229,7 +229,7 @@ static AUDIO_THREAD_LOG_LINE: &CStr = c"tutti-probe logging from the audio threa
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_audio_thread_log_lines(count: u32) {
     LOG_LINES_PER_BLOCK.store(count, Ordering::SeqCst);
 }
@@ -249,18 +249,18 @@ pub(crate) unsafe fn emit_audio_thread_logs(host: *const clap_host) {
     if host.is_null() {
         return;
     }
-    let Some(get_extension) = (*host).get_extension else {
+    let Some(get_extension) = (unsafe { (*host).get_extension }) else {
         return;
     };
-    let ptr = get_extension(host, CLAP_EXT_LOG.as_ptr()) as *const clap_host_log;
+    let ptr = unsafe { get_extension(host, CLAP_EXT_LOG.as_ptr()) } as *const clap_host_log;
     if ptr.is_null() {
         return;
     }
-    let Some(log) = (*ptr).log else {
+    let Some(log) = (unsafe { (*ptr).log }) else {
         return;
     };
     for _ in 0..count {
-        log(host, CLAP_LOG_WARNING, AUDIO_THREAD_LOG_LINE.as_ptr());
+        unsafe { log(host, CLAP_LOG_WARNING, AUDIO_THREAD_LOG_LINE.as_ptr()) };
     }
 }
 
@@ -278,7 +278,7 @@ pub(crate) unsafe fn emit_sysex_output(p: &clap_process) {
     if count == 0 || bytes == 0 || p.out_events.is_null() {
         return;
     }
-    let Some(try_push) = (*p.out_events).try_push else {
+    let Some(try_push) = (unsafe { (*p.out_events).try_push }) else {
         return;
     };
 
@@ -297,10 +297,12 @@ pub(crate) unsafe fn emit_sysex_output(p: &clap_process) {
         };
         // CLAP: the buffer is owned by the caller and valid only for this call,
         // so a host that wants to keep it must copy. That copy is the hazard.
-        try_push(
-            p.out_events,
-            &ev as *const clap_event_midi_sysex as *const clap_event_header,
-        );
+        unsafe {
+            try_push(
+                p.out_events,
+                &ev as *const clap_event_midi_sysex as *const clap_event_header,
+            )
+        };
     }
 }
 
@@ -363,7 +365,7 @@ static WIDE_LAYOUT: AtomicU32 = AtomicU32::new(WideLayout::Off as u32);
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_wide_layout(mode: u32) {
     WIDE_LAYOUT.store(mode, Ordering::SeqCst);
 }
@@ -400,7 +402,7 @@ pub const PARAM_OUTPUT_FIRST_ID: u32 = 10_000;
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_param_output(params: u32, points: u32) {
     PARAM_OUTPUT_OWN.store(0, Ordering::SeqCst);
     PARAM_OUTPUT_PARAMS.store(params, Ordering::SeqCst);
@@ -414,7 +416,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_param_output(params: u32, points:
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_set_param_output_own(points: u32) {
     PARAM_OUTPUT_OWN.store(1, Ordering::SeqCst);
     PARAM_OUTPUT_PARAMS.store(
@@ -437,7 +439,7 @@ pub(crate) unsafe fn emit_param_output(p: &clap_process) {
     if params == 0 || points == 0 || p.out_events.is_null() {
         return;
     }
-    let Some(try_push) = (*p.out_events).try_push else {
+    let Some(try_push) = (unsafe { (*p.out_events).try_push }) else {
         return;
     };
     let frames = p.frames_count.max(1);
@@ -466,10 +468,12 @@ pub(crate) unsafe fn emit_param_output(p: &clap_process) {
                 key: -1,
                 value: f64::from(k) / f64::from(points),
             };
-            try_push(
-                p.out_events,
-                &ev as *const clap_event_param_value as *const clap_event_header,
-            );
+            unsafe {
+                try_push(
+                    p.out_events,
+                    &ev as *const clap_event_param_value as *const clap_event_header,
+                )
+            };
         }
     }
 }
@@ -487,7 +491,7 @@ pub(crate) unsafe fn emit_param_output(p: &clap_process) {
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn tutti_test_plugin_reset_rt_probe() {
     STATUS_MODE.store(StatusMode::Continue as u32, Ordering::SeqCst);
     BLOCK_COUNTER.store(0, Ordering::SeqCst);

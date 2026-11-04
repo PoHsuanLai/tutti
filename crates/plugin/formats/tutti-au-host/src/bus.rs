@@ -250,15 +250,17 @@ pub(crate) struct AuChannelInfo {
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn bus_count(unit: AudioUnit, direction: BusDirection) -> u32 {
-    get_property::<u32>(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT,
-        direction.scope(),
-        // The element index is meaningless for ElementCount itself — the
-        // property describes the whole scope — so it is always 0.
-        0,
-    )
-    .unwrap_or(0)
+    unsafe {
+        get_property::<u32>(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT,
+            direction.scope(),
+            // The element index is meaningless for ElementCount itself — the
+            // property describes the whole scope — so it is always 0.
+            0,
+        )
+        .unwrap_or(0)
+    }
 }
 
 /// The channel layout of bus `bus` on `direction`.
@@ -278,12 +280,14 @@ pub(crate) unsafe fn bus_layout(
     direction: BusDirection,
     bus: u32,
 ) -> Result<ChannelLayout> {
-    let asbd = get_property::<AudioStreamBasicDescription>(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-        direction.scope(),
-        bus,
-    )?;
+    let asbd = unsafe {
+        get_property::<AudioStreamBasicDescription>(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
+            direction.scope(),
+            bus,
+        )
+    }?;
     Ok(ChannelLayout::from(asbd.mChannelsPerFrame))
 }
 
@@ -300,12 +304,14 @@ pub(crate) unsafe fn bus_layout(
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn supported_channel_configs(unit: AudioUnit) -> Vec<AuChannelConfig> {
-    let bytes = match get_property_bytes(
-        unit,
-        K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
-    ) {
+    let bytes = match unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )
+    } {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };

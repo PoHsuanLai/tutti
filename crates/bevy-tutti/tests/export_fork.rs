@@ -733,9 +733,14 @@ mod plugin {
     /// starts from this process too, so a switch set after the live load
     /// reaches the fork only.
     fn probe_env(key: &str, value: impl ToString) {
-        // SAFETY: nextest runs each test in its own process, and nothing in it
-        // reads the environment concurrently; the probe's switches and the
-        // server path are only reachable through it.
+        // SAFETY: nextest runs each test in its own process, but the app, its IPC
+        // threads and a live server exist by the time a later switch is set, so
+        // this is not single-threaded. What makes it sound: the threads in this
+        // process are Rust threads, which read the environment only through
+        // `std::env` (behind std's environment lock), and no plugin code runs in
+        // it. The server reads a switch only at spawn, and `Command::spawn` takes
+        // that same lock to read `environ`; the already-running server never
+        // re-reads it.
         unsafe { std::env::set_var(key, value.to_string()) };
     }
 
@@ -991,7 +996,7 @@ mod plugin {
         let open: Vec<usize> = planes[0]
             .iter()
             .enumerate()
-            .filter(|(_, &s)| s != 0.0)
+            .filter(|&(_, &s)| s != 0.0)
             .map(|(i, _)| i)
             .collect();
         assert!(

@@ -239,10 +239,10 @@ fn same_core_caller_and_helper() {
              {idle} not exercised (wait under {EXERCISED:?})",
             runs.len()
         );
-        if caller == helper {
-            if let Policy::Fifo(_) = caller {
-                fifo_equal = runs;
-            }
+        if caller == helper
+            && let Policy::Fifo(_) = caller
+        {
+            fifo_equal = runs;
         }
     }
     // The fix's property: at equal FIFO priority on one core, the caller's

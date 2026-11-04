@@ -120,14 +120,13 @@ fn handle_with_mock_server(
                     Ok(msg) => msg,
                     Err(_) => break,
                 };
-                if let Some(response) = respond(msg) {
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(response) = respond(msg)
+                    && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         send_bridge_msg(&server_stream, &response)
                     }))
                     .is_err()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
             }
         })

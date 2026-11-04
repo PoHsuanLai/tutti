@@ -683,10 +683,10 @@ impl PolySynth {
     }
 
     fn apply_pitch_bend(&mut self) {
-        if let Some(ref porta) = self.portamento {
-            if porta.is_gliding() {
-                return;
-            }
+        if let Some(ref porta) = self.portamento
+            && porta.is_gliding()
+        {
+            return;
         }
 
         // Multiplicative, matching every other bend site. They must all agree,
@@ -743,16 +743,15 @@ impl PolySynth {
     /// Rendering a whole sub-block at the glide's final pitch would instead
     /// produce a staircase, one step per MIDI sub-block.
     fn control_step(&mut self, frames: usize) {
-        if let Some(ref mut porta) = self.portamento {
-            if porta.is_gliding() {
-                let freq = porta.advance(frames);
-                // Hoisted: neither operand changes inside a step (MIDI is
-                // handled between steps).
-                let bend_multiplier =
-                    (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
-                for voice in self.voices.iter_mut().filter(|v| v.is_active()) {
-                    voice.set_pitch(freq * bend_multiplier);
-                }
+        if let Some(ref mut porta) = self.portamento
+            && porta.is_gliding()
+        {
+            let freq = porta.advance(frames);
+            // Hoisted: neither operand changes inside a step (MIDI is
+            // handled between steps).
+            let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
+            for voice in self.voices.iter_mut().filter(|v| v.is_active()) {
+                voice.set_pitch(freq * bend_multiplier);
             }
         }
 

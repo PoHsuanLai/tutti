@@ -74,7 +74,7 @@ use tutti_vst3_host::{
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
 
-extern "C" {
+unsafe extern "C" {
     fn hc_num_log_events() -> c_int;
     fn hc_log_description(id: c_int) -> *const c_char;
     fn hc_log_severity(id: c_int) -> *const c_char;
@@ -160,7 +160,7 @@ fn findings_from(counts: &[i64]) -> Vec<Finding> {
     counts
         .iter()
         .enumerate()
-        .filter(|(_, &c)| c > 0)
+        .filter(|&(_, &c)| c > 0)
         .map(|(id, &count)| unsafe {
             let d = CStr::from_ptr(hc_log_description(id as c_int));
             let s = CStr::from_ptr(hc_log_severity(id as c_int));
@@ -2242,10 +2242,9 @@ fn plugin_observes_the_offline_mode_we_requested() {
         if let Some(queue) = out
             .parameter_changes
             .get_queue(param_address(K_PARAM_PROCESS_MODE_TAG))
+            && let Some(point) = queue.points.last()
         {
-            if let Some(point) = queue.points.last() {
-                reported = Some(point.value.get());
-            }
+            reported = Some(point.value.get());
         }
     }
 
@@ -2522,10 +2521,11 @@ fn units_enumerate_with_resolvable_parents() {
     let ids: Vec<i32> = units.iter().map(|u| u.id).collect();
     let mut orphans = Vec::new();
     for unit in &units {
-        if let Some(parent) = unit.parent {
-            if parent != tutti_vst3_host::unit_ids::ROOT && !ids.contains(&parent) {
-                orphans.push(format!("unit {} names absent parent {parent}", unit.id));
-            }
+        if let Some(parent) = unit.parent
+            && parent != tutti_vst3_host::unit_ids::ROOT
+            && !ids.contains(&parent)
+        {
+            orphans.push(format!("unit {} names absent parent {parent}", unit.id));
         }
     }
     assert!(

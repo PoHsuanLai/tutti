@@ -72,6 +72,13 @@ members = [
     "crates/bevy-tutti",
 ]
 
+# The edition every member inherits with `edition.workspace = true`, vendored
+# members included, and the minimum Rust they build with (`rust-version`, the
+# pinned toolchain's minor; let chains need 1.88). Pinned here once.
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+
 # Lints every member inherits with `[lints] workspace = true`.
 #
 # `broken_intra_doc_links` is deny, not the default warn: a doc link into a

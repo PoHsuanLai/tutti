@@ -47,10 +47,10 @@ fn main() {
                     let mut batch_kept = 0;
                     for event in 0..64u64 {
                         let category = CATEGORIES[((batch + event) as usize + w) % 3];
-                        if let Some(&n) = sampling.keep_one_in.get(category) {
-                            if (batch * 64 + event).is_multiple_of(n) {
-                                batch_kept += 1;
-                            }
+                        if let Some(&n) = sampling.keep_one_in.get(category)
+                            && (batch * 64 + event).is_multiple_of(n)
+                        {
+                            batch_kept += 1;
                         }
                     }
                     kept.fetch_add(batch_kept, Ordering::Relaxed);

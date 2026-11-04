@@ -258,10 +258,10 @@ impl Sending<'_, '_> {
         let Some(at) = at else { return };
         self.restated = Some(at);
         for kind in [HarmonyKind::Chord, HarmonyKind::Scale] {
-            if let Some(h) = Self::in_force(changes, beat, frames_per_beat, kind) {
-                if !changed_only || *self.sent.slot(kind) != Some(h) {
-                    self.send(at, h);
-                }
+            if let Some(h) = Self::in_force(changes, beat, frames_per_beat, kind)
+                && (!changed_only || *self.sent.slot(kind) != Some(h))
+            {
+                self.send(at, h);
             }
         }
     }

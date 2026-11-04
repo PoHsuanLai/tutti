@@ -157,10 +157,10 @@ pub fn ci_ingest_system(
             send_ci(&sender, &feedback);
         }
         // A peer whose identity was not already recorded → surface it.
-        if let Some(peer) = ci.initiator.discovered() {
-            if before.as_ref() != Some(peer) {
-                discovered.write(CiDeviceDiscovered(peer.clone()));
-            }
+        if let Some(peer) = ci.initiator.discovered()
+            && before.as_ref() != Some(peer)
+        {
+            discovered.write(CiDeviceDiscovered(peer.clone()));
         }
     }
 }
@@ -230,10 +230,8 @@ pub fn endpoint_ingest_system(
     for InboundEndpointReply(event) in inbound.read() {
         let had = endpoint.inquiry.result().is_some();
         endpoint.inquiry.ingest(event);
-        if !had {
-            if let Some(result) = endpoint.inquiry.result() {
-                discovered.write(EndpointDiscovered(result.clone()));
-            }
+        if !had && let Some(result) = endpoint.inquiry.result() {
+            discovered.write(EndpointDiscovered(result.clone()));
         }
     }
 }

@@ -786,7 +786,7 @@ impl Editor {
         // was for the unit this one supersedes.
         self.fades.remove(&key);
         self.latency_cuts.remove(&key);
-        let gen = {
+        let generation = {
             let g = self.next_gen.entry(key).or_insert(0);
             let this = *g;
             *g += 1;
@@ -804,13 +804,13 @@ impl Editor {
             .with_tail(shape.tail);
         spec.params = params;
         self.spec.topology.nodes.insert(key, spec);
-        self.spec.generations.insert(key, gen);
+        self.spec.generations.insert(key, generation);
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
         // The unit's fork source, or none: a unit that hands none over makes
         // the key unforkable, even if the one it supersedes was.
         match fork {
-            Some(fork) => self.forks.insert(key, (gen, fork)),
+            Some(fork) => self.forks.insert(key, (generation, fork)),
             None => self.forks.remove(&key),
         };
     }
@@ -947,10 +947,10 @@ impl Editor {
         // later commit with nothing else to send is the plain comparison,
         // not a validate. (A committed spec without the node differs in its
         // topology anyway, and gets a full commit.)
-        if let Some((committed, _)) = &mut self.committed {
-            if committed.topology.nodes.contains_key(&at.node) {
-                committed.set_param_range(at, range);
-            }
+        if let Some((committed, _)) = &mut self.committed
+            && committed.topology.nodes.contains_key(&at.node)
+        {
+            committed.set_param_range(at, range);
         }
         Ok(())
     }
@@ -1072,7 +1072,9 @@ impl Editor {
     /// Where `key`'s forks come from, and the generation of the unit that
     /// handed it over, if it is forkable.
     pub(crate) fn fork_source(&self, key: NodeKey) -> Option<(u32, &dyn ForkSource)> {
-        self.forks.get(&key).map(|(gen, f)| (*gen, f.as_ref()))
+        self.forks
+            .get(&key)
+            .map(|(generation, f)| (*generation, f.as_ref()))
     }
 
     /// Watch `health` for the forked unit at `key` (`Editor::fork` only).
@@ -1283,7 +1285,7 @@ impl Editor {
                 && base
                     .as_ref()
                     .and_then(|b| b.unit(key))
-                    .is_some_and(|u| u.gen == spec.generation(key));
+                    .is_some_and(|u| u.generation == spec.generation(key));
             if !survives {
                 continue;
             }
@@ -1309,7 +1311,7 @@ impl Editor {
                 .iter()
                 .map(|u| Placement {
                     key: u.key,
-                    gen: u.gen,
+                    generation: u.generation,
                     idx: u.idx,
                 })
                 .collect(),
@@ -1408,9 +1410,9 @@ impl Editor {
             .filter_map(|&key| {
                 let now = plan.unit(key)?;
                 let was = base?.unit(key)?;
-                (was.gen == now.gen && was.idx == now.idx).then_some(Placement {
+                (was.generation == now.generation && was.idx == now.idx).then_some(Placement {
                     key,
-                    gen: now.gen,
+                    generation: now.generation,
                     idx: now.idx,
                 })
             })

@@ -244,7 +244,8 @@ impl IParameterChangesTrait for ParameterChangesImpl {
         if id.is_null() {
             return std::ptr::null_mut();
         }
-        let param_id = *id;
+        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+        let param_id = unsafe { *id };
         let (Some(queues), Some(mut live)) = (self.queues.try_borrow(), self.live.try_borrow_mut())
         else {
             self.count_dropped();
@@ -269,7 +270,7 @@ impl IParameterChangesTrait for ParameterChangesImpl {
             }
         };
         if !index.is_null() {
-            *index = i32::try_from(at).unwrap_or(i32::MAX);
+            unsafe { *index = i32::try_from(at).unwrap_or(i32::MAX) };
         }
         queues[at]
             .as_com_ref::<IParamValueQueue>()

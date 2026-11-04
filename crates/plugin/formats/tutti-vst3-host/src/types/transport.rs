@@ -191,10 +191,10 @@ pub fn to_process_context(
             t.position.samples.unwrap_or(0)
         };
     }
-    if wants(need::NEED_SYSTEM_TIME) {
-        if let Some(ns) = t.system_time_ns {
-            ctx.systemTime = ns;
-        }
+    if wants(need::NEED_SYSTEM_TIME)
+        && let Some(ns) = t.system_time_ns
+    {
+        ctx.systemTime = ns;
     }
     if wants(need::NEED_PROJECT_TIME_MUSIC) {
         ctx.projectTimeMusic = t.position.quarters;
@@ -222,10 +222,10 @@ pub fn to_process_context(
         ctx.timeSigNumerator = t.timing.signature.beats_per_bar().into();
         ctx.timeSigDenominator = t.timing.signature.note_value().into();
     }
-    if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) {
-        if let Some(frames) = to_clock {
-            ctx.samplesToNextClock = frames;
-        }
+    if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK)
+        && let Some(frames) = to_clock
+    {
+        ctx.samplesToNextClock = frames;
     }
     // `smpteOffsetSubframes` / `frameRate` (kNeedFrameRate) and the chord field
     // (kNeedChord) are not sourced from TransportInfo yet; left zeroed with

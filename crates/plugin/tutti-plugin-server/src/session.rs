@@ -301,10 +301,10 @@ impl Session {
                 // (`Features::RENDER_MODE`), not a per-call outcome, and the
                 // host already has it. Logged rather than dropped so a refusal
                 // is greppable when a bounce sounds like the live path.
-                if let Some(plugin) = self.plugin.as_mut() {
-                    if !plugin.instance_mut().set_render_mode(mode) {
-                        tracing::debug!(?mode, "plugin did not accept the render mode");
-                    }
+                if let Some(plugin) = self.plugin.as_mut()
+                    && !plugin.instance_mut().set_render_mode(mode)
+                {
+                    tracing::debug!(?mode, "plugin did not accept the render mode");
                 }
                 Ok(Reaction::None)
             }

@@ -2335,7 +2335,7 @@ mod tests {
             "channels {:?} never produced output through the stretch path",
             seen.iter()
                 .enumerate()
-                .filter(|(_, &b)| !b)
+                .filter(|&(_, &b)| !b)
                 .map(|(c, _)| c)
                 .collect::<Vec<_>>()
         );

@@ -99,49 +99,49 @@ impl ApplicationHandler for App {
                               send already-open redraws to the catch-all arm instead \
                               of this deliberate no-op"
                 )]
-                if !self.editor_open {
-                    if let (Some(window), Some(plugin)) = (&self.window, &mut self.plugin) {
-                        // Get the native window handle
-                        let handle = match window.window_handle() {
-                            Ok(h) => h,
-                            Err(e) => {
-                                eprintln!("Failed to get window handle: {:?}", e);
-                                return;
-                            }
-                        };
+                if !self.editor_open
+                    && let (Some(window), Some(plugin)) = (&self.window, &mut self.plugin)
+                {
+                    // Get the native window handle
+                    let handle = match window.window_handle() {
+                        Ok(h) => h,
+                        Err(e) => {
+                            eprintln!("Failed to get window handle: {:?}", e);
+                            return;
+                        }
+                    };
 
-                        let raw_handle = handle.as_raw();
+                    let raw_handle = handle.as_raw();
 
-                        // Extract the native view pointer
-                        let parent: *mut c_void = match raw_handle {
-                            #[cfg(target_os = "macos")]
-                            RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
-                            #[cfg(target_os = "windows")]
-                            RawWindowHandle::Win32(h) => h.hwnd.get() as *mut c_void,
-                            #[cfg(target_os = "linux")]
-                            RawWindowHandle::Xlib(h) => h.window as *mut c_void,
-                            _ => {
-                                eprintln!("Unsupported window handle type");
-                                return;
-                            }
-                        };
+                    // Extract the native view pointer
+                    let parent: *mut c_void = match raw_handle {
+                        #[cfg(target_os = "macos")]
+                        RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
+                        #[cfg(target_os = "windows")]
+                        RawWindowHandle::Win32(h) => h.hwnd.get() as *mut c_void,
+                        #[cfg(target_os = "linux")]
+                        RawWindowHandle::Xlib(h) => h.window as *mut c_void,
+                        _ => {
+                            eprintln!("Unsupported window handle type");
+                            return;
+                        }
+                    };
 
-                        println!("Opening plugin editor...");
-                        let handle = unsafe { WindowHandle::from_raw(parent) };
-                        let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
-                        match plugin.open_editor(handle, scale) {
-                            Ok(size) => {
-                                println!("Editor opened: {}x{}", size.width, size.height);
-                                // Resize window to fit editor
-                                let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
-                                    size.width,
-                                    size.height,
-                                ));
-                                self.editor_open = true;
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to open editor: {:?}", e);
-                            }
+                    println!("Opening plugin editor...");
+                    let handle = unsafe { WindowHandle::from_raw(parent) };
+                    let scale = ContentScale::new(window.scale_factor()).unwrap_or_default();
+                    match plugin.open_editor(handle, scale) {
+                        Ok(size) => {
+                            println!("Editor opened: {}x{}", size.width, size.height);
+                            // Resize window to fit editor
+                            let _ = window.request_inner_size(winit::dpi::LogicalSize::new(
+                                size.width,
+                                size.height,
+                            ));
+                            self.editor_open = true;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to open editor: {:?}", e);
                         }
                     }
                 }

@@ -402,14 +402,14 @@ impl CiResponder {
 
         // §11.1 makes partial/full/notify Responder-only. Arriving here they are
         // inbound *to* the responder, so an initiator sent one out of turn.
-        if let Some(cmd) = command {
-            if !cmd.is_valid_from(true) {
-                return self.nak_with(
-                    dest,
-                    tutti_midi_types::ci::property::SUB_ID2_SUBSCRIPTION,
-                    Nak::STATUS_MESSAGE_NOT_SUPPORTED,
-                );
-            }
+        if let Some(cmd) = command
+            && !cmd.is_valid_from(true)
+        {
+            return self.nak_with(
+                dest,
+                tutti_midi_types::ci::property::SUB_ID2_SUBSCRIPTION,
+                Nak::STATUS_MESSAGE_NOT_SUPPORTED,
+            );
         }
 
         // A `start` names a resource, and a peer can only be subscribed to a
@@ -553,10 +553,10 @@ impl CiInitiator {
                 state: ProfileState::InquiryReply { enabled, disabled },
                 header,
             } => {
-                if let Some(dev) = self.discovered.as_mut() {
-                    if dev.muid == header.source {
-                        dev.profiles = enabled.iter().chain(disabled).copied().collect();
-                    }
+                if let Some(dev) = self.discovered.as_mut()
+                    && dev.muid == header.source
+                {
+                    dev.profiles = enabled.iter().chain(disabled).copied().collect();
                 }
                 Vec::new()
             }

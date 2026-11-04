@@ -390,10 +390,11 @@ impl ClickNode {
         meter: &MeterMap,
         beat: Beat,
     ) {
-        if let Some(onset) = *last_click_onset {
-            if beat >= onset && beat < *latched_until {
-                return;
-            }
+        if let Some(onset) = *last_click_onset
+            && beat >= onset
+            && beat < *latched_until
+        {
+            return;
         }
 
         let position = meter.bar_at(beat);
@@ -836,10 +837,10 @@ mod tests {
         let mut beat = 0.0;
         while beat < 14.5 {
             let _ = frame(&mut node, ROLLING, beat);
-            if let Some(onset) = node.last_click_onset {
-                if onsets.last() != Some(&onset) {
-                    onsets.push(onset);
-                }
+            if let Some(onset) = node.last_click_onset
+                && onsets.last() != Some(&onset)
+            {
+                onsets.push(onset);
             }
             // Step by whichever notated beat is in force here.
             beat += if beat < 10.5 { 0.5 } else { 1.0 };

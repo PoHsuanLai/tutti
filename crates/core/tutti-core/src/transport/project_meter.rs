@@ -237,10 +237,10 @@ impl MeterSlot {
     /// already followed changes nothing. Control thread.
     pub fn follow(&self, meter: ProjectMeter) {
         let mut follows = self.follows();
-        if let Some(old) = follows.take() {
-            if !old.ptr_eq(&meter) {
-                old.forget(&self.0.cell);
-            }
+        if let Some(old) = follows.take()
+            && !old.ptr_eq(&meter)
+        {
+            old.forget(&self.0.cell);
         }
         meter.attach(&self.0.cell);
         *follows = Some(meter);

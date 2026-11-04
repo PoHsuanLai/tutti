@@ -1,7 +1,8 @@
 [package]
 name = "tutti-export"
 version = "0.0.1"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "Offline audio export and rendering for Tutti audio engine"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"

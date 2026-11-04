@@ -56,14 +56,13 @@ impl Node for Burst {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         for &(f, port, tag) in &self.plan {
-            if let Some(at) = cx.env.offset_of(Frame(f)) {
-                if io
+            if let Some(at) = cx.env.offset_of(Frame(f))
+                && io
                     .event_out(port as usize)
                     .push(Event::midi(at, [tag, 0, 0, 0]))
                     .is_err()
-                {
-                    self.refused.fetch_add(1, Ordering::Relaxed);
-                }
+            {
+                self.refused.fetch_add(1, Ordering::Relaxed);
             }
         }
         Status::Silent

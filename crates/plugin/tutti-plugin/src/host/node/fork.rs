@@ -258,14 +258,14 @@ impl ForkHealth for ForkWatch {
         if self.server_died() {
             return lock(&self.died).clone().map(crashed);
         }
-        if let Some(bridge) = self.bridge.upgrade() {
-            if bridge.is_crashed() {
-                return Some(crashed(
-                    bridge
-                        .crash_cause()
-                        .unwrap_or_else(|| "no cause latched".to_string()),
-                ));
-            }
+        if let Some(bridge) = self.bridge.upgrade()
+            && bridge.is_crashed()
+        {
+            return Some(crashed(
+                bridge
+                    .crash_cause()
+                    .unwrap_or_else(|| "no cause latched".to_string()),
+            ));
         }
         if let Some((rate, reason)) = lock(&self.refusal).clone() {
             let cause = PluginRenderFault::RateRefused { rate, reason };

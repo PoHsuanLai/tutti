@@ -145,10 +145,10 @@ fn an_upgrade_excludes_another_reader() {
         });
         let held = Held::new(1);
         let mut v = split.view(&held);
-        if v.try_get(0).is_ok() {
-            if let Ok(c) = v.try_get_mut(0) {
-                c[0].bump();
-            }
+        if v.try_get(0).is_ok()
+            && let Ok(c) = v.try_get_mut(0)
+        {
+            c[0].bump();
         }
         drop(v);
         r.join().unwrap();

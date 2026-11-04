@@ -134,7 +134,7 @@ impl AuInstance {
         block_size: u32,
     ) -> Result<Self> {
         Ok(AuInstance {
-            state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
+            state: State::Loaded(unsafe { AuLoaded::new(component, sample_rate, block_size) }?),
             editor: None,
             sysex: Default::default(),
         })
@@ -153,7 +153,7 @@ impl AuInstance {
     /// against what was requested to detect it.
     pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
         Ok(AuInstance {
-            state: State::Loaded(AuLoaded::new_with_config(component, config)?),
+            state: State::Loaded(unsafe { AuLoaded::new_with_config(component, config) }?),
             editor: None,
             sysex: Default::default(),
         })
@@ -192,7 +192,8 @@ impl AuInstance {
         preferred: EditorSize,
     ) -> Result<EditorSize> {
         self.close_editor();
-        let editor = crate::editor::AuEditor::open(self.raw_unit(), Some(parent), preferred)?;
+        let editor =
+            unsafe { crate::editor::AuEditor::open(self.raw_unit(), Some(parent), preferred) }?;
         let size = editor.editor_size();
         self.editor = Some(editor);
         Ok(size)
@@ -2141,7 +2142,7 @@ impl AuLoaded {
         sample_rate: f64,
         block_size: u32,
     ) -> Result<Self> {
-        let handle = AuHandle::new(component)?;
+        let handle = unsafe { AuHandle::new(component) }?;
 
         let probed = StreamConfig::probe(&handle);
         // The stereo floor lives HERE, in the layout-less constructor, because
@@ -2177,7 +2178,7 @@ impl AuLoaded {
     /// way to tell, and it is why `apply` returns the effective layout rather
     /// than `()`.
     pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
-        Self::with_layout(AuHandle::new(component)?, config)
+        Self::with_layout(unsafe { AuHandle::new(component) }?, config)
     }
 
     /// Shared tail of both constructors: apply the config, verify the block size
@@ -2277,24 +2278,24 @@ impl AuLoaded {
         // that has no input element is a property error, and the `?` aborted
         // init entirely.
         let scratch_ptr: *mut RenderScratch = &*ready.scratch as *const RenderScratch as *mut _;
-        if ready.loaded.config.channels.has_input {
-            if let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) } {
-                // The AU *is* initialized at this point, so backing out has to
-                // undo that too — not merely drop the half-built `AuActive`.
-                // Route through `uninitialize`, which owns the ordering
-                // invariant (uninitialize before the boxed scratch is freed)
-                // rather than duplicating it here.
-                //
-                // The reported error is always `e`, the install failure: it is
-                // what actually went wrong, and a follow-on
-                // `AudioUnitUninitialize` complaint would only describe the
-                // cleanup. If that cleanup also failed there is no `Loaded` AU
-                // to hand back — dropping the `AuActive` still disposes the unit.
-                return Err(match ready.uninitialize() {
-                    Ok(loaded) => (Some(loaded), e),
-                    Err((_ready, _unwind_err)) => (None, e),
-                });
-            }
+        if ready.loaded.config.channels.has_input
+            && let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) }
+        {
+            // The AU *is* initialized at this point, so backing out has to
+            // undo that too — not merely drop the half-built `AuActive`.
+            // Route through `uninitialize`, which owns the ordering
+            // invariant (uninitialize before the boxed scratch is freed)
+            // rather than duplicating it here.
+            //
+            // The reported error is always `e`, the install failure: it is
+            // what actually went wrong, and a follow-on
+            // `AudioUnitUninitialize` complaint would only describe the
+            // cleanup. If that cleanup also failed there is no `Loaded` AU
+            // to hand back — dropping the `AuActive` still disposes the unit.
+            return Err(match ready.uninitialize() {
+                Ok(loaded) => (Some(loaded), e),
+                Err((_ready, _unwind_err)) => (None, e),
+            });
         }
         Ok(ready)
     }
@@ -2494,13 +2495,15 @@ impl AuActive {
             inputProc: Some(au_input_render_callback),
             inputProcRefCon: scratch_ptr as *mut c_void,
         };
-        set_property(
-            self.loaded.handle.raw_unit(),
-            K_AUDIO_UNIT_PROPERTY_SET_RENDER_CALLBACK,
-            K_AUDIO_UNIT_SCOPE_INPUT,
-            0,
-            &callback,
-        )
+        unsafe {
+            set_property(
+                self.loaded.handle.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_SET_RENDER_CALLBACK,
+                K_AUDIO_UNIT_SCOPE_INPUT,
+                0,
+                &callback,
+            )
+        }
     }
 
     /// Borrows the underlying [`AuHandle`].
@@ -2595,7 +2598,7 @@ unsafe extern "C" fn au_input_render_callback(
     // (shared, read-only) and the AU's own buffers. A panic mid-copy can leave
     // a partially-written output buffer, which is a glitched block — not a
     // broken invariant — so there is nothing for unwind safety to protect.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         render_input(in_ref_con, in_number_frames, io_data)
     }));
     match result {
@@ -2629,10 +2632,10 @@ unsafe fn render_input(
         return -1;
     }
 
-    let scratch = &*(in_ref_con as *const RenderScratch);
+    let scratch = unsafe { &*(in_ref_con as *const RenderScratch) };
     let requested = in_number_frames as usize;
 
-    for (ch, buf) in iter_buffers_mut(io_data).enumerate() {
+    for (ch, buf) in unsafe { iter_buffers_mut(io_data) }.enumerate() {
         // Never trust the buffer the AU handed over. `mData` may be null
         // (the AU asking the host to supply its own pointer) and `mDataByteSize` may
         // describe FEWER frames than `in_number_frames`. Writing
@@ -2656,7 +2659,7 @@ unsafe fn render_input(
             continue;
         }
 
-        let dst = std::slice::from_raw_parts_mut(buf.mData as *mut f32, frames);
+        let dst = unsafe { std::slice::from_raw_parts_mut(buf.mData as *mut f32, frames) };
         match scratch.inputs.get(ch) {
             Some(src) => {
                 let n = frames.min(src.len());

@@ -197,7 +197,8 @@ impl<T: Vst3Sample> BusBuffers<T> {
         // continues from where bus 0 stopped — so it's threaded through each call.
         let mut next_live = 0usize;
         for bus_idx in 0..self.ptr_tables.len() {
-            next_live = self.fill_bus(bus_idx, live, live_len, next_live, aux_ptr, zero_aux);
+            next_live =
+                unsafe { self.fill_bus(bus_idx, live, live_len, next_live, aux_ptr, zero_aux) };
         }
         self.bus_arrays.as_mut_ptr()
     }
@@ -244,7 +245,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
             let is_real_channel = slot_idx < bus_ch; // vs a MIN_PTR_COUNT padding slot
             let has_live_audio = next_live < live_len; // flat list not yet exhausted
             *slot = if is_real_channel && has_live_audio {
-                let channel = *live.add(next_live);
+                let channel = unsafe { *live.add(next_live) };
                 next_live += 1;
                 channel
             } else {

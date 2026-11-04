@@ -433,13 +433,13 @@ fn handle_set_stream_loop(
     };
     apply_mapping(writer, new, config.seek_crossfade_frames, rate);
 
-    if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        if let Some(link) = plan.link.as_mut() {
-            link.set_loop(recorded.map(|(range, crossfade_frames)| LoopConfig {
-                range,
-                crossfade_frames,
-            }));
-        }
+    if let Some(mut plan) = shared.plans.get_mut(&channel_index)
+        && let Some(link) = plan.link.as_mut()
+    {
+        link.set_loop(recorded.map(|(range, crossfade_frames)| LoopConfig {
+            range,
+            crossfade_frames,
+        }));
     }
 }
 
@@ -467,10 +467,10 @@ pub(super) fn handle_seek_stream(
         return;
     };
     link.consumer.request_seek(file_position);
-    if !link.consumer.placed() {
-        if let Some(writer) = local.regions.get_mut(link.region_id) {
-            writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
-        }
+    if !link.consumer.placed()
+        && let Some(writer) = local.regions.get_mut(link.region_id)
+    {
+        writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
     }
 }
 

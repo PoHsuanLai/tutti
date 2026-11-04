@@ -31,7 +31,7 @@ impl PluginPtr {
     /// Caller must ensure the plugin has not been destroyed yet and is
     /// being called from a thread permitted by the CLAP spec.
     pub unsafe fn as_ref(&self) -> &clap_plugin {
-        &*self.ptr
+        unsafe { &*self.ptr }
     }
 }
 

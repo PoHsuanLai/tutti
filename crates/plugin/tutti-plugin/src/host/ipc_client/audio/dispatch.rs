@@ -50,6 +50,11 @@ const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long the bridge waits for a plugin to re-activate at a new rate.
+/// Longer than [`PARAM_TIMEOUT`]: it tears down and rebuilds the plugin's
+/// processing, which a large instrument can take seconds to do.
+const RATE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long [`Owed::settle`] waits to find out whether an owed reply has
 /// *started* arriving.
 ///
@@ -506,6 +511,41 @@ pub(super) fn handle(
         }
         Command::SetSampleRate { rate } => {
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
+            // Wait for the answer: the plugin's re-activation is the slowest
+            // thing the bridge asks of it, and what it says decides whether
+            // the next block may be sent. A refusal is connection-level on
+            // purpose: the plugin is not running at `rate`, so it is dead to
+            // the host exactly as a crashed one is, with the reason as its
+            // cause (`crash` latches it).
+            //
+            // Replies owed from abandoned blocks can still be ahead of the
+            // answer on the stream; they are taken as `settle` takes them.
+            loop {
+                match recv_reply(stream, inbox, RATE_TIMEOUT, &mut owed.partial)? {
+                    BridgeMessage::AudioProcessed { seq, midi_out, .. } if owed.count > 0 => {
+                        owed.count -= 1;
+                        let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
+                        channels
+                            .push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
+                        channels.note_settled(1);
+                    }
+                    BridgeMessage::Error { .. } if owed.count > 0 => {
+                        owed.count -= 1;
+                        channels.note_settled(1);
+                    }
+                    BridgeMessage::SampleRateSet { error: None, .. } => break,
+                    BridgeMessage::SampleRateSet {
+                        rate,
+                        error: Some(reason),
+                    } => return Err(BridgeError::SampleRateRefused { rate, reason }),
+                    other => {
+                        return Err(BridgeError::UnexpectedMessage {
+                            expected: "SampleRateSet",
+                            got: format!("{other:?}"),
+                        })
+                    }
+                }
+            }
         }
         Command::SetRenderMode { mode } => {
             ipc::send(stream, &HostMessage::SetRenderMode { mode })?;

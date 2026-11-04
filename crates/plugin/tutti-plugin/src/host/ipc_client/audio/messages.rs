@@ -432,7 +432,8 @@ pub enum PluginInvalidation {
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.
     Reloaded,
-    /// The plugin died and is not coming back — unwire it.
+    /// The plugin died, or cannot run at the engine's sample rate, and is not
+    /// coming back — unwire it.
     ///
     /// Structural rather than cosmetic, and terminal rather than a request to
     /// re-read: every other variant asks the host to *update* its plan, this one

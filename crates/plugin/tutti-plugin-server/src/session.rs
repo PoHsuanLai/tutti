@@ -271,17 +271,26 @@ impl Session {
             }
             M::SetSampleRate { rate } => {
                 // The clock follows the rate the plugin runs at: a refusal
-                // leaves both where they were, and the reason is said here
-                // because a silent discard is how a refused rate becomes an
-                // unexplained pitch shift.
-                match self.plugin.as_mut() {
+                // leaves both where they were. The host is told either way,
+                // because it is already at `rate` and a refused plugin renders
+                // at the wrong rate or not at all; it stops the plugin.
+                let error = match self.plugin.as_mut() {
                     Some(plugin) => match plugin.instance_mut().set_sample_rate(rate) {
-                        Ok(()) => self.clock.sample_rate = rate,
-                        Err(e) => tracing::warn!(requested = rate, "sample rate not applied: {e}"),
+                        Ok(()) => {
+                            self.clock.sample_rate = rate;
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!(requested = rate, "sample rate not applied: {e}");
+                            Some(e.to_string())
+                        }
                     },
-                    None => self.clock.sample_rate = rate,
-                }
-                Ok(Reaction::None)
+                    None => {
+                        self.clock.sample_rate = rate;
+                        None
+                    }
+                };
+                Ok(BridgeMessage::SampleRateSet { rate, error }.into())
             }
             M::SetRenderMode { mode } => {
                 // The plugin's answer is deliberately not returned to the host:
@@ -733,8 +742,12 @@ mod tests {
         let mut s = Session::new();
         let r = s
             .handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
-        assert_none(r);
+            .unwrap()
+            .into_reply();
+        assert!(matches!(
+            r,
+            BridgeMessage::SampleRateSet { rate, error: None } if rate == 96000.0
+        ));
         assert_eq!(s.clock.sample_rate, 96000.0);
     }
 
@@ -855,6 +868,7 @@ mod tests {
     /// Mutation (run): set `self.clock.sample_rate = rate` before the
     /// `set_sample_rate` call in `Session::handle` → the second assertion sees
     /// 48 kHz → fails. Make the `Ok` arm skip the assignment → the first
+    /// assertion fails. Reply `error: None` on the `Err` arm → the refusal
     /// assertion fails.
     #[test]
     #[cfg(feature = "clap")]
@@ -866,14 +880,30 @@ mod tests {
         let (mut s, _shm) = load_clap("clock_follows_rate", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
 
-        s.handle(HostMessage::SetSampleRate { rate: 48000.0 })
-            .unwrap();
+        let accepted = s
+            .handle(HostMessage::SetSampleRate { rate: 48000.0 })
+            .unwrap()
+            .into_reply();
+        assert!(
+            matches!(accepted, BridgeMessage::SampleRateSet { error: None, .. }),
+            "{accepted:?}"
+        );
         assert_eq!(s.clock.sample_rate, 48000.0, "accepted");
         assert!(s.drain_async_events().is_empty(), "nothing changed");
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
-        s.handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
+        let refused = s
+            .handle(HostMessage::SetSampleRate { rate: 96000.0 })
+            .unwrap()
+            .into_reply();
+        assert!(
+            matches!(
+                &refused,
+                BridgeMessage::SampleRateSet { rate, error: Some(e) }
+                    if *rate == 96000.0 && !e.is_empty()
+            ),
+            "the host is told, with a reason: {refused:?}"
+        );
         assert_eq!(s.clock.sample_rate, 48000.0, "refused: the clock stays");
         assert!(
             s.drain_async_events()
@@ -1311,8 +1341,12 @@ mod tests {
         let (mut s, _shm) = load_clap("set_sr_clap", SampleFormat::Float32);
         let r = s
             .handle(HostMessage::SetSampleRate { rate: 96000.0 })
-            .unwrap();
-        assert_none(r);
+            .unwrap()
+            .into_reply();
+        assert!(matches!(
+            r,
+            BridgeMessage::SampleRateSet { error: None, .. }
+        ));
         assert_eq!(s.clock.sample_rate, 96000.0);
     }
 

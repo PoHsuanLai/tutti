@@ -89,7 +89,9 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamAddress,
     },
-    /// Re-rate the plugin. Deactivates and reactivates it server-side.
+    /// Re-rate the plugin. Deactivates and reactivates it server-side, and is
+    /// answered by [`BridgeMessage::SampleRateSet`]: the host must learn
+    /// whether the plugin runs at the rate before it renders another block.
     SetSampleRate {
         /// Sample rate in Hz, as `f64` because plugin ABIs denominate it so.
         rate: f64,
@@ -387,6 +389,22 @@ pub enum BridgeMessage {
     /// it and a caller wants to show the user *why* their preset did not load.
     StateLoaded {
         /// The plugin's refusal, or `None` on success.
+        error: Option<String>,
+    },
+    /// Answers a `HostMessage::SetSampleRate`: the plugin runs at the rate, or
+    /// it does not.
+    ///
+    /// A refusal is not "keep the old rate": the plugin may have rolled back to
+    /// the rate it had or been left deactivated, and the host's blocks are
+    /// already at the new one, so neither renders the audio the host asked for.
+    /// The host treats the plugin as dead rather than hear it at the wrong
+    /// pitch.
+    SampleRateSet {
+        /// The rate that was asked for, echoed so a reply read late is never
+        /// attributed to a later request.
+        rate: f64,
+        /// The plugin's reason, formatted subprocess-side, or `None` when it
+        /// now runs at `rate`.
         error: Option<String>,
     },
 }

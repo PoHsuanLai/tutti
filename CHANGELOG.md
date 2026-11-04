@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — a plugin that refuses the engine's sample rate is stopped and reported dead, not left rendering at the wrong rate
+
+A hosted plugin that refused a rate change (CLAP `activate` returning false)
+rolled back to its old rate or stayed deactivated, while the host's blocks
+and transport were at the new rate: the audio was pitch-shifted or silent
+and nothing said why. The server now answers `HostMessage::SetSampleRate`
+with the new `BridgeMessage::SampleRateSet { rate, error }`; a refusal makes
+the bridge latch `BridgeError::SampleRateRefused` as the crash cause, so
+`PluginHandle::status()` is `PluginStatus::Dead { cause }` (the cause names
+the rate and the plugin's reason), `PluginInvalidation::Crashed` fires and
+the node renders silence, as for a plugin that aborted. Recovery is loading a
+replacement, as after a crash.
+
+Migration: `PROTOCOL_VERSION` is 20 (rebuild `plugin-server` with the host).
+A host that matched `BridgeMessage` exhaustively adds `SampleRateSet`; one
+that matched `BridgeError` adds `SampleRateRefused`. `PluginClient`'s
+`set_sample_rate_rt` is unchanged. `TUTTI_CLAP_PROBE_REFUSE_RATE` makes the
+reference plugin refuse one rate out of process.
+
 ### Changed — `clap_live` tolerates one bounded scheduler stall
 
 The paced `clap_live` tests allow one contiguous silent run, no longer than

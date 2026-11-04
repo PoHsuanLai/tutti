@@ -59,6 +59,7 @@ use support::corpus::{
     render, silence, DELAY, DYNAMICS, EFFECTS, INSTRUMENTS, MATRIX_REVERB, NO_TAIL_EFFECTS,
     TAILLESS_UNITS, TAIL_EFFECTS, TAIL_UNSUPPORTED,
 };
+use support::probe_au::{last_host_pull, Misbehaviour, NOT_CALLED};
 
 use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
@@ -469,7 +470,8 @@ fn the_locate_flag_is_consumed_exactly_once() {
     let state = TransportState::new();
     let procs = TestProcs::install(&state);
 
-    // No locate yet.
+    // A transport is published, but no locate.
+    state.set_transport(&TransportInfo::new(), false);
     assert!(!procs.transport_v1().changed, "no locate published yet");
 
     state.set_transport(&TransportInfo::new().with_playing(true), true);
@@ -587,6 +589,200 @@ fn callbacks_refuse_a_null_user_data() {
     );
     assert_eq!(beat, 0.0, "nothing may be written when there is no state");
     assert_eq!(tempo, 0.0);
+}
+
+/// `kAudioUnitErr_CannotDoInCurrentContext`.
+const CANNOT_DO: i32 = -10863;
+
+/// Until the host publishes a transport every proc answers
+/// `kAudioUnitErr_CannotDoInCurrentContext` and writes nothing; the first
+/// `set_transport` turns all four to `noErr`.
+///
+/// The header designates that status for "the host cannot provide the
+/// requested information". Answering `noErr` with a made-up 120 BPM, beat 0
+/// instead would have a tempo-synced AU lock to a tempo nobody chose. Nothing
+/// is consumed either: a pending locate must still be there for the first real
+/// answer. `set_samples_to_next_beat` alone is not a publish.
+///
+/// Mutation: drop the `is_published` check in `guarded` → the pre-publish
+/// statuses read 0 → fails. Mutation: `set_transport` without its
+/// `published.store` → the post-publish statuses read -10863 → fails.
+/// Mutation: `set_samples_to_next_beat` also storing `published` → the
+/// "still unpublished" assertion fails.
+#[test]
+fn every_proc_answers_cannot_do_until_the_host_publishes() {
+    let state = TransportState::new();
+    let procs = TestProcs::install(&state);
+    assert!(!state.is_published());
+
+    let probe = |procs: &TestProcs| unsafe {
+        let (mut beat, mut tempo) = (-1.0f64, -1.0f64);
+        let (mut delta, mut num, mut den, mut downbeat) = (7u32, 7.0f32, 7u32, -1.0f64);
+        let (mut playing, mut recording, mut changed, mut cycling) = (9u8, 9u8, 9u8, 9u8);
+        let (mut sample, mut c0, mut c1) = (-1.0f64, -1.0f64, -1.0f64);
+        let statuses = [
+            (procs.beat_and_tempo_fn)(procs.user_data, &mut beat, &mut tempo),
+            (procs.musical_time_fn)(
+                procs.user_data,
+                &mut delta,
+                &mut num,
+                &mut den,
+                &mut downbeat,
+            ),
+            (procs.transport_v1_fn)(
+                procs.user_data,
+                &mut playing,
+                &mut changed,
+                &mut sample,
+                &mut cycling,
+                &mut c0,
+                &mut c1,
+            ),
+            (procs.transport_v2_fn)(
+                procs.user_data,
+                &mut playing,
+                &mut recording,
+                &mut changed,
+                &mut sample,
+                &mut cycling,
+                &mut c0,
+                &mut c1,
+            ),
+        ];
+        let untouched = beat == -1.0
+            && tempo == -1.0
+            && delta == 7
+            && num == 7.0
+            && den == 7
+            && downbeat == -1.0
+            && [playing, recording, changed, cycling] == [9; 4]
+            && [sample, c0, c1] == [-1.0; 3];
+        (statuses, untouched)
+    };
+
+    state.set_samples_to_next_beat(100);
+    let (statuses, untouched) = probe(&procs);
+    assert_eq!(statuses, [CANNOT_DO; 4], "nothing published yet");
+    assert!(
+        untouched,
+        "an unanswered pull must not write its out-params"
+    );
+    assert!(!state.is_published(), "a beat distance is not a transport");
+
+    state.set_transport(&TransportInfo::new().with_tempo(133.0), true);
+    assert!(state.is_published());
+    let (statuses, _) = probe(&procs);
+    assert_eq!(statuses, [0; 4], "published");
+    assert_eq!(procs.beat_and_tempo().1, 133.0);
+}
+
+/// An AU that pulls through AudioToolbox sees what the host published, and sees
+/// "cannot do" until it has published.
+///
+/// The probe (`support/probe_au.rs`) stores the `HostCallbackInfo` the host
+/// writes and calls the v1 procs from inside its render, the way
+/// TAL-NoiseMaker does; no Apple unit calls them. So this is the whole round
+/// trip: the property write, AudioToolbox handing the AU the pointers, the
+/// render-thread read, the answers. A real tempo-synced AU *acting* on them
+/// (an AU delay locking to the project tempo) needs such a unit on macOS
+/// hardware and is not asserted here.
+///
+/// Mutation: skip `install_host_callbacks` → `pulls` stays 0 → fails.
+/// Mutation: `set_transport` publishing the tempo into the beat field → the
+/// 137.5 / 12.25 checks fail. Mutation: drop the `is_published` check in
+/// `guarded` → the pre-publish pull reads status 0 → fails.
+#[test]
+fn an_au_pulls_the_published_transport_through_audiotoolbox() {
+    let _g = lock();
+    let mut au = Misbehaviour::None.open_initialized(RATE, BLOCK);
+    let input = silence(2, BLOCK as usize);
+    let mut output = silence(2, BLOCK as usize);
+
+    // No callbacks installed: the AU has nothing to pull from.
+    render(&mut au, &input, &mut output, BLOCK).expect("render");
+    assert_eq!(
+        last_host_pull(&au).pulls,
+        0,
+        "nothing installed, nothing pulled"
+    );
+
+    // Installed, nothing published: it pulls and is told the host cannot say.
+    au.install_host_callbacks().expect("install");
+    render(&mut au, &input, &mut output, BLOCK).expect("render");
+    let pull = last_host_pull(&au);
+    assert_eq!(pull.pulls, 1);
+    assert_eq!(
+        [pull.beat_status, pull.musical_status, pull.transport_status],
+        [CANNOT_DO; 3]
+    );
+    assert!(pull.tempo.is_nan(), "a refused pull must not carry a tempo");
+
+    // Published: the next render's pull sees all of it.
+    let info = TransportInfo::new()
+        .with_tempo(137.5)
+        .with_playing(true)
+        .with_position_beats(12.25, 5.0)
+        .with_position_samples(240_000)
+        .with_loop(true, 4.0, 20.0)
+        .with_bar(8.0, BarNumber::new(3))
+        .with_time_signature(TimeSignature::from_parts(7, 8));
+    au.transport()
+        .expect("installed")
+        .set_samples_to_next_beat(321);
+    assert!(au.set_transport(&info, true));
+    render(&mut au, &input, &mut output, BLOCK).expect("render");
+    let pull = last_host_pull(&au);
+    assert_eq!(pull.pulls, 2);
+    assert_eq!(
+        [pull.beat_status, pull.musical_status, pull.transport_status],
+        [0; 3]
+    );
+    assert_eq!((pull.beat, pull.tempo), (12.25, 137.5));
+    assert_eq!(pull.delta_to_next_beat, 321);
+    assert_eq!((pull.numerator, pull.denominator), (7.0, 8));
+    assert_eq!(pull.measure_downbeat, 8.0);
+    assert_eq!(pull.playing, 1);
+    assert_eq!(pull.cycling, 1);
+    assert_eq!((pull.cycle_start, pull.cycle_end), (4.0, 20.0));
+    assert_eq!(pull.sample_time, 240_000.0);
+    assert_eq!(pull.changed, 1, "the locate reaches the AU");
+
+    // The next block publishes no locate, and the AU is told so.
+    assert!(au.set_transport(&info.with_position_beats(12.5, 5.0), false));
+    render(&mut au, &input, &mut output, BLOCK).expect("render");
+    let pull = last_host_pull(&au);
+    assert_eq!(pull.changed, 0, "the locate flag must not latch");
+    assert_eq!(pull.beat, 12.5);
+    assert_ne!(pull.beat_status, NOT_CALLED);
+}
+
+/// A unit that refuses `kAudioUnitProperty_HostCallbacks` makes the install an
+/// error, and the unit keeps rendering and never pulls.
+///
+/// The probe answers `kAudioUnitErr_InvalidProperty` to the write. The loader
+/// treats that as "no transport for this unit" (its `TRANSPORT` bit clear)
+/// rather than a failed load; this pins the host half that makes that possible:
+/// a reported error, not a panic and not a silent success.
+///
+/// Mutation: make `install_host_callbacks` discard the `set_property` result
+/// (`let _ =`) → the install returns `Ok` → fails.
+#[test]
+fn a_refused_host_callbacks_install_is_an_error() {
+    let _g = lock();
+    let mut au = Misbehaviour::RefusesHostCallbacks.open_initialized(RATE, BLOCK);
+
+    let err = au
+        .install_host_callbacks()
+        .expect_err("a refused HostCallbacks write must be reported");
+    assert!(
+        matches!(err, AuError::OsStatus { .. }),
+        "the refusal is the AU's OSStatus, got {err:?}"
+    );
+
+    let input = silence(2, BLOCK as usize);
+    let mut output = silence(2, BLOCK as usize);
+    render(&mut au, &input, &mut output, BLOCK).expect("a refusing unit still renders");
+    assert_eq!(last_host_pull(&au).pulls, 0, "it was never given procs");
 }
 
 /// The `HostCallbackInfo` layout must match Apple's declaration.

@@ -68,6 +68,10 @@ pub struct AuInstance {
     /// allocation-free.
     #[cfg(all(target_os = "macos", feature = "au"))]
     param_ranges: Vec<(u32, ParamBounds)>,
+    /// Derives the "transport changed" flag the AU's transport callback
+    /// reports from consecutive blocks' snapshots.
+    #[cfg(all(target_os = "macos", feature = "au"))]
+    playhead: tutti_plugin_types::PlayheadWatch,
     meta: Meta,
 }
 
@@ -341,7 +345,7 @@ impl PropertyWatch {
 // - `inner`'s editor is `Send` but not `Sync`, which is the tighter of the
 //   two bounds and therefore the one that decides this impl's shape. The
 //   editor lives on the host `AuInstance`, not as a sibling field here.
-// - `param_ranges` and `meta` are plain data.
+// - `param_ranges`, `playhead` and `meta` are plain data.
 //
 // The field-order invariant on `watch` is what makes the listener argument hold
 // through teardown: the registration is disposed before the unit it points at.
@@ -460,6 +464,20 @@ impl AuInstance {
                         reason: e.to_string(),
                     })?;
 
+            // Offered before `initialize`, once, off the audio thread: the AU
+            // pulls tempo, beat and transport state from these procs during its
+            // render, and `process` publishes into the state each block. A unit
+            // that refuses the property simply runs on its own clock, so the
+            // refusal is reported through `Features::TRANSPORT`, not as a failed
+            // load.
+            let transport_installed = match inner.install_host_callbacks() {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!("AU refused host transport callbacks: {e}");
+                    false
+                }
+            };
+
             inner.initialize().map_err(|e| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Initialization,
@@ -495,16 +513,17 @@ impl AuInstance {
                 editor: EditorPresence::measured(has_editor),
             };
             // This AUv2 host is f32-only, single-bus, with a Cocoa editor,
-            // latency read-back and MIDI *input*. MIDI output, transport/host-
-            // callbacks, sample-accurate automation, note-expression, sequencer
-            // context, f64, and host-driven editor resize are not implemented
-            // (latency presence is derived from `latency_samples`).
+            // latency read-back, MIDI *input* and host transport callbacks.
+            // MIDI output, sample-accurate automation, note-expression,
+            // sequencer context, f64, and host-driven editor resize are not
+            // implemented (latency presence is derived from `latency_samples`).
             //
             // MIDI output is the one gap that is a wiring job rather than an
             // absent API: `AuInstance::install_midi_output` exists, but nothing
             // here plumbs a callback to it, so the bit stays unprobed.
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
+            features.set(Features::TRANSPORT, transport_installed);
             // The process path routes MIDI to any AU whose component type
             // `receives_midi()` — instruments, music effects, MIDI processors.
             // Reporting the same predicate here keeps one fact from being
@@ -570,6 +589,7 @@ impl AuInstance {
                 watch,
                 inner,
                 param_ranges,
+                playhead: tutti_plugin_types::PlayheadWatch::new(),
                 meta: Meta { descriptor, loaded },
             })
         }
@@ -606,6 +626,46 @@ pub(crate) struct AuPropertyChanges {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl AuInstance {
+    /// Publishes this block's transport for the AU to pull during its render:
+    /// the snapshot, whether it is a start/stop/locate since the last block,
+    /// and the frames to the next whole beat. Allocation-free and lock-free.
+    ///
+    /// The distance to the next beat is stored before the snapshot, whose
+    /// publication is what makes the callbacks start answering.
+    ///
+    /// Does nothing for a unit that refused the host callbacks at load (its
+    /// `Features::TRANSPORT` is clear): nothing reads what would be written.
+    fn publish_transport(
+        &mut self,
+        transport: &tutti_plugin::server::TransportInfo,
+        buffer: &tutti_plugin::server::AudioBufferMut<'_, '_>,
+    ) {
+        if !self.meta.loaded.features.contains(Features::TRANSPORT) {
+            return;
+        }
+        let mut snapshot = *transport;
+        // A snapshot without its own rate (a hand-built one) borrows the
+        // block's, so the beat distance can still be derived.
+        if !tutti_plugin_types::is_usable(snapshot.sample_rate) || snapshot.sample_rate <= 0.0 {
+            snapshot.sample_rate = buffer.sample_rate();
+        }
+        let frames = u32::try_from(buffer.num_samples()).unwrap_or(u32::MAX);
+        let changed = self.playhead.observe(&snapshot, frames);
+        if let Some(state) = self.inner.transport() {
+            state.set_samples_to_next_beat(snapshot.samples_to_next_beat().unwrap_or(0));
+            state.set_transport(&snapshot, changed);
+        }
+    }
+
+    /// A block with no transport: the AU's callbacks answer "cannot provide"
+    /// until the next block that has one, which is then a start.
+    fn withdraw_transport(&mut self) {
+        self.playhead.reset();
+        if let Some(state) = self.inner.transport() {
+            state.withdraw();
+        }
+    }
+
     /// Drain the property-change flags the listener raised since the last poll,
     /// re-reading each changed property and refreshing the cached copy.
     ///
@@ -739,6 +799,15 @@ impl PluginAudio for AuInstance {
             }
         }
 
+        // The AU pulls transport during its render, so this block's snapshot
+        // goes in first. A block with no transport withdraws the last one: the
+        // AU is told the host cannot say (the header's answer) rather than
+        // handed a frozen beat, and the next block with one starts afresh.
+        match ctx.transport {
+            Some(transport) => self.publish_transport(transport, &buffer),
+            None => self.withdraw_transport(),
+        }
+
         // Deliver MIDI to instrument / music-effect AUs before rendering, so
         // note-ons scheduled this block sound in it. Plain effects don't
         // consume MIDI (`receives_midi()` is false) — skip the decode for them.
@@ -774,6 +843,8 @@ impl PluginAudio for AuInstance {
     }
 
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+        // A new rate breaks the previous block's prediction of the playhead.
+        self.playhead.reset();
         self.inner
             .set_sample_rate(rate)
             .map_err(|e| PluginError::Other(format!("AU refused sample rate {rate}: {e}")))
@@ -1359,6 +1430,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
 
@@ -1394,6 +1466,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
 
@@ -1416,6 +1489,197 @@ mod tests {
         let mut out = tutti_plugin::server::ProcessOutput::default();
         let _output = au.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
         // No crash is the assertion
+    }
+
+    /// The loader offers `kAudioUnitProperty_HostCallbacks` at load and publishes
+    /// each block's transport into it, so a tempo-synced AU that pulls through
+    /// the procs sees the block's tempo, beat, signature, distance to the next
+    /// beat and a locate flag that fires once per start/seek.
+    ///
+    /// No Apple AU calls the procs (see `tutti-au-host`'s `au_transport` suite),
+    /// so the pull is made the way AudioToolbox makes it, through the procs the
+    /// loader installed. What this pins is the loader's wiring; that an AU
+    /// *behaves* on the values (an AU delay locking to tempo) needs a
+    /// tempo-synced unit on macOS hardware and is not asserted here.
+    ///
+    /// Mutation: drop the `install_host_callbacks` call in `load` → the
+    /// `TRANSPORT` bit and `transport()` are absent → fails. Mutation: drop the
+    /// `publish_transport` call in `process` → every pull after the first block
+    /// answers CannotDo → fails. Mutation: swap the `set_samples_to_next_beat`
+    /// value for 0 → the 14433 check fails. Mutation: pass `false` for
+    /// `changed` → the start and seek checks fail. Mutation: publish only when
+    /// the transport is playing → the stopped block answers CannotDo → fails.
+    #[test]
+    fn the_loader_installs_host_callbacks_and_feeds_each_blocks_transport() {
+        use tutti_plugin::server::{
+            AudioBuffer as TuttiAudioBuffer, AudioBufferMut, TimeSignature, TransportInfo,
+        };
+
+        // kAudioUnitErr_CannotDoInCurrentContext.
+        const CANNOT_DO: i32 = -10863;
+        const RATE: f64 = 44_100.0;
+        const FRAMES: usize = 512;
+
+        let mut au = AuInstance::load(Path::new("AUDelay"), RATE, FRAMES).expect("AUDelay loads");
+        assert!(
+            au.loaded().features.contains(Features::TRANSPORT),
+            "the loader must offer transport to every unit that accepts it"
+        );
+
+        let input = vec![vec![0.0f32; FRAMES]; 2];
+        let mut output = vec![vec![0.0f32; FRAMES]; 2];
+        let mut run = |au: &mut AuInstance, transport: Option<&TransportInfo>| {
+            let inputs: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+            let mut outputs: Vec<&mut [f32]> =
+                output.iter_mut().map(|v| v.as_mut_slice()).collect();
+            let buffer = TuttiAudioBuffer {
+                inputs: &inputs,
+                outputs: &mut outputs,
+                num_samples: FRAMES,
+                sample_rate: RATE,
+            };
+            let mut ctx = ProcessContext::new();
+            ctx.transport = transport;
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            au.process(AudioBufferMut::F32(buffer), &ctx, &mut out)
+                .expect("process");
+        };
+
+        // What the AU's procs answer now: (beat_and_tempo status, beat, tempo,
+        // delta, numerator, denominator, v1 changed, v1 playing).
+        let pull = |au: &AuInstance| {
+            let state = au.inner.transport().expect("callbacks installed at load");
+            let (user, beat_tempo, musical, v1, _v2) = state.test_callback_info();
+            let (mut beat, mut tempo) = (f64::NAN, f64::NAN);
+            let (mut delta, mut num, mut den, mut downbeat) = (u32::MAX, f32::NAN, u32::MAX, 0.0);
+            let (mut playing, mut changed, mut sample, mut cycling) = (0u8, 0u8, 0.0, 0u8);
+            let (mut c0, mut c1) = (0.0, 0.0);
+            // SAFETY: the procs and `user` come from the live state the unit
+            // holds, and every out-param is a valid local.
+            unsafe {
+                let status = beat_tempo(user, &mut beat, &mut tempo);
+                musical(user, &mut delta, &mut num, &mut den, &mut downbeat);
+                v1(
+                    user,
+                    &mut playing,
+                    &mut changed,
+                    &mut sample,
+                    &mut cycling,
+                    &mut c0,
+                    &mut c1,
+                );
+                (
+                    status,
+                    beat,
+                    tempo,
+                    delta,
+                    num,
+                    den,
+                    changed != 0,
+                    playing != 0,
+                )
+            }
+        };
+
+        // Nothing published: the host cannot say, so no fabricated 120 BPM.
+        assert_eq!(pull(&au).0, CANNOT_DO, "before any block");
+        run(&mut au, None);
+        assert_eq!(
+            pull(&au).0,
+            CANNOT_DO,
+            "a block without transport publishes none"
+        );
+
+        // Playing, 137.5 BPM, 3/4, a quarter of the way past beat 2.
+        let beat0 = 2.25;
+        let start = TransportInfo::new()
+            .with_sample_rate(RATE)
+            .with_tempo(137.5)
+            .with_time_signature(TimeSignature::from_parts(3, 4))
+            .with_playing(true)
+            .with_position_beats(beat0, 0.0);
+        run(&mut au, Some(&start));
+        let (status, beat, tempo, delta, num, den, changed, playing) = pull(&au);
+        assert_eq!(status, 0);
+        assert_eq!((beat, tempo), (beat0, 137.5));
+        // 0.75 beat left at 60 / 137.5 s per beat: 14 432.7 frames at 44.1 kHz.
+        assert_eq!(delta, 14_433, "frames to the next whole beat");
+        assert_eq!((num, den), (3.0, 4));
+        assert!(playing);
+        assert!(changed, "the first block is a start");
+
+        // The next block is where playing leaves the playhead: no locate.
+        let next = start.with_position_beats(beat0 + FRAMES as f64 / RATE * 137.5 / 60.0, 0.0);
+        run(&mut au, Some(&next));
+        assert!(!pull(&au).6, "a continuous block is not a locate");
+
+        // A seek is one.
+        let seek = next.with_position_beats(32.0, 0.0);
+        run(&mut au, Some(&seek));
+        let (_, beat, _, delta, _, _, changed, _) = pull(&au);
+        assert_eq!(beat, 32.0);
+        assert_eq!(delta, 0, "on a beat");
+        assert!(changed, "a seek is reported once");
+
+        // Stopped is published too, not skipped.
+        run(&mut au, Some(&seek.with_playing(false)));
+        let (status, _, _, _, _, _, changed, playing) = pull(&au);
+        assert_eq!(status, 0);
+        assert!(!playing && changed, "a stop is a change");
+
+        // A block with no transport takes it back, and the next one that has
+        // one is a start again even where playing would have put the playhead.
+        run(&mut au, Some(&next));
+        run(&mut au, None);
+        assert_eq!(pull(&au).0, CANNOT_DO, "no frozen beat after a gap");
+        let resumed = next.with_position_beats(next.position.beats + 0.026, 0.0);
+        run(&mut au, Some(&resumed));
+        let (status, _, _, _, _, _, changed, _) = pull(&au);
+        assert_eq!(status, 0);
+        assert!(changed, "the block after a gap starts afresh");
+    }
+
+    /// A unit that refused the host callbacks (its `TRANSPORT` bit is clear) is
+    /// not written to: no block publishes into it.
+    ///
+    /// The refusal is simulated by clearing the bit on a loaded unit, since no
+    /// installed AU refuses the property; `tutti-au-host`'s
+    /// `a_refused_host_callbacks_install_is_an_error` covers the refusal itself,
+    /// against the probe unit that refuses it.
+    ///
+    /// Mutation: drop the `contains(Features::TRANSPORT)` early return in
+    /// `publish_transport` → the pull answers 0 → fails.
+    #[test]
+    fn a_unit_that_refused_the_callbacks_is_not_published_to() {
+        use tutti_plugin::server::{
+            AudioBuffer as TuttiAudioBuffer, AudioBufferMut, TransportInfo,
+        };
+
+        let mut au = AuInstance::load(Path::new("AUDelay"), 44_100.0, 512).expect("AUDelay loads");
+        au.meta.loaded.features.remove(Features::TRANSPORT);
+
+        let input = vec![vec![0.0f32; 512]; 2];
+        let mut output = vec![vec![0.0f32; 512]; 2];
+        let inputs: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut outputs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let buffer = TuttiAudioBuffer {
+            inputs: &inputs,
+            outputs: &mut outputs,
+            num_samples: 512,
+            sample_rate: 44_100.0,
+        };
+        let transport = TransportInfo::new().with_tempo(150.0).with_playing(true);
+        let mut ctx = ProcessContext::new();
+        ctx.transport = Some(&transport);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        au.process(AudioBufferMut::F32(buffer), &ctx, &mut out)
+            .expect("process");
+
+        let state = au.inner.transport().expect("state exists");
+        assert!(
+            !state.is_published(),
+            "nothing is written to a refusing unit"
+        );
     }
 
     /// The live half of the direct path: `PluginParams` is normalized for every
@@ -1455,6 +1719,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
         let addr = ParamAddress::Opaque(cutoff_id.into());
@@ -1501,6 +1766,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
 
@@ -1640,6 +1906,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
 
@@ -1764,6 +2031,7 @@ mod tests {
             watch: None,
             inner,
             param_ranges,
+            playhead: Default::default(),
             meta: Meta::default(),
         };
 

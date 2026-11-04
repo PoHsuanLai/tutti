@@ -1258,11 +1258,11 @@ impl AuInstance {
     /// trip for an out-of-process AU. A host that does not sequence — a mastering
     /// chain, an analysis pass — should not pay for either, and an AU that is
     /// handed a transport it can pull is entitled to assume the host maintains
-    /// it. Installing by default would leave every non-sequencing host silently
-    /// advertising a transport frozen at beat 0, 120 BPM, stopped, which is
-    /// worse for a tempo-synced plugin than advertising none at all: with no
-    /// callbacks installed the plugin falls back to its own free-running clock,
-    /// which at least advances.
+    /// it. Installing by default would leave every non-sequencing host
+    /// advertising callbacks it never feeds. Until the first
+    /// [`TransportState::set_transport`] they answer
+    /// `kAudioUnitErr_CannotDoInCurrentContext`, so the plugin falls back to its
+    /// own clock, as it does with none installed.
     ///
     /// # Errors
     /// Returns [`AuError::OsStatus`] if the AU refuses

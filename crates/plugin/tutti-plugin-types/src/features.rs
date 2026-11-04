@@ -302,10 +302,16 @@ pub mod probed {
         .union(Features::PRESET_LIST)
         .union(Features::PRESET_LOAD);
 
-    /// AU answers five: MIDI input, the editor, both preset bits, and the render
-    /// mode.
+    /// AU answers six: MIDI input, the editor, both preset bits, the render
+    /// mode and transport.
     ///
     /// The rest are unimplemented in this host, not declined by the units.
+    ///
+    /// `TRANSPORT` is the host-callbacks property
+    /// (`kAudioUnitProperty_HostCallbacks`): the loader installs it on every
+    /// unit and feeds it each block, and the bit reports whether the unit
+    /// accepted it. A unit takes it whether or not it ever pulls the transport,
+    /// so a set bit means "offered", not "used".
     ///
     /// `MIDI_IN` is answered from the component type — an AU is an instrument,
     /// music effect or MIDI processor, or it is not — which is the same
@@ -313,8 +319,8 @@ pub mod probed {
     /// `aufx` effect therefore reports `Some(false)` rather than silence.
     ///
     /// `MIDI_OUT` stays unprobed even though the two look symmetric: reading
-    /// MIDI back out of an AU needs a host callback installed on the unit, and
-    /// this loader installs none, so no unit has been asked.
+    /// MIDI back out of an AU needs a MIDI-output callback installed on the
+    /// unit, and this loader installs none, so no unit has been asked.
     ///
     /// The preset bits are live-probed together because one AU property backs
     /// both: a unit answering `kAudioUnitProperty_FactoryPresets` can be asked
@@ -325,6 +331,7 @@ pub mod probed {
     /// bit reports whether *this* unit accepted the mode.
     pub const AU: Features = Features::MIDI_IN
         .union(Features::EDITOR)
+        .union(Features::TRANSPORT)
         .union(Features::PRESET_LIST)
         .union(Features::PRESET_LOAD)
         .union(Features::RENDER_MODE);
@@ -424,6 +431,7 @@ mod tests {
             probed::AU,
             Features::MIDI_IN
                 | Features::EDITOR
+                | Features::TRANSPORT
                 | Features::PRESET_LIST
                 | Features::PRESET_LOAD
                 | Features::RENDER_MODE
@@ -433,15 +441,14 @@ mod tests {
         assert!(!probed::CLAP.contains(Features::SEQUENCER_CONTEXT));
     }
 
-    /// The AU loader probes MIDI input, the editor and the two preset bits; the
-    /// remaining five read as "nobody asked" rather than as refusals. This is the
-    /// gap the mask exists to expose.
+    /// The AU loader probes MIDI input, the editor, transport and the two preset
+    /// bits; the remaining ones read as "nobody asked" rather than as refusals.
+    /// This is the gap the mask exists to expose.
     #[test]
     fn the_au_loader_leaves_the_unimplemented_capabilities_unasked() {
         for f in [
             Features::MIDI_OUT,
             Features::F64_AUDIO,
-            Features::TRANSPORT,
             Features::PARAM_AUTOMATION,
         ] {
             assert!(
@@ -479,7 +486,7 @@ mod tests {
     }
 
     /// MIDI output is not the mirror of MIDI input here. Reading events back out
-    /// of an AU needs a host callback this loader never installs, so no unit has
+    /// of an AU needs a MIDI-output callback this loader never installs, so no unit has
     /// been asked and the bit must stay silent rather than reporting a refusal.
     #[test]
     fn au_midi_output_is_unasked_rather_than_declined() {

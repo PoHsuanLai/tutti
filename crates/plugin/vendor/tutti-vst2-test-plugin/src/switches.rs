@@ -340,6 +340,8 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     ECHO_SET_PARAMETER.store(false, Ordering::SeqCst);
     PRESET_TRACE.store(0, Ordering::SeqCst);
     PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
+    EDITOR_OPENS.store(false, Ordering::SeqCst);
+    tutti_vst2_probe_reset_trace();
 }
 
 /// One preset opcode, as recorded in `PRESET_TRACE`. Mirrored in
@@ -416,4 +418,128 @@ pub extern "C" fn tutti_vst2_probe_close_count() -> u32 {
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_reset_close_count() {
     CLOSE_COUNT.store(0, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle trace
+// ---------------------------------------------------------------------------
+
+/// The host's lifecycle opcodes in the order they arrived: `effSetSampleRate`,
+/// `effSetBlockSize`, `effMainsChanged`, `effStartProcess`, `effStopProcess`,
+/// `effSetProcessPrecision` and `effEditIdle`, each as `opcode << 32 | value`
+/// (the value's low 32 bits; the rate, an `f32`, travels in `opt` and is not
+/// recorded). Order is the point: the VST 2.4 bracket (stop, suspend, set,
+/// resume, start) is a sequence, and a count cannot tell a balanced pair from
+/// two unbalanced ones.
+static LIFECYCLE: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn record_lifecycle(opcode: i32, value: isize) {
+    let packed = (i64::from(opcode) << 32) | i64::from(value as u32);
+    LIFECYCLE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(packed);
+}
+
+/// How many entries the lifecycle trace holds.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_trace_len() -> u32 {
+    LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner()).len() as u32
+}
+
+/// Entry `index` of the lifecycle trace (`opcode << 32 | value`), or `-1`.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_trace_at(index: u32) -> i64 {
+    LIFECYCLE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(index as usize)
+        .copied()
+        .unwrap_or(-1)
+}
+
+/// Clear the lifecycle trace.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_reset_trace() {
+    LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+
+// ---------------------------------------------------------------------------
+// Plugin -> host calls
+// ---------------------------------------------------------------------------
+
+/// The host's `audioMaster` callback and the `AEffect` it was handed with,
+/// stored at `VSTPluginMain` so an `extern "C"` switch can make the calls a
+/// plugin makes on its own initiative. The latest instance wins.
+static HOST_CALLBACK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOST_EFFECT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn remember_host(callback: usize, effect: usize) {
+    HOST_CALLBACK.store(callback, Ordering::SeqCst);
+    HOST_EFFECT.store(effect, Ordering::SeqCst);
+}
+
+/// One `audioMaster` call from the plugin, `None` before the plugin has been
+/// loaded.
+///
+/// # Safety
+/// `ptr` must satisfy the opcode's contract.
+unsafe fn call_host(opcode: i32, ptr: *mut std::ffi::c_void) -> Option<isize> {
+    let callback = HOST_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return None;
+    }
+    let callback: vst::api::HostCallbackProc = std::mem::transmute(callback);
+    let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
+    Some(callback(effect, opcode, 0, 0, ptr, 0.0))
+}
+
+/// What a plugin does when its configuration changes under it: write the new
+/// `initialDelay` and `numInputs` into its `AEffect` and call
+/// `audioMasterIOChanged`. Returns the host's answer (`1` = handled), or `-1`
+/// before a plugin is loaded.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_fire_io_changed(latency: i32, inputs: i32) -> isize {
+    let effect = HOST_EFFECT.load(Ordering::SeqCst) as *mut vst::api::AEffect;
+    if effect.is_null() {
+        return -1;
+    }
+    // SAFETY: the host holds the `AEffect` this pointer names for as long as
+    // the plugin is loaded, and the test that calls this keeps it so.
+    unsafe {
+        (*effect).initialDelay = latency;
+        (*effect).numInputs = inputs;
+        // `audioMasterIOChanged` is opcode 13.
+        call_host(13, std::ptr::null_mut()).unwrap_or(-1)
+    }
+}
+
+/// Ask the host `audioMasterCanDo` for `name` (a NUL-terminated string), as a
+/// plugin gating a feature does. The host's raw answer: `1`, `0` or `-1`.
+///
+/// # Safety
+/// `name` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_vst2_probe_ask_host_can_do(
+    name: *const std::os::raw::c_char,
+) -> isize {
+    // `audioMasterCanDo` is opcode 37.
+    call_host(37, name as *mut std::ffi::c_void).unwrap_or(-2)
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------
+
+static EDITOR_OPENS: AtomicBool = AtomicBool::new(false);
+
+/// Let the probe's editor (`TUTTI_VST2_PROBE_EDITOR=1`) accept `effEditOpen`.
+/// Off by default: it has no window to embed.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_editor_opens(opens: bool) {
+    EDITOR_OPENS.store(opens, Ordering::SeqCst);
+}
+
+pub(crate) fn editor_opens() -> bool {
+    EDITOR_OPENS.load(Ordering::SeqCst)
 }

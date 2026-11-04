@@ -23,7 +23,7 @@ mod transport_cell;
 
 pub use error::{LoadStage, Result, Vst2Error};
 pub use host::ParameterChange;
-pub use instance::Vst2Instance;
+pub use instance::{Precision, Vst2Changes, Vst2Instance};
 // `effGetParameterProperties` + the MIDI-metadata family. VST2 has no
 // CC→parameter mapping query at all — see the module docs for the opcode
 // evidence — so this is the whole of its parameter/MIDI metadata surface.

@@ -31,6 +31,9 @@ pub(crate) struct InProcessVst2Backend {
     /// node. Drained here because telling a VST2 plugin its rate runs
     /// the `effMainsChanged` bracket, which allocates.
     pub(crate) pending_sample_rate: Arc<AtomicU64>,
+    /// Where a re-read that found the plugin's latency, tail or pins moved is
+    /// reported (`PluginHandle::on_invalidate`).
+    pub(crate) invalidate_sink: crate::host::node::InvalidateSink,
 }
 
 impl HostParams for InProcessVst2Backend {
@@ -223,15 +226,33 @@ impl HostEditor for InProcessVst2Backend {
         // rate the audio thread had to park.
         super::client::drain_sample_rate(&self.pending_sample_rate, &self.inner);
 
-        let mut instance = self.inner.lock();
-        instance.editor_idle();
+        let (changes, param_changes) = {
+            let mut instance = self.inner.lock();
+            instance.editor_idle();
+            // What the plugin changed about itself since the last pump: the
+            // host's re-reads after the rate drained above, and an
+            // `audioMasterIOChanged` the plugin raised. Re-read here, on the
+            // main thread, where `effGetTailSize` belongs.
+            (instance.poll_changes(), instance.drain_param_changes())
+        };
         // Drain any plugin-internal parameter changes (knob movement on
         // the editor surface) and forward them to the user sink. Fires
         // on the GUI thread — same threading contract as the parameter
         // sink callback for the subprocess backend (which fires on the
-        // bridge thread).
-        for (index, value) in instance.drain_param_changes() {
+        // bridge thread). After the lock is released: a callback may call back.
+        for (index, value) in param_changes {
             self.param_sink.fire(index as u32, value);
+        }
+        use crate::handles::PluginInvalidation;
+        if let Some(samples) = changes.latency {
+            self.invalidate_sink
+                .fire(PluginInvalidation::Latency { samples });
+        }
+        if let Some(tail) = changes.tail {
+            self.invalidate_sink.fire(PluginInvalidation::Tail { tail });
+        }
+        if changes.io {
+            self.invalidate_sink.fire(PluginInvalidation::Io);
         }
     }
 }

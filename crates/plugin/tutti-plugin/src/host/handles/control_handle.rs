@@ -237,14 +237,22 @@ impl PluginHandle {
             descriptor,
             loaded,
             param_sink,
-            // In-process backends have no latency-change or
-            // restartComponent mechanism, so they never emit refresh /
-            // invalidate signals — these sinks stay empty.
+            // In-process backends emit no refresh signal; an in-process VST2
+            // raises invalidations through `with_invalidate_sink`.
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
             // In-process: there is no subprocess to name.
             server_pid: None,
         }
+    }
+
+    /// This handle with `sink` as the one `on_invalidate` registers into: how
+    /// an in-process backend that re-reads its plugin raises
+    /// [`PluginInvalidation`]s.
+    #[cfg(feature = "vst2")]
+    pub(crate) fn with_invalidate_sink(mut self, sink: InvalidateSink) -> Self {
+        self.invalidate_sink = sink;
+        self
     }
 
     #[cfg(test)]

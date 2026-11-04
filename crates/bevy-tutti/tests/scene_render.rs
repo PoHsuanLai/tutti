@@ -232,7 +232,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
     if GOLDEN_HERE {
         assert_eq!(
             digest(&b),
-            0x576a_ac03_8473_6dc5,
+            0x9171_6fcb_83b8_0121,
             "the recorded samples: digest {:#018x}",
             digest(&b)
         );

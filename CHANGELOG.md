@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — the lookahead limiter's ceiling is a hard bound, output bits change
+
+`LimiterNode`'s gain window ended one frame after the delayed sample's own
+frame: the sliding minimum held the last `n` gains (ending at frame `k`) while
+the sample leaving the ring is frame `k - n`, so its own target gain fell
+outside the window and the envelope had released one step by then. On loud
+noise the output passed the ceiling by about 0.16% (max |y| / ceiling =
+1.001581). The window now holds `n + 1` gains, so the delayed sample's own
+frame is in it and `|y| <= ceiling` for any input. The ring and the declared
+latency are unchanged (still `n` frames); no migration is needed. Output bits
+change wherever the old window's minimum differed, which is any block where
+the gain was released: the golden digest in `bevy-tutti`'s `scene_render` was
+re-recorded (its structural assertions, which compare renders with each
+other, passed unchanged). `BrickwallLimiterNode` is a stateless clamp and was
+never affected.
+
 ### Changed — the lookahead limiter's gain runs on the linear peak, last-bit differences
 
 `LimiterNode` no longer takes a `log10` of the peak and a `powf` of the

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `clap_live` tolerates one bounded scheduler stall
+
+The paced `clap_live` tests allow one contiguous silent run, no longer than
+36 ms of block periods plus the pipeline's `RING_SLOTS` refill; a second run,
+a longer one or any wrong block fails, and the burst test counts a stall at
+the edge of its window as one run. A thread woken from an idle CPU is
+sometimes 10 to 28 ms late (observed on a 4-vCPU VM, at any thread priority),
+and a plugin has one period to answer, so a stall costs about three blocks.
+On Linux with at least 4 CPUs the tests also run `cpus / 2` nice-19 spinner
+threads to keep the other CPUs out of idle. Test-only change.
+
 ### Changed — a long tail transform runs in steps over several host blocks: the 64-frame p99 of a 2 s IR falls by a fifth or more; `StagedRealFft`; output bits change for IRs reaching a 2048-frame tail
 
 **`tutti_types::StagedRealFft`** is a `RealFft` whose transform runs in steps

@@ -7,8 +7,9 @@
 //! (`Prepare::quantum`), not a fixed 64 frames. With 64, a chunk completed
 //! mid-callback would be collected microseconds after it was submitted, and
 //! read as silence; with the callback as the chunk, the server has a whole
-//! device period to answer. Asserted here: at least 99% of the
-//! blocks after warm-up carry audio, every block is either the input delayed
+//! device period to answer. Asserted here: the blocks after warm-up are
+//! silent in at most one run, no longer than a scheduler stall plus the
+//! pipeline's refill (`max_stall_blocks`), every block is either the input delayed
 //! by exactly the declared latency (137 + quantum) or silence, and the graph
 //! declares that latency.
 //!
@@ -20,6 +21,10 @@
 mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 
+use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, Transport};
@@ -65,6 +70,76 @@ struct Run {
     wrong: Vec<usize>,
 }
 
+/// Keeps idle CPUs awake for the length of a paced run (Linux only).
+///
+/// Measured on an idle 4-vCPU VM: a thread woken from an idle CPU is
+/// sometimes 10 to 28 ms late (a bare `sleep(1 ms)` loop with no tutti code
+/// oversleeps by more than 10 ms about once in 4000 calls), at any thread
+/// priority, and the late thread is the host's bridge thread or the server's
+/// about once in 1000 blocks. The plugin gets one period to answer, so such a
+/// wake-up costs the block and its successors up to the next fresh one: the
+/// source of the stalls `judge_stall` tolerates. With spinners on the other
+/// CPUs at the lowest priority (they yield to any waking thread) the late
+/// wake-ups fell from 8 in 5249 blocks to 1 in 8399. A device's callback is
+/// woken by an interrupt, not from an idle CPU, so this keeps the run closer
+/// to one.
+///
+/// Safe where the CPU count is a quota: fewer than 4 CPUs spawn none, and
+/// `cpus / 2` bounds the rest. Every caller holds [`exclusive`], so one
+/// process spins at a time. A spinner whose `setpriority` fails exits rather
+/// than spin at normal priority; other platforms spawn none.
+///
+/// Mutation: spawn no spinners (`spinner_count` returns 0) and the stalls
+/// return (measured with 3 spinners: 17 of 120 paced runs had a silent block
+/// instead of 8 of 135).
+struct KeepAwake {
+    stop: Arc<AtomicBool>,
+    spinners: Vec<JoinHandle<()>>,
+}
+
+/// Spinners for `cpus` CPUs.
+fn spinner_count(cpus: usize) -> usize {
+    if cfg!(target_os = "linux") && cpus >= 4 {
+        cpus / 2
+    } else {
+        0
+    }
+}
+
+impl KeepAwake {
+    fn new() -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let spinners = (0..spinner_count(cpus))
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    // Nice 19 on the calling thread; a spinner that cannot
+                    // get it would compete with the run.
+                    #[cfg(target_os = "linux")]
+                    // SAFETY: `setpriority` takes no pointers.
+                    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, 19) } != 0 {
+                        return;
+                    }
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        Self { stop, spinners }
+    }
+}
+
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for t in self.spinners.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
 /// Callbacks a [`run_live`] burst makes back to back.
 const BURST: usize = 3;
 
@@ -74,6 +149,7 @@ const BURST: usize = 3;
 /// [`BURST`] in a row with no pause, as a device does when it catches up.
 fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -> Run {
     let probe = load_probe(rate);
+    let _awake = KeepAwake::new();
     let inputs = probe.client.inputs();
     let prepare = Prepare::new(SampleRate(rate), Samples(quantum)).with_quantum(Samples(quantum));
     let (mut ed, exec) = Editor::new(prepare);
@@ -141,6 +217,111 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     }
 }
 
+/// Longest scheduler stall a paced run tolerates, once. Empirical: the
+/// wake-up delays measured on the 4-vCPU VM were 10 to 28 ms (max 28 ms), and
+/// 36 ms leaves headroom over that for the test thread and the server each
+/// being late. Not derived from a scheduler's constants, which differ by
+/// kernel and CPU count.
+const STALL: Duration = Duration::from_millis(36);
+
+/// Silent blocks one stall of [`STALL`] may cost at `period`: the blocks the
+/// stall spans, plus `RING_SLOTS` while the pipeline refills.
+fn max_stall_blocks(period: Duration) -> usize {
+    STALL.as_nanos().div_ceil(period.as_nanos()) as usize + RING_SLOTS
+}
+
+/// `Ok` iff the sorted block indices `silent` form at most one contiguous run
+/// and it is no longer than `max_run`. A second run, or a longer one, is a
+/// fault in the pipeline and not a stall.
+///
+/// `neutral` is a range whose blocks are not judged (the burst window): they
+/// count as silent when runs are formed, so a stall straddling its edge is one
+/// run, and not towards a run's length.
+///
+/// Mutation (`tolerates_one_bounded_stall`): `runs.len() > 1` to `> 2` → the
+/// two-stall case passes → fails. `len > max_run` to `len > max_run + 1` →
+/// the bound-plus-one case passes → fails. `len >= max_run` → the case at the
+/// bound fails → fails. Not adding `neutral` to `all` → the straddle case
+/// reads as two runs → fails.
+fn judge_stall(silent: &[usize], max_run: usize, neutral: Range<usize>) -> Result<(), String> {
+    let mut all: Vec<usize> = silent.iter().copied().chain(neutral.clone()).collect();
+    all.sort_unstable();
+    all.dedup();
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for &b in &all {
+        match runs.last_mut() {
+            Some(run) if run.last().is_some_and(|&l| l + 1 == b) => run.push(b),
+            _ => runs.push(vec![b]),
+        }
+    }
+    for run in &mut runs {
+        run.retain(|b| !neutral.contains(b));
+    }
+    runs.retain(|r| !r.is_empty());
+    if runs.len() > 1 {
+        return Err(format!("{} separate silent runs: {silent:?}", runs.len()));
+    }
+    match runs.first() {
+        Some(r) if r.len() > max_run => Err(format!(
+            "one silent run of {} blocks (> {max_run}): {r:?}",
+            r.len()
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[test]
+fn tolerates_one_bounded_stall() {
+    assert!(judge_stall(&[], 4, 0..0).is_ok());
+    assert!(judge_stall(&[22, 23, 24], 4, 0..0).is_ok());
+    assert!(
+        judge_stall(&[9, 10, 11, 12], 4, 0..0).is_ok(),
+        "at the bound"
+    );
+    assert!(
+        judge_stall(&[9, 10, 11, 12, 13], 4, 0..0).is_err(),
+        "bound + 1"
+    );
+    assert!(
+        judge_stall(&[22, 23, 24, 87, 88], 4, 0..0).is_err(),
+        "two stalls"
+    );
+    assert!(
+        judge_stall(&[5, 7], 4, 0..0).is_err(),
+        "a gap of one block separates"
+    );
+}
+
+#[test]
+fn a_stall_straddling_the_neutral_window_is_one_run() {
+    let window = 60..65;
+    assert!(judge_stall(&[58, 59, 65, 66], 4, window.clone()).is_ok());
+    assert!(judge_stall(&[59, 65], 4, window.clone()).is_ok());
+    assert!(judge_stall(&[], 4, window.clone()).is_ok(), "empty window");
+    assert!(
+        judge_stall(&[56, 57, 58, 59, 65], 4, window.clone()).is_err(),
+        "five blocks outside the window exceed the bound"
+    );
+    assert!(
+        judge_stall(&[10, 11, 58, 59], 4, window.clone()).is_err(),
+        "a stall away from the window is a second run"
+    );
+    assert!(
+        judge_stall(&[57], 4, window).is_ok(),
+        "one stall near the window"
+    );
+}
+
+#[test]
+fn a_stall_bound_follows_the_block_period() {
+    // 36 ms over 10 ms blocks is 4 blocks, over 21.33 ms blocks 2.
+    assert_eq!(max_stall_blocks(Duration::from_millis(10)), 4 + RING_SLOTS);
+    assert_eq!(
+        max_stall_blocks(Duration::from_secs_f64(1024.0 / 48_000.0)),
+        2 + RING_SLOTS
+    );
+}
+
 fn assert_live(rate: f64, quantum: usize) {
     let run = run_live(rate, quantum, 200, None);
     eprintln!(
@@ -150,13 +331,14 @@ fn assert_live(rate: f64, quantum: usize) {
         run.blocks,
         run.wrong.len()
     );
-    assert!(
-        run.silent.len() * 100 <= run.blocks,
-        "{quantum}-frame callbacks: {} of {} blocks were silent — the server was \
-         not given the device period to answer",
-        run.silent.len(),
-        run.blocks
-    );
+    let period = Duration::from_secs_f64(quantum as f64 / rate);
+    if let Err(why) = judge_stall(&run.silent, max_stall_blocks(period), 0..0) {
+        panic!(
+            "{quantum}-frame callbacks: {why} of {} blocks: more than one \
+             scheduler stall, or the server was not given the device period to answer",
+            run.blocks
+        );
+    }
     assert!(
         run.wrong.is_empty(),
         "{quantum}-frame callbacks: blocks {:?} are neither silent nor the input \
@@ -212,7 +394,7 @@ fn a_441_frame_device_hears_its_plugin() {
 /// [`BURST`] callbacks plus `RING_SLOTS` more while the pipeline refills.
 /// Asserted: no block is ever neither silent nor the delayed input (a dropped
 /// block must not surface stale or torn data), and outside that window the
-/// stream is as sound as a paced run (at most 1% silent), counted from
+/// stream is as sound as a paced run (at most one bounded stall), counted from
 /// `SETTLE` blocks after the run's warm-up: a loaded machine can still be
 /// starting the server's pipeline then, which says nothing about the burst.
 /// How many blocks the burst itself drops depends on how fast the server
@@ -222,10 +404,12 @@ fn a_441_frame_device_hears_its_plugin() {
 /// `burst_at.is_some_and(|at| b >= warm_up + at)` (the burst never ends: free
 /// running) → every block after it is silent → the second assertion fails.
 /// Make `SETTLE` 0 → the start-up silence of a loaded machine (blocks 0 to 2,
-/// seen once in 45 runs) counts against the allowance and fails the run.
-/// Not caught (tried): `is_stale` always false in `dispatch.rs`, and an empty
-/// window (two dropped blocks fit the 1% allowance). The mechanism of the drop
-/// is pinned by `dispatch`'s unit tests; this pins the outcome a device sees.
+/// seen once in 45 runs) counts as a stall of its own next to the burst's and
+/// fails the run.
+/// Not caught: `is_stale` always false in `dispatch.rs`, and a burst that
+/// drops nothing (silence inside the window is not asserted, and silence
+/// next to it joins its run). The mechanism of the drop is pinned by
+/// `dispatch`'s unit tests; this pins the outcome a device sees.
 #[test]
 fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     const QUANTUM: usize = 480;
@@ -247,15 +431,14 @@ fn a_burst_of_callbacks_loses_blocks_but_never_corrupts_them() {
     );
     eprintln!("burst at {BURST_AT}: silent blocks {:?}", run.silent);
     let window = BURST_AT..BURST_AT + BURST + RING_SLOTS;
-    let outside = run
+    let silent: Vec<usize> = run
         .silent
         .iter()
-        .filter(|&&b| b >= SETTLE && !window.contains(&b))
-        .count();
-    assert!(
-        outside * 100 <= BLOCKS,
-        "{outside} blocks from {SETTLE} outside the burst window {window:?} were silent \
-         (silent: {:?})",
-        run.silent
-    );
+        .copied()
+        .filter(|&b| b >= SETTLE)
+        .collect();
+    let period = Duration::from_secs_f64(QUANTUM as f64 / 48_000.0);
+    if let Err(why) = judge_stall(&silent, max_stall_blocks(period), window.clone()) {
+        panic!("outside the burst window {window:?} from {SETTLE}: {why}");
+    }
 }

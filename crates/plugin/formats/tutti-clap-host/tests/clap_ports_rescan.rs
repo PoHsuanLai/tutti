@@ -267,7 +267,10 @@ fn process_f64_block(
 /// `!self.loaded.flags.active` conditions in both `ClapActive::process_impl`
 /// and `ensure_processing` with `false` → the block reaches the deactivated
 /// plugin → the `NotActive` assertion fails. Either check alone keeps the
-/// test green: the second is the one that guards the FFI call.
+/// test green: the second is the one that guards the FFI call. Drop the
+/// `self.loaded.flags.active &&` from `set_sample_rate`'s same-rate early
+/// return → the retry at the old rate returns `Ok` on a deactivated instance →
+/// the retry's `expect_err` fails.
 #[test]
 fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
     let probe = Probe::acquire();
@@ -292,6 +295,16 @@ fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
     let refused = process_f64_block(&mut active, 2).expect_err("a deactivated plugin is not run");
     assert!(matches!(refused, ClapError::NotActive), "got {refused}");
     assert!(!active.is_processing(), "processing was never started");
+
+    let retry = active
+        .set_sample_rate(48_000.0)
+        .expect_err("a retry at the old rate still meets dropped flags");
+    assert!(matches!(retry, ClapError::Deactivated(_)), "got {retry}");
+    probe.ports_64bit(BOTH_SIDES);
+    active
+        .set_sample_rate(48_000.0)
+        .expect("the flags are back, so the same rate re-activates");
+    assert!(active.is_active(), "re-activated at the old rate");
 }
 
 /// **A failed reconfiguration that also changed the port layout leaves the

@@ -401,7 +401,7 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// the instance is then left deactivated and `process` refuses every
     /// block with [`ClapError::NotActive`].
     pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
-        if max_frames <= self.loaded.audio.max_frames {
+        if self.loaded.flags.active && max_frames <= self.loaded.audio.max_frames {
             return Ok(());
         }
         self.reconfigure(self.loaded.audio.sample_rate, max_frames)
@@ -415,7 +415,9 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// # Errors
     /// Same contract as [`Self::set_max_block_size`].
     pub fn set_sample_rate(&mut self, sample_rate: f64) -> Result<()> {
-        if (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
+        if self.loaded.flags.active
+            && (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON
+        {
             return Ok(());
         }
         self.reconfigure(sample_rate, self.loaded.audio.max_frames)

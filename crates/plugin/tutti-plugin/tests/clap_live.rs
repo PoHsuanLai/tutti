@@ -150,7 +150,6 @@ fn assert_live(rate: f64, quantum: usize) {
         run.blocks,
         run.wrong.len()
     );
-    eprintln!("silent blocks {:?}", run.silent);
     assert!(
         run.silent.len() * 100 <= run.blocks,
         "{quantum}-frame callbacks: {} of {} blocks were silent — the server was \

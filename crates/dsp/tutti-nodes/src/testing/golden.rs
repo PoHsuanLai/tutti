@@ -46,6 +46,7 @@ fn glibc_version() -> Option<(u32, u32)> {
     }
 }
 
+#[cfg(any(test, all(target_os = "linux", target_env = "gnu")))]
 fn parse_version(s: &str) -> Option<(u32, u32)> {
     let mut parts = s.split('.');
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))

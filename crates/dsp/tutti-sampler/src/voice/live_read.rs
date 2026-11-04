@@ -232,6 +232,19 @@ impl LiveRead {
         }
     }
 
+    /// What a block with no frame to play does to the reader, without
+    /// writing the (all +0.0) frames: [`render`](Self::render)'s all-`None`
+    /// path. The last position and the fade are forgotten and the ring's
+    /// reader claims no range. A severed reader or a clone changes nothing,
+    /// as there.
+    pub(crate) fn silence(&mut self) {
+        if let (Some(reader), Some(_)) = (self.reader.as_mut(), self.map.as_ref()) {
+            self.st.last = None;
+            self.st.fade = None;
+            reader.idle();
+        }
+    }
+
     /// Let go of the live reader: this copy (a fork) never touches the live
     /// ring again, and renders silence through it.
     pub(crate) fn sever(&mut self) {

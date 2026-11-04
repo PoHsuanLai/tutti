@@ -16,6 +16,16 @@ replaced by `tutti_nodes::testing::assert_golden`. It compares only on glibc
 `TUTTI_GOLDEN=record` prints every figure for a re-record. Migration: a test
 crate that asserted a libm-dependent digest depends on `tutti-nodes` with the
 `testing` feature and calls `assert_golden(what, got, want)`.
+### Changed — a silent streamed sampler clip is not rendered: 64 clips out of their window cost 11 us a block instead of 22 us, output bits unchanged
+
+A live disk-streamed voice with no stretch filter whose window is closed (or
+whose transport stands) for a whole piece is skipped like a memory voice: its
+ring is not read and its lanes are not written (`DiskVoice::render_lanes` now
+returns whether anything sounded). It leaves the reader as the silent frames
+did (last position and fade forgotten, ring claim released), so the render is
+bit-identical, the butler is not held back, and the clip resumes at the frame
+the clock names. `pool64/disk-silent/64`: 21.8 to 11.4 us. No public API
+changes. Stretched voices and offline forks still render.
 
 ### Changed — the convolver cuts a long IR into a head and larger tail partitions: about 1.8x cheaper on a 2 s IR and 3x on a 5 s one, same latency, output bits change
 

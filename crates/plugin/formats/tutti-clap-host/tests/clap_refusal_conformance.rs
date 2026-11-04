@@ -119,6 +119,17 @@ fn activate_refusals() -> u32 {
     }
 }
 
+fn inactive_deactivations() -> u32 {
+    type F = unsafe extern "C" fn() -> u32;
+    unsafe {
+        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let f: libloading::Symbol<F> = lib
+            .get(b"tutti_test_plugin_inactive_deactivations\0")
+            .expect("inactive deactivations symbol present");
+        f()
+    }
+}
+
 fn activate_accepts() -> u32 {
     type F = unsafe extern "C" fn() -> u32;
     unsafe {
@@ -497,4 +508,43 @@ fn unrefused_context_save_takes_the_context_aware_path() {
         "context 0 is the probe's tag for the plain `state.save`; a nonzero tag \
          proves the host used `clap.state-context/2`"
     );
+}
+
+/// **A plugin left deactivated is not deactivated again.** A rate change the
+/// plugin refuses, whose rollback it also refuses, leaves it inactive; a later
+/// `reactivate` (a restart request) or rate change then called the plugin's
+/// `deactivate`, which CLAP allows only while active.
+///
+/// Mutation (run): delete the `if !self.flags.active { return; }` guard in
+/// `ClapLoaded::deactivate_plugin` → the plugin counts a deactivate while
+/// inactive → the first count assertion fails. The last assertions also pin
+/// that a refused instance can be brought back once the plugin accepts.
+#[test]
+fn an_inactive_plugin_is_not_deactivated_again() {
+    let probe = Probe::acquire();
+    let mut active = probe.activate();
+
+    // Refuse the new rate and, by its block size, the rollback too.
+    set_activate_refusal(96_000f64.to_bits(), BASE_FRAMES);
+    let err = active.set_sample_rate(96_000.0).expect_err("refused");
+    assert!(matches!(err, ClapError::Deactivated(_)), "got {err}");
+    assert!(!active.is_active());
+    assert_eq!(
+        inactive_deactivations(),
+        0,
+        "it was active when deactivated"
+    );
+
+    let err = active.reactivate().expect_err("still refused");
+    assert!(matches!(err, ClapError::Deactivated(_)), "got {err}");
+    assert_eq!(
+        inactive_deactivations(),
+        0,
+        "an inactive plugin is not deactivated"
+    );
+
+    set_activate_refusal(ACTIVATE_REFUSE_NONE, 0);
+    active.reactivate().expect("the plugin accepts again");
+    assert!(active.is_active());
+    assert_eq!(inactive_deactivations(), 0);
 }

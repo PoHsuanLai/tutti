@@ -27,7 +27,7 @@
 //! each is about what the host does when the plugin stops cooperating and the
 //! plugin is in another process:
 //!
-//! - `crash_on_block` kills the subprocess ([`die`]). In
+//! - `crash_on_block` kills the subprocess (`die`). In
 //!   process that would take the test runner down with it.
 //! - `block_from` parks `process()` indefinitely. In
 //!   process that would deadlock the caller, since the caller *is* the audio

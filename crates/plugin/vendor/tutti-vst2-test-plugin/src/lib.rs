@@ -40,10 +40,10 @@ use vst::host::Host as _;
 use vst::plugin::{CanDo, HostCallback, Info, Plugin, PluginParameters};
 
 pub use capture::{
-    tutti_vst2_probe_capture, tutti_vst2_probe_reset_capture, CapturedEvent, ProcessCapture,
-    ProcessEntry, MAX_CAPTURED_EVENTS,
+    CapturedEvent, MAX_CAPTURED_EVENTS, ProcessCapture, ProcessEntry, tutti_vst2_probe_capture,
+    tutti_vst2_probe_reset_capture,
 };
-pub use config::{channel_tag, ProbeConfig};
+pub use config::{ProbeConfig, channel_tag};
 pub use switches::CanDoAnswer;
 
 /// `AEffect::uniqueId` the probe advertises; the host derives its plugin id

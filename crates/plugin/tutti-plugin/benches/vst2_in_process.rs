@@ -28,10 +28,10 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::SampleRate;
 use tutti_graph::contract::Direct;
-use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
+use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 
 // The bench target gets dev-dependencies and the build script's env, so the
 // test suites' resolver works here unchanged rather than being copied.

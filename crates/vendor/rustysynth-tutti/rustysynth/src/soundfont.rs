@@ -2,6 +2,7 @@
 
 use std::io::Read;
 
+use crate::LoopMode;
 use crate::binary_reader::BinaryReader;
 use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
@@ -11,7 +12,6 @@ use crate::sample_header::SampleHeader;
 use crate::soundfont_info::SoundFontInfo;
 use crate::soundfont_parameters::SoundFontParameters;
 use crate::soundfont_sampledata::SoundFontSampleData;
-use crate::LoopMode;
 
 /// Parsed SoundFont (.sf2) containing samples, instruments, and presets.
 #[derive(Debug)]

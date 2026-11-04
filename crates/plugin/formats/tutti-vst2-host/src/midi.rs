@@ -21,7 +21,7 @@ use crate::types::{MidiEvent, MidiEventVec};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use tutti_midi_types::UmpMessageType;
-use tutti_plugin_types::{SysExAssembler, SysExRef, SysExStep, MIDI_STACK_CAPACITY};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
 
 /// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned

@@ -12,11 +12,11 @@
 //! patching basedrop.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use arc_lend_compare::{begin_counting, end_counting, CountingAlloc, Payload};
+use arc_lend_compare::{CountingAlloc, Payload, begin_counting, end_counting};
 
 mod common;
 use common::Step;

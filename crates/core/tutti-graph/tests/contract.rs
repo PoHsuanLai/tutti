@@ -14,16 +14,16 @@
 //! on purpose, which it must fail — a harness that cannot fail is worse than
 //! none.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
 use tutti_graph::contract::{
-    Detect, Emitter, Excite, Lookahead, ParamEcho, Path, Pulse, Row, MAX_BLOCK, OFFSETS,
+    Detect, Emitter, Excite, Lookahead, MAX_BLOCK, OFFSETS, ParamEcho, Path, Pulse, Row,
     SAMPLE_RATE,
 };
 use tutti_graph::{
-    contract_tests, Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Ump,
-    Unforkable,
+    Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Ump, Unforkable,
+    contract_tests,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
 
@@ -433,7 +433,7 @@ fn rolling_at_two() -> tutti_graph::Transport {
 /// `Transport::default()` to the executor → fails.
 #[test]
 fn the_transport_harnesses_hand_the_node_their_transport() {
-    use tutti_graph::contract::{drive_in, prepared, BlockRig, Direct};
+    use tutti_graph::contract::{BlockRig, Direct, drive_in, prepared};
     use tutti_graph::{Env, Offset, TransportChanges};
     use tutti_types::{Beat, Bpm, SampleRate};
     let rate = SampleRate(48_000.0);

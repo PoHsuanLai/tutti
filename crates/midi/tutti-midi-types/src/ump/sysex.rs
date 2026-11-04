@@ -68,11 +68,7 @@ impl MidiEvent {
     /// yields.
     pub const fn sysex7_packet_count(payload_len: usize) -> usize {
         let packets = payload_len.div_ceil(6);
-        if packets == 0 {
-            1
-        } else {
-            packets
-        }
+        if packets == 0 { 1 } else { packets }
     }
 
     /// The SysEx 7-bit packets (UMP type 0x3) for `data`, one at a time and

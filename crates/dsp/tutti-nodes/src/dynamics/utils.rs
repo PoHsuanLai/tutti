@@ -364,7 +364,7 @@ mod tests {
         // Fully closed (gate_level=0): gain = range_linear
         let closed = compute_gate_gain(0.0, -80.0).get();
         assert!(closed < 0.001); // -80dB is very quiet
-                                 // -12dB range, closed gate
+        // -12dB range, closed gate
         let closed_12 = compute_gate_gain(0.0, -12.0).get();
         assert!((closed_12 - db_to_amplitude(-12.0).get()).abs() < 0.001);
     }

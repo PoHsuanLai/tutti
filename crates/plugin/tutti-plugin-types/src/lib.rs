@@ -50,14 +50,14 @@ pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::{
-    clap_features_role, ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,
+    ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,
 };
-pub use order::{insertion_sort_by_key, StableOrder};
+pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
@@ -68,22 +68,22 @@ pub use format_host::{
     PluginState,
 };
 pub use harmony::{
-    ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue, HARMONY_CAPACITY,
+    ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
-pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
+pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents};
 pub use midi1_decoder::{
-    note_on_velocity_midi1, Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY,
+    Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY, note_on_velocity_midi1,
 };
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };
-pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
+pub use note_id::{MAX_HOST_NOTE_ID, note_id_for, note_id_to_channel_note};
 pub use parameters::{
     Normalized, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
 };
@@ -91,12 +91,12 @@ pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use sysex::{
-    is_framed, push_sysex, push_sysex_stack, unframed, SysExAssembler, SysExRef, SysExStep,
-    SYSEX_MESSAGE_CAPACITY,
+    SYSEX_MESSAGE_CAPACITY, SysExAssembler, SysExRef, SysExStep, is_framed, push_sysex,
+    push_sysex_stack, unframed,
 };
 pub use transport::{
-    is_usable, BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
-    TransportPosition,
+    BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
+    TransportPosition, is_usable,
 };
 
 /// Re-export of the workspace-wide MIDI event so host crates don't all

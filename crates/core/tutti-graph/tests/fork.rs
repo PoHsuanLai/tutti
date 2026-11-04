@@ -4,15 +4,15 @@
 mod common;
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use common::{bits, prepare, Kind, TestNode};
+use common::{Kind, TestNode, bits, prepare};
 use tutti_graph::{
-    param_parts, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkBuild,
-    ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkRemains,
-    ForkSource, ForkTarget, Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode,
-    ParamSet, PendingFork, Prepare, Renderer, Shape, Status, Unforkable,
+    CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkBuild, ForkByClone,
+    ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkRemains, ForkSource,
+    ForkTarget, Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet,
+    PendingFork, Prepare, Renderer, Shape, Status, Unforkable, param_parts,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail, UnitParam};
@@ -603,9 +603,10 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
     assert_eq!(err.clone(), err, "a clone shares its cause");
 
     // The target's sub-graph excludes the failing node, so forking it works.
-    assert!(ed
-        .fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, pre)
-        .is_ok());
+    assert!(
+        ed.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, pre)
+            .is_ok()
+    );
 }
 
 /// **A node fork's outputs clamp**: channel `c` reads the node's port `min(c, outs - 1)` —

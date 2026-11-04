@@ -235,16 +235,16 @@ mod spec;
 mod time;
 
 pub use builder::{GraphBuilder, Renderer, Solo};
-pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
-pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
-pub use controls::{param_parts, ParamFork, ParamNode, ParamSet, ParamSetBuilder};
+pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
+pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
+pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts};
 pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
     ParamSegment, SegmentShape, SortedEvents, SubBlocks, Ump,
 };
-pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
+pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
@@ -253,18 +253,18 @@ pub use fork::{
 pub use history::TransportHistory;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use node::{
-    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,
-    Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
-    TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
+    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
+    MaxBlock, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,
+    TransportChange, TransportChangeRejected, TransportChanges,
 };
 pub use par::Pool;
 pub use param::{
-    ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange, ParamRangeReader,
-    MAX_PARAM_PORTS, PARAM_DECLICK,
+    MAX_PARAM_PORTS, PARAM_DECLICK, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError,
+    ParamRange, ParamRangeReader,
 };
 pub use plan::{
-    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,
-    Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EMPTY_SLOT, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op,
+    ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,
 };
 pub use play::PlayClock;
 // The reading is a value type, `tutti-types`' (the modulation compiler

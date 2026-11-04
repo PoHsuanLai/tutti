@@ -54,8 +54,8 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-use tutti_types::graph::{Edge, InPort, NodeKey, NodeSpec, OutPort, Source, Topology};
 use tutti_types::ChannelLayout;
+use tutti_types::graph::{Edge, InPort, NodeKey, NodeSpec, OutPort, Source, Topology};
 
 use super::wire::{MasterSources, PortSource, PortSources};
 use super::{AudioGraphRes, GraphSource};

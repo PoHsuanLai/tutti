@@ -34,7 +34,7 @@ fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_process_is_allocation_free() {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
 
     let ir = generate_test_ir(2048, 0.3, 48_000.0);
     gate(ConvolverNode::new(&ir, 512));
@@ -43,7 +43,7 @@ fn convolver_process_is_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn stereo_convolver_process_is_allocation_free() {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
 
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
@@ -59,7 +59,7 @@ fn stereo_convolver_process_is_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_mid_cycle_blocks_are_allocation_free() {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
 
     let ir = generate_test_ir(8192, 0.3, 48_000.0);
     for block in [37usize, 100, 128, 1000] {
@@ -75,7 +75,7 @@ fn convolver_mid_cycle_blocks_are_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_ragged_calls_are_allocation_free() {
-    use tutti_nodes::{generate_test_ir, Convolver};
+    use tutti_nodes::{Convolver, generate_test_ir};
 
     let ir = generate_test_ir(8192, 0.3, 48_000.0);
     let mut c = Convolver::new(&ir, 128);
@@ -105,7 +105,7 @@ fn convolver_ragged_calls_are_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_tail_levels_are_allocation_free() {
-    use tutti_nodes::{generate_test_ir, Convolver};
+    use tutti_nodes::{Convolver, generate_test_ir};
 
     let ir = generate_test_ir(240_000, 1.0, 48_000.0);
     let mut c = Convolver::new(&ir, 512);
@@ -134,7 +134,7 @@ fn convolver_tail_levels_are_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn folded_six_channel_convolver_process_is_allocation_free() {
-    use tutti_nodes::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
 
     let irs: Vec<Vec<f32>> = (0..6)
         .map(|c| generate_test_ir(1024, 0.2 + 0.05 * c as f32, 48_000.0))

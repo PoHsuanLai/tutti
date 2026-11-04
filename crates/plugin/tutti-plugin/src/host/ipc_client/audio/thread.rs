@@ -2,12 +2,12 @@
 //! pumps [`Command`]s through [`handle`]. Runs entirely on one OS
 //! thread; all IPC calls are blocking.
 
+use super::ListenerSlot;
 use super::channels::Channels;
-use super::dispatch::{handle, Owed};
+use super::dispatch::{Owed, handle};
 use super::lifecycle::Lifecycle;
 use super::messages::{AudioResponse, BridgeEvent, Command, Unsolicited};
 use super::payload_pool::PayloadPool;
-use super::ListenerSlot;
 use crate::util::transport::control::{self as ipc, ControlStream};
 use std::path::PathBuf;
 use std::thread;

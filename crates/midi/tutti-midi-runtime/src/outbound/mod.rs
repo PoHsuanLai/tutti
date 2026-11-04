@@ -18,9 +18,9 @@ pub mod jr_timestamp;
 pub mod mpe_ingest;
 
 pub use clock_master::ClockMaster;
-pub use clock_node::{ClockNode, CLOCK_EVENT_CAPACITY};
+pub use clock_node::{CLOCK_EVENT_CAPACITY, ClockNode};
 pub use jr_timestamp::{
-    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, JR_CLOCK_INTERVAL,
-    JR_CLOCK_MAX_INTERVAL,
+    JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL, JrClock, JrClockEmitter, JrReceiver, JrStamper,
+    JrStream,
 };
 pub use mpe_ingest::{MpeIngest, Translated};

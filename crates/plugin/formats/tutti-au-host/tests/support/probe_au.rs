@@ -54,8 +54,8 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use coreaudio_sys as sys;
 
-use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
 use tutti_au_host::AuInstance;
+use tutti_au_host::component::{AuComponentInfo, AuType, enumerate_components_of_type};
 
 /// Manufacturer code for every probe component. Distinct from `appl` so a probe
 /// can never be mistaken for a corpus unit, and vice versa.

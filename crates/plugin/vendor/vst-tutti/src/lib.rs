@@ -291,7 +291,7 @@ mod tests {
     use std::os::raw::c_void;
 
     use crate::{
-        api::{consts::VST_MAGIC, AEffect},
+        api::{AEffect, consts::VST_MAGIC},
         interfaces,
         plugin::{HostCallback, Info, Plugin},
     };

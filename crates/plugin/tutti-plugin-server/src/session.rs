@@ -9,13 +9,13 @@
 use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
+use tutti_plugin::Result;
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    midi_from_wire, AudioSlab, BridgeMessage, ContentScale, HostMessage, IpcMidiEvent,
-    IpcMidiEventVec, MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle,
-    MAX_STATE_BYTES,
+    AudioSlab, BridgeMessage, ContentScale, HostMessage, IpcMidiEvent, IpcMidiEventVec,
+    MAX_STATE_BYTES, MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle,
+    midi_from_wire,
 };
-use tutti_plugin::Result;
 
 /// Convert a block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
@@ -533,7 +533,7 @@ impl Session {
                     return BridgeMessage::Error {
                         message: format!("Failed to save state: {e}"),
                     }
-                    .into()
+                    .into();
                 }
             },
             None => Vec::new(),

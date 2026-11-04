@@ -49,13 +49,13 @@
 use std::sync::Arc;
 
 use bytemuck::{AnyBitPattern, NoUninit};
-use sync::{fence, AtomicU64, Ordering};
+use sync::{AtomicU64, Ordering, fence};
 
 mod sync {
     #[cfg(loom)]
-    pub(super) use loom::sync::atomic::{fence, AtomicU64, Ordering};
+    pub(super) use loom::sync::atomic::{AtomicU64, Ordering, fence};
     #[cfg(not(loom))]
-    pub(super) use std::sync::atomic::{fence, AtomicU64, Ordering};
+    pub(super) use std::sync::atomic::{AtomicU64, Ordering, fence};
 
     #[cfg(loom)]
     pub(super) use loom::hint::spin_loop;

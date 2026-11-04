@@ -24,11 +24,11 @@ mod graph_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use bevy_tutti::AudioEngineState;
     use bevy_tutti::graph::{
         AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources, PortSource,
         PortSources,
     };
-    use bevy_tutti::AudioEngineState;
     // `GraphSource` is the graph's own spelling of what feeds a port.
     use bevy_tutti::graph::GraphSource;
     use tutti_core::AudioNode;
@@ -491,8 +491,8 @@ mod graph_wire {
     /// fails.
     #[test]
     fn a_rebuild_that_changes_nothing_writes_nothing() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
@@ -789,9 +789,9 @@ mod param_mod_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use bevy_tutti::AudioEngineState;
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, PortSource, PortSources};
-    use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
     use tutti_core::Hz;
     use tutti_graph::{EventOut, ParamRange};

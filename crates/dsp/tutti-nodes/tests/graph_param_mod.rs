@@ -22,13 +22,13 @@
 //! engine wires; the shaping oracle (`param_mod_oracle.rs`) went with
 //! `ParamModShaping`.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
 use tutti_graph::{
-    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, ParamIn, ParamRange, Prepare, Renderer,
-    PARAM_DECLICK,
+    Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamRange,
+    Prepare, Renderer,
 };
 use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;

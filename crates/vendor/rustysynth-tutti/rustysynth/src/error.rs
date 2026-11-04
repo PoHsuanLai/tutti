@@ -133,7 +133,10 @@ impl fmt::Display for SoundFontError {
                 "the instrument with the ID '{instrument_id}' contains an invalid sample ID '{sample_id}'"
             ),
             SoundFontError::InvalidInstrument(instrument_id) => {
-                write!(f, "the instrument with the ID '{instrument_id}' has no zone")
+                write!(
+                    f,
+                    "the instrument with the ID '{instrument_id}' has no zone"
+                )
             }
             SoundFontError::InstrumentNotFound => write!(f, "no valid instrument was found"),
             SoundFontError::InvalidSampleHeaderList => {

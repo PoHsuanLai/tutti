@@ -26,11 +26,11 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::{Amplitude, ChannelLayout, Db, FrozenClock, Hz, SampleRate};
 use tutti_export::{
-    render_normalized_to_file, render_to_buffers, render_to_file, AudioFormat, BitDepth, Dither,
-    EncodeConfig, ExportConfig, Normalize, RenderConfig, RenderGraph, Resample,
+    AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig, Normalize, RenderConfig,
+    RenderGraph, Resample, render_normalized_to_file, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};

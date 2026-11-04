@@ -26,8 +26,8 @@ static A: AllocDisabler = AllocDisabler;
 #[test]
 fn mic_monitor_process_is_allocation_free() {
     use ringbuf::{
-        traits::{Producer, Split},
         HeapRb,
+        traits::{Producer, Split},
     };
     use tutti_io::{MicMonitorNode, MicRing};
 

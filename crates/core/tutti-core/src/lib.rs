@@ -12,8 +12,8 @@ pub use tutti_types::value::SampleRate;
 pub use tutti_types::value::{
     Adsr, Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Db,
     Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Param, Param64, ParamAddr, Phase,
-    PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds, Semitones,
-    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
+    PhaseIncrement, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, Seconds,
+    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam,
 };
 
 mod engine;
@@ -31,22 +31,22 @@ pub use tutti_graph::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it, and names it from the root.
-pub use engine::{Engine, GraphEngineError, DEFAULT_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
+pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError, MAX_ROOT_CHANNELS};
 
 pub mod transport;
 pub use transport::{
     ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MeterSlot,
     MeterSlotCell, MeterSlotReader, MetronomeMode, MotionEvent, MotionFsm, MotionState,
-    OfflineTimeline, OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock, ScheduleFull,
-    Then, Timeline, Transport, TransportClock, TransportCommand, TransportSettings, TransportState,
-    SCHEDULE_CAPACITY,
+    OfflineTimeline, OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock,
+    SCHEDULE_CAPACITY, ScheduleFull, Then, Timeline, Transport, TransportClock, TransportCommand,
+    TransportSettings, TransportState,
 };
 // The time a scheduled command names, and the engine's frame clock. Homed in
 // `tutti-types` so the graph's `Editor::schedule` and the transport's
 // `MotionFsm::schedule` share one vocabulary.
 pub use tutti_types::{
-    first_frame_at_or_after, snap_to_whole_frame, At, Frame, FrameClock, SegmentOrigin,
-    TimelineSegment, FRAME_TOLERANCE,
+    At, FRAME_TOLERANCE, Frame, FrameClock, SegmentOrigin, TimelineSegment,
+    first_frame_at_or_after, snap_to_whole_frame,
 };
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
@@ -57,14 +57,14 @@ pub use tutti_types::meter::{
     TimeSignature,
 };
 pub use tutti_types::{
-    ArcLend, Loan, PosClaim, PosFrame, PosReader, PosRing, PosWriter, Reader, RingWindow,
-    MAX_POS_RING_FRAMES,
+    ArcLend, Loan, MAX_POS_RING_FRAMES, PosClaim, PosFrame, PosReader, PosRing, PosWriter, Reader,
+    RingWindow,
 };
 
 mod metering;
 pub use metering::{
-    meter_output, AtomicAmplitude, AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading,
-    MeteringContext, TapBusy, TapCons, LOAD_MEAN_TIME_CONSTANT,
+    AtomicAmplitude, AudioTap, LOAD_MEAN_TIME_CONSTANT, LoadMeter, LoadReading, MasterMeter,
+    MeterReading, MeteringContext, TapBusy, TapCons, meter_output,
 };
 
 // Delay compensation: the graph-agnostic planner, homed in `tutti-types` and
@@ -80,7 +80,7 @@ pub use preroll::PrerollTable;
 
 // How long a graph rings after its input stops. Same as latency above: the
 // walk is graph-agnostic and lives in `tutti-types`.
-pub use tutti_types::tail::{self, graph_tail, GraphTail, TailGraph};
+pub use tutti_types::tail::{self, GraphTail, TailGraph, graph_tail};
 pub use tutti_types::value::Tail;
 
 // The audio graph as a value, and its folds: graph-agnostic, in `tutti-types`.
@@ -92,10 +92,10 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 // so sibling crates can write `tutti_core::Arc` etc. (`parking_lot` locks and
 // `hashbrown` maps are deliberate non-std choices — sibling crates name those
 // crates directly rather than re-exporting them here.)
-pub use std::sync::atomic::{
-    AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
-};
 pub use std::sync::Arc;
+pub use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 // Real-time audio-thread primitives, all homed in `tutti-types` (the bottom
 // leaf, no engine dependency) and surfaced here so consumers reach them via the
@@ -104,13 +104,13 @@ pub use std::sync::Arc;
 pub use tutti_types::{AudioThreadCell, RtVec, ScopedNoDenormals};
 // The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in
 // `tutti-types` and surfaced here so consumers reach it via the engine root.
-pub use tutti_types::io::{self, pump, AudioIn, AudioOut, OnEmpty};
+pub use tutti_types::io::{self, AudioIn, AudioOut, OnEmpty, pump};
 // Float→PCM quantization, homed in `tutti-types` and surfaced here so codecs and
 // sinks reach it via the engine root.
 pub use tutti_types::pcm::{self, f32_to_i16, f32_to_i24};
 // The WAV container facts both WAV writers share (speaker mask, 4 GiB limit).
 pub use tutti_types::wav::{
-    self, channel_mask, default_channel_mask, max_data_frames, DataLimitExceeded,
+    self, DataLimitExceeded, channel_mask, default_channel_mask, max_data_frames,
 };
 // The unified channel-layout enum, homed in `tutti-types` and surfaced here so
 // consumers (incl. `bevy-tutti`) reach it via the engine root.

@@ -2,14 +2,14 @@
 //! `load_with_library`. Everything through "get the first plugin descriptor
 //! from the factory" lives here; the two entry points then diverge.
 
-use super::entry::{entry_registry_acquire, EntryGuard};
+use super::entry::{EntryGuard, entry_registry_acquire};
 use crate::cstr_to_string;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::types::PluginInfo;
 use clap_sys::entry::clap_plugin_entry;
-use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
+use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::plugin::clap_plugin_descriptor;
-use clap_sys::version::{clap_version, clap_version_is_compatible, CLAP_VERSION_MAJOR};
+use clap_sys::version::{CLAP_VERSION_MAJOR, clap_version, clap_version_is_compatible};
 use std::ffi::{CStr, CString};
 use std::path::Path;
 

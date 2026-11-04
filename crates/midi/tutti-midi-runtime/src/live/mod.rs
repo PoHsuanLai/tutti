@@ -20,10 +20,10 @@ pub mod queue_node;
 mod route;
 
 pub use input_node::{
-    input_port_of, input_ports, MidiInputControls, MidiInputNode, CHANNELLESS_PORT,
-    MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
+    CHANNELLESS_PORT, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputControls,
+    MidiInputNode, input_port_of, input_ports,
 };
-pub use mailbox::{MidiMailbox, MidiReceiver, MidiSender, MAILBOX_CAPACITY};
-pub use out_node::{MidiOutControls, MidiOutNode, MIDI_OUT_CAPACITY};
-pub use queue_node::{MidiQueueNode, MIDI_QUEUE_CAPACITY};
-pub use route::{compile_routes, RouteRule};
+pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
+pub use out_node::{MIDI_OUT_CAPACITY, MidiOutControls, MidiOutNode};
+pub use queue_node::{MIDI_QUEUE_CAPACITY, MidiQueueNode};
+pub use route::{RouteRule, compile_routes};

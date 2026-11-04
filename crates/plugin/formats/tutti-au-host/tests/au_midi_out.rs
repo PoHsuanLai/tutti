@@ -51,11 +51,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 mod support;
-use support::corpus::{every_component, DELAY, DLS_SYNTH, LOWPASS, SAMPLER};
+use support::corpus::{DELAY, DLS_SYNTH, LOWPASS, SAMPLER, every_component};
 
+use tutti_au_host::AuType;
 use tutti_au_host::midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::types::MIDIPacketList;
-use tutti_au_host::AuType;
 use tutti_midi_types::MidiMessage;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 

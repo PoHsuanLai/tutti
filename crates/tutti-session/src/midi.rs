@@ -18,11 +18,11 @@ use std::time::{Duration, Instant};
 
 use tutti_core::AudioNode;
 use tutti_midi_runtime::{
-    compile_routes, MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender,
-    RouteRule, TimedMidiEvent,
+    MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
+    TimedMidiEvent, compile_routes,
 };
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiChannel;
+use tutti_midi_types::ump::MidiEvent;
 
 use crate::graph::Graph;
 use crate::{Error, EventSource, MidiNodes, Result};
@@ -744,8 +744,8 @@ impl Midi<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
     use tutti_midi_types::MidiGroup;
 
     /// Counts what reached the wire. Stands in for a real OS endpoint so

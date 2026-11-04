@@ -20,9 +20,9 @@ use tutti_graph::{
     ScheduleError,
 };
 use tutti_mod::{
-    compile, CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey,
-    RouteTarget, SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl,
-    TargetKey,
+    CompileError, Compiled, ControlProgram, Declarations, RouteDecl, RouteKey, RouteTarget,
+    SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl, TargetKey,
+    compile,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{At, AtomicF32, NodeKey, ParamAddr};

@@ -27,7 +27,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples, Tail};
@@ -355,11 +355,7 @@ impl Node for FormNop {
     fn shape(&self) -> Shape {
         let ch = ChannelLayout::from_count(self.width);
         let s = Shape::audio(ch, ch).with_events(self.events, 0);
-        if self.in_place {
-            s.with_in_place()
-        } else {
-            s
-        }
+        if self.in_place { s.with_in_place() } else { s }
     }
     fn prepare(&mut self, _p: &Prepare) {}
     fn process(&mut self, _cx: &Cx<'_>, _io: Io<'_>) -> Status {

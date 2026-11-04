@@ -28,8 +28,8 @@ pub use instance::{Precision, Vst2Changes, Vst2Instance};
 // CC→parameter mapping query at all — see the module docs for the opcode
 // evidence — so this is the whole of its parameter/MIDI metadata surface.
 pub use param_properties::{
-    FloatSteps, IntegerRange, MidiKeyName, MidiProgram, MidiProgramCategory, ParameterCategory,
-    ParameterProperties, ParameterPropertyFlags, MAX_MIDI_KEY, NUM_MIDI_CHANNELS,
+    FloatSteps, IntegerRange, MAX_MIDI_KEY, MidiKeyName, MidiProgram, MidiProgramCategory,
+    NUM_MIDI_CHANNELS, ParameterCategory, ParameterProperties, ParameterPropertyFlags,
 };
 pub use scratch::RenderScratch;
 pub use types::{

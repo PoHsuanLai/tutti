@@ -80,7 +80,7 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
 /// `tutti-midi-file`): this crate's own writer sets one tempo only.
 fn phrase(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use tutti::midi_file::midly::{
-        num::u28, Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
+        Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind, num::u28,
     };
     const TPQ: u32 = 480;
     let event = |delta: u32, kind| TrackEvent {

@@ -30,10 +30,10 @@ use crate::config::ExportConfig;
 use crate::error::Result;
 // `drive` and the buffer views are `pump_blocks`'s, and it carries the same
 // codec gate.
+use crate::Written;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 use crate::render::drive;
 use crate::render::{FrameSource, PlaneSource, RenderPlan};
-use crate::Written;
 use std::path::Path;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
@@ -122,12 +122,12 @@ pub(crate) fn encode_to_file(
     config: &ExportConfig,
     path: &Path,
 ) -> Result<Written> {
-    use crate::options::AudioFormat;
     #[allow(
         unused_imports,
         reason = "named only by the `cfg(not(feature))` fallback arms; unused when every format feature is on"
     )]
     use crate::Error;
+    use crate::options::AudioFormat;
 
     match config.encode.format {
         #[cfg(feature = "wav")]

@@ -32,7 +32,7 @@ use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapActive, ClapLoaded, ClapProcessContext};
 use tutti_clap_test_plugin::{
-    probe_tag, PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES,
+    PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES, probe_tag,
 };
 
 const SAMPLE_RATE: f64 = 48_000.0;

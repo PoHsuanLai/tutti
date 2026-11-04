@@ -198,8 +198,8 @@ impl MidiEvent {
     /// `(channel, 14-bit bank, program)` of a MIDI 2.0 Program Change whose bank
     /// is valid.
     fn program_change_bank(&self) -> Option<(u8, u16, u8)> {
-        use midi2::channel_voice2::ChannelVoice2;
         use midi2::UmpMessage;
+        use midi2::channel_voice2::ChannelVoice2;
         let Ok(UmpMessage::ChannelVoice2(ChannelVoice2::ProgramChange(m))) =
             UmpMessage::try_from(self.data_words())
         else {
@@ -231,8 +231,8 @@ impl MidiEvent {
         use super::scaling::{
             midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
         };
-        use midi2::channel_voice2::ChannelVoice2;
         use midi2::UmpMessage;
+        use midi2::channel_voice2::ChannelVoice2;
         let msg = UmpMessage::try_from(self.data_words()).ok()?;
         let UmpMessage::ChannelVoice2(cv2) = msg else {
             return None;

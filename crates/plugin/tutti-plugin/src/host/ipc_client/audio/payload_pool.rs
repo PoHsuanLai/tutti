@@ -13,8 +13,8 @@
 use super::messages::ProcessPayload;
 use crate::protocol::ParameterChanges;
 use crossbeam::queue::ArrayQueue;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One payload per command the audio thread can have queued.
 ///

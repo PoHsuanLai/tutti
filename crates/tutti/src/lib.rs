@@ -146,12 +146,12 @@ pub use tutti_plugin as plugin;
 /// `Phase` is the session's (`tutti_session::Phase`); the oscillator phase
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
+    pub use tutti_core::CrossfadeCurve;
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
         ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
         OfflineTimeline, OfflineTimelineConfig, Then,
     };
-    pub use tutti_core::CrossfadeCurve;
 
     // The device handle and its enumeration record.
     #[cfg(feature = "device")]

@@ -442,9 +442,10 @@ mod tests {
             .map(|p| (p.sample_offset, p.value.get()))
             .collect();
         assert_eq!(points(&buf), want);
-        assert!(buf
-            .windows(2)
-            .all(|w| w[0].sample_offset <= w[1].sample_offset));
+        assert!(
+            buf.windows(2)
+                .all(|w| w[0].sample_offset <= w[1].sample_offset)
+        );
     }
 
     /// **`try_push_front` puts the point ahead of every point**, shifting

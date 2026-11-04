@@ -13,12 +13,12 @@
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
 use crate::types::{TrackPortType, TransportRequest, UndoChange};
-use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_PORT_AMBISONIC};
+use clap_sys::ext::ambisonic::{CLAP_PORT_AMBISONIC, clap_host_ambisonic};
 use clap_sys::ext::audio_ports::{
-    clap_host_audio_ports, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+    CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
     CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
     CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE, CLAP_PORT_MONO,
-    CLAP_PORT_STEREO,
+    CLAP_PORT_STEREO, clap_host_audio_ports,
 };
 use clap_sys::ext::audio_ports_config::clap_host_audio_ports_config;
 use clap_sys::ext::context_menu::{
@@ -33,12 +33,12 @@ use clap_sys::ext::event_registry::clap_host_event_registry;
 use clap_sys::ext::gui::clap_host_gui;
 use clap_sys::ext::latency::clap_host_latency;
 use clap_sys::ext::log::{
-    clap_host_log, clap_log_severity, CLAP_LOG_DEBUG, CLAP_LOG_ERROR, CLAP_LOG_FATAL,
-    CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO, CLAP_LOG_PLUGIN_MISBEHAVING, CLAP_LOG_WARNING,
+    CLAP_LOG_DEBUG, CLAP_LOG_ERROR, CLAP_LOG_FATAL, CLAP_LOG_HOST_MISBEHAVING, CLAP_LOG_INFO,
+    CLAP_LOG_PLUGIN_MISBEHAVING, CLAP_LOG_WARNING, clap_host_log, clap_log_severity,
 };
 use clap_sys::ext::note_name::clap_host_note_name;
 use clap_sys::ext::note_ports::{
-    clap_host_note_ports, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI,
+    CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, clap_host_note_ports,
 };
 use clap_sys::ext::params::clap_host_params;
 #[cfg(unix)]
@@ -46,21 +46,21 @@ use clap_sys::ext::posix_fd_support::clap_host_posix_fd_support;
 use clap_sys::ext::preset_load::clap_host_preset_load;
 use clap_sys::ext::remote_controls::clap_host_remote_controls;
 use clap_sys::ext::state::clap_host_state;
-use clap_sys::ext::surround::clap_host_surround;
 use clap_sys::ext::surround::CLAP_PORT_SURROUND;
+use clap_sys::ext::surround::clap_host_surround;
 use clap_sys::ext::tail::clap_host_tail;
 use clap_sys::ext::thread_check::clap_host_thread_check;
 use clap_sys::ext::thread_pool::clap_host_thread_pool;
 use clap_sys::ext::timer_support::clap_host_timer_support;
 use clap_sys::ext::track_info::{
-    clap_host_track_info, clap_track_info, CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL,
-    CLAP_TRACK_INFO_HAS_TRACK_COLOR, CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS,
-    CLAP_TRACK_INFO_IS_FOR_MASTER, CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK,
+    CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL, CLAP_TRACK_INFO_HAS_TRACK_COLOR,
+    CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS, CLAP_TRACK_INFO_IS_FOR_MASTER,
+    CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK, clap_host_track_info, clap_track_info,
 };
 use clap_sys::ext::voice_info::clap_host_voice_info;
 use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::host::clap_host as ClapHostVtable;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;

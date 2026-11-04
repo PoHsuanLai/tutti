@@ -6,8 +6,8 @@
 //! command queue with a timeout between cycles, so a max-priority thread with
 //! nothing to do does not spin a core, and a sent command is handled at once.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 

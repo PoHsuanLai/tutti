@@ -467,8 +467,8 @@ mod tests {
     /// `tutti-shm-model` crate.
     #[test]
     fn a_million_blocks_never_show_a_sequence_without_its_data() {
-        use std::sync::atomic::AtomicU64 as StdAtomicU64;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicU64 as StdAtomicU64;
 
         /// A stand-in for the audio region: one word per slot, carrying the
         /// same sequence number the header publishes for it. A reader that

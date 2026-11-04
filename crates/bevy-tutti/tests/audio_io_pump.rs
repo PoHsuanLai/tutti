@@ -607,10 +607,10 @@ mod io_graph_composition {
     use bevy_ecs::prelude::*;
     use ringbuf::traits::{Producer as _, Split as _};
 
+    use bevy_tutti::AudioEngineState;
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use bevy_tutti::io::{MicMonitorNode, MicRing};
-    use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
     use tutti_nodes::testing::Through;
 

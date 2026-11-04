@@ -26,23 +26,23 @@
 //! ([`EventList::sysex_dropped`]).
 
 use vst3::Steinberg::{
-    kInvalidArgument, kResultFalse, kResultOk, tresult,
     Vst::{Event, IEventList, IEventListTrait},
+    kInvalidArgument, kResultFalse, kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 
 use crate::types::MidiEvent;
 use crate::types::{
-    from_c_event, midi1_data_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi,
-    EventHeader, SysExEvent, TextArena, Vst3Event, Vst3InputEvents, K_DATA_EVENT,
-    K_DATA_TYPE_MIDI_SYSEX, K_NOTE_OFF_EVENT,
+    EventHeader, K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX, K_NOTE_OFF_EVENT, SysExEvent, TextArena,
+    Vst3Event, Vst3InputEvents, from_c_event, midi1_data_event, note_expression_to_vst3,
+    to_c_event, vst3_event_from_midi,
 };
 use tutti_midi_types::PerNoteBendRanges;
 #[cfg(doc)]
 use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
 use tutti_plugin_types::{
-    push_sysex, RtMidiEvents, StableOrder, SysExAssembler, SysExRef, SysExStep, HARMONY_CAPACITY,
-    MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY,
+    HARMONY_CAPACITY, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, StableOrder,
+    SysExAssembler, SysExRef, SysExStep, push_sysex,
 };
 use tutti_types::AudioThreadCell;
 
@@ -577,8 +577,8 @@ pub fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
 mod tests {
     use super::*;
     use crate::types::{
-        ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
-        NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
+        ChordValue, EventHeader, K_NOTE_ON_EVENT, NoteExpressionIntValue, NoteExpressionText,
+        NoteExpressionValue, NoteOnEvent, ScaleValue,
     };
     use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
@@ -607,9 +607,9 @@ mod tests {
     /// block's quarter bend reads 12 semitones (0.55), not 6 → fails.
     #[test]
     fn a_per_note_bend_range_outlives_its_block() {
+        use tutti_midi_types::PitchBendSensitivity;
         use tutti_midi_types::convert::signed_f32_to_bend_u32;
         use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-        use tutti_midi_types::PitchBendSensitivity;
 
         let list = EventList::input();
         let sensitivity = [MidiEvent::registered_controller(
@@ -659,9 +659,9 @@ mod tests {
     #[test]
     fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
         use tutti_clap_host::{ClapEvent, EventList as _, InputEventList};
+        use tutti_midi_types::PitchBendSensitivity;
         use tutti_midi_types::convert::signed_f32_to_bend_u32;
         use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-        use tutti_midi_types::PitchBendSensitivity;
 
         let bend = |channel: u8| {
             MidiEvent::per_note_pitch_bend(

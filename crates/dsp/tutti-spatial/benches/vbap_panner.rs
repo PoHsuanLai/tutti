@@ -18,7 +18,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_spatial::VbapPannerNode;

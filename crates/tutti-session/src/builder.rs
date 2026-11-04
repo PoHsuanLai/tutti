@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use tutti_core::{
-    AudioNode, AudioTap, ChannelLayout, ClickNode, ClickSettings, MasterMeter, PrerollTable,
-    SampleRate, Samples, Transport, MAX_ROOT_CHANNELS,
+    AudioNode, AudioTap, ChannelLayout, ClickNode, ClickSettings, MAX_ROOT_CHANNELS, MasterMeter,
+    PrerollTable, SampleRate, Samples, Transport,
 };
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};

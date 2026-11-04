@@ -362,13 +362,10 @@ mod tests {
         );
 
         // And it is accepted at the overlap it actually asks for.
-        assert!(StftGeometry::cola_with(
-            44100.0,
-            Samples(2048),
-            Samples(256),
-            CosineWindow::BLACKMAN
-        )
-        .is_ok());
+        assert!(
+            StftGeometry::cola_with(44100.0, Samples(2048), Samples(256), CosineWindow::BLACKMAN)
+                .is_ok()
+        );
     }
 
     /// The builder does **not** re-check COLA, and the doc says so — this pins

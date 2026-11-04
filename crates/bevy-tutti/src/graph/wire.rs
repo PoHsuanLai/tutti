@@ -99,7 +99,7 @@ use tutti_core::AudioNode;
 use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
 
 use super::topology::{self, LiveGraph};
-use super::{engine_ready, AudioGraphRes, GraphReconcileSystems, GraphSource};
+use super::{AudioGraphRes, GraphReconcileSystems, GraphSource, engine_ready};
 
 /// Where one input port's signal comes from.
 ///

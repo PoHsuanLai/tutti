@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use assert_no_alloc::{assert_no_alloc, AllocDisabler};
+use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_clap_host::{AudioBuffer32, AudioBuffer64, ClapError, ClapLoaded, ClapProcessContext};
 use tutti_clap_test_plugin::{PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, REPORTED_TAIL_SAMPLES};
 

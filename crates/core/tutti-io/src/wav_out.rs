@@ -33,10 +33,10 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use tutti_core::SampleRate;
 use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
 use tutti_core::wav::{self, DataLimitExceeded};
-use tutti_core::SampleRate;
 use tutti_core::{ChannelLayout, ChannelTopology};
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.

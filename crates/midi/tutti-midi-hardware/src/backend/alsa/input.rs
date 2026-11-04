@@ -1,16 +1,16 @@
 //! Reading UMP from a sequencer port.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use super::client::SeqClient;
 use super::enumerate::unpack_id;
 use super::sys;
+use crate::InputProducerHandle;
 use crate::capability::EndpointId;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
-use crate::InputProducerHandle;
 use tutti_midi_types::ump::split_ump_stream;
 
 /// How long the pump sleeps when the queue is empty.

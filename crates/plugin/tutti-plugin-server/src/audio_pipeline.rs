@@ -10,12 +10,12 @@
 //! `AudioBlock` and builds the wire `BridgeMessage::AudioProcessed` from the
 //! resulting `AudioOutput`.
 
+use tutti_plugin::Result;
 use tutti_plugin::server::{
     AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, ProcessOutput, SampleFormat, ScaleChanges, TransportInfo,
 };
-use tutti_plugin::Result;
 
 /// Maximum channel count handled by the audio pipeline's stack-array
 /// slice tables. 16 covers every realistic plugin layout (most are mono
@@ -768,8 +768,8 @@ mod tests {
         }
     }
 
-    use tutti_plugin::server::SampleFormat as SF;
     use tutti_plugin::server::RING_SLOTS;
+    use tutti_plugin::server::SampleFormat as SF;
 
     /// A slab layout with real bus lists in both directions.
     ///

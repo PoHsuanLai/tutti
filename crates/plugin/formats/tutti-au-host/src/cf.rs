@@ -16,7 +16,7 @@
 
 use core_foundation::array::CFArray;
 use core_foundation::base::TCFType;
-use core_foundation::propertylist::{self, kCFPropertyListBinaryFormat_v1_0, CFPropertyList};
+use core_foundation::propertylist::{self, CFPropertyList, kCFPropertyListBinaryFormat_v1_0};
 use core_foundation::string::CFString as CfCFString;
 use core_foundation::url::CFURL;
 

@@ -28,8 +28,8 @@
 //! sample, so a mute is silent from the next block on. See
 //! `BusStripNode::render`.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, Tail, UnitParam};
 use tutti_graph::{
@@ -523,7 +523,7 @@ impl IntoNode for BusStripNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{tick, RATE};
+    use crate::test_support::{RATE, tick};
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// The strip measured as a `Light` node, at every width.
@@ -907,16 +907,20 @@ mod tests {
     fn a_fresh_or_reset_strip_starts_at_its_target() {
         let mut s = BusStripNode::new();
         s.set_muted(true);
-        assert!(process_dc(&mut s, 16, 1.0, 1.0)
-            .iter()
-            .all(|f| *f == [0.0, 0.0]));
+        assert!(
+            process_dc(&mut s, 16, 1.0, 1.0)
+                .iter()
+                .all(|f| *f == [0.0, 0.0])
+        );
 
         s.set_muted(false);
         s.reset();
         s.set_volume(Amplitude(0.25));
-        assert!(process_dc(&mut s, 16, 1.0, 1.0)
-            .iter()
-            .all(|f| *f == [0.25, 0.25]));
+        assert!(
+            process_dc(&mut s, 16, 1.0, 1.0)
+                .iter()
+                .all(|f| *f == [0.25, 0.25])
+        );
     }
 
     /// Every channel, the ones past the balanced pair included, follows the

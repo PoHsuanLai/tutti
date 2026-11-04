@@ -6,8 +6,8 @@
 //! Start/End-of-Clip (also UMP Stream) are built by the clip-file codec.
 
 use bitflags::bitflags;
-use midi2::prelude::*;
 use midi2::Data;
+use midi2::prelude::*;
 use tutti_types::MidiGroup;
 
 use super::MidiEvent;
@@ -345,8 +345,8 @@ mod tests {
 
     #[test]
     fn endpoint_discovery_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::endpoint_discovery(
             1,
             1,
@@ -366,8 +366,8 @@ mod tests {
 
     #[test]
     fn function_block_info_decodes_via_midi2() {
-        use midi2::ump_stream::{Direction, UmpStream};
         use midi2::UmpMessage;
+        use midi2::ump_stream::{Direction, UmpStream};
         let ev = MidiEvent::function_block_info(
             true,
             2,
@@ -389,8 +389,8 @@ mod tests {
 
     #[test]
     fn endpoint_info_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::endpoint_info(
             UmpVersion::V1_1,
             FunctionBlocks {
@@ -414,8 +414,8 @@ mod tests {
 
     #[test]
     fn device_identity_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::device_identity([0x00, 0x21, 0x09], 0x1234, 0x0001, [1, 2, 3, 4]);
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::UmpStream(UmpStream::DeviceIdentity(m)) => {
@@ -428,8 +428,8 @@ mod tests {
 
     #[test]
     fn stream_configuration_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::stream_configuration_notification(
             Protocol::Midi2,
             JrTimestamps::SEND | JrTimestamps::RECEIVE,
@@ -446,8 +446,8 @@ mod tests {
 
     #[test]
     fn stream_configuration_request_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::stream_configuration_request(Protocol::Midi1, JrTimestamps::RECEIVE);
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::UmpStream(UmpStream::StreamConfigurationRequest(m)) => {
@@ -477,8 +477,8 @@ mod tests {
 
     #[test]
     fn function_block_discovery_decodes_via_midi2() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         let ev = MidiEvent::function_block_discovery(
             3,
             FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
@@ -495,8 +495,8 @@ mod tests {
 
     #[test]
     fn function_block_discovery_filter_bits_are_independent() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         // §7.1.7 Figure 21 places 'i' and 'n' in distinct bits, so asking for
         // one must not imply the other — the caller controls how many replies
         // it gets back.
@@ -515,8 +515,8 @@ mod tests {
 
     #[test]
     fn function_block_discovery_carries_the_all_blocks_sentinel() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
         // §7.1.7: "Use 0xFF to request information about all Function Blocks."
         // Individual blocks are 0x00..=0x1F, so 0xFF must survive intact rather
         // than being masked into a block number the way a 7-bit field would.
@@ -534,8 +534,8 @@ mod tests {
 
     #[test]
     fn function_block_name_round_trips() {
-        use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
+        use midi2::ump_stream::UmpStream;
 
         // Short name: one packet, decodes directly.
         let mut out = Vec::new();

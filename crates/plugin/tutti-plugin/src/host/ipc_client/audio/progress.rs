@@ -55,8 +55,8 @@
 
 use super::ask::Ask;
 use crate::error::StateError;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// How long a state transfer may make no progress before it is declared stalled.
@@ -162,7 +162,7 @@ impl StateProgress {
             match ask.recv_timeout_borrowed(POLL_INTERVAL) {
                 Ok(value) => return value,
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    return Err(StateError::PluginCrashed)
+                    return Err(StateError::PluginCrashed);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             }

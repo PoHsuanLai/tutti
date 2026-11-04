@@ -1,7 +1,7 @@
 //! Audio processing methods for the active CLAP instance.
 
-use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use super::ClapActive;
+use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
 use crate::types::{
@@ -9,19 +9,19 @@ use crate::types::{
 };
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
-    clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
-    CLAP_TRANSPORT_HAS_BEATS_TIMELINE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
-    CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
-    CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+    CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
+    CLAP_TRANSPORT_HAS_TIME_SIGNATURE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
+    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_transport,
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{
-    clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR,
-    CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
+    CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process,
+    clap_process_status,
 };
 use std::ptr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tutti_plugin_types::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for

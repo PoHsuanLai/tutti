@@ -81,34 +81,34 @@ pub mod test_support {
 }
 
 pub use nodes::{
-    attach_live_midi, detach_live_midi, LiveMidi, LiveMidiInput, LiveMidiPlugin, MidiEngineNodes,
-    MpeModeConfig, MpeModeRes,
+    LiveMidi, LiveMidiInput, LiveMidiPlugin, MidiEngineNodes, MpeModeConfig, MpeModeRes,
+    attach_live_midi, detach_live_midi,
 };
 
 pub use inbound::route::{
-    rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,
+    MidiRouteFallback, MidiRoutePlugin, MidiRouteRule, rebuild as rebuild_midi_routes,
 };
 
-pub use hardware::clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
+pub use hardware::clock_out::{ClockMasterRes, ClockOutPlugin, pump_clock_out_system};
 #[cfg(feature = "midi-hardware")]
 pub use hardware::device::{
-    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, ConnectMidiOutput,
-    DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
-    MidiDirection, MidiIoRes,
+    ConnectMidiDevice, ConnectMidiOutput, DisconnectMidiDevice, DisconnectMidiOutput,
+    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiDirection, MidiIoRes,
+    midi_device_connect_system, midi_device_poll_system,
 };
 pub use hardware::hardware_out::JrStamperRes;
 pub use hardware::metadata::{
-    flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
+    BroadcastFlexMetadata, MidiMetadataPlugin, flex_metadata_broadcast_system,
 };
 pub use hardware::negotiation::{
-    ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
     InboundEndpointReply, MidiNegotiationPlugin, StartCiDiscovery, StartEndpointDiscovery,
+    ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
 };
 pub use hardware::track_out::{
-    midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
+    MidiOutPlugin, MidiOutRes, SendMidiOut, midi_out_send_system, pump_midi_out_system,
 };
-pub use tutti_session::{drain_receiver_through, MidiOutDrops, MidiOutRouter, UmpOut};
+pub use tutti_session::{MidiOutDrops, MidiOutRouter, UmpOut, drain_receiver_through};
 
 pub use file::{
     MidiFileAsset, MidiFileAssetLoader, MidiFilePlugin, MidiFileWrite, MidiFileWriteInFlight,
@@ -116,5 +116,5 @@ pub use file::{
 };
 pub use plugin::TuttiMidiPlugin;
 pub use sequence::{
-    rebuild as rebuild_midi_sources, MidiSequencePlugin, MidiSourceInstall, SequencedClips,
+    MidiSequencePlugin, MidiSourceInstall, SequencedClips, rebuild as rebuild_midi_sources,
 };

@@ -17,11 +17,11 @@
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{AudioTap, ChannelLayout, Engine, Hz, InterleavedMut, NodeKey, Samples};
 use tutti_core::{MasterMeter, SampleRate, Transport};
-use tutti_cpal::{process_audio, AudioCallbackState, OutputBlock};
+use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 

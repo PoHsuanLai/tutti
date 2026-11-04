@@ -43,8 +43,8 @@ use tutti_core::Hz;
 use tutti_core::{ChannelLayout, SampleRate, Samples, Transport};
 use tutti_core::{Engine, InterleavedMut};
 use tutti_graph::{Editor, Executor, ForkByClone, Prepare};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);

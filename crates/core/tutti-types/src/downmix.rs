@@ -444,11 +444,13 @@ mod tests {
         match dst {
             1 if src == 1 => vec![vec![1.0]],
             1 if src == 2 => vec![vec![0.5, 0.5]],
-            1 => vec![stereo[0]
-                .iter()
-                .zip(&stereo[1])
-                .map(|(l, r)| (l + r) * M)
-                .collect()],
+            1 => vec![
+                stereo[0]
+                    .iter()
+                    .zip(&stereo[1])
+                    .map(|(l, r)| (l + r) * M)
+                    .collect(),
+            ],
             2 => stereo.to_vec(),
             _ => (0..dst)
                 .map(|o| (0..src).map(|k| f32::from(u8::from(k == o))).collect())

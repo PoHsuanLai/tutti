@@ -41,9 +41,9 @@
 //! The bound below is the measured worst case plus headroom, not a guess; the
 //! test prints every reading so the margin stays visible.
 
-use pitch_detection::detector::yin::YINDetector;
 use pitch_detection::detector::PitchDetector;
-use tutti_analysis::{yin, PitchEstimate, YinConfig};
+use pitch_detection::detector::yin::YINDetector;
+use tutti_analysis::{PitchEstimate, YinConfig, yin};
 use tutti_types::SampleRate;
 
 const SR: f64 = 48_000.0;

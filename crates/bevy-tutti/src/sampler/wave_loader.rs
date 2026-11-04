@@ -5,7 +5,7 @@
 //! for that goes through the disk streamer instead, which never becomes an
 //! asset. The asset type itself lives in `tutti-io`; this is only its loader.
 
-use bevy_asset::{io::Reader, AssetLoader, LoadContext};
+use bevy_asset::{AssetLoader, LoadContext, io::Reader};
 use bevy_reflect::TypePath;
 use tutti_io::WaveAsset;
 

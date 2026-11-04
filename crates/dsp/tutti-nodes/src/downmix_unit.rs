@@ -114,9 +114,9 @@ impl IntoNode for DownmixNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{tick, RATE};
+    use crate::test_support::{RATE, tick};
     use tutti_graph::contract::drive;
-    use tutti_types::{fold_frame_to_mono, fold_frame_to_stereo, M3DB};
+    use tutti_types::{M3DB, fold_frame_to_mono, fold_frame_to_stereo};
 
     #[test]
     fn arity_comes_from_the_two_layouts() {

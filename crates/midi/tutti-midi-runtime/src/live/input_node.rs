@@ -15,8 +15,8 @@
 //!
 //! Its fork is silent: an offline render reads no wire.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_core::{ArcLend, ChannelLayout, Reader};
 use tutti_graph::{

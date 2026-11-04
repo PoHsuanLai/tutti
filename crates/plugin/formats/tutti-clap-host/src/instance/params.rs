@@ -4,8 +4,8 @@
 //! no normalized parameter interface. Denormalization against `param_ranges`
 //! happens on the `process` path, not here.
 
-use super::ext;
 use super::ClapLoaded;
+use super::ext;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 #[cfg(feature = "clap-extras")]
@@ -580,7 +580,7 @@ mod param_text_tests {
     use super::*;
     use clap_sys::ext::params::clap_plugin_params;
     use clap_sys::plugin::clap_plugin;
-    use std::ffi::{c_char, CStr};
+    use std::ffi::{CStr, c_char};
 
     // value_to_text: writes "42.0 dB" into the caller buffer for any id/value.
     unsafe extern "C" fn stub_value_to_text(

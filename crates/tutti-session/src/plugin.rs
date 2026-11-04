@@ -1026,11 +1026,12 @@ mod tests {
                     Ok(crate::Crossfade::Landed(_))
                 ));
             } else {
-                assert!(rig
-                    .session
-                    .graph()
-                    .replace(rig.node, replacement, fade, curve)
-                    .is_ok());
+                assert!(
+                    rig.session
+                        .graph()
+                        .replace(rig.node, replacement, fade, curve)
+                        .is_ok()
+                );
             }
             assert!(rig.session.plugin(rig.node).is_none(), "the record went");
             // The outgoing plugin dies, past the debounce's count and window.

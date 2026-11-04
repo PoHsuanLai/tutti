@@ -11,8 +11,8 @@ use tutti_core::{
 };
 use tutti_graph::{Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status};
 use tutti_graph::{Transport as BlockTransport, Unforkable};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;

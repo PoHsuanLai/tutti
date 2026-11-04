@@ -656,11 +656,13 @@ mod tests {
     fn member_channel_bend_becomes_per_note_pitch_bend() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         // Note held on member channel 2.
-        assert!(ingest
-            .translate(&note_on(2, 60, 100))
-            .next()
-            .unwrap()
-            .is_note_on());
+        assert!(
+            ingest
+                .translate(&note_on(2, 60, 100))
+                .next()
+                .unwrap()
+                .is_note_on()
+        );
         // Channel bend on ch2 → per-note bend on note 60.
         let out = ingest
             .translate(&pitch_bend14(2, 16383))

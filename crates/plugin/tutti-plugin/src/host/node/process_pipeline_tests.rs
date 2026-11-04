@@ -23,8 +23,8 @@
 //! A constant signal would separate none of those, which is why the ramp is
 //! load-bearing rather than decorative.
 
-use crate::host::ipc_client::audio::BridgeThread;
 use crate::host::ipc_client::PluginBridge;
+use crate::host::ipc_client::audio::BridgeThread;
 use crate::host::node::batcher::{Batcher, ChunkCounters};
 
 /// The chunk these tests ship: the slab ceiling they build each batcher and
@@ -32,8 +32,8 @@ use crate::host::node::batcher::{Batcher, ChunkCounters};
 const BATCH_SIZE: usize = 64;
 use crate::host::node::BlockPayload;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, MidiEventVec, SampleFormat, SlabLayout,
-    PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, HostMessage, MidiEventVec, PROTOCOL_VERSION, SampleFormat,
+    SlabLayout,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::sync::Arc;
@@ -174,7 +174,7 @@ fn bridge_with_server(
     stall: std::time::Duration,
     route: fn(usize) -> usize,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     let path = unique_socket_path("process-sync");
     let _ = std::fs::remove_file(&path);
@@ -1429,7 +1429,7 @@ fn stamped_server(
     stall: std::time::Duration,
     first_only: bool,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     let path = unique_socket_path("stamped");
     let _ = std::fs::remove_file(&path);
@@ -1732,7 +1732,7 @@ fn two_stale_blocks(
     Vec<crate::protocol::MidiEvent>,
     u64,
 ) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     assert_eq!(RING_SLOTS, 2, "blocks 1 and 2 of 4 are stale");
     let path = unique_socket_path("stale-midi");

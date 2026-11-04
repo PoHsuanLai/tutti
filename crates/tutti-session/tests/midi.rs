@@ -11,13 +11,13 @@ use tutti_core::{
     AudioNode, Beat, BeatDuration, ChannelLayout, InterleavedMut, MotionEvent, SampleRate, Samples,
 };
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Ump};
-use tutti_midi_runtime::{TimedMidiEvent, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
+use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
 use tutti_session::{
-    Error, EventSource, MidiRouteRule, PhaseCx, Session, SessionEvent, SessionNode, UmpOut,
-    MIDI_OUT_DROP_REPORT, PHASES,
+    Error, EventSource, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, Session,
+    SessionEvent, SessionNode, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -397,9 +397,11 @@ fn the_hardware_out_drains_with_stamping_off() {
         count.load(Ordering::SeqCst) > 0,
         "the clock reached the sink, unstamped"
     );
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, SessionEvent::MidiOutDropped(_))));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::MidiOutDropped(_)))
+    );
 
     let mut s = clocked();
     let events = s.update();
@@ -548,7 +550,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     use tutti_midi_runtime::MidiClipNode;
 
     let sorted = |mut v: Vec<EventSource>| {
-        v.sort_by_key(|e| (e.node.0 .0, e.port));
+        v.sort_by_key(|e| (e.node.0.0, e.port));
         v
     };
     let mut s = offline();

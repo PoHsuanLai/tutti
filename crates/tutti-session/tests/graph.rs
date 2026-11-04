@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use tutti_core::{
-    ChannelLayout, CrossfadeCurve, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds,
-    MAX_ROOT_CHANNELS,
+    ChannelLayout, CrossfadeCurve, Drive, Hz, InterleavedMut, MAX_ROOT_CHANNELS, SampleRate,
+    Samples, Seconds,
 };
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
@@ -16,7 +16,7 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Const, Osc, Through};
 use tutti_session::{
-    root_width, Crossfade, EventSource, GraphSource, Session, SessionEvent, SessionNode,
+    Crossfade, EventSource, GraphSource, Session, SessionEvent, SessionNode, root_width,
 };
 use tutti_types::{Latency, Param, UnitParam};
 
@@ -661,7 +661,7 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
 #[cfg(all(feature = "plugin", debug_assertions))]
 #[test]
 fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     tutti_plugin_types::mark_main_thread();
     let mut s = detached(1);
@@ -894,15 +894,16 @@ fn the_update_sweeps_each_nodes_reclaimer_while_it_is_in_the_graph() {
 
     // A raw replace (a plain `IntoNode`) keeps no reclaimer, and takes the
     // outgoing node's with it.
-    assert!(s
-        .graph()
-        .replace(
-            node,
-            Const::mono(0.0),
-            Seconds(0.0),
-            CrossfadeCurve::EqualAmplitude
-        )
-        .is_ok());
+    assert!(
+        s.graph()
+            .replace(
+                node,
+                Const::mono(0.0),
+                Seconds(0.0),
+                CrossfadeCurve::EqualAmplitude
+            )
+            .is_ok()
+    );
     assert_eq!(
         Arc::strong_count(&second.token),
         1,

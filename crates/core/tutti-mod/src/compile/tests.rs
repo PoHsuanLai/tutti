@@ -2,8 +2,8 @@
 //! Each test carries the mutations it was seen to fail under.
 
 use super::*;
-use crate::shape::shape;
 use crate::LfoShape;
+use crate::shape::shape;
 use audio_automation::{AutomationEnvelope, AutomationPoint};
 use tutti_types::{Amplitude, Frame, Hz, UnitParam};
 

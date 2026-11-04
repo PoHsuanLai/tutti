@@ -2,8 +2,8 @@
 //! in-process VST2.
 
 use std::path::Path;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;

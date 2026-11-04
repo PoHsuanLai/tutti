@@ -51,13 +51,13 @@
 //!
 
 use crate::error::{BridgeError, Result};
-use crate::protocol::audio::Sample;
 use crate::protocol::SlabLayout;
+use crate::protocol::audio::Sample;
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
 
-use super::header::{slot_for, Direction, RING_SLOTS, SLAB_HEADER_BYTES};
-use super::mmap::{as_bytes, as_bytes_mut, MmapCell};
+use super::header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, slot_for};
+use super::mmap::{MmapCell, as_bytes, as_bytes_mut};
 
 /// Who is responsible for the backing file's lifetime.
 enum Ownership {

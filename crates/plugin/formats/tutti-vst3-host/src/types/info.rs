@@ -5,7 +5,7 @@ use vst3::Steinberg::Vst::IAutomationState_::AutomationStates_;
 use vst3::Steinberg::Vst::KeyswitchTypeIDs_;
 use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
-use vst3::Steinberg::Vst::{ePrefetchableSupport_, PhysicalUITypeIDs_};
+use vst3::Steinberg::Vst::{PhysicalUITypeIDs_, ePrefetchableSupport_};
 
 use crate::helpers::utf16_to_string;
 
@@ -615,7 +615,7 @@ pub mod prefetchable_support {
 
 #[cfg(test)]
 mod note_expression_info_tests {
-    use super::{note_expression_flags, Vst3NoteExpressionInfo};
+    use super::{Vst3NoteExpressionInfo, note_expression_flags};
 
     /// Copies a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
     fn string128(s: &str) -> [u16; 128] {
@@ -665,7 +665,7 @@ mod note_expression_info_tests {
 
 #[cfg(test)]
 mod keyswitch_info_tests {
-    use super::{keyswitch_type, Vst3KeyswitchInfo};
+    use super::{Vst3KeyswitchInfo, keyswitch_type};
 
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];
@@ -701,7 +701,7 @@ mod keyswitch_info_tests {
 
 #[cfg(test)]
 mod unit_info_tests {
-    use super::{unit_ids, Vst3ProgramListInfo, Vst3UnitInfo};
+    use super::{Vst3ProgramListInfo, Vst3UnitInfo, unit_ids};
 
     fn string128(s: &str) -> [u16; 128] {
         let mut buf = [0u16; 128];

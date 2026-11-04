@@ -102,12 +102,12 @@
 //! channels rotate every frame and reads back as a subtly-wrong recording rather
 //! than as a failure.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 use tutti_core::Samples;
+use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
 
 use crate::error::{Error, Result};
 
@@ -847,9 +847,9 @@ impl Drop for Recorder {
 mod tests {
     use super::*;
     use crate::WavOut;
+    use tutti_core::ChannelLayout;
     use tutti_core::io::{AudioIn, OnEmpty};
     use tutti_core::pcm::BitDepth;
-    use tutti_core::ChannelLayout;
 
     /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
     /// frames in bounded chunks, returning a short-then-zero count at

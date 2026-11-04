@@ -46,7 +46,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use bevy_ecs::prelude::*;
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
 use tutti_core::AudioNode;
 #[cfg(doc)]
@@ -283,9 +283,9 @@ mod tests {
     use bevy_app::prelude::*;
     use std::sync::Arc;
     use std::time::Duration;
+    use tutti_plugin::Liveness;
     use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress, PluginHandle};
     use tutti_plugin::server::ParameterInfo;
-    use tutti_plugin::Liveness;
 
     /// A backend whose liveness is whatever the test says it is.
     ///

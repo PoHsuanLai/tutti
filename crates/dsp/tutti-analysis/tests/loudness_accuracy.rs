@@ -13,7 +13,7 @@
 //! Confirmed to fail against a meter with the sample rate hardcoded to 48 kHz —
 //! the defect `LoudnessConfig` makes unrepresentable.
 
-use tutti_analysis::{measure_loudness, ChannelLayout, LoudnessConfig};
+use tutti_analysis::{ChannelLayout, LoudnessConfig, measure_loudness};
 use tutti_types::{Db, Interleaved, SampleRate};
 
 /// Interleaved stereo sine, both channels identical.

@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use tutti_core::{ChannelLayout, SampleRate, Samples};
 
+use crate::MAX_FRAMES;
 use crate::block::OutputBlock;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
-use crate::MAX_FRAMES;
 
 /// The configuration an output stream is opened with: rate, width, sample
 /// format and callback size.
@@ -210,7 +210,7 @@ impl StreamDriver for CpalDriver {
             format => {
                 return Err(Error::InvalidConfig(format!(
                     "Unsupported sample format: {format:?}"
-                )))
+                )));
             }
         };
         stream.play()?;

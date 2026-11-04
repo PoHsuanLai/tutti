@@ -43,7 +43,7 @@
 //! helper queued behind a `SCHED_FIFO` caller on its own core can run and
 //! leave.
 
-use sync::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering, UnsafeCell};
+use sync::{AtomicBool, AtomicU32, AtomicU64, Ordering, UnsafeCell, fence};
 
 use super::spin::{BlockWaits, SpinThenYield};
 
@@ -51,9 +51,9 @@ mod sync {
     #[cfg(loom)]
     pub(super) use loom::cell::UnsafeCell;
     #[cfg(loom)]
-    pub(super) use loom::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+    pub(super) use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
     #[cfg(not(loom))]
-    pub(super) use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+    pub(super) use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 
     /// `loom`'s `UnsafeCell` API over `std`'s, so the gate is written once.
     #[cfg(not(loom))]
@@ -286,8 +286,8 @@ impl Drop for Leave<'_> {
 
 #[cfg(all(test, not(loom)))]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
 
     use super::*;
 

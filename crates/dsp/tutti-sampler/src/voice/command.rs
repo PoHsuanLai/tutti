@@ -14,7 +14,7 @@ use crate::ports::Commands;
 use crate::stretch;
 
 use super::memory_source::{LoopSetting, VoiceWindow};
-use super::pool::{forward_loop, DrainCounters, LoopRoute, PoolDrops, Retired, StreamAddr};
+use super::pool::{DrainCounters, LoopRoute, PoolDrops, Retired, StreamAddr, forward_loop};
 use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};

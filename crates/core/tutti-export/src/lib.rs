@@ -11,10 +11,10 @@ mod config;
 pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{render_normalized_to_file, Normalize};
+pub use normalize::{Normalize, render_normalized_to_file};
 
 mod graph;
-pub use graph::{RenderGraph, GRAPH_MAX_BLOCK};
+pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
 /// Frame-count arithmetic — pure, and public so a caller can size a render
 /// before committing to one.
 pub use render::plan::{beats_to_seconds, duration_to_frames};

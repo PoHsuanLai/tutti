@@ -49,8 +49,8 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    all_finite, peak, render, silence, DLS_SYNTH, EFFECTS, INSTRUMENTS, MATRIX_MIXER, MIXERS,
-    MULTI_CHANNEL_MIXER, MULTI_SPLITTER, SAMPLER,
+    DLS_SYNTH, EFFECTS, INSTRUMENTS, MATRIX_MIXER, MIXERS, MULTI_CHANNEL_MIXER, MULTI_SPLITTER,
+    SAMPLER, all_finite, peak, render, silence,
 };
 
 use tutti_au_host::parameters::{self, ParamAddress};

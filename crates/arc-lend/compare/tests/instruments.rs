@@ -12,10 +12,10 @@
 //! were the barrier's, not the cell's.
 
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use arc_lend_compare::{begin_counting, end_counting, live_payloads, CountingAlloc, Payload};
+use arc_lend_compare::{CountingAlloc, Payload, begin_counting, end_counting, live_payloads};
 
 mod common;
 use common::Step;

@@ -16,11 +16,11 @@
 //! flight on the same group at once, and only the Stream ID tells them apart.
 //! Buffering per group alone would concatenate them into one corrupt payload.
 
-use tutti_midi_types::ump::{
-    sysex8_message, MidiEvent, UmpMessageType, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END,
-    SYSEX8_STATUS_SINGLE, SYSEX8_STATUS_START,
-};
 use tutti_midi_types::MidiGroup;
+use tutti_midi_types::ump::{
+    MidiEvent, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
+    SYSEX8_STATUS_START, UmpMessageType, sysex8_message,
+};
 
 /// Default cap on a reassembled SysEx8 payload, in bytes. See
 /// [`Sysex8PacketReassembler::with_max_bytes`].
@@ -267,14 +267,15 @@ mod tests {
 
         let mut r = Sysex8PacketReassembler::new();
         r.push(&out[0]);
-        assert!(r
-            .push(&MidiEvent::note_on(
+        assert!(
+            r.push(&MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_none());
+            .is_none()
+        );
         assert_eq!(r.in_flight_count(), 1, "note-on must not terminate SysEx8");
         r.push(&out[1]);
         assert_eq!(payload_of(r.push(&out[2])), data);
@@ -336,14 +337,15 @@ mod tests {
     #[test]
     fn non_sysex8_event_is_ignored() {
         let mut r = Sysex8PacketReassembler::new();
-        assert!(r
-            .push(&MidiEvent::note_on(
+        assert!(
+            r.push(&MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 60,
                 0x8000
             ))
-            .is_none());
+            .is_none()
+        );
         assert!(r.push(&MidiEvent::timing_clock(MidiGroup::FIRST)).is_none());
     }
 }

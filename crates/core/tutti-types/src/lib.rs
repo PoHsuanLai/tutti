@@ -40,9 +40,9 @@ pub mod wav;
 // RT-callback primitives.
 pub use rt::{
     AudioThreadCell, BlockWaits, BorrowGuard, BorrowRef, ClaimConflict, ClaimTable, Claimed,
-    ClaimedRun, Contended, Held, JobGate, PackedAtomic, Participant, PosClaim, PosFrame, PosReader,
-    PosRing, PosWriter, RingWindow, RtScope, RtScopeGuard, RtVec, RwView, ScopedNoDenormals,
-    SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph, MAX_POS_RING_FRAMES,
+    ClaimedRun, Contended, Held, JobGate, MAX_POS_RING_FRAMES, PackedAtomic, Participant, PosClaim,
+    PosFrame, PosReader, PosRing, PosWriter, RingWindow, RtScope, RtScopeGuard, RtVec, RwView,
+    ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph,
 };
 
 // The cell non-scalar state reaches the audio thread through: a control
@@ -61,16 +61,16 @@ pub use value::{
     Adsr, Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, CCNumber, Cents,
     CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz,
     Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param,
-    Param64, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate,
+    Param64, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Q,
     Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread,
-    SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
+    SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
 // and the one rule for which frame a beat lands on.
 pub use value::{
-    first_frame_at_or_after, snap_to_whole_frame, FrameClock, LoopRange, SegmentOrigin,
-    TimelineSegment, FRAME_TOLERANCE,
+    FRAME_TOLERANCE, FrameClock, LoopRange, SegmentOrigin, TimelineSegment,
+    first_frame_at_or_after, snap_to_whole_frame,
 };
 
 // Channel layout — how many channels.
@@ -84,8 +84,8 @@ pub use topology::{ChannelTopology, Speaker};
 // the −3 dB centre/surround coefficient those matrices apply, and it comes along
 // because a caller checking a fold's output has to name the same constant.
 pub use downmix::{
-    fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_channel,
-    fold_planar_to_mono, M3DB,
+    M3DB, fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo,
+    fold_planar_channel, fold_planar_to_mono,
 };
 
 // A flat buffer that carries its own frame width, so a frame index and a sample
@@ -93,11 +93,11 @@ pub use downmix::{
 pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge + latency.
-pub use io::{pump, AudioIn, AudioOut, OnEmpty};
-pub use latency::{delays, Compensation, Delays, Feed, LatencyGraph};
+pub use io::{AudioIn, AudioOut, OnEmpty, pump};
+pub use latency::{Compensation, Delays, Feed, LatencyGraph, delays};
 
 // How long a graph rings after its input stops.
-pub use tail::{graph_tail, GraphTail, TailGraph};
+pub use tail::{GraphTail, TailGraph, graph_tail};
 
 // The audio graph as a value. Only the four names a consumer spells outside a
 // builder come to the root: `Source`, `Edge`, `InPort`, `OutPort`, `NodeSpec`
@@ -120,15 +120,15 @@ pub use meter::{
 pub mod prelude {
     pub use crate::value::{
         Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Frame, Hz, MidiChannel,
-        MidiGroup, Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, SamplePosition,
-        SampleRate, Samples, Seconds, Semitones, Tail, UnitParam, Velocity, Q,
+        MidiGroup, Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition,
+        SampleRate, Samples, Seconds, Semitones, Tail, UnitParam, Velocity,
     };
 
     pub use crate::channels::ChannelLayout;
     pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
     pub use crate::topology::{ChannelTopology, Speaker};
 
-    pub use crate::io::{pump, AudioIn, AudioOut, OnEmpty};
+    pub use crate::io::{AudioIn, AudioOut, OnEmpty, pump};
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
     pub use crate::{ArcLend, Loan, Reader};

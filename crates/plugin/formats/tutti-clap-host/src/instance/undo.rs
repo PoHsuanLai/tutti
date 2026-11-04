@@ -1,7 +1,7 @@
 //! Undo / redo support from the draft `CLAP_EXT_UNDO` extensions.
 
-use super::ext;
 use super::ClapLoaded;
+use super::ext;
 use crate::types::UndoDeltaProperties;
 use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 

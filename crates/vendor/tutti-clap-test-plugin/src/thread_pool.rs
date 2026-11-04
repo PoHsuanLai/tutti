@@ -30,13 +30,13 @@
 //! Lock-free and allocation-free on the audio thread and in the tasks: the
 //! host's no-alloc gates run around both.
 
-use std::ffi::{c_void, CStr};
+use std::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use clap_sys::ext::log::{clap_host_log, CLAP_EXT_LOG, CLAP_LOG_INFO};
+use clap_sys::ext::log::{CLAP_EXT_LOG, CLAP_LOG_INFO, clap_host_log};
 use clap_sys::ext::thread_pool::{
-    clap_host_thread_pool, clap_plugin_thread_pool, CLAP_EXT_THREAD_POOL,
+    CLAP_EXT_THREAD_POOL, clap_host_thread_pool, clap_plugin_thread_pool,
 };
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;

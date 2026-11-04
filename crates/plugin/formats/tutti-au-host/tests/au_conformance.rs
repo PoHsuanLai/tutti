@@ -35,13 +35,13 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    all_finite, impulse, peak, render, silence, DELAY, DLS_SYNTH, DYNAMICS, EFFECTS, INSTRUMENTS,
-    LOWPASS, N_BAND_EQ, SAMPLER,
+    DELAY, DLS_SYNTH, DYNAMICS, EFFECTS, INSTRUMENTS, LOWPASS, N_BAND_EQ, SAMPLER, all_finite,
+    impulse, peak, render, silence,
 };
 
+use tutti_au_host::AuError;
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
-use tutti_au_host::AuError;
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::Samples;
 

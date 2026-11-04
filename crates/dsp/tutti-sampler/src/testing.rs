@@ -13,11 +13,11 @@
 //! position — a test that then fails for a reason nowhere near the code under
 //! test. Unit types make the swap a compile error.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use tutti_core::{Beat, Bpm, Frame, SampleRate, Samples};
-use tutti_graph::{contract, Env, Node, Transport, TransportChanges};
+use tutti_graph::{Env, Node, Transport, TransportChanges, contract};
 
 /// A transport a test can move between blocks, as a real one moves.
 ///

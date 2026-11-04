@@ -62,8 +62,8 @@ mod tests {
     use super::*;
     use crate::midi::{MidiOutRes, UmpOut};
     use bevy_ecs::system::RunSystemOnce;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
 

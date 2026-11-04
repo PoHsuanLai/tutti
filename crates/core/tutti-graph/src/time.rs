@@ -30,7 +30,7 @@
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
 use tutti_types::{
-    first_frame_at_or_after, At, Frame, Latency, SampleRate, Samples, FRAME_TOLERANCE,
+    At, FRAME_TOLERANCE, Frame, Latency, SampleRate, Samples, first_frame_at_or_after,
 };
 
 use crate::node::{Env, Transport, TransportChanges};

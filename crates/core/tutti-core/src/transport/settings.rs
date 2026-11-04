@@ -9,8 +9,8 @@
 //! lock-free cell shared between the UI thread and the audio thread, and a
 //! forwarding method would only rename it.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::state::LoopSpan;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU64};

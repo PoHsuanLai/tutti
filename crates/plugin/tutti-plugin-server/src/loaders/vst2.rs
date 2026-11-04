@@ -21,7 +21,7 @@ use tutti_plugin::{BridgeError, Result};
 #[cfg(feature = "vst2")]
 use tutti_vst2_host::{RenderScratch, Vst2Error, Vst2Instance as Vst2Host, Vst2ProcessContext};
 
-use crate::loaders::common::{single_bus, Meta};
+use crate::loaders::common::{Meta, single_bus};
 
 pub struct Vst2Instance {
     #[cfg(feature = "vst2")]

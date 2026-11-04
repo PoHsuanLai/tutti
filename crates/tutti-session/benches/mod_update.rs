@@ -23,7 +23,7 @@ use tutti_core::{AudioNode, ChannelLayout, SampleRate, Samples};
 use tutti_mod::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{GraphSource, ParamRef, Session};
-use tutti_types::{BeatDuration, Depth, Hz, UnitParam, Q};
+use tutti_types::{BeatDuration, Depth, Hz, Q, UnitParam};
 
 const UPDATES: usize = 2_000;
 

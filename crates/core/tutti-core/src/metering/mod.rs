@@ -20,8 +20,8 @@ mod rt;
 mod tap;
 
 pub use amplitude::{AtomicAmplitude, MasterMeter, MeterReading};
-pub use load::{LoadMeter, LoadReading, LOAD_MEAN_TIME_CONSTANT};
-pub use rt::{meter_output, MeteringContext};
+pub use load::{LOAD_MEAN_TIME_CONSTANT, LoadMeter, LoadReading};
+pub use rt::{MeteringContext, meter_output};
 pub use tap::{AudioTap, TapBusy, TapCons};
 
 // The Bevy resource wrapper (`MeteringRes`) belongs to the host adapter,

@@ -23,7 +23,7 @@ use tutti_types::{
 };
 
 use crate::curve::{Curve, CurveSegment};
-use crate::shape::{shape, LfoShape, Polarity};
+use crate::shape::{LfoShape, Polarity, shape};
 
 /// Time-function layers one program holds, at most: a lane keeps per-layer
 /// state in arrays this long, so it never allocates on the audio thread.

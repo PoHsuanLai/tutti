@@ -351,7 +351,9 @@ pub enum ExportError {
     /// share too. A microphone monitor, a node built unforkable. Nothing was
     /// rendered; remove, freeze or bounce the node, or export a node that it
     /// does not feed.
-    #[error("cannot export: {node} cannot be forked for an offline render (a mic monitor, or a node built unforkable)")]
+    #[error(
+        "cannot export: {node} cannot be forked for an offline render (a mic monitor, or a node built unforkable)"
+    )]
     NotForkable {
         /// The node.
         node: ExportNode,

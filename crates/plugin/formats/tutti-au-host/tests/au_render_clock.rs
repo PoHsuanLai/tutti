@@ -57,7 +57,7 @@ use tutti_au_host::AuInstance;
 use tutti_plugin_types::ChannelLayout;
 
 mod support;
-use support::probe_au::{last_render_sample_time, render_count, Misbehaviour};
+use support::probe_au::{Misbehaviour, last_render_sample_time, render_count};
 
 const BLOCK: u32 = 64;
 const RATE: f64 = 48_000.0;

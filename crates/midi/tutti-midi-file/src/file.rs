@@ -10,13 +10,13 @@
 
 use std::path::Path;
 
-use midly::live::LiveEvent;
 use midly::Smf;
+use midly::live::LiveEvent;
 use tutti_core::{Beat, Bpm};
 use tutti_midi_types::ump::flex_tempo_bpm;
-use tutti_midi_types::{normalize, read_clip_file, MidiEvent, ParsedClipFile};
+use tutti_midi_types::{MidiEvent, ParsedClipFile, normalize, read_clip_file};
 
-use crate::smf::{tracks_of, ParsedMidiFile, SmfTrack};
+use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
 use crate::{Error, MidiFileKind, Result};
 
 /// A decoded MIDI file, in whichever of the two containers it turned out to be.

@@ -3,9 +3,9 @@
 use bevy_app::{App, Plugin};
 use bevy_log::{error, info};
 
+use crate::AudioEngineState;
 use crate::engine::device_state;
 use crate::graph::{AudioConfig, GraphReconcilePlugin};
-use crate::AudioEngineState;
 
 #[cfg(feature = "midi")]
 use crate::midi::TuttiMidiPlugin;

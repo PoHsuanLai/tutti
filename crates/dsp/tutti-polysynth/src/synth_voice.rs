@@ -101,11 +101,7 @@ impl SynthVoice {
     }
     /// `1.0` while the key (or a pedal) holds the gate open, `0.0` after.
     pub(crate) fn gate_value(&self) -> f32 {
-        if self.gate {
-            1.0
-        } else {
-            0.0
-        }
+        if self.gate { 1.0 } else { 0.0 }
     }
     #[cfg(test)]
     pub fn mpe_state(&self) -> &MpeVoiceState {

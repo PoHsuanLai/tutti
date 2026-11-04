@@ -48,14 +48,14 @@ mod support;
 
 use support::corpus;
 use support::probe_au::{
-    last_presentation_latency, Misbehaviour, PROBE_DEPENDENT_PARAMS, PROBE_META_PARAM_ID,
+    Misbehaviour, PROBE_DEPENDENT_PARAMS, PROBE_META_PARAM_ID, last_presentation_latency,
 };
 
+use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, DependentParam, MetaScope, ParamAddress};
 use tutti_au_host::types::{
     K_AUDIO_UNIT_SCOPE_GLOBAL, K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
 };
-use tutti_au_host::BusDirection;
 use tutti_types::Seconds;
 
 const RATE: f64 = 48_000.0;

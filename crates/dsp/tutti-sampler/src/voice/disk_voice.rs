@@ -16,8 +16,8 @@
 //! render.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::{
@@ -31,7 +31,7 @@ use tutti_graph::{
 
 use super::clock::{BlockClock, Clock};
 use super::fault::FaultLatch;
-use super::interp::{past_window, place, Gate};
+use super::interp::{Gate, past_window, place};
 use super::live_read::{LiveRead, Out};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
@@ -1052,7 +1052,7 @@ fn force_no_skip() -> bool {
 mod tests {
     use super::*;
     use crate::butler::{RegionBuffer, RegionId};
-    use crate::testing::{block, MockTransport};
+    use crate::testing::{MockTransport, block};
     use std::path::PathBuf;
     use tutti_core::{Bpm, SamplePosition, Samples};
     use tutti_graph::contract::Direct;
@@ -1687,11 +1687,7 @@ mod tests {
     /// (the ring's width) with the lanes, and a lane past the reader is
     /// silent (`render_lanes` clears it).
     fn wide_expected(width: usize, k: u64, c: usize) -> f32 {
-        if c < width {
-            wide_value(k, c)
-        } else {
-            0.0
-        }
+        if c < width { wide_value(k, c) } else { 0.0 }
     }
 
     /// **A steady block read writes the caller's lanes as the frame path's

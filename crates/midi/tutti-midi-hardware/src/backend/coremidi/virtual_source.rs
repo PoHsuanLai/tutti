@@ -17,9 +17,9 @@
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use coremidi_sys::{
-    kMIDIProtocol_2_0, MIDIClientCreate, MIDIClientDispose, MIDIClientRef, MIDIEndpointDispose,
-    MIDIEndpointRef, MIDIEventList, MIDIEventListAdd, MIDIEventListInit, MIDIProtocolID,
-    MIDIReceivedEventList, MIDISourceCreateWithProtocol, MIDITimeStamp,
+    MIDIClientCreate, MIDIClientDispose, MIDIClientRef, MIDIEndpointDispose, MIDIEndpointRef,
+    MIDIEventList, MIDIEventListAdd, MIDIEventListInit, MIDIProtocolID, MIDIReceivedEventList,
+    MIDISourceCreateWithProtocol, MIDITimeStamp, kMIDIProtocol_2_0,
 };
 use std::mem::MaybeUninit;
 use tracing::debug;

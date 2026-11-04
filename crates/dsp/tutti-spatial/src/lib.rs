@@ -29,8 +29,8 @@ pub(crate) use target::AngleSmoother;
 pub use target::SpatialTarget;
 
 pub use vbap::{
-    build_vbap_mix, vbap_mix_parts, VbapError, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts,
-    VbapPannerControls, VbapPannerNode, VbapSource,
+    VbapError, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapPannerControls,
+    VbapPannerNode, VbapSource, build_vbap_mix, vbap_mix_parts,
 };
 
 #[cfg(feature = "hrtf")]

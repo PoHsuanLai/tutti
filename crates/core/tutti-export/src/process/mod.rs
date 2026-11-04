@@ -25,6 +25,6 @@ pub use resample::ChunkSize;
 // it before measuring, and that entry point is available with no codec on — it
 // renders and normalizes, then fails at the encode. The streaming `Resampler`
 // is only reached from the encode arms, so it keeps the gate.
-pub(crate) use resample::resample_rendered;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use resample::Resampler;
+pub(crate) use resample::resample_rendered;

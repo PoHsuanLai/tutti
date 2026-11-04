@@ -10,7 +10,7 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
-use crate::loaders::common::{single_bus, Meta};
+use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 /// Build the catalog descriptor from CLAP factory info, carrying its feature

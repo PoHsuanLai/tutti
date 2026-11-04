@@ -288,8 +288,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "a threaded stress run; the loom model covers it")]
     fn concurrent_reader_never_observes_a_torn_snapshot() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let mut writer = TransportWriter::new();
         let stop = Arc::new(AtomicBool::new(false));

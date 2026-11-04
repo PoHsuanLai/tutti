@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use tutti_types::RwView;
 
-use crate::arena::{borrow_sorted, Arena, Line, Role};
+use crate::arena::{Arena, Line, Role, borrow_sorted};
 use crate::event::Event;
 use crate::plan::Direct;
 

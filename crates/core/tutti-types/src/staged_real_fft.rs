@@ -367,10 +367,12 @@ mod tests {
             let mut back = vec![0.0f32; n];
             plain.inverse(&mut want, &mut back, &mut scratch);
             let again = run_inverse(&f, got);
-            assert!(again
-                .iter()
-                .zip(&back)
-                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(
+                again
+                    .iter()
+                    .zip(&back)
+                    .all(|(a, b)| a.to_bits() == b.to_bits())
+            );
         }
     }
 

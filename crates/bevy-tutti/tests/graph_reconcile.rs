@@ -26,11 +26,11 @@ mod graph_reconcile {
     use bevy_app::App;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{
-        commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, AudioGraphRes,
-        GraphReconcileSystems, SpawnAudioNode,
-    };
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::{
+        AudioGraphRes, GraphReconcileSystems, SpawnAudioNode, commit_graph, crossfade_audio_node,
+        engine_ready, reconcile_node_despawn,
+    };
     use tutti_core::{AudioNode, Hz};
     use tutti_nodes::testing::Osc;
 
@@ -68,8 +68,8 @@ mod graph_reconcile {
     /// failed to build — and must let it run once the resource is present.
     #[test]
     fn engine_ready_gates_plain_res_system() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let ran = Arc::new(AtomicUsize::new(0));
         let ran_c = ran.clone();
@@ -185,8 +185,8 @@ mod graph_reconcile {
         // The `On<Remove, AudioNode>` observer fires at command-flush, so the
         // graph.remove (an edit) happens the same frame the despawn flushes; the
         // next frame's Commit-phase `commit_graph` coalesces the edit.
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         let mut app = test_app();
 
@@ -253,10 +253,11 @@ mod graph_reconcile {
         app.update();
 
         let node_id_before = *app.world().get::<AudioNode>(entity).expect("AudioNode");
-        assert!(app
-            .world()
-            .resource::<AudioGraphRes>()
-            .contains(node_id_before));
+        assert!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .contains(node_id_before)
+        );
 
         // Replace with a different oscillator — same NodeKey, new unit.
         {
@@ -272,10 +273,11 @@ mod graph_reconcile {
         // Same NodeKey stays — that's the contract of crossfade.
         let node_id_after = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert_eq!(node_id_before, node_id_after);
-        assert!(app
-            .world()
-            .resource::<AudioGraphRes>()
-            .contains(node_id_after));
+        assert!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .contains(node_id_after)
+        );
     }
 }
 
@@ -291,6 +293,7 @@ mod audio_param {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use bevy_tutti::AudioEngineState;
     use bevy_tutti::graph::{
         AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
         SessionNode, TransportRes,
@@ -299,7 +302,6 @@ mod audio_param {
     use bevy_tutti::modulation::{
         Macro, ModRange, ModRoute, ModSource, ParamRef, TuttiModulationPlugin,
     };
-    use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
     use tutti_types::{Drive, Hz, UnitParam};
     // Only the modulation tests below use these.

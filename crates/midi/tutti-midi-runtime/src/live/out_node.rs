@@ -12,8 +12,8 @@
 //!
 //! Its fork discards: an offline render sends nothing to a wire.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_core::ChannelLayout;
 use tutti_graph::{

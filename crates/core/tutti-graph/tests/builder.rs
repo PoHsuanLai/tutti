@@ -7,7 +7,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::{prepare, Kind, TestNode};
+use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventOut, ForkByClone, GraphBuilder, Io, Node, Prepare,
     Renderer, Shape, Status, Transport, Unforkable,

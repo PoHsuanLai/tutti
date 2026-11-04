@@ -10,8 +10,8 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use tutti_session::{Phase, SessionEvent};
 
-use crate::graph::{engine_ready, AudioConfig, AudioGraphRes, SessionPhaseSystems};
 use crate::Device;
+use crate::graph::{AudioConfig, AudioGraphRes, SessionPhaseSystems, engine_ready};
 use tutti_core::ChannelLayout;
 use tutti_cpal::StreamFault;
 

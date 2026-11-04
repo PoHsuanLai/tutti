@@ -26,7 +26,7 @@ use std::f64::consts::TAU;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use tutti_analysis::{measure_loudness, yin, yin_track, ChannelLayout, LoudnessConfig, YinConfig};
+use tutti_analysis::{ChannelLayout, LoudnessConfig, YinConfig, measure_loudness, yin, yin_track};
 use tutti_core::SampleRate;
 use tutti_types::Interleaved;
 

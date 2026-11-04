@@ -25,7 +25,7 @@ use bevy_tutti::export::{
     ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
-use tutti_core::{Hz, Tail, Q};
+use tutti_core::{Hz, Q, Tail};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
@@ -33,7 +33,7 @@ use tutti_graph::{
     Cx, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Prepare, Shape, Status,
 };
-use tutti_nodes::testing::{assert_golden, Osc};
+use tutti_nodes::testing::{Osc, assert_golden};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::{SampleRate, Samples};
 
@@ -176,7 +176,7 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
 /// clamped across a stereo root). A fork starts reset, which is what a
 /// fresh graph is.
 fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    use tutti_export::{render_to_buffers, FrozenClock, RenderGraph};
+    use tutti_export::{FrozenClock, RenderGraph, render_to_buffers};
     use tutti_graph::GraphBuilder;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -714,8 +714,8 @@ mod plugin {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
-    use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_core::AudioNode;
+    use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -1832,13 +1832,13 @@ mod disk {
 /// what that pool does.
 mod off_thread {
     use std::sync::atomic::AtomicU32;
-    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use std::thread::ThreadId;
     use std::time::Duration;
 
     use super::*;
     use bevy_tutti::graph::GraphSource;
-    use tutti_graph::{param_parts, ForkBuild, ParamNode, ParamSet};
+    use tutti_graph::{ForkBuild, ParamNode, ParamSet, param_parts};
     use tutti_types::{Amplitude, Param, UnitParam};
 
     /// A constant the fork renders: a value the gather read.

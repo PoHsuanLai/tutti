@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tutti_plugin::handles::PluginHandle;
-use tutti_plugin::{in_process_vst2_client, FeatureReport, Features, PresetId};
+use tutti_plugin::{FeatureReport, Features, PresetId, in_process_vst2_client};
 
 #[path = "support/probe_path.rs"]
 mod probe_path;

@@ -1074,11 +1074,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
         &[],
         None,
         |_, _, i| {
-            if i == 0 {
-                1.0
-            } else {
-                0.0
-            }
+            if i == 0 { 1.0 } else { 0.0 }
         },
     );
     let ch0 = &rendered.out[0][0];
@@ -1197,9 +1193,9 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 /// 64, fails; the sensitivity not stored → 0.55 at sample 192, fails.
 #[test]
 fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
+    use tutti_midi_types::PitchBendSensitivity;
     use tutti_midi_types::convert::signed_f32_to_bend_u32;
     use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-    use tutti_midi_types::PitchBendSensitivity;
 
     if !harness_ready() {
         return;
@@ -1400,7 +1396,7 @@ fn context_requirements_are_read_after_the_component_initializes() {
 #[test]
 fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     use tutti_vst3_host::host::conformance::plugin_perform_edit;
-    use tutti_vst3_host::{PluginNotification, NOTIFICATION_CAPACITY};
+    use tutti_vst3_host::{NOTIFICATION_CAPACITY, PluginNotification};
 
     let _guard = plugin_guard();
     let Some(mut inst) = load_probe(512) else {

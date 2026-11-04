@@ -121,7 +121,7 @@ impl Vst3Sample for f64 {
 
 #[cfg(test)]
 mod process_mode_tests {
-    use super::{sdk_enum_i32, ProcessMode, ProcessModes_};
+    use super::{ProcessMode, ProcessModes_, sdk_enum_i32};
 
     /// The wire values must be the SDK's, not a re-declared copy. A host that
     /// sends 2 where the plugin reads `kPrefetch` asks for the wrong behaviour

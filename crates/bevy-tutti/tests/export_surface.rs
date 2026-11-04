@@ -13,8 +13,8 @@
 #[macro_use]
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;

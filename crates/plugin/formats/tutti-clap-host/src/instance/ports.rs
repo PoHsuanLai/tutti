@@ -12,21 +12,22 @@ use tutti_types::ChannelTopology;
 #[cfg(feature = "clap-extras")]
 use crate::types::AudioPortConfigRequest;
 use clap_sys::ext::ambisonic::{
-    clap_ambisonic_config, CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
+    CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
     CLAP_AMBISONIC_NORMALIZATION_N3D, CLAP_AMBISONIC_NORMALIZATION_SN2D,
     CLAP_AMBISONIC_NORMALIZATION_SN3D, CLAP_AMBISONIC_ORDERING_ACN, CLAP_AMBISONIC_ORDERING_FUMA,
+    clap_ambisonic_config,
 };
-use clap_sys::ext::audio_ports::{clap_audio_port_info, CLAP_PORT_MONO, CLAP_PORT_STEREO};
+use clap_sys::ext::audio_ports::{CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_audio_port_info};
 use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
 #[cfg(feature = "clap-extras")]
 use clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request;
 use clap_sys::ext::note_name::clap_note_name;
 use clap_sys::ext::note_ports::{
-    clap_note_port_info, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI2,
-    CLAP_NOTE_DIALECT_MIDI_MPE,
+    CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI_MPE,
+    CLAP_NOTE_DIALECT_MIDI2, clap_note_port_info,
 };
 use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
-use clap_sys::ext::voice_info::{clap_voice_info, CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES};
+use clap_sys::ext::voice_info::{CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES, clap_voice_info};
 use std::ffi::CStr;
 #[cfg(feature = "clap-extras")]
 use std::ptr;

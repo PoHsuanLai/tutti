@@ -83,8 +83,8 @@ impl tutti_graph::Node for TransportTone {
 fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump, Unforkable};
-    use tutti_types::graph::{OutPort, Source};
     use tutti_types::NodeKey;
+    use tutti_types::graph::{OutPort, Source};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
@@ -286,8 +286,8 @@ impl tutti_core::Pool for GatedPool {
 #[test]
 fn graph_engine_on_a_worker_pool_is_allocation_free() {
     use tutti_graph::{Editor, ForkByClone, Prepare};
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::NodeKey;
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);

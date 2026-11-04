@@ -31,11 +31,11 @@ use tutti_graph::{
 };
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{
-    in_process_vst2_client, InProcessVst2Client, PluginForkError, PresetId, RenderMode,
+    InProcessVst2Client, PluginForkError, PresetId, RenderMode, in_process_vst2_client,
 };
 use tutti_plugin_types::{Normalized, ParamAddress};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{OutPort, Source};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/probe_path.rs"]

@@ -187,13 +187,15 @@ mod tests {
                 .sysex8_status()
                 .is_none()
         );
-        assert!(sysex8_message(&[MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        )])
-        .is_none());
+        assert!(
+            sysex8_message(&[MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            )])
+            .is_none()
+        );
         assert!(sysex8_message(&[]).is_none());
     }
 

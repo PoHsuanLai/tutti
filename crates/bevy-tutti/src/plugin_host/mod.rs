@@ -59,26 +59,27 @@ pub mod live_resize;
 /// reaper system. Public because the editor systems name it in their
 /// signatures — the observers must never live in a `Send + Sync` component.
 #[cfg(target_os = "macos")]
-pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
+pub use live_resize::{LiveResizeRegistry, reap_orphaned_live_resize_observers};
 
-pub use bind::{plugin_bind_meter, PluginMeterBound, PluginShadow};
-pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
+pub use bind::{PluginMeterBound, PluginShadow, plugin_bind_meter};
+pub use catalog::{InFlightProbes, PluginProbed, ProbePlugin, poll_probes, start_probe};
 pub use editor::{
-    editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
-    plugin_editor_resize_request_system, plugin_editor_window_close_system,
-    plugin_editor_window_resize_system, set_editor_visible_observer, PendingPluginEditor,
-    PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen, SetEditorVisible, Visibility,
+    PendingPluginEditor, PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen,
+    SetEditorVisible, Visibility, editor_is_open, plugin_editor_attach_system,
+    plugin_editor_idle_system, plugin_editor_resize_request_system,
+    plugin_editor_window_close_system, plugin_editor_window_resize_system,
+    set_editor_visible_observer,
 };
-pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginLiveness};
+pub use health::{PluginHealth, PluginLiveness, plugin_health_poll, plugin_state_snapshot};
 pub use load::{
-    plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
-    PluginRequest,
+    PendingPlugin, PluginLoadDone, PluginLoadTerminated, PluginRequest, plugin_load_promote,
+    plugin_load_start,
 };
 #[cfg(feature = "export")]
 pub use render_mode::plugin_render_mode;
 pub use scan::{
-    poll_scan, start_scan, InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins,
-    ScanProgressed,
+    InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins, ScanProgressed, poll_scan,
+    start_scan,
 };
 
 /// Non-send marker that pins plugin editor systems to the main thread.

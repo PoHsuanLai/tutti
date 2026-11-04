@@ -9,7 +9,7 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
-use crate::ramp::{self, block_driven, Ramp};
+use crate::ramp::{self, Ramp, block_driven};
 use tutti_core::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;

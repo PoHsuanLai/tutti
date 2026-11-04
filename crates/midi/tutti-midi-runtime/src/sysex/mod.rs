@@ -25,7 +25,7 @@
 pub mod reassembler7;
 pub mod reassembler8;
 
-pub use reassembler7::{Sysex7PacketReassembler, DEFAULT_MAX_SYSEX_BYTES};
+pub use reassembler7::{DEFAULT_MAX_SYSEX_BYTES, Sysex7PacketReassembler};
 pub use reassembler8::{
-    Sysex8Abort, Sysex8Event, Sysex8PacketReassembler, DEFAULT_MAX_SYSEX8_BYTES,
+    DEFAULT_MAX_SYSEX8_BYTES, Sysex8Abort, Sysex8Event, Sysex8PacketReassembler,
 };

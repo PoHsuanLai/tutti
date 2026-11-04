@@ -15,28 +15,28 @@ mod sysex;
 
 pub use gather::gather_midi;
 pub use live::{
-    compile_routes, input_port_of, input_ports, MidiInputControls, MidiInputNode, MidiMailbox,
-    MidiOutControls, MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
     CHANNELLESS_PORT, MAILBOX_CAPACITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
-    MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY,
+    MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY, MidiInputControls, MidiInputNode, MidiMailbox,
+    MidiOutControls, MidiOutNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
+    compile_routes, input_port_of, input_ports,
 };
 pub use negotiate::{
     CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,
     EndpointInquiry, EndpointNegotiator, FunctionBlock,
 };
 pub use outbound::{
-    ClockMaster, ClockNode, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest,
-    Translated, CLOCK_EVENT_CAPACITY, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
+    CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
+    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest, Translated,
 };
 pub use schedule::{
-    HarmonyControls, HarmonyNode, MidiClipControls, MidiClipNode, TimedHarmony, TimedMidiEvent,
-    CLIP_EVENT_CAPACITY, HARMONY_EVENT_CAPACITY,
+    CLIP_EVENT_CAPACITY, HARMONY_EVENT_CAPACITY, HarmonyControls, HarmonyNode, MidiClipControls,
+    MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
 // The two capacity ceilings come along: a caller sizing its own SysEx buffer, or
 // choosing a non-default limit, has to name the same bound.
 pub use sysex::{
-    Sysex7PacketReassembler, Sysex8Abort, Sysex8Event, Sysex8PacketReassembler,
-    DEFAULT_MAX_SYSEX8_BYTES, DEFAULT_MAX_SYSEX_BYTES,
+    DEFAULT_MAX_SYSEX_BYTES, DEFAULT_MAX_SYSEX8_BYTES, Sysex7PacketReassembler, Sysex8Abort,
+    Sysex8Event, Sysex8PacketReassembler,
 };
 
 // Value types that live one crate down, re-exported so a consumer of the runtime

@@ -44,7 +44,7 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
+use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
 
 use std::time::{Duration, Instant};
 

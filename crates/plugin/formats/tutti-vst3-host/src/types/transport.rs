@@ -1,7 +1,7 @@
 //! VST3-specific encoding of the shared [`TransportInfo`] into VST3's
 //! `ProcessContext` struct.
 
-use tutti_plugin_types::{is_usable, TransportInfo};
+use tutti_plugin_types::{TransportInfo, is_usable};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
 /// VST3 `IProcessContextRequirements` flag bits as simple `u32` constants,

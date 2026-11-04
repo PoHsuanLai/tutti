@@ -79,8 +79,8 @@ pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle}
 // `Seconds` from `get_tail_time`. Re-exported because a consumer that cannot
 // name a returned type cannot bind it — `tutti-plugin-server` depends on this
 // crate but not on `tutti-types`.
-pub use tutti_types::value::units::Seconds;
 pub use tutti_types::Samples;
+pub use tutti_types::value::units::Seconds;
 
 // Bus topology vocabulary. Unlike the parameter types below, these ARE flat
 // re-exports: `bus_count` / `bus_layout` / `supported_channel_configs` are
@@ -148,7 +148,7 @@ pub use preset::AuPreset;
 // which is the function a preset browser is built on, so a caller cannot name
 // what it gets back without it.
 #[cfg(target_os = "macos")]
-pub use aupreset::{read_preset_metadata, AuPresetIdentity};
+pub use aupreset::{AuPresetIdentity, read_preset_metadata};
 // Flat-re-exported for the same reason `AuPreset` is: `AuParameterListener` is
 // the type a host names to hold a registration, `AuEvent` is what its callback
 // receives, and `EventAddress` is an argument to every `watch_*` method. All
@@ -156,7 +156,7 @@ pub use aupreset::{read_preset_metadata, AuPresetIdentity};
 // `tutti_plugin_types` notification vocabulary to translate into.
 #[cfg(target_os = "macos")]
 pub use listener::{
-    emit_gesture, notify_all_parameters, AuEvent, AuParameterListener, EventAddress,
+    AuEvent, AuParameterListener, EventAddress, emit_gesture, notify_all_parameters,
 };
 // Flat-re-exported for the reason `AuParameterListener` is: `RenderNotify` is
 // the handle a host holds, `RenderNotification`/`RenderPhase` are what its

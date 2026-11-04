@@ -35,32 +35,31 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
 use vst3::Steinberg::{
-    kResultFalse, kResultOk,
     Vst::{
         IAudioProcessorTrait, IComponentTrait, MediaTypes_::kEvent, ProcessSetup, SpeakerArr,
         SpeakerArrangement,
     },
+    kResultFalse, kResultOk,
 };
 
 use tutti_plugin_types::{PointPool, RtMidiEvents};
 use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::com::{
-    event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl, MIN_POINT_ROOM,
+    EventList, MIN_POINT_ROOM, ParameterChangesImpl, event_list_ptr, param_changes_ptr,
 };
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::sdk_enum_i32;
 use crate::types::{
-    to_process_context, AudioBuffer, BufferPtrs, BusInfo as BusInfoWrap, MidiEvent,
-    ParameterChanges, PluginInfo, ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents,
-    Vst3Sample,
+    AudioBuffer, BufferPtrs, BusInfo as BusInfoWrap, MidiEvent, ParameterChanges, PluginInfo,
+    ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample, to_process_context,
 };
 
 use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
 use super::midi_learn::MidiLearnProducer;
-use super::midi_mapping::{midi_to_mapped_controller, stage_input_events, CcRoute, MidiCcMapping};
-use super::{speakers, IComponentExt, K_INPUT, K_OUTPUT};
+use super::midi_mapping::{CcRoute, MidiCcMapping, midi_to_mapped_controller, stage_input_events};
+use super::{IComponentExt, K_INPUT, K_OUTPUT, speakers};
 
 pub(super) const K_EVENT: i32 = sdk_enum_i32(kEvent);
 

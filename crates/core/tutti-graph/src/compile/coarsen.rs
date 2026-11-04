@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::Samples;
 
-use crate::cost::{Work, GRAIN, TASK_DISPATCH};
+use crate::cost::{GRAIN, TASK_DISPATCH, Work};
 use crate::plan::{Csr, Span};
 
 /// The task tables and the cost model's totals.

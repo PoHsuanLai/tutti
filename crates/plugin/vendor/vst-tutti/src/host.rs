@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::{fmt, ptr, slice};
 
 use crate::{
-    api::{self, consts::*, AEffect, ChunkError, PluginFlags, PluginMain, Supported, TimeInfo},
+    api::{self, AEffect, ChunkError, PluginFlags, PluginMain, Supported, TimeInfo, consts::*},
     buffer::AudioBuffer,
     channels::ChannelInfo,
     editor::{Editor, Rect},

@@ -9,7 +9,7 @@ use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 
-use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Tail, Q};
+use tutti_core::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Tail};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -715,7 +715,7 @@ impl<F: Real> Clone for SvfFilterNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, make_impulse, rms};
-    use crate::test_support::{drive_block, prepared, RATE};
+    use crate::test_support::{RATE, drive_block, prepared};
     use tutti_graph::contract::{assert_param_fork, drive};
 
     /// `node`, prepared at 44.1 kHz, over a mono `input` in one block.

@@ -4,10 +4,10 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{prepare, Kind, TestNode};
+use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     CommitError, Cx, Editor, Executor, Io, Node, Prepare, Reference, Shape, Status, Transport,
     Unforkable,

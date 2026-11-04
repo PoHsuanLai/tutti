@@ -7,8 +7,8 @@ use super::enumerate::unpack_id;
 use super::sys;
 use crate::capability::EndpointId;
 use crate::error::Result;
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
+use tutti_midi_types::ump::MidiEvent;
 
 /// An open ALSA output, as a [`MidiOut`].
 pub struct AlsaOutput {

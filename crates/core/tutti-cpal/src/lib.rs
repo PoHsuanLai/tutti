@@ -15,12 +15,12 @@ pub use block::OutputBlock;
 pub use driver::{DeviceInfo, Stopped, TuttiDriver};
 pub use driver_seam::{
     CpalDriver, CpalStream, ManualRunning, ManualStream, ManualStreamDriver, OutputSpec,
-    RunningStream, StreamDriver, PREFERRED_QUANTUM,
+    PREFERRED_QUANTUM, RunningStream, StreamDriver,
 };
 pub use error::{Error, Result};
 pub use faults::{StreamFault, StreamFaultKind, StreamFaults};
-pub use host::{available_hosts, AudioHost, DeviceHost, DeviceSelector};
-pub use output::{process_audio, AudioCallbackState, AudioEngine, MAX_FRAMES};
+pub use host::{AudioHost, DeviceHost, DeviceSelector, available_hosts};
+pub use output::{AudioCallbackState, AudioEngine, MAX_FRAMES, process_audio};
 
 // Re-exported for the same reason `tutti-midi-file` re-exports `midly`: this
 // crate's public surface already names cpal types (`SampleFormat` in

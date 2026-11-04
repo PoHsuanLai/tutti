@@ -62,7 +62,7 @@ use lifecycle::Lifecycle;
 use messages::{AudioResponse, Command};
 use parking_lot::Mutex;
 use payload_pool::PayloadPool;
-use progress::{StateProgress, PROGRESS_TIMEOUT};
+use progress::{PROGRESS_TIMEOUT, StateProgress};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

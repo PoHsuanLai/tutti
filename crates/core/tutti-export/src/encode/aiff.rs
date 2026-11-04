@@ -11,7 +11,7 @@
 //! beyond the PCM scaling every format does.
 
 use crate::config::ExportConfig;
-use crate::encode::{pump_blocks, Encoder};
+use crate::encode::{Encoder, pump_blocks};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};

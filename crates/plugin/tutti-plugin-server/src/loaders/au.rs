@@ -18,11 +18,11 @@ use tutti_plugin::server::{
     RenderMode, WindowHandle,
 };
 
-use crate::loaders::common::{single_bus, Meta};
+use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
-use tutti_au_host::{component, parameters, AuInstance as AuHostInstance, Samples};
+use tutti_au_host::{AuInstance as AuHostInstance, Samples, component, parameters};
 
 /// Map the AU host's native component type to the wire `AuComponentType` mirror.
 #[cfg(all(target_os = "macos", feature = "au"))]

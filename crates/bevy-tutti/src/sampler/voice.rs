@@ -41,8 +41,8 @@ use bevy_ecs::prelude::*;
 use tutti_core::ChannelLayout;
 use tutti_sampler::{Voice, VoiceNode, VoiceNodeHandle};
 
-use crate::graph::insert_and_bind;
 use crate::graph::NodeControls;
+use crate::graph::insert_and_bind;
 
 /// Marks an entity whose audio node is a sampler voice.
 ///

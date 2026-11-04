@@ -20,7 +20,7 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, load_probe_with, render, ProbeEnv, Rig};
+use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, load_probe_with, render};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -34,8 +34,8 @@ use tutti_graph::{
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
 use tutti_plugin_types::{Normalized, ParamAddress, ParamId};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{OutPort, Source};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;

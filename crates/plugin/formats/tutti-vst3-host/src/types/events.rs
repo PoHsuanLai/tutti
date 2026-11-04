@@ -31,7 +31,7 @@
 pub use tutti_midi_types::MidiEvent;
 
 use tutti_plugin_types::{
-    is_usable, note_id_for, NoteExpressionType, NoteExpressionValue, SysExRef,
+    NoteExpressionType, NoteExpressionValue, SysExRef, is_usable, note_id_for,
 };
 
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
@@ -2150,9 +2150,9 @@ mod tests {
     /// fails.
     #[test]
     fn a_per_note_bend_is_tuned_over_its_channels_range() {
+        use tutti_midi_types::PitchBendSensitivity;
         use tutti_midi_types::convert::signed_f32_to_bend_u32;
         use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-        use tutti_midi_types::PitchBendSensitivity;
 
         let bend = |channel: u8, amount: f32| {
             MidiEvent::per_note_pitch_bend(

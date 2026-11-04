@@ -6,11 +6,11 @@
 //! `respond` callback lets each test script the server's replies.
 
 use crate::host::handles::control_handle::PluginHandle;
-use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
+use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParamAddress, ParamId,
-    ParameterInfo, PluginDescriptor, PluginTail, Samples, PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, PROTOCOL_VERSION,
+    ParamAddress, ParamId, ParameterInfo, PluginDescriptor, PluginTail, Samples,
 };
 use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
@@ -66,7 +66,7 @@ fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMess
 fn handle_with_mock_server(
     respond: impl Fn(HostMessage) -> Option<BridgeMessage> + Send + 'static,
 ) -> (PluginHandle, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     let path = unique_socket_path("handle");
     let _ = std::fs::remove_file(&path);
@@ -168,7 +168,7 @@ fn handle_with_multi_reply_server(
     BridgeThread,
     std::thread::JoinHandle<()>,
 ) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
+    use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
 
     let path = unique_socket_path("handle-multi");
     let _ = std::fs::remove_file(&path);
@@ -480,7 +480,9 @@ fn handle_open_editor_errors_for_missing_plugin() {
     }
 
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|_| None);
-    assert!(handle
-        .open_editor(FakeWindow, crate::handles::ContentScale::IDENTITY)
-        .is_err());
+    assert!(
+        handle
+            .open_editor(FakeWindow, crate::handles::ContentScale::IDENTITY)
+            .is_err()
+    );
 }

@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::lanes::{accumulate, scale, BlockScratch};
+use crate::lanes::{BlockScratch, accumulate, scale};
 use crate::nonempty;
 use crate::stretch;
 

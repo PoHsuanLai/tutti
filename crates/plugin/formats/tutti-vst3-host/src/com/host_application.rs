@@ -13,16 +13,14 @@
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
-    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
-    IPlugFrame_iid,
+    IPlugFrame_iid, TUID,
     Vst::{
-        IAttributeList, IComponentHandler2_iid, IComponentHandler3_iid,
-        IComponentHandlerBusActivation_iid, IComponentHandler_iid, IHostApplication,
-        IHostApplicationTrait, IHostApplication_iid, IMessage, IPlugInterfaceSupport,
-        IPlugInterfaceSupportTrait, IPlugInterfaceSupport_iid, IProgress_iid, IUnitHandler2_iid,
-        IUnitHandler_iid, String128,
+        IAttributeList, IComponentHandler_iid, IComponentHandler2_iid, IComponentHandler3_iid,
+        IComponentHandlerBusActivation_iid, IHostApplication, IHostApplication_iid,
+        IHostApplicationTrait, IMessage, IPlugInterfaceSupport, IPlugInterfaceSupport_iid,
+        IPlugInterfaceSupportTrait, IProgress_iid, IUnitHandler_iid, IUnitHandler2_iid, String128,
     },
-    TUID,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
 };
 use vst3::{Class, ComWrapper};
 
@@ -221,9 +219,9 @@ impl IPlugInterfaceSupportTrait for HostApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vst3::com_scrape_types::Unknown;
     use vst3::Steinberg::FUnknown;
     use vst3::Steinberg::Vst::{IDataExchangeHandler_iid, IMidiMapping_iid};
+    use vst3::com_scrape_types::Unknown;
 
     /// The host must not claim an interface it does not install.
     ///

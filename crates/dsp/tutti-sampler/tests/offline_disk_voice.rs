@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tutti_core::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
-use tutti_graph::{contract, Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges};
+use tutti_graph::{Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges, contract};
 use tutti_sampler::{
     Command, DiskStreamer, DiskVoice, LoopSetting, Playback, Voice, VoiceNode, VoiceSource,
 };

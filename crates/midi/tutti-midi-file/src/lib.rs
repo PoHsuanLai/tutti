@@ -4,11 +4,11 @@ pub mod clip;
 mod file;
 pub mod smf;
 
-pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
+pub use clip::{MidiFileKind, read_clip_file_from_path, write_clip_file_to_path};
 pub use file::{MidiFile, SmfFile};
 pub use smf::{
-    encode_midi_file, write_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfNote,
-    SmfTimedEvent, SmfTrack,
+    MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfNote, SmfTimedEvent, SmfTrack,
+    encode_midi_file, write_midi_file,
 };
 
 use thiserror::Error;
@@ -69,8 +69,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// [`clip`] is the *file-level* (path) half; these are the byte-level types it
 /// reads and writes.
 pub use tutti_midi_types::{
+    CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
 
 /// `midly` itself, for a consumer that needs the raw SMF vocabulary.

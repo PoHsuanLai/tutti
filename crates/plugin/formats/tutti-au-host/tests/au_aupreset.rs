@@ -64,8 +64,8 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    all_finite, find_apple_preset_for, peak, render, silence, DELAY, DISTORTION, LOWPASS,
-    SPATIAL_MIXER,
+    DELAY, DISTORTION, LOWPASS, SPATIAL_MIXER, all_finite, find_apple_preset_for, peak, render,
+    silence,
 };
 
 use tutti_au_host::AuError;

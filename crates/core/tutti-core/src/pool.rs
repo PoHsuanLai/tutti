@@ -67,7 +67,7 @@
 //! equal-priority real-time threads at a quantum's end). Above it is wrong
 //! too: a helper would then preempt the callback on its core.
 
-use std::sync::atomic::{fence, AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
@@ -442,9 +442,11 @@ mod tests {
         let s = Arc::clone(&started);
         let pool = WorkerPool::builder(4)
             .on_start(Arc::new(move |i| {
-                assert!(std::thread::current()
-                    .name()
-                    .is_some_and(|n| n == format!("tutti-worker-{i}")));
+                assert!(
+                    std::thread::current()
+                        .name()
+                        .is_some_and(|n| n == format!("tutti-worker-{i}"))
+                );
                 s.fetch_add(1, Ordering::Relaxed);
             }))
             .build();

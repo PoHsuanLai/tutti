@@ -20,7 +20,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::{Amplitude, ChannelLayout, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};

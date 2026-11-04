@@ -17,8 +17,8 @@
 
 use tutti_core::{Amplitude, Hz, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
-    ExportConfig, FrozenClock, RenderClock, RenderConfig, RenderGraph, Resample,
+    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderClock,
+    RenderConfig, RenderGraph, Resample, render_to_buffers, render_to_file,
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
@@ -130,8 +130,8 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
 /// the failure mode is total silence.
 #[test]
 fn the_clock_advances_by_exactly_the_frames_rendered() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingClock(AtomicUsize);
     impl RenderClock for CountingClock {
@@ -439,7 +439,7 @@ fn buffers_report_their_own_shape() {
 /// reports. The crate does not hide this, which is why it can stream.
 #[test]
 fn a_caller_can_compose_normalization() {
-    use tutti_analysis::{measure_loudness, LoudnessConfig};
+    use tutti_analysis::{LoudnessConfig, measure_loudness};
     use tutti_types::{Db, Interleaved};
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
@@ -656,7 +656,7 @@ fn file_peak(path: &std::path::Path) -> f32 {
 /// control: equal peaks would mean the normalization did nothing.
 #[test]
 fn normalized_export_lifts_the_level_toward_the_target() {
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -696,8 +696,8 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 /// the amount the feature is supposed to catch.
 #[test]
 fn peak_normalization_lands_on_the_requested_dbtp() {
-    use tutti_analysis::{measure_loudness, LoudnessConfig};
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_analysis::{LoudnessConfig, measure_loudness};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::{Db, Interleaved};
 
     let d = tempfile::tempdir().unwrap();
@@ -744,7 +744,7 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
 /// must produce a finite, readable file.
 #[test]
 fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -782,7 +782,7 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
 /// different metric.
 #[test]
 fn surround_normalizes_rather_than_falling_back_to_peak() {
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -890,7 +890,7 @@ fn int_file_peak(path: &std::path::Path) -> f32 {
 /// `f32` and quantize to nothing.
 #[test]
 fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::Db;
 
     let silence = || {
@@ -936,8 +936,8 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 /// exactly how this bug survived its first test.
 #[test]
 fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
-    use tutti_analysis::{measure_loudness, LoudnessConfig};
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_analysis::{LoudnessConfig, measure_loudness};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::{Db, Interleaved};
 
     // Energy near Nyquist, with its true peak *between* samples, is what SRC
@@ -1006,7 +1006,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
 /// success would lose the fact entirely.
 #[test]
 fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
-    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::Db;
 
     let dir = tempfile::tempdir().unwrap();

@@ -19,10 +19,10 @@
 //! developed on, so it is written to be verifiable by reading. **If it ever
 //! needs logic, that is a signal to reconsider rather than to grow it.**
 
+use crate::InputProducerHandle;
 use crate::capability::{EndpointId, EndpointInfo};
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
-use crate::InputProducerHandle;
 use tutti_midi_types::MidiOut;
 
 /// Why every call here fails, in the error a caller will surface.

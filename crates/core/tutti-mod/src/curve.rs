@@ -211,10 +211,12 @@ mod tests {
     fn a_bent_piece_is_no_segment() {
         assert!(envelope().with_step(0.1).segment_at(Beat(1.5)).is_none());
         assert!(envelope().with_max(0.5).segment_at(Beat(1.5)).is_none());
-        assert!(envelope()
-            .with_range(0.0, 1.0)
-            .segment_at(Beat(1.5))
-            .is_some());
+        assert!(
+            envelope()
+                .with_range(0.0, 1.0)
+                .segment_at(Beat(1.5))
+                .is_some()
+        );
         let mut off = envelope();
         off.enabled = false;
         assert!(off.segment_at(Beat(1.5)).is_none());

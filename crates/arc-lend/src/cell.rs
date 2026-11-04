@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::current::Current;
 use crate::reader::Reader;
 use crate::slots::Slots;
-use crate::sync::{fence, Mutex, MutexGuard, Ordering};
+use crate::sync::{Mutex, MutexGuard, Ordering, fence};
 
 /// State that only the writer's side touches, kept behind the cell's mutex.
 pub(crate) struct Control<T> {

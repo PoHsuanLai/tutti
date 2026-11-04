@@ -258,7 +258,7 @@ impl<U> From<ParamKey<U>> for UnitParam {
 }
 
 use super::units::{
-    Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Seconds, Q,
+    Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Q, Seconds,
 };
 
 /// Defines the typed keys, and — from the same lines — the registry

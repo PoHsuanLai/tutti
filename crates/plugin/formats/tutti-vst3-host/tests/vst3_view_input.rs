@@ -33,8 +33,8 @@ use std::sync::{Arc, Mutex};
 use tutti_vst3_host::host::{send_key_down, send_key_up, send_wheel, set_view_focus};
 
 use vst3::Steinberg::{
-    char16, int16, kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue,
-    tresult, FIDString, IPlugFrame, IPlugView, IPlugViewTrait, TBool, ViewRect,
+    FIDString, IPlugFrame, IPlugView, IPlugViewTrait, TBool, ViewRect, char16, int16,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
 };
 use vst3::{Class, ComWrapper};
 

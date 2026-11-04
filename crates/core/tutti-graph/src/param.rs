@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use tutti_types::{NodeKey, PackedAtomic, ParamAddr, RtScope, Samples, UnitParam};
 
-use crate::event::{segment_progress, Event, EventKind, SegmentShape};
+use crate::event::{Event, EventKind, SegmentShape, segment_progress};
 use crate::spec::EventOut;
 
 /// Most params one node can declare modulatable.

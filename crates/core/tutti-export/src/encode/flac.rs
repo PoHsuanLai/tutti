@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::sync::Mutex;
+use std::sync::mpsc;
 
 /// Frames per FLAC block, every block but the last.
 const BLOCK_SIZE: usize = 4096;
@@ -206,41 +206,43 @@ impl FrameWriter {
             // before any frame, as flacenc's own parallel encoder does: a
             // frame's encoding reads only its rate, width and depth.
             let info = info.clone();
-            scope.spawn(move || loop {
-                // The lock is held only to take one job; a closed queue ends
-                // the worker.
-                let job = job_rx.lock().map(|rx| rx.recv());
-                let Ok(Ok((n, buf))) = job else { return };
-                let config = if buf.size() < MIN_BLOCK_SIZE {
-                    &configs.short
-                } else {
-                    &configs.full
-                };
-                // A panic is caught and sent back as an error: the producer
-                // waits on `done` while this worker's sender is alive in its
-                // siblings, so a worker that unwound silently would leave it
-                // waiting forever.
-                let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    #[cfg(test)]
-                    if configs.panic_at == Some(n) {
-                        panic!("injected at frame {n}");
-                    }
-                    encode_fixed_size_frame(config, &buf, n, &info).map(|mut f| {
-                        f.precompute_bitstream();
-                        f
+            scope.spawn(move || {
+                loop {
+                    // The lock is held only to take one job; a closed queue ends
+                    // the worker.
+                    let job = job_rx.lock().map(|rx| rx.recv());
+                    let Ok(Ok((n, buf))) = job else { return };
+                    let config = if buf.size() < MIN_BLOCK_SIZE {
+                        &configs.short
+                    } else {
+                        &configs.full
+                    };
+                    // A panic is caught and sent back as an error: the producer
+                    // waits on `done` while this worker's sender is alive in its
+                    // siblings, so a worker that unwound silently would leave it
+                    // waiting forever.
+                    let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        #[cfg(test)]
+                        if configs.panic_at == Some(n) {
+                            panic!("injected at frame {n}");
+                        }
+                        encode_fixed_size_frame(config, &buf, n, &info).map(|mut f| {
+                            f.precompute_bitstream();
+                            f
+                        })
+                    }))
+                    .map_err(|payload| {
+                        let msg = payload
+                            .downcast_ref::<&str>()
+                            .map(|s| (*s).to_owned())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_default();
+                        format!("panicked: {msg}")
                     })
-                }))
-                .map_err(|payload| {
-                    let msg = payload
-                        .downcast_ref::<&str>()
-                        .map(|s| (*s).to_owned())
-                        .or_else(|| payload.downcast_ref::<String>().cloned())
-                        .unwrap_or_default();
-                    format!("panicked: {msg}")
-                })
-                .and_then(|r| r.map_err(|e| format!("{e:?}")));
-                if done_tx.send((n, frame, buf)).is_err() {
-                    return;
+                    .and_then(|r| r.map_err(|e| format!("{e:?}")));
+                    if done_tx.send((n, frame, buf)).is_err() {
+                        return;
+                    }
                 }
             });
         }

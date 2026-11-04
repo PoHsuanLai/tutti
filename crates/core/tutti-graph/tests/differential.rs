@@ -39,7 +39,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{bits, input_signal, Kind, Pair};
+use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};

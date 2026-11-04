@@ -44,12 +44,12 @@ use super::fault::FaultLatch;
 use tutti_core::SamplePosition;
 use tutti_io::Wave;
 
-use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
-use super::loop_span::{blend, LoopSpan};
-use super::types::Direction;
 use super::LoopSetting;
-use crate::butler::control::StreamFile;
+use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
+use super::loop_span::{LoopSpan, blend};
+use super::types::Direction;
 use crate::MAX_SAMPLER_CHANNELS;
+use crate::butler::control::StreamFile;
 
 /// Frames per page. Two pages are resident; see [`Pages`].
 const PAGE_FRAMES: usize = 1 << 15;

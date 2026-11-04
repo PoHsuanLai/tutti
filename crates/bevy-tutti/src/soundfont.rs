@@ -9,15 +9,15 @@
 //! node.
 
 use bevy_app::{App, Plugin, Update};
-use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
+use bevy_asset::{AssetApp, AssetLoader, Assets, Handle, LoadContext, io::Reader};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
 use std::sync::Arc;
 
 use crate::graph::{
-    engine_ready, AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems,
+    AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems, engine_ready,
 };
 use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
 

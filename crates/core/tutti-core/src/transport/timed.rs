@@ -30,8 +30,8 @@
 //! dropped. Nothing but an engine drains this queue; the motion machine's
 //! own drain applies only the untimed queue.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crossbeam_queue::ArrayQueue;
 use tutti_types::At;

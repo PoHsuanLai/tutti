@@ -18,12 +18,12 @@ use crate::types::{
 };
 #[cfg(feature = "clap-extras")]
 use clap_sys::ext::context_menu::{
-    clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
-    clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
     CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU, CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY,
     CLAP_CONTEXT_MENU_ITEM_END_SUBMENU, CLAP_CONTEXT_MENU_ITEM_ENTRY,
     CLAP_CONTEXT_MENU_ITEM_SEPARATOR, CLAP_CONTEXT_MENU_ITEM_TITLE,
     CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
+    clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
+    clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
 };
 #[cfg(feature = "clap-extras")]
 use clap_sys::ext::draft::triggers::clap_trigger_info;
@@ -907,11 +907,7 @@ impl ClapLoaded {
             .remote_controls
             .suggested_page
             .swap(u32::MAX, std::sync::atomic::Ordering::AcqRel);
-        if val == u32::MAX {
-            None
-        } else {
-            Some(val)
-        }
+        if val == u32::MAX { None } else { Some(val) }
     }
 
     /// Drains all pending [`TransportRequest`]s the plugin has emitted, in
@@ -1993,7 +1989,7 @@ mod timer_due_tests {
 
 #[cfg(all(test, unix))]
 mod ready_fd_tests {
-    use super::{ready_fds_into, FdScratch};
+    use super::{FdScratch, ready_fds_into};
     use clap_sys::ext::posix_fd_support::{
         CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, CLAP_POSIX_FD_WRITE,
     };

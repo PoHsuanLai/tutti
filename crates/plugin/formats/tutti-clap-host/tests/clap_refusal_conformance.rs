@@ -20,8 +20,8 @@ use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
 use tutti_clap_host::{ClapActive, ClapError, ClapLoaded};
-use tutti_clap_test_plugin::refusal::ACTIVATE_REFUSE_NONE;
 use tutti_clap_test_plugin::ParamStateCapture;
+use tutti_clap_test_plugin::refusal::ACTIVATE_REFUSE_NONE;
 
 /// The sample rate every fixture loads and activates at. The probe accepts it,
 /// so it is the configuration a rollback must land back on.

@@ -80,9 +80,9 @@ use support::corpus;
 
 use std::sync::Mutex;
 
-use tutti_au_host::offline::PushScratch;
 use tutti_au_host::AuError;
 use tutti_au_host::BusDirection;
+use tutti_au_host::offline::PushScratch;
 use tutti_plugin_types::ChannelLayout;
 
 /// Serializes AU instantiation, as the other suites' `AU_LOCK`s do and for the
@@ -196,8 +196,8 @@ fn push_refuses_a_scratch_with_no_input_bus() {
 /// file's header explains.
 #[test]
 fn the_two_has_input_inferences_are_indistinguishable_on_this_machine() {
-    use tutti_au_host::component::{enumerate_components_of_type, AuType};
     use tutti_au_host::AuInstance;
+    use tutti_au_host::component::{AuType, enumerate_components_of_type};
 
     let _g = lock();
     let mut checked = 0;

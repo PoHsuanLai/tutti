@@ -5,8 +5,9 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
 use parking_lot::Mutex;
 use vst3::Steinberg::{
-    kInvalidArgument, kResultOk, tresult, IBStream, IBStreamTrait,
+    IBStream,
     IBStream_::IStreamSeekMode_::{kIBSeekCur, kIBSeekEnd, kIBSeekSet},
+    IBStreamTrait, kInvalidArgument, kResultOk, tresult,
 };
 use vst3::{Class, ComWrapper};
 

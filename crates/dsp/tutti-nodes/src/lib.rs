@@ -46,8 +46,8 @@ mod test_support;
 
 pub use tutti_core::{
     Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
-    Feedback, Hz, Mix, Param, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth, Unit,
-    Q,
+    Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth,
+    Unit,
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
@@ -66,26 +66,25 @@ mod modulator;
 // `LfoNode` is `ModulatorNode<Wave>` — the graph node over a pure
 // `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-mod` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
-pub use lfo::{LfoMode, LfoNode, LfoShape, ModulatorNode, Wave, LFO_PARAMS};
+pub use lfo::{LFO_PARAMS, LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
 pub use modulator::Modulator;
 
 mod delay;
-pub use delay::{DelayLine, DelayLineNode, InterpolationMode, DELAY_PARAMS};
+pub use delay::{DELAY_PARAMS, DelayLine, DelayLineNode, InterpolationMode};
 
 mod distortion;
-pub use distortion::{DistortionNode, ShapeKind, DISTORTION_PARAMS};
+pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
 
 mod filter;
 pub use filter::{
-    compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
-    LadderFilterNode, LadderType, Real, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS,
-    SVF_PARAMS,
+    BandState, EqBandNode, LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType, Real,
+    SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType, compute_ladder_coeffs, compute_svf_coeffs,
 };
 
 mod dynamics;
 pub use dynamics::{
-    BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode, BRICKWALL_PARAMS,
-    COMPRESSOR_PARAMS, GATE_PARAMS, LIMITER_PARAMS,
+    BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode, GATE_PARAMS,
+    GateNode, LIMITER_PARAMS, LimiterNode,
 };
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one
@@ -106,13 +105,13 @@ pub use strip::{BusStripNode, STRIP_PARAMS};
 // this crate; nothing here names it.
 
 mod modulation;
-pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode, MOD_DELAY_PARAMS, PHASER_PARAMS};
+pub use modulation::{MOD_DELAY_PARAMS, ModDelayConfig, ModDelayNode, PHASER_PARAMS, PhaserNode};
 
 // The signal-driven sources a `tutti_mod::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.
 mod signal;
 pub use signal::{
-    EnvelopeFollowerNode, NoteEnvelopeNode, FOLLOWER_EVENT_CAPACITY, NOTE_ENVELOPE_EVENT_CAPACITY,
+    EnvelopeFollowerNode, FOLLOWER_EVENT_CAPACITY, NOTE_ENVELOPE_EVENT_CAPACITY, NoteEnvelopeNode,
 };
 
 // The reconcile step (doc 014 §8.2): declarations compiled and applied to
@@ -126,8 +125,8 @@ pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
-    generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
-    ConvolverNode, IrChannelConfig, IrSpectra, WetDry, CONVOLVER_PARAMS,
+    CONVOLVER_PARAMS, Convolver, ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
+    generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

@@ -44,8 +44,8 @@ impl PitchResult {
 
 use tutti_types::{Confidence, Hz, RealFft};
 
-use crate::yin::YinConfig;
 use crate::Complex;
+use crate::yin::YinConfig;
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///

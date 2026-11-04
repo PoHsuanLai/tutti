@@ -16,8 +16,8 @@
 //! ([`lend_from`](ParamValueQueueImpl::lend_from)).
 
 use vst3::Steinberg::{
+    Vst::{IParamValueQueue, IParamValueQueueTrait, kNoParamId},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
-    Vst::{kNoParamId, IParamValueQueue, IParamValueQueueTrait},
 };
 use vst3::{Class, ComWrapper};
 

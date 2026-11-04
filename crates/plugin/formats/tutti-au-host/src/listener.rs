@@ -66,13 +66,13 @@
 #![cfg(target_os = "macos")]
 
 use std::os::raw::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use block2::RcBlock;
 use coreaudio_sys::{
-    dispatch_queue_t, kAudioUnitScope_Global, AudioUnit, AudioUnitElement, AudioUnitParameter,
-    AudioUnitParameterID, AudioUnitParameterValue, AudioUnitPropertyID, AudioUnitScope, OSStatus,
+    AudioUnit, AudioUnitElement, AudioUnitParameter, AudioUnitParameterID, AudioUnitParameterValue,
+    AudioUnitPropertyID, AudioUnitScope, OSStatus, dispatch_queue_t, kAudioUnitScope_Global,
 };
 
 use crate::error::Result;

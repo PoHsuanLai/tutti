@@ -24,10 +24,10 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples, Q};
+use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, Q, SampleRate, Samples};
 use tutti_core::{ChannelLayout, InterleavedMut};
 use tutti_core::{MotionEvent, Transport};
-use tutti_cpal::{process_audio, AudioCallbackState, MAX_FRAMES};
+use tutti_cpal::{AudioCallbackState, MAX_FRAMES, process_audio};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};

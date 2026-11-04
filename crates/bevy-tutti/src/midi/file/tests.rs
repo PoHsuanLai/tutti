@@ -7,7 +7,7 @@
 
 use super::*;
 use bevy_ecs::system::RunSystemOnce;
-use tutti_midi_file::smf::{encode_midi_file, MidiWriteConfig, SmfMessage, SmfTimedEvent};
+use tutti_midi_file::smf::{MidiWriteConfig, SmfMessage, SmfTimedEvent, encode_midi_file};
 use tutti_types::Beat;
 
 /// An app with the plugin and the pools it needs.

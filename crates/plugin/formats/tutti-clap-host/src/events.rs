@@ -21,20 +21,19 @@ use crate::types::{
     ParameterQueue,
 };
 use clap_sys::events::{
-    clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
-    clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
-    clap_event_param_value, clap_input_events, clap_output_events, CLAP_CORE_EVENT_SPACE_ID,
-    CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END,
-    CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_CHOKE,
+    CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
     CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
     CLAP_EVENT_PARAM_VALUE, CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_EXPRESSION,
     CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
-    CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME,
+    CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME, clap_event_header, clap_event_midi,
+    clap_event_midi_sysex, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
+    clap_event_param_mod, clap_event_param_value, clap_input_events, clap_output_events,
 };
 use std::ptr;
 use tutti_plugin_types::{
-    note_id_for, note_id_to_channel_note, push_sysex, unframed, Normalized, ParamAddress,
-    RtMidiEvents, StableOrder, SysExAssembler, SysExStep, SYSEX_MESSAGE_CAPACITY,
+    Normalized, ParamAddress, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
+    SysExStep, note_id_for, note_id_to_channel_note, push_sysex, unframed,
 };
 
 use crate::types::RtNoteExpressions;
@@ -2335,8 +2334,8 @@ mod tests {
     #[test]
     fn clap_volume_round_trips_and_saturates_boost_l6() {
         use tutti_midi_types::convert::u32_to_unit_f32;
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
         use tutti_midi_types::midi2::UmpMessage;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
 
         let unit_of = |gain: f64| -> f32 {
             let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain)
@@ -2658,8 +2657,8 @@ mod tests {
     fn note_off_release_velocity_round_trips() {
         // The CLAP → MIDI-2 direction must preserve release velocity too.
         use tutti_midi_types::convert::u16_to_unit_f32;
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
         use tutti_midi_types::midi2::UmpMessage;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
 
         let clap = ClapEvent::note_off(2, 1, 48, 0.5);
         let midi = clap.to_midi().expect("note off -> midi");
@@ -2769,8 +2768,8 @@ mod tests {
         // silently dropped. They land in the CLAP-private gesture list, and
         // `fill_param_changes` still ignores them (only PARAM_VALUE flows there).
         use clap_sys::events::{
-            clap_event_param_gesture, clap_event_param_mod, CLAP_EVENT_PARAM_GESTURE_BEGIN,
-            CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
+            CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
+            clap_event_param_gesture, clap_event_param_mod,
         };
 
         let mut output = OutputEventList::new();
@@ -2826,12 +2825,16 @@ mod tests {
         let mut gestures: Vec<ClapEvent> = Vec::new();
         output.fill_gestures(&mut gestures);
         assert_eq!(gestures.len(), 3, "begin + mod + end captured");
-        assert!(gestures
-            .iter()
-            .any(|e| matches!(e, ClapEvent::ParamGestureBegin(_))));
-        assert!(gestures
-            .iter()
-            .any(|e| matches!(e, ClapEvent::ParamGestureEnd(_))));
+        assert!(
+            gestures
+                .iter()
+                .any(|e| matches!(e, ClapEvent::ParamGestureBegin(_)))
+        );
+        assert!(
+            gestures
+                .iter()
+                .any(|e| matches!(e, ClapEvent::ParamGestureEnd(_)))
+        );
         assert!(gestures.iter().any(|e| matches!(e, ClapEvent::ParamMod(_))));
 
         // fill_param_changes only picks up the PARAM_VALUE, not gestures/mods.

@@ -15,13 +15,13 @@
 
 use bevy_app::prelude::*;
 
+use bevy_tutti::AudioEngineState;
 use bevy_tutti::midi::test_support::drain_midi_out;
 use bevy_tutti::midi::{BroadcastFlexMetadata, MidiMetadataPlugin, MidiOutRes};
-use bevy_tutti::AudioEngineState;
 use tutti_midi_types::midi2::ux::u3;
 use tutti_midi_types::ump::{
-    flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text, BarAccents, ChordName,
-    ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, MidiEvent, Tonic,
+    BarAccents, ChordName, ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, MidiEvent,
+    Tonic, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
 };
 
 /// An app with just the metadata plugin and the mailbox it writes into.

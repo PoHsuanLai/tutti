@@ -23,37 +23,37 @@
 //! Single fake, single test process: a global is the simplest correct
 //! capture channel and is strictly test-only.
 
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
-    clap_event_param_value, clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX,
-    CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE,
-    CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
+    CLAP_EVENT_MIDI, CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
+    CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_midi, clap_event_midi_sysex,
+    clap_event_note, clap_event_param_value, clap_event_transport,
 };
 use clap_sys::ext::audio_ports::{
-    clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN,
-    CLAP_AUDIO_PORT_SUPPORTS_64BITS, CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO, CLAP_PORT_STEREO,
+    CLAP_AUDIO_PORT_IS_MAIN, CLAP_AUDIO_PORT_SUPPORTS_64BITS, CLAP_EXT_AUDIO_PORTS, CLAP_PORT_MONO,
+    CLAP_PORT_STEREO, clap_audio_port_info, clap_plugin_audio_ports,
 };
-use clap_sys::ext::latency::{clap_host_latency, clap_plugin_latency, CLAP_EXT_LATENCY};
+use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency, clap_plugin_latency};
 use clap_sys::ext::note_ports::{
-    clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP,
-    CLAP_NOTE_DIALECT_MIDI,
+    CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, clap_note_port_info,
+    clap_plugin_note_ports,
 };
 use clap_sys::ext::render::{
-    clap_plugin_render, clap_plugin_render_mode, CLAP_EXT_RENDER, CLAP_RENDER_OFFLINE,
+    CLAP_EXT_RENDER, CLAP_RENDER_OFFLINE, clap_plugin_render, clap_plugin_render_mode,
 };
-use clap_sys::ext::tail::{clap_plugin_tail, CLAP_EXT_TAIL};
-use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
+use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_plugin_tail};
+use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
-use clap_sys::process::{clap_process, clap_process_status, CLAP_PROCESS_CONTINUE};
+use clap_sys::process::{CLAP_PROCESS_CONTINUE, clap_process, clap_process_status};
 use clap_sys::string_sizes::CLAP_NAME_SIZE;
 use clap_sys::version::CLAP_VERSION;
 
@@ -64,8 +64,8 @@ use clap_sys::version::CLAP_VERSION;
 pub mod threading;
 
 pub use threading::{
-    Site, ThreadAnswer, ThreadCapture, CMD_LOG_ALL_SEVERITIES, CMD_NONE, CMD_REGISTER_TIMER,
-    CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART, CMD_UNREGISTER_TIMER, SITE_COUNT,
+    CMD_LOG_ALL_SEVERITIES, CMD_NONE, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
+    CMD_UNREGISTER_TIMER, SITE_COUNT, Site, ThreadAnswer, ThreadCapture,
 };
 
 /// PARAMS + STATE probe: `clap.params`, `clap.state`, `clap.state-context/2`,
@@ -76,9 +76,9 @@ pub use threading::{
 pub mod params_state;
 
 pub use params_state::{
-    CapturedParamEvent, ParamStateCapture, MAX_CAPTURED_PARAM_EVENTS, MAX_CAPTURED_STATE,
-    PARAM_CMD_CLEAR, PARAM_CMD_NONE, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,
-    PARAM_CMD_RESCAN_VALUES, STATE_MAGIC,
+    CapturedParamEvent, MAX_CAPTURED_PARAM_EVENTS, MAX_CAPTURED_STATE, PARAM_CMD_CLEAR,
+    PARAM_CMD_NONE, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL, PARAM_CMD_RESCAN_VALUES,
+    ParamStateCapture, STATE_MAGIC,
 };
 
 /// RT-HAZARD probe: the switches that make the host's audio thread take the
@@ -88,7 +88,7 @@ pub use params_state::{
 /// oracle, and its switches must not perturb the structural captures.
 pub mod rt_probe;
 
-pub use rt_probe::{StatusMode, WideLayout, GARBAGE_STATUS, MAX_SYSEX_BYTES};
+pub use rt_probe::{GARBAGE_STATUS, MAX_SYSEX_BYTES, StatusMode, WideLayout};
 
 /// GUI probe: `clap.gui`, the editor lifecycle, and the host's own
 /// `clap_host_gui` callbacks. Separate module for the same reason as the three
@@ -97,14 +97,14 @@ pub use rt_probe::{StatusMode, WideLayout, GARBAGE_STATUS, MAX_SYSEX_BYTES};
 pub mod gui;
 
 pub use gui::{
-    GuiCapture, GuiMode, GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE,
-    GUI_CALL_CREATE, GUI_CALL_DESTROY, GUI_CALL_GET_PREFERRED_API, GUI_CALL_GET_RESIZE_HINTS,
-    GUI_CALL_GET_SIZE, GUI_CALL_HIDE, GUI_CALL_IS_API_SUPPORTED, GUI_CALL_SET_PARENT,
-    GUI_CALL_SET_SCALE, GUI_CALL_SET_SIZE, GUI_CALL_SET_TRANSIENT, GUI_CALL_SHOW,
-    GUI_CALL_SUGGEST_TITLE, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW,
+    GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE, GUI_CALL_CREATE,
+    GUI_CALL_DESTROY, GUI_CALL_GET_PREFERRED_API, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE,
+    GUI_CALL_HIDE, GUI_CALL_IS_API_SUPPORTED, GUI_CALL_SET_PARENT, GUI_CALL_SET_SCALE,
+    GUI_CALL_SET_SIZE, GUI_CALL_SET_TRANSIENT, GUI_CALL_SHOW, GUI_CALL_SUGGEST_TITLE,
+    GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW,
     GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_NONE, GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT,
-    GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH, MAX_GUI_CALLS,
-    MAX_TITLE_LEN,
+    GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH, GuiCapture,
+    GuiMode, MAX_GUI_CALLS, MAX_TITLE_LEN,
 };
 
 /// REFUSAL probe: switches that make `activate` and the `clap.state-context/2`
@@ -128,7 +128,7 @@ pub use holes::HOLE_NONE;
 /// channel and switches.
 pub mod thread_pool;
 
-pub use thread_pool::{ThreadPoolCapture, MAX_POOL_TASKS};
+pub use thread_pool::{MAX_POOL_TASKS, ThreadPoolCapture};
 
 /// OUT-OF-PROCESS probe: switches selected by **environment** rather than by an
 /// `extern "C"` call, for the host suites whose plugin lives in a
@@ -1289,11 +1289,7 @@ impl NoteGate {
     }
 
     fn level(&self) -> f32 {
-        if self.held > 0 {
-            self.level
-        } else {
-            0.0
-        }
+        if self.held > 0 { self.level } else { 0.0 }
     }
 }
 
@@ -1752,11 +1748,7 @@ pub unsafe extern "C" fn tutti_test_plugin_set_preferred_dialect(raw: u32) {
 }
 
 unsafe extern "C" fn note_ports_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
-    if is_input {
-        2
-    } else {
-        1
-    }
+    if is_input { 2 } else { 1 }
 }
 
 unsafe extern "C" fn note_ports_get(

@@ -39,9 +39,9 @@ use tutti_types::{ChannelTopology, Speaker};
 // The individual speaker bits live directly in `Vst`; only the named
 // arrangements (`kStereo`, `k51`, …) are in the `SpeakerArr` submodule.
 use vst3::Steinberg::Vst::{
-    kSpeakerC, kSpeakerCs, kSpeakerL, kSpeakerLc, kSpeakerLfe, kSpeakerLs, kSpeakerM, kSpeakerR,
-    kSpeakerRc, kSpeakerRs, kSpeakerSl, kSpeakerSr, kSpeakerTc, kSpeakerTfc, kSpeakerTfl,
-    kSpeakerTfr, kSpeakerTrc, kSpeakerTrl, kSpeakerTrr, SpeakerArrangement,
+    SpeakerArrangement, kSpeakerC, kSpeakerCs, kSpeakerL, kSpeakerLc, kSpeakerLfe, kSpeakerLs,
+    kSpeakerM, kSpeakerR, kSpeakerRc, kSpeakerRs, kSpeakerSl, kSpeakerSr, kSpeakerTc, kSpeakerTfc,
+    kSpeakerTfl, kSpeakerTfr, kSpeakerTrc, kSpeakerTrl, kSpeakerTrr,
 };
 
 /// One VST3 speaker bit and the shared [`Speaker`] it means.
@@ -203,7 +203,7 @@ pub(crate) fn to_arrangement(topology: &ChannelTopology) -> Option<SpeakerArrang
 mod tests {
     use super::*;
     use tutti_types::ChannelLayout;
-    use vst3::Steinberg::Vst::{kSpeakerLfe2, SpeakerArr};
+    use vst3::Steinberg::Vst::{SpeakerArr, kSpeakerLfe2};
 
     /// Every speaker in the table survives a round trip through the mask.
     ///

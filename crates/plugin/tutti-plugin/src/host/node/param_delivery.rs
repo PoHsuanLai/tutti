@@ -1352,10 +1352,11 @@ mod tests {
                     ParameterChanges::FLOOR_POINTS
                 };
                 assert_eq!(q.points.len(), want);
-                assert!(q
-                    .points
-                    .windows(2)
-                    .all(|w| w[0].sample_offset < w[1].sample_offset));
+                assert!(
+                    q.points
+                        .windows(2)
+                        .all(|w| w[0].sample_offset < w[1].sample_offset)
+                );
             }
             std::mem::swap(d.changes(), spare);
             d.handed_off(true);

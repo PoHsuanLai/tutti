@@ -61,10 +61,10 @@ mod support;
 use std::sync::{Mutex, MutexGuard};
 
 use support::corpus::{AuRef, SAMPLER};
+use tutti_midi_types::MidiEvent;
 use tutti_midi_types::ump::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
 };
-use tutti_midi_types::MidiEvent;
 
 const RATE: f64 = 48_000.0;
 const BLOCK: u32 = 512;
@@ -141,8 +141,10 @@ fn a_multi_packet_sysex_does_not_disturb_the_notes_around_it() {
     for unit in SYSEX_SAFE_INSTRUMENTS {
         let au = unit.open(RATE, BLOCK);
 
-        let mut events = vec![MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100])
-            .expect("a note-on is a valid 3-byte message")];
+        let mut events = vec![
+            MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100])
+                .expect("a note-on is a valid 3-byte message"),
+        ];
         events.push(sysex7_packet(SYSEX7_STATUS_START, &body[0..6]));
         events.push(sysex7_packet(SYSEX7_STATUS_CONTINUE, &body[6..12]));
         events.push(sysex7_packet(SYSEX7_STATUS_END, &body[12..14]));

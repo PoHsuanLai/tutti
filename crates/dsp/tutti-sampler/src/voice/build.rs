@@ -7,7 +7,7 @@ use tutti_core::ChannelLayout;
 
 use super::memory_source::{MemorySource, VoiceWindow};
 use super::types::{Playback, Voice, VoiceSource};
-use crate::{Wave, MAX_SAMPLER_CHANNELS};
+use crate::{MAX_SAMPLER_CHANNELS, Wave};
 
 /// Builds an in-memory voice from a decoded wave.
 ///

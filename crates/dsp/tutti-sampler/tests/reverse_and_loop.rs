@@ -19,11 +19,11 @@
 //! The one exception is the crossfade seam test, which needs a signal whose
 //! discontinuity is audible; it uses two constants so the seam is a step.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples};
-use tutti_graph::{contract, Env, Node, TransportChanges};
+use tutti_graph::{Env, Node, TransportChanges, contract};
 use tutti_io::Wave;
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,

@@ -282,13 +282,15 @@ mod tests {
     #[test]
     fn from_mcm_rejects_non_mcm() {
         // A plain note-on is not an MCM.
-        assert!(MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        ))
-        .is_none());
+        assert!(
+            MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none()
+        );
         // An RPN with a different index is not an MCM.
         let other_rpn = crate::ump::MidiEvent::registered_controller(
             MidiGroup::FIRST,

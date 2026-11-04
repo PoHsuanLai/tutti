@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{bits, test_pool, Kind, TestNode, WORKERS};
+use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamIn, ParamRamp, ParamRange,

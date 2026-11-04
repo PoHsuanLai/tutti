@@ -37,9 +37,9 @@
 //!
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 
+use crate::InputProducerHandle;
 use crate::capability::{EndpointId, EndpointInfo};
 use crate::error::Result;
-use crate::InputProducerHandle;
 use tutti_midi_types::MidiOut;
 
 /// An open input connection: a live subscription to one endpoint.

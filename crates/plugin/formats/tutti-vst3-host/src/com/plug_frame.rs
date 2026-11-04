@@ -24,7 +24,7 @@
 //! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
 
 use parking_lot::Mutex;
-use vst3::Steinberg::{kResultOk, tresult, IPlugFrame, IPlugView, ViewRect};
+use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kResultOk, tresult};
 use vst3::{Class, ComWrapper};
 
 use crate::types::EditorSize;

@@ -4,11 +4,11 @@
 
 #[cfg(loom)]
 pub(crate) use loom::{
-    sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering, fence},
     sync::{Mutex, MutexGuard},
 };
 #[cfg(not(loom))]
 pub(crate) use std::{
-    sync::atomic::{fence, AtomicBool, AtomicPtr, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering, fence},
     sync::{Mutex, MutexGuard},
 };

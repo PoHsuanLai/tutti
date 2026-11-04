@@ -116,8 +116,8 @@ mod tests {
 
     use crate::util::ParameterTransfer;
 
-    use std::sync::mpsc::channel;
     use std::sync::Arc;
+    use std::sync::mpsc::channel;
     use std::thread;
     use std::time::Duration;
 

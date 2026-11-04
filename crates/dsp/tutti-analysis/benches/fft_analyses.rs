@@ -8,11 +8,11 @@
 //! cargo bench -p tutti-analysis --bench fft_analyses
 //! ```
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tutti_analysis::{
-    detect_onsets, stft, DetectionFunction, FftScratch, OnsetConfig, StftGeometry, StftRequest,
-    YinConfig,
+    DetectionFunction, FftScratch, OnsetConfig, StftGeometry, StftRequest, YinConfig,
+    detect_onsets, stft,
 };
 use tutti_types::{SampleRate, Samples};
 

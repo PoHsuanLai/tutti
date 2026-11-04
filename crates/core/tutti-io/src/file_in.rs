@@ -35,8 +35,8 @@ use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::{ChannelLayout, Samples};
 
-use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 use crate::WaveError;
+use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 
 /// A streaming decoder over an audio file's first audio track, as an
 /// [`AudioIn`].

@@ -13,11 +13,11 @@
 
 use tutti_types::{Amplitude, SampleRate, Samples, Seconds};
 
+use crate::Complex;
 use crate::error::Result;
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
 use crate::grid::FrameIndex;
-use crate::Complex;
 
 /// How novelty is measured frame to frame.
 ///
@@ -797,8 +797,10 @@ mod tests {
     fn input_shorter_than_a_window_yields_nothing() {
         let cfg = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
         let mut fft = FftScratch::new();
-        assert!(detect_onsets(&cfg, &[0.0; 100], &mut fft)
-            .unwrap()
-            .is_empty());
+        assert!(
+            detect_onsets(&cfg, &[0.0; 100], &mut fft)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

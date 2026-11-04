@@ -53,8 +53,8 @@
 
 use std::mem::align_of;
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{Midi1Decoder, Midi1Message, Midi1Splitter};

@@ -33,8 +33,8 @@
 
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
-use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Q};
-use tutti_nodes::{compute_ladder_coeffs, compute_svf_coeffs, SvfType};
+use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
+use tutti_nodes::{SvfType, compute_ladder_coeffs, compute_svf_coeffs};
 use wide::u32x8;
 
 /// The longest run of frames rendered between two control steps.
@@ -833,11 +833,7 @@ fn seed_from(n: u32) -> u32 {
     x ^= x >> 16;
     x = x.wrapping_mul(0x85EB_CA6B);
     x ^= x >> 13;
-    if x == 0 {
-        0x6D2B_79F5
-    } else {
-        x
-    }
+    if x == 0 { 0x6D2B_79F5 } else { x }
 }
 
 /// Group and lane-within-group of a flat lane index.

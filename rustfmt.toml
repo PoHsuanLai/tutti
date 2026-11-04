@@ -1,4 +1,0 @@
-# The workspace is on edition 2024 but keeps the 2021 formatting: `cargo fmt`
-# defaults `style_edition` to the edition, and the 2024 style re-sorts every
-# import block and rewraps long lines across ~600 files.
-style_edition = "2021"

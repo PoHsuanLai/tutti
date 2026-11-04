@@ -91,12 +91,12 @@ mod reconcile;
 mod tests;
 
 pub use declare::{
-    close_takes, Automation, AutomationTake, Follower, ModFeed, ModRange, ModRoute, ModSource,
-    ModSourceKind, Mods, NoteEnvelope, ParamRef,
+    Automation, AutomationTake, Follower, ModFeed, ModRange, ModRoute, ModSource, ModSourceKind,
+    Mods, NoteEnvelope, ParamRef, close_takes,
 };
 pub use reconcile::{
-    after_commit, note_declaration_changes, reconcile, DeclChanges, Declared, Kept,
-    ModulationRefused, ModulationState,
+    DeclChanges, Declared, Kept, ModulationRefused, ModulationState, after_commit,
+    note_declaration_changes, reconcile,
 };
 // The time-function builders are `tutti-mod`'s, declared as they are.
 pub use tutti_mod::{Adsr, CurveType, Lfo, LfoRate, LfoShape, Macro, Polarity};
@@ -106,7 +106,7 @@ use bevy_ecs::prelude::*;
 
 use tutti_session::Phase;
 
-use crate::graph::{engine_ready, GraphReconcileSystems, SessionPhaseSystems};
+use crate::graph::{GraphReconcileSystems, SessionPhaseSystems, engine_ready};
 
 /// Where the modulation systems run, for a host's own to order against.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]

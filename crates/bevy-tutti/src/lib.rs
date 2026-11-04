@@ -225,7 +225,7 @@ pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingP
 
 // Engine types. The graph itself is `graph::AudioGraphRes`.
 pub use engine::{
-    restart_device, restart_device_on, Device, DeviceInfo, DeviceRestart, DeviceSelector,
+    Device, DeviceInfo, DeviceRestart, DeviceSelector, restart_device, restart_device_on,
 };
 
 // The crate error, at the crate root: its public position and its file
@@ -239,11 +239,11 @@ pub use engine::{AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKin
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
-        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
-        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes,
-        GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode, MasterSources,
-        MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished, SessionNode,
-        SpawnAudioNode, TransportRes,
+        AudioConfig, AudioGraphRes, AudioParam, AudioParamAppExt, AudioPump, AudioPumpAppExt,
+        AudioTapRes, EngineNodes, GraphReconcilePlugin, GraphReconcileSystems, GraphSource,
+        InsertAudioNode, MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources,
+        PumpFinished, SessionNode, SpawnAudioNode, TransportRes, commit_graph,
+        crossfade_audio_node, engine_ready,
     };
     pub use crate::{
         AudioDeviceFault, AudioDeviceState, AudioEngineState, ChannelCompensation, Device,
@@ -280,11 +280,11 @@ pub mod prelude {
         PlaySoundFont, SoundFontAsset, SoundFontAssetLoader, TuttiSoundFontPlugin,
     };
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{memory_voice, voice_width, Playback, Voice, VoiceWindow};
+    pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
+    pub use tutti_core::CrossfadeCurve;
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;
-    pub use tutti_core::CrossfadeCurve;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};

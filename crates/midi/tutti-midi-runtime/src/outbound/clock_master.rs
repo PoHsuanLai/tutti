@@ -21,11 +21,11 @@
 //! - **MTC quarter-frames** (0xF1) at frame-rate×4, cycling the 8 SMPTE nibbles
 //!   (when `send_mtc` is set).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
-use tutti_core::{first_frame_at_or_after, Beat, BeatDuration, SampleRate};
+use tutti_core::{Beat, BeatDuration, SampleRate, first_frame_at_or_after};
 use tutti_graph::Transport;
 use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_midi_types::ump::MidiEvent;
@@ -517,11 +517,11 @@ fn mtc_cycle_nibbles(tc: &SmpteTimecode, fps: SmpteFrameRate) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool as StdAtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool as StdAtomicBool;
     use tutti_core::Bpm;
-    use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
     use tutti_midi_types::MidiMessage;
+    use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 
     /// Test transport: tempo + beat + playing under a switch.
     struct TestTransport {

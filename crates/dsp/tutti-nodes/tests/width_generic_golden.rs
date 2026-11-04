@@ -17,8 +17,8 @@
 //! remains"); the recursive filters can carry such an ulp for a while, which is
 //! why this is looser than a feed-forward node would need.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
 use tutti_graph::contract::drive;

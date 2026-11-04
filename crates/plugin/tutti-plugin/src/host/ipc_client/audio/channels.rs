@@ -13,8 +13,8 @@
 use super::messages::{AudioResponse, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::Thread;
 
 /// How many commands the audio thread can queue before `push_command` fails.

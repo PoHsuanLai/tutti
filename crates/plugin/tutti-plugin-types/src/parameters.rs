@@ -207,11 +207,7 @@ impl ParamRange {
 
 /// NaN checked before the clamp, which would pass it through.
 fn clamp_unit(v: f64) -> f64 {
-    if v.is_nan() {
-        0.0
-    } else {
-        v.clamp(0.0, 1.0)
-    }
+    if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }
 }
 
 /// `(min, max)` if both are finite, else [`None`].

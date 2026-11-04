@@ -80,20 +80,20 @@
 
 use std::sync::atomic::Ordering;
 
-use sync::{fence, Arc, AtomicU32, AtomicU64};
+use sync::{Arc, AtomicU32, AtomicU64, fence};
 
 /// The atomics: `std`'s in a real build, `loom`'s under `--cfg loom`, so the
 /// model in `tests/pos_ring_loom.rs` checks this code rather than a replica.
 mod sync {
     #[cfg(loom)]
     pub(super) use loom::sync::{
-        atomic::{fence, AtomicU32, AtomicU64},
         Arc,
+        atomic::{AtomicU32, AtomicU64, fence},
     };
     #[cfg(not(loom))]
     pub(super) use std::sync::{
-        atomic::{fence, AtomicU32, AtomicU64},
         Arc,
+        atomic::{AtomicU32, AtomicU64, fence},
     };
 }
 
@@ -674,11 +674,7 @@ fn first_alias(to: u64, a: u64, e: u64, n: u64) -> u64 {
         return to;
     }
     let next = to + (n - d);
-    if next == a {
-        inside(a)
-    } else {
-        next
-    }
+    if next == a { inside(a) } else { next }
 }
 
 #[cfg(all(test, not(loom)))]

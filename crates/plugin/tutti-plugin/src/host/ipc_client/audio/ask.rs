@@ -7,7 +7,7 @@
 //! one-shot semantics are enforced by the type system, not by hoping
 //! responses come back in the order requests went out.
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
 use std::time::Duration;
 
 /// Sender half. Consumed on [`Self::send`] — exactly one message can be

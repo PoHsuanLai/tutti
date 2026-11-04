@@ -53,7 +53,7 @@ impl PolySynth {
 #[cfg(test)]
 mod tests {
     use tutti_core::{SampleRate, Seconds, UnitParam};
-    use tutti_graph::contract::{assert_param_fork, Direct};
+    use tutti_graph::contract::{Direct, assert_param_fork};
     use tutti_graph::{Event, Offset, ParamFork};
     use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 

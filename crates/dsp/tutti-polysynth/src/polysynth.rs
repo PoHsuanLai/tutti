@@ -16,14 +16,14 @@
 //! targets sample by sample. The mix of one step lives in the bank, so no
 //! scratch is sized to a block — any block length renders every frame.
 
-use crate::bank::{VoiceBank, CONTROL_BLOCK};
-use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
+use crate::bank::{CONTROL_BLOCK, VoiceBank};
+use crate::synth_voice::SynthVoice;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_core::{Amplitude, Param, Tail};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{cc, NoteId};
 use tutti_midi_types::{CCNumber, MidiChannel};
+use tutti_midi_types::{NoteId, cc};
 
 use std::sync::Arc;
 

@@ -32,8 +32,8 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::{Amplitude, Hz, Resonance, SampleRate, Samples, Seconds, Q};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_core::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;

@@ -41,15 +41,15 @@
 // the CLAP harness (and its `tutti-clap-test-plugin` dev-dependency) at all.
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv};
+use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 
 use tutti_core::{ChannelLayout, SampleRate, Samples};
 use tutti_graph::{GraphBuilder, Prepare, Renderer};
-use tutti_nodes::testing::Through;
 use tutti_nodes::ChannelSumNode;
+use tutti_nodes::testing::Through;
 use tutti_plugin::handles::{Bound, PluginClient, PluginControls};
-use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
+use tutti_types::graph::{OutPort, Source};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

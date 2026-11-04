@@ -25,7 +25,7 @@ mod probe_path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
+use clap_probe::{ProbeEnv, Rig, exclusive, load_probe, render};
 use param_probe::{knob, knobs, load_vst2_probe, until};
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};

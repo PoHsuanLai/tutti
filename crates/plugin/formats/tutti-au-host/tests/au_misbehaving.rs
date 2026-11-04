@@ -48,7 +48,7 @@ use tutti_types::Samples;
 
 mod support;
 use support::probe_au::{
-    Misbehaviour, CLAMPED_MAX_FRAMES, LIED_LATENCY_SAMPLES, LYING_ELEMENT_COUNT,
+    CLAMPED_MAX_FRAMES, LIED_LATENCY_SAMPLES, LYING_ELEMENT_COUNT, Misbehaviour,
     PROBE_RENDER_LEVEL, STALE_POISON,
 };
 

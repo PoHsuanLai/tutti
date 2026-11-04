@@ -488,8 +488,7 @@ mod tests {
             )),
             allow(irrefutable_let_patterns)
         )]
-        let Plugin::Clap(clap) = &mut plugin
-        else {
+        let Plugin::Clap(clap) = &mut plugin else {
             unreachable!("constructed as Clap immediately above")
         };
         clap.clap_loaded()
@@ -556,8 +555,7 @@ mod tests {
             )),
             allow(irrefutable_let_patterns)
         )]
-        let Plugin::Clap(clap) = &mut plugin
-        else {
+        let Plugin::Clap(clap) = &mut plugin else {
             unreachable!("constructed as Clap immediately above")
         };
         let state = clap.clap_loaded().host_state();
@@ -642,8 +640,7 @@ mod tests {
             // any multi-format build, and deleting it would make this test stop
             // checking that `load` returned the variant it was asked for.
             #[allow(irrefutable_let_patterns, unreachable_patterns)]
-            let Plugin::Au(au) = &mut plugin
-            else {
+            let Plugin::Au(au) = &mut plugin else {
                 unreachable!("constructed as Au immediately above")
             };
             std::sync::Arc::clone(au.property_flags().expect(

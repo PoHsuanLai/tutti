@@ -670,11 +670,7 @@ fn check_source(key: SourceKey, source: &Source) -> Result<(), CompileError> {
                         && points.windows(2).all(|w| w[0].at < w[1].at)
                 }
             };
-            if ok_clock && ok_wave {
-                Ok(())
-            } else {
-                bad
-            }
+            if ok_clock && ok_wave { Ok(()) } else { bad }
         }
         Source::Macro { value } => {
             if value.is_finite() {

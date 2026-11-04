@@ -368,9 +368,11 @@ mod tests {
         }
 
         // Both directions, and the input scope is named separately.
-        assert!(config_at(44_100.0)
-            .check_sample_rate("input", 48_000.0)
-            .is_err());
+        assert!(
+            config_at(44_100.0)
+                .check_sample_rate("input", 48_000.0)
+                .is_err()
+        );
         assert!(matches!(
             config_at(44_100.0).check_sample_rate("input", 96_000.0),
             Err(AuError::SampleRateRejected { scope: "input", .. })

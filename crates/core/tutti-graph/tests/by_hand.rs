@@ -4,7 +4,7 @@
 //! allocating). A node's unit tests and allocation gates lean on them to
 //! play MIDI and read the transport, so each promise is pinned here.
 
-use tutti_graph::contract::{drive_in, Direct, Emitter};
+use tutti_graph::contract::{Direct, Emitter, drive_in};
 use tutti_graph::{
     Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, Status, Transport,
     TransportChanges, Ump,

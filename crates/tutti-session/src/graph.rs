@@ -44,9 +44,9 @@ use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
     ParamIn, ParamMod, ParamRange, ParamSet, Prepare, Transport,
 };
-use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
+use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitParam};
 
 use crate::SessionNode;

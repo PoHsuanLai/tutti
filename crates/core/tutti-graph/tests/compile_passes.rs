@@ -8,10 +8,10 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{bits, input_signal, Kind, Pair, SpecBehaviour};
+use common::{Kind, Pair, SpecBehaviour, bits, input_signal};
 use tutti_graph::{
-    compile, verify, CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid,
-    GraphSpec, Op, PortKind, Shape, Shapes, Unforkable,
+    CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, Op,
+    PortKind, Shape, Shapes, Unforkable, compile, verify,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
 use tutti_types::latency;
@@ -427,9 +427,10 @@ fn an_audio_cycle_is_invalid() {
     edge(&mut g.topology, at(B, 0), out(A, 0));
     edge(&mut g.topology, at(A, 0), out(B, 0));
     let errs = g.validate().expect_err("cyclic");
-    assert!(errs
-        .iter()
-        .any(|e| matches!(e, GraphInvalid::Topology(Invalid::Cycle { .. }))));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, GraphInvalid::Topology(Invalid::Cycle { .. })))
+    );
 }
 
 /// A cycle that runs through an event edge is only visible to the compiler,

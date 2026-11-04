@@ -39,9 +39,9 @@
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{ChannelLayout, Hz, NodeKey, SampleRate, Samples, WorkerPool, Q};
+use tutti_core::{ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples, WorkerPool};
 use tutti_graph::{Editor, Executor, Prepare, Transport, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};

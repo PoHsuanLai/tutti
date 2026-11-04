@@ -46,7 +46,7 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
 use tutti_core::{Db, Hz, Q};
@@ -300,8 +300,8 @@ impl tutti_graph::Node for Lowpass {
 /// The `nodes` shape on the graph: `ours` runs this crate's own nodes,
 /// otherwise the reference pair.
 fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
-    use tutti_core::graph::{Edge, InPort, OutPort, Source};
     use tutti_core::NodeKey;
+    use tutti_core::graph::{Edge, InPort, OutPort, Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
         tutti_core::Samples(512),

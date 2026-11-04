@@ -2,7 +2,7 @@
 
 #![cfg(target_os = "macos")]
 
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{MaybeUninit, size_of};
 use std::os::raw::c_void;
 
 use crate::error::{AuError, Result};

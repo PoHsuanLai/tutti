@@ -386,9 +386,11 @@ mod tests {
     /// that always returned `false` would satisfy the negative assertion.
     #[test]
     fn a_named_topology_reports_itself_fully_named() {
-        assert!(ChannelTopology::smpte(ChannelLayout::STEREO)
-            .expect("stereo has an order")
-            .is_fully_named());
+        assert!(
+            ChannelTopology::smpte(ChannelLayout::STEREO)
+                .expect("stereo has an order")
+                .is_fully_named()
+        );
     }
 
     /// A speaker this bus does not carry is absent, not index 0.

@@ -10,11 +10,11 @@
 //! quantization to dither against.
 
 use crate::config::ExportConfig;
-use crate::encode::{pump_blocks, Encoder};
+use crate::encode::{Encoder, pump_blocks};
 use crate::error::{Error, Result};
 use crate::render::{FrameSource, RenderPlan};
 use std::io::BufWriter;
-use std::num::{NonZeroU32, NonZeroU8};
+use std::num::{NonZeroU8, NonZeroU32};
 use std::path::Path;
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 

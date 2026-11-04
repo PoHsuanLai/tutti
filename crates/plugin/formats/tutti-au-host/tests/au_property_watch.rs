@@ -56,8 +56,8 @@ use tutti_types::Samples;
 
 mod support;
 use support::probe_au::{
-    set_latency_seconds, set_param_count, set_tail_seconds, Misbehaviour,
-    PROBE_INITIAL_PARAM_COUNT, PROBE_INITIAL_TAIL_SECONDS,
+    Misbehaviour, PROBE_INITIAL_PARAM_COUNT, PROBE_INITIAL_TAIL_SECONDS, set_latency_seconds,
+    set_param_count, set_tail_seconds,
 };
 
 const BLOCK: u32 = 64;

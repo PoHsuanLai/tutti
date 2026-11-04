@@ -1532,10 +1532,11 @@ mod tests {
         assert!(per_sample.spectra().levels.len() > 1);
         let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
         let got = run_blocks(&mut Convolver::new(&ir, 32), &x, &[33, 5, 100, 1, 31]);
-        assert!(got
-            .iter()
-            .zip(&want)
-            .all(|(g, w)| g.to_bits() == w.to_bits()));
+        assert!(
+            got.iter()
+                .zip(&want)
+                .all(|(g, w)| g.to_bits() == w.to_bits())
+        );
     }
 
     /// The layout of every length and head is well formed: levels are
@@ -1876,7 +1877,9 @@ mod tests {
                     c.reset();
                     let got = render(&mut c, &x, &[61]);
                     assert!(
-                        got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits()),
+                        got.iter()
+                            .zip(&want)
+                            .all(|(a, b)| a.to_bits() == b.to_bits()),
                         "{name}: after {n} junk frames in calls {lens:?} the render differs from a fresh one's"
                     );
                 }

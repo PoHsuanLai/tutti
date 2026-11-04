@@ -8,13 +8,13 @@
 //! never grown, so reassembly does not allocate and a pointer handed to the
 //! plugin is never moved during the block it was handed out in.
 
-use tutti_midi_types::ump::{
-    UmpMessageType, SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END,
-    SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
-};
 use tutti_midi_types::MidiGroup;
+use tutti_midi_types::ump::{
+    SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
+    SYSEX7_STATUS_START, UmpMessageType,
+};
 
-use crate::{MidiEvent, MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY};
+use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, RtMidiEvents};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer

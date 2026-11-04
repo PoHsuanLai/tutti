@@ -31,7 +31,7 @@ pub mod property;
 // `NO_FUNCTION_BLOCK` alongside the struct: `DiscoveryData` is re-exported
 // here and one of its fields is documented in terms of that constant, so a
 // caller could build the struct without being able to name the sentinel.
-pub use discovery::{CiCategories, DiscoveryData, Nak, NO_FUNCTION_BLOCK};
+pub use discovery::{CiCategories, DiscoveryData, NO_FUNCTION_BLOCK, Nak};
 pub use profile::{ProfileId, ProfileState};
 pub use property::{PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand};
 

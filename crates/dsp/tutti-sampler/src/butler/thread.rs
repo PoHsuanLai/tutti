@@ -4,8 +4,8 @@
 //! via `command_sender`, and read metrics / cache / stream states through
 //! accessors. The thread body and command handlers live in sibling modules.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
@@ -13,18 +13,18 @@ use thread_priority::ThreadPriority;
 use tutti_core::PrerollTable;
 use tutti_core::SampleRate;
 
+use super::ButlerSender;
 use super::cache::LruCache;
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::{Handles, SessionRate};
-use super::loop_body::{butler_loop, Pacing};
+use super::loop_body::{Pacing, butler_loop};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 use super::preroll::PdcFeed;
 use super::step::ButlerCycle;
 #[cfg(any(test, feature = "test-support"))]
 use super::step::StepOutcome;
-use super::ButlerSender;
 use crossbeam_channel::Receiver;
 
 /// Owner of the butler thread and of every handle shared with it.
@@ -304,8 +304,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::butler::loop_body::Pacing;
     use crate::butler::ButlerGone;
+    use crate::butler::loop_body::Pacing;
     use crate::ports::{Command, Commands};
     use tutti_core::Samples;
 

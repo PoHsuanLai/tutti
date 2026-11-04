@@ -676,7 +676,7 @@ fn a_tempo_change_inside_a_block_re_times_the_passes() {
 /// early where a wrap overshoots → fails.
 #[test]
 fn every_pass_lands_where_the_hosts_clock_reaches_it() {
-    use tutti_core::{FrameClock, LoopRange as Region, FRAME_TOLERANCE};
+    use tutti_core::{FRAME_TOLERANCE, FrameClock, LoopRange as Region};
     const TEMPO: f64 = 97.0;
     let (start, end) = (Beat(3.0), Beat(3.00126));
     let fpb = RATE * 60.0 / TEMPO;

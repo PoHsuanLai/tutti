@@ -5,13 +5,13 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use common::{prepare, Kind, TestNode};
+use common::{Kind, TestNode, prepare};
 use tutti_graph::{
-    compile, CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node,
-    Prepare, Shape, Status, Transport, Ump, Unforkable,
+    CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
+    Shape, Status, Transport, Ump, Unforkable, compile,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{At, ChannelLayout, NodeKey, RtScope, Samples};
@@ -674,8 +674,8 @@ fn set_latency_cuts_a_fade() {
 #[test]
 fn the_reference_cuts_a_fade_on_a_latency_change() {
     use tutti_graph::{GraphSpec, Reference};
-    use tutti_types::graph::NodeSpec;
     use tutti_types::Topology;
+    use tutti_types::graph::NodeSpec;
 
     let spec_at = |generation: u32, latency: usize| {
         let mut t = Topology {

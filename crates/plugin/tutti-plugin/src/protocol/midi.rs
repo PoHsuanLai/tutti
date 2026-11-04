@@ -7,7 +7,7 @@ use tutti_midi_types::ump::MidiEvent;
 /// one type, so a block's MIDI moves between them without a copy. Each
 /// direction of the wire carries at most this many events a block; the
 /// subprocess caps its outgoing MIDI at it.
-pub use tutti_plugin_types::{MidiEventVec, MIDI_STACK_CAPACITY};
+pub use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec};
 
 /// On-wire MIDI event. 20 bytes — packs the full UMP event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

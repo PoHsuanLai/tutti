@@ -37,8 +37,8 @@ use std::sync::Mutex;
 
 mod support;
 use support::corpus::{
-    all_finite, peak, render, silence, ACCEPTS_MONO, DELAY, DLS_SYNTH, EFFECTS, INSTRUMENTS,
-    MATRIX_REVERB, REFUSES_MONO,
+    ACCEPTS_MONO, DELAY, DLS_SYNTH, EFFECTS, INSTRUMENTS, MATRIX_REVERB, REFUSES_MONO, all_finite,
+    peak, render, silence,
 };
 
 use tutti_au_host::BusDirection;

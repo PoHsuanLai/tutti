@@ -5,8 +5,8 @@
 //!
 //! A note at frame 0 into a saw synth, 120 BPM at 48 kHz.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{

@@ -67,7 +67,9 @@ pub enum Error {
     /// it, otherwise at the frame that crosses the limit, and the partial file
     /// is removed. Choose another format (FLAC, Ogg) or a shorter
     /// span.
-    #[error("The export does not fit a WAV file (more than {limit_frames} frames; 32-bit sizes, just under 4 GiB)")]
+    #[error(
+        "The export does not fit a WAV file (more than {limit_frames} frames; 32-bit sizes, just under 4 GiB)"
+    )]
     WavTooLarge {
         /// The frames a WAV of this width and depth can hold.
         limit_frames: u64,
@@ -91,7 +93,9 @@ pub enum Error {
     /// A variant of its own rather than inside [`Fork`](Self::Fork) because it
     /// is the one a host acts on — "remove or freeze this node" — and the key
     /// is what it acts on.
-    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a mic monitor, or a node built unforkable)")]
+    #[error(
+        "Cannot export: node {key:?} cannot be forked for an offline render (a mic monitor, or a node built unforkable)"
+    )]
     NotForkable {
         /// The node, as the live graph keys it.
         key: tutti_types::NodeKey,

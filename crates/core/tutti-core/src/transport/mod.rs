@@ -34,10 +34,10 @@ pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
 pub use state::{
-    beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed, SeekSlot,
+    ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed, SeekSlot, beats_per_sample,
 };
+pub use timed::{SCHEDULE_CAPACITY, ScheduleFull, TransportCommand};
 pub(crate) use timed::{Schedule, Scheduled};
-pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
 // host adapter, `bevy_tutti::graph`, not to this crate.

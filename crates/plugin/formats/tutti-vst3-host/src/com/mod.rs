@@ -39,12 +39,12 @@ pub struct RunLoopActivity {
 }
 
 pub use component_handler::{
-    ComponentHandler, ParameterEditEvent, PluginNotification, ProgressDescription, ProgressEvent,
-    RestartFlags, UnitEvent, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY,
+    ComponentHandler, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent,
+    PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
-pub use event_list::{event_list_ptr, EventList};
+pub use event_list::{EventList, event_list_ptr};
 pub use host_application::HostApplication;
-pub use param_changes::{param_changes_ptr, ParameterChangesImpl};
+pub use param_changes::{ParameterChangesImpl, param_changes_ptr};
 pub(crate) use param_queue::MIN_POINT_ROOM;
 pub(crate) use plug_frame::HostPlugFrame;
 pub use stream::BStream;

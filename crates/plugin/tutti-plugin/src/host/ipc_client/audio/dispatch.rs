@@ -833,7 +833,6 @@ fn recv_state_reply(
     }
 }
 
-/// Drain unsolicited events into `inbox`, returning the next reply-type message.
 /// Record the plugin's answer to a rate change: the refusal while it refuses,
 /// cleared (and heard, if there was one) when it takes the rate.
 pub(super) fn apply_rate_reply(
@@ -856,6 +855,7 @@ pub(super) fn apply_rate_reply(
     }
 }
 
+/// Drain unsolicited events into `inbox`, returning the next reply-type message.
 fn recv_reply(
     stream: &mut ControlStream,
     inbox: &mut Unsolicited,

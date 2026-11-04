@@ -256,8 +256,8 @@ pub(super) struct Unsolicited {
     /// Rate changes the bridge stopped waiting for, whose answers have not
     /// arrived.
     late_rate_owed: u32,
-    /// The latest such answer, until the thread applies it.
-    late_rate: Option<(f64, Option<String>)>,
+    /// What a late answer is applied to, when it is read.
+    lifecycle: Option<super::lifecycle::Lifecycle>,
     reloaded: bool,
     io: bool,
     param_titles: bool,
@@ -274,7 +274,7 @@ impl Unsolicited {
             tail: None,
             rate: None,
             late_rate_owed: 0,
-            late_rate: None,
+            lifecycle: None,
             reloaded: false,
             io: false,
             param_titles: false,
@@ -308,20 +308,27 @@ impl Unsolicited {
         self.late_rate_owed = self.late_rate_owed.saturating_add(1);
     }
 
-    /// Take `SampleRateSet` as a late answer if one is owed (`true`), keeping
-    /// the latest; `false` when it answers the request being waited on.
+    /// An inbox whose late rate answers are applied to `lifecycle`.
+    pub(super) fn with_lifecycle(lifecycle: super::lifecycle::Lifecycle) -> Self {
+        Self {
+            lifecycle: Some(lifecycle),
+            ..Self::new()
+        }
+    }
+
+    /// Take `SampleRateSet` as a late answer if one is owed (`true`), applying
+    /// it **now**: it is read in stream order, ahead of whatever is read after
+    /// it, so a later answer (the request being waited on) lands after it and
+    /// wins. `false` when it answers the request being waited on.
     pub(super) fn late_rate_reply(&mut self, rate: f64, error: Option<String>) -> bool {
         if self.late_rate_owed == 0 {
             return false;
         }
         self.late_rate_owed -= 1;
-        self.late_rate = Some((rate, error));
+        if let Some(lifecycle) = self.lifecycle.clone() {
+            super::dispatch::apply_rate_reply(&lifecycle, self, rate, error);
+        }
         true
-    }
-
-    /// The late answer held, if any.
-    pub(super) fn take_late_rate(&mut self) -> Option<(f64, Option<String>)> {
-        self.late_rate.take()
     }
 
     /// A rate refusal, or its clearing, replacing one already held.

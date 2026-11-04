@@ -2,8 +2,9 @@
 //! speaker mask of a multichannel file is patched in after it (`tutti_core::wav`).
 //!
 //! A WAV file's sizes are 32-bit: an export that would pass them fails with
-//! [`Error::WavTooLarge`] before the render starts when the plan already shows it,
-//! and otherwise at the frame that crosses the limit.
+//! [`Error::WavTooLarge`] before the file is created when the plan already shows
+//! it (an existing file at the path is left alone), and otherwise at the frame
+//! that crosses the limit, which removes the partial file it had begun.
 //!
 //! The offline twin of `tutti_io::WavOut`, and the two stay separate because
 //! this one **pulls** (it drives the render to a planned frame count) while a
@@ -29,13 +30,52 @@ pub(crate) struct WavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,
     bit_depth: BitDepth,
     path: PathBuf,
+    /// The speaker mask the finished file declares.
+    mask: u32,
     layout: ChannelLayout,
     /// The frames the file may hold: [`wav::max_data_frames`], lowered by tests.
     max_frames: u64,
 }
 
 impl WavEncoder {
-    pub(crate) fn create(path: &Path, config: &ExportConfig) -> Result<Self> {
+    /// Opens the file for `plan`, or fails with [`Error::WavTooLarge`] without
+    /// touching `path` when the plan cannot fit.
+    pub(crate) fn create(
+        path: &Path,
+        config: &ExportConfig,
+        source_rate: tutti_core::SampleRate,
+        plan: &RenderPlan,
+    ) -> Result<Self> {
+        let max_frames = wav::max_data_frames(config.encode.channels, config.encode.bit_depth);
+        Self::create_with_limit(path, config, source_rate, plan, max_frames)
+    }
+
+    /// [`create`](Self::create) with the frame limit a test lowers.
+    fn create_with_limit(
+        path: &Path,
+        config: &ExportConfig,
+        source_rate: tutti_core::SampleRate,
+        plan: &RenderPlan,
+        max_frames: u64,
+    ) -> Result<Self> {
+        let mask = match &config.encode.topology {
+            Some(t) if t.layout() != config.encode.channels => {
+                return Err(Error::InvalidConfig(format!(
+                    "the topology is {:?} wide but the file has {:?}",
+                    t.layout(),
+                    config.encode.channels
+                )));
+            }
+            Some(t) => wav::channel_mask(t),
+            None => wav::default_channel_mask(config.encode.channels),
+        };
+        // Before `WavWriter::create`, which truncates an existing file: a
+        // refused export must leave what is at `path` alone.
+        if Self::planned_frames(plan, source_rate, config) > max_frames {
+            return Err(Error::WavTooLarge {
+                limit_frames: max_frames,
+            });
+        }
         let (bits_per_sample, sample_format) = match config.encode.bit_depth {
             BitDepth::Int16 => (16, SampleFormat::Int),
             BitDepth::Int24 => (24, SampleFormat::Int),
@@ -55,8 +95,9 @@ impl WavEncoder {
             writer,
             bit_depth: config.encode.bit_depth,
             path: path.to_path_buf(),
+            mask,
             layout: config.encode.channels,
-            max_frames: wav::max_data_frames(config.encode.channels, config.encode.bit_depth),
+            max_frames,
         })
     }
 
@@ -101,26 +142,26 @@ impl FrameBudget {
 
 impl Encoder for WavEncoder {
     fn encode(
-        mut self,
+        self,
         src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
-        // Refuse before rendering when the plan alone shows the file cannot
-        // fit; the loop below still counts, since a resampler's output length
-        // is only known to within a frame or two.
-        if Self::planned_frames(plan, source_rate, config) > self.max_frames {
-            return Err(Error::WavTooLarge {
-                limit_frames: self.max_frames,
-            });
-        }
         let mut budget = FrameBudget {
             written: 0,
             max: self.max_frames,
         };
-        let width = u64::from(self.layout.count().max(1));
-        pump_blocks(src, source_rate, plan, config, |frames| {
+        let Self {
+            mut writer,
+            bit_depth,
+            path,
+            mask,
+            layout,
+            ..
+        } = self;
+        let width = u64::from(layout.count().max(1));
+        let pumped = pump_blocks(src, source_rate, plan, config, |frames| {
             budget.admit(frames.samples().len() as u64 / width)?;
             // Already interleaved — hound wants a flat sample stream, which is
             // exactly what the render hands over. No de-interleave step to undo.
@@ -130,19 +171,28 @@ impl Encoder for WavEncoder {
                 // offline render and a live capture therefore quantize a given
                 // sample identically by construction, not by two hand-written
                 // matches happening to agree.
-                match self.bit_depth.quantize(s) {
-                    Sample::I16(v) => self.writer.write_sample(v),
-                    Sample::I24(v) => self.writer.write_sample(v),
-                    Sample::F32(v) => self.writer.write_sample(v),
+                match bit_depth.quantize(s) {
+                    Sample::I16(v) => writer.write_sample(v),
+                    Sample::I24(v) => writer.write_sample(v),
+                    Sample::F32(v) => writer.write_sample(v),
                 }
                 .map_err(io_err)?;
             }
             Ok(())
-        })?;
-        self.writer.finalize().map_err(io_err)?;
+        });
+        if let Err(e @ Error::WavTooLarge { .. }) = pumped {
+            // The file holds a truncated render, which the error says is not an
+            // export: close it, then take it away rather than leave it looking
+            // like one.
+            drop(writer);
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+        pumped?;
+        writer.finalize().map_err(io_err)?;
         // `hound` writes the lowest-N-bits speaker mask and has no way to change
-        // it; the one for the engine's channel order goes in over the header.
-        wav::patch_channel_mask_at(&self.path, self.layout)?;
+        // it; the one for the channels' speakers goes in over the header.
+        wav::patch_channel_mask_at(&path, mask)?;
         Ok(())
     }
 }
@@ -171,6 +221,7 @@ mod tests {
                 format: AudioFormat::Wav,
                 bit_depth: depth,
                 channels: ChannelLayout::from(channels),
+                topology: None,
             },
             ..Default::default()
         }
@@ -184,67 +235,103 @@ mod tests {
     ) -> Result<()> {
         let plan = RenderPlan::new(&config.render);
         assert_eq!(plan.output_length, Samples(8));
-        let mut enc = WavEncoder::create(path, config)?;
-        enc.max_frames = max_frames;
-        enc.encode(
+        let rate = config.render.sample_rate;
+        WavEncoder::create_with_limit(path, config, rate, &plan, max_frames)?.encode(
             &mut PlaneSource::new(planes),
-            config.render.sample_rate,
+            rate,
             &plan,
             config,
         )
     }
 
     /// An export at exactly the limit succeeds, and its 6-channel header
-    /// carries the 5.1 (side) mask rather than `hound`'s `0x3F`.
+    /// carries the 5.1 (side) mask rather than `hound`'s `0x3F`; four channels
+    /// are unassigned unless the config says they are quad.
     ///
     /// Mutation: dropping the `patch_channel_mask_at` call in `encode` leaves
     /// `0x3F` and fails the mask assertion; `admit` using `>=` fails the
-    /// limit-exact case.
+    /// limit-exact case; ignoring `config.encode.topology` fails the quad row.
     #[test]
     fn an_export_at_the_limit_succeeds_and_declares_its_mask() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("six.wav");
-        let planes = vec![vec![0.5f32; 8]; 6];
-        encode(&path, &config(6, BitDepth::Int24), 8, &planes).expect("8 frames fit a limit of 8");
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x60F);
-        assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8 * 6);
+        for (channels, topology, mask) in [
+            (6u16, None, 0x60Fu32),
+            (4, None, 0),
+            (4, Some(tutti_core::ChannelTopology::quad()), 0x33),
+        ] {
+            let path = dir.path().join(format!("w{channels}_{mask}.wav"));
+            let planes = vec![vec![0.5f32; 8]; channels as usize];
+            let mut cfg = config(channels, BitDepth::Int24);
+            cfg.encode.topology = topology;
+            encode(&path, &cfg, 8, &planes).expect("8 frames fit a limit of 8");
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), mask);
+            assert_eq!(
+                hound::WavReader::open(&path).unwrap().len(),
+                8 * u32::from(channels)
+            );
+        }
+        let mut cfg = config(2, BitDepth::Int24);
+        cfg.encode.topology = Some(tutti_core::ChannelTopology::quad());
+        let err = encode(&dir.path().join("bad.wav"), &cfg, 8, &vec![vec![0.0; 8]; 2])
+            .expect_err("a quad topology is not stereo");
+        assert!(matches!(err, Error::InvalidConfig(_)), "{err}");
     }
 
-    /// A plan that cannot fit is refused before a frame is pulled: the source
-    /// is never asked for one.
+    /// A plan that cannot fit is refused before the file is created: bytes
+    /// already at the path survive.
     ///
-    /// Mutation: deleting the `planned_frames` check lets the loop pull the
-    /// first block before `admit` fails, and the source's fill count is then non-zero.
+    /// Mutation: moving the `planned_frames` check below `WavWriter::create`
+    /// (the order before this fix) truncates the sentinel to a 44-byte empty
+    /// WAV and fails the equality.
     #[test]
-    fn a_plan_that_cannot_fit_is_refused_before_rendering() {
-        struct Counting(usize);
-        impl FrameSource for Counting {
-            fn fill(&mut self, out: tutti_types::InterleavedMut<'_>) -> usize {
-                self.0 += 1;
-                out.len()
-            }
-            fn produced(&self) -> Samples {
-                Samples(0)
-            }
-            fn max_block(&self) -> usize {
-                4
-            }
-        }
+    fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(2, BitDepth::Int16);
         let plan = RenderPlan::new(&config.render);
-        let mut enc = WavEncoder::create(&dir.path().join("big.wav"), &config).unwrap();
-        enc.max_frames = 7;
-        let mut src = Counting(0);
-        let err = enc
-            .encode(&mut src, config.render.sample_rate, &plan, &config)
-            .expect_err("8 frames do not fit a limit of 7");
+        let rate = config.render.sample_rate;
+        let path = dir.path().join("keep.wav");
+        std::fs::write(&path, b"sentinel").unwrap();
+        let err = WavEncoder::create_with_limit(&path, &config, rate, &plan, 7)
+            .err()
+            .expect("8 frames do not fit a limit of 7");
         assert!(
             matches!(err, Error::WavTooLarge { limit_frames: 7 }),
             "{err}"
         );
-        assert_eq!(src.0, 0, "nothing was rendered");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"sentinel",
+            "a refused export must not touch the file at the path"
+        );
+    }
+
+    /// A render that crosses the limit mid-way leaves no file behind. The plan
+    /// handed to `create` is a short one so the up-front check passes; the
+    /// render itself is 8 frames against a limit of 6.
+    ///
+    /// Mutation: deleting the `remove_file` call leaves a finalized prefix and
+    /// fails the `exists` assertion.
+    #[test]
+    fn a_render_that_crosses_the_limit_removes_its_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(2, BitDepth::Int16);
+        let rate = config.render.sample_rate;
+        let mut short = config.clone();
+        short.render.duration_seconds = 0.004;
+        let short_plan = RenderPlan::new(&short.render);
+        let plan = RenderPlan::new(&config.render);
+        let path = dir.path().join("partial.wav");
+        let enc = WavEncoder::create_with_limit(&path, &config, rate, &short_plan, 6).unwrap();
+        let planes = vec![vec![0.5f32; 8]; 2];
+        let err = enc
+            .encode(&mut PlaneSource::new(&planes), rate, &plan, &config)
+            .expect_err("8 frames cross a limit of 6");
+        assert!(
+            matches!(err, Error::WavTooLarge { limit_frames: 6 }),
+            "{err}"
+        );
+        assert!(!path.exists(), "the truncated file must be removed");
     }
 
     /// The running count fails on the frame that crosses the limit, not before.

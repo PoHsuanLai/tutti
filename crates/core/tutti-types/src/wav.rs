@@ -11,56 +11,71 @@
 //!
 //! # The mask
 //!
-//! The speaker bits are the `SPEAKER_*` constants of `ksmedia.h` (checked
-//! against the mingw-w64 copy), and a WAVE file stores channels in ascending
-//! bit order. [`channel_mask`] returns a mask only when tutti's channel order
-//! *is* that ascending order:
+//! A WAVE file stores channels in ascending speaker-bit order, so a mask can
+//! describe a [`ChannelTopology`] only when its speakers already are in that
+//! order. [`channel_mask`] returns the mask of such a topology, and `0` (the
+//! "unassigned" mask: the channels are anonymous rather than mislabelled) when
+//! a speaker has no WAVE bit or the order differs. Samples are never
+//! reordered, so file channel `n` is always the engine's channel `n`.
 //!
-//! | channels | tutti order | mask |
-//! |---|---|---|
-//! | 1 | C | `0x4` (`KSAUDIO_SPEAKER_MONO`) |
-//! | 2 | FL FR | `0x3` |
-//! | 4 | FL FR BL BR | `0x33` (`KSAUDIO_SPEAKER_QUAD`) |
-//! | 6 | FL FR C LFE SL SR | `0x60F` (`KSAUDIO_SPEAKER_5POINT1_SURROUND`) |
-//! | 8 | FL FR C LFE SL SR BL BR | `0`: ascending order would be `... BL BR SL SR` |
-//! | other | not specified | `0` |
-//!
-//! `0` is the "unassigned" mask: a reader takes the channels as anonymous
-//! rather than mislabelled. Reordering the samples of 7.1 on write is not done,
-//! so a file's channel `n` is always the engine's channel `n`.
+//! A writer that is given only a width uses [`default_channel_mask`], which is
+//! [`channel_mask`] of [`ChannelTopology::smpte`], so it never guesses where
+//! the engine declines to: 1 channel is `0x4` (`KSAUDIO_SPEAKER_MONO`), 2 is
+//! `0x3`, 6 is `0x60F` (`KSAUDIO_SPEAKER_5POINT1_SURROUND`), and every other
+//! width is `0`, including 8 (tutti's 7.1 is `... SL SR BL BR`, WAVE's would be
+//! `... BL BR SL SR`) and 4 (quad and B-format are both four channels).
+//! Quad's `0x33` (`KSAUDIO_SPEAKER_QUAD`) needs the caller to pass
+//! [`ChannelTopology::quad`].
 
 use crate::pcm::BitDepth;
-use crate::ChannelLayout;
+use crate::{ChannelLayout, ChannelTopology, Speaker};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-const SPEAKER_FRONT_LEFT: u32 = 0x1;
-const SPEAKER_FRONT_RIGHT: u32 = 0x2;
-const SPEAKER_FRONT_CENTER: u32 = 0x4;
-const SPEAKER_LOW_FREQUENCY: u32 = 0x8;
-const SPEAKER_BACK_LEFT: u32 = 0x10;
-const SPEAKER_BACK_RIGHT: u32 = 0x20;
-const SPEAKER_SIDE_LEFT: u32 = 0x200;
-const SPEAKER_SIDE_RIGHT: u32 = 0x400;
+/// The `SPEAKER_*` bit of `speaker` in `ksmedia.h`, or `None` for a speaker
+/// WAVE has no bit for.
+const fn speaker_bit(speaker: Speaker) -> Option<u32> {
+    Some(match speaker {
+        Speaker::FrontLeft => 0x1,
+        Speaker::FrontRight => 0x2,
+        Speaker::FrontCenter => 0x4,
+        Speaker::LowFrequency => 0x8,
+        Speaker::BackLeft => 0x10,
+        Speaker::BackRight => 0x20,
+        Speaker::FrontLeftOfCenter => 0x40,
+        Speaker::FrontRightOfCenter => 0x80,
+        Speaker::BackCenter => 0x100,
+        Speaker::SideLeft => 0x200,
+        Speaker::SideRight => 0x400,
+        Speaker::TopCenter => 0x800,
+        Speaker::TopFrontLeft => 0x1000,
+        Speaker::TopFrontCenter => 0x2000,
+        Speaker::TopFrontRight => 0x4000,
+        Speaker::TopBackLeft => 0x8000,
+        Speaker::TopBackCenter => 0x10000,
+        Speaker::TopBackRight => 0x20000,
+        _ => return None,
+    })
+}
 
-/// The speaker mask a WAV file declares for `layout`, or `0` (unassigned)
-/// when tutti's channel order cannot be expressed as one. See the
-/// [module docs](self) for the table.
-pub const fn channel_mask(layout: ChannelLayout) -> u32 {
-    match layout.count() {
-        1 => SPEAKER_FRONT_CENTER,
-        2 => SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT,
-        4 => SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT,
-        6 => {
-            SPEAKER_FRONT_LEFT
-                | SPEAKER_FRONT_RIGHT
-                | SPEAKER_FRONT_CENTER
-                | SPEAKER_LOW_FREQUENCY
-                | SPEAKER_SIDE_LEFT
-                | SPEAKER_SIDE_RIGHT
+/// The speaker mask a WAV file declares for `topology`, or `0` (unassigned)
+/// when a speaker has no WAVE bit or the speakers are not in ascending bit
+/// order, which is the only order a WAVE file can state.
+pub fn channel_mask(topology: &ChannelTopology) -> u32 {
+    let mut mask = 0u32;
+    for &speaker in topology.positions() {
+        match speaker_bit(speaker) {
+            Some(bit) if bit > mask => mask |= bit,
+            _ => return 0,
         }
-        _ => 0,
     }
+    mask
+}
+
+/// [`channel_mask`] of the engine's own order for a bare width
+/// ([`ChannelTopology::smpte`]), `0` for a width that has none.
+pub fn default_channel_mask(layout: ChannelLayout) -> u32 {
+    ChannelTopology::smpte(layout).map_or(0, |t| channel_mask(&t))
 }
 
 /// File offset of `dwChannelMask` in a `WAVE_FORMAT_EXTENSIBLE` file whose
@@ -71,8 +86,7 @@ const MASK_OFFSET: u64 = 40;
 const FORMAT_TAG_OFFSET: u64 = 20;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-/// Rewrites the `dwChannelMask` of the WAV file in `file` to
-/// [`channel_mask`]`(layout)`.
+/// Rewrites the `dwChannelMask` of the WAV file in `file` to `mask`.
 ///
 /// A header that is not `WAVE_FORMAT_EXTENSIBLE` (mono or stereo at 16 bit)
 /// has no mask, and is left alone. Call it on a finalized file.
@@ -81,10 +95,7 @@ const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 ///
 /// The `io::Error` from reading or writing the header; a file shorter than
 /// the extensible header reads as not extensible and is left alone.
-pub fn patch_channel_mask<F: Read + Write + Seek>(
-    file: &mut F,
-    layout: ChannelLayout,
-) -> io::Result<()> {
+pub fn patch_channel_mask<F: Read + Write + Seek>(file: &mut F, mask: u32) -> io::Result<()> {
     file.seek(SeekFrom::Start(FORMAT_TAG_OFFSET))?;
     let mut tag = [0u8; 2];
     match file.read_exact(&mut tag) {
@@ -96,7 +107,7 @@ pub fn patch_channel_mask<F: Read + Write + Seek>(
         return Ok(());
     }
     file.seek(SeekFrom::Start(MASK_OFFSET))?;
-    file.write_all(&channel_mask(layout).to_le_bytes())?;
+    file.write_all(&mask.to_le_bytes())?;
     file.flush()
 }
 
@@ -105,12 +116,12 @@ pub fn patch_channel_mask<F: Read + Write + Seek>(
 /// # Errors
 ///
 /// The `io::Error` from opening the file or patching it.
-pub fn patch_channel_mask_at(path: impl AsRef<Path>, layout: ChannelLayout) -> io::Result<()> {
+pub fn patch_channel_mask_at(path: impl AsRef<Path>, mask: u32) -> io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)?;
-    patch_channel_mask(&mut file, layout)
+    patch_channel_mask(&mut file, mask)
 }
 
 /// The largest header `hound` writes before the data (a
@@ -169,19 +180,22 @@ mod tests {
         h
     }
 
-    /// The masks are the `ksmedia.h` constants, and 7.1 and unnamed widths are
-    /// unassigned.
+    /// The masks are the `ksmedia.h` constants. Quad comes only from a quad
+    /// topology; a bare width of 4, 7.1 and unnamed widths are unassigned, and
+    /// so are a topology out of ascending order or with a speaker WAVE has no
+    /// bit for.
     ///
-    /// Mutation: changing `SPEAKER_SIDE_LEFT` to `SPEAKER_BACK_LEFT` in the 6
-    /// arm (the back-5.1 mask `0x3F`, what `hound` wrote) fails the `0x60F`
-    /// assertion; giving 8 channels `0x63F` fails the 7.1 one.
+    /// Mutation: giving `default_channel_mask` a `4 => 0x33` arm (the count
+    /// guess) fails the bare-4 assertion; making `channel_mask` skip the
+    /// ascending check gives the swapped pair `0x3`, failing that assertion;
+    /// SideLeft mapped to BackLeft's bit gives `0x3F` for 5.1.
     #[test]
-    fn masks_match_ksmedia_and_are_zero_where_the_order_differs() {
-        let m = |n: u16| channel_mask(ChannelLayout::from(n));
+    fn masks_match_ksmedia_and_are_zero_where_they_cannot_be_stated() {
+        let m = |n: u16| default_channel_mask(ChannelLayout::from(n));
         assert_eq!(m(1), 0x4);
         assert_eq!(m(2), 0x3);
-        assert_eq!(m(4), 0x33);
         assert_eq!(m(6), 0x60F);
+        assert_eq!(m(4), 0, "a bare 4 may be quad or B-format");
         assert_eq!(
             m(8),
             0,
@@ -189,6 +203,28 @@ mod tests {
         );
         assert_eq!(m(3), 0);
         assert_eq!(m(12), 0);
+        assert_eq!(channel_mask(&ChannelTopology::quad()), 0x33);
+        assert_eq!(
+            channel_mask(&ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap()),
+            0x60F
+        );
+        use Speaker::*;
+        assert_eq!(
+            channel_mask(&ChannelTopology::new([FrontRight, FrontLeft])),
+            0
+        );
+        assert_eq!(
+            channel_mask(&ChannelTopology::new([FrontLeft, TopSideLeft])),
+            0
+        );
+        assert_eq!(
+            channel_mask(&ChannelTopology::new([FrontLeft, Unknown(3)])),
+            0
+        );
+        assert_eq!(
+            channel_mask(&ChannelTopology::new([FrontLeft, FrontLeft])),
+            0
+        );
     }
 
     /// Only the four mask bytes change, and only in an extensible header.
@@ -199,7 +235,7 @@ mod tests {
     fn patching_rewrites_only_the_mask_of_an_extensible_header() {
         let before = extensible(6);
         let mut file = Cursor::new(before.clone());
-        patch_channel_mask(&mut file, ChannelLayout::from(6u16)).unwrap();
+        patch_channel_mask(&mut file, 0x60F).unwrap();
         let after = file.into_inner();
         let mut expect = before;
         expect[40..44].copy_from_slice(&0x60Fu32.to_le_bytes());
@@ -208,11 +244,11 @@ mod tests {
         let mut plain = extensible(2);
         plain[20..22].copy_from_slice(&1u16.to_le_bytes());
         let mut file = Cursor::new(plain.clone());
-        patch_channel_mask(&mut file, ChannelLayout::STEREO).unwrap();
+        patch_channel_mask(&mut file, 0x3).unwrap();
         assert_eq!(file.into_inner(), plain, "WAVE_FORMAT_PCM has no mask");
 
         let mut file = Cursor::new(vec![0u8; 10]);
-        patch_channel_mask(&mut file, ChannelLayout::STEREO).unwrap();
+        patch_channel_mask(&mut file, 0x3).unwrap();
         assert_eq!(
             file.into_inner(),
             vec![0u8; 10],

@@ -93,9 +93,9 @@ fn main() -> tutti_export::Result<()> {
         let s = ExportConfig {
             encode: EncodeConfig {
                 format,
-                ..config.encode
+                ..config.encode.clone()
             },
-            ..config
+            ..config.clone()
         };
         let w = render_to_file(tone(), &s, &FrozenClock, &dir.join(format!("tone.{ext}")))?;
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);

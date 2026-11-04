@@ -36,8 +36,8 @@ use std::path::{Path, PathBuf};
 use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
 use tutti_core::wav::{self, DataLimitExceeded};
-use tutti_core::ChannelLayout;
 use tutti_core::SampleRate;
+use tutti_core::{ChannelLayout, ChannelTopology};
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
 ///
@@ -71,8 +71,11 @@ pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 /// returns a [`DataLimitExceeded`] inside its `io::Error`. RF64 is not written.
 ///
 /// A header with more than two channels also declares which speakers they
-/// are, from [`wav::channel_mask`]: quad and 5.1 (FL FR C LFE SL SR) are named,
-/// and 7.1 and other widths are written unassigned.
+/// are. Given only a width the sink uses the engine's SMPTE order
+/// ([`wav::default_channel_mask`]): mono, stereo and 5.1 (FL FR C LFE SL SR)
+/// are named, and every other width (4 may be quad or B-format; tutti's 7.1 is
+/// not in WAVE's order) is written unassigned. A caller that knows its 4
+/// channels are quad says so with [`with_topology`](Self::with_topology).
 ///
 /// # Examples
 ///
@@ -105,6 +108,8 @@ pub struct WavOut {
     /// the *first* one is what makes the report meaningful: later failures are
     /// usually the same cause repeated.
     first_error: Option<std::io::Error>,
+    /// The speakers the caller declared; `None` means the width's SMPTE order.
+    topology: Option<ChannelTopology>,
     /// Where the file is, to patch the speaker mask into once `hound` has
     /// finalized it.
     path: PathBuf,
@@ -170,10 +175,40 @@ impl WavOut {
             depth,
             sample_rate,
             first_error: None,
+            topology: None,
             path,
             frames_written: 0,
             max_frames: wav::max_data_frames(layout, depth),
         })
+    }
+
+    /// Declares which speaker each channel feeds, for the file's speaker mask
+    /// (see [`wav::channel_mask`]: `0`, unassigned, when WAVE cannot state the
+    /// order). The samples are written as given, never reordered.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if `topology`'s width is not this sink's.
+    pub fn with_topology(mut self, topology: ChannelTopology) -> std::io::Result<Self> {
+        if topology.layout() != self.layout {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "a topology of {:?} cannot describe a sink of {:?}",
+                    topology.layout(),
+                    self.layout
+                ),
+            ));
+        }
+        self.topology = Some(topology);
+        Ok(self)
+    }
+
+    /// The mask the finished file declares.
+    fn mask(&self) -> u32 {
+        self.topology
+            .as_ref()
+            .map_or_else(|| wav::default_channel_mask(self.layout), wav::channel_mask)
     }
 
     /// A sink whose next loud write is guaranteed to fail, for tests that need
@@ -206,10 +241,17 @@ impl WavOut {
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
             path: file_path.as_ref().to_path_buf(),
             frames_written: 0,
             max_frames: u64::MAX,
         }
+    }
+
+    #[cfg(test)]
+    fn write_interleaved_and_finish_for_test(mut self) {
+        self.write_interleaved(&vec![0.25; 5 * self.stride()]);
+        self.finalize().unwrap();
     }
 
     /// Lowers the frame limit so a test reaches it without writing 4 GiB.
@@ -390,9 +432,9 @@ impl AudioOut for WavOut {
     }
 
     fn finalize(self) -> std::io::Result<()> {
+        let mask = self.mask();
         let Self {
             writer,
-            layout,
             first_error,
             path,
             ..
@@ -405,7 +447,7 @@ impl AudioOut for WavOut {
         if let Some(error) = first_error {
             // Still finalize, so the bytes that did land are readable.
             if writer.finalize().is_ok() {
-                let _ = wav::patch_channel_mask_at(&path, layout);
+                let _ = wav::patch_channel_mask_at(&path, mask);
             }
             return Err(error);
         }
@@ -417,7 +459,7 @@ impl AudioOut for WavOut {
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         // `hound` writes the lowest-N-bits speaker mask and has no way to
         // change it; the right one goes in over the finished header.
-        wav::patch_channel_mask_at(&path, layout)
+        wav::patch_channel_mask_at(&path, mask)
     }
 }
 
@@ -684,6 +726,7 @@ mod tests {
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
             path: path.clone(),
             frames_written: 0,
             max_frames: u64::MAX,
@@ -752,6 +795,7 @@ mod tests {
             depth: BitDepth::Int16,
             sample_rate: SampleRate::SR_48K,
             first_error: None,
+            topology: None,
             path: path.clone(),
             frames_written: 0,
             max_frames: u64::MAX,
@@ -819,7 +863,7 @@ mod tests {
     fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
         let dir = tempfile::tempdir().unwrap();
         for (channels, depth, mask) in [
-            (4u16, BitDepth::Float32, 0x33u32),
+            (4u16, BitDepth::Float32, 0u32),
             (6, BitDepth::Float32, 0x60F),
             (6, BitDepth::Int24, 0x60F),
             (8, BitDepth::Float32, 0),
@@ -846,6 +890,32 @@ mod tests {
             let reader = hound::WavReader::open(&path).unwrap();
             assert_eq!(reader.len() as usize, 5 * channels as usize);
         }
+    }
+
+    /// Quad is declared only by a caller that says it is quad: the same four
+    /// channels with `ChannelTopology::quad()` carry `0x33`, and a topology of
+    /// another width is refused.
+    ///
+    /// Mutation: ignoring `self.topology` in `mask` leaves `0` and fails the
+    /// quad assertion; deleting the width check in `with_topology` fails the
+    /// refusal.
+    #[test]
+    fn a_declared_quad_topology_sets_the_quad_mask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quad.wav");
+        let sink = WavOut::create(&path, 48_000.0, 4u16, BitDepth::Float32)
+            .unwrap()
+            .with_topology(ChannelTopology::quad())
+            .unwrap();
+        sink.write_interleaved_and_finish_for_test();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x33);
+
+        let err = WavOut::create(dir.path().join("x.wav"), 48_000.0, 2u16, BitDepth::Float32)
+            .unwrap()
+            .with_topology(ChannelTopology::quad())
+            .expect_err("a quad topology is not stereo");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// A header with no mask (stereo, 16 bit) is not touched.

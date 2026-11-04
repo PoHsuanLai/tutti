@@ -101,6 +101,7 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
             format,
             bit_depth,
             channels: ChannelLayout::STEREO,
+            topology: None,
         },
         dither: Dither::Off,
         ..Default::default()
@@ -486,6 +487,7 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
                         format,
                         bit_depth,
                         channels: layout,
+                        topology: None,
                     },
                     dither: Dither::Off,
                     ..Default::default()

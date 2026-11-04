@@ -92,7 +92,7 @@ impl Default for RenderConfig {
 }
 
 /// The encode stage: what file to write.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EncodeConfig {
     /// The container to write, carrying that format's own settings.
     pub format: AudioFormat,
@@ -102,6 +102,12 @@ pub struct EncodeConfig {
     /// Width of the written file. A graph wider than this is folded with the
     /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
     pub channels: ChannelLayout,
+    /// Which speaker each file channel feeds, for the WAV speaker mask: `None`
+    /// is the engine's SMPTE order for `channels` (mono, stereo and 5.1 named;
+    /// a bare 4 or 8 unassigned), and a caller that knows it is writing quad
+    /// passes [`ChannelTopology::quad`]. Its width must be `channels`. Samples
+    /// are never reordered; the other formats ignore it.
+    pub topology: Option<tutti_types::ChannelTopology>,
 }
 
 /// The format's and depth's own defaults, written to a **stereo** file.
@@ -117,6 +123,7 @@ impl Default for EncodeConfig {
             format: AudioFormat::default(),
             bit_depth: BitDepth::default(),
             channels: ChannelLayout::STEREO,
+            topology: None,
         }
     }
 }
@@ -156,7 +163,7 @@ impl Resample {
 /// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
 /// with [`tutti_analysis::measure_loudness`], take `Loudness::gain_to` and
 /// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExportConfig {
     /// What to produce, and for how long.
     pub render: RenderConfig,

@@ -63,9 +63,9 @@ pub enum Error {
 
     /// The WAV file would exceed what its 32-bit sizes can describe (just under
     /// 4 GiB; RF64 is not written). `limit_frames` is the most frames a file of
-    /// this width and depth holds. Raised before the render when the plan shows
+    /// this width and depth holds. Raised before the file is created when the plan shows
     /// it, otherwise at the frame that crosses the limit, and the partial file
-    /// is not a valid export. Choose another format (FLAC, Ogg) or a shorter
+    /// is removed. Choose another format (FLAC, Ogg) or a shorter
     /// span.
     #[error("The export does not fit a WAV file (more than {limit_frames} frames; 32-bit sizes, just under 4 GiB)")]
     WavTooLarge {

@@ -70,6 +70,7 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
             format,
             bit_depth,
             channels: ChannelLayout::STEREO,
+            topology: None,
         },
         // Exactness: see the module note.
         dither: Dither::Off,

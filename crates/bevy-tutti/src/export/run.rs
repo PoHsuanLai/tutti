@@ -560,7 +560,7 @@ mod tests {
         for source in [ExportSource::Master, ExportSource::Node(click)] {
             let left = export(
                 &mut app,
-                ExportRequest::new(source, ExportTarget::Buffers, config, timeline()),
+                ExportRequest::new(source, ExportTarget::Buffers, config.clone(), timeline()),
             );
             assert_eq!(left.len(), RATE as usize, "{source:?}");
         }
@@ -569,7 +569,7 @@ mod tests {
             ExportRequest::new(
                 ExportSource::Node(walker),
                 ExportTarget::Buffers,
-                config,
+                config.clone(),
                 timeline(),
             ),
         );

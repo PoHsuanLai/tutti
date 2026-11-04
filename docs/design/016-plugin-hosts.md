@@ -1040,12 +1040,9 @@ copy (fp-edge F5, F6).
 
 ```rust
 pub struct Vst2Quirks {
-    /// Cheap exclusive calls run at the head of a block; state loads go through
-    /// a shadow instance.
+    /// Cheap exclusive calls run at the head of a block; state loads and
+    /// program changes go through a shadow instance.
     pub serialize: bool,
-    /// `effSetProgram` also goes through the shadow, for a plugin that loads
-    /// samples or allocates on a program change. Meaningful only with `serialize`.
-    pub heavy_programs: bool,
 }
 ```
 
@@ -1061,9 +1058,8 @@ index or a flag, so the plugin has nothing to allocate or wait on:
 
 | Opcode | Why it is cheap |
 |---|---|
-| `effSetProgram` | an index into the plugin's in-memory program table (unless `heavy_programs`) |
 | `effSetProgramName` | at most `kVstMaxProgNameLen` (24) bytes copied inline into the entry |
-| `effBeginSetProgram`, `effEndSetProgram` | no payload; they bracket `effSetProgram` |
+| `effBeginSetProgram`, `effEndSetProgram` | no payload; they bracket a program change |
 | `effSetBypass` | one int |
 | `setParameter` | one float; the ordinary parameter edit |
 
@@ -1072,21 +1068,23 @@ from the thread that is already calling into the plugin, so the plugin sees no
 concurrency. The list is default-deny: a new opcode is not cheap until it is
 argued onto it, and nothing that takes a pointer to a buffer, loads a file or
 resizes a table (`effSetChunk`, `effBeginLoadBank`, `effBeginLoadProgram`) is
-on it. Opcodes on neither list (editor, display, `effCanDo`) stay concurrent
+on it. `effSetProgram` is not either: plugins load samples or allocate on a
+program change, so it goes through the shadow like a state load. Opcodes on neither list (editor, display, `effCanDo`) stay concurrent
 as in the default. Reads (`getParameter`, `effGetProgram`,
 `effGetProgramName`) need a reply and stay on the Controller.
 
-**State loads: a shadow.** `effSetChunk` (bank and program) is a
-`HostOp::LoadState`. Under `shadow_loads` the core plans it as rules 11 to 14:
+**State loads and program changes: a shadow.** `effSetChunk` (bank and
+program) and `effSetProgram` are a `HostOp::LoadState`. Under `shadow_loads`
+the core plans it as rules 11 to 14:
 
 1. `LoadShadow(s)`: `apply` calls `L::load_shadow(&controller)`, then
    `load_state(s)` on the new instance while it is `Loaded`, then `activate` at
    the live `Prepare`, and parks the new `(Processor, Controller)` in
    `Active { swap: Swap::Ready { .. } }`. All of it is on the main thread, off the
    audio thread, which keeps rendering the old instance. Any failure drops the
-   shadow, replies `ShadowFailed`, and leaves the live pair as it was. With
-   `heavy_programs`, `effSetProgram(i)` is staged as a chunk the same way: the
-   shadow takes the live `effGetChunk` first, then the program index.
+   shadow, replies `ShadowFailed`, and leaves the live pair as it was. A program
+   change is staged as the live `effGetChunk` followed by the program index, so
+   the shadow starts from the live state.
 2. `SwapTo`: `apply` replays the parameter edits made since `LoadShadow` began
    onto the shadow's ring (they are newer than the state), moves the shadow's
    Controller into `controller` and the old one into `Swap::Retiring`, and does
@@ -1277,8 +1275,8 @@ makes it.
   `process`. It never allocates or locks. The `EditRing` drain, the `Handoff` poll
   are atomic loads and exchanges with no retry loop. Under the VST2 quirk the
   drain also makes the cheap calls (§2.10), which are table writes by contract; a
-  plugin that blocks in one is a plugin that blocks in `setParameter`, and goes
-  on `heavy_programs` or off the list.
+  plugin that blocks in one is a plugin that blocks in `setParameter`, and that
+  opcode comes off the list.
 - The Processor crosses threads only at a block boundary, by a move through the
   `Handoff`. A swap is two moves, the shadow in and the old one out; the fade runs
   on tables and scratch allocated on the main thread, and the old Processor is
@@ -1343,8 +1341,9 @@ makes it.
   quirk off, the same `load_state` reaches the live Controller and `load_shadow`
   is never called. Mutation: skip `Retire` and the retire assertion fails; load
   on the live Controller and the zero-calls assertion fails; drop a block during
-  the swap and the block count fails. The cheap calls are tested the same way:
-  `effSetProgram` is seen only between blocks, on the Processor's thread.
+  the swap and the block count fails. A program change is tested the same way
+  as a state load; the cheap calls are seen only between blocks, on the
+  Processor's thread.
 - **The split against a real plugin.** One live test per format runs `process` on
   one thread while another calls the Controller's main-side set (parameter reads,
   state save, editor calls), under the format's own sanitizer-free harness, and a

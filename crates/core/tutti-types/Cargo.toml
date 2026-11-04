@@ -45,6 +45,15 @@ bytemuck = "1.16"
 # coefficient does not depend on the platform's C math library (the rule
 # `tutti-nodes`' filters follow).
 libm = "0.2.15"
+# `RealFft` (`real_fft.rs`), the one real-input FFT of the convolver, the
+# analysis kernels and the time-stretch vocoder, planned on rustfft's *scalar*
+# planner. Its auto planner (and so `realfft`, which cannot be handed another)
+# picks AVX, SSE or NEON at run time, and those round differently, so a render
+# would differ bitwise between CPUs. It lives here because these crates share
+# nothing else that is lower than `tutti-types`, which names no tutti crate and
+# which `tutti-graph` and the DSP crates already depend on; rustfft depends on
+# no tutti crate either. Same version as `Cargo.lock`'s.
+rustfft = "6.4"
 serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
 # defines vocabulary, not ECS surface.

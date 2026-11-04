@@ -33,6 +33,9 @@ umbrella, which re-export it. What is in it:
   and sink in the engine speaks (mic, file, disk, plugin boundary).
 - **`pcm`** — the canonical float→fixed-point quantization, shared by every codec
   and sink so a recorded and an exported file quantize a sample identically.
+- **`RealFft`** — the real-input FFT the convolver, the analysis kernels and the
+  time-stretch vocoder share, on rustfft's scalar planner so its arithmetic is
+  the same on every CPU.
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
   `delays`) and how long a graph rings after its input stops (`TailGraph`,
   `graph_tail`), as pure graph math over any graph representation.

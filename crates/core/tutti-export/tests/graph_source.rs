@@ -12,10 +12,11 @@
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
-//!   file's) bits. All but the pitched sampler voice's were recorded from the
-//!   graph's render against an independent reference renderer it matched bit
-//!   for bit; the pitched digest is self-recorded (the vocoder's scalar FFT has
-//!   no reference renderer), and its cross-check is the fifth-up pitch figure.
+//!   file's) bits. All but the pitched sampler voice's and the convolver's were
+//!   recorded from the graph's render against an independent reference
+//!   renderer it matched bit for bit; those two are self-recorded (the scalar
+//!   FFT has no reference renderer), and their cross-checks are the fifth-up
+//!   pitch figure and the direct convolution.
 //!   They catch the drift an analytic
 //!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
 //!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
@@ -505,6 +506,13 @@ fn a_surround_mix_folds_to_every_width() {
 /// The tolerance is the FFT's `f32` rounding over a 3 000-tap sum whose
 /// output reaches ~10: 1e-3, against an error measured below 1e-4.
 ///
+/// The digest moved when the convolver's FFT went scalar (`RealFft`): the
+/// inner transform no longer rounds as the AVX one did. Swapping
+/// `RealFft::new` back to rustfft's auto planner on an AVX machine restores the
+/// previous digest (0x1163_cc03_0b49_99c6) exactly, so the real-FFT passes
+/// are unchanged and the scalar planner is the whole difference. The new
+/// digest is self-recorded.
+///
 /// Mutations (run): `block_size` rounded down to a multiple of 64 → the
 /// length is short; the output scaled by `1.0 + f32::EPSILON` → the digest
 /// moves.
@@ -528,7 +536,7 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
             "frame {n}: {s}, the convolution is {want} (latency {latency})"
         );
     }
-    assert_golden("convolver", digest(&planes), 0x1163_cc03_0b49_99c6);
+    assert_golden("convolver", digest(&planes), 0x72ca_224c_c4cd_9a4e);
 }
 
 /// The graph reports a lookahead limiter's latency analytically (5 ms at

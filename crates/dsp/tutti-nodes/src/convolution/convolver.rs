@@ -3,10 +3,12 @@
 //! behind an `Arc`, and shared by every convolver built from it.
 //!
 //! The partitioned convolution is the one `fft-convolver` 0.3 runs (its
-//! `FFTConvolver`), written over the same `realfft` transforms with the same
-//! arithmetic in the same order, so an output is bit-identical to it (checked
-//! for IRs of 0 to 5000 samples at partitions of 2 to 512; the node's goldens
-//! pin it). It is written here rather than depended on because
+//! `FFTConvolver`), with the same arithmetic in the same order, over
+//! [`RealFft`], the engine's CPU-independent real FFT (rustfft's scalar
+//! planner, where `fft-convolver`'s `realfft` picks SIMD at run time). An
+//! output is therefore bit-identical across CPUs on one OS and libm, and equal
+//! to `fft-convolver`'s up to the transforms' rounding. It is written here
+//! rather than depended on because
 //! `fft-convolver` keeps the IR's spectra inside each convolver with no way to
 //! share them, so every channel of a shared-IR node and every fork of a node
 //! would hold its own copy — megabytes for a long reverb. Here a channel, a
@@ -29,8 +31,7 @@
 
 use std::sync::Arc;
 
-use realfft::num_complex::Complex;
-use realfft::{ComplexToReal, FftError, RealFftPlanner, RealToComplex};
+use tutti_types::{Complex32, RealFft};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.
@@ -116,9 +117,9 @@ pub struct IrSpectra {
     ir_len: usize,
     /// `ceil(ir_len / block_size)` spectra of `block_size + 1` bins; empty
     /// for an empty IR, whose convolution is silence.
-    segments: Vec<Vec<Complex<f32>>>,
-    forward: Arc<dyn RealToComplex<f32>>,
-    inverse: Arc<dyn ComplexToReal<f32>>,
+    segments: Vec<Vec<Complex32>>,
+    /// Both directions, `2 × block_size` points.
+    fft: RealFft,
 }
 
 impl IrSpectra {
@@ -127,21 +128,17 @@ impl IrSpectra {
     fn new(ir: &[f32], block_size: usize) -> Self {
         debug_assert!(block_size.is_power_of_two());
         let seg_size = 2 * block_size;
-        let mut planner = RealFftPlanner::new();
-        let forward = planner.plan_fft_forward(seg_size);
-        let inverse = planner.plan_fft_inverse(seg_size);
+        let fft = RealFft::new(seg_size);
         let bins = seg_size / 2 + 1;
         let seg_count = ir.len().div_ceil(block_size);
-        let mut scratch = forward.make_scratch_vec();
+        let mut scratch = fft.make_scratch();
         let mut buffer = vec![0.0f32; seg_size];
         let segments = (0..seg_count)
             .map(|i| {
                 let part = &ir[i * block_size..ir.len().min((i + 1) * block_size)];
                 copy_and_pad(&mut buffer, part);
-                let mut spectrum = vec![Complex::new(0.0, 0.0); bins];
-                forward
-                    .process_with_scratch(&mut buffer, &mut spectrum, &mut scratch)
-                    .expect("buffers sized for the plan");
+                let mut spectrum = vec![Complex32::new(0.0, 0.0); bins];
+                fft.forward(&buffer, &mut spectrum, &mut scratch);
                 spectrum
             })
             .collect();
@@ -149,8 +146,7 @@ impl IrSpectra {
             block_size,
             ir_len: ir.len(),
             segments,
-            forward,
-            inverse,
+            fft,
         }
     }
 }
@@ -165,11 +161,7 @@ fn copy_and_pad(dst: &mut [f32], src: &[f32]) {
 /// `result += a × b`, bin by bin: the complex multiply-accumulate of the
 /// partitioned convolution, in `fft-convolver`'s operand order.
 #[inline]
-fn complex_multiply_accumulate(
-    result: &mut [Complex<f32>],
-    a: &[Complex<f32>],
-    b: &[Complex<f32>],
-) {
+fn complex_multiply_accumulate(result: &mut [Complex32], a: &[Complex32], b: &[Complex32]) {
     debug_assert!(result.len() == a.len() && result.len() == b.len());
     for ((r, a), b) in result.iter_mut().zip(a).zip(b) {
         r.re += a.re * b.re - a.im * b.im;
@@ -185,20 +177,20 @@ struct Partitioned {
     spectra: Arc<IrSpectra>,
     /// The input's spectra, one per IR partition: a ring whose head is
     /// `current`.
-    history: Vec<Vec<Complex<f32>>>,
+    history: Vec<Vec<Complex32>>,
     current: usize,
     /// `2 × block_size`: the padded input going in, the product coming out.
     buffer: Vec<f32>,
-    forward_scratch: Vec<Complex<f32>>,
-    inverse_scratch: Vec<Complex<f32>>,
+    /// Both transforms' scratch.
+    scratch: Vec<Complex32>,
     /// The older partitions' products, summed a few partitions at a time
     /// between two boundaries ([`accumulate_to`](Self::accumulate_to)):
     /// partitions `1..=accumulated` are in, and `begun` says the sum was
     /// zeroed for this block.
-    pre_multiplied: Vec<Complex<f32>>,
+    pre_multiplied: Vec<Complex32>,
     accumulated: usize,
     begun: bool,
-    conv: Vec<Complex<f32>>,
+    conv: Vec<Complex32>,
     /// The second half of the last block's product, added to the next.
     overlap: Vec<f32>,
 }
@@ -209,13 +201,12 @@ impl Partitioned {
     fn new(spectra: Arc<IrSpectra>) -> Self {
         let bs = spectra.block_size;
         let bins = bs + 1;
-        let zero = Complex::new(0.0, 0.0);
+        let zero = Complex32::new(0.0, 0.0);
         Self {
             history: vec![vec![zero; bins]; spectra.segments.len()],
             current: 0,
             buffer: vec![0.0; 2 * bs],
-            forward_scratch: spectra.forward.make_scratch_vec(),
-            inverse_scratch: spectra.inverse.make_scratch_vec(),
+            scratch: spectra.fft.make_scratch(),
             pre_multiplied: vec![zero; bins],
             accumulated: 0,
             begun: false,
@@ -235,7 +226,7 @@ impl Partitioned {
         let spectra = &*self.spectra;
         let count = spectra.segments.len();
         if !self.begun {
-            self.pre_multiplied.fill(Complex::new(0.0, 0.0));
+            self.pre_multiplied.fill(Complex32::new(0.0, 0.0));
             self.begun = true;
         }
         let upto = upto.min(count.saturating_sub(1));
@@ -265,45 +256,26 @@ impl Partitioned {
             return;
         }
         copy_and_pad(&mut self.buffer, input);
-        // The transforms cannot fail on buffers sized for their plan. On the
-        // audio thread a sizing failure still degrades to silence rather
-        // than a panic across the callback; `debug_assert` catches a sizing
-        // regression in tests. Data never fails the forward transform.
-        let forward = spectra.forward.process_with_scratch(
-            &mut self.buffer,
+        spectra.fft.forward(
+            &self.buffer,
             &mut self.history[self.current],
-            &mut self.forward_scratch,
+            &mut self.scratch,
         );
-        debug_assert!(forward.is_ok(), "forward FFT on pre-sized buffers");
-        if forward.is_err() {
-            output.fill(0.0);
-            return;
-        }
         self.conv.copy_from_slice(&self.pre_multiplied);
         complex_multiply_accumulate(
             &mut self.conv,
             &self.history[self.current],
             &spectra.segments[0],
         );
-        let inverse = spectra.inverse.process_with_scratch(
-            &mut self.conv,
-            &mut self.buffer,
-            &mut self.inverse_scratch,
-        );
-        // `InputValues` is about data, not sizing: a non-zero imaginary part
-        // at DC or Nyquist, which the spectrum of a real input has only when
-        // the input held NaN or ±∞. `realfft` zeroes those parts and still
-        // completes the transform, so the block is used as computed: a
-        // non-finite input propagates as through any linear filter, the same
-        // in debug and release, and leaves with the partition that carried it.
-        match inverse {
-            Ok(()) | Err(FftError::InputValues(..)) => {}
-            Err(_) => {
-                debug_assert!(false, "inverse FFT on pre-sized buffers");
-                output.fill(0.0);
-                return;
-            }
-        }
+        // A non-zero imaginary part at DC or Nyquist, which the spectrum of a
+        // real input has only when the input held NaN or ±∞, is ignored by
+        // the inverse and the transform completes, so the block is used as
+        // computed: a non-finite input propagates as through any linear
+        // filter, the same in debug and release, and leaves with the
+        // partition that carried it.
+        spectra
+            .fft
+            .inverse(&mut self.conv, &mut self.buffer, &mut self.scratch);
         // The inverse is unnormalised.
         let len = self.buffer.len() as f32;
         for x in &mut self.buffer {
@@ -322,7 +294,7 @@ impl Partitioned {
 
     /// Clear the running state; the spectra stay.
     fn reset(&mut self) {
-        let zero = Complex::new(0.0, 0.0);
+        let zero = Complex32::new(0.0, 0.0);
         self.buffer.fill(0.0);
         for h in &mut self.history {
             h.fill(zero);
@@ -344,8 +316,7 @@ impl Clone for Partitioned {
             history: self.history.clone(),
             current: self.current,
             buffer: self.buffer.clone(),
-            forward_scratch: self.forward_scratch.clone(),
-            inverse_scratch: self.inverse_scratch.clone(),
+            scratch: self.scratch.clone(),
             pre_multiplied: self.pre_multiplied.clone(),
             accumulated: self.accumulated,
             begun: self.begun,
@@ -674,14 +645,15 @@ mod tests {
     /// and once its partition has left the spectra history and the overlap,
     /// silence in is exactly silence out again.
     ///
-    /// The NaN's spectrum is NaN in every bin, so `realfft`'s inverse
-    /// reports `InputValues` for the DC and Nyquist imaginary parts. With an
+    /// The NaN's spectrum is NaN in every bin, including the DC and Nyquist
+    /// imaginary parts, which the inverse ignores. With an
     /// 8-tap IR at block 4 (two partitions), a NaN fed at sample 0 is in the
     /// history for two FFT cycles and in the overlap for one more; past the
     /// latency plus three blocks the output is pure convolution of zeros.
     ///
-    /// Mutation (run): `debug_assert!(inverse.is_ok(), ..)` restored before
-    /// the match → panics on the first drain after the NaN → fails.
+    /// The inverse's handling of those parts is mutation-tested in
+    /// `tutti-types`; here the NaN reaches the output with or without them.
+    ///
     /// Mutation (run): the overlap keeps a NaN it already holds → the NaN
     /// outlasts its partition → fails.
     /// Mutation (run): `*o = y + v` without the overlap `v` → the NaN is
@@ -893,7 +865,7 @@ mod tests {
                 continue;
             }
             assert_eq!(c.fft.accumulated, count - 1, "sum complete, call {n}");
-            let mut want = vec![Complex::new(0.0f32, 0.0); part + 1];
+            let mut want = vec![Complex32::new(0.0f32, 0.0); part + 1];
             for i in 1..count {
                 let seg = &c.fft.spectra.segments[i];
                 let hist = &c.fft.history[(c.fft.current + i) % count];

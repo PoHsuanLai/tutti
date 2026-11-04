@@ -19,13 +19,14 @@ where the results go:
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 
-FFT is [realfft](https://crates.io/crates/realfft)'s (real-input transforms on
-[rustfft](https://crates.io/crates/rustfft)). `tutti-sampler`'s vocoder
-has its own real-input pair over rustfft's scalar planner (so its renders are
-bit-identical on every CPU), planned at construction so its audio path
-allocates nothing. This crate plans lazily, per scratch, on the cold path
-(rustfft's auto planner, which picks SIMD at run time). Both are
-`num_complex::Complex<f32>` underneath, so values cross freely.
+FFT is `tutti_types::RealFft`, the engine's one real-input FFT: rustfft's
+*scalar* planner under realfft's even-length real passes (an odd size runs a
+full-length complex transform). Its arithmetic does not depend on the CPU, so
+a spectrum, a pitch or an onset is bit-identical on every CPU on the same OS
+and libm (the twiddles call the C library's `sin` and `cos`, so not across
+libms). `tutti-sampler`'s vocoder and `tutti-nodes`' convolver use the same
+transform, so values cross freely as `num_complex::Complex<f32>`. This crate
+plans lazily, per scratch, on the cold path.
 
 ## Scope
 

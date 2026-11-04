@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — every FFT user but the HRTF is CPU-independent: `tutti_types::RealFft`; convolver and analysis output bits change
+
+**One real-input FFT, on rustfft's scalar planner, serves the convolver, the
+analysis kernels and the time-stretch vocoder.** `realfft`'s planners use
+rustfft's auto planner, which picks AVX, SSE or NEON at run time and rounds
+differently from scalar, so a `ConvolverNode` render, a spectrum, a YIN pitch
+or an onset curve differed in the last bits between CPUs. They now run on
+`tutti_types::RealFft` (the sampler's scalar passes, moved there; they are
+adapted from realfft 3.5.0 by Henrik Enquist, MIT, and the notice moved with
+them to `tutti-types/src/LICENSE-realfft`). The vocoder's output is unchanged:
+the same arithmetic, and the digest test that pinned it passes with its value
+untouched. An odd size, which tutti-analysis accepts, runs a full-length
+complex transform on the same scalar planner. The guarantee is
+CPU-independent arithmetic: results are bit-identical across CPUs on the same
+OS and libm, not across libms (the twiddles call the C library's `sin` and
+`cos`). `tutti-spatial`'s HRTF and `tutti-export`'s `rubato` resampler still use
+SIMD-dispatching FFTs.
+
+**Output bits change** in `ConvolverNode`/`Convolver`, `FftScratch`
+(so `stft`, `istft`, `detect_onsets`) and `yin`/`yin_track`: the scalar inner
+FFT rounds differently from AVX/SSE/NEON, at f32 rounding level. The
+analytic analysis tests and the convolver's tolerance-pinned render pass
+unchanged. One golden moved: `tutti-export`'s `graph_source` convolver digest
+(0x1163cc030b4999c6 to 0x72ca224cc4cd9a4e, Linux/glibc). Swapping `RealFft`
+back to rustfft's auto planner on an AVX machine restores the old digest
+exactly, so the scalar planner is the whole difference; the analytic
+direct-convolution check beside it is untouched. The convolver is no longer
+bit-identical to `fft-convolver` 0.3, which runs `realfft`.
+
+Cost of determinism (`taskset -c 0`, 5 interleaved runs, median, main to
+branch; the machine is noisy, so ratios, not absolutes): `stft` + `istft`
+(2048, hop 512) +141%, `yin_track` +117%, `detect_onsets` (flux) +41%;
+`stretch` +5 to +6% at every window (the same arithmetic as before, now across
+a crate boundary); `convolver_blocks` partition 128 within noise, partition
+512 0 to +16%, partition 2048 +16 to +41% (mean per call).
+
+Migration: `tutti-types` depends on `rustfft`; `tutti-nodes`'s `convolution`
+feature and `tutti-analysis` no longer pull `realfft`, and `tutti-sampler`
+no longer names `rustfft`. `tutti_analysis::GenericComplex` is removed;
+`tutti_analysis::Complex` is `tutti_types::Complex32` (the same
+`num_complex::Complex<f32>`), so name `Complex` or `num_complex` directly.
+New: `tutti_types::{RealFft, Complex32}`.
+
 ### Changed — the lookahead limiter's threshold drives its input; with the ceiling above the threshold the output changes
 
 `LimiterNode`'s curve was discontinuous and non-monotonic when `ceiling_db >
@@ -88,14 +131,15 @@ allocate nothing. `microfft` and `num-complex` leave `tutti-sampler`, and
 **The FFT is forced scalar, so its arithmetic is CPU-independent.**
 `realfft`'s planners always use rustfft's auto planner, which picks AVX, SSE or
 NEON at run time and differs bitwise from scalar in about 97% of bins. `realfft`
-cannot be given a planner, so `stretch::fft` carries its even-length real-FFT
-passes over `rustfft::FftPlannerScalar` (adapted from realfft 3.5.0 by Henrik
-Enquist, MIT; the notice is `stretch/LICENSE-realfft`). A test pins the scalar
-choice on Linux/glibc, and another checks the transforms against the textbook
-DFT. The twiddles and the vocoder's phase math still use the C library's
+cannot be given a planner, so the even-length real-FFT passes run over
+`rustfft::FftPlannerScalar` (adapted from realfft 3.5.0 by Henrik Enquist, MIT;
+the notice is `tutti-types/src/LICENSE-realfft`). A test pins the scalar choice
+on Linux/glibc, and another checks the transforms against the textbook DFT.
+The twiddles and the vocoder's phase math still use the C library's
 sin/cos/atan2/hypot, so renders are bit-identical across CPUs on the same OS
-and libm, not across libms. The tutti-nodes convolver, tutti-analysis and the
-tutti-spatial HRTF still use SIMD-dispatching FFTs.
+and libm, not across libms. The tutti-spatial HRTF and the
+`tutti-export` resampler (`rubato`'s FFT resampler, which runs `realfft`) still
+use SIMD-dispatching FFTs.
 The inverse zeroes the
 imaginary parts of DC and Nyquist (a polar bin at phase pi is not exactly real),
 so non-finite input there cannot panic the audio path; the state after a

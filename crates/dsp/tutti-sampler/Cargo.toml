@@ -71,19 +71,6 @@ tutti-analysis = { path = "../tutti-analysis", default-features = false }
 # gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
-# The vocoder's real-input FFT (`stretch::fft`), planned at construction on
-# rustfft's *scalar* planner (`FftPlannerScalar`). `realfft`'s planners always
-# use rustfft's auto planner, which picks AVX, SSE or NEON at run time, and
-# those round differently from scalar in most bins. The FFT arithmetic is then
-# CPU-independent; the twiddles and the vocoder's phase math use the C
-# library's sin/cos/atan2/hypot, so renders are bit-identical across CPUs on
-# one OS and libm, not across libms. (tutti-nodes' convolver, tutti-analysis
-# and tutti-spatial's HRTF still use SIMD-dispatching FFTs.) `realfft` cannot be handed a planner (its
-# constructors take the auto `FftPlanner`), so `stretch::fft` carries
-# realfft's even-length pre/post-processing over a scalar inner FFT. Same
-# version as Cargo.lock's (realfft's own dependency).
-rustfft = "6.4"
-
 tracing = "0.1"
 thiserror = "2"
 

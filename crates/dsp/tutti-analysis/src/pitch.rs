@@ -40,12 +40,10 @@ impl PitchResult {
     }
 }
 
-use std::sync::Arc;
-
-use realfft::{num_complex::Complex, ComplexToReal, FftError, RealFftPlanner, RealToComplex};
-use tutti_types::{Confidence, Hz};
+use tutti_types::{Confidence, Hz, RealFft};
 
 use crate::yin::YinConfig;
+use crate::Complex;
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
@@ -57,18 +55,17 @@ pub(crate) struct PitchDetector {
     cfg: YinConfig,
     difference: Vec<f32>,
     cumulative_mean: Vec<f32>,
-    fft_forward: Arc<dyn RealToComplex<f32>>,
-    fft_inverse: Arc<dyn ComplexToReal<f32>>,
+    fft: RealFft,
     /// The zero-padded real analysis window `x[0..W]`.
     time_a: Vec<f32>,
     /// The zero-padded real signal `x[0..W+max_period]`; then, after the
     /// inverse transform, the cross-correlation.
     time_b: Vec<f32>,
     /// The `fft_size / 2 + 1` bins of `time_a`.
-    fft_a: Vec<Complex<f32>>,
+    fft_a: Vec<Complex>,
     /// The bins of `time_b`; then the cross-power spectrum.
-    fft_buffer: Vec<Complex<f32>>,
-    fft_scratch: Vec<Complex<f32>>,
+    fft_buffer: Vec<Complex>,
+    fft_scratch: Vec<Complex>,
     /// Prefix sums of the squared input, for the windowed energies.
     cum_sq: Vec<f64>,
 }
@@ -77,25 +74,20 @@ impl PitchDetector {
     pub fn new(cfg: YinConfig) -> Self {
         let max_period = cfg.max_period().get();
         let fft_size = (max_period * 2).next_power_of_two();
-        let mut planner = RealFftPlanner::new();
-        let fft_forward = planner.plan_fft_forward(fft_size);
-        let fft_inverse = planner.plan_fft_inverse(fft_size);
-        let bins = fft_size / 2 + 1;
-        let scratch_len = fft_forward
-            .get_scratch_len()
-            .max(fft_inverse.get_scratch_len());
+        let fft = RealFft::new(fft_size);
+        let bins = fft.bins();
+        let fft_scratch = fft.make_scratch();
 
         Self {
             cfg,
             difference: vec![0.0; max_period + 1],
             cumulative_mean: vec![0.0; max_period + 1],
-            fft_forward,
-            fft_inverse,
+            fft,
             time_a: vec![0.0; fft_size],
             time_b: vec![0.0; fft_size],
             fft_a: vec![Complex::new(0.0, 0.0); bins],
             fft_buffer: vec![Complex::new(0.0, 0.0); bins],
-            fft_scratch: vec![Complex::new(0.0, 0.0); scratch_len],
+            fft_scratch,
             // `usable` is at most `2 * max_period` (see `compute_difference`).
             cum_sq: vec![0.0; 2 * max_period + 1],
         }
@@ -183,18 +175,10 @@ impl PitchDetector {
         head.copy_from_slice(&samples[..usable]);
         tail.fill(0.0);
 
-        // The buffers were sized from the plans at construction, so the
-        // transforms cannot report a length error.
-        self.fft_forward
-            .process_with_scratch(&mut self.time_a, &mut self.fft_a, &mut self.fft_scratch)
-            .expect("buffers sized at construction");
-        self.fft_forward
-            .process_with_scratch(
-                &mut self.time_b,
-                &mut self.fft_buffer,
-                &mut self.fft_scratch,
-            )
-            .expect("buffers sized at construction");
+        self.fft
+            .forward(&self.time_a, &mut self.fft_a, &mut self.fft_scratch);
+        self.fft
+            .forward(&self.time_b, &mut self.fft_buffer, &mut self.fft_scratch);
 
         // Cross-power spectrum: conj(A) * B, over the non-redundant bins.
         for (a, buf) in self.fft_a.iter().zip(self.fft_buffer.iter_mut()) {
@@ -203,18 +187,14 @@ impl PitchDetector {
 
         // Inverse FFT -> cross-correlation. The product of two real signals'
         // spectra has real DC and Nyquist bins, so nothing is dropped. A
-        // non-finite sample makes those imaginary parts NaN: realfft ignores
-        // them, still writes the output, and reports `InputValues`, which is
-        // tolerated. The estimate is then unvoiced, as the NaNs fail every
-        // threshold comparison.
-        match self.fft_inverse.process_with_scratch(
+        // non-finite sample makes those imaginary parts NaN: the inverse
+        // ignores them and still writes the output. The estimate is then
+        // unvoiced, as the NaNs fail every threshold comparison.
+        self.fft.inverse(
             &mut self.fft_buffer,
             &mut self.time_b,
             &mut self.fft_scratch,
-        ) {
-            Ok(()) | Err(FftError::InputValues(..)) => {}
-            Err(e) => unreachable!("buffers sized at construction: {e}"),
-        }
+        );
 
         let inv_n = 1.0 / fft_size as f64;
         self.difference[0] = 0.0;

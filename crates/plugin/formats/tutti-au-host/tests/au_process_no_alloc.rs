@@ -4,12 +4,8 @@
 //! Mirrors `tutti-clap-host/tests/clap_process_no_alloc.rs` and
 //! `tutti-vst3-host/tests/vst3_process_no_alloc.rs`. macOS-only; uses Apple's
 //! stock units (always installed), so the suite runs anywhere the AU framework
-//! is available — no third-party plugin required. `#[ignore]`'d to match the
-//! other host-level rt tests:
-//!
-//! ```bash
-//! cargo test -p tutti-au-host --test au_process_no_alloc -- --ignored
-//! ```
+//! is available — no third-party plugin required, and the macOS CI job runs it
+//! with the rest of the workspace.
 //!
 //! ## What is covered, and why each one is here
 //!
@@ -172,7 +168,6 @@ impl Bufs64 {
 /// thread starts taking the allocator lock every 1.3ms at 48kHz, which is heard
 /// as intermittent dropouts under load rather than seen as a crash.
 #[test]
-#[ignore]
 fn effect_render_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DELAY.open(48_000.0, BLOCK);
@@ -199,7 +194,6 @@ fn effect_render_does_not_allocate() {
 /// Nothing gates this path — sample width is the host pipeline's choice, so an
 /// AU on a `Float64` pipeline takes it on every block unconditionally.
 #[test]
-#[ignore]
 fn f64_effect_render_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DELAY.open(48_000.0, BLOCK);
@@ -222,7 +216,6 @@ fn f64_effect_render_does_not_allocate() {
 /// A host that allocates here glitches exactly while the user is playing — the
 /// worst possible moment, and one that never reproduces on an idle timeline.
 #[test]
-#[ignore]
 fn instrument_render_with_midi_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DLS_SYNTH.open(48_000.0, BLOCK);
@@ -259,7 +252,6 @@ fn instrument_render_with_midi_does_not_allocate() {
 /// that allocated *before* discovering it had nothing to send would be invisible
 /// to a test that only drove the delivered families.
 #[test]
-#[ignore]
 fn send_midi_decode_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DLS_SYNTH.open(48_000.0, BLOCK);
@@ -312,13 +304,12 @@ fn send_midi_decode_does_not_allocate() {
 /// AUSampler, not `DLS_SYNTH`: `DLSMusicDevice` traps inside
 /// `MusicDeviceSysEx` (see `au_sysex.rs`).
 ///
-/// Mutation (cannot be run on the Linux this was written on; macOS CI runs
-/// it): restore the local `let mut sysex_buf: Vec<u8> = Vec::new()` with
+/// Mutation (cannot be run on the Linux this was written on; the macOS CI job
+/// runs it): restore the local `let mut sysex_buf: Vec<u8> = Vec::new()` with
 /// `extend_from_slice` per packet → `assert_no_alloc` aborts in the guarded
 /// region; skip the reservation in `AuInstance::initialize` → every message
 /// is dropped and the first `assert_eq!` fails.
 #[test]
-#[ignore]
 fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
     use tutti_midi_types::ump::SYSEX7_MAX_PAYLOAD;
 
@@ -358,7 +349,6 @@ fn a_long_sysex_does_not_allocate_and_an_oversized_one_is_dropped_counted() {
 /// table in the corpus (22, pinned in `support/corpus.rs`) and is strongly
 /// non-linear, so a load genuinely moves its state.
 #[test]
-#[ignore]
 fn render_after_preset_load_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DISTORTION.open(48_000.0, BLOCK);
@@ -394,7 +384,6 @@ fn render_after_preset_load_does_not_allocate() {
 /// write allocates, the click that bypasses a plugin is also the click that
 /// drops a buffer.
 #[test]
-#[ignore]
 fn bypass_toggle_during_render_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DISTORTION.open(48_000.0, BLOCK);
@@ -424,7 +413,6 @@ fn bypass_toggle_during_render_does_not_allocate() {
 /// one most likely to grow a `format!`: error construction is where allocation
 /// hides, and a suite that only drove the success path would never see it.
 #[test]
-#[ignore]
 fn per_element_parameter_writes_do_not_allocate() {
     let _lock = lock();
     let mut au = corpus::MULTI_CHANNEL_MIXER.open(48_000.0, BLOCK);
@@ -474,7 +462,6 @@ fn per_element_parameter_writes_do_not_allocate() {
 /// mid-session is the real trigger, and it is the kind of regression that only
 /// shows up on the machine that switched.
 #[test]
-#[ignore]
 fn render_after_sample_rate_change_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DELAY.open(48_000.0, BLOCK);

@@ -54,7 +54,7 @@ pub fn unframed(message: &[u8]) -> &[u8] {
 /// whether it was pushed.
 pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> bool {
     let payload = unframed(message);
-    let packets = payload.len().div_ceil(6).max(1);
+    let packets = MidiEvent::sysex7_packet_count(payload.len());
     if packets > out.remaining() {
         out.mark_overflowed();
         return false;

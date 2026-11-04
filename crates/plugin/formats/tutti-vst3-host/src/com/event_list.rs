@@ -34,7 +34,8 @@ use vst3::{Class, ComWrapper};
 use crate::types::MidiEvent;
 use crate::types::{
     from_c_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi, EventHeader,
-    SysExEvent, TextArena, Vst3Event, Vst3InputEvents, K_DATA_EVENT, K_NOTE_OFF_EVENT,
+    SysExEvent, TextArena, Vst3Event, Vst3InputEvents, K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX,
+    K_NOTE_OFF_EVENT,
 };
 use tutti_midi_types::PerNoteBendRanges;
 #[cfg(doc)]
@@ -146,7 +147,8 @@ impl Inner {
     /// Takes in a SysEx message a plugin `addEvent`ed: copied into
     /// `sysex_out` (all of it, not [`DataEvent`]'s 16 inline bytes) and
     /// staged as a [`Vst3Event::SysEx`] over it. Dropped whole, counted in
-    /// `dropped`, when the arena or the list has no room: never truncated.
+    /// `dropped`, when the arena has no room: never truncated. The caller has
+    /// checked the list's room (`addEvent` refuses a full list first).
     /// Returns whether it was staged.
     ///
     /// # Safety
@@ -157,7 +159,7 @@ impl Inner {
         bytes: *const u8,
         size: usize,
     ) -> bool {
-        if !self.has_room() || self.sysex_out.len() + size > self.sysex_out.capacity() {
+        if self.sysex_out.len() + size > self.sysex_out.capacity() {
             self.dropped += 1;
             return false;
         }
@@ -169,6 +171,17 @@ impl Inner {
             header,
             bytes: SysExRef::new(start, size),
         }))
+    }
+
+    /// The buffer a [`Vst3Event::SysEx`] of this list indexes: the output
+    /// list's `sysex_out` (the only list with room for it), else the input
+    /// list's reassembled messages.
+    fn sysex_bytes(&self) -> &[u8] {
+        if self.sysex_out.capacity() > 0 {
+            &self.sysex_out
+        } else {
+            self.sysex.bytes()
+        }
     }
 
     /// Stage one MIDI event: a SysEx7 packet through the reassembler (a
@@ -363,7 +376,9 @@ impl EventList {
     /// Events this list dropped for want of room since it was made: staged
     /// past [`EVENT_CAPACITY`] in one block (by the host, or by the plugin
     /// through `addEvent`), per-note expression values past
-    /// [`NOTE_EXPRESSION_ROOM`], or given way to a later note-off.
+    /// [`NOTE_EXPRESSION_ROOM`], given way to a later note-off, or a plugin's
+    /// SysEx the arena or the host's MIDI pool had no room for
+    /// ([`fill_midi_events`](Self::fill_midi_events)).
     pub fn dropped(&self) -> u64 {
         self.inner.borrow().dropped
     }
@@ -406,20 +421,24 @@ impl EventList {
     /// heap-allocated on the audio thread. `out.overflowed()` reports it.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
-        let inner = self.inner.borrow();
+        let mut inner = self.inner.borrow_mut();
+        let mut refused = 0;
         for event in inner.events.iter() {
             if let Vst3Event::SysEx(e) = event {
                 // Whole or not at all; a message that does not fit is dropped
-                // (reported through `overflowed`) and later events still get
-                // the room that is left.
+                // (reported through `overflowed`, counted in `dropped`) and
+                // later events still get the room that is left.
                 let frame = u32::try_from(e.header.sample_offset).unwrap_or(0);
-                push_sysex(out, frame, &inner.sysex_out[e.bytes.range()]);
+                if !push_sysex(out, frame, &inner.sysex_out[e.bytes.range()]) {
+                    refused += 1;
+                }
             } else if let Some(midi) = event.to_midi() {
                 if !out.push(midi) {
                     break;
                 }
             }
         }
+        inner.dropped += refused;
     }
 }
 
@@ -452,7 +471,7 @@ impl IEventListTrait for EventList {
         let Some(event) = inner.events.get(index) else {
             return kInvalidArgument;
         };
-        *e = to_c_event(event, &inner.text_arena, inner.sysex.bytes());
+        *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes());
         kResultOk
     }
 
@@ -476,11 +495,19 @@ impl IEventListTrait for EventList {
         // keeps all of its bytes (a channel-voice message is never longer).
         if c_event.r#type == K_DATA_EVENT {
             let data = c_event.__field0.data;
+            // The `kMidiSysEx` type says it is SysEx, framed or not, of any
+            // length. That type is 0, which is also what the host's own raw
+            // channel-voice fallback carries, so data led by a status byte
+            // other than `0xF0` stays on the MIDI-1 path unless it is longer
+            // than a channel-voice message could be.
             // SAFETY: a `kDataEvent` carries `size` readable bytes at `bytes`
             // for the duration of this call.
-            let sysex = !data.bytes.is_null()
+            let sysex = data.r#type == K_DATA_TYPE_MIDI_SYSEX
+                && !data.bytes.is_null()
                 && data.size > 0
-                && (data.size as usize > INLINE_DATA_BYTES || *data.bytes == 0xF0);
+                && (data.size as usize > INLINE_DATA_BYTES
+                    || *data.bytes == 0xF0
+                    || *data.bytes < 0x80);
             if sysex {
                 let header = EventHeader {
                     bus_index: c_event.busIndex,
@@ -766,17 +793,22 @@ mod tests {
         assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultOk);
     }
 
-    /// A `kDataEvent` SysEx as a plugin hands it to `addEvent`.
-    fn data_sysex(sample_offset: i32, bytes: &[u8]) -> Event {
+    /// A `kDataEvent` of `data_type` as a plugin hands it to `addEvent`.
+    fn data_event(data_type: u32, sample_offset: i32, bytes: &[u8]) -> Event {
         let mut e: Event = unsafe { std::mem::zeroed() };
         e.r#type = K_DATA_EVENT;
         e.sampleOffset = sample_offset;
         e.__field0.data = vst3::Steinberg::Vst::DataEvent {
             size: bytes.len() as u32,
-            r#type: 0,
+            r#type: data_type,
             bytes: bytes.as_ptr(),
         };
         e
+    }
+
+    /// A `kMidiSysEx` data event as a plugin hands it to `addEvent`.
+    fn data_sysex(sample_offset: i32, bytes: &[u8]) -> Event {
+        data_event(K_DATA_TYPE_MIDI_SYSEX, sample_offset, bytes)
     }
 
     /// Reassembles `events` into the complete messages they carry.
@@ -840,6 +872,134 @@ mod tests {
         let mut pool = RtMidiEvents::new();
         list.fill_midi_events(&mut pool);
         assert_eq!(reassembled(pool.as_slice()), vec![short.to_vec()]);
+    }
+
+    /// **A SysEx is recognised by its data type, framed or not.** An unframed
+    /// message of 7 to 16 bytes used to be cut to a `Data` event the host could
+    /// not pack into one packet; a data event of another type is not SysEx
+    /// whatever its bytes; and a raw channel-voice message carried as data
+    /// (status byte first) stays a MIDI-1 message.
+    ///
+    /// Mutations (run): detect by `size > 16 || bytes[0] == 0xF0` alone → the
+    /// unframed 7/10/16-byte messages are cut or missing, and the other-type
+    /// 40-byte event is staged as SysEx → fails; drop the `< 0x80` arm → the
+    /// unframed messages fail; drop the `0xF0`/`< 0x80` guard (type alone) →
+    /// the raw note-on becomes a SysEx7 packet and fails.
+    #[test]
+    fn a_sysex_is_detected_by_its_data_type() {
+        for len in [7usize, 10, 16] {
+            let payload: Vec<u8> = (1..=len as u8).collect();
+            let list = EventList::output();
+            let ptr = list.to_com_ptr::<IEventList>().unwrap();
+            let mut e = data_sysex(5, &payload);
+            assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk, "{len} bytes");
+            let mut pool = RtMidiEvents::new();
+            list.fill_midi_events(&mut pool);
+            assert_eq!(reassembled(pool.as_slice()), vec![framed(&payload)]);
+        }
+
+        // Another data type, even one led by `0xF0` or longer than the inline
+        // bytes, is not a SysEx and stages no SysEx bytes.
+        let mut other = vec![0xF0];
+        other.extend(std::iter::repeat_n(1u8, 38));
+        other.push(0xF7);
+        let list = EventList::output();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let mut e = data_event(K_DATA_TYPE_MIDI_SYSEX + 1, 0, &other);
+        assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
+        assert_eq!(list.len(), 1);
+        assert!(list.inner.borrow().sysex_out.is_empty());
+        let mut pool = RtMidiEvents::new();
+        list.fill_midi_events(&mut pool);
+        assert!(reassembled(pool.as_slice()).is_empty());
+
+        // A raw note-on carried as data (status byte first) is still a
+        // MIDI-1 message.
+        let list = EventList::output();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let raw = [0x90u8, 60, 100];
+        let mut e = data_sysex(0, &raw);
+        assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
+        assert!(list.inner.borrow().sysex_out.is_empty());
+        let mut pool = RtMidiEvents::new();
+        list.fill_midi_events(&mut pool);
+        assert_eq!(pool.len(), 1);
+        assert!(pool.as_slice()[0].sysex7_payload().is_none());
+    }
+
+    /// **`getEvent` on an output list reads a SysEx back from the output
+    /// list's own buffer**, not the input list's reassembly buffer (which an
+    /// output list has none of).
+    ///
+    /// Mutation (run): `getEvent` passing `inner.sysex.bytes()` → the event
+    /// reads back with size 0 and a null pointer → fails.
+    #[test]
+    fn get_event_reads_an_output_lists_sysex_back() {
+        let list = EventList::output();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let message: Vec<u8> = framed(&sysex_payload(40));
+        let mut e = data_sysex(9, &message);
+        assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
+        let mut back: Event = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { ptr.getEvent(0, &mut back) }, kResultOk);
+        assert_eq!(back.sampleOffset, 9);
+        let d = unsafe { back.__field0.data };
+        assert_eq!(d.r#type, K_DATA_TYPE_MIDI_SYSEX);
+        let read = unsafe { std::slice::from_raw_parts(d.bytes, d.size as usize) };
+        assert_eq!(read, &message[..]);
+    }
+
+    /// **A SysEx the host's MIDI pool has no room for is dropped whole and
+    /// counted in `dropped`** (and latches the pool's `overflowed`); the
+    /// message before it arrives intact.
+    ///
+    /// Mutation (run): drop `inner.dropped += refused` in `fill_midi_events`
+    /// → `dropped()` stays 0 → fails.
+    #[test]
+    fn a_sysex_past_the_midi_pool_is_counted_in_dropped() {
+        let list = EventList::output();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        // The first takes all but one of the pool's packets, the second
+        // needs two; both fit the arena.
+        let first = vec![1u8; (RT_MIDI_CAPACITY - 1) * 6 - 2];
+        let second = vec![2u8; 7];
+        for m in [&first, &second] {
+            let mut e = data_sysex(0, m);
+            assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
+        }
+        assert_eq!(list.dropped(), 0);
+        let mut pool = RtMidiEvents::new();
+        list.fill_midi_events(&mut pool);
+        assert!(pool.overflowed());
+        assert_eq!(list.dropped(), 1);
+        assert_eq!(reassembled(pool.as_slice()), vec![framed(&first)]);
+    }
+
+    /// **The plugin-SysEx path is allocation-free**: a 200-byte message
+    /// through `addEvent`, then more until the list refuses one, then
+    /// `fill_midi_events` over what it holds.
+    ///
+    /// Mutation (run): a `Vec` copy of the message in `stage_plugin_sysex`
+    /// (`let _v = std::slice::from_raw_parts(bytes, size).to_vec();`), and one
+    /// in `fill_midi_events`' SysEx arm → `assert_no_alloc` aborts.
+    #[test]
+    fn the_plugin_sysex_path_is_allocation_free() {
+        let list = EventList::output();
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let message = framed(&sysex_payload(200));
+        let mut e = data_sysex(1, &message);
+        let mut pool = RtMidiEvents::new();
+        let mut refused = false;
+        assert_no_alloc::assert_no_alloc(|| {
+            assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
+            for _ in 0..SYSEX_OUT_ROOM / 200 + 2 {
+                refused |= unsafe { ptr.addEvent(&mut e) } == kResultFalse;
+            }
+            list.fill_midi_events(&mut pool);
+        });
+        assert!(refused, "the arena refused one inside the gate");
+        assert!(!pool.is_empty());
+        assert!(list.dropped() > 0);
     }
 
     #[test]

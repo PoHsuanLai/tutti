@@ -29,8 +29,16 @@ changes. Stretched voices and offline forks still render.
   over its capacity is dropped and counted (`AuInstance::sysex_dropped`). A
   SysEx run open at the end of a block now continues in the next, as for the
   other formats.
-- **New:** `MidiEvent::sysex7_packets` (allocation-free `sysex7_fragments`),
-  `tutti_plugin_types::{push_sysex, unframed}`, `SysExRef::new`,
+- A VST3 SysEx is recognised by its data type (`kMidiSysEx`), so an unframed
+  7 to 16 byte message arrives whole and a data event of another type is not
+  taken for one; `getEvent` on a plugin's output list reads a SysEx from the
+  list's own buffer; a SysEx the host's MIDI pool has no room for is counted in
+  `EventList::dropped`. Limit: VST2's whole-or-nothing check assumes one
+  producer (`audioMasterProcessEvents` is audio-thread only); the queue cannot
+  reserve several slots at once or take a push back, so a second producer could
+  leave a `START` without its `END`.
+- **New:** `MidiEvent::sysex7_packet_count`, `MidiEvent::sysex7_packets`
+  (allocation-free `sysex7_fragments`), `tutti_plugin_types::{push_sysex, unframed}`, `SysExRef::new`,
   `RtVec::mark_overflowed`. `Vst3Event::SysEx` is also what a VST3 plugin's
   output list holds for a SysEx; `Vst3Event::to_midi` still returns `None` for
   it (the list drains it).

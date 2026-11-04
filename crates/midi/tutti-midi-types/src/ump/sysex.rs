@@ -62,6 +62,19 @@ impl MidiEvent {
         }
     }
 
+    /// How many SysEx 7-bit packets a payload of `payload_len` bytes (the
+    /// data between 0xF0 and 0xF7) takes: six bytes to a packet, and an empty
+    /// payload is one empty `SINGLE`. The count [`Self::sysex7_packets`]
+    /// yields.
+    pub const fn sysex7_packet_count(payload_len: usize) -> usize {
+        let packets = payload_len.div_ceil(6);
+        if packets == 0 {
+            1
+        } else {
+            packets
+        }
+    }
+
     /// The SysEx 7-bit packets (UMP type 0x3) for `data`, one at a time and
     /// without allocating: the same packets, in the same order, as
     /// [`Self::sysex7_fragments`] pushes. `data` is the payload *between* 0xF0
@@ -72,7 +85,7 @@ impl MidiEvent {
     /// For the audio thread, where [`Self::sysex7_fragments`]' `Vec` is not
     /// available.
     pub fn sysex7_packets(group: MidiGroup, data: &[u8]) -> impl Iterator<Item = MidiEvent> + '_ {
-        let packets = data.len().div_ceil(6).max(1);
+        let packets = Self::sysex7_packet_count(data.len());
         (0..packets).map(move |i| {
             let chunk = &data[(i * 6).min(data.len())..((i + 1) * 6).min(data.len())];
             let status = match (packets, i) {
@@ -197,6 +210,23 @@ mod tests {
                 let got: Vec<MidiEvent> = MidiEvent::sysex7_packets(group, &data[..len]).collect();
                 assert_eq!(got, expected, "{len} bytes, group {}", group.get());
             }
+        }
+    }
+
+    /// The packet count is what `sysex7_packets` yields, at every length
+    /// around a packet boundary, and an empty payload is one packet.
+    ///
+    /// Mutation: drop the empty-payload case (`0` for `0`) or round down
+    /// (`payload_len / 6`) in `sysex7_packet_count` and this fails.
+    #[test]
+    fn sysex7_packet_count_is_what_sysex7_packets_yields() {
+        let data = [0u8; 40];
+        for len in 0..=40 {
+            assert_eq!(
+                MidiEvent::sysex7_packet_count(len),
+                MidiEvent::sysex7_packets(MidiGroup::FIRST, &data[..len]).count(),
+                "{len} bytes"
+            );
         }
     }
 }

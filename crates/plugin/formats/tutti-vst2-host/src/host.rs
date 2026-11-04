@@ -203,14 +203,18 @@ impl HostState {
         self.dropped_param_changes.load(Ordering::Relaxed)
     }
 
-    /// How many plugin-emitted MIDI events have been dropped because the queue
-    /// was full, since load.
     /// Queues a SysEx message the plugin emitted as UMP SysEx7 packets (any
     /// length), copying its bytes out of the plugin's buffer, which is valid
     /// only for the callback. The packets go in whole or not at all: one that
     /// does not fit the queue is dropped and counted once in
     /// [`dropped_midi_out`](Self::dropped_midi_out), because a `START`
     /// without its `END` would corrupt what follows.
+    ///
+    /// That holds for the one producer VST2 allows: `audioMasterProcessEvents`
+    /// is an audio-thread callback, so nothing else fills the queue between
+    /// the room check and the pushes. The queue cannot reserve several slots
+    /// at once or take a push back, so a second producer racing this check
+    /// could leave a `START` without its `END`.
     pub(crate) fn push_sysex_out(&self, sysex: &vst::api::SysExEvent) {
         let len = usize::try_from(sysex.data_size).unwrap_or(0);
         if sysex.system_data.is_null() || len == 0 {
@@ -220,7 +224,7 @@ impl HostState {
         // for the duration of the callback.
         let bytes = unsafe { std::slice::from_raw_parts(sysex.system_data, len) };
         let payload = unframed(bytes);
-        let packets = payload.len().div_ceil(6).max(1);
+        let packets = MidiEvent::sysex7_packet_count(payload.len());
         // The queue's only other end pops, so room seen now can only grow.
         let room = self.midi_out_tx.capacity() - self.midi_out_tx.len();
         if packets > room {
@@ -233,6 +237,8 @@ impl HostState {
         }
     }
 
+    /// How many plugin-emitted MIDI events have been dropped because the queue
+    /// was full, since load.
     pub(crate) fn dropped_midi_out(&self) -> u64 {
         self.dropped_midi_out.load(Ordering::Relaxed)
     }
@@ -618,6 +624,37 @@ mod tests {
         deliver(&host, &mut event);
         assert!(host.midi_out_tx.is_empty());
         assert_eq!(host.dropped_midi_out(), 1);
+    }
+
+    /// **The SysEx path is allocation-free**, accepting and refusing: a
+    /// 200-byte message is delivered and drained, then more are delivered
+    /// until the queue refuses one, then it is drained again.
+    ///
+    /// Mutation (run): collect the packets into a `Vec` in `push_sysex_out`
+    /// (`let all: Vec<_> = MidiEvent::sysex7_packets(..).collect();` before the
+    /// room check) → `assert_no_alloc` aborts on the first delivery.
+    #[test]
+    fn the_sysex_path_is_allocation_free() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        let mut payload: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
+        let mut event = sysex_event(3, &mut payload);
+        let packets = MidiEvent::sysex7_packet_count(200);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            deliver(&host, &mut event);
+            let mut drained = 0;
+            while host.midi_out_tx.pop().is_some() {
+                drained += 1;
+            }
+            assert_eq!(drained, packets);
+
+            // Past the room: the refusing branch.
+            for _ in 0..MIDI_OUT_QUEUE_CAPACITY / packets + 2 {
+                deliver(&host, &mut event);
+            }
+            while host.midi_out_tx.pop().is_some() {}
+        });
+        assert!(host.dropped_midi_out() > 0, "the refusing branch ran");
     }
 
     /// **The RT gate.** Both callbacks are entered from inside the plugin's

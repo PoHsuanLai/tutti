@@ -44,6 +44,8 @@ use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tutti_midi_types::MidiGroup;
+use tutti_plugin_types::unframed;
 use vst::host::Host;
 
 /// `(parameter_index, normalized_value)` reported by the plugin's
@@ -201,6 +203,40 @@ impl HostState {
         self.dropped_param_changes.load(Ordering::Relaxed)
     }
 
+    /// Queues a SysEx message the plugin emitted as UMP SysEx7 packets (any
+    /// length), copying its bytes out of the plugin's buffer, which is valid
+    /// only for the callback. The packets go in whole or not at all: one that
+    /// does not fit the queue is dropped and counted once in
+    /// [`dropped_midi_out`](Self::dropped_midi_out), because a `START`
+    /// without its `END` would corrupt what follows.
+    ///
+    /// That holds for the one producer VST2 allows: `audioMasterProcessEvents`
+    /// is an audio-thread callback, so nothing else fills the queue between
+    /// the room check and the pushes. The queue cannot reserve several slots
+    /// at once or take a push back, so a second producer racing this check
+    /// could leave a `START` without its `END`.
+    pub(crate) fn push_sysex_out(&self, sysex: &vst::api::SysExEvent) {
+        let len = usize::try_from(sysex.data_size).unwrap_or(0);
+        if sysex.system_data.is_null() || len == 0 {
+            return;
+        }
+        // Safety: the plugin guarantees `data_size` bytes at `system_data`
+        // for the duration of the callback.
+        let bytes = unsafe { std::slice::from_raw_parts(sysex.system_data, len) };
+        let payload = unframed(bytes);
+        let packets = MidiEvent::sysex7_packet_count(payload.len());
+        // The queue's only other end pops, so room seen now can only grow.
+        let room = self.midi_out_tx.capacity() - self.midi_out_tx.len();
+        if packets > room {
+            self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let frame = sysex.delta_frames.max(0) as u32;
+        for packet in MidiEvent::sysex7_packets(MidiGroup::FIRST, payload) {
+            let _ = self.midi_out_tx.push(packet.with_frame_offset(frame));
+        }
+    }
+
     /// How many plugin-emitted MIDI events have been dropped because the queue
     /// was full, since load.
     pub(crate) fn dropped_midi_out(&self) -> u64 {
@@ -273,6 +309,9 @@ impl Host for HostState {
                         self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+            } else if matches!(event.event_type, vst::api::EventType::SysEx) {
+                let sysex = unsafe { &*(event_ptr as *const vst::api::SysExEvent) };
+                self.push_sysex_out(sysex);
             }
         }
     }
@@ -512,6 +551,110 @@ mod tests {
             0,
             "a MIDI drop must not move the parameter tally"
         );
+    }
+
+    /// A `vst::api::SysExEvent` over `bytes`, as a plugin passes it.
+    fn sysex_event(delta_frames: i32, bytes: &mut [u8]) -> vst::api::SysExEvent {
+        vst::api::SysExEvent {
+            event_type: vst::api::EventType::SysEx,
+            byte_size: std::mem::size_of::<vst::api::SysExEvent>() as i32,
+            delta_frames,
+            _flags: 0,
+            data_size: bytes.len() as i32,
+            _reserved1: 0,
+            system_data: bytes.as_mut_ptr(),
+            _reserved2: 0,
+        }
+    }
+
+    fn deliver(host: &HostState, event: &mut vst::api::SysExEvent) {
+        let events = vst::api::Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [
+                event as *mut vst::api::SysExEvent as *mut vst::api::Event,
+                std::ptr::null_mut(),
+            ],
+        };
+        host.process_events(&events);
+    }
+
+    /// **A SysEx the plugin emits reaches the host whole, at any length.**
+    /// `process_events` used to look at `Midi` events only, so every SysEx a
+    /// VST2 plugin emitted was ignored.
+    ///
+    /// Mutation (run): remove the `SysEx` arm of `process_events` → nothing
+    /// is queued → fails.
+    #[test]
+    fn a_sysex_from_the_plugin_reaches_the_host_whole() {
+        for len in [1usize, 6, 7, 40, 200] {
+            let host = make_host(TransportWriter::new().reader(), 48_000.0);
+            let body: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
+            let mut message = vec![0xF0];
+            message.extend_from_slice(&body);
+            message.push(0xF7);
+            // The plugin's own buffer, alive for the callback only.
+            let mut wire = message.clone();
+            let mut event = sysex_event(13, &mut wire);
+            deliver(&host, &mut event);
+
+            let mut asm = tutti_plugin_types::SysExAssembler::reserved();
+            let mut done = Vec::new();
+            while let Some(e) = host.midi_out_tx.pop() {
+                assert_eq!(e.frame_offset, 13);
+                if let tutti_plugin_types::SysExStep::Complete(r) = asm.push(&e) {
+                    done.push(asm.message(r).to_vec());
+                }
+            }
+            assert_eq!(done, vec![message], "{len} bytes");
+            assert_eq!(host.dropped_midi_out(), 0);
+        }
+    }
+
+    /// A SysEx that does not fit the queue is dropped whole and counted once,
+    /// never left as a `START` without its `END`.
+    ///
+    /// Mutation (run): drop the `packets > room` check → the queue is left
+    /// holding the head of the message → fails.
+    #[test]
+    fn a_sysex_past_the_queue_is_dropped_whole_and_counted() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        let mut payload = vec![1u8; MIDI_OUT_QUEUE_CAPACITY * 6 + 1];
+        let mut event = sysex_event(0, &mut payload);
+        deliver(&host, &mut event);
+        assert!(host.midi_out_tx.is_empty());
+        assert_eq!(host.dropped_midi_out(), 1);
+    }
+
+    /// **The SysEx path is allocation-free**, accepting and refusing: a
+    /// 200-byte message is delivered and drained, then more are delivered
+    /// until the queue refuses one, then it is drained again.
+    ///
+    /// Mutation (run): collect the packets into a `Vec` in `push_sysex_out`
+    /// (`let all: Vec<_> = MidiEvent::sysex7_packets(..).collect();` before the
+    /// room check) → `assert_no_alloc` aborts on the first delivery.
+    #[test]
+    fn the_sysex_path_is_allocation_free() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        let mut payload: Vec<u8> = (0..200).map(|i| (i % 0x7F) as u8).collect();
+        let mut event = sysex_event(3, &mut payload);
+        let packets = MidiEvent::sysex7_packet_count(200);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            deliver(&host, &mut event);
+            let mut drained = 0;
+            while host.midi_out_tx.pop().is_some() {
+                drained += 1;
+            }
+            assert_eq!(drained, packets);
+
+            // Past the room: the refusing branch.
+            for _ in 0..MIDI_OUT_QUEUE_CAPACITY / packets + 2 {
+                deliver(&host, &mut event);
+            }
+            while host.midi_out_tx.pop().is_some() {}
+        });
+        assert!(host.dropped_midi_out() > 0, "the refusing branch ran");
     }
 
     /// **The RT gate.** Both callbacks are entered from inside the plugin's

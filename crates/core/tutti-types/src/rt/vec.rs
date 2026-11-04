@@ -83,6 +83,14 @@ impl<T, const N: usize> RtVec<T, N> {
         true
     }
 
+    /// Latches [`overflowed`](Self::overflowed) without pushing: the caller
+    /// refused a group of items as a whole (one that would have to be split
+    /// to fit) and dropped it.
+    #[inline]
+    pub fn mark_overflowed(&mut self) {
+        self.overflowed = true;
+    }
+
     /// Appends from an iterator, stopping at the cap.
     ///
     /// Returns how many items were written; a short return means the rest were

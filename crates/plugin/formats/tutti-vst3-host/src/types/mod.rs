@@ -11,7 +11,6 @@ mod transport;
 
 pub(crate) use audio::K_SAMPLE_64_INT;
 pub use audio::{ProcessMode, Vst3Sample};
-#[cfg(test)]
 pub(crate) use events::K_DATA_TYPE_MIDI_SYSEX;
 pub(crate) use events::{from_c_event, to_c_event, vst3_event_from_midi, TextArena};
 pub use events::{

@@ -244,9 +244,9 @@ impl ClapLoaded {
     /// Calls the plugin's `deactivate` FFI. Shared by `ClapActive::deactivate`
     /// and the in-place re-activation path.
     ///
-    /// A plugin that is not active is left alone: `deactivate` is
-    /// `[main-thread & active]`, and a refused re-activation leaves one
-    /// inactive.
+    /// `deactivate` is `[main-thread & active]`, so an instance already
+    /// inactive (a re-activation that failed and could not be rolled back) is
+    /// left alone.
     pub(crate) fn deactivate_plugin(&mut self) {
         if !self.flags.active {
             return;
@@ -428,6 +428,29 @@ impl<T: super::ClapSample> ClapActive<T> {
             return Ok(());
         }
         self.reconfigure(sample_rate, self.loaded.audio.max_frames)
+    }
+
+    /// Deactivates and re-activates the plugin at the rate and block size it
+    /// runs at, so it reads its audio ports afresh. This is what a plugin's
+    /// `audio-ports.rescan` (any [`AudioPortsRescan::needs_deactivate`] flag,
+    /// see [`poll_audio_ports_rescan`](ClapLoaded::poll_audio_ports_rescan))
+    /// or `request_restart` asks of the host. The ports are re-read while
+    /// deactivated and the scratch is sized from them; compare
+    /// [`audio_port_info`](ClapLoaded::audio_port_info) with the host's own
+    /// copy afterwards to see whether the layout changed.
+    ///
+    /// Setup-time only: it stops processing and allocates. Call it between
+    /// blocks, on the thread that loaded the plugin.
+    ///
+    /// # Errors
+    /// As [`Self::set_sample_rate`]: [`ClapError::NotSupported`] when the
+    /// plugin refuses the activation (it is rolled back and left active),
+    /// [`ClapError::Deactivated`] when it cannot be brought back, or no longer
+    /// takes 64-bit audio on an `f64` instance.
+    ///
+    /// [`AudioPortsRescan::needs_deactivate`]: crate::AudioPortsRescan::needs_deactivate
+    pub fn reactivate(&mut self) -> Result<()> {
+        self.reconfigure(self.loaded.audio.sample_rate, self.loaded.audio.max_frames)
     }
 
     /// Deactivates → re-activates at `(sample_rate, max_frames)`, restoring the

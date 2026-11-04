@@ -358,8 +358,8 @@ unsafe extern "C" fn plugin_activate(
 
 unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
     if let Some(state) = plugin_state(plugin) {
-        // `deactivate` is `[main-thread & active]`: count a host calling it on
-        // an inactive plugin.
+        // `deactivate` is `[main-thread & active]`: a call while inactive is a
+        // host bug, counted for the test to read.
         if !state.active.swap(false, Ordering::SeqCst) {
             refusal::note_inactive_deactivation();
         }
@@ -592,6 +592,8 @@ unsafe extern "C" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     // `[main-thread]`, so the latched command runs here rather than wherever
     // the test happened to latch it.
     params_state::run_pending_param_command(host);
+    // AUDIO PORTS: `clap_host_audio_ports::rescan` is `[main-thread]` too.
+    run_pending_ports_rescan(host);
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,6 +1031,46 @@ fn port_layout() -> PortLayoutMode {
 #[no_mangle]
 pub unsafe extern "C" fn tutti_test_plugin_set_port_layout(mode: u32) {
     PORT_LAYOUT.store(mode, Ordering::SeqCst);
+}
+
+/// The flags of the `audio-ports.rescan` the plugin calls at its next
+/// `on_main_thread`, or `0` for none.
+static PENDING_PORTS_RESCAN: AtomicU32 = AtomicU32::new(0);
+
+/// Latch an `audio-ports.rescan(flags)` call for the plugin's next
+/// `on_main_thread`, the one place CLAP lets it make that call from (it is
+/// `[main-thread]`). The host runs `on_main_thread` when the plugin asks with
+/// `request_callback`; a test that has no such pump calls
+/// `ClapLoaded::on_main_thread` itself. `0` clears a call not yet made.
+///
+/// Pair it with [`tutti_test_plugin_set_port_layout`]: the call announces a
+/// change, and the layout is what the host reads when it acts on it. The call
+/// is made once, whether the plugin is active or not.
+///
+/// # Safety
+/// Safe to call from any thread; `extern "C"` only so the test can reach it
+/// across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_request_ports_rescan(flags: u32) {
+    PENDING_PORTS_RESCAN.store(flags, Ordering::Release);
+}
+
+/// Make the latched `audio-ports.rescan` call, if any, consuming it.
+///
+/// # Safety
+/// `host` must be null or valid, and this must run inside `on_main_thread`.
+unsafe fn run_pending_ports_rescan(host: *const clap_host) {
+    let flags = PENDING_PORTS_RESCAN.swap(0, Ordering::AcqRel);
+    if flags == 0 {
+        return;
+    }
+    let ext = threading::host_ext::<clap_sys::ext::audio_ports::clap_host_audio_ports>(
+        host,
+        CLAP_EXT_AUDIO_PORTS,
+    );
+    if let Some(rescan) = ext.and_then(|e| e.rescan) {
+        rescan(host, flags);
+    }
 }
 
 /// [`tutti_test_plugin_set_ports_64bit`] bit: every **input** port advertises

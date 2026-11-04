@@ -50,15 +50,23 @@ static REFUSE_RATE: AtomicU64 = AtomicU64::new(ACTIVATE_REFUSE_NONE);
 /// call `process`. No real host asks for it.
 static REFUSE_FRAMES: AtomicU32 = AtomicU32::new(0);
 
-/// `deactivate` calls on a plugin that was not active, since the last reset.
+/// Refused-`activate` count since the last [`reset`].
+static REFUSALS: AtomicU32 = AtomicU32::new(0);
+
+/// Accepted-`activate` count since the last [`reset`]. Distinguishes "rolled
+/// back" (two accepts — the original plus the rollback) from "abandoned" (one).
+static ACCEPTS: AtomicU32 = AtomicU32::new(0);
+
+/// `deactivate` calls that reached an instance that was not active, since the
+/// last [`reset`]: a host breaking `[active]` on `clap_plugin.deactivate`.
 static INACTIVE_DEACTIVATIONS: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) fn note_inactive_deactivation() {
     INACTIVE_DEACTIVATIONS.fetch_add(1, Ordering::SeqCst);
 }
 
-/// `deactivate` calls the host made on an inactive plugin (which CLAP does not
-/// allow) since the last [`tutti_test_plugin_reset_activation`].
+/// How many `deactivate` calls reached an inactive instance, for the test to
+/// read across `dlopen`.
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
@@ -66,13 +74,6 @@ pub(crate) fn note_inactive_deactivation() {
 pub unsafe extern "C" fn tutti_test_plugin_inactive_deactivations() -> u32 {
     INACTIVE_DEACTIVATIONS.load(Ordering::SeqCst)
 }
-
-/// Refused-`activate` count since the last [`reset`].
-static REFUSALS: AtomicU32 = AtomicU32::new(0);
-
-/// Accepted-`activate` count since the last [`reset`]. Distinguishes "rolled
-/// back" (two accepts — the original plus the rollback) from "abandoned" (one).
-static ACCEPTS: AtomicU32 = AtomicU32::new(0);
 
 /// `(sample_rate bits, max_frames)` of the most recent **accepted** `activate`.
 static LAST_RATE: AtomicU64 = AtomicU64::new(0);

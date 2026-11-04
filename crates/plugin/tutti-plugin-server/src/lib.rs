@@ -354,6 +354,89 @@ pub(crate) mod test_utils {
         set_clap_probe_switch(b"tutti_test_plugin_set_ports_64bit\0", mask);
     }
 
+    /// Make the reference plugin call `audio-ports.rescan(flags)` at its next
+    /// `on_main_thread` (see `tutti_test_plugin_request_ports_rescan`) until
+    /// the returned guard drops, which clears a call not yet made.
+    #[cfg(feature = "clap")]
+    #[must_use = "a call not yet made is cleared when the guard drops"]
+    pub fn clap_probe_request_ports_rescan(flags: u32) -> ClapProbePortsRescan {
+        set_clap_probe_switch(b"tutti_test_plugin_request_ports_rescan\0", flags);
+        ClapProbePortsRescan
+    }
+
+    /// Clears a pending `audio-ports.rescan` call on drop; see
+    /// [`clap_probe_request_ports_rescan`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbePortsRescan;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbePortsRescan {
+        fn drop(&mut self) {
+            set_clap_probe_switch(b"tutti_test_plugin_request_ports_rescan\0", 0);
+        }
+    }
+
+    /// Make the reference plugin call `host.request_restart()` from its next
+    /// `process`, until the returned guard drops (which clears a call not yet
+    /// made).
+    #[cfg(feature = "clap")]
+    #[must_use = "a call not yet made is cleared when the guard drops"]
+    pub fn clap_probe_request_restart() -> ClapProbeRestart {
+        set_clap_probe_switch(
+            b"tutti_test_plugin_thread_command\0",
+            tutti_clap_test_plugin::CMD_REQUEST_RESTART,
+        );
+        ClapProbeRestart
+    }
+
+    /// Clears a pending `request_restart` on drop; see
+    /// [`clap_probe_request_restart`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeRestart;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeRestart {
+        fn drop(&mut self) {
+            set_clap_probe_switch(
+                b"tutti_test_plugin_thread_command\0",
+                tutti_clap_test_plugin::CMD_NONE,
+            );
+        }
+    }
+
+    /// How many times the reference plugin accepted `activate` since
+    /// [`clap_probe_reset_activation_count`]: one per activation, so a
+    /// re-activation shows as one more.
+    #[cfg(feature = "clap")]
+    pub fn clap_probe_activation_count() -> u32 {
+        // SAFETY: `#[no_mangle] extern "C" fn() -> u32` in
+        // `tutti-clap-test-plugin`; the handle is leaked as in
+        // `set_clap_probe_switch`.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let count: libloading::Symbol<unsafe extern "C" fn() -> u32> = lib
+                .get(b"tutti_test_plugin_activate_accepts\0")
+                .expect("counter exported by the reference plugin");
+            let n = count();
+            std::mem::forget(lib);
+            n
+        }
+    }
+
+    /// Zeroes [`clap_probe_activation_count`].
+    #[cfg(feature = "clap")]
+    pub fn clap_probe_reset_activation_count() {
+        // SAFETY: `#[no_mangle] extern "C" fn()`; see above.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let reset: libloading::Symbol<unsafe extern "C" fn()> = lib
+                .get(b"tutti_test_plugin_reset_activation\0")
+                .expect("reset exported by the reference plugin");
+            reset();
+            std::mem::forget(lib);
+        }
+    }
+
     /// Make the reference plugin withhold `clap.tail` until the returned guard
     /// drops, which restores it. Call before loading: the host asks for the
     /// plugin's extensions once, at load.

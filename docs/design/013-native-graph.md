@@ -3859,6 +3859,12 @@ What they show:
   that and the limiter's linear-domain gain are bit-changing and left
   out.
 
+  The limiter's curve is `gain = min(drive, ceiling / peak)` with `drive =
+  ceiling - threshold`, so the output is `min(peak * drive, ceiling)`: the
+  threshold drives the input, the curve is continuous and monotonic whatever
+  the order of ceiling and threshold, and the block's linear form and the fed
+  dB form are one curve (`LimiterCurve`, `compute_limiter_gain`).
+
 Why the biquad ceiling does not carry over to tutti's graphs:
 
 - **No recursive siblings.** The same-kind sets that occur are:

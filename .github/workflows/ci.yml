@@ -26,6 +26,10 @@ env:
   CARGO_TERM_COLOR: always
   # Fewer codegen units keeps CI RAM in check on the large Bevy graph.
   CARGO_INCREMENTAL: 0
+  # Line tables only: backtraces keep file:line, and the test binaries are a
+  # fraction of the size. Full debug info filled the ubuntu runner's disk.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
 
 # Reproducible builds. Every stable job installs the toolchain

@@ -17,8 +17,10 @@ workspace = true
 # the engine runtime, so this is the only tutti edge.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
-# FFT for spectral analysis (transient detection, pitch detection)
-rustfft = "6"
+# Real-input FFT for spectral analysis (transient detection, pitch detection).
+# Half the work of a complex transform over a real signal; re-exports
+# `num_complex`.
+realfft = "3.5"
 
 # EBU R128 loudness metering (`loudness`). An online meter, which is why the
 # streaming Config/State/step shape fits it without buffering the signal.
@@ -43,7 +45,13 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # No `assert_no_alloc` here, unlike most sibling crates: everything this crate
 # does is cold-path batch analysis that legitimately allocates its output.
 rand = "0.8"
+# `benches/fft_analyses`.
+criterion.workspace = true
 # An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
 # Unmaintained (last release 2022) — see that file's header for why it is still
 # a usable oracle and what is deliberately not compared against it.
 pitch-detection = "0.3"
+
+[[bench]]
+name = "fft_analyses"
+harness = false

@@ -80,13 +80,13 @@ pub use tutti_types::{Note, PitchClass};
 pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 
 /// The generic complex type, re-exported so consumers can name a bin without
-/// depending on `rustfft` directly. Most code wants [`Complex`] instead.
-pub use rustfft::num_complex::Complex as GenericComplex;
+/// depending on `num_complex` directly. Most code wants [`Complex`] instead.
+pub use realfft::num_complex::Complex as GenericComplex;
 
 /// A single frequency bin: a rectangular complex number.
 ///
-/// A plain alias for `num_complex::Complex<f32>`, the type `rustfft` works
+/// A plain alias for `num_complex::Complex<f32>`, the type `realfft` works
 /// in, so bins cross the FFT boundary without conversion. The engine's
 /// real-time FFT (`microfft`, in `tutti-sampler`) uses the same type, so values
 /// cross freely between the two.
-pub type Complex = rustfft::num_complex::Complex<f32>;
+pub type Complex = realfft::num_complex::Complex<f32>;

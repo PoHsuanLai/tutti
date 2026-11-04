@@ -42,6 +42,28 @@ and compared with `diff -rq`: 0 differences.
   point pitch conversions. `PitchBendSensitivity::as_semitones_f32` and the
   polysynth's per-note tuning use them; the polysynth's private
   `q7_25_to_fractional_note` and `q7_9_to_fractional_note` are gone.
+### Changed — `tutti-analysis` runs real-input FFTs; output bits change
+
+**`FftScratch::forward`/`inverse` (so `stft`, `istft`, `detect_onsets`) and the
+YIN difference function run on `realfft`'s real-to-complex plans instead of
+complex `rustfft` plans over a zero-imaginary signal.** A real transform does
+about half the work. **The output bits change**: the real-input algorithm
+rounds differently, so spectra, onset flux and YIN's difference function differ
+from the previous release in the last few ulps (f32 rounding level), and a YIN
+estimate can move in its last digits. No golden digest in the tree depends on
+them. They are checked against analytic figures instead: a sine of amplitude `a` on bin `k` reads `a*N/2`
+there, DC and Nyquist are the sum and alternating sum of the input, Parseval's
+identity holds for even and odd sizes, a two-tone centroid lands on the
+midpoint, and YIN's difference function equals its defining sum. Measured on
+4 s of audio at 48 kHz, one core, median of three interleaved runs, main to
+branch: `stft` + `resynthesize` (2048 window, hop 512) 3.69 to 2.87 ms,
+`yin_track` (hop 512) 5.29 to 4.83 ms, `detect_onsets` (spectral flux) 4.45 to
+4.27 ms; `cargo bench -p tutti-analysis --bench fft_analyses`.
+
+Migration: `tutti-analysis` no longer depends on `rustfft` directly; `Complex`
+and `GenericComplex` are now re-exported from `realfft::num_complex` (the same
+`num_complex` type). An `inverse` caller's non-zero imaginary DC or Nyquist
+bin was already without effect on the real output, and still is.
 
 ### Changed — the convolver spreads its work across a partition's blocks, renders unchanged
 

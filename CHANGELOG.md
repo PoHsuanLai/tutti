@@ -26,6 +26,24 @@ must re-activate. Refused foreign-space or undersized events now count in
 `events_refused`. New: `ClapLoaded::sends_midi_notes`, `ClapActive::sends_midi_notes`,
 `InputEventList::{set_midi_notes, midi_notes}`.
 
+### Fixed — tempo-synced AUs hosted by the plugin server follow the project transport
+
+- **The AU loader never installed the host callbacks**, so a tempo-synced AU
+  (a note-value delay, an LFO sync, an arpeggiator) ran at its own tempo, live
+  and in export. The loader installs `kAudioUnitProperty_HostCallbacks` at load
+  and publishes every block's tempo, beat, time signature, measure downbeat,
+  play/record/cycle state and the distance to the next beat. The AU feature
+  report now declares `TRANSPORT` (`probed::AU` claims it). New in
+  `tutti-plugin-types`: `TransportInfo::samples_to_next_beat` and
+  `PlayheadWatch` (the "transport changed" flag from consecutive blocks).
+- **Before the host publishes a transport, the callbacks answered `noErr`
+  with 120 BPM at beat 0.** They now answer
+  `kAudioUnitErr_CannotDoInCurrentContext` and write nothing, as the header
+  specifies for a host that cannot provide it (`TransportState::is_published`,
+  new). A caller of `install_host_callbacks` that relied on the default must
+  call `set_transport` first. macOS only; the beat distance and the change
+  flag are tested on every platform.
+
 ### Fixed — MIDI against the specs: Flex Set Tempo, outbound MTC, Note Off velocity, SysEx bytes, bank select, RPN, Song Position
 
 - **Flex Data Set Tempo** was 10x too fast on the wire (`6e8` for `6e9` ten-nanosecond units a minute): 120 BPM is now `0x02FAF080`. Clip files and Flex metadata written before this carry the old field and read back 10x slow, and clips from other tools now read back right.

@@ -185,6 +185,150 @@ pub const PROBE_PROPERTY_SET_PARAM_COUNT: u32 = 0x5474_746D;
 /// unknown latency").
 pub const PROBE_PROPERTY_LAST_PRESENTATION_LATENCY: u32 = 0x5474_746E;
 
+/// Vendor-private, **readable**: what the probe's last render got when it
+/// pulled the host's transport through the `kAudioUnitProperty_HostCallbacks`
+/// procs, as a [`HostPull`].
+///
+/// No Apple unit calls those procs, so without a unit that does there is no
+/// observation of what an AU *receives* through AudioToolbox: the suite could
+/// only call the procs itself. Read it with [`last_host_pull`].
+pub const PROBE_PROPERTY_HOST_PULL: u32 = 0x5474_746F;
+
+/// `HostPull::*_status` for a proc the probe never called, distinct from every
+/// OSStatus a proc can return.
+pub const NOT_CALLED: i32 = i32::MIN;
+
+/// What a render pulled from the host's transport procs.
+///
+/// Each proc is called once per render, in the order of the fields, with every
+/// out-param non-null. A status of [`NOT_CALLED`] means the proc was not
+/// installed; the values beside it are then the probe's untouched sentinels
+/// (`NaN`, `u32::MAX`, `0xFF`), never a reading.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct HostPull {
+    /// Renders that found host callbacks installed and pulled. Zero until the
+    /// host installs them, which is what makes "the host never installed" an
+    /// observable fact rather than an absent one.
+    pub pulls: u32,
+    pub beat_status: i32,
+    pub musical_status: i32,
+    pub transport_status: i32,
+    pub beat: f64,
+    pub tempo: f64,
+    pub delta_to_next_beat: u32,
+    pub numerator: f32,
+    pub denominator: u32,
+    pub measure_downbeat: f64,
+    pub sample_time: f64,
+    pub cycle_start: f64,
+    pub cycle_end: f64,
+    pub playing: u8,
+    pub recording: u8,
+    pub changed: u8,
+    pub cycling: u8,
+}
+
+impl HostPull {
+    const fn never() -> Self {
+        Self {
+            pulls: 0,
+            beat_status: NOT_CALLED,
+            musical_status: NOT_CALLED,
+            transport_status: NOT_CALLED,
+            beat: f64::NAN,
+            tempo: f64::NAN,
+            delta_to_next_beat: u32::MAX,
+            numerator: f32::NAN,
+            denominator: u32::MAX,
+            measure_downbeat: f64::NAN,
+            sample_time: f64::NAN,
+            cycle_start: f64::NAN,
+            cycle_end: f64::NAN,
+            playing: 0xFF,
+            recording: 0xFF,
+            changed: 0xFF,
+            cycling: 0xFF,
+        }
+    }
+}
+
+/// What the probe's most recent render pulled through the host callbacks.
+///
+/// # Panics
+/// If the probe refuses the property, which would mean the component answering
+/// is not this file's probe.
+pub fn last_host_pull(au: &AuInstance) -> HostPull {
+    // SAFETY: `raw_unit` is live for `&au`; the probe answers this id with
+    // exactly one `HostPull`.
+    unsafe { read_probe_property::<HostPull>(au, PROBE_PROPERTY_HOST_PULL) }
+}
+
+/// Apple's `HostCallbackInfo` (`AudioUnitProperties.h`), as the probe reads it
+/// from the host's write. Declared here, not borrowed from `tutti-au-host`, so
+/// the probe checks the host against the header's layout and not against the
+/// host's own copy of it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(clippy::type_complexity)]
+struct ProbeHostCallbacks {
+    user_data: *mut c_void,
+    beat_and_tempo: Option<unsafe extern "C" fn(*mut c_void, *mut f64, *mut f64) -> sys::OSStatus>,
+    musical_time: Option<
+        unsafe extern "C" fn(*mut c_void, *mut u32, *mut f32, *mut u32, *mut f64) -> sys::OSStatus,
+    >,
+    transport_state: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *mut u8,
+            *mut u8,
+            *mut f64,
+            *mut u8,
+            *mut f64,
+            *mut f64,
+        ) -> sys::OSStatus,
+    >,
+    // v2 is never called: a unit that pulls only v1 is the measured case (see
+    // `transport.rs`), and the host must serve it.
+    _transport_state2: *mut c_void,
+}
+
+/// Pull the host's transport the way an AU does, once, from inside a render.
+///
+/// # Safety
+/// The procs in `p.host_callbacks`, if any, must be the ones the host installed
+/// and still be live — which holds from the host's property write until it
+/// clears the property.
+unsafe fn pull_host_transport(p: &mut Probe) {
+    let Some(cb) = p.host_callbacks else { return };
+    let mut pull = HostPull::never();
+    pull.pulls = p.host_pull.pulls.saturating_add(1);
+    if let Some(f) = cb.beat_and_tempo {
+        pull.beat_status = f(cb.user_data, &mut pull.beat, &mut pull.tempo);
+    }
+    if let Some(f) = cb.musical_time {
+        pull.musical_status = f(
+            cb.user_data,
+            &mut pull.delta_to_next_beat,
+            &mut pull.numerator,
+            &mut pull.denominator,
+            &mut pull.measure_downbeat,
+        );
+    }
+    if let Some(f) = cb.transport_state {
+        pull.transport_status = f(
+            cb.user_data,
+            &mut pull.playing,
+            &mut pull.changed,
+            &mut pull.sample_time,
+            &mut pull.cycling,
+            &mut pull.cycle_start,
+            &mut pull.cycle_end,
+        );
+    }
+    p.host_pull = pull;
+}
+
 /// The parameter id the probe marks `kAudioUnitParameterFlag_IsGlobalMeta` and
 /// publishes dependents for.
 ///
@@ -391,6 +535,11 @@ pub enum Misbehaviour {
     /// `chunks` survived mutation with no input in the suite able to tell them
     /// apart.
     RaggedDependentParameters,
+    /// Refuses a write of `kAudioUnitProperty_HostCallbacks` (property 27) with
+    /// `kAudioUnitErr_InvalidProperty`, as a unit that has no transport
+    /// callbacks would. No installed AU does, so this is the only way to reach
+    /// a host's handling of the refusal.
+    RefusesHostCallbacks,
 }
 
 impl Misbehaviour {
@@ -413,6 +562,7 @@ impl Misbehaviour {
             Self::WritesFewerFrames => b"pfew",
             Self::ClampsBlockSize => b"pclm",
             Self::RaggedDependentParameters => b"prdp",
+            Self::RefusesHostCallbacks => b"prhc",
         }
     }
 
@@ -432,6 +582,7 @@ impl Misbehaviour {
             Self::WritesFewerFrames => "probe that writes fewer frames",
             Self::ClampsBlockSize => "probe that clamps the block size",
             Self::RaggedDependentParameters => "probe with a ragged dependents array",
+            Self::RefusesHostCallbacks => "probe that refuses host callbacks",
         }
     }
 
@@ -451,6 +602,7 @@ impl Misbehaviour {
         Misbehaviour::WritesFewerFrames,
         Misbehaviour::ClampsBlockSize,
         Misbehaviour::RaggedDependentParameters,
+        Misbehaviour::RefusesHostCallbacks,
     ];
 
     /// Register this probe (once per process) and return its component info.
@@ -602,6 +754,10 @@ struct Probe {
     /// than freed memory. The point of the test is the host's *handling*, not a
     /// use-after-free the probe itself caused.
     garbage_presets: Option<core_foundation::array::CFArray<core_foundation::data::CFData>>,
+    /// The host's `kAudioUnitProperty_HostCallbacks`, as last written.
+    host_callbacks: Option<ProbeHostCallbacks>,
+    /// What the last render pulled through them; see [`HostPull`].
+    host_pull: HostPull,
 }
 
 // AU selector numbers, from `AUComponent.h`. There is no compiler check tying
@@ -791,6 +947,7 @@ unsafe extern "C" fn probe_get_property_info(
             PROBE_PROPERTY_SET_LATENCY | PROBE_PROPERTY_SET_TAIL => 8,
             PROBE_PROPERTY_LAST_PRESENTATION_LATENCY => 8,
             PROBE_PROPERTY_SET_PARAM_COUNT => 4,
+            PROBE_PROPERTY_HOST_PULL => std::mem::size_of::<HostPull>() as u32,
             _ => return ERR_INVALID_PROPERTY,
         };
         if !out_size.is_null() {
@@ -962,6 +1119,7 @@ unsafe extern "C" fn probe_get_property(
             PROBE_PROPERTY_SET_LATENCY => write_property(data, io_size, p.latency_seconds),
             PROBE_PROPERTY_SET_TAIL => write_property(data, io_size, p.tail_seconds),
             PROBE_PROPERTY_SET_PARAM_COUNT => write_property(data, io_size, p.param_count),
+            PROBE_PROPERTY_HOST_PULL => write_property(data, io_size, p.host_pull),
             PROBE_PROPERTY_LAST_PRESENTATION_LATENCY => {
                 // `NAN` for an address never written, so a test can tell "never
                 // told" from "told zero" — see the constant's docs.
@@ -1181,6 +1339,18 @@ unsafe extern "C" fn probe_set_property(
             notify_property_listeners(self_ as *mut Probe, sys::kAudioUnitProperty_ParameterList);
             return 0;
         }
+        if id == tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS {
+            if p.behaviour == Misbehaviour::RefusesHostCallbacks {
+                return ERR_INVALID_PROPERTY;
+            }
+            // The width is the header's: a host that wrote a short struct would
+            // have the probe call whatever lay past it.
+            if data.is_null() || (size as usize) != std::mem::size_of::<ProbeHostCallbacks>() {
+                return ERR_INVALID_PROPERTY_VALUE;
+            }
+            p.host_callbacks = Some(std::ptr::read_unaligned(data as *const ProbeHostCallbacks));
+            return 0;
+        }
         // Render-callback installs and bypass are accepted silently: neither is
         // what any probe is testing.
         0
@@ -1345,6 +1515,7 @@ unsafe extern "C" fn probe_render(
             p.last_render_sample_time = (*ts).mSampleTime;
         }
         p.render_count = p.render_count.saturating_add(1);
+        pull_host_transport(p);
         if io_data.is_null() {
             return ERR_PARAM;
         }
@@ -1417,6 +1588,7 @@ unsafe extern "C" fn probe_process(
             p.last_render_sample_time = (*ts).mSampleTime;
         }
         p.render_count = p.render_count.saturating_add(1);
+        pull_host_transport(p);
         if io_data.is_null() {
             return ERR_PARAM;
         }
@@ -1575,6 +1747,8 @@ fn make_probe(behaviour: Misbehaviour) -> *mut PlugInInterface {
         // Filled by `probe_open`, which AudioToolbox calls before anything else.
         instance: std::ptr::null_mut(),
         garbage_presets: None,
+        host_callbacks: None,
+        host_pull: HostPull::never(),
     });
     Box::into_raw(p) as *mut PlugInInterface
 }
@@ -1620,6 +1794,7 @@ probe_factories! {
     factory_fewer_frames => Misbehaviour::WritesFewerFrames,
     factory_clamps_block_size => Misbehaviour::ClampsBlockSize,
     factory_ragged_dependents => Misbehaviour::RaggedDependentParameters,
+    factory_refuses_host_callbacks => Misbehaviour::RefusesHostCallbacks,
 }
 
 extern "C" {

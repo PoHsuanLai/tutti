@@ -343,6 +343,52 @@ impl TransportInfo {
         Some(frames.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)
     }
 
+    /// Frames from the snapshot's first frame to the next whole beat, as AU's
+    /// `outDeltaSampleOffsetToNextBeat` wants it: `0` when the playhead is on a
+    /// beat (within half a frame) and when the transport is stopped, since a
+    /// stopped playhead never reaches the next one.
+    ///
+    /// Derived from [`position.beats`](TransportPosition::beats), the same
+    /// axis the beat position is reported on, at the snapshot's tempo and
+    /// rate. `None` unless all three are usable: a finite position, a finite
+    /// positive tempo and rate (see [`is_usable`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tutti_plugin_types::TransportInfo;
+    ///
+    /// // 120 BPM at 48 kHz: a beat is 24 000 frames; a quarter beat is left.
+    /// let t = TransportInfo::new()
+    ///     .with_sample_rate(48_000.0)
+    ///     .with_tempo(120.0)
+    ///     .with_playing(true)
+    ///     .with_position_beats(2.75, 0.0);
+    /// assert_eq!(t.samples_to_next_beat(), Some(6_000));
+    /// ```
+    // A bare `u32`, not `Samples`: it is AU's `UInt32` ABI value, as
+    // `samples_to_nearest_clock` is the VST ABI's `i32`; the unit types stop at
+    // a C ABI.
+    pub fn samples_to_next_beat(&self) -> Option<u32> {
+        let (beats, tempo, rate) = (self.position.beats, self.timing.tempo, self.sample_rate);
+        if !(is_usable(beats) && is_usable(tempo) && is_usable(rate)) || tempo <= 0.0 || rate <= 0.0
+        {
+            return None;
+        }
+        if !self.state.playing {
+            return Some(0);
+        }
+        let frames_per_beat = 60.0 / tempo * rate;
+        let to_next = (beats.ceil() - beats) * frames_per_beat;
+        let frames = to_next.round();
+        // Just past a beat, the distance to the next is a whole beat less a
+        // sliver: that is "on the beat", not "a beat away".
+        if frames >= frames_per_beat.round() {
+            return Some(0);
+        }
+        Some(frames.clamp(0.0, f64::from(u32::MAX)) as u32)
+    }
+
     /// Sets every bar field (builder).
     ///
     /// `position_quarters` and `start_beats` take the same value because the
@@ -368,6 +414,80 @@ impl TransportInfo {
         self.loop_region.start_quarters = start_beats;
         self.loop_region.end_quarters = end_beats;
         self
+    }
+}
+
+/// Tells a format host whether the playhead moved other than by playing, from
+/// one block's snapshot to the next.
+///
+/// Formats that pull transport (AU's `outTransportStateChanged`) need to say
+/// "start, stop, or locate since you last asked" so a plugin's internal
+/// sequencer resynchronizes instead of counting on from the old position. The
+/// host's snapshots carry no such flag, so it is derived: a play/stop flip, or a
+/// beat position that is not where the previous block's playing would have put
+/// it (a seek, a loop wrap), or the first block after [`reset`](Self::reset).
+///
+/// Plain data, no allocation: [`observe`](Self::observe) is called on the audio
+/// thread.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlayheadWatch {
+    /// Whether any block was observed since construction or [`reset`](Self::reset).
+    seen: bool,
+    /// The last block's `playing`.
+    playing: bool,
+    /// Where the previous block's playing leaves the playhead; `None` when it
+    /// could not be computed (no usable tempo or rate), in which case only a
+    /// play/stop flip is detected.
+    expected_beats: Option<f64>,
+}
+
+impl PlayheadWatch {
+    /// Beats of disagreement below which a position is "where it should be".
+    /// Tempo ramps move the playhead by far less than this per block; a seek
+    /// that small is inaudible.
+    const BEAT_TOLERANCE: f64 = 1e-3;
+
+    /// A watch that has seen nothing: its first block reports a change.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forgets the previous block: the next [`observe`](Self::observe) reports a
+    /// change. Call after anything that breaks continuity outside the
+    /// snapshots (a sample-rate change, a reset).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Records this block's snapshot (`frames` long) and returns whether the
+    /// transport started, stopped or jumped since the previous block.
+    pub fn observe(&mut self, transport: &TransportInfo, frames: u32) -> bool {
+        let playing = transport.state.playing;
+        let beats = transport.position.beats;
+        let jumped = match self.expected_beats {
+            // Agreement is tested and negated, not `>` tested: a NaN position
+            // is a jump, not agreement.
+            Some(expected) => {
+                let agrees = (beats - expected).abs() <= Self::BEAT_TOLERANCE;
+                !agrees
+            }
+            None => false,
+        };
+        let changed = !self.seen || playing != self.playing || jumped;
+
+        let (tempo, rate) = (transport.timing.tempo, transport.sample_rate);
+        self.expected_beats = if !is_usable(beats) {
+            None
+        } else if !playing {
+            Some(beats)
+        } else if is_usable(tempo) && is_usable(rate) && tempo > 0.0 && rate > 0.0 {
+            Some(beats + f64::from(frames) / rate * tempo / 60.0)
+        } else {
+            None
+        };
+        self.seen = true;
+        self.playing = playing;
+        changed
     }
 }
 
@@ -442,5 +562,107 @@ mod tests {
         assert_eq!(at(120.0, 0.0, 2.0), None);
         assert_eq!(at(120.0, 48_000.0, f64::NAN), None);
         assert_eq!(at(f64::INFINITY, 48_000.0, 2.0), None);
+    }
+
+    /// **The next-beat offset is the distance to the next whole beat, in
+    /// frames; on a beat and while stopped it is zero.** At 120 BPM and 48 kHz
+    /// a beat is 24 000 frames; at 90 BPM and 44.1 kHz it is 29 400.
+    ///
+    /// Mutation: `beats.ceil()` for `beats.floor()` → the distance to the
+    /// previous beat (18 000 for 2.25) → fails. Mutation: drop the
+    /// `frames >= frames_per_beat.round()` fold → 3.0 + 1e-9 reads 24 000, not
+    /// 0 → fails. Mutation: drop the `!self.state.playing` early return → the
+    /// stopped case reads 6 000 → fails. Mutation: drop the `tempo <= 0.0`
+    /// gate → a zero tempo reads `Some(0)` or saturates → fails.
+    #[test]
+    fn samples_to_next_beat_is_the_distance_to_the_next_whole_beat() {
+        let at = |tempo: f64, rate: f64, beats: f64, playing: bool| {
+            TransportInfo::new()
+                .with_tempo(tempo)
+                .with_sample_rate(rate)
+                .with_playing(playing)
+                .with_position_beats(beats, 0.0)
+                .samples_to_next_beat()
+        };
+        assert_eq!(at(120.0, 48_000.0, 2.25, true), Some(18_000));
+        assert_eq!(at(120.0, 48_000.0, 2.75, true), Some(6_000));
+        assert_eq!(at(90.0, 44_100.0, 1.5, true), Some(14_700));
+        // On a beat, and a hair past it: no distance, not a whole beat.
+        assert_eq!(at(120.0, 48_000.0, 3.0, true), Some(0));
+        assert_eq!(at(120.0, 48_000.0, 3.0 + 1e-9, true), Some(0));
+        // Stopped: it never gets there.
+        assert_eq!(at(120.0, 48_000.0, 2.25, false), Some(0));
+
+        assert_eq!(at(0.0, 48_000.0, 2.25, true), None);
+        assert_eq!(at(120.0, 0.0, 2.25, true), None);
+        assert_eq!(at(120.0, 48_000.0, f64::NAN, true), None);
+    }
+
+    fn block(playing: bool, beats: f64) -> TransportInfo {
+        TransportInfo::new()
+            .with_tempo(120.0)
+            .with_sample_rate(48_000.0)
+            .with_playing(playing)
+            .with_position_beats(beats, 0.0)
+    }
+
+    /// **A playhead that advances as playing predicts is not a change; the
+    /// first block, a start, a stop, a seek and a loop wrap are.** 512 frames
+    /// at 120 BPM / 48 kHz is `512 / 24 000` beats.
+    ///
+    /// Mutation: drop `!self.seen ||` → the first block reads unchanged →
+    /// fails. Mutation: drop `playing != self.playing` → the start and stop
+    /// read unchanged → fails. Mutation: drop `|| jumped` → the seek and wrap
+    /// read unchanged → fails. Mutation: advance by `frames / rate` without
+    /// `* tempo / 60.0` → the steady blocks read as jumps → fails.
+    #[test]
+    fn a_playhead_watch_reports_starts_stops_and_jumps_only() {
+        let step = 512.0 / 24_000.0;
+        let mut w = PlayheadWatch::new();
+        assert!(w.observe(&block(false, 0.0), 512), "first block");
+        assert!(!w.observe(&block(false, 0.0), 512), "stopped and still");
+        assert!(w.observe(&block(true, 0.0), 512), "start");
+        for i in 1..=20 {
+            assert!(
+                !w.observe(&block(true, f64::from(i) * step), 512),
+                "steady block {i}"
+            );
+        }
+        assert!(w.observe(&block(true, 40.0), 512), "seek forward");
+        assert!(!w.observe(&block(true, 40.0 + step), 512), "steady again");
+        assert!(w.observe(&block(true, 8.0), 512), "loop wrap back");
+        assert!(w.observe(&block(false, 8.0 + step), 512), "stop");
+        // Stopped: the playhead is expected where it is.
+        assert!(!w.observe(&block(false, 8.0 + step), 512), "stopped, still");
+        assert!(w.observe(&block(false, 3.0), 512), "seek while stopped");
+    }
+
+    /// `reset` makes the next block a change, and a snapshot with no usable rate
+    /// detects only start and stop, not jumps (it cannot predict one).
+    ///
+    /// Mutation: `reset` as a no-op → the post-reset block reads unchanged →
+    /// fails. Mutation: `None => true` for a missing prediction (a jump) → the
+    /// rate-0 steady block reads changed → fails.
+    #[test]
+    fn a_playhead_watch_resets_and_degrades_without_a_rate() {
+        let mut w = PlayheadWatch::new();
+        let step = 512.0 / 24_000.0;
+        w.observe(&block(true, 0.0), 512);
+        assert!(!w.observe(&block(true, step), 512));
+        w.reset();
+        // Exactly where playing would have put it: only the reset makes it a change.
+        assert!(
+            w.observe(&block(true, 2.0 * step), 512),
+            "first block after reset"
+        );
+
+        let blind = |playing, beats| block(playing, beats).with_sample_rate(0.0);
+        let mut w = PlayheadWatch::new();
+        w.observe(&blind(true, 0.0), 512);
+        assert!(
+            !w.observe(&blind(true, 0.02), 512),
+            "no prediction, no jump"
+        );
+        assert!(w.observe(&blind(false, 0.02), 512), "stop is still seen");
     }
 }

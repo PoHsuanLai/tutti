@@ -95,7 +95,8 @@ pub use sysex::{
     SYSEX_MESSAGE_CAPACITY,
 };
 pub use transport::{
-    is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
+    is_usable, BarInfo, LoopRegion, MusicalTiming, PlayheadWatch, TransportFlags, TransportInfo,
+    TransportPosition,
 };
 
 /// Re-export of the workspace-wide MIDI event so host crates don't all

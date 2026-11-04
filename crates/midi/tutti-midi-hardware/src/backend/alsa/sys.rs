@@ -48,7 +48,9 @@ pub enum snd_seq_port_info_t {}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct snd_seq_addr_t {
+    /// Sequencer client id.
     pub client: u8,
+    /// Port number within the client.
     pub port: u8,
 }
 
@@ -70,13 +72,19 @@ pub struct snd_seq_addr_t {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct snd_seq_ump_event_t {
+    /// Event type (`SND_SEQ_EVENT_*`).
     pub type_: u8,
+    /// Event flags; timestamp and queue modes.
     pub flags: u8,
+    /// Application-defined tag.
     pub tag: u8,
+    /// Queue id; `SND_SEQ_QUEUE_DIRECT` for immediate dispatch.
     pub queue: u8,
     /// `snd_seq_timestamp_t`, unused — see the type doc.
     pub time: [u8; 8],
+    /// Sending address.
     pub source: snd_seq_addr_t,
+    /// Destination address.
     pub dest: snd_seq_addr_t,
     /// The UMP words. A message is 1–4 of them; the rest are zero.
     pub ump: [u32; 4],
@@ -140,18 +148,24 @@ pub const SND_SEQ_QUEUE_DIRECT: u8 = 253;
 
 /// Port capabilities.
 pub const SND_SEQ_PORT_CAP_READ: c_uint = 1 << 0;
+/// Other clients may write events to the port.
 pub const SND_SEQ_PORT_CAP_WRITE: c_uint = 1 << 1;
+/// Other clients may subscribe to read from the port.
 pub const SND_SEQ_PORT_CAP_SUBS_READ: c_uint = 1 << 5;
+/// Other clients may subscribe to write to the port.
 pub const SND_SEQ_PORT_CAP_SUBS_WRITE: c_uint = 1 << 6;
 
 /// Port types.
 pub const SND_SEQ_PORT_TYPE_MIDI_GENERIC: c_uint = 1 << 1;
+/// A port owned by an application.
 pub const SND_SEQ_PORT_TYPE_APPLICATION: c_uint = 1 << 20;
 
 /// `snd_ump_block_info_get_direction` results (M2-104 §7.1.8 function-block
 /// direction).
 pub const SND_UMP_DIR_INPUT: c_uint = 1;
+/// The block sends.
 pub const SND_UMP_DIR_OUTPUT: c_uint = 2;
+/// The block sends and receives.
 pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
 
 // --- Functions -------------------------------------------------------------
@@ -159,15 +173,20 @@ pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
 #[link(name = "asound")]
 unsafe extern "C" {
     // Client lifecycle.
+    /// Open a sequencer client handle; `streams` and `mode` are alsa-lib's `SND_SEQ_OPEN_*` / `SND_SEQ_NONBLOCK` flags.
     pub fn snd_seq_open(
         seq: *mut *mut snd_seq_t,
         name: *const c_char,
         streams: c_int,
         mode: c_int,
     ) -> c_int;
+    /// Close a client opened by `snd_seq_open`.
     pub fn snd_seq_close(seq: *mut snd_seq_t) -> c_int;
+    /// This client's id on the sequencer.
     pub fn snd_seq_client_id(seq: *mut snd_seq_t) -> c_int;
+    /// Set the name other clients see for this client.
     pub fn snd_seq_set_client_name(seq: *mut snd_seq_t, name: *const c_char) -> c_int;
+    /// Static message for a negative alsa-lib error code.
     pub fn snd_strerror(errnum: c_int) -> *const c_char;
 
     /// Declare this client's MIDI version — `SND_SEQ_CLIENT_UMP_MIDI_2_0` here.
@@ -181,31 +200,37 @@ unsafe extern "C" {
     pub fn snd_seq_set_client_ump_conversion(seq: *mut snd_seq_t, enable: c_int) -> c_int;
 
     // Ports.
+    /// Create a port with `caps` (`SND_SEQ_PORT_CAP_*`) and `type_` (`SND_SEQ_PORT_TYPE_*`); returns the port number or a negative error.
     pub fn snd_seq_create_simple_port(
         seq: *mut snd_seq_t,
         name: *const c_char,
         caps: c_uint,
         type_: c_uint,
     ) -> c_int;
+    /// Delete a port created by `snd_seq_create_simple_port`.
     pub fn snd_seq_delete_simple_port(seq: *mut snd_seq_t, port: c_int) -> c_int;
+    /// Subscribe `my_port` to events sent by `src_client:src_port`.
     pub fn snd_seq_connect_from(
         seq: *mut snd_seq_t,
         my_port: c_int,
         src_client: c_int,
         src_port: c_int,
     ) -> c_int;
+    /// Subscribe `dest_client:dest_port` to events sent by `my_port`.
     pub fn snd_seq_connect_to(
         seq: *mut snd_seq_t,
         my_port: c_int,
         dest_client: c_int,
         dest_port: c_int,
     ) -> c_int;
+    /// Undo `snd_seq_connect_from`.
     pub fn snd_seq_disconnect_from(
         seq: *mut snd_seq_t,
         my_port: c_int,
         src_client: c_int,
         src_port: c_int,
     ) -> c_int;
+    /// Undo `snd_seq_connect_to`.
     pub fn snd_seq_disconnect_to(
         seq: *mut snd_seq_t,
         my_port: c_int,
@@ -228,34 +253,55 @@ unsafe extern "C" {
     ) -> c_int;
 
     // Client enumeration.
+    /// Allocate a client-info record; free it with `snd_seq_client_info_free`.
     pub fn snd_seq_client_info_malloc(ptr: *mut *mut snd_seq_client_info_t) -> c_int;
+    /// Free a record from `snd_seq_client_info_malloc`.
     pub fn snd_seq_client_info_free(ptr: *mut snd_seq_client_info_t);
+    /// Set the client id a query starts from (`-1` for the first).
     pub fn snd_seq_client_info_set_client(info: *mut snd_seq_client_info_t, client: c_int);
+    /// The client id in the record.
     pub fn snd_seq_client_info_get_client(info: *const snd_seq_client_info_t) -> c_int;
+    /// The client name in the record; valid while the record lives.
     pub fn snd_seq_client_info_get_name(info: *mut snd_seq_client_info_t) -> *const c_char;
+    /// Advance `info` to the next client; negative when there is none.
     pub fn snd_seq_query_next_client(
         seq: *mut snd_seq_t,
         info: *mut snd_seq_client_info_t,
     ) -> c_int;
 
     // Port enumeration.
+    /// Allocate a port-info record; free it with `snd_seq_port_info_free`.
     pub fn snd_seq_port_info_malloc(ptr: *mut *mut snd_seq_port_info_t) -> c_int;
+    /// Free a record from `snd_seq_port_info_malloc`.
     pub fn snd_seq_port_info_free(ptr: *mut snd_seq_port_info_t);
+    /// Set the client whose ports a query walks.
     pub fn snd_seq_port_info_set_client(info: *mut snd_seq_port_info_t, client: c_int);
+    /// Set the port a query starts from (`-1` for the first).
     pub fn snd_seq_port_info_set_port(info: *mut snd_seq_port_info_t, port: c_int);
+    /// The port number in the record.
     pub fn snd_seq_port_info_get_port(info: *const snd_seq_port_info_t) -> c_int;
+    /// The port name in the record; valid while the record lives.
     pub fn snd_seq_port_info_get_name(info: *const snd_seq_port_info_t) -> *const c_char;
+    /// The port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_get_capability(info: *const snd_seq_port_info_t) -> c_uint;
+    /// Advance `info` to the client's next port; negative when there is none.
     pub fn snd_seq_query_next_port(seq: *mut snd_seq_t, info: *mut snd_seq_port_info_t) -> c_int;
 
     // Function blocks. Opaque + getters, so no struct layout to get wrong.
     // @@ALSA_1.2.10
+    /// Allocate a function-block record; free it with `snd_ump_block_info_free`.
     pub fn snd_ump_block_info_malloc(ptr: *mut *mut snd_ump_block_info_t) -> c_int;
+    /// Free a record from `snd_ump_block_info_malloc`.
     pub fn snd_ump_block_info_free(ptr: *mut snd_ump_block_info_t);
+    /// Non-zero when the function block is active.
     pub fn snd_ump_block_info_get_active(info: *const snd_ump_block_info_t) -> c_int;
+    /// The block's direction, one of `SND_UMP_DIR_*`.
     pub fn snd_ump_block_info_get_direction(info: *const snd_ump_block_info_t) -> c_uint;
+    /// Index of the first UMP group the block covers.
     pub fn snd_ump_block_info_get_first_group(info: *const snd_ump_block_info_t) -> c_uint;
+    /// Number of UMP groups the block covers.
     pub fn snd_ump_block_info_get_num_groups(info: *const snd_ump_block_info_t) -> c_uint;
+    /// The block name; valid while the record lives.
     pub fn snd_ump_block_info_get_name(info: *const snd_ump_block_info_t) -> *const c_char;
     /// @@ALSA_1.2.10
     pub fn snd_seq_get_ump_block_info(

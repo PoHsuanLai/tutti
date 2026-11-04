@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `missing_docs` is a workspace lint
+
+`[workspace.lints.rust]` sets `missing_docs = "warn"`, which CI's `-D warnings`
+enforces for every member that inherits the workspace lints. The remaining
+undocumented public items (the hand-written ALSA UMP bindings, `Tuning`'s test
+accessors, `arc-lend-compare`'s `Tail`) are documented.
+
 ### Changed — the workspace is on Rust edition 2024
 
 Every member inherits `edition = "2024"` from `[workspace.package]`

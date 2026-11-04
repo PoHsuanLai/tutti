@@ -269,6 +269,7 @@ impl Tuning {
         }
     }
 
+    /// The frequency in [`Hz`] of a whole MIDI note.
     #[cfg(test)]
     #[inline]
     pub fn note_to_freq(&self, note: u8) -> Hz {
@@ -308,11 +309,13 @@ impl Tuning {
         Hz((low_freq.ln() + (high_freq.ln() - low_freq.ln()) * frac).exp())
     }
 
+    /// Number of degrees in the scale.
     #[cfg(test)]
     pub fn scale_size(&self) -> usize {
         self.degrees.len()
     }
 
+    /// Sets the reference frequency and note, then rebuilds the table.
     #[cfg(test)]
     pub fn set_reference(&mut self, freq: impl Into<Hz>, note: u8) {
         self.reference_freq = freq.into();
@@ -320,11 +323,13 @@ impl Tuning {
         self.recompute_table();
     }
 
+    /// The reference frequency.
     #[cfg(test)]
     pub fn reference_freq(&self) -> Hz {
         self.reference_freq
     }
 
+    /// The MIDI note the reference frequency is pinned to.
     #[cfg(test)]
     pub fn reference_note(&self) -> u8 {
         self.reference_note

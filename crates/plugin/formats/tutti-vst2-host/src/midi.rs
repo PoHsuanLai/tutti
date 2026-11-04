@@ -184,11 +184,11 @@ pub(crate) struct MidiSendBuffer {
     /// Reassembles SysEx7 packets and owns the bytes a `SysExEvent` points
     /// at. Reserved at construction; an open message carries across blocks.
     sysex: SysExAssembler,
-    /// The SysEx messages the block completed, each with the frame (clamped
-    /// to the block) it lands on, filled once at the block's first piece and
+    /// The SysEx messages the block completed, each with the index of its
+    /// `END` packet and the frame (clamped to the block) it lands on, filled once at the block's first piece and
     /// selected from by every piece. A message is assembled once per block: a
     /// run is open across blocks, not pieces.
-    completed: Vec<(usize, SysExRef)>,
+    completed: Vec<(usize, usize, SysExRef)>,
     /// Pointer table — one `*mut api::Event` per event, laid out into
     /// the trailing flexible-array region of `header`.
     event_ptrs: Vec<*mut vst::api::Event>,
@@ -303,19 +303,39 @@ impl MidiSendBuffer {
         if start == 0 {
             self.sysex.begin_block();
             self.completed.clear();
-            for ev in midi_events {
+            for (index, ev) in midi_events.iter().enumerate() {
                 if let SysExStep::Complete(message) = self.sysex.push(ev) {
                     if self.completed.len() == self.completed.capacity() {
                         self.events_dropped += 1;
                     } else {
                         let at = (ev.frame_offset as usize).min(last);
-                        self.completed.push((at, message));
+                        self.completed.push((index, at, message));
                     }
                 }
             }
         }
-        for ev in midi_events {
+        // Staged in input order (a completed SysEx at its `END` packet), so the
+        // stable sort below keeps input order at equal frames.
+        let mut next_sysex = 0;
+        for (index, ev) in midi_events.iter().enumerate() {
             if ev.message_type() == UmpMessageType::Sysex7 {
+                let Some(&(end, at, message)) = self.completed.get(next_sysex) else {
+                    continue;
+                };
+                if end != index {
+                    continue;
+                }
+                next_sysex += 1;
+                if !(start..start + len).contains(&at) {
+                    continue;
+                }
+                if self.order.len() == self.room {
+                    self.events_dropped += 1;
+                    continue;
+                }
+                let event = self.sysex_event((at - start) as i32, message);
+                self.order.push(Staged::SysEx(self.sysex_events.len()));
+                self.sysex_events.push(event);
                 continue;
             }
             let Some(delta) = delta_in_piece(ev.frame_offset) else {
@@ -330,19 +350,6 @@ impl MidiSendBuffer {
                 self.order.push(Staged::Midi(self.api_events.len()));
                 self.api_events.push(api);
             }
-        }
-        for i in 0..self.completed.len() {
-            let (at, message) = self.completed[i];
-            if !(start..start + len).contains(&at) {
-                continue;
-            }
-            if self.order.len() == self.room {
-                self.events_dropped += 1;
-                continue;
-            }
-            let event = self.sysex_event((at - start) as i32, message);
-            self.order.push(Staged::SysEx(self.sysex_events.len()));
-            self.sysex_events.push(event);
         }
         if self.order.is_empty() {
             return None;
@@ -830,6 +837,25 @@ mod tests {
         }
         let _ = buf.stage_piece(&packets[..1], 0, 64, 64);
         assert_eq!(buf.sysex_dropped(), 1, "the one abandoned run");
+    }
+
+    /// **A SysEx keeps its input position among events at the same frame**:
+    /// one whose `END` is listed before a note at that frame reaches the
+    /// plugin first.
+    ///
+    /// Mutation (run): stage the completed SysEx after every plain event
+    /// (a second loop) -> the note comes first -> fails.
+    #[test]
+    fn a_sysex_keeps_input_order_at_an_equal_frame() {
+        let body: Vec<u8> = (0..20).map(|i| i as u8 + 1).collect();
+        let mut events = sysex_packets(&body, 3);
+        events.push(note(3, 60));
+        let mut buf = MidiSendBuffer::new();
+        let staged = read_staged(buf.stage_piece(&events, 0, 64, 64).expect("staged"));
+        assert_eq!(staged.len(), 2);
+        assert_eq!(staged[0], (3, framed(&body)), "the SysEx, listed first");
+        assert_eq!(staged[1].0, 3);
+        assert_eq!(staged[1].1[1], 60, "then the note");
     }
 
     fn read_staged(events: *mut vst::api::Events) -> Vec<(i32, Vec<u8>)> {

@@ -72,8 +72,9 @@ impl LoudnessConfig {
 pub struct Loudness {
     /// Integrated (gated) loudness, in LUFS.
     pub lufs: Db,
-    /// Maximum true peak, in dBTP — 4× oversampled, so it catches
-    /// inter-sample peaks a plain sample peak misses.
+    /// Maximum true peak, in dBTP. The meter oversamples 4× below 96 kHz and
+    /// 2× from 96 kHz to below 192 kHz, so it catches inter-sample peaks a
+    /// plain sample peak misses; at 192 kHz and above it is the sample peak.
     pub true_peak: Db,
     /// Loudness range (LRA), in LU.
     pub range: Db,

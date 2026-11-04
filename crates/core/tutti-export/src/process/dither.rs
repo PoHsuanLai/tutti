@@ -14,7 +14,7 @@
 )]
 
 use crate::config::ExportConfig;
-use crate::options::{BitDepth, Dither};
+use crate::options::{AudioFormat, BitDepth, Dither};
 
 /// Per-render dither state: the mode, the target depth, and the RNG.
 ///
@@ -37,8 +37,12 @@ impl DitherState {
     /// `1 << (bits - 1)`, which at 32 bits is `1 << 31`: an `i32` overflow to
     /// `-2147483648`, i.e. a *negative* LSB and sign-flipped noise, and a panic
     /// outright in a build with overflow checks on.
+    ///
+    /// **Ogg Vorbis never dithers** either: its encoder takes the float stream
+    /// and quantizes nothing, so the noise would only be encoded as signal.
     pub(crate) fn for_config(config: &ExportConfig) -> Self {
         let lsb = match (config.dither, config.encode.bit_depth) {
+            _ if matches!(config.encode.format, AudioFormat::OggVorbis(_)) => None,
             (Dither::Off, _) | (_, BitDepth::Float32) => None,
             // `bits - 1` is the magnitude of a full-scale integer sample, so
             // its reciprocal is one LSB in the [-1, 1] float domain.
@@ -129,6 +133,21 @@ mod tests {
             "float output must pass through untouched, got {:?}",
             samples[0]
         );
+    }
+
+    /// An Ogg export at the default integer depth and dither adds nothing.
+    ///
+    /// Mutation (run): drop the `OggVorbis` arm in `for_config` and the noise
+    /// reaches the samples.
+    #[test]
+    fn ogg_is_never_dithered() {
+        let mut cfg = config(Dither::Triangular, BitDepth::Int24);
+        cfg.encode.format = AudioFormat::OggVorbis(Default::default());
+        let mut d = DitherState::for_config(&cfg);
+        assert!(d.is_off());
+        let mut samples = [0.5f32; 16];
+        d.apply(&mut samples);
+        assert!(samples.iter().all(|&s| s == 0.5));
     }
 
     #[test]

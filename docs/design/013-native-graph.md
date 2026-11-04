@@ -7225,7 +7225,8 @@ The graph's f32 is converted in the node's batcher today. The changes:
   f64 graph.
 - **Export:** `BitDepth` gains `Float64` (WAV `WAVE_FORMAT_IEEE_FLOAT` at
   64 bits, AIFF-C `fl64`). FLAC is integer and Ogg is f32 inside, so they
-  refuse it. Dither is unchanged (it runs only for integer depths). The
+  refuse it. Dither runs only for integer depths
+  (WAV, AIFF, FLAC); Ogg is never dithered. The
   render driver's planes, `normalize` and the resampler take the sample
   type, so an f64 export never narrows before the file.
 - **Device:** `Engine::process` writes f32 interleaved for the device, and

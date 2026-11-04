@@ -3,8 +3,8 @@
 //! Two stages, and both stream:
 //!
 //! - **dither** ([`DitherState`]) — per block, carrying only its RNG.
-//! - **resample** ([`resample::resample_planar`]) — rubato is a block
-//!   resampler; it never needs the whole signal.
+//! - **resample** ([`resample::resample_planar`]) — an FFT block resampler
+//!   on the scalar `RealFft`; it never needs the whole signal.
 //!
 //! There is deliberately no "mastering" type and no whole-signal pass.
 //! Normalization is the one step that genuinely needs two passes (measure, then
@@ -14,6 +14,7 @@
 //! export stream.
 
 pub(crate) mod dither;
+mod fft_resample;
 pub(crate) mod resample;
 
 // Consumed only by `encode_to_file`'s per-format arms, which are codec-gated.

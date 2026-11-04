@@ -30,7 +30,6 @@ tutti-graph = { path = "../tutti-graph" }
 # Config/State/step analysis home) — `render_normalized_to_file` measures with
 # it. Acyclic: tutti-analysis does NOT depend on tutti-export.
 tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
-rubato = "0.16"
 hound = { version = "3.5", optional = true }
 # No default features: the encoder drives flacenc's frame encoder on its own
 # workers, so flacenc's `par` (and its `serde`/`log`) are unused.

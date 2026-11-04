@@ -42,8 +42,8 @@ pub enum Error {
     #[error("Render error: {0}")]
     Render(String),
 
-    /// rubato could not be constructed for this rate pair, or rejected a chunk.
-    /// Converted from both of its error types by the `From` impls below.
+    /// The resampler could not be constructed for this rate pair, or rejected a
+    /// chunk.
     #[error("Resampling error: {0}")]
     Resample(String),
 
@@ -118,17 +118,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl From<hound::Error> for Error {
     fn from(e: hound::Error) -> Self {
         Self::Io(io::Error::other(e))
-    }
-}
-
-impl From<rubato::ResamplerConstructionError> for Error {
-    fn from(e: rubato::ResamplerConstructionError) -> Self {
-        Self::Resample(e.to_string())
-    }
-}
-
-impl From<rubato::ResampleError> for Error {
-    fn from(e: rubato::ResampleError) -> Self {
-        Self::Resample(e.to_string())
     }
 }

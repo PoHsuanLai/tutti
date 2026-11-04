@@ -2,7 +2,7 @@
 //!
 //! Dither is the only mastering step that is genuinely streamable: it needs no
 //! look-ahead, only a continuous RNG across block boundaries. Resampling is also
-//! block-based (rubato), and normalization is the caller's two-pass composition
+//! block-based (an FFT overlap-add resampler), and normalization is the caller's two-pass composition
 //! (see `tutti_analysis::loudness`), so this is the whole of what a "mastering"
 //! stage would otherwise hold.
 //! Reached only through the codec-gated encode arms, so a build with no format

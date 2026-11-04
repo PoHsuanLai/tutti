@@ -333,6 +333,10 @@ fn a_sine_renders_its_closed_form() {
 /// resampler's carry makes its output independent of the block partition;
 /// `oracle_resample.rs` holds the conversion to first principles.
 ///
+/// The digest is of the scalar-FFT resampler; the analytic figures it must
+/// satisfy (frequency, level, DC, rejection, length, latency) are pinned in
+/// `process/resample.rs` and `oracle_resample.rs`.
+///
 /// Mutation (run): scale the graph path's output by `1.0 + f32::EPSILON` in
 /// `GraphSource::fill` → the digest moves.
 #[test]
@@ -355,7 +359,7 @@ fn a_resampled_export_writes_its_render() {
     assert_golden(
         "resampled file",
         fnv(bytes.iter().copied()),
-        0x742b_d54e_8409_650e,
+        0x964e_0424_498c_a85a,
     );
 }
 

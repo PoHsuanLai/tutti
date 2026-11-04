@@ -820,9 +820,10 @@ below). What each item became:
     realfft's even-length passes over rustfft's *scalar* planner (and a
     scalar complex transform for an odd size), so the FFT arithmetic is
     CPU-independent: a result is bit-identical across CPUs on one OS and
-    libm, not across libms. The sampler's vocoder, the convolver and
-    tutti-analysis all use it; the HRTF and the export resampler (`rubato`, over
-    `realfft`) still use SIMD FFTs. The
+    libm, not across libms. The sampler's vocoder, the convolver,
+    tutti-analysis and the export resampler (`tutti-export`'s
+    `fft_resample.rs`, rubato's `FftFixedIn` algorithm) all use it; the HRTF
+    still uses a SIMD FFT. The
     vocoder plans a pair at construction and shares the plans across its
     channels and clones (`stretch/fft.rs`, a scratch owner over `RealFft`).
   - `Fade` is `CrossfadeCurve`, now `tutti-graph`'s,

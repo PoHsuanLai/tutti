@@ -1065,7 +1065,7 @@ and `Pedal::recover` keep the read, the rename and the remove, and call
 stamps the facts' time, existing record or stub: keeping the old time left a
 blacklisted record whose file had changed looking changed, so it was re-probed on
 every scan. `discover` keys on the path's extension. `FileFacts::read` takes a
-bundle's time as the later of the directory's and its module's, the module found
+plugin bundle's time as the later of the directory's and its module's, the module found
 by `tutti_plugin_types::bundle` (`native_module_in_bundle`, then
 `any_module_in_bundle`), because replacing the binary leaves the directory's time
 alone. Nothing in discovery writes another copy of the bundle walk (fp-edge F5,

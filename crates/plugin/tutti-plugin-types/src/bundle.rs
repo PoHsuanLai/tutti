@@ -1,4 +1,5 @@
-//! Locating the loadable module inside a `.vst3` / `.vst` bundle directory.
+//! Locating the loadable module inside a plugin bundle directory (`.vst3`, `.vst`,
+//! `.clap`, `.component`).
 //!
 //! A bundle is a *directory*: the module sits at `Contents/<arch>/<name>`,
 //! where `<arch>` names the platform and CPU and the extension differs per
@@ -32,6 +33,11 @@ pub enum ModuleKind {
     Vst2,
     /// `.vst3` bundles: `.vst3` on Windows, `.so` on Linux, extensionless on macOS.
     Vst3,
+    /// `.clap` bundles: `.clap` on Windows, `.so` on Linux, extensionless on macOS.
+    Clap,
+    /// `.component` bundles, macOS only: the executable under `Contents/MacOS`,
+    /// named by the bundle's `Info.plist` and usually its stem.
+    Au,
 }
 
 /// Every `Contents/<arch>` subdirectory any platform may keep a module in.
@@ -156,6 +162,8 @@ fn exts_for(arch_dir: &str, kind: ModuleKind) -> &'static [&'static str] {
     match kind {
         ModuleKind::Vst2 => &["dll"],
         ModuleKind::Vst3 => &["vst3", "dll"],
+        ModuleKind::Clap => &["clap", "dll"],
+        ModuleKind::Au => &[],
     }
 }
 
@@ -448,6 +456,50 @@ mod tests {
             Some("p.vst3"),
             "the correctly-named module lost to whatever happened to sit in an \
              earlier arch directory"
+        );
+    }
+
+    /// A Windows CLAP module is `<stem>.clap` in the arch directory (the bundle
+    /// is spelled `.CLAP` so the full-name spelling cannot find it). Mutation:
+    /// drop `"clap"` from `ModuleKind::Clap`'s extensions in `exts_for`.
+    #[test]
+    fn a_clap_module_is_named_with_the_clap_extension_on_windows() {
+        let tmp = TempDir::new().unwrap();
+        let b = bundle_with(&tmp, "Synth.CLAP", "x86_64-win", &["Synth.clap"]);
+        assert_eq!(
+            probe_named(&b, "x86_64-win", ModuleKind::Clap),
+            Some(b.join("Contents/x86_64-win/Synth.clap"))
+        );
+    }
+
+    /// A macOS CLAP or AU bundle's executable is the bare stem under
+    /// `Contents/MacOS`. Mutation: make `probe_named` skip the bare stem.
+    #[test]
+    fn a_macos_clap_or_au_bundle_resolves_its_bare_stem_executable() {
+        let tmp = TempDir::new().unwrap();
+        for (name, kind) in [
+            ("Synth.clap", ModuleKind::Clap),
+            ("Verb.component", ModuleKind::Au),
+        ] {
+            let b = bundle_with(&tmp, name, "MacOS", &[name.split('.').next().unwrap()]);
+            let exe = b
+                .join("Contents/MacOS")
+                .join(name.split('.').next().unwrap());
+            assert_eq!(probe_named(&b, "MacOS", kind), Some(exe.clone()));
+            assert_eq!(any_module_in_bundle(&b, kind), Some(exe));
+        }
+    }
+
+    /// An AU executable need not carry the bundle's stem (its `Info.plist` names
+    /// it); the enumeration finds it. Mutation: set `enumerate` to `false` in
+    /// `any_module_in_bundle`.
+    #[test]
+    fn an_au_executable_with_another_name_is_found_by_enumeration() {
+        let tmp = TempDir::new().unwrap();
+        let b = bundle_with(&tmp, "Verb.component", "MacOS", &["VerbEngine"]);
+        assert_eq!(
+            any_module_in_bundle(&b, ModuleKind::Au),
+            Some(b.join("Contents/MacOS/VerbEngine"))
         );
     }
 }

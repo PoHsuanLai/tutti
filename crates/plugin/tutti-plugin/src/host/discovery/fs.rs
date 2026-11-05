@@ -42,7 +42,7 @@ impl FileFacts {
     /// Reads the facts for `path`.
     ///
     /// The scan's filesystem edge: every decision after it is a pure function of
-    /// the value. For a VST2 or VST3 bundle (a directory) the modification time
+    /// the value. For a plugin bundle (a directory) the modification time
     /// is the later of the directory's and its module's, since replacing the
     /// binary inside leaves the directory's own time alone. The module is found
     /// by `tutti_plugin_types::bundle`, the one bundle walk.
@@ -81,7 +81,8 @@ fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathB
     let kind = match format? {
         PluginFormat::Vst3 => ModuleKind::Vst3,
         PluginFormat::Vst2 => ModuleKind::Vst2,
-        _ => return None,
+        PluginFormat::Clap => ModuleKind::Clap,
+        PluginFormat::AudioUnit => ModuleKind::Au,
     };
     native_module_in_bundle(bundle, kind).or_else(|| any_module_in_bundle(bundle, kind))
 }
@@ -263,43 +264,44 @@ mod tests {
         assert_eq!(found.len(), 1);
     }
 
-    /// Replacing a bundle's binary leaves the directory's own time alone; the
-    /// facts must still move. Mutation: return the directory's time alone (drop
-    /// the `max` with the module's).
+    /// A bundle directory holding one bare-stem binary, with the binary's and the
+    /// directory's times set; returns the facts read.
     #[cfg(unix)]
-    #[test]
-    fn a_bundle_whose_binary_changed_reads_as_changed() {
+    fn facts_of_bundle(name: &str, module_secs: u64, dir_secs: u64) -> FileFacts {
         use std::time::{Duration, UNIX_EPOCH};
         let dir = TempDir::new().unwrap();
-        let bundle = dir.path().join("Reverb.vst3");
+        let bundle = dir.path().join(name);
         let arch = bundle
             .join("Contents")
             .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
         std::fs::create_dir_all(&arch).unwrap();
-        let module = arch.join(if cfg!(target_os = "linux") {
-            "Reverb.so"
-        } else {
-            "Reverb"
-        });
+        let module = arch.join(name.split('.').next().unwrap());
         std::fs::write(&module, b"x").unwrap();
-
-        let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
         let set = |p: &Path, secs: u64| {
             std::fs::File::open(p)
                 .unwrap()
-                .set_modified(at(secs))
+                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
                 .unwrap();
         };
-        set(&module, 2_000_000_000);
-        set(&bundle, 1_000_000_000);
+        set(&module, module_secs);
+        set(&bundle, dir_secs);
+        FileFacts::read(&bundle)
+    }
 
-        let facts = FileFacts::read(&bundle);
-        assert_eq!(facts.mtime, Some(2_000_000_000));
-        assert_eq!(facts.format, Some(PluginFormat::Vst3));
-
-        // The directory later than the binary still wins.
-        set(&bundle, 3_000_000_000);
-        assert_eq!(FileFacts::read(&bundle).mtime, Some(3_000_000_000));
+    /// Replacing a bundle's binary leaves the directory's own time alone; the
+    /// facts must still move, for every bundle format. Mutation: drop the `max`
+    /// with the module's in `FileFacts::read`; and, per format, map that format
+    /// to `return None` in `module_in_bundle`.
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_whose_binary_changed_reads_as_changed() {
+        for name in ["Reverb.vst3", "Legacy.vst", "Synth.clap", "Verb.component"] {
+            let facts = facts_of_bundle(name, 2_000_000_000, 1_000_000_000);
+            assert_eq!(facts.mtime, Some(2_000_000_000), "{name}");
+            // The directory later than the binary still wins.
+            let facts = facts_of_bundle(name, 1_000_000_000, 3_000_000_000);
+            assert_eq!(facts.mtime, Some(3_000_000_000), "{name}");
+        }
     }
 
     #[test]

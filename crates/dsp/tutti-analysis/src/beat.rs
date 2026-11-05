@@ -38,8 +38,7 @@ pub(crate) fn track(novelty: &[f32], period: f64, tightness: f32) -> Vec<usize> 
         return Vec::new();
     }
 
-    let lo = ((period / 2.0).round() as usize).max(1);
-    let hi = ((period * 2.0).round() as usize).max(lo);
+    let (lo, hi) = gap_bounds(period, n);
     // `penalty[t - lo]` is the cost of a gap of `t` frames.
     let penalty: Vec<f32> = (lo..=hi)
         .map(|t| -tightness * (t as f64 / period).ln().powi(2) as f32)
@@ -83,6 +82,19 @@ pub(crate) fn track(novelty: &[f32], period: f64, tightness: f32) -> Vec<usize> 
     beats
 }
 
+/// The shortest and longest gap tried, in frames: half and double the period,
+/// the longest held to the curve's length so a huge period cannot size a table.
+fn gap_bounds(period: f64, len: usize) -> (usize, usize) {
+    let lo = ((period / 2.0).round() as usize).max(1);
+    let hi = ((period * 2.0).round() as usize).min(len);
+    (lo, hi)
+}
+
+/// The smoothing kernel's half-width, three sigma, held to the curve's length.
+fn kernel_half(sigma: f64, len: usize) -> isize {
+    ((3.0 * sigma).ceil() as usize).min(len) as isize
+}
+
 /// The novelty scaled to unit standard deviation and smoothed by a Gaussian
 /// of `period / 32` frames. Empty when the curve has no spread.
 fn local_score(novelty: &[f32], period: f64) -> Vec<f32> {
@@ -99,7 +111,7 @@ fn local_score(novelty: &[f32], period: f64) -> Vec<f32> {
     }
 
     let sigma = (period * SMOOTH_PERIOD_FRACTION).max(f64::MIN_POSITIVE);
-    let half = (3.0 * sigma).ceil() as isize;
+    let half = kernel_half(sigma, novelty.len());
     let kernel: Vec<f64> = (-half..=half)
         .map(|k| (-0.5 * (k as f64 / sigma).powi(2)).exp())
         .collect();
@@ -174,5 +186,26 @@ fn trim(beats: &mut Vec<usize>, local: &[f32]) {
             beats.drain(..f);
         }
         _ => beats.clear(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A period far past the curve sizes no table past the curve.
+    ///
+    /// Mutation checked: removing `.min(len)` from either helper fails here.
+    #[test]
+    fn tables_never_outgrow_the_curve() {
+        let (lo, hi) = gap_bounds(1e12, 1000);
+        assert!(hi <= 1000 && lo > hi, "{lo} {hi}");
+        assert_eq!(kernel_half(1e11, 1000), 1000);
+        assert_eq!(gap_bounds(20.0, 1000), (10, 40));
+        assert_eq!(kernel_half(2.0, 1000), 6);
+        // And a period too long for any gap tracks without a beat chain.
+        let mut curve = vec![0.0f32; 1000];
+        curve[10] = 1.0;
+        assert!(track(&curve, 1e12, 100.0).len() <= 1);
     }
 }

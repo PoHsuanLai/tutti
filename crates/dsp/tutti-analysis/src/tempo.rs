@@ -10,7 +10,7 @@
 //!
 //! Everything works on the novelty curve, one value per hop. The default
 //! [`TempoConfig::geometry`] is a 1024-sample window with a 512-sample hop:
-//! 11.6 ms at 44.1 kHz. Beats sit on the hop grid at frame centres, so each is
+//! 11.6 ms at 44.1 kHz. Beats sit on the hop grid, shifted by where flux peaks in a frame, so each is
 //! within one hop of the onset it marks. A tempo is a period of whole frames
 //! refined by a parabola, so its error grows with tempo: measured, 0.3 BPM at
 //! 90 BPM and 1.1 at 174 at this hop. A smaller hop buys resolution at the cost
@@ -28,7 +28,7 @@
 //! These are offline or UI-thread calls: each allocates the novelty curve, its
 //! autocorrelation and the tracker's tables.
 
-use tutti_types::{Bpm, Confidence, SampleRate, Samples, Seconds};
+use tutti_types::{Bpm, Confidence, Db, SampleRate, Samples, Seconds};
 
 use crate::beat;
 use crate::error::{Error, Result};
@@ -41,6 +41,20 @@ use crate::xcorr::cross_correlate;
 const WINDOW: usize = 1024;
 /// The default hop, in samples.
 const HOP: usize = 512;
+
+/// The slowest and fastest tempo [`TempoConfig::with_range`] accepts. Outside
+/// them a period is not a musical beat, and the lag it maps to is absurd.
+const MIN_BPM: f64 = 1.0;
+const MAX_BPM: f64 = 1000.0;
+
+/// The most runner-up tempi kept.
+const MAX_ALTERNATIVES: usize = 16;
+
+/// Input whose peak is below this is treated as silence. The audio entry
+/// points work on the spectral flux of the samples, which is relative, so
+/// without a floor the rounding noise of a near-silent buffer would still read
+/// as a pulse.
+const SILENCE_FLOOR: Db = Db(-90.0);
 
 /// A curve with less relative spread than this is flat: its peak-to-peak range
 /// is within rounding of its own level.
@@ -56,12 +70,11 @@ pub struct TempoConfig {
     spread: f32,
     tightness: f32,
     alternatives: usize,
-    function: DetectionFunction,
 }
 
 impl Default for TempoConfig {
     /// 60 to 200 BPM, a prior centred on 120 BPM one octave wide, a tightness
-    /// of 100, two alternatives and spectral flux.
+    /// of 100 and two alternatives.
     fn default() -> Self {
         Self {
             min: Bpm(60.0),
@@ -70,7 +83,6 @@ impl Default for TempoConfig {
             spread: 1.0,
             tightness: 100.0,
             alternatives: 2,
-            function: DetectionFunction::SpectralFlux,
         }
     }
 }
@@ -94,14 +106,16 @@ impl TempoConfig {
     }
 
     /// Search tempi from `min` to `max` inclusive. The estimate never leaves
-    /// the range.
+    /// the range. A range that holds no whole-frame lag at the hop in use, or
+    /// needs more curve than the input has, is refused when the tempo is
+    /// estimated.
     ///
     /// # Errors
     ///
-    /// [`Error::EmptyTempoRange`] unless `0 < min < max` and both are finite.
+    /// [`Error::EmptyTempoRange`] unless `1 <= min < max <= 1000`, both finite.
     pub fn with_range(mut self, min: impl Into<Bpm>, max: impl Into<Bpm>) -> Result<Self> {
         let (min, max) = (min.into(), max.into());
-        let ok = |b: Bpm| b.get().is_finite() && b.get() > 0.0;
+        let ok = |b: Bpm| (MIN_BPM..=MAX_BPM).contains(&b.get());
         if !(ok(min) && ok(max) && min < max) {
             return Err(Error::EmptyTempoRange { min, max });
         }
@@ -147,17 +161,11 @@ impl TempoConfig {
         Ok(self)
     }
 
-    /// How many runner-up tempi [`Tempo::alternatives`] holds, at most.
+    /// How many runner-up tempi [`Tempo::alternatives`] holds, at most; capped
+    /// at 16.
     #[must_use]
     pub fn with_alternatives(mut self, count: usize) -> Self {
-        self.alternatives = count;
-        self
-    }
-
-    /// The detection function the audio entry points take novelty from.
-    #[must_use]
-    pub fn with_function(mut self, function: DetectionFunction) -> Self {
-        self.function = function;
+        self.alternatives = count.min(MAX_ALTERNATIVES);
         self
     }
 
@@ -197,11 +205,15 @@ pub struct TempoCandidate {
 pub struct Tempo {
     /// The estimated tempo, in [`Bpm`], inside the configured range.
     pub bpm: Bpm,
-    /// How periodic the novelty is at that tempo: its normalised
-    /// autocorrelation there, from zero for no repetition to one for an exact
-    /// one. A reading of periodicity, not a probability, and blind to octave
-    /// ambiguity: a train that repeats at 60 and 120 BPM reads high for both,
-    /// so check [`alternatives`](Self::alternatives) when the octave matters.
+    /// How periodic the novelty is at that tempo: the autocorrelation
+    /// coefficient of the mean-removed curve at the tempo's lag, in `0..=1`
+    /// (a negative one reads zero). One is a curve that repeats exactly over
+    /// the whole clip, and noise reads near zero. It is not a probability, and
+    /// it does not measure octave ambiguity: a train that repeats at 60 and
+    /// 120 BPM reads high for both, so check
+    /// [`alternatives`](Self::alternatives) when the octave matters. It is
+    /// normalised by the whole curve, not the overlap at the lag, so a clip
+    /// short against the period reads lower, not higher.
     pub confidence: Confidence,
     /// The next strongest tempi after the prior's weighting, best first. Each
     /// is a separate peak of the autocorrelation, so a half or double of
@@ -240,7 +252,7 @@ impl BeatGrid {
 /// # Errors
 ///
 /// [`Error::NonFiniteInput`] for a NaN or infinite sample; [`Error::NoSignal`]
-/// for silence or any input whose novelty is flat; [`Error::InsufficientInput`]
+/// for input whose peak is under -90 dBFS or whose novelty is flat; [`Error::InsufficientInput`]
 /// when the input is shorter than one window, or holds fewer than two periods
 /// of the slowest tempo; [`Error::EmptyTempoRange`] when no whole-frame lag
 /// falls in the range at this hop.
@@ -250,7 +262,7 @@ pub fn estimate_tempo(
     samples: &[f32],
     fft: &mut FftScratch,
 ) -> Result<Tempo> {
-    let novelty = novelty(cfg, geometry, samples, fft)?;
+    let novelty = novelty(geometry, samples, fft)?;
     estimate_tempo_from_novelty(cfg, &novelty, geometry.sample_rate(), geometry.hop(), fft)
 }
 
@@ -258,11 +270,14 @@ pub fn estimate_tempo(
 ///
 /// For a caller's own detection function. The curve is read as strength per
 /// frame, and only its shape matters: any positive gain gives the same
-/// result.
+/// result. Its level is not judged: only an exactly flat curve (or one flat to
+/// rounding) is [`Error::NoSignal`], so a curve from near-silent audio is the
+/// caller's to gate.
 ///
 /// # Errors
 ///
-/// As [`estimate_tempo`], with [`Error::NonFiniteInput`] for a NaN or infinite
+/// As [`estimate_tempo`] (except that a silence floor applies to samples
+/// only), with [`Error::NonFiniteInput`] for a NaN or infinite
 /// value in `novelty` and [`Error::ZeroHop`] for a zero `hop`.
 pub fn estimate_tempo_from_novelty(
     cfg: &TempoConfig,
@@ -279,8 +294,8 @@ pub fn estimate_tempo_from_novelty(
 /// Places the beats of `samples` at its estimated tempo.
 ///
 /// Takes the novelty as [`estimate_tempo`] does, and places beats with
-/// [`track_beats_from_novelty`]; each beat is the centre of its analysis frame,
-/// `frame * hop + window / 2`.
+/// [`track_beats_from_novelty`]; each beat is `frame * hop` plus the lag that spectral
+/// flux peaks behind its onset, `3 * window / 4 - hop / 2`.
 ///
 /// # Errors
 ///
@@ -291,7 +306,7 @@ pub fn track_beats(
     samples: &[f32],
     fft: &mut FftScratch,
 ) -> Result<BeatGrid> {
-    let novelty = novelty(cfg, geometry, samples, fft)?;
+    let novelty = novelty(geometry, samples, fft)?;
     let mut grid = track_beats_from_novelty(
         cfg,
         &novelty,
@@ -317,8 +332,10 @@ pub fn track_beats(
 /// # Errors
 ///
 /// As [`estimate_tempo_from_novelty`] when estimating. With a supplied tempo,
-/// [`Error::NonFiniteInput`] for a NaN or infinite value in `novelty`, or for a
-/// tempo that is not finite and above zero; a flat curve gives no beats.
+/// [`Error::NonFiniteInput`] for a NaN or infinite value in `novelty`, and
+/// [`Error::InvalidTempoParameter`] for a tempo whose period is not between two
+/// frames and the curve's length (this covers zero, negative and NaN); a flat
+/// curve gives no beats.
 pub fn track_beats_from_novelty(
     cfg: &TempoConfig,
     novelty: &[f32],
@@ -331,9 +348,14 @@ pub fn track_beats_from_novelty(
     let rate = frame_rate(sample_rate, hop)?;
     let bpm = match tempo {
         Some(bpm) => {
-            if !(bpm.get().is_finite() && bpm.get() > 0.0) || novelty.iter().any(|v| !v.is_finite())
-            {
+            if novelty.iter().any(|v| !v.is_finite()) {
                 return Err(Error::NonFiniteInput);
+            }
+            // A period under two frames cannot be tracked, and one longer than
+            // the curve holds at most one beat.
+            let period = 60.0 * rate / bpm.get();
+            if !(2.0..=novelty.len() as f64).contains(&period) {
+                return Err(Error::InvalidTempoParameter("tempo"));
             }
             bpm
         }
@@ -358,18 +380,20 @@ fn frame_rate(sample_rate: SampleRate, hop: Samples) -> Result<f64> {
     Ok(sample_rate.get() / hop.get() as f64)
 }
 
-/// Where a beat sits in the frame whose novelty it raises: the frame's centre.
+/// How far after the start of its frame the onset a spectral-flux peak marks
+/// sits: `3 * window / 4 - hop / 2`.
+///
+/// Flux is the rise in the Hann-weighted magnitude from one frame to the next.
+/// An onset at `p` into a frame was `p + hop` into the last, so the rise is
+/// `w(p) - w(p + hop)`, about `-hop * w'` at `p + hop / 2`, and `w' = sin(2πp/W)
+/// π/W` falls fastest at `3W/4`. The frame grid then places the peak to within
+/// half a hop. (Not `window / 2`: that is right only when `hop = window / 2`.)
 fn onset_lag(geometry: StftGeometry) -> usize {
-    geometry.window().get() / 2
+    (geometry.window().get() * 3 / 4).saturating_sub(geometry.hop().get() / 2)
 }
 
 /// The detection curve of `samples`, with the first frame zeroed.
-fn novelty(
-    cfg: &TempoConfig,
-    geometry: StftGeometry,
-    samples: &[f32],
-    fft: &mut FftScratch,
-) -> Result<Vec<f32>> {
+fn novelty(geometry: StftGeometry, samples: &[f32], fft: &mut FftScratch) -> Result<Vec<f32>> {
     if samples.iter().any(|s| !s.is_finite()) {
         return Err(Error::NonFiniteInput);
     }
@@ -380,7 +404,11 @@ fn novelty(
             got: Samples(samples.len()),
         });
     }
-    let onset = OnsetConfig::new(geometry, cfg.function);
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak < SILENCE_FLOOR.to_amplitude().get() {
+        return Err(Error::NoSignal);
+    }
+    let onset = OnsetConfig::new(geometry, DetectionFunction::SpectralFlux);
     let mut state = OnsetState::new();
     for frame in geometry.frames_for(Samples(samples.len())).indices() {
         let offset = frame.get() * geometry.hop().get();
@@ -404,7 +432,7 @@ struct Periodicity {
     /// Normalised autocorrelation at lags `first_lag..=last_lag`, including
     /// the one lag either side that the refinement reads.
     values: Vec<f32>,
-    /// The lag of `values[1]`: the first lag inside the tempo range.
+    /// The first lag inside the tempo range.
     first_lag: usize,
     last_lag: usize,
     frame_rate: f64,
@@ -423,8 +451,10 @@ impl Periodicity {
         }
         // Lag 1 has no neighbour below it for the refinement, so start at 2.
         let first_lag = ((60.0 * frame_rate / cfg.max.get()).ceil() as usize).max(2);
-        let last_lag = (60.0 * frame_rate / cfg.min.get()).floor() as usize;
-        if last_lag < first_lag {
+        // In floating point first: a slow tempo at a fast frame rate maps to a
+        // lag that does not fit a `usize` after the arithmetic below.
+        let longest = (60.0 * frame_rate / cfg.min.get()).floor();
+        if longest < first_lag as f64 {
             return Err(Error::EmptyTempoRange {
                 min: cfg.min,
                 max: cfg.max,
@@ -433,13 +463,14 @@ impl Periodicity {
         let n = novelty.len();
         // Two periods of the slowest tempo, so the longest lag still overlaps
         // half the curve.
-        let needed = 2 * (last_lag + 2);
-        if n < needed {
+        let needed = 2.0 * (longest + 2.0);
+        if (n as f64) < needed {
             return Err(Error::InsufficientInput {
-                needed: Samples(needed * hop.get()),
+                needed: Samples((needed * hop.get() as f64).min(usize::MAX as f64) as usize),
                 got: Samples(n * hop.get()),
             });
         }
+        let last_lag = longest as usize;
 
         let (lo, hi) = novelty
             .iter()
@@ -457,13 +488,11 @@ impl Periodicity {
         if power <= 0.0 {
             return Err(Error::NoSignal);
         }
-        // Divided by the overlap, so a long lag is not penalised for having
-        // fewer terms.
+        // Over the whole curve's power, not the overlap at the lag: a coefficient
+        // in -1..=1 (Cauchy-Schwarz), where a long lag has fewer terms and
+        // reads lower.
         let values = (first_lag - 1..=last_lag + 1)
-            .map(|lag| {
-                let overlap = (n - lag) as f32;
-                correlation.at(lag as isize).unwrap_or(0.0) / overlap / power
-            })
+            .map(|lag| correlation.at(lag as isize).unwrap_or(0.0) / n as f32 / power)
             .collect();
         Ok(Self {
             values,
@@ -478,9 +507,12 @@ impl Periodicity {
         60.0 * self.frame_rate / lag
     }
 
-    /// The normalised autocorrelation at an in-range or neighbouring lag.
+    /// The normalised autocorrelation at a lag in `first_lag - 1..=last_lag + 1`
+    /// (the searched lags and the one either side that refinement reads);
+    /// `values[0]` is lag `first_lag - 1`.
     fn at(&self, lag: usize) -> f32 {
-        self.values[lag + 1 - self.first_lag]
+        debug_assert!((self.first_lag - 1..=self.last_lag + 1).contains(&lag));
+        self.values[lag - (self.first_lag - 1)]
     }
 
     /// The prior's weight at `lag`, from 1 at the centre down.
@@ -534,6 +566,7 @@ impl Periodicity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::Db;
 
     const RATE: f64 = 44100.0;
 
@@ -594,26 +627,78 @@ mod tests {
         estimate_tempo(&TempoConfig::new(), geometry(), x, &mut FftScratch::new()).unwrap()
     }
 
-    /// Click trains read at their own tempo, within 1.5 BPM: the hop is 512
-    /// samples, so the period is a whole number of frames to within a
-    /// parabola's reach, and the error grows with tempo (about 1.1 BPM at 174).
-    /// 120 BPM reads as strongly periodic.
+    const FRAME_RATE: f64 = RATE / 512.0;
+
+    /// The tempo the prior should pick for a click train at `bpm`, as the
+    /// tempi it may read as: the train's own and its integer divisions down to
+    /// the range floor, best prior weight first, plus the runner-up when its
+    /// weight is within 25% of the best: the prior cannot separate them, because the
+    /// autocorrelation at the longer lag is lower by the curve's overlap and by
+    /// where the period falls between frames, each worth several percent.
+    fn expected_readings(bpm: f64) -> Vec<f64> {
+        let weight = |b: f64| (-0.5 * (b / 120.0).log2().powi(2)).exp();
+        let mut options: Vec<f64> = (1..=3)
+            .map(|m| bpm / m as f64)
+            .filter(|&b| b >= 60.0)
+            .collect();
+        options.sort_by(|a, b| weight(*b).total_cmp(&weight(*a)));
+        let keep = if options.len() > 1 && weight(options[1]) > 0.75 * weight(options[0]) {
+            2
+        } else {
+            1
+        };
+        options.truncate(keep);
+        options
+    }
+
+    /// The error a reading may have: a third of a frame of period. The tempo is
+    /// `60 * frame_rate / lag`, so a lag error `d` frames moves it by
+    /// `bpm^2 * d / (60 * frame_rate)`. A parabola through a peak sampled
+    /// between two frames is good to about 0.2 frames at worst (measured over
+    /// the sweep below), which leaves this bound a margin of about 40%.
+    fn tolerance(bpm: f64) -> f64 {
+        bpm * bpm / (3.0 * 60.0 * FRAME_RATE)
+    }
+
+    /// Click trains from 60 to 200 BPM in steps of 7, and 90, 120, 128 and 174,
+    /// read at their tempo, or at the octave the prior prefers, within a third
+    /// of a frame of period (0.2 to 1.5 BPM across the range; the measured
+    /// worst is 0.2 frames). A confidence is a coefficient: at most one, and
+    /// high for a steady train.
     ///
     /// Mutation checked: skipping the parabolic refinement (`refined` returning
-    /// `lag as f64`) moves cases out of tolerance, as does reading the frame
-    /// rate off a fixed 1024 window instead of the hop.
+    /// `lag as f64`) moves several tempi out of tolerance; reading the frame
+    /// rate off a fixed 1024 window instead of the hop fails every one.
     #[test]
     fn click_trains_read_at_their_tempo() {
-        for bpm in [90.0, 120.0, 128.0, 174.0] {
+        let mut tempi: Vec<f64> = (60..=200).step_by(7).map(f64::from).collect();
+        tempi.extend([90.0, 120.0, 128.0, 174.0]);
+        for bpm in tempi {
             let tempo = tempo_of(&clicks(bpm, 0.3, 20.0));
+            let readings = expected_readings(bpm);
             assert!(
-                (tempo.bpm.get() - bpm).abs() < 1.5,
-                "{bpm} BPM read as {}",
+                readings
+                    .iter()
+                    .any(|&r| (tempo.bpm.get() - r).abs() <= tolerance(r)),
+                "{bpm} BPM read as {}, wanted one of {readings:?}",
                 tempo.bpm
             );
+            assert!(tempo.confidence.get() > 0.4 && tempo.confidence.get() <= 1.0);
         }
         let strong = tempo_of(&clicks(120.0, 0.3, 20.0));
         assert!(strong.confidence.get() > 0.9, "{:?}", strong.confidence);
+    }
+
+    /// The confidence is normalised by the whole curve, so a clip short against
+    /// the period reads lower than a long one of the same train.
+    ///
+    /// Mutation checked: dividing each lag by its overlap again (the old
+    /// estimator) reads both near one and fails.
+    #[test]
+    fn a_short_clip_reads_less_confident() {
+        let short = tempo_of(&clicks(60.0, 0.3, 4.0)).confidence.get();
+        let long = tempo_of(&clicks(60.0, 0.3, 20.0)).confidence.get();
+        assert!(short < 0.85 && long > 0.9 && short < long, "{short} {long}");
     }
 
     /// Every beat lands within one hop of a click, and no click is missed by
@@ -638,7 +723,13 @@ mod tests {
                 grid.beats.len(),
                 clicks_at.len()
             );
-            assert!((grid.bpm.get() - bpm).abs() < 1.5);
+            assert!(
+                expected_readings(bpm)
+                    .iter()
+                    .any(|&r| (grid.bpm.get() - r).abs() <= tolerance(r)),
+                "{bpm}: {}",
+                grid.bpm
+            );
         }
     }
 
@@ -923,7 +1014,12 @@ mod tests {
         assert_eq!(forced.bpm, Bpm(100.0));
     }
 
-    /// Unstructured noise has no clear tempo: the confidence is low.
+    /// Unstructured noise has no clear tempo: the confidence is low. White
+    /// novelty over about 860 frames has an autocorrelation coefficient of
+    /// standard deviation `1 / sqrt(860)`, 0.034, at each lag beyond the
+    /// window's overlap; the strongest of the 60 searched lags is under
+    /// four deviations (0.14), so a bound of 0.3 is eight deviations out and
+    /// does not rest on the seed.
     ///
     /// Mutation checked: reporting the weighted score's maximum scaled to one
     /// (or a constant) as the confidence fails the bound.
@@ -989,5 +1085,137 @@ mod tests {
             estimate_tempo_from_novelty(&narrow, &long, RATE, Samples(512), &mut fft),
             Err(Error::EmptyTempoRange { .. })
         ));
+    }
+
+    /// A window much wider than the hop still puts beats within one hop of the
+    /// clicks: at 4096/512 flux peaks `3 * 4096 / 4 - 256 = 2816` samples after
+    /// a frame starts, where the old `window / 2` was 768 samples off. The
+    /// bound is one hop: half for placing the peak on the frame grid, half for
+    /// the click's own width (its energy is within the first 300 samples, and
+    /// an onset's rise can peak a few hundred samples late at a window this
+    /// wide).
+    ///
+    /// Mutation checked: `onset_lag` returning `window / 2` puts every beat
+    /// 768 samples early and fails.
+    #[test]
+    fn a_wide_window_still_places_beats_within_a_hop() {
+        let wide = StftGeometry::new(RATE, Samples(4096), Samples(512)).unwrap();
+        let clicks_at = click_samples(120.0, 0.3, 20.0);
+        let grid = track_beats(
+            &TempoConfig::new(),
+            wide,
+            &clicks(120.0, 0.3, 20.0),
+            &mut FftScratch::new(),
+        )
+        .unwrap();
+        let worst = miss(&grid, &clicks_at).into_iter().fold(0.0, f64::max);
+        assert!(worst <= 512.0, "a beat is {worst} samples off");
+        assert!(grid.beats.len() + 2 >= clicks_at.len());
+    }
+
+    /// Near-silence has no tempo even though flux is relative: a click train
+    /// at -100 dBFS is refused, at -80 dBFS it reads.
+    ///
+    /// Mutation checked: removing the floor reads the -100 dBFS train;
+    /// raising it to -60 dBFS refuses the -80 dBFS one.
+    #[test]
+    fn near_silence_has_no_tempo() {
+        let quiet = |db: f32| -> Vec<f32> {
+            let gain = Db(db).to_amplitude().get();
+            clicks(120.0, 0.3, 20.0).iter().map(|s| s * gain).collect()
+        };
+        let cfg = TempoConfig::new();
+        let mut fft = FftScratch::new();
+        assert_eq!(
+            estimate_tempo(&cfg, geometry(), &quiet(-100.0), &mut fft),
+            Err(Error::NoSignal)
+        );
+        assert_eq!(
+            track_beats(&cfg, geometry(), &quiet(-100.0), &mut fft),
+            Err(Error::NoSignal)
+        );
+        let tempo = estimate_tempo(&cfg, geometry(), &quiet(-80.0), &mut fft).unwrap();
+        assert!((tempo.bpm.get() - 120.0).abs() < 1.5);
+    }
+
+    /// A supplied tempo whose period no curve can hold is an
+    /// `InvalidTempoParameter`, not an allocation of the period's size and not
+    /// an empty grid; a usable one tracks.
+    ///
+    /// Mutation checked: removing the period check lets `1e-6` BPM reach the
+    /// tracker (the kernel table is sized by the period) and `1e12` return an
+    /// empty grid; each case here fails.
+    #[test]
+    fn a_supplied_tempo_must_fit_the_curve() {
+        let mut curve = vec![0.0f32; 1000];
+        for i in (0..1000).step_by(40) {
+            curve[i] = 1.0;
+        }
+        let cfg = TempoConfig::new();
+        let mut fft = FftScratch::new();
+        let hop = Samples(441);
+        // 100 frames per second: a curve of 1000 frames spans 10 s, so the
+        // slowest tempo is 6 BPM (a period of the whole curve) and the fastest
+        // 3000 (a period of two frames).
+        for bad in [
+            1e-6,
+            5.0,
+            3001.0,
+            1e12,
+            0.0,
+            -120.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert_eq!(
+                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm(bad)), &mut fft),
+                Err(Error::InvalidTempoParameter("tempo")),
+                "{bad}"
+            );
+        }
+        for good in [6.0, 150.0, 3000.0] {
+            assert!(
+                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm(good)), &mut fft)
+                    .is_ok(),
+                "{good}"
+            );
+        }
+    }
+
+    /// A range too slow or too fast to be a tempo is refused when it is set,
+    /// and one the curve cannot hold is refused when it is read, not
+    /// overflowed.
+    ///
+    /// Mutation checked: lowering `MIN_BPM` to `1e-300` lets the first case
+    /// through; raising `MAX_BPM` to infinity lets the second through.
+    #[test]
+    fn an_absurd_range_is_refused() {
+        let cfg = TempoConfig::new();
+        for (min, max) in [(1e-300, 90.0), (0.5, 90.0), (60.0, 1e9), (60.0, 1001.0)] {
+            assert!(
+                matches!(
+                    cfg.with_range(Bpm(min), Bpm(max)),
+                    Err(Error::EmptyTempoRange { .. })
+                ),
+                "{min}..{max}"
+            );
+        }
+        // The slowest range allowed needs 2 * (5168 + 2) frames of curve.
+        let slow = cfg.with_range(Bpm(1.0), Bpm(200.0)).unwrap();
+        let curve: Vec<f32> = (0..2000).map(|i| (i % 43) as f32).collect();
+        assert!(matches!(
+            estimate_tempo_from_novelty(&slow, &curve, RATE, Samples(512), &mut FftScratch::new()),
+            Err(Error::InsufficientInput { .. })
+        ));
+    }
+
+    /// The alternatives are capped.
+    ///
+    /// Mutation checked: removing the `min` in `with_alternatives` lets
+    /// the count through unclipped and fails.
+    #[test]
+    fn the_alternative_count_is_capped() {
+        let cfg = TempoConfig::new().with_alternatives(usize::MAX);
+        assert_eq!(cfg.alternatives, MAX_ALTERNATIVES);
     }
 }

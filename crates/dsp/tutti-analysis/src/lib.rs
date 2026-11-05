@@ -31,9 +31,12 @@
 //!   and a [`VectorscopeState`].
 //! - Cross-correlation: [`cross_correlate`] into a [`CrossCorrelation`], read
 //!   at a lag or for its [`CorrelationPeak`].
+//! - Take alignment: [`align()`] with an [`AlignConfig`] finds an [`Alignment`]
+//!   (whole-sample lag, sub-sample offset, confidence) by GCC-PHAT.
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
+mod align;
 mod error;
 mod features;
 mod fft;
@@ -55,6 +58,7 @@ mod yin;
 
 pub use tutti_types::ChannelLayout;
 
+pub use align::{AlignConfig, Alignment, align};
 pub use error::{Error, Result};
 pub use features::{
     SpectralFeatures, spectral_centroid, spectral_features, spectral_flatness, spectral_rolloff,

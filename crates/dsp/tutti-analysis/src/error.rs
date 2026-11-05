@@ -88,6 +88,12 @@ pub enum Error {
     /// Two grids that must share a shape do not.
     #[error("grids that must share a shape have different shapes")]
     GridShapeDisagreement,
+    /// A sample that is NaN or infinite.
+    #[error("input holds a NaN or infinite sample")]
+    NonFiniteInput,
+    /// Nothing to correlate: silent input, or a band holding no spectrum bin.
+    #[error("no signal to correlate: silent input or an empty band")]
+    NoSignal,
     /// Input shorter than the algorithm's minimum.
     #[error("need at least {needed} samples, got {got}")]
     InsufficientInput {

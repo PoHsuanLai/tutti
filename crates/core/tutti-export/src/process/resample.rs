@@ -422,13 +422,20 @@ mod tests {
     }
 
     /// The signal itself survives every blocking: a 1 kHz sine of amplitude
-    /// 0.5 on one channel keeps its level (within 0.01 dB) and a 0.25
+    /// 0.5 on one channel keeps its level (within 0.001 dB, the bound
+    /// `a_sine_keeps_its_frequency_and_amplitude` holds the default chunk to)
+    /// and matches the analytic waveform `0.5 sin(2 pi f j / to)` to 1e-4 (the
+    /// latency is compensated, so frame `j` is time `j / to`), and a 0.25
     /// constant on the other stays within 1e-4 of it, measured in the middle
-    /// half, so a chunk read from the wrong place or dropped at a seam shows.
+    /// half, so a chunk read from the wrong place, a phase error or a seam
+    /// shows. The bounds sit above the worst error measured at every preset
+    /// (under 1e-5).
     ///
     /// Mutation (run): read each chunk from the start of the carry instead of
     /// the head (`let chunk = 0..need;`) → the second chunk repeats the first
-    /// and the level or the constant is off at the seam.
+    /// and the waveform is off at the seam; delaying the head by one frame
+    /// (`output_delay() + 1` for `skip` in `Resampler::new`) → the level holds but the waveform
+    /// is off by about 0.07.
     #[test]
     fn the_signal_survives_every_blocking() {
         for (from, to) in RATE_PAIRS {
@@ -441,8 +448,23 @@ mod tests {
                     let (a, b) = (len / 4, 3 * len / 4);
                     let db = 20.0 * (level_at(&out[0], f64::from(to), 1000.0, a, b) / 0.5).log10();
                     assert!(
-                        db.abs() < 0.01,
+                        db.abs() < 0.001,
                         "{from}->{to} {chunk:?} block={block:?}: sine {db:+.4} dB"
+                    );
+                    // Latency is compensated, so output frame j is the input
+                    // tone at time j / to: compare the waveform, not only its
+                    // level, so a phase or chunk-offset error shows.
+                    let waveform = (a..b)
+                        .map(|j| {
+                            let want = 0.5
+                                * (2.0 * std::f64::consts::PI * 1000.0 * j as f64 / f64::from(to))
+                                    .sin();
+                            (f64::from(out[0][j]) - want).abs()
+                        })
+                        .fold(0.0f64, f64::max);
+                    assert!(
+                        waveform < 1e-4,
+                        "{from}->{to} {chunk:?} block={block:?}: waveform off by {waveform}"
                     );
                     let worst = out[1][a..b]
                         .iter()
@@ -681,7 +703,8 @@ mod tests {
     /// 0.5 amplitude at 48 kHz, converted to 44.1 kHz (Nyquist 22.05 kHz),
     /// would alias to `44.1 kHz - f`; the output holds under -120 dB re the
     /// input (`AMOUNT` below) at that frequency for every `f` from 22.3 kHz to
-    /// 23.9 kHz. A 15 kHz tone, well inside the band, passes within 0.01 dB.
+    /// 23.9 kHz, at every preset chunk size. A 15 kHz tone, well inside the
+    /// band, passes within 0.01 dB.
     ///
     /// Mutation (run): drop the anti-alias cut when downsampling, so the
     /// filter is cut at the output's Nyquist without the fit
@@ -692,25 +715,29 @@ mod tests {
         const AMOUNT: f64 = -120.0;
         let (from, to) = (48_000.0, 44_100.0);
         let n = 48_000;
-        for f in [22_300.0, 22_600.0, 23_000.0, 23_500.0, 23_900.0] {
-            let out = resample(&[tone(f, from, n, 0.5)], 48_000, 44_100, ChunkSize::N1024);
-            let x = &out[0];
-            let (a, b) = (x.len() / 4, 3 * x.len() / 4);
-            let alias = level_at(x, to, to - f, a, b);
-            let db = 20.0 * (alias / 0.5).log10();
-            assert!(db < AMOUNT, "{f} Hz: alias at {} Hz is {db:.1} dB", to - f);
-        }
+        for chunk in ChunkSize::PRESETS {
+            for f in [22_300.0, 22_600.0, 23_000.0, 23_500.0, 23_900.0] {
+                let out = resample(&[tone(f, from, n, 0.5)], 48_000, 44_100, chunk);
+                let x = &out[0];
+                let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+                let alias = level_at(x, to, to - f, a, b);
+                let db = 20.0 * (alias / 0.5).log10();
+                assert!(
+                    db < AMOUNT,
+                    "{chunk:?} {f} Hz: alias at {} Hz is {db:.1} dB",
+                    to - f
+                );
+            }
 
-        let inband = resample(
-            &[tone(15_000.0, from, n, 0.5)],
-            48_000,
-            44_100,
-            ChunkSize::N1024,
-        );
-        let x = &inband[0];
-        let (a, b) = (x.len() / 4, 3 * x.len() / 4);
-        let kept = 20.0 * (level_at(x, to, 15_000.0, a, b) / 0.5).log10();
-        assert!(kept.abs() < 0.01, "15 kHz moved by {kept:+.4} dB");
+            let inband = resample(&[tone(15_000.0, from, n, 0.5)], 48_000, 44_100, chunk);
+            let x = &inband[0];
+            let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+            let kept = 20.0 * (level_at(x, to, 15_000.0, a, b) / 0.5).log10();
+            assert!(
+                kept.abs() < 0.01,
+                "{chunk:?}: 15 kHz moved by {kept:+.4} dB"
+            );
+        }
     }
 
     /// The length is exactly `round(input * ratio)` for every input length, and

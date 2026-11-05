@@ -80,6 +80,12 @@ impl Transport for SocketTransport {
         // server's own memory can drive this loop. Trusting the length here
         // would let it turn a corrupted write into a 4 GiB allocation, or park
         // the session thread in `read_exact` forever.
+        //
+        // The verdict differs from the host's on purpose. The host reads this
+        // same condition as `ProcessCrashed`, because it has no way to keep
+        // talking to a server whose stream is desynchronised. Here the peer is
+        // the host, which has not crashed: the error names the frame instead,
+        // and the session ends on it either way.
         if len > MAX_FRAME_BYTES {
             return Err(BridgeError::ConnectionFailed(format!(
                 "incoming frame is {len} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit"
@@ -502,6 +508,11 @@ mod recv_tests {
     #[test]
     fn an_oversize_inbound_frame_is_a_protocol_error_not_a_crash() {
         let (mut host, server) = UnixStream::pair().expect("socket pair");
+        // A regression that waits for a body fails on this timeout rather
+        // than hanging the suite.
+        server
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout");
         let mut transport = SocketTransport::new(PlatformStream::from(OwnedFd::from(server)));
         let len = u32::try_from(MAX_FRAME_BYTES + 1).expect("the cap fits a u32 prefix");
         host.write_all(&len.to_be_bytes()).expect("write prefix");

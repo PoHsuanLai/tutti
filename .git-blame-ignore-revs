@@ -1,0 +1,4 @@
+# Formatting-only commits, skipped by `git blame` (git config blame.ignoreRevsFile .git-blame-ignore-revs; GitHub reads it by default).
+
+# style: format the workspace with the 2024 style edition (#204)
+6ef2b9718997b2f4f297ddd6890722da74034c5a

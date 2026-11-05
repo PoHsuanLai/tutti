@@ -1,6 +1,6 @@
 //! What an export can fail with.
 //!
-//! One `#[non_exhaustive]` [`Error`] for the whole crate — every stage (plan,
+//! One `#[non_exhaustive]` [`Error`](enum@Error) for the whole crate — every stage (plan,
 //! render, resample, dither, encode) reports through it, so a caller matches one
 //! type whichever entry point it used.
 

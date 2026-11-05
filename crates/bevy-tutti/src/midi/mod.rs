@@ -5,7 +5,7 @@
 //! [`TuttiMidiPlugin`] (in [`plugin`]) as the composition root, added by
 //! [`TuttiPlugin`](crate::TuttiPlugin). The MIDI engine these systems drive is
 //! framework-free; this layer only wraps it. [`file`](mod@self::file) adapts
-//! `tutti-midi-file` (codecs, no OS port); [`hardware::device`] adapts
+//! `tutti-midi-file` (codecs, no OS port); `hardware::device` adapts
 //! `tutti-midi-hardware` and is gated with it behind `midi-hardware`; the rest
 //! adapts `tutti-midi-runtime`.
 //!

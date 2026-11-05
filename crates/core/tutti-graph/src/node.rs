@@ -867,7 +867,7 @@ pub struct Env {
     /// before it.
     ///
     /// A [`Frame`] — an absolute position — and never an
-    /// [`Offset`](crate::Offset): the two convert only through this `Env`
+    /// [`Offset`]: the two convert only through this `Env`
     /// ([`offset_of`](Self::offset_of), [`frame_at`](Self::frame_at)), so an
     /// event cannot be stamped with one where the other was meant.
     pub frame: Frame,
@@ -1023,7 +1023,7 @@ pub trait Node: Send + 'static {
 /// A node that can be copied into a graph of its own — an offline export, a
 /// live duplicate ([`Editor::fork`](crate::Editor::fork)) — says so here, in
 /// [`into_parts`](Self::into_parts), by handing the editor a
-/// [`ForkSource`](crate::ForkSource) beside the node. It is the only chance:
+/// [`ForkSource`] beside the node. It is the only chance:
 /// once inserted, the unit belongs to the executor and nothing on the control
 /// side can reach it again.
 ///

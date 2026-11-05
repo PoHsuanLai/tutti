@@ -5,7 +5,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "The tutti audio engine behind one dependency. Bevy-free."
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti"
+readme = "README.md"
+keywords = ["audio", "dsp", "real-time", "daw", "midi"]
+categories = ["multimedia::audio"]
 
 [dependencies]
 # Always present: the vocabulary, the runtime, the node contract, the DSP.
@@ -152,7 +157,9 @@ clap = ["plugin", "tutti-plugin/clap", "tutti-session?/clap"]
 au = ["plugin", "tutti-plugin/au", "tutti-session?/au"]
 
 [package.metadata.docs.rs]
-all-features = true
+# Not `jack` (see tutti-cpal): `full` and the plugin formats, which `full` leaves out.
+features = ["full", "vst2", "vst3", "clap", "au"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "headless_export"

@@ -5,7 +5,7 @@
 //! (`probe`, `load`); the server code above sees only a uniform
 //! `&mut dyn PluginInstance`.
 //!
-//! [`poll_async_events`] folds the format-specific host-callback fan-out
+//! [`Plugin::poll_async_events`] folds the format-specific host-callback fan-out
 //! (VST2 parameter changes, VST3 restart flags, CLAP runtime latency *and* tail
 //! notifications, AU property changes) into one list the server can drain after
 //! each audio block.

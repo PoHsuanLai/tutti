@@ -9,11 +9,11 @@
 //!
 //! The composition itself is public API elsewhere — a caller who wants to log
 //! the reading, gate on it, or apply a gain of its own writes the four steps
-//! directly ([`render_to_buffers`](crate::render_to_buffers),
-//! [`measure_loudness`](tutti_analysis::measure_loudness),
+//! directly ([`render_to_buffers`],
+//! [`measure_loudness`],
 //! [`Loudness::gain_to`](tutti_analysis::Loudness::gain_to),
 //! [`Rendered::apply_gain`](crate::Rendered::apply_gain),
-//! [`write_buffers`](crate::write_buffers)). This function exists because every
+//! [`write_buffers`]). This function exists because every
 //! host was otherwise writing the same five lines.
 
 use std::path::Path;
@@ -117,7 +117,7 @@ impl Normalize {
     /// outside that cannot produce a reading. This is an error rather than a
     /// `None` the caller might discard, because the alternative — writing the
     /// file un-normalized and reporting success — is silent: nothing in
-    /// [`Written`](crate::Written) records that the gain the caller asked for
+    /// [`Written`] records that the gain the caller asked for
     /// was never applied.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
         let meter = LoudnessConfig::new(rendered.sample_rate, rendered.layout());

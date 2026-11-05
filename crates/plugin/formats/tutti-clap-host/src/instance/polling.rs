@@ -287,7 +287,7 @@ unsafe fn floating_editor_sequence(
 
 /// Reads `can_resize` + `get_resize_hints` off a created editor.
 ///
-/// Split out of [`ClapActive::editor_capabilities`] for the same reason as
+/// Split out of [`ClapLoaded::editor_capabilities`] for the same reason as
 /// `embed_editor_sequence`: the CLAP call order is the contract, and a free
 /// function over a vtable can be tested against a logging stub. The caller owns
 /// the *precondition* — `create()` must already have run — because that lives in

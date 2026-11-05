@@ -150,7 +150,7 @@ impl Vst2Instance {
     /// [`ParameterInfo`](crate::ParameterInfo).
     ///
     /// Each entry's [`id`](crate::ParameterInfo::id) is
-    /// [`ParamAddress::Index`](crate::ParamAddress::Index), the position to pass
+    /// [`ParamAddress::Index`], the position to pass
     /// to [`get_parameter`](Self::get_parameter) and
     /// [`set_parameter`](Self::set_parameter). The list dispatches several
     /// opcodes per parameter, so call it from the main thread, not per block.

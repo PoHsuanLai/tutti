@@ -1,11 +1,11 @@
 //! The transport a hosted plugin is handed each block: a pure function of the
-//! block's [`Env`] and the project meter.
+//! block's [`Env`](tutti_graph::Env) and the project meter.
 //!
 //! The plugin node does not poll a shared timeline. The executor hands it the
-//! block's [`Env`], whose
+//! block's [`Env`](tutti_graph::Env), whose
 //! transport is the engine's own playhead at the block's first frame, with
 //! every start, stop, seek, tempo or loop edit inside the block in
-//! [`Env::changes`]. [`from_cx`] reads it at a frame with
+//! [`Env::changes`](tutti_graph::Env::changes). [`from_cx`] reads it at a frame with
 //! [`Cx::transport_at`]: the transport the node's **input** was rendered at,
 //! its compiled arrival latency earlier, reaching before the block through
 //! the executor's transport history. Behind a latent path the plugin is told
@@ -102,7 +102,7 @@ impl HostClock {
 /// The free-running sample counter a node hands its plugin: frames it has
 /// rendered, whatever the transport did.
 ///
-/// Its own count, not [`Env::frame`]: the executor's frame is the graph's
+/// Its own count, not [`Env::frame`](tutti_graph::Env::frame): the executor's frame is the graph's
 /// clock, which a re-prepare (a sample-rate change) starts over, and the plugin
 /// ABIs' steady time (VST2 `samplePos`'s continuous twin, VST3
 /// `continousTimeSamples`) must never jump. A node keeps one and advances it by

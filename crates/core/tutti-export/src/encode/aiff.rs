@@ -7,7 +7,7 @@
 //! the part worth not writing by hand.
 //!
 //! `SampleFormat::{I16, I24, F32}` line up exactly with the three
-//! [`BitDepth`](crate::BitDepth) variants, so there is no conversion policy here
+//! [`BitDepth`] variants, so there is no conversion policy here
 //! beyond the PCM scaling every format does.
 
 use crate::config::ExportConfig;

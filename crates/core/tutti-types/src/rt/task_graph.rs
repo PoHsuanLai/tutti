@@ -48,7 +48,7 @@
 //! `Acquire`, and a successor run inline is in the same thread's program
 //! order.
 //!
-//! Every task's writes happen-before [`work`] returning on any participant,
+//! Every task's writes happen-before `work` returning on any participant,
 //! and only the **sinks** (tasks with no successor) are counted for it:
 //! `remaining` starts at the sink count, and a sink decrements it
 //! (`Release`) after it runs. A participant returns once it loads 0
@@ -362,7 +362,12 @@ impl TaskGraph {
                                     .iter()
                                     .fold(0u32, |n, p| n.wrapping_add(p.0.load(Ordering::Relaxed)));
                             }
-                            polls = (polls + 1) % PROGRESS_EVERY;
+                            // A compare and reset, not `% PROGRESS_EVERY`: under
+                            // loom the constant is 1, which clippy rejects.
+                            polls += 1;
+                            if polls == PROGRESS_EVERY {
+                                polls = 0;
+                            }
                             caller.wait(left.wrapping_add(mine).wrapping_add(theirs));
                         }
                         Participant::Helper(_) => {

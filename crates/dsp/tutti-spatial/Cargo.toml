@@ -4,8 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Spatial audio for the Tutti engine — VBAP speaker panning, binaural HRTF rendering, surround mix assembly"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-spatial"
+readme = "README.md"
+keywords = ["audio", "spatial", "vbap", "hrtf", "dsp"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -68,3 +72,7 @@ harness = false
 [[bench]]
 name = "hrtf_binaural"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

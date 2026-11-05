@@ -4,12 +4,16 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
-
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-polysynth"
+readme = "README.md"
+keywords = ["audio", "synthesizer", "polyphony", "mpe", "dsp"]
+categories = ["multimedia::audio"]
 # `std` gates nothing yet. There is no `midi` feature: a voice is addressed by
 # per-note identity, so MIDI is not optional. SoundFont playback is the
 # separate `tutti-soundfont` crate.
+
 [lints]
 workspace = true
 
@@ -55,3 +59,7 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false }
 [[bench]]
 name = "polysynth"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

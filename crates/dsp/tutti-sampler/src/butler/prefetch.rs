@@ -13,7 +13,7 @@
 //! so it seats on the clock exactly as the memory tier does and reads what the
 //! memory tier reads, at any rate; a jump inside the window costs nothing; and
 //! a jump outside it is the butler moving the window to where the reader now
-//! plays ([`Ring::play`]), with no flush, no stale frames to discard and no
+//! plays (`Ring::play`), with no flush, no stale frames to discard and no
 //! read head to guess.
 //!
 //! The slots, the window and the protocol that keeps a write from ever
@@ -451,7 +451,7 @@ impl RegionBuffer {
         Self::for_file(region_id, file_path, capacity, channels, usize::MAX)
     }
 
-    /// [`with_capacity`](Self::with_capacity) for a file `len` frames long.
+    /// `RegionBuffer::with_capacity` for a file `len` frames long.
     pub(crate) fn for_file(
         region_id: RegionId,
         file_path: PathBuf,

@@ -785,7 +785,7 @@ pub struct Value {
 }
 
 /// The compiled, immutable form of a graph, produced by
-/// [`compile`](crate::compile) and run by the [`Executor`](crate::Executor).
+/// [`compile`](fn@crate::compile) and run by the [`Executor`](crate::Executor).
 ///
 /// Plain data (`Send + Sync`, `Vec`s of indices and a closed [`Op`] enum),
 /// so it is shared with the audio thread as one `Arc` and a test or the

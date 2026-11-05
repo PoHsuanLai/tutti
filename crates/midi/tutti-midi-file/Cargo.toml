@@ -4,9 +4,12 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "MIDI file codecs — Standard MIDI File (SMF) and MIDI 2.0 Clip File"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-file"
 readme = "README.md"
+keywords = ["midi", "smf", "audio", "codec"]
+categories = ["multimedia::audio", "parser-implementations"]
 
 [lints]
 workspace = true
@@ -27,3 +30,7 @@ midly = { workspace = true, features = ["std", "parallel"] }
 # its own process, so a fixed name under `std::env::temp_dir()` is a shared
 # mutable path that two concurrent runs of the same binary race on.
 tempfile = "3.8"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

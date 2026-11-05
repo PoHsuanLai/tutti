@@ -190,7 +190,7 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
 /// The caller owns clearing/seeding `out_params` and clearing `out_filtered`
 /// before the call (the audio path clears in place to stay allocation-free);
 /// this routine only appends. Decoding goes through
-/// [`tutti_midi_types::decode`], so MIDI-2 controllers keep their full width.
+/// [`tutti_midi_types::convert`], so MIDI-2 controllers keep their full width.
 ///
 /// Allocation-free given pre-warmed `out_*` capacity — the inner loop only
 /// pushes into existing storage.

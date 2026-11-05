@@ -16,7 +16,7 @@
 //! | `declick` ([`Declick`]) | `Engine` | read every buffer to shape gain |
 //!
 //! The settings half — tempo, loop region, recording — lives in
-//! [`TransportSettings`](super::TransportSettings) and is not routed through
+//! [`TransportSettings`] and is not routed through
 //! this queue: nothing decides those, they are just values.
 
 use std::sync::Arc;
@@ -67,7 +67,7 @@ pub enum Then {
 /// Every variant is a genuine state-machine input — the FSM may reject it
 /// (`Play` while already rolling does nothing) or defer it (a `Declick` stop
 /// while rolling fades out first). Settings changes are deliberately *not*
-/// here; see [`TransportSettings`](super::TransportSettings).
+/// here; see [`TransportSettings`].
 ///
 /// `fade` and `then` are orthogonal: `fade` is about the output gain, `then`
 /// about the motion after landing. Neither constrains the other, which is what
@@ -287,11 +287,11 @@ impl MotionFsm {
     ///
     /// With no engine running over the transport, commands stay in flight,
     /// up to [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) (64), and past
-    /// that this returns [`ScheduleFull`](super::ScheduleFull).
+    /// that this returns [`ScheduleFull`].
     ///
     /// # Errors
     ///
-    /// Returns [`ScheduleFull`](super::ScheduleFull) when
+    /// Returns [`ScheduleFull`] when
     /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands are in flight:
     /// nothing was sent, and the command is handed back inside it.
     ///

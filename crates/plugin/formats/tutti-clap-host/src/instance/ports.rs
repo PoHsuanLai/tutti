@@ -672,7 +672,7 @@ fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
 /// `CLAP_PORT_MONO`/`CLAP_PORT_STEREO` map to the named variants; any other tag
 /// (surround, ambisonic, vendor-specific) becomes `Multi(channel_count)`.
 ///
-/// Shared with [`super::load::port_channels`], so the layout `PortLayout`
+/// Shared with `load::port_channels`, so the layout `PortLayout`
 /// stores is the same one `audio_port_info` reports — one conversion, one
 /// answer.
 pub(super) fn layout_from_clap_port(

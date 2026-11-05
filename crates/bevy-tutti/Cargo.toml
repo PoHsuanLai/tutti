@@ -6,7 +6,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Bevy plugin for the Tutti real-time audio engine: the audio graph, transport, MIDI, plugin hosting and export as ECS entities and resources"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/bevy-tutti"
+readme = "README.md"
+keywords = ["bevy", "audio", "daw", "midi", "real-time"]
+categories = ["game-development", "multimedia::audio"]
 
 [lints]
 workspace = true
@@ -288,3 +293,4 @@ required-features = ["plugin", "modulation"]
 # feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

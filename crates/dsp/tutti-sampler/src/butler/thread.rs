@@ -38,7 +38,7 @@ pub struct ButlerThread {
     tx: ButlerSender,
     /// Its receiving end, until a driver takes it: the thread
     /// [`start`](Self::start) spawns (which drops it on exit, however it
-    /// exits), or [`step_once`](Self::step_once). [`stop`](Self::stop) drops
+    /// exits), or `ButlerThread::step_once`. [`stop`](Self::stop) drops
     /// it. With every receiver dropped a send reports the butler gone.
     rx: Option<Receiver<ButlerCommand>>,
     thread_handle: Option<JoinHandle<()>>,
@@ -120,7 +120,7 @@ impl ButlerThread {
     }
 
     /// The cycle state a driver owns: the thread [`start`](Self::start)
-    /// spawns, or [`step_once`](Self::step_once). Built here, on the control
+    /// spawns, or `ButlerThread::step_once`. Built here, on the control
     /// thread, by both, so the hand-stepped tests build what the thread runs,
     /// the compensation table included.
     fn cycle(&self) -> ButlerCycle {

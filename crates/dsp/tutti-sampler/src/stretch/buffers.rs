@@ -48,7 +48,7 @@ impl Ring {
     /// Capping does not *fix* an overrun — the data is already gone. It bounds
     /// the damage to "the oldest samples were dropped" instead of "the stream is
     /// silently interleaved with stale laps", and it makes
-    /// [`Ring::overrun`](Self::overrun) meaningful.
+    /// `Ring::overrun` meaningful.
     #[inline]
     pub(super) fn available(&self) -> usize {
         self.write.saturating_sub(self.read).min(self.data.len())

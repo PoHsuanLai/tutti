@@ -75,7 +75,7 @@ pub enum Error {
     Synth(#[from] tutti_polysynth::Error),
 
     /// SoundFont subsystem failure. Wraps `tutti_soundfont::Error`; a
-    /// separate variant from [`Self::Synth`] because the two are separate
+    /// separate variant from `Synth` because the two are separate
     /// crates with disjoint failure modes.
     #[cfg(feature = "soundfont")]
     #[error("SoundFont: {0}")]

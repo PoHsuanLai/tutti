@@ -4,11 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "CLAP plugin hosting library for Rust"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-clap-host"
+readme = "README.md"
 keywords = ["clap", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
-readme = "README.md"
 
 [lints]
 workspace = true
@@ -59,3 +60,7 @@ tempfile = "3"
 # side gives the test the `ProcessCapture` type directly. build.rs
 # resolves the cdylib artifact path for the test to dlopen.
 tutti-clap-test-plugin = { path = "../../../vendor/tutti-clap-test-plugin" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

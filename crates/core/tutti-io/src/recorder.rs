@@ -732,7 +732,7 @@ impl Recorder {
     /// [`stop`](Self::stop) cuts a source off wherever the pump happens to be,
     /// which silently truncates a finite one. This instead lets the loop run
     /// until the source reports
-    /// [`OnEmpty::EndOfStream`](tutti_core::io::OnEmpty::EndOfStream), then
+    /// [`OnEmpty::EndOfStream`], then
     /// returns the finalize result as `stop` does.
     ///
     /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks

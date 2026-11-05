@@ -13,7 +13,7 @@
 //!   normal (un-armed) case does literally nothing on the hot path. Bounded +
 //!   `try_send` keeps the push allocation-free; on overflow the CC is dropped
 //!   (learning only needs *a* recent CC, not all of them).
-//! - **Forward (main thread):** [`Vst3Loaded::poll_plugin_notifications`] drains
+//! - **Forward (main thread):** [`Vst3Loaded::poll_plugin_notifications`](super::loaded::Vst3Loaded::poll_plugin_notifications) drains
 //!   the channel and makes the actual `onLiveMIDIControllerInput` COM call,
 //!   honouring the spec's threading contract.
 //!

@@ -150,6 +150,8 @@
 //!   (the `plugin_host` module); implies `midi`. `vst2`, `vst3`, `clap` and
 //!   `au` enable each plugin format and imply `plugin`.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 /// The reference plugin and `plugin-server` paths, shared with the
 /// integration suites, for unit tests that host a real plugin.
 #[cfg(all(test, feature = "plugin"))]

@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // The VST2 FFI layer is the vendored fork of vst-rs (`vst-tutti`), which adds
 // the host-side audioMaster callbacks upstream swallows. Aliased to `vst` at the

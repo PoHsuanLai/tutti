@@ -4,9 +4,9 @@
 //! protocol, and it does not fit the frame cap: a sample-embedding instrument
 //! or a convolution reverb carrying an impulse response routinely exceeds
 //! 64 MiB. So state travels as chunks of at most
-//! [`STATE_CHUNK_BYTES`](crate::server::STATE_CHUNK_BYTES): each frame stays
+//! [`STATE_CHUNK_BYTES`]: each frame stays
 //! small, and the *total* is bounded separately on reassembly by
-//! [`MAX_STATE_BYTES`](crate::server::MAX_STATE_BYTES).
+//! [`MAX_STATE_BYTES`].
 //!
 //! Both directions use the same two helpers, because the hazard is symmetric:
 //! the host reassembles what a plugin produced, and the server reassembles what

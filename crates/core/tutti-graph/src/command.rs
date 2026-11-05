@@ -27,7 +27,7 @@
 //! **Beats: reached, not passed.** An `At::Beat` fires when the playhead
 //! reaches or crosses it **through continuous playback** — a loop wrap that
 //! lands at or after it counts as reaching it (see
-//! [`Playhead`](crate::Playhead)). A seek, or a loop that jumps *over* it,
+//! [`Playhead`]). A seek, or a loop that jumps *over* it,
 //! does not fire it: it stays pending until reached, or cancelled. It is late
 //! only when continuous playback crossed it before the command was
 //! processed; it then lands at offset 0 of the block and is counted. So a

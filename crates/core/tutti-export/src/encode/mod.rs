@@ -3,18 +3,18 @@
 //! # Why the encoder pulls
 //!
 //! The encoder drives the render rather than being fed by it: each format's
-//! `encode` takes the [`FrameSource`](crate::render::FrameSource) (a live
+//! `encode` takes the [`FrameSource`] (a live
 //! [`GraphSource`](crate::render::driver::GraphSource) or a rendered
-//! [`PlaneSource`](crate::render::PlaneSource)) and pulls it block by block
+//! [`PlaneSource`]) and pulls it block by block
 //! through [`pump_blocks`], the one place the gate, the resample and the
 //! dither live. Every format streams, FLAC included (it encodes a frame per
 //! full block as it arrives), so there is no buffered-vs-streaming decision
 //! for a caller to get wrong.
 //!
 //! Every encoder is width-agnostic: the width comes from the caller's
-//! [`ChannelLayout`](tutti_types::ChannelLayout) at runtime, the render folds the
+//! [`ChannelLayout`] at runtime, the render folds the
 //! graph onto it once, and the file header is simply that width. Nothing here is
-//! generic over the width — [`Interleaved`](tutti_types::Interleaved) carries
+//! generic over the width — [`Interleaved`] carries
 //! it — so *any* width encodes.
 
 #[cfg(feature = "aiff")]

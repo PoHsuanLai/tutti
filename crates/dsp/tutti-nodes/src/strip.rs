@@ -232,7 +232,7 @@ impl BusStripNode {
     /// `(1, 1)` at centre, `(1, 0)` hard left, `(0, 1)` hard right. Unity at
     /// centre is the property that matters — a strip must be transparent until
     /// somebody moves it, and this is what
-    /// [`unity_at_defaults`](self::tests::unity_at_defaults) pins.
+    /// the `unity_at_defaults` test pins.
     ///
     /// This is **balance, not panning**. A panner *places* a mono signal, so it spreads
     /// one input across two outputs with an equal-power (`cos`/`sin`) law that

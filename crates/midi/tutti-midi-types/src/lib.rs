@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Third-party, re-exported whole so a consumer matching our version needs no
 // dependency entry of its own.

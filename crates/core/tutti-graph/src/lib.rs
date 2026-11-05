@@ -73,7 +73,7 @@
 //!   and outputs) plus event edges and each param port's event source.
 //! - [`Editor`] (control thread) holds the spec and the units not yet
 //!   shipped. [`Editor::insert`] adds a node and returns its typed controls;
-//!   [`Editor::commit`] validates, [`compile`]s against the plan sent last
+//!   [`Editor::commit`] validates, [`compile()`]s against the plan sent last
 //!   and sends the result — the new [`Plan`] and only the units that changed
 //!   — over a preallocated queue.
 //! - [`Executor`] (audio thread) installs each commit at the start of a
@@ -187,7 +187,7 @@
 //! - [`Reference`] is a naive interpreter the executor is checked against,
 //!   bit for bit.
 //! - [`verify`] and [`verify_fades`] check a [`Plan`] against its op DAG;
-//!   [`compile`] runs `verify` in every debug build.
+//!   [`compile()`] runs `verify` in every debug build.
 //! - [`GraphBuilder::renderer`] returns a [`Renderer`] that drives an
 //!   executor and hands back planar or interleaved output.
 //!
@@ -207,6 +207,7 @@
 // No `unsafe` anywhere in the crate: the arena's disjoint borrows are proven
 // by `split_at_mut`, not by a comment. See `arena.rs`.
 #![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod arena;
 mod builder;
@@ -276,7 +277,7 @@ pub use tutti_types::{BlockWaits, PlayReading};
 
 /// Checks `plan` against its op DAG: no slot shared by ops that may run
 /// concurrently, every read of the value it was meant to read, feedback read
-/// before it is captured. [`compile`] runs this in every debug build.
+/// before it is captured. [`compile()`] runs this in every debug build.
 ///
 /// # Errors
 ///

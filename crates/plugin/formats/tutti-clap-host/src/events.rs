@@ -1436,7 +1436,7 @@ impl OutputEventList {
     /// `RtVec`, whose capacity is inline and fixed, so this never allocates:
     /// events past that capacity are dropped and `out` reports the overflow.
     /// A plugin's SysEx arrives as UMP SysEx7 packets
-    /// ([`push_sysex`](tutti_plugin_types::push_sysex)): any length the pool
+    /// ([`push_sysex`]): any length the pool
     /// has room for, whole or dropped.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();

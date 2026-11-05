@@ -3,6 +3,7 @@
 // below a struct), which leaves the type undocumented in rustdoc while it looks
 // documented in the source. Nothing else catches that.
 #![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
 // it defines are in scope for the modules below — `macro_rules!` are textually

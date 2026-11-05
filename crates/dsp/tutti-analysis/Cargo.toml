@@ -4,8 +4,10 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Audio analysis for Tutti over plain sample slices: waveform blocks, onsets, pitch, loudness, stereo correlation, STFT"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-analysis"
+readme = "README.md"
 keywords = ["audio", "analysis", "waveform", "pitch", "dsp"]
 categories = ["multimedia::audio"]
 
@@ -51,3 +53,7 @@ pitch-detection = "0.3"
 [[bench]]
 name = "fft_analyses"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

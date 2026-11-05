@@ -12,7 +12,7 @@
 //! plain mutex that is never contended.
 //!
 //! On Linux this object also carries `IRunLoop`, delegating to the shared
-//! [`RunLoop`](super::run_loop::RunLoop). Some plugin toolkits look for the run
+//! [`RunLoop`]. Some plugin toolkits look for the run
 //! loop on the frame rather than on the host context, so it is answered here too —
 //! but note the frame is *not* the path that prevents the editor-open crash;
 //! see `run_loop.rs` for why the host context is the load-bearing one.

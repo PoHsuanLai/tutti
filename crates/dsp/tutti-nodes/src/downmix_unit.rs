@@ -3,7 +3,7 @@
 //! When a signal meets a sink of a different width, the extra channels must be
 //! *folded in*, not dropped: taking channels 0/1 of a 5.1 bus discards the
 //! dialogue (centre) and the ambience (surrounds) entirely. The engine already
-//! knows how to do that — [`tutti_types::downmix`] holds the ITU-R BS.775 /
+//! knows how to do that — `tutti_types::downmix` holds the ITU-R BS.775 /
 //! Dolby matrices, and the graph root folds through them every block.
 //!
 //! What was missing was a way to do it *inside* the graph. A mismatched edge

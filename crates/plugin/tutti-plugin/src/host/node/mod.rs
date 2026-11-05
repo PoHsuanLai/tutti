@@ -5,7 +5,7 @@
 //! A client is born [`Unbound`] ([`PluginClient::new`]): a loaded plugin with
 //! its control surface, not yet a node. [`bind`](PluginClient::bind) turns it
 //! into a [`PluginClient<Bound>`], which owns the audio path (the IPC
-//! [`Batcher`](batcher::Batcher) and its scratch) and is the only state that
+//! [`Batcher`] and its scratch) and is the only state that
 //! goes into a graph ([`tutti_graph::IntoNode`]), as the `Node` that
 //! `graph_node` implements. Inserting it hands back its [`PluginControls`]:
 //!
@@ -50,7 +50,7 @@
 //! # What the node reads
 //!
 //! - **Audio**, planar `f32`, through the pipelined IPC
-//!   [`Batcher`](batcher::Batcher): whole chunks of one device callback (the
+//!   [`Batcher`]: whole chunks of one device callback (the
 //!   graph's `MaxBlock` when the host does not say), so the plugin's latency
 //!   is its own plus one callback. The `f64` wire conversion stays inside it.
 //! - **The transport**, from each chunk's frame of the block's `Env`

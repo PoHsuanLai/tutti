@@ -36,8 +36,8 @@ pub const SUB_ID2_NOTIFY: u8 = 0x3F;
 ///
 /// Deliberately excludes [`SUB_ID2_PE_CAPABILITIES`] / its reply: those are in
 /// the same 0x30-0x3F category but carry three scalars instead of the chunked
-/// header/body, so they decode to [`CiMessage::PropertyCapabilities`] rather
-/// than [`CiMessage::Property`].
+/// header/body, so they decode to [`CiMessage::PropertyCapabilities`](super::CiMessage::PropertyCapabilities) rather
+/// than [`CiMessage::Property`](super::CiMessage::Property).
 pub(super) fn is_property_sub_id2(sub_id2: u8) -> bool {
     matches!(
         sub_id2,

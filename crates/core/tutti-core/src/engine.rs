@@ -1,7 +1,7 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
 //! [`Engine`] ticks the graph's
-//! [`Executor`](tutti_graph::Executor) and the transport, and renders one
+//! [`Executor`] and the transport, and renders one
 //! output buffer per block. It folds the graph's outputs to the device width, keeps
 //! the declick, and applies timestamped transport commands on their frame.
 //!

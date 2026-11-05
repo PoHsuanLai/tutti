@@ -7,7 +7,7 @@
 //! the install succeed and the data silently vanish.
 //!
 //! These views move that answer to the call site. Each accessor on
-//! [`PluginClient`](super::PluginClient) returns `None` for a plugin that
+//! [`PluginClient`] returns `None` for a plugin that
 //! **declined** the capability, so the installer is not reachable at all rather
 //! than reachable and inert:
 //!
@@ -25,7 +25,7 @@
 //!
 //! # Declined, not merely absent
 //!
-//! The gate is [`LoadedPlugin::capability`], which is three-valued: `Some(true)`
+//! The gate is [`LoadedPlugin::capability`](crate::protocol::LoadedPlugin::capability), which is three-valued: `Some(true)`
 //! (asked, yes), `Some(false)` (asked, no), `None` (never asked). Only
 //! `Some(false)` withholds the view.
 //!

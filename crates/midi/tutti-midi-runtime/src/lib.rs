@@ -1,4 +1,6 @@
 #![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // NOTE: this crate has no fallible operation and therefore no `Error` type.
 // Everything here runs on or feeds the audio thread, where refusal is shaped as

@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
 pub use error::{BridgeError, EditorError, LoadStage, PluginForkError, PluginRenderFault, Result};

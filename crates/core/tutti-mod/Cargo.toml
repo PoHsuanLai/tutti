@@ -4,8 +4,10 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Modulation for the Tutti engine: a pure compiler from sources and routes to one control program per target"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-mod"
+readme = "README.md"
 keywords = ["audio", "modulation", "lfo"]
 categories = ["multimedia::audio"]
 
@@ -47,3 +49,4 @@ bevy_reflect = { workspace = true, optional = true }
 # feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

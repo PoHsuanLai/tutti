@@ -597,7 +597,7 @@ impl<T: Host> PluginLoader<T> {
 
     /// Try to create an instance of this VST plugin.
     ///
-    /// If the instance is successfully created, a [`PluginInstance`](struct.PluginInstance.html)
+    /// If the instance is successfully created, a [`PluginInstance`]
     /// is returned. This struct implements the [`Plugin` trait](../plugin/trait.Plugin.html).
     pub fn instance(&mut self) -> Result<PluginInstance, PluginLoadError> {
         // Call the plugin main function. This also passes the plugin main function as the closure

@@ -4,8 +4,10 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Pure MIDI types for Tutti - MidiEvent (UMP) + tutti-domain MPE/sync"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/PoHsuanLai/Tutti"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-types"
+readme = "README.md"
 keywords = ["midi", "audio", "real-time"]
 categories = ["multimedia::audio"]
 
@@ -50,3 +52,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # argument `tutti-types` makes for its meter types.
 serde_json = "1"
 tutti-midi-types = { path = ".", features = ["serde"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -348,7 +348,7 @@ impl Vst3Instance {
     /// Surfaced for the client (no host-side action possible): the parameter
     /// re-read flags.
     ///
-    /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
+    /// Polled between audio blocks by [`Plugin::poll_async_events`](crate::plugin::Plugin::poll_async_events); it must
     /// not be called concurrently with [`process`](Self::process).
     ///
     /// It runs in the server's audio phase, so with nothing requested it

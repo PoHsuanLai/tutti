@@ -95,6 +95,9 @@ pub enum Error {
     /// names it.
     #[error("invalid tonal parameter: {0}")]
     InvalidTonalParameter(&'static str),
+    /// A live-loudness setting or input that is out of range; the text names it.
+    #[error("invalid loudness parameter: {0}")]
+    InvalidLoudnessParameter(&'static str),
     /// No pitch to read a key from: no frames, silent, or a chroma so flat
     /// that every key correlates alike.
     #[error("no tonal content: silent or flat chroma")]

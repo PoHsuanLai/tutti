@@ -17,6 +17,8 @@ where the results go:
 - `correlate` — inter-channel phase correlation and stereo image.
 - `measure_loudness` — EBU R128 integrated loudness, loudness range and true
   peak.
+- `step_live_loudness` — momentary (400 ms) and short-term (3 s) loudness and
+  true peak of a running stream, after every chunk.
 - `spectral_features` — centroid, flatness and rolloff of every STFT frame.
 - `strip_silence` — the sample ranges that hold signal, with a minimum silence
   length and padding.
@@ -50,9 +52,10 @@ plans lazily, per scratch, on the cold path.
 
 - **No graph, no framework, no ECS.** Nothing here is a graph node or knows
   about one, and there is no Bevy feature.
-- **No threading and no scheduling.** "Live" is a property of a call site, never
-  of an algorithm, so nothing here is named for it. A host that wants these
-  results on a background thread owns that plumbing itself.
+- **No threading and no scheduling.** A host that wants these results on a
+  background thread owns that plumbing itself. `step_live_loudness` is the
+  streaming form of a meter: it takes whatever chunks arrive, keeps a window
+  of them, and says what each step costs.
 - **No display.** These return numbers, not pixels.
 
 ## Configs, and carries where they are needed
@@ -60,9 +63,10 @@ plans lazily, per scratch, on the cold path.
 Every algorithm takes a **config**: immutable, validated once, so an invalid
 combination fails at construction rather than silently producing nothing.
 
-Four of them additionally need a **carry** between frames — onset detection
+Five of them additionally need a **carry** between frames — onset detection
 diffs against the previous spectrum, waveform blocking holds a partial block,
-strip silence holds the region it is growing, and chroma a running mean.
+strip silence holds the region it is growing, chroma a running mean, and live
+loudness its meter.
 Those expose the carry as an explicit value and a `step` function, and their
 batch entry points (`detect_onsets`, `summarize`, `strip_silence`) *fold that
 same step*, so the two paths cannot drift. Tests pin the equality across chunk
@@ -167,7 +171,9 @@ error rather than a panic.
 
 The batch entry points allocate their results, so call them off the audio
 thread. The `step_*` functions and `FftScratch` let a caller reuse buffers
-across calls.
+across calls. `step_live_loudness` allocates nothing once its state is built,
+but reads three-second windows on every call, so it belongs on the consumer side
+of an `AudioTap`, not in an audio callback.
 
 ## Features
 

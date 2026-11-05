@@ -12,7 +12,7 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::helpers::sdk_enum_i32;
+use crate::sdk::sdk_enum_i32;
 
 /// COM-wrapped in-memory stream.
 ///

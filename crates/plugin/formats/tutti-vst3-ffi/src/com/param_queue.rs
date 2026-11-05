@@ -22,14 +22,14 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::types::{ParameterPoint, ParameterQueue};
 use tutti_plugin_types::{Normalized, PointBuf, PointPool};
+use tutti_plugin_types::{ParameterPoint, ParameterQueue};
 use tutti_types::AudioThreadCell;
 
 /// The least point room a queue is built with. Typical automation carries a
 /// handful of points per buffer; past a queue's room it keeps its latest
 /// value, counted.
-pub(crate) const MIN_POINT_ROOM: usize = 16;
+pub const MIN_POINT_ROOM: usize = 16;
 
 pub struct ParamValueQueueImpl {
     param_id: AudioThreadCell<u32>,

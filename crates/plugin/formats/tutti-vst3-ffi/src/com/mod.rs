@@ -14,7 +14,7 @@ mod param_changes;
 mod param_queue;
 mod plug_frame;
 #[cfg(target_os = "linux")]
-pub(crate) mod run_loop;
+mod run_loop;
 mod stream;
 
 /// What one run-loop pump actually did, plus what the plugin has registered.
@@ -45,6 +45,8 @@ pub use component_handler::{
 pub use event_list::{EventList, event_list_ptr};
 pub use host_application::HostApplication;
 pub use param_changes::{ParameterChangesImpl, param_changes_ptr};
-pub(crate) use param_queue::MIN_POINT_ROOM;
-pub(crate) use plug_frame::HostPlugFrame;
+pub use param_queue::MIN_POINT_ROOM;
+pub use plug_frame::HostPlugFrame;
+#[cfg(target_os = "linux")]
+pub use run_loop::RunLoop;
 pub use stream::BStream;

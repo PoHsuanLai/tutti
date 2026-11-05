@@ -454,7 +454,7 @@ impl Vst3Event {
     reason = "arena offsets and text lengths are bounded by MAX_EVENT_TEXT_LEN, \
               and a SysEx message by SYSEX_MESSAGE_CAPACITY"
 )]
-pub(crate) fn to_c_event<'a>(
+pub fn to_c_event<'a>(
     event: &'a Vst3Event,
     text_arena: &'a [u16],
     sysex: &'a [u8],
@@ -609,7 +609,7 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
     reason = "the SDK event ordinals are u32 on unix and c_int on Windows; each \
               cast is a no-op on one target and load-bearing on the other"
 )]
-pub(crate) unsafe fn from_c_event(
+pub unsafe fn from_c_event(
     event: &vst3::Steinberg::Vst::Event,
     text_arena: &mut TextArena,
 ) -> Option<Vst3Event> {
@@ -781,7 +781,7 @@ fn tuning_expression(bend: f32, range: f32) -> f64 {
     clippy::cast_possible_truncation,
     reason = "text sizes bounded by MAX_EVENT_TEXT_LEN"
 )]
-pub(crate) fn vst3_event_from_midi(
+pub fn vst3_event_from_midi(
     event: &MidiEvent,
     ranges: &mut PerNoteBendRanges,
 ) -> Option<Vst3Event> {
@@ -947,7 +947,7 @@ pub(crate) fn vst3_event_from_midi(
 
 /// One MIDI-1 message as the VST3 Data event that carries it (see the fallback
 /// in [`vst3_event_from_midi`]).
-pub(crate) fn midi1_data_event(sample_offset: i32, bytes: [u8; 3]) -> Vst3Event {
+pub fn midi1_data_event(sample_offset: i32, bytes: [u8; 3]) -> Vst3Event {
     let mut data = [0u8; 16];
     data[..3].copy_from_slice(&bytes);
     Vst3Event::Data(DataEvent {
@@ -1052,7 +1052,7 @@ fn midi_note(raw: i16) -> u8 {
     (raw as u8) & 0x7F
 }
 
-pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
+pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     use tutti_midi_types::convert::{unit_f32_to_u16, unit_f32_to_u32};
 
     let frame = event.sample_offset().max(0) as u32;
@@ -1130,7 +1130,7 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     reason = "SDK controller ordinals < 130; cn is range-checked before narrowing"
 )]
 fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> {
-    use crate::helpers::sdk_enum_i32;
+    use crate::sdk::sdk_enum_i32;
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
     use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
@@ -1338,7 +1338,7 @@ pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue>
 /// (and allocates on the audio thread). So the arena never grows: a text that
 /// does not fit the room left is refused, interned as an empty [`TextRef`],
 /// and counted in [`TextArena::dropped`]. The event itself is still staged.
-pub(crate) struct TextArena {
+pub struct TextArena {
     buf: Vec<u16>,
     dropped: usize,
 }

@@ -32,7 +32,7 @@ workspace = true
 # before `IAudioProcessor::process`. Used by the VST3 host-conformance tests
 # to validate what this host assembles against the VST3 spec.
 default = []
-conformance = []
+conformance = ["tutti-vst3-ffi/conformance"]
 
 [dependencies]
 libloading = "0.9"
@@ -45,6 +45,7 @@ tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
 vst3 = "0.3"
+tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
 
 # The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
 # CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
@@ -71,10 +72,6 @@ cc = "1"
 # production builds.
 tutti-vst3-host = { path = ".", features = ["conformance"] }
 assert_no_alloc = { version = "1", default-features = false }
-# The CLAP host, to feed one MIDI stream to both formats' event lists and
-# check they read a per-note bend at the same range. Acyclic: it does not
-# depend on this crate.
-tutti-clap-host = { path = "../tutti-clap-host" }
 tempfile = "3"
 winit = "0.30"
 raw-window-handle = "0.6"

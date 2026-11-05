@@ -9,7 +9,7 @@
 #   from the first `#[cfg(test)] mod` of a file on is skipped). The host
 #   callbacks, the stream, event-list and context-menu callbacks all live
 #   there; `tutti-clap-host` has none.
-# - tutti-vst3-host: each `unsafe fn` in an `impl ...Trait for ...` block
+# - tutti-vst3-ffi: each `unsafe fn` in an `impl ...Trait for ...` block
 #   under `src/com`.
 #
 # The functions in ALLOW only return a constant or have an empty body, so
@@ -17,7 +17,7 @@
 #
 # Mutation (run): replace the `guarded(host, (), |cb| cb.request_restart())`
 # body of `host_request_restart` in clap-ffi with `()`, or delete the wrapper
-# of `getEventCount` in vst3-host -> this script exits 1 naming the function.
+# of `getEventCount` in vst3-ffi -> this script exits 1 naming the function.
 #
 # No build needed (python3 only), so CI runs it in the static `paths` job.
 set -euo pipefail
@@ -34,7 +34,7 @@ ALLOW = {
     "host_context_menu_can_popup", "host_context_menu_popup",
     "host_triggers_clear", "host_tuning_get_relative",
     "host_tuning_should_play",
-    # vst3-host
+    # vst3-ffi
     "createContextMenu",
 }
 
@@ -94,7 +94,7 @@ for path in glob.glob("crates/plugin/formats/tutti-clap-ffi/src/**/*.rs", recurs
         if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
             bad.append((path, m.group(1)))
 
-for path in glob.glob("crates/plugin/formats/tutti-vst3-host/src/com/*.rs"):
+for path in glob.glob("crates/plugin/formats/tutti-vst3-ffi/src/com/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s

@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kResultOk, tresult};
 use vst3::{Class, ComWrapper};
 
-use crate::types::EditorSize;
+use tutti_plugin_types::EditorSize;
 
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
@@ -40,7 +40,7 @@ use vst3::Steinberg::Linux::{
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
 
-pub(crate) struct HostPlugFrame {
+pub struct HostPlugFrame {
     /// The latest `resizeView` request not yet taken.
     resize_request: Mutex<Option<EditorSize>>,
     /// Shared with `HostApplication` — see `run_loop.rs`.
@@ -61,7 +61,7 @@ impl Class for HostPlugFrame {
 }
 
 impl HostPlugFrame {
-    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+    pub fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
@@ -70,7 +70,7 @@ impl HostPlugFrame {
     }
 
     /// The latest size the plugin asked for since the last take, if any.
-    pub(crate) fn take_resize_request(&self) -> Option<EditorSize> {
+    pub fn take_resize_request(&self) -> Option<EditorSize> {
         self.resize_request.lock().take()
     }
 }

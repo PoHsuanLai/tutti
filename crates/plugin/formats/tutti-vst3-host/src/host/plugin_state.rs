@@ -11,7 +11,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use crate::com::{ComponentHandler, HostApplication, HostPlugFrame};
+use tutti_vst3_ffi::{ComponentHandler, HostApplication, HostPlugFrame};
 
 pub(super) struct PluginInterfaces {
     pub component: ComPtr<IComponent>,

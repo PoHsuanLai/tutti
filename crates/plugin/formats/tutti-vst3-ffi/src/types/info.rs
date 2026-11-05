@@ -7,7 +7,7 @@ use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
 use vst3::Steinberg::Vst::{PhysicalUITypeIDs_, ePrefetchableSupport_};
 
-use crate::helpers::utf16_to_string;
+use crate::sdk::utf16_to_string;
 
 /// Host-facing bus descriptor. Thin wrapper around `vst3::Steinberg::Vst::BusInfo`
 /// whose field layout is retained verbatim for FFI, but whose only public
@@ -62,7 +62,7 @@ impl BusInfo {
         utf16_to_string(&self.inner.name)
     }
 
-    pub(crate) fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
+    pub fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
         &mut self.inner
     }
 }
@@ -162,7 +162,7 @@ impl Vst3ParameterInfo {
         (self.flags & parameter_flags::IS_WRAP) != 0
     }
 
-    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
+    pub fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
         Self {
             id: c.id,
             title: c.title,
@@ -361,7 +361,7 @@ impl Vst3NoteExpressionInfo {
         (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
     }
 
-    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
+    pub fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -453,7 +453,7 @@ impl Vst3KeyswitchInfo {
         utf16_to_string(&self.short_title)
     }
 
-    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
+    pub fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -515,7 +515,7 @@ impl Vst3UnitInfo {
     /// Decodes the C struct. `program_list` is left unresolved (`None` unless
     /// the raw id is a real one); [`resolve_program_list`](Self::resolve_program_list)
     /// finishes the job once the list ids are known.
-    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
+    pub fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
         Self {
             id: c.id,
             parent: (c.parentUnitId != unit_ids::NO_PARENT).then_some(c.parentUnitId),
@@ -529,7 +529,7 @@ impl Vst3UnitInfo {
     /// it. Split from `from_c` because resolving needs every list id, which is
     /// a second call the accessor makes once for the whole enumeration rather
     /// than once per unit.
-    pub(crate) fn resolve_program_list(&mut self, known: &[i32]) {
+    pub fn resolve_program_list(&mut self, known: &[i32]) {
         self.program_list = (self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
             && known.contains(&self.program_list_id_raw))
         .then_some(self.program_list_id_raw);
@@ -551,7 +551,7 @@ pub struct Vst3ProgramListInfo {
 }
 
 impl Vst3ProgramListInfo {
-    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
+    pub fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
         Self {
             id: c.id,
             name: utf16_to_string(&c.name),

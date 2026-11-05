@@ -35,8 +35,8 @@ use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChange
 use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
-use crate::types::{ParameterChanges, ParameterPoint};
 use tutti_plugin_types::{Normalized, PointPool};
+use tutti_plugin_types::{ParameterChanges, ParameterPoint};
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {

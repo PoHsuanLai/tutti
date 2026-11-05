@@ -32,13 +32,13 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::types::MidiEvent;
 use crate::types::{
     EventHeader, K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX, K_NOTE_OFF_EVENT, SysExEvent, TextArena,
     Vst3Event, Vst3InputEvents, from_c_event, midi1_data_event, note_expression_to_vst3,
     to_c_event, vst3_event_from_midi,
 };
 use tutti_midi_types::PerNoteBendRanges;
+use tutti_plugin_types::MidiEvent;
 #[cfg(doc)]
 use tutti_plugin_types::SYSEX_MESSAGE_CAPACITY;
 use tutti_plugin_types::{
@@ -591,9 +591,10 @@ mod tests {
     use super::*;
     use crate::types::{
         ChordValue, EventHeader, K_NOTE_ON_EVENT, NoteExpressionIntValue, NoteExpressionText,
-        NoteExpressionValue, NoteOnEvent, ScaleValue,
+        NoteOnEvent, ScaleValue,
     };
     use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_plugin_types::NoteExpressionValue;
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {
@@ -1285,7 +1286,7 @@ mod tests {
         let note_expr = [NoteExpressionValue {
             sample_offset: 0,
             note_id: 0,
-            expression_type: crate::types::NoteExpressionType::Tuning,
+            expression_type: tutti_plugin_types::NoteExpressionType::Tuning,
             value: 0.5,
         }];
         let cmaj: Vec<u16> = "Cmaj7".encode_utf16().collect();
@@ -1367,7 +1368,7 @@ mod tests {
         NoteExpressionValue {
             sample_offset: offset,
             note_id,
-            expression_type: crate::types::NoteExpressionType::Tuning,
+            expression_type: tutti_plugin_types::NoteExpressionType::Tuning,
             value: 0.5,
         }
     }

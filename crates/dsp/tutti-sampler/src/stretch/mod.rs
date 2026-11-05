@@ -102,6 +102,7 @@ impl FftSize {
     /// Fallible rather than clamping: silently rounding 1000 up to 1024 would
     /// hand back a unit whose latency is not the one the caller asked for — so the
     /// caller has to know.
+    #[must_use]
     pub const fn new(size: usize) -> Option<Self> {
         if size.is_power_of_two() && size >= Self::MIN.0 && size <= Self::MAX.0 {
             Some(Self(size))
@@ -111,11 +112,13 @@ impl FftSize {
     }
 
     /// The window length in samples.
+    #[must_use]
     pub const fn size(self) -> Samples {
         Samples(self.0)
     }
 
     /// One quarter of the window: 75% overlap, the minimum Hann² COLA needs.
+    #[must_use]
     pub const fn hop(self) -> Samples {
         Samples(self.0 / 4)
     }

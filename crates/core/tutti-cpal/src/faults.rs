@@ -63,6 +63,7 @@ pub struct StreamFaults {
 
 impl StreamFaults {
     /// Creates an empty fault record.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

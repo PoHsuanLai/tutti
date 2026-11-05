@@ -107,8 +107,7 @@ impl MicIn {
     /// sample format; [`Error::BuildStream`] / [`Error::PlayStream`] from
     /// CPAL.
     pub fn open(sel: impl Into<DeviceSelector>, graph_rate: SampleRate) -> Result<Self> {
-        let (source, _) = Self::open_inner(sel.into(), graph_rate, false)?;
-        Ok(source)
+        Self::open_inner(sel.into(), graph_rate, None)
     }
 
     /// Opens the mic like [`open`](Self::open), and also returns a
@@ -127,16 +126,24 @@ impl MicIn {
         sel: impl Into<DeviceSelector>,
         graph_rate: SampleRate,
     ) -> Result<(Self, MicMonitorNode)> {
-        let (source, monitor) = Self::open_inner(sel.into(), graph_rate, true)?;
-        // `open_inner(_, true)` always returns the monitor.
-        Ok((source, monitor.expect("monitor requested")))
+        // Optional monitor tap: a second, shallow ring the callback also feeds.
+        let (mon_prod, mon_cons) = HeapRb::<[f32; 2]>::new(MONITOR_RING_FRAMES).split();
+        let source = Self::open_inner(sel.into(), graph_rate, Some(mon_prod))?;
+        // `new_at`, not `new`: the node then carries the rate it was
+        // opened at, and its `prepare` debug-asserts the graph
+        // agrees. That assertion is the unchecked half of the same
+        // guarantee `Error::SampleRateMismatch` is the checked half of —
+        // the two-check shape `pump`'s layout `debug_assert` and
+        // `Recorder::start`'s returned error already use.
+        let monitor = MicMonitorNode::new_at(MicRing::new(mon_cons), source.sample_rate);
+        Ok((source, monitor))
     }
 
     fn open_inner(
         sel: DeviceSelector,
         graph_rate: SampleRate,
-        with_monitor: bool,
-    ) -> Result<(Self, Option<MicMonitorNode>)> {
+        mon_prod: Option<HeapProd<[f32; 2]>>,
+    ) -> Result<Self> {
         let host = DeviceHost::open(AudioHost::Default)?;
         let device = host.device(Direction::Input, &sel)?;
         let name = device.name().unwrap_or_default();
@@ -153,25 +160,6 @@ impl MicIn {
 
         let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
         let (prod, cons) = rb.split();
-
-        // Optional monitor tap: a second, shallow ring the callback also feeds.
-        let (mon_prod, monitor) = if with_monitor {
-            let mon_rb = HeapRb::<[f32; 2]>::new(MONITOR_RING_FRAMES);
-            let (mon_prod, mon_cons) = mon_rb.split();
-            let ring = MicRing::new(mon_cons);
-            // `new_at`, not `new`: the node then carries the rate it was
-            // opened at, and its `prepare` debug-asserts the graph
-            // agrees. That assertion is the unchecked half of the same
-            // guarantee `Error::SampleRateMismatch` is the checked half of —
-            // the two-check shape `pump`'s layout `debug_assert` and
-            // `Recorder::start`'s returned error already use.
-            (
-                Some(mon_prod),
-                Some(MicMonitorNode::new_at(ring, sample_rate)),
-            )
-        } else {
-            (None, None)
-        };
 
         // Raw interleaved buffer math (`data.chunks(..)`) needs the device's
         // channel count as a `usize`; derive it from the layout at the boundary.
@@ -212,14 +200,11 @@ impl MicIn {
             Ok(stream)
         })?;
 
-        Ok((
-            Self {
-                cons,
-                sample_rate,
-                _stream: StreamHandle(owned),
-            },
-            monitor,
-        ))
+        Ok(Self {
+            cons,
+            sample_rate,
+            _stream: StreamHandle(owned),
+        })
     }
 
     /// Returns the rate the capture stream runs at (the `graph_rate` it was

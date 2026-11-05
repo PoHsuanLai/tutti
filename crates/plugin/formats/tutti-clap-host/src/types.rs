@@ -60,36 +60,42 @@ impl PluginInfo {
     }
 
     /// Sets the plugin vendor (builder style).
+    #[must_use]
     pub fn vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = vendor.into();
         self
     }
 
     /// Sets the plugin version string (builder style).
+    #[must_use]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
     }
 
     /// Sets the plugin homepage URL (builder style).
+    #[must_use]
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = url.into();
         self
     }
 
     /// Sets the plugin description (builder style).
+    #[must_use]
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
     /// Sets the CLAP feature/category tags (builder style).
+    #[must_use]
     pub fn features(mut self, features: Vec<String>) -> Self {
         self.features = features;
         self
     }
 
     /// Sets the audio input/output channel counts (builder style).
+    #[must_use]
     pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
         self.audio_inputs = inputs;
         self.audio_outputs = outputs;
@@ -148,6 +154,7 @@ pub type RtNoteExpressions = tutti_types::RtVec<ClapNoteExpression, RT_NOTE_EXPR
 impl ClapNoteExpression {
     /// Creates a new note expression. Defaults to port 0, any channel, any key;
     /// refine with the `port`/`on_channel`/`on_key`/`at` builders.
+    #[must_use]
     pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
         Self {
             sample_offset: 0,
@@ -161,24 +168,28 @@ impl ClapNoteExpression {
     }
 
     /// Sample offset (within the current block) at which the expression fires.
+    #[must_use]
     pub fn at(mut self, sample_offset: i32) -> Self {
         self.sample_offset = sample_offset;
         self
     }
 
     /// Sets the note port index.
+    #[must_use]
     pub fn port(mut self, port_index: i16) -> Self {
         self.port_index = port_index;
         self
     }
 
     /// Scope to a specific MIDI channel.
+    #[must_use]
     pub fn on_channel(mut self, channel: i16) -> Self {
         self.channel = channel;
         self
     }
 
     /// Scope to a specific MIDI key.
+    #[must_use]
     pub fn on_key(mut self, key: i16) -> Self {
         self.key = key;
         self
@@ -188,6 +199,7 @@ impl ClapNoteExpression {
     /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue). The
     /// shared form carries no voice addressing, so `port`/`channel`/`key`
     /// default to port 0 / any-channel / any-key.
+    #[must_use]
     pub fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
         Self::new(expr.expression_type, expr.note_id, expr.value).at(expr.sample_offset)
     }
@@ -278,12 +290,14 @@ impl ClapParamInfo {
     }
 
     /// Sets the grouping path (slash-separated, e.g. `"Filter/Cutoff"`).
+    #[must_use]
     pub fn module(mut self, module: impl Into<String>) -> Self {
         self.module = module.into();
         self
     }
 
     /// Sets the value range and default all at once.
+    #[must_use]
     pub fn range(mut self, min: f64, max: f64, default: f64) -> Self {
         self.min_value = min;
         self.max_value = max;
@@ -292,6 +306,7 @@ impl ClapParamInfo {
     }
 
     /// Sets the parameter flags.
+    #[must_use]
     pub fn flags(mut self, flags: ClapParamFlags) -> Self {
         self.flags = flags;
         self
@@ -676,6 +691,7 @@ impl TrackAudio {
     /// A track whose width is known but whose topology is not: the layout's
     /// natural tag for mono/stereo, and no tag for anything wider (where the
     /// count alone cannot distinguish surround from ambisonic).
+    #[must_use]
     pub fn from_layout(layout: ChannelLayout) -> Self {
         let port_type = match layout.count() {
             1 => Some(TrackPortType::Mono),
@@ -962,6 +978,7 @@ impl SurroundChannel {
     /// `None`, because the caller decodes a *positional* map and has no way to
     /// represent "channel 4's speaker is unreadable" other than by keeping the
     /// slot.
+    #[must_use]
     pub fn from_position(pos: u8) -> Self {
         match pos {
             0 => Self::FrontLeft,
@@ -993,6 +1010,7 @@ impl SurroundChannel {
     ///
     /// Use this instead of `as u8`, which the enum does not support (see the
     /// type docs).
+    #[must_use]
     pub fn position(self) -> u8 {
         match self {
             Self::FrontLeft => 0,

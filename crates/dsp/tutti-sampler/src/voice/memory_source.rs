@@ -139,6 +139,7 @@ pub struct VoiceWindow {
 
 impl VoiceWindow {
     /// A window starting at `start` and running to the end of the source.
+    #[must_use]
     pub const fn from(start: Beat) -> Self {
         Self {
             start,
@@ -372,6 +373,7 @@ impl MemorySource {
     ///
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
     /// Use [`with_channels`](Self::with_channels) to declare a different width.
+    #[must_use]
     pub fn new(wave: Arc<Wave>) -> Self {
         let sample_rate = wave.sample_rate();
         Self {
@@ -417,6 +419,7 @@ impl MemorySource {
     /// A `LoopSetting::On { crossfade_frames, .. }` loops with that crossfade
     /// (via [`set_loop_range`](Self::set_loop_range)); `crossfade_frames == 0`
     /// loops with no crossfade.
+    #[must_use]
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
             gain: Param::new(config.gain),

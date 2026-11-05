@@ -36,6 +36,7 @@ pub struct PrerollTable(Mutex<Vec<Samples>>);
 
 impl PrerollTable {
     /// A table holding `channels`.
+    #[must_use]
     pub fn new(channels: Vec<Samples>) -> Self {
         Self(Mutex::new(channels))
     }

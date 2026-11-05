@@ -76,6 +76,7 @@ impl CiResponder {
     /// A responder with the given MUID and Discovery identity, no profiles or
     /// properties. Add them with [`with_profiles`](Self::with_profiles) /
     /// [`with_properties`](Self::with_properties).
+    #[must_use]
     pub fn new(muid: Muid, identity: DiscoveryData) -> Self {
         Self {
             muid,
@@ -98,18 +99,21 @@ impl CiResponder {
     /// Override the Property Exchange capabilities this device reports
     /// (M2-101 §8.4). Raise `simultaneous_requests` only alongside a request
     /// queue that can actually service that many.
+    #[must_use]
     pub fn with_pe_capabilities(mut self, caps: PropertyCapabilities) -> Self {
         self.pe_capabilities = caps;
         self
     }
 
     /// Declare the profiles this device exposes as `(id, enabled)` pairs.
+    #[must_use]
     pub fn with_profiles(mut self, profiles: Vec<(ProfileId, bool)>) -> Self {
         self.profiles = profiles;
         self
     }
 
     /// Declare the properties this device answers Get requests for.
+    #[must_use]
     pub fn with_properties(mut self, properties: Vec<CiProperty>) -> Self {
         self.properties = properties;
         self
@@ -490,6 +494,7 @@ pub struct CiInitiator {
 impl CiInitiator {
     /// An initiator with the given MUID and Discovery identity, having
     /// discovered nothing yet.
+    #[must_use]
     pub fn new(muid: Muid, identity: DiscoveryData) -> Self {
         Self {
             muid,

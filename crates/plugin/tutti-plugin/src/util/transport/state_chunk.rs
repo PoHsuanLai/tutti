@@ -88,6 +88,7 @@ impl Reassembler {
     ///
     /// [`Default`] uses [`MAX_STATE_BYTES`]; a smaller limit makes the
     /// over-limit path testable at a size a test can build.
+    #[must_use]
     pub fn with_limit(limit: usize) -> Self {
         Self {
             buf: Vec::new(),
@@ -131,6 +132,7 @@ impl Reassembler {
     /// Returns the reassembled state.
     ///
     /// Only meaningful once [`push`](Self::push) returned `Ok(true)`.
+    #[must_use]
     pub fn into_inner(self) -> Vec<u8> {
         self.buf
     }

@@ -152,6 +152,7 @@ impl PhaserNode {
     ///
     /// The all-pass corner frequencies and the LFO's per-sample phase
     /// increment both take the rate [`Node::prepare`] hands it.
+    #[must_use]
     pub fn new(stages: usize) -> Self {
         Self::with_channels(ChannelLayout::MONO, stages)
     }
@@ -191,6 +192,7 @@ impl PhaserNode {
     /// # Panics
     ///
     /// If `offsets.len()` is not the node's width — a build-time shape error.
+    #[must_use]
     pub fn with_phase_offsets(mut self, offsets: &[PhaseIncrement]) -> Self {
         assert_eq!(offsets.len(), self.width, "one phase offset per channel");
         for (o, &new) in self.phase_offsets.iter_mut().zip(offsets) {

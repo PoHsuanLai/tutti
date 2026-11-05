@@ -242,6 +242,7 @@ impl PluginControls {
     }
 
     /// Whether a meter is installed — what a host's binding checks.
+    #[must_use]
     pub fn has_meter(&self) -> bool {
         self.meter.has_meter()
     }

@@ -83,6 +83,7 @@ pub struct TransportSettings {
 
 impl TransportSettings {
     /// Fresh settings: 120 BPM, beat 0, paused, not recording, loop disarmed.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tempo: Arc::new(AtomicF64::new(120.0)),
@@ -133,6 +134,7 @@ impl TransportSettings {
     }
 
     /// Whether the transport is armed and capturing.
+    #[must_use]
     pub fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Acquire)
     }
@@ -143,6 +145,7 @@ impl TransportSettings {
     }
 
     /// Whether a count-in is running.
+    #[must_use]
     pub fn is_in_preroll(&self) -> bool {
         self.in_preroll.load(Ordering::Acquire)
     }
@@ -156,6 +159,7 @@ impl TransportSettings {
     ///
     /// Read-only here: the flag is derived from motion by
     /// the engine's motion machine, so there is no setter to race it with.
+    #[must_use]
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::Acquire)
     }

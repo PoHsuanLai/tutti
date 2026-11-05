@@ -150,6 +150,7 @@ impl TransportHistory {
     pub const CHECKPOINT: Samples = Samples(CHECKPOINT);
 
     /// An empty history. Nothing is allocated, now or later.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             pieces: [EMPTY; JUMPS],

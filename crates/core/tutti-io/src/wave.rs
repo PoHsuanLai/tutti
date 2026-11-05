@@ -145,12 +145,14 @@ impl Wave {
 
     /// Returns the length in frames.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns whether the wave holds no frames.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

@@ -562,6 +562,7 @@ impl Memo {
 
 impl Modulation {
     /// Nothing applied yet.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -625,6 +626,10 @@ impl Modulation {
     /// # Errors
     ///
     /// Each [`ReconcileError`]; nothing changes on any of them.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "the expects run after validation: every key they look up was listed by this call, and a declaration that compiled builds its node"
+    )]
     pub fn apply(
         &mut self,
         decl: &Declarations<'_>,

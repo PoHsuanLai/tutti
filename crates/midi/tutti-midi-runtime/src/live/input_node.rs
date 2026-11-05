@@ -96,6 +96,7 @@ impl MidiInputNode {
     /// with MPE ingestion off. The node owns `input`: build one per node (for
     /// the hardware ports, `tutti_midi_hardware::HardwareMidiDrain::new`
     /// over the shared `Arc<HardwareMidiInputs>`).
+    #[must_use]
     pub fn new(input: Option<Box<dyn MidiIn>>) -> Self {
         let cell = Arc::new(ArcLend::new(None));
         Self {

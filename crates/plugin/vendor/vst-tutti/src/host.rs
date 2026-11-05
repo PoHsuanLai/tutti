@@ -572,6 +572,12 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// Upon success, this method returns a [`PluginLoader`](.) object which you can use to call
     /// [`instance`](#method.instance) to create a new instance of the plugin.
     ///
+    /// # Errors
+    ///
+    /// [`PluginLoadError::InvalidPath`] if the library at `path` cannot be
+    /// opened, and [`PluginLoadError::NotAPlugin`] if it has no `VSTPluginMain`
+    /// entry point.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -649,6 +655,12 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     ///
     /// If the instance is successfully created, a [`PluginInstance`]
     /// is returned. This struct implements the [`Plugin` trait](../plugin/trait.Plugin.html).
+    ///
+    /// # Errors
+    ///
+    /// [`PluginLoadError::InstanceFailed`] if the plugin's entry point returns
+    /// no instance, and [`PluginLoadError::InvalidApiVersion`] if the instance
+    /// speaks a VST API version this library does not support.
     pub fn instance(&mut self) -> Result<PluginInstance, PluginLoadError> {
         // Call the plugin main function. This also passes the plugin main function as the closure
         // could not return an error if the symbol wasn't found

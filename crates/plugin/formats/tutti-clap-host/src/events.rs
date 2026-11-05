@@ -469,6 +469,7 @@ impl ClapEvent {
     /// plugins consume when the host has no parameter mapping for it. Returns
     /// `None` for UMP variants with no MIDI-1 form (utility) and for SysEx,
     /// which [`InputEventList::add_midi`] reassembles into a `MidiSysex`.
+    #[must_use]
     pub fn from_midi(event: &MidiEvent, ranges: &PerNoteBendRanges) -> Option<Self> {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
         use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
@@ -591,6 +592,7 @@ impl ClapEvent {
         clippy::cast_possible_truncation,
         reason = "CLAP carries velocities and expression values as f64; the MIDI-2 conversion helpers take f32"
     )]
+    #[must_use]
     pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
@@ -1157,6 +1159,7 @@ impl InputEventList {
 
     /// Raw pointer to the `clap_input_events` struct for FFI. Valid only
     /// while `self` is not moved or dropped.
+    #[must_use]
     pub fn as_raw(&self) -> *const clap_input_events {
         &self.list as *const _ as *const _
     }
@@ -1422,6 +1425,7 @@ impl OutputEventList {
 
     /// Extracts MIDI events from the output as UMP [`MidiEvent`]s,
     /// dropping non-MIDI events.
+    #[must_use]
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
         let mut out = Vec::new();
         for e in &self.events {
@@ -1462,6 +1466,7 @@ impl OutputEventList {
     /// Extracts parameter-value events into a [`ParameterChanges`] grouped
     /// by parameter ID. Allocates as it needs to and keeps every point, each
     /// queue sized to its points; off the audio thread only.
+    #[must_use]
     pub fn to_param_changes(&self) -> ParameterChanges {
         let mut grouped: Vec<(ParamAddress, Vec<ParameterPoint>)> = Vec::new();
         for (addr, point) in self.param_points() {

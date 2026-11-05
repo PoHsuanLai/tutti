@@ -82,6 +82,7 @@ impl BitDepth {
     ///
     /// `Float32` passes samples through, so dithering it is a no-op and
     /// clipping is the caller's concern.
+    #[must_use]
     pub fn is_integer(&self) -> bool {
         !matches!(self, Self::Float32)
     }
@@ -91,6 +92,7 @@ impl BitDepth {
     /// The single dispatch every PCM sink shares. Out-of-range input is clamped
     /// by the underlying converters rather than wrapping.
     #[inline]
+    #[must_use]
     pub fn quantize(self, sample: f32) -> Sample {
         match self {
             Self::Int16 => Sample::I16(f32_to_i16(sample)),

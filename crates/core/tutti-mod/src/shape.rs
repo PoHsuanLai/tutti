@@ -76,6 +76,7 @@ impl LfoShape {
     /// [`LfoShape::evaluate_periodic`], or evaluate through
     /// [`Wave::raw_at`](crate::Wave::raw_at), which takes every shape.
     #[inline]
+    #[must_use]
     pub fn is_random(&self) -> bool {
         matches!(self, Self::Random | Self::RandomSmooth)
     }

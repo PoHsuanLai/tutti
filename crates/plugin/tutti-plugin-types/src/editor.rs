@@ -106,12 +106,14 @@ impl ContentScale {
     pub const IDENTITY: Self = Self(1.0);
 
     /// The scale `factor`, or `None` unless it is finite and positive.
+    #[must_use]
     pub fn new(factor: f64) -> Option<Self> {
         (factor.is_finite() && factor > 0.0).then_some(Self(factor))
     }
 
     /// The factor. A raw `f64`: it is handed straight to a C ABI (CLAP takes
     /// `double`, VST3 `float`).
+    #[must_use]
     pub fn get(self) -> f64 {
         self.0
     }
@@ -188,6 +190,7 @@ impl WindowHandle {
     /// `ptr` must be a valid platform window handle for the current OS
     /// when interpreted as a pointer, and must outlive any editor opened
     /// against it.
+    #[must_use]
     pub unsafe fn from_u64(ptr: u64) -> Self {
         Self(ptr as *mut c_void)
     }
@@ -197,11 +200,13 @@ impl WindowHandle {
     /// Safe to obtain — the pointer is opaque here. Dereferencing it requires
     /// the invariants [`from_raw`](Self::from_raw) documents, which this type
     /// carries but does not verify.
+    #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
         self.0
     }
 
     /// Returns the pointer's numeric value, the form it takes over IPC.
+    #[must_use]
     pub fn as_u64(&self) -> u64 {
         self.0 as u64
     }

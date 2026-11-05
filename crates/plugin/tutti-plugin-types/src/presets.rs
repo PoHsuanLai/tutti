@@ -160,6 +160,7 @@ impl PresetSupport {
     // `get(f) == Some(true)` is equivalent to `enabled(f)` here, because
     // `FeatureReport::new` stores `features & probed`. `get` is kept because it
     // states the intent: a UI decision reading a three-state answer.
+    #[must_use]
     pub fn from_report(report: &crate::FeatureReport) -> Self {
         use crate::Features;
         let can_load = report.get(Features::PRESET_LOAD) == Some(true);
@@ -181,11 +182,13 @@ impl PresetSupport {
     }
 
     /// Returns whether a caller can enumerate presets to show.
+    #[must_use]
     pub fn can_list(self) -> bool {
         matches!(self, Self::Full | Self::ListOnly)
     }
 
     /// Returns whether a caller can ask the plugin to load one.
+    #[must_use]
     pub fn can_load(self) -> bool {
         matches!(self, Self::Full | Self::LoadByPath)
     }

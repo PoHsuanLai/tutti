@@ -121,6 +121,7 @@ impl ChannelCompensation {
     }
 
     /// The whole table, copied.
+    #[must_use]
     pub fn to_vec(&self) -> Vec<Samples> {
         self.0.to_vec()
     }
@@ -140,6 +141,7 @@ pub struct GraphLatency(pub Samples);
 
 impl GraphLatency {
     /// Whether any path in the graph needs compensation at all.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0 == Samples(0)
     }

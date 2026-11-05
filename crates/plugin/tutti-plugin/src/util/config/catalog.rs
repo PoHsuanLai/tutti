@@ -58,12 +58,14 @@ impl CatalogConfig {
     // --- chainable setters ---
 
     /// Sets where the plugin database JSON is read from and written to.
+    #[must_use]
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = path.into();
         self
     }
 
     /// Sets the directories a scan walks, replacing any already configured.
+    #[must_use]
     pub fn scan_dirs<I, P>(mut self, dirs: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -114,6 +116,7 @@ impl Default for AudioConfig {
 impl AudioConfig {
     /// Creates the default config: 32-bit float samples, 8192-frame blocks and
     /// a 5 s IPC timeout.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -121,18 +124,21 @@ impl AudioConfig {
     // --- chainable setters ---
 
     /// Sets the sample format to request from each plugin.
+    #[must_use]
     pub fn format(mut self, format: SampleFormat) -> Self {
         self.format = format;
         self
     }
 
     /// Sets the maximum block size, in **frames** per channel.
+    #[must_use]
     pub fn buffer_size(mut self, n: usize) -> Self {
         self.buffer_size = n;
         self
     }
 
     /// Sets how long to wait on a subprocess reply before erroring.
+    #[must_use]
     pub fn timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self

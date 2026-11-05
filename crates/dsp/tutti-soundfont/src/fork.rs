@@ -52,6 +52,7 @@ impl SoundFontUnit {
     ///
     /// A unit inserted into a graph registers its own fork source, so a graph
     /// fork needs no call to this; it is for hosts building a copy by hand.
+    #[must_use]
     pub fn fork_instance(&self) -> SoundFontUnit {
         let mut fork = self.clone();
         fork.release_all();

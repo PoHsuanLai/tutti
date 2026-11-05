@@ -25,6 +25,7 @@ impl MeteringContext {
     ///
     /// Call from the control thread before handing this to the callback — this
     /// is the only allocation on the metering path.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             left: vec![0.0; MAX_FRAMES].into_boxed_slice(),

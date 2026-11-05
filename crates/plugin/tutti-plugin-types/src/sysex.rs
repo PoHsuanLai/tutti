@@ -45,6 +45,7 @@ pub fn unframed(message: &[u8]) -> &[u8] {
 /// (`MusicDevice.h`: "including the F0 and F7 start and termination bytes").
 /// [`SysExAssembler`] hands over messages in this form; the AU host checks
 /// what it sends with this.
+#[must_use]
 pub fn is_framed(message: &[u8]) -> bool {
     message.len() >= 2 && message[0] == 0xF0 && message[message.len() - 1] == 0xF7
 }
@@ -104,6 +105,7 @@ impl SysExRef {
         clippy::cast_possible_truncation,
         reason = "a buffer reserved for SysEx messages is far below u32::MAX bytes"
     )]
+    #[must_use]
     pub fn new(start: usize, len: usize) -> Self {
         Self {
             start: start as u32,
@@ -112,17 +114,20 @@ impl SysExRef {
     }
 
     /// The message's byte range in [`SysExAssembler::bytes`].
+    #[must_use]
     pub fn range(self) -> std::ops::Range<usize> {
         let start = self.start as usize;
         start..start + self.len as usize
     }
 
     /// The message's length in bytes, delimiters included.
+    #[must_use]
     pub fn len(self) -> usize {
         self.len as usize
     }
 
     /// Always false: a complete message holds at least its two delimiters.
+    #[must_use]
     pub fn is_empty(self) -> bool {
         self.len == 0
     }
@@ -235,6 +240,7 @@ impl SysExAssembler {
 
     /// An assembler for messages of up to `max_message` bytes, delimiters
     /// included. Off the audio thread: it reserves the buffer (none for 0).
+    #[must_use]
     pub fn with_capacity(max_message: usize) -> Self {
         let room = if max_message == 0 {
             0

@@ -51,6 +51,7 @@ pub struct TimedHarmony {
 
 impl TimedHarmony {
     /// `harmony` from `beat`.
+    #[must_use]
     pub const fn new(beat: Beat, harmony: Harmony) -> Self {
         Self { beat, harmony }
     }
@@ -202,11 +203,13 @@ impl HarmonyControls {
     }
 
     /// How many changes the lanes hold.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.shared.current().changes.len()
     }
 
     /// Whether the lanes hold no change.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

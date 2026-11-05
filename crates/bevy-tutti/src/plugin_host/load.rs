@@ -296,6 +296,10 @@ pub fn plugin_load_start(
 /// this system and stalls the frame it lands in; two landing together
 /// would stall it twice over. The second waits, its task unpolled, for the
 /// next frame. Out-of-process loads, opened on the pool, are all promoted.
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "`add_plugin` hosts the node it returns, so looking it up cannot miss"
+)]
 pub fn plugin_load_promote(
     _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,

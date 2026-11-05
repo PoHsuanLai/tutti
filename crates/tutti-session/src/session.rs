@@ -107,6 +107,7 @@ impl PhaseCx<'_> {
 #[cfg(feature = "modulation")]
 impl<'a> PhaseCx<'a> {
     /// The same context with the host's declarations.
+    #[must_use]
     pub fn with_mods(mut self, mods: ModInput<'a>) -> Self {
         self.mods = Some(mods);
         self

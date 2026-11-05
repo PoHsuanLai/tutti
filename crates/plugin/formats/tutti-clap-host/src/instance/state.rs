@@ -147,6 +147,7 @@ impl ClapLoaded {
     }
 
     /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
+    #[must_use]
     pub fn supports_state_context(&self) -> bool {
         !self.extensions.state.context.is_null()
     }
@@ -158,6 +159,7 @@ impl ClapLoaded {
     /// separate factory-level extension this host does not bind, so a plugin
     /// answering `true` here can still only be pointed at a path the host
     /// already knows.
+    #[must_use]
     pub fn supports_preset_load(&self) -> bool {
         !self.extensions.state.preset_load.is_null()
     }

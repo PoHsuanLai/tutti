@@ -128,6 +128,7 @@ impl Work {
     };
 
     /// The estimate for a block of `frames`.
+    #[must_use]
     pub const fn at(self, frames: Samples) -> u64 {
         self.fixed
             .saturating_add(self.per_frame.saturating_mul(frames.0 as u64))

@@ -88,12 +88,14 @@ impl Frame {
 
     /// Wraps a raw position already denominated in frames.
     #[inline]
+    #[must_use]
     pub const fn new(v: u64) -> Self {
         Self(v)
     }
 
     /// Returns the raw position.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u64 {
         self.0
     }

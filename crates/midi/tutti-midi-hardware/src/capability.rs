@@ -31,11 +31,13 @@ pub struct EndpointId {
 
 impl EndpointId {
     /// Mint an id from a backend's own stable identifier.
+    #[must_use]
     pub fn from_raw(raw: u64) -> Self {
         Self { raw }
     }
 
     /// The backend's identifier. Meaningful only to the backend that minted it.
+    #[must_use]
     pub fn raw(self) -> u64 {
         self.raw
     }
@@ -99,6 +101,7 @@ impl UmpCapability {
     /// already does for the protocol-level equivalent).
     ///
     /// [`EndpointNegotiator`]: tutti_midi_runtime::EndpointNegotiator
+    #[must_use]
     pub fn with_function_blocks(mut self, blocks: Vec<FunctionBlock>) -> Self {
         self.function_blocks = blocks;
         self

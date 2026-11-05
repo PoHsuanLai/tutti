@@ -82,6 +82,7 @@ impl ChunkSize {
     /// sets the input frames per call and, with the sub-chunk count, how many
     /// of the rate pair's repeating units one FFT block holds; the block
     /// sizes are those units, not powers of two.
+    #[must_use]
     pub const fn new(chunk: Samples, sub_chunks: usize) -> Option<Self> {
         if !chunk.0.is_power_of_two()
             || chunk.0 < Self::MIN.chunk.0
@@ -96,11 +97,13 @@ impl ChunkSize {
     }
 
     /// Input frames per FFT chunk.
+    #[must_use]
     pub const fn chunk(self) -> Samples {
         self.chunk
     }
 
     /// Sub-chunks each chunk is split into.
+    #[must_use]
     pub const fn sub_chunks(self) -> usize {
         self.sub_chunks
     }

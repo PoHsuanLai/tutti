@@ -35,6 +35,10 @@ pub trait ForkSource: Send {
     /// unit from outside the process — a hosted plugin, loaded afresh and
     /// handed the live instance's state — can, and must say so rather than
     /// fall back to anything that shares the live unit.
+    ///
+    /// # Errors
+    ///
+    /// [`ForkCause`] when the copy cannot be built.
     fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause>;
 
     /// The control-thread half of a fork ([`Editor::fork_gather`]): read
@@ -56,6 +60,11 @@ pub trait ForkSource: Send {
     /// launch).
     ///
     /// An `Err` fails the fork as [`ForkError::Source`], naming the key.
+    ///
+    /// # Errors
+    ///
+    /// [`ForkCause`] when the build cannot start; the default returns what
+    /// [`fork`](Self::fork) does.
     fn gather(&self, mode: ForkMode) -> Result<ForkBuild, ForkCause> {
         self.fork(mode).map(ForkBuild::pinned)
     }
@@ -218,6 +227,7 @@ pub struct ForkRemains {
 
 impl ForkRemains {
     /// Whether it holds nothing at all.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.units.is_empty() && self.graph.is_none()
     }
@@ -343,11 +353,13 @@ pub struct Forked {
 
 impl Forked {
     /// A unit with no health probe.
+    #[must_use]
     pub fn new(node: Box<dyn Node>) -> Self {
         Self { node, health: None }
     }
 
     /// Attaches `health`.
+    #[must_use]
     pub fn with_health(mut self, health: Arc<dyn ForkHealth>) -> Self {
         self.health = Some(health);
         self

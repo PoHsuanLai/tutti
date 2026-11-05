@@ -398,6 +398,7 @@ fn refresh(key: NodeKey, shape: Shape, spec: &mut GraphSpec, shapes: &mut Shapes
 impl Editor {
     /// An empty graph, and the executor that will run it, both for
     /// `prepare`. The only way to build an [`Executor`].
+    #[must_use]
     pub fn new(prepare: Prepare) -> (Self, Executor) {
         Self::with_event_capacity(prepare, DEFAULT_EVENT_CAPACITY)
     }
@@ -407,6 +408,7 @@ impl Editor {
     /// ([`Shape::event_capacity`](crate::Shape::event_capacity)) — its
     /// writer's limit, and the rate the delay FIFOs fed by it are sized
     /// from. A declared capacity overrides it for that node's ports.
+    #[must_use]
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
@@ -1356,6 +1358,10 @@ impl Editor {
     /// unit to place), [`CommitError::Backpressure`],
     /// [`CommitError::Repreparing`], [`CommitError::Poisoned`] or a
     /// [`Limits`] refusal ([`CommitError::TooManyOutputs`]).
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "every pending unit the delta needs was checked present just before it is taken"
+    )]
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;

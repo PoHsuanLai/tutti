@@ -47,6 +47,7 @@ pub struct MidiOutNode {
 
 impl MidiOutNode {
     /// A node with an empty ring of [`MIDI_OUT_CAPACITY`] events.
+    #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = MidiMailbox::with_capacity(MIDI_OUT_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));

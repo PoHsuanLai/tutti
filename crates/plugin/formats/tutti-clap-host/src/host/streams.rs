@@ -39,6 +39,7 @@ impl OutputStream {
     }
 
     /// Consumes the stream and return the accumulated bytes.
+    #[must_use]
     pub fn into_data(self) -> Vec<u8> {
         self.buffer
     }

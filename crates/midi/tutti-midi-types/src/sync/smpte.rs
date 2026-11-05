@@ -43,6 +43,7 @@ impl SmpteFrameRate {
     /// on the grounds that a malformed byte from a device should not kill the
     /// transport — but a caller constructing this value itself has a bug, which
     /// is what the assert is there to catch.
+    #[must_use]
     pub fn from_u8(val: u8) -> Self {
         debug_assert!(val <= 4, "invalid SmpteFrameRate discriminant: {val}");
         match val {
@@ -102,6 +103,7 @@ impl SmpteFrameRate {
     /// True only for [`Fps2997Df`](Self::Fps2997Df). A renderer that ignores this
     /// produces timecode that is correct frame-by-frame and wrong by seconds an
     /// hour in.
+    #[must_use]
     pub fn is_drop_frame(&self) -> bool {
         matches!(self, Self::Fps2997Df)
     }

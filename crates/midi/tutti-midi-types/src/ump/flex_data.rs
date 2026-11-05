@@ -379,6 +379,7 @@ pub struct FlexTextReassembler {
 
 impl FlexTextReassembler {
     /// A reassembler with no run in flight.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -407,6 +408,7 @@ impl FlexTextReassembler {
     }
 
     /// Whether a multi-packet run is currently in flight.
+    #[must_use]
     pub fn is_in_flight(&self) -> bool {
         !self.words.is_empty()
     }

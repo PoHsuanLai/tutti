@@ -80,12 +80,14 @@ impl StereoReading {
     /// Whether the correlation is negative enough that a mono fold would
     /// cancel audibly.
     #[inline]
+    #[must_use]
     pub fn has_phase_issues(&self) -> bool {
         self.correlation.has_phase_issues()
     }
 
     /// Whether the channels are near-identical (correlation above 0.95).
     #[inline]
+    #[must_use]
     pub fn is_mono(&self) -> bool {
         self.correlation > Correlation(0.95)
     }
@@ -172,6 +174,7 @@ impl Ballistics {
     }
 
     /// 10 ms attack, 100 ms release — standard meter ballistics.
+    #[must_use]
     pub fn standard() -> Self {
         Self::new(Seconds(0.01), Seconds(0.1))
     }
@@ -214,6 +217,7 @@ pub struct BallisticsState {
 
 impl BallisticsState {
     /// A state seeded with a default (silent, uncorrelated) reading.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

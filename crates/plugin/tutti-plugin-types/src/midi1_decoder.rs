@@ -62,6 +62,7 @@ impl Default for Midi1Splitter {
 
 impl Midi1Splitter {
     /// A splitter. Off the audio thread: it reserves the SysEx buffer.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: Vec::with_capacity(SYSEX_OUT_CAPACITY),
@@ -233,6 +234,7 @@ impl Default for Midi1Decoder {
 
 impl Midi1Decoder {
     /// A decoder. Off the audio thread: it reserves the SysEx buffer.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             splitter: Midi1Splitter::new(),

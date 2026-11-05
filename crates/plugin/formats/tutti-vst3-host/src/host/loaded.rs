@@ -171,6 +171,7 @@ pub struct RestartOutcome {
 impl RestartOutcome {
     /// Returns `true` if nothing actionable was reported, so the caller has
     /// nothing to refresh.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -1302,6 +1303,7 @@ impl Vst3Loaded {
 
     /// Whether VST3 MIDI learn is currently armed. See
     /// [`arm_midi_learn`](Self::arm_midi_learn).
+    #[must_use]
     pub fn is_midi_learn_armed(&self) -> bool {
         self.midi_learn.is_armed()
     }
@@ -1532,6 +1534,7 @@ impl Vst3Loaded {
     /// once, at scan time.
     ///
     /// A plugin with no controller at all answers `false`.
+    #[must_use]
     pub fn has_editor(&self) -> bool {
         let Some(ctrl) = self.interfaces.controller.as_ref() else {
             return false;

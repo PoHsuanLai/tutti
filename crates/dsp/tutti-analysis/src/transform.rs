@@ -33,6 +33,7 @@ pub struct RawMagnitudes(Grid<f32>);
 
 impl RawMagnitudes {
     /// Wraps a `frames x bins` grid of linear magnitudes.
+    #[must_use]
     pub fn new(grid: Grid<f32>) -> Self {
         Self(grid)
     }
@@ -45,6 +46,7 @@ impl RawMagnitudes {
 
     /// Moves the grid out, dropping the "raw" marker with it.
     #[inline]
+    #[must_use]
     pub fn into_grid(self) -> Grid<f32> {
         self.0
     }
@@ -74,9 +76,7 @@ impl RawMagnitudes {
             self.0.as_slice().to_vec()
         };
         NormalizedMagnitudes {
-            // Same shape by construction, so the invariant cannot fail.
-            values: Grid::new(values, self.0.frames(), self.0.bins())
-                .expect("normalize preserves shape"),
+            values: self.0.same_shape(values),
             peak,
         }
     }
@@ -99,6 +99,7 @@ impl NormalizedMagnitudes {
 
     /// Moves the `0..1` grid out, dropping the peak that scaled it.
     #[inline]
+    #[must_use]
     pub fn into_grid(self) -> Grid<f32> {
         self.values
     }
@@ -174,6 +175,7 @@ impl Stft {
 
     /// Whether the transform produced no frames at all.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bins.is_empty()
     }
@@ -208,6 +210,7 @@ impl Stft {
     }
 
     /// Converts to magnitude/phase. Lossless.
+    #[must_use]
     pub fn to_polar(&self) -> StftPolar {
         let (mut magnitudes, mut phases) = (
             Vec::with_capacity(self.bins.as_slice().len()),
@@ -217,24 +220,19 @@ impl Stft {
             magnitudes.push(bin.norm());
             phases.push(bin.arg());
         }
-        let (frames, bins) = (self.bins.frames(), self.bins.bins());
         StftPolar {
-            magnitudes: RawMagnitudes(
-                Grid::new(magnitudes, frames, bins).expect("shape preserved"),
-            ),
-            phases: Grid::new(phases, frames, bins).expect("shape preserved"),
+            magnitudes: RawMagnitudes(self.bins.same_shape(magnitudes)),
+            phases: self.bins.same_shape(phases),
             geometry: self.geometry,
         }
     }
 
     /// Discards phase. One-way, and the return type says so.
+    #[must_use]
     pub fn to_magnitude(&self) -> StftMagnitude {
         let magnitudes: Vec<f32> = self.bins.as_slice().iter().map(|b| b.norm()).collect();
         StftMagnitude {
-            magnitudes: RawMagnitudes(
-                Grid::new(magnitudes, self.bins.frames(), self.bins.bins())
-                    .expect("shape preserved"),
-            ),
+            magnitudes: RawMagnitudes(self.bins.same_shape(magnitudes)),
             geometry: self.geometry,
         }
     }
@@ -266,7 +264,7 @@ impl Stft {
             .map(|(b, m)| b * m)
             .collect();
         let masked = Stft {
-            bins: Grid::new(masked, self.bins.frames(), self.bins.bins()).expect("shape preserved"),
+            bins: self.bins.same_shape(masked),
             geometry: self.geometry,
         };
         Ok(istft(&masked, fft))
@@ -294,6 +292,7 @@ impl StftPolar {
     }
 
     /// Back to complex bins. Lossless.
+    #[must_use]
     pub fn to_rectangular(&self) -> Stft {
         let bins: Vec<Complex> = self
             .magnitudes
@@ -304,14 +303,14 @@ impl StftPolar {
             .map(|(&m, &p)| Complex::from_polar(m, p))
             .collect();
         Stft {
-            bins: Grid::new(bins, self.phases.frames(), self.phases.bins())
-                .expect("shape preserved"),
+            bins: self.phases.same_shape(bins),
             geometry: self.geometry,
         }
     }
 
     /// Moves both grids out without cloning — consumers copy these into their
     /// own asset types.
+    #[must_use]
     pub fn into_grids(self) -> (Grid<f32>, Grid<f32>) {
         (self.magnitudes.into_grid(), self.phases)
     }
@@ -353,6 +352,7 @@ impl StftMagnitude {
 
     /// Whether the transform produced no frames at all.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.magnitudes.grid().is_empty()
     }
@@ -448,12 +448,14 @@ impl StftRequest {
     /// refuses but [`resolve`](Self::resolve) accepts — Blackman needs 8x
     /// overlap where Hann needs 4x, so a grid that inverted before may not
     /// after. That refusal is the point.
+    #[must_use]
     pub fn with_window(mut self, window_fn: CosineWindow) -> Self {
         self.window_fn = window_fn;
         self
     }
 
     /// Decimates to roughly `frames` frames — a display transform.
+    #[must_use]
     pub fn decimated_to(mut self, frames: FrameCount, min_hop: impl Into<Samples>) -> Self {
         self.hop = HopPolicy::TargetFrames {
             frames,
@@ -464,6 +466,7 @@ impl StftRequest {
 
     /// Restricts the request to the half-open span `[start, end)`, clamped to
     /// the buffer at resolve time.
+    #[must_use]
     pub fn over(mut self, start: impl Into<Samples>, end: impl Into<Samples>) -> Self {
         self.range = SampleRange::Span {
             start: start.into(),
@@ -514,6 +517,11 @@ impl StftRequest {
 /// Computes the complex STFT.
 ///
 /// The geometry must be COLA-compliant, because this result can be inverted.
+///
+/// # Errors
+///
+/// As [`StftRequest::resolve_cola`]: an invalid geometry, or one that is not
+/// COLA-compliant.
 pub fn stft(samples: &[f32], request: StftRequest, fft: &mut FftScratch) -> Result<Stft> {
     let (start, end) = request.range.resolve(samples.len());
     let slice = &samples[start..end];
@@ -522,6 +530,10 @@ pub fn stft(samples: &[f32], request: StftRequest, fft: &mut FftScratch) -> Resu
 }
 
 /// Computes the STFT in magnitude/phase form. Also invertible.
+///
+/// # Errors
+///
+/// As [`stft`].
 pub fn stft_polar(
     samples: &[f32],
     request: StftRequest,
@@ -535,6 +547,10 @@ pub fn stft_polar(
 /// Accepts any overlapping geometry, including decimated hops that break COLA,
 /// because the result cannot be inverted anyway. That is the whole reason this
 /// returns a different type.
+///
+/// # Errors
+///
+/// As [`StftRequest::resolve`]: an invalid geometry.
 pub fn stft_magnitude(
     samples: &[f32],
     request: StftRequest,

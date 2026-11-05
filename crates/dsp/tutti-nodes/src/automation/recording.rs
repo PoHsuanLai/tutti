@@ -51,6 +51,7 @@ impl RecordMode {
     /// Whether a take begins on [`touch`](Recorder::touch) rather than on the
     /// first [`record`](Recorder::record).
     #[inline]
+    #[must_use]
     pub fn starts_on_touch(self) -> bool {
         matches!(self, Self::Touch | Self::Latch)
     }
@@ -58,6 +59,7 @@ impl RecordMode {
     /// Whether [`release`](Recorder::release) ends the take outright (`Touch`)
     /// rather than holding the released value (`Latch`).
     #[inline]
+    #[must_use]
     pub fn stops_on_release(self) -> bool {
         matches!(self, Self::Touch)
     }
@@ -129,11 +131,13 @@ pub struct Recorder {
 
 impl Recorder {
     /// A recorder over an empty envelope clamped to `[min, max]`.
+    #[must_use]
     pub fn new(mode: RecordMode, min: f32, max: f32) -> Self {
         Self::with_config(mode, min, max, RecordingConfig::default())
     }
 
     /// [`new`](Self::new) with an explicit capture policy.
+    #[must_use]
     pub fn with_config(mode: RecordMode, min: f32, max: f32, config: RecordingConfig) -> Self {
         Self {
             // `0.0` is the envelope's *target label*, not a value — the label is
@@ -192,6 +196,7 @@ impl Recorder {
     }
 
     /// Whether a take is currently open (capturing, or latch-held).
+    #[must_use]
     pub fn is_taking(&self) -> bool {
         self.take.is_some()
     }
@@ -265,6 +270,7 @@ impl Recorder {
     /// Takes `self`: the take is over, so consuming the recorder is what the
     /// host's map does anyway (remove the entry, keep the envelope). This is the
     /// only way to get the envelope by value.
+    #[must_use]
     pub fn finish(mut self) -> AutomationEnvelope<f32> {
         if self.config.auto_simplify {
             self.envelope.simplify(self.config.simplify_tolerance);

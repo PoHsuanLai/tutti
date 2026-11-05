@@ -63,6 +63,7 @@ impl ShapeKind {
     /// Memoryless and total: every curve maps every finite `x` to a finite
     /// output, and none keeps state between calls.
     #[inline]
+    #[must_use]
     pub fn apply(self, x: f32, drive: Drive) -> f32 {
         Shaper::build(self, drive.get().max(0.0)).shape(x)
     }

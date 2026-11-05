@@ -44,14 +44,19 @@ pub trait Real:
     /// This value as `f64`, widened or kept.
     fn to_f64(self) -> f64;
     /// Absolute value.
+    #[must_use]
     fn abs(self) -> Self;
     /// The larger of the two (the other when one is NaN, as `f32::max`).
+    #[must_use]
     fn max(self, other: Self) -> Self;
     /// The smaller of the two (the other when one is NaN, as `f32::min`).
+    #[must_use]
     fn min(self, other: Self) -> Self;
     /// Tangent.
+    #[must_use]
     fn tan(self) -> Self;
     /// Hyperbolic tangent.
+    #[must_use]
     fn tanh(self) -> Self;
 }
 

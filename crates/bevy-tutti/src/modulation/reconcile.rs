@@ -405,7 +405,9 @@ pub fn reconcile(
     if stale {
         *kept.collected = Some(declared.collect());
     }
-    let collected = kept.collected.as_ref().expect("collected");
+    let Some(collected) = kept.collected.as_ref() else {
+        return;
+    };
     run(
         Phase::Modulation,
         &declared,

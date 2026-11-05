@@ -42,6 +42,7 @@ impl ParamMapping {
     /// Creates a mapping entry for the given parameter.
     /// Set `has_mapping = false` to tell the plugin the parameter is no
     /// longer mapped to any physical control.
+    #[must_use]
     pub fn new(param_id: u32, has_mapping: bool) -> Self {
         Self {
             param_id,
@@ -53,18 +54,21 @@ impl ParamMapping {
     }
 
     /// Color hint for the mapped control's LED/ring (builder style).
+    #[must_use]
     pub fn color(mut self, color: Color) -> Self {
         self.color = Some(color);
         self
     }
 
     /// Short label for the mapped control (builder style).
+    #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
     /// Longer description of the mapping (builder style).
+    #[must_use]
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self

@@ -37,6 +37,7 @@ impl PolySynth {
     ///
     /// A synth inserted into a graph registers this as its fork, so a graph
     /// fork needs no call to it; it is for hosts building a copy by hand.
+    #[must_use]
     pub fn fork_instance(&self) -> PolySynth {
         let mut fork = self.clone();
         // Control cells: detached at their current values, so the fork

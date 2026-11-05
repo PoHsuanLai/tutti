@@ -88,6 +88,7 @@ impl Default for Sysex8PacketReassembler {
 impl Sysex8PacketReassembler {
     /// A reassembler with no in-flight messages, bounded at
     /// [`DEFAULT_MAX_SYSEX8_BYTES`].
+    #[must_use]
     pub fn new() -> Self {
         Self::with_max_bytes(DEFAULT_MAX_SYSEX8_BYTES)
     }
@@ -97,6 +98,7 @@ impl Sysex8PacketReassembler {
     /// As with SysEx7, an unterminated `START` + endless `CONTINUE` would grow
     /// the buffer until the host is out of memory. A run past the cap is dropped
     /// and reported as [`Sysex8Abort::TooLong`].
+    #[must_use]
     pub fn with_max_bytes(max_bytes: usize) -> Self {
         Self {
             in_flight: Vec::new(),

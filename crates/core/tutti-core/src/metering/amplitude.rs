@@ -41,6 +41,7 @@ impl Default for AtomicAmplitude {
 
 impl AtomicAmplitude {
     /// Creates a silent cell — all four levels at zero.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             peak_left: AtomicF32::new(0.0),
@@ -128,6 +129,7 @@ pub struct MasterMeter {
 impl MasterMeter {
     /// Creates a silent, **disabled** meter. Nothing is measured until
     /// [`enable`](Self::enable) is called.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -145,6 +147,7 @@ impl MasterMeter {
     }
 
     /// Whether the audio callback is filling this meter.
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }

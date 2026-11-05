@@ -99,6 +99,7 @@ pub struct EventSource {
 
 impl EventSource {
     /// Names `node`'s event output `port`.
+    #[must_use]
     pub const fn new(node: AudioNode, port: u16) -> Self {
         Self { node, port }
     }
@@ -617,6 +618,12 @@ impl Graph {
     /// swaps any node: crossfading when the running node's shape fits the
     /// bound plugin's, else a plain swap at the same key. Refused, handing
     /// `client` back unbound, while a re-prepare is between its two commits.
+    ///
+    /// # Errors
+    ///
+    /// As [`replace`](Self::replace): [`ReplaceRefused::Busy`] while the graph
+    /// re-prepares, with `client` handed back unbound;
+    /// [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in it.
     #[cfg(feature = "plugin")]
     pub fn replace_plugin(
         &mut self,
@@ -752,6 +759,12 @@ impl Graph {
     /// record is dropped, so its health, snapshots and render mode stop
     /// (a replacement plugin goes in with
     /// `Graph::replace_plugin`, which carries the record).
+    ///
+    /// # Errors
+    ///
+    /// [`ReplaceRefused::Busy`] while the graph re-prepares, handing `incoming`
+    /// back; [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in
+    /// it, dropping `incoming`.
     pub fn replace<N: IntoNode>(
         &mut self,
         node: AudioNode,

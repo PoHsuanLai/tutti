@@ -162,6 +162,7 @@ pub struct GraphBuilder {
 impl GraphBuilder {
     /// An empty graph with `inputs` global input channels and `outputs`
     /// global output channels, every output silent until wired.
+    #[must_use]
     pub fn new(inputs: ChannelLayout, outputs: ChannelLayout) -> Self {
         let mut spec = GraphSpec::default();
         spec.topology.inputs = inputs;

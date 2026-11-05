@@ -148,6 +148,7 @@ impl TimelineSegment {
     /// Creates a segment at `origin_beat` from `origin_frame`, at `tempo` and
     /// `sample_rate`.
     #[inline]
+    #[must_use]
     pub const fn new(
         origin_frame: Frame,
         origin_beat: Beat,

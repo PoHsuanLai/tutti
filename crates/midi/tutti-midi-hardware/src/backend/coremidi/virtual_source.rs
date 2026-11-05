@@ -35,6 +35,7 @@ const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;
 /// every event through `MidiEvent::to_midi1_bytes`), this endpoint carries UMP
 /// words end to end, so JR Timestamps and other MIDI-2-only messages survive to
 /// the wire. Owns its client + endpoint; both are disposed on drop.
+#[must_use = "dropping it removes the virtual source"]
 pub struct UmpVirtualSource {
     client: MIDIClientRef,
     source: MIDIEndpointRef,

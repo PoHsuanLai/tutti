@@ -526,6 +526,7 @@ struct NotifyState {
 /// # }
 /// # }
 /// ```
+#[must_use = "dropping it unregisters the callback"]
 pub struct RenderNotify {
     unit: AudioUnit,
     /// The `ref_con` the AU holds. An [`Arc`] rather than a [`Box`] so the

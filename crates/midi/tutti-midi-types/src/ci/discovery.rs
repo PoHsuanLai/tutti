@@ -100,6 +100,7 @@ impl DiscoveryData {
     /// A body with the Message-Version-2 fields at their neutral values: path
     /// id 0 and [`NO_FUNCTION_BLOCK`]. Use the field setters for a device that
     /// has several MIDI Out connections or sits behind a Function Block.
+    #[must_use]
     pub fn new(
         manufacturer: [u8; 3],
         family: u16,
@@ -223,6 +224,7 @@ impl Nak {
     /// Prefer a precise code over [`Self::STATUS_NAK`]: Table 16 splits
     /// "Do Not Retry" (0x00-0x1F) from "Retry is recommended" (0x40-0x5F), and a
     /// generic 0x00 tells the peer only that something went wrong.
+    #[must_use]
     pub fn new(nak_sub_id2: u8, status_code: u8) -> Self {
         Self {
             nak_sub_id2,
@@ -234,12 +236,14 @@ impl Nak {
     }
 
     /// Attach a human-readable reason (Table 15's Message Text).
+    #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = message.into();
         self
     }
 
     /// Attach the 5-byte per-classification detail block.
+    #[must_use]
     pub fn with_details(mut self, details: [u8; 5]) -> Self {
         self.details = details;
         self

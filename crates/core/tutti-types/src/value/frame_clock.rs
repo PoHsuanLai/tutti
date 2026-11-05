@@ -68,6 +68,7 @@ impl LoopRange {
 
     /// Returns the length in beats; always positive, by construction.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> BeatDuration {
         self.end - self.start
     }
@@ -76,6 +77,7 @@ impl LoopRange {
     ///
     /// The end beat is *not* contained: it is the first beat of the next pass.
     #[inline]
+    #[must_use]
     pub fn contains(&self, beat: Beat) -> bool {
         beat >= self.start && beat < self.end
     }
@@ -162,6 +164,7 @@ pub struct FrameClock {
 impl FrameClock {
     /// Creates a clock at `beat`, moving at `tempo`, counting frames at
     /// `sample_rate`.
+    #[must_use]
     pub fn new(beat: Beat, tempo: Bpm, sample_rate: SampleRate) -> Self {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, beat, tempo, sample_rate),
@@ -174,6 +177,7 @@ impl FrameClock {
     ///
     /// A host's clock rebuilt from its own snapshot (`origin()`) continues
     /// with the same arithmetic, so it lands on the same bits the host does.
+    #[must_use]
     pub fn from_origin(origin: SegmentOrigin, tempo: Bpm) -> Self {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, origin.beat, tempo, origin.sample_rate),

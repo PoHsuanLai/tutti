@@ -79,11 +79,13 @@ impl Normalized {
     /// NaN maps to `0.0` rather than clamping, because `f64::clamp` returns NaN
     /// for a NaN input. This value reaches a live plugin parameter, and a NaN in
     /// a filter coefficient does not stay confined to the parameter it entered.
+    #[must_use]
     pub fn new(v: f64) -> Self {
         Self(clamp_unit(v))
     }
 
     /// Returns the underlying `0..=1` value.
+    #[must_use]
     pub const fn get(self) -> f64 {
         self.0
     }
@@ -135,6 +137,7 @@ impl ParamRange {
     }
 
     /// Returns the default value, in whichever domain this range speaks.
+    #[must_use]
     pub fn default_value(&self) -> f64 {
         match *self {
             Self::Normalized { default } | Self::Plain { default, .. } => default,
@@ -167,6 +170,7 @@ impl ParamRange {
     /// Only NaN needs the check. `clamp` handles ±∞ correctly — `+∞` is "as high
     /// as this parameter goes" — so an infinite *value* lands on an endpoint. An
     /// infinite *bound* is rejected, because there is no endpoint to land on.
+    #[must_use]
     pub fn to_plain(&self, normalized: f64) -> f64 {
         let n = clamp_unit(normalized);
         match *self {
@@ -189,6 +193,7 @@ impl ParamRange {
     ///
     /// A degenerate or non-finite range yields `0.0`, as does a NaN input — see
     /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped.
+    #[must_use]
     pub fn to_normalized(&self, plain: f64) -> f64 {
         match *self {
             Self::Normalized { .. } => clamp_unit(plain),
@@ -248,6 +253,7 @@ impl ParamSteps {
     /// A span below 1 has no positions to step between, so it is
     /// [`Continuous`](Self::Continuous) rather than an invented count; a span of
     /// exactly 1 is two positions, which is a [`Toggle`](Self::Toggle).
+    #[must_use]
     pub fn from_span(span: f64) -> Self {
         if !span.is_finite() || span < 1.0 {
             Self::Continuous
@@ -375,12 +381,14 @@ impl ParamId {
     /// let id: ParamId = 0x4000_0001u32.into();
     /// assert_eq!(id.get(), 0x4000_0001);
     /// ```
+    #[must_use]
     pub const fn new(id: u32) -> Self {
         Self(id)
     }
 
     /// Returns the underlying number, for handing back to the format that
     /// issued it.
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -493,6 +501,7 @@ impl ParamAddress {
     /// assert_eq!(index.opaque(), None);
     /// assert_eq!(index.index(), Some(3));
     /// ```
+    #[must_use]
     pub const fn opaque(self) -> Option<ParamId> {
         match self {
             Self::Opaque(id) => Some(id),
@@ -501,6 +510,7 @@ impl ParamAddress {
     }
 
     /// Returns the dense index, or `None` if this is an opaque handle.
+    #[must_use]
     pub const fn index(self) -> Option<i32> {
         match self {
             Self::Index(i) => Some(i),
@@ -614,12 +624,14 @@ impl ParameterInfo {
     }
 
     /// Sets the group this parameter belongs to.
+    #[must_use]
     pub fn with_group(mut self, group: impl Into<String>) -> Self {
         self.group = group.into();
         self
     }
 
     /// Sets a declared plain range, in the unit [`unit`](Self::unit) names.
+    #[must_use]
     pub fn with_plain_range(mut self, min: f64, max: f64, default: f64) -> Self {
         self.range = ParamRange::Plain { min, max, default };
         self
@@ -627,12 +639,14 @@ impl ParameterInfo {
 
     /// Sets a normalized `0..=1` range with the given default, for a parameter
     /// that declared no plain range.
+    #[must_use]
     pub fn with_normalized_default(mut self, default: f64) -> Self {
         self.range = ParamRange::Normalized { default };
         self
     }
 
     /// Sets the step information.
+    #[must_use]
     pub fn with_steps(mut self, steps: ParamSteps) -> Self {
         self.steps = steps;
         self
@@ -642,6 +656,7 @@ impl ParameterInfo {
     ///
     /// Takes both together so a format cannot set a bit it never reported, nor
     /// report a bit it left unset.
+    #[must_use]
     pub fn with_flags(mut self, known: ParamFlags, reported: ParamFlags) -> Self {
         self.known = known;
         self.flags = reported & known;
@@ -659,12 +674,14 @@ impl ParameterInfo {
 
     /// Maps a normalized `0..=1` value onto this parameter's domain.
     /// See [`ParamRange::to_plain`].
+    #[must_use]
     pub fn to_plain(&self, normalized: f64) -> f64 {
         self.range.to_plain(normalized)
     }
 
     /// Maps a value in this parameter's domain onto normalized `0..=1`.
     /// See [`ParamRange::to_normalized`].
+    #[must_use]
     pub fn to_normalized(&self, plain: f64) -> f64 {
         self.range.to_normalized(plain)
     }
@@ -684,6 +701,7 @@ impl ParameterInfo {
     /// Returns the default value, in whichever domain [`bounds`](Self::bounds)
     /// speaks: plain units when it returns `Some`, normalized `0..=1` when
     /// `None`.
+    #[must_use]
     pub fn default_value(&self) -> f64 {
         self.range.default_value()
     }

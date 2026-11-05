@@ -84,6 +84,7 @@ impl<U: Unit<Raw = f32>> Param<U> {
     /// Clones the `Arc`, so keep it off the audio path. Same as `clone`, but
     /// named so hot-path code visibly avoids it.
     #[inline]
+    #[must_use]
     pub fn handle(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -114,6 +115,7 @@ impl<U: Unit<Raw = f32>> Param<U> {
     ///
     /// Clones the `Arc`; do not call on the audio thread.
     #[inline]
+    #[must_use]
     pub fn as_atomic(&self) -> Arc<AtomicF32> {
         Arc::clone(&self.inner)
     }

@@ -281,6 +281,7 @@ impl InProcessVst2Controls {
     }
 
     /// Whether a meter is installed.
+    #[must_use]
     pub fn has_meter(&self) -> bool {
         self.meter.has_meter()
     }

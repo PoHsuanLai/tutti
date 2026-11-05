@@ -176,6 +176,7 @@ impl Compensation {
     }
 
     /// Returns whether no channel needs compensation at all.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.total.is_zero()
     }

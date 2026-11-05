@@ -2,16 +2,17 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, BusTopologies, ClapFeature, ContentScale, EditorPresence, EditorSize, Features,
-    LoadedPlugin, Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo,
-    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples,
-    WindowHandle,
+    BusChannels, ClapFeature, ContentScale, EditorPresence, EditorSize, Features, LoadedPlugin,
+    Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio,
+    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
+    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
 use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
+#[cfg(feature = "clap")]
+use tutti_plugin_types::Layout;
 
 /// Build the catalog descriptor from CLAP factory info, carrying its feature
 /// tags verbatim as the native class.
@@ -247,33 +248,23 @@ pub struct ClapChanges {
     pub param_titles: bool,
 }
 
-/// What the plugin declares on its audio ports: the buses and, per port,
-/// what `clap.surround` says (`None` for a port the plugin will not answer
-/// for: no extension, or no `get_channel_map`).
+/// Reads what the plugin declares on its audio ports: the buses and, per
+/// port, what `clap.surround` says (`None` for a port the plugin will not
+/// answer for: no extension, or no `get_channel_map`).
 #[cfg(feature = "clap")]
-struct BusLayout {
-    inputs: BusChannels,
-    outputs: BusChannels,
-    input_topology: BusTopologies,
-    output_topology: BusTopologies,
-}
-
-#[cfg(feature = "clap")]
-impl BusLayout {
-    fn read(loaded: &ClapLoaded) -> Self {
-        let inputs = per_bus_channels(loaded, true);
-        let outputs = per_bus_channels(loaded, false);
-        let topology = |is_input: bool, count: usize| {
-            (0..count)
-                .map(|i| loaded.surround_topology(is_input, i as u32))
-                .collect()
-        };
-        Self {
-            input_topology: topology(true, inputs.len()),
-            output_topology: topology(false, outputs.len()),
-            inputs,
-            outputs,
-        }
+fn read_layout(loaded: &ClapLoaded) -> Layout {
+    let inputs = per_bus_channels(loaded, true);
+    let outputs = per_bus_channels(loaded, false);
+    let topology = |is_input: bool, count: usize| {
+        (0..count)
+            .map(|i| loaded.surround_topology(is_input, i as u32))
+            .collect()
+    };
+    Layout {
+        input_topology: topology(true, inputs.len()),
+        output_topology: topology(false, outputs.len()),
+        inputs,
+        outputs,
     }
 }
 
@@ -453,7 +444,7 @@ impl ClapInstance {
             ClapInner::F64(i) => i,
         };
 
-        let layout = BusLayout::read(active_loaded);
+        let layout = read_layout(active_loaded);
 
         let mut features = features;
         // The format actually activated, as VST3 reports it.
@@ -492,7 +483,7 @@ impl ClapInstance {
     /// it while deactivated, which a rate change does.
     #[cfg(feature = "clap")]
     fn note_layout_change(&mut self) {
-        let now = BusLayout::read(clap_dispatch!(self, i => i));
+        let now = read_layout(clap_dispatch!(self, i => i));
         let meta = &mut self.meta.loaded;
         if now.inputs != meta.inputs
             || now.outputs != meta.outputs

@@ -24,6 +24,9 @@ where the results go:
   (side, mid) points for a goniometer.
 - `cross_correlate` — FFT cross-correlation of two buffers at every lag.
 - `align` — GCC-PHAT delay between two takes: lag, sub-sample offset, confidence.
+- `estimate_tempo` / `track_beats` — tempo (BPM, confidence, octave alternatives) by
+  autocorrelation under a log-Gaussian prior, and beat positions by dynamic
+  programming (Ellis 2007); `_from_novelty` forms take your own detection curve.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 

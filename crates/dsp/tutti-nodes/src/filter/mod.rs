@@ -1,5 +1,7 @@
-//! Frequency-domain filters: state-variable, Moog ladder, and parametric EQ band.
+//! Frequency-domain filters: state-variable, Moog ladder, parametric EQ band,
+//! and the Linkwitz-Riley crossover.
 
+mod crossover;
 pub mod eq_band;
 pub mod ladder;
 mod real;
@@ -7,6 +9,7 @@ pub mod svf;
 
 pub use real::Real;
 
+pub use crossover::{Crossover, CrossoverControls, CrossoverError, CrossoverNode};
 pub use eq_band::{BandState, EqBandNode};
 pub use ladder::{LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType};
 pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType};

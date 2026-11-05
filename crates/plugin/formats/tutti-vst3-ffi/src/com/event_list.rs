@@ -111,7 +111,8 @@ struct Inner {
     sysex: SysExAssembler,
     /// The bytes of the SysEx messages a plugin `addEvent`ed to an output
     /// list, which a [`Vst3Event::SysEx`] there indexes. The plugin's pointer
-    /// is valid only for the call, and [`DataEvent`](crate::types::DataEvent)'s inline bytes hold 16,
+    /// is valid only for the call, and [`DataEvent`](crate::types::DataEvent)'s inline bytes
+    /// hold 16,
     /// so the message is copied here. Reserved on the output list only,
     /// never grown, and cleared with `events`.
     sysex_out: Vec<u8>,
@@ -521,7 +522,8 @@ impl IEventListTrait for EventList {
             let Some(event) = inner.events.get(index) else {
                 return kInvalidArgument;
             };
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+            // VST3 ABI.
             unsafe { *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes()) };
             kResultOk
         })

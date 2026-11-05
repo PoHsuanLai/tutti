@@ -244,7 +244,8 @@ impl IPlugInterfaceSupportTrait for HostApplication {
             if iid.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+            // VST3 ABI.
             let queried = unsafe { *iid };
             if SUPPORTED_IIDS.contains(&queried) {
                 kResultTrue
@@ -286,7 +287,8 @@ mod tests {
     fn does_not_claim_uninstalled_interfaces() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(&IDataExchangeHandler_iid),
@@ -300,7 +302,8 @@ mod tests {
     fn reports_installed_host_interfaces_supported() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(&IHostApplication_iid),
@@ -318,7 +321,8 @@ mod tests {
     fn reports_uninstalled_interfaces_unsupported() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         // The host does not install IMidiMapping (that's a plugin-side interface).
         unsafe {
             assert_eq!(
@@ -332,7 +336,8 @@ mod tests {
     fn null_iid_is_invalid_argument() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(std::ptr::null()),
@@ -358,7 +363,8 @@ mod tests {
         // `release` and subtract to read the count without moving it.
         let refcount = || {
             let iface = host.as_com_ref::<IHostApplication>().unwrap();
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             unsafe {
                 let after_add = IHostApplication::add_ref(iface.as_ptr());
                 IHostApplication::release(iface.as_ptr());
@@ -400,7 +406,8 @@ mod tests {
         let ptr = host.to_com_ptr::<IHostApplication>().unwrap();
 
         let mut name: String128 = [0; 128];
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             assert_eq!(ptr.getName(&mut name), kResultOk);
         }

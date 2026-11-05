@@ -103,6 +103,7 @@ impl Plugin {
     ) -> Result<(), Vst3Error> {
         let mut state = self.shared.lock_for_control()?;
         state.setup = None;
+        state.buses = None;
         // SAFETY: each pointer is valid for the length passed beside it, for
         // the call, and the claim is held with no audio half out.
         check(unsafe {
@@ -148,10 +149,14 @@ impl Plugin {
     ///
     /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; any other refusal.
     ///
-    /// What was set up (the sample size and the longest block) is remembered:
-    /// the audio half refuses a block that does not fit it.
+    /// What was set up (the sample size and the longest block) is remembered
+    /// when the plugin does not fail the call (`Ok(true)` or `Ok(false)`: a
+    /// `kResultFalse` setup is tolerated, as the host's activation expects): the
+    /// audio half refuses a block that does not fit it. A call that errors
+    /// leaves no setup, and the previous one is forgotten when the call is made.
     pub fn setup_processing(&self, mut setup: ProcessSetup) -> Result<bool, Vst3Error> {
         let mut state = self.shared.lock_for_control()?;
+        state.setup = None;
         // SAFETY: `setup` is a valid in-parameter for the call, and the claim is
         // held with no audio half out.
         let result = check_bool(unsafe { self.processor.setupProcessing(&mut setup) });

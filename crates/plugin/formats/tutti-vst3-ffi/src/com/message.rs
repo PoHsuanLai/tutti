@@ -57,7 +57,8 @@ impl IMessageTrait for Message {
             *guard = if id.is_null() {
                 None
             } else {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3
                 // ABI.
                 Some(unsafe { CStr::from_ptr(id) }.to_owned())
             };

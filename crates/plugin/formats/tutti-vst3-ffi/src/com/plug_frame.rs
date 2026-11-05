@@ -183,7 +183,8 @@ mod tests {
         let frame = frame();
         let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
 
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             for (w, h) in [(300, 200), (640, 480), (800, 600)] {
                 let mut r = rect(w, h);
@@ -200,7 +201,8 @@ mod tests {
         );
         assert_eq!(frame.take_resize_request(), None);
 
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         // A null rect is ignored rather than clearing or corrupting the cell.
         unsafe {
             let mut r = rect(320, 240);

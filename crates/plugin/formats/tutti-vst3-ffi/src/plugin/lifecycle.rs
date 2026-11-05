@@ -181,6 +181,13 @@ impl Plugin {
         // third state to recover to, and teardown must not retry it.
         if result.is_ok() || !active {
             state.active = active;
+            // The layout `process` holds the bound buses to is read now, from
+            // the plugin as it stands once active (it may settle its buses
+            // only then), and forgotten on deactivation.
+            state.buses = (active && result.is_ok()).then(|| Arrangement {
+                inputs: self.audio_bus_channels(BusDirection::Input).into(),
+                outputs: self.audio_bus_channels(BusDirection::Output).into(),
+            });
         }
         result
     }
@@ -230,13 +237,15 @@ impl Plugin {
 
 impl Drop for Plugin {
     fn drop(&mut self) {
-        // Retire first: the audio half refuses every later block without
-        // touching the claim, and this waits out one in flight.
+        // Retire first: the audio half refuses every later block, and this waits
+        // out one in flight. The state is cleared under the lock, so an audio
+        // thread that gets the lock later finds neither an active nor a set-up
+        // plugin (and `retired`, checked again under the lock).
         let shared = self.shared.clone();
-        let state = shared.retire();
+        let (state, was_active) = shared.teardown();
         // A plugin dropped while activated (its halves were never rejoined)
         // stops and deactivates first: `terminate` is for an inactive component.
-        if state.active {
+        if was_active {
             // SAFETY: plain calls on live interfaces; the claim is held, so the
             // audio half is not inside `process`.
             unsafe {
@@ -245,8 +254,8 @@ impl Drop for Plugin {
             }
         }
         // The claim is not needed past this point: every audio-half entry
-        // refuses on the retired flag, and the rest is control-side teardown
-        // that must not hold it.
+        // refuses on `retired`, which it checks under the lock, and the rest is
+        // control-side teardown that must not hold it.
         drop(state);
         // No main-thread assert: Drop has no main-thread guarantee.
         self.close_editor();
@@ -258,16 +267,18 @@ impl Drop for Plugin {
         // borrows the host context, `setComponentHandler` *retains* — so a
         // plugin that overrides `terminate` without chaining up to the base
         // class (which resets it) would hold the handler past its own teardown.
-        // Order — retract, controller, component — follows Steinberg's own
-        // wrapper (`basewrapper.cpp:369`).
+        // The order — retract the handler, terminate a separate controller, then
+        // the component — is the SDK wrapper's (`basewrapper.cpp`, "Terminate
+        // Controller Component" then "Terminate Processor Component"). The
+        // hosting sample's `PlugProvider::terminatePlugin` terminates the
+        // component first; both terminate a single-component plugin once.
         if let Some(ctrl) = self.controller.get() {
             // SAFETY: the controller is live; a null handler clears the one the
             // host attached.
             unsafe {
                 let _ = ctrl.setComponentHandler(std::ptr::null_mut());
             }
-            // A component that is its own controller is terminated once, below
-            // (the SDK's own host terminates a single-component plugin once).
+            // A component that is its own controller is terminated once, below.
             if matches!(self.controller, ControllerLink::Separate(_)) {
                 // SAFETY: a separate controller is a distinct live object,
                 // terminated once, before the component.

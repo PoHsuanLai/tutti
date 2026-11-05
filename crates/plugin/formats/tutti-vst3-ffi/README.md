@@ -37,8 +37,9 @@ plugin's state changes (`set_active`, `set_processing`, `setup_processing`,
 `set_bus_arrangements`, `activate_bus`) answer `Vst3Error::Busy`, so the
 transitions the SDK reserves for the non-processing states cannot run beside a
 block. `process` refuses a block whose width is not the setup's
-`symbolicSampleSize` or that is longer than its `maxSamplesPerBlock`, a bound
-channel or the aux block.
+`symbolicSampleSize`, that is longer than its `maxSamplesPerBlock`, a bound
+channel or the aux block, or whose buses are not the plugin's arrangement (read
+when it was activated).
 
 The audio half holds no reference to the plugin, only a pointer it may use under
 the instance's claim, which the audio thread only ever `try_lock`s. The plugin's

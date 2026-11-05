@@ -190,7 +190,8 @@ mod platform {
             unsafe { exit() };
         }
         if !entry.bundle.is_null() {
-            // SAFETY: `entry.bundle` is the +1 reference `make_bundle` returned, released once and then nulled.
+            // SAFETY: `entry.bundle` is the +1 reference `make_bundle` returned, released once
+            // and then nulled.
             unsafe { CFRelease(entry.bundle as *const _) };
             entry.bundle = std::ptr::null_mut();
         }
@@ -259,7 +260,8 @@ mod platform {
         // Reconstruct the owner immediately, so the reference is released by
         // `Entry`'s drop on every path below — including the refusal below,
         // where `?`-style early return would otherwise leak it.
-        // SAFETY: `handle_raw` came from `into_raw` just above and is owned by exactly one `Library`.
+        // SAFETY: `handle_raw` came from `into_raw` just above and is owned by exactly one
+        // `Library`.
         let handle = unsafe { libloading::os::unix::Library::from_raw(handle_raw) };
 
         // SAFETY: `entry` is the module's `ModuleEntry`, called once with the module's own handle,

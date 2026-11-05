@@ -1,4 +1,4 @@
-//! harmony: part of the VST3 event vocabulary.
+//! Chord and scale events and their host-side values.
 
 use super::*;
 

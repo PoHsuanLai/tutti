@@ -196,9 +196,11 @@ fn concurrent_reads_of_the_list_both_succeed() {
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let count = unsafe { ptr.getEventCount() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let got = unsafe { ptr.getEvent(0, &mut out) };
         done.wait();
         assert_eq!(count, 1, "a second reader must see the list");
@@ -227,17 +229,22 @@ fn a_read_during_a_write_fails_at_the_com_level() {
     let mut out: Event = unsafe { std::mem::zeroed() };
     {
         let _writing = list.inner.borrow_mut();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getEventCount() }, 0);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultFalse);
         out.r#type = K_NOTE_ON_EVENT;
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.addEvent(&mut out) }, kResultFalse);
     }
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEventCount() }, 1);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultOk);
 }
 
@@ -273,8 +280,8 @@ fn reassembled(events: &[MidiEvent]) -> Vec<Vec<u8>> {
 }
 
 /// **A SysEx a plugin emits arrives whole, whatever its length.** The
-/// output list used to keep 16 bytes of it and then drop anything over
-/// one UMP packet (6 bytes), so no message of 7 bytes or more ever
+/// output list keeps every byte of it: capping it at the 16 inline bytes, or
+/// at one UMP packet (6 bytes), would mean no message of 7 bytes or more ever
 /// reached the host.
 ///
 /// Mutation (run): drop the SysEx branch in `addEvent` so the event goes
@@ -289,7 +296,8 @@ fn a_sysex_from_the_plugin_reaches_the_host_whole() {
         let list = EventList::output();
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
         let mut e = data_sysex(11, &message);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk, "{len} bytes");
         let mut pool = RtMidiEvents::new();
         list.fill_midi_events(&mut pool);
@@ -313,13 +321,15 @@ fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
     long.extend(std::iter::repeat_n(1u8, SYSEX_OUT_ROOM));
     long.push(0xF7);
     let mut e = data_sysex(0, &long);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultFalse);
     assert_eq!(list.dropped(), 1);
 
     let short = [0xF0, 1, 2, 3, 4, 5, 6, 7, 8, 0xF7];
     let mut e = data_sysex(0, &short);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
     let mut pool = RtMidiEvents::new();
     list.fill_midi_events(&mut pool);
@@ -327,8 +337,8 @@ fn a_sysex_past_the_output_room_is_dropped_whole_and_counted() {
 }
 
 /// **A SysEx is recognised by its data type, framed or not.** An unframed
-/// message of 7 to 16 bytes used to be cut to a `Data` event the host could
-/// not pack into one packet; a data event of another type is not SysEx
+/// message of 7 to 16 bytes is kept whole, not cut to a `Data` event the host
+/// could not pack into one packet; a data event of another type is not SysEx
 /// whatever its bytes; and a raw channel-voice message carried as data
 /// (status byte first) stays a MIDI-1 message.
 ///
@@ -344,7 +354,8 @@ fn a_sysex_is_detected_by_its_data_type() {
         let list = EventList::output();
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
         let mut e = data_sysex(5, &payload);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk, "{len} bytes");
         let mut pool = RtMidiEvents::new();
         list.fill_midi_events(&mut pool);
@@ -359,7 +370,8 @@ fn a_sysex_is_detected_by_its_data_type() {
     let list = EventList::output();
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
     let mut e = data_event(K_DATA_TYPE_MIDI_SYSEX + 1, 0, &other);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
     assert_eq!(list.len(), 1);
     assert!(list.inner.borrow().sysex_out.is_empty());
@@ -373,7 +385,8 @@ fn a_sysex_is_detected_by_its_data_type() {
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
     let raw = [0x90u8, 60, 100];
     let mut e = data_sysex(0, &raw);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
     assert!(list.inner.borrow().sysex_out.is_empty());
     let mut pool = RtMidiEvents::new();
@@ -404,7 +417,8 @@ fn get_event_reads_an_output_lists_sysex_back() {
     // SAFETY: the test wrote this union member itself, with the tag that names it.
     let d = unsafe { back.__field0.data };
     assert_eq!(d.r#type, K_DATA_TYPE_MIDI_SYSEX);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let read = unsafe { std::slice::from_raw_parts(d.bytes, d.size as usize) };
     assert_eq!(read, &message[..]);
 }
@@ -425,7 +439,8 @@ fn a_sysex_past_the_midi_pool_is_counted_in_dropped() {
     let second = vec![2u8; 7];
     for m in [&first, &second] {
         let mut e = data_sysex(0, m);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
     }
     assert_eq!(list.dropped(), 0);
@@ -452,10 +467,12 @@ fn the_plugin_sysex_path_is_allocation_free() {
     let mut pool = RtMidiEvents::new();
     let mut refused = false;
     assert_no_alloc::assert_no_alloc(|| {
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk);
         for _ in 0..SYSEX_OUT_ROOM / 200 + 2 {
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             refused |= unsafe { ptr.addEvent(&mut e) } == kResultFalse;
         }
         list.fill_midi_events(&mut pool);
@@ -475,7 +492,8 @@ fn test_get_event_valid() {
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
     // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
     let mut out: Event = unsafe { std::mem::zeroed() };
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let result = unsafe { ptr.getEvent(0, &mut out) };
     assert_eq!(result, kResultOk);
     assert_eq!(out.r#type, K_NOTE_ON_EVENT);
@@ -520,7 +538,8 @@ fn data_event_bytes_stay_valid_after_fetching_every_event() {
     list.update_from_midi(&midi);
 
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let count = unsafe { ptr.getEventCount() };
     assert_eq!(count as usize, N, "every CC should stage as a Data event");
 
@@ -530,7 +549,8 @@ fn data_event_bytes_stay_valid_after_fetching_every_event() {
     for i in 0..count {
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
         fetched.push(out);
     }
@@ -542,7 +562,8 @@ fn data_event_bytes_stay_valid_after_fetching_every_event() {
         let data = unsafe { ev.__field0.data };
         assert_eq!(data.size, 3, "event {i}");
         assert!(!data.bytes.is_null(), "event {i}");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let bytes = unsafe { std::slice::from_raw_parts(data.bytes, 3) };
         assert_eq!(bytes[0], 0xB0, "event {i} status");
         assert_eq!(bytes[1], 74, "event {i} controller");
@@ -580,7 +601,8 @@ fn text_pointers_stay_valid_after_fetching_every_event() {
     });
 
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let count = unsafe { ptr.getEventCount() };
     assert_eq!(count as usize, names.len());
 
@@ -588,7 +610,8 @@ fn text_pointers_stay_valid_after_fetching_every_event() {
     for i in 0..count {
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
         fetched.push(out);
     }
@@ -597,7 +620,8 @@ fn text_pointers_stay_valid_after_fetching_every_event() {
         // SAFETY: the test wrote this union member itself, with the tag that names it.
         let chord = unsafe { ev.__field0.chord };
         assert_eq!(chord.root, 60 + i as i16, "event {i}");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
         assert_eq!(text, names[i].as_slice(), "event {i} text");
     }
@@ -647,14 +671,16 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
     assert_eq!(list.text_dropped(), over);
 
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let count = unsafe { ptr.getEventCount() };
     assert_eq!(count as usize, fits + over, "every event is staged");
     let mut fetched: Vec<Event> = Vec::with_capacity(count as usize);
     for i in 0..count {
         // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
         let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
         fetched.push(out);
     }
@@ -662,7 +688,8 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
         // SAFETY: the test wrote this union member itself, with the tag that names it.
         let chord = unsafe { ev.__field0.chord };
         if i < fits {
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
             assert_eq!(text, names[i].as_slice(), "event {i} text");
         } else {
@@ -690,11 +717,14 @@ fn get_event_rejects_bad_indices() {
     let ptr = list.to_com_ptr::<IEventList>().unwrap();
     // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
     let mut out: Event = unsafe { std::mem::zeroed() };
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEvent(-1, &mut out) }, kInvalidArgument);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEvent(1, &mut out) }, kInvalidArgument);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultOk);
 }
 
@@ -1072,21 +1102,25 @@ fn add_event_refuses_past_the_room() {
     let mut results = [0; 4];
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..EVENT_CAPACITY - 1 {
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.addEvent(&mut on) }, kResultOk);
         }
         for r in &mut results[..3] {
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             *r = unsafe { ptr.addEvent(&mut on) };
         }
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         results[3] = unsafe { ptr.addEvent(&mut chord_c) };
     });
     assert_eq!(
         results,
         [kResultOk, kResultFalse, kResultFalse, kResultFalse]
     );
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getEventCount() } as usize, EVENT_CAPACITY);
     assert_eq!(list.dropped(), 3);
     assert!(

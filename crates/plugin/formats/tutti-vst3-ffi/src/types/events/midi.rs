@@ -1,4 +1,4 @@
-//! midi: part of the VST3 event vocabulary.
+//! `MidiEvent` to VST3 event conversion and back.
 
 use super::*;
 

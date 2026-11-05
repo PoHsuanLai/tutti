@@ -32,8 +32,28 @@ pub(crate) struct State {
     /// `setActive(1)` has run and `setActive(0)` has not.
     pub(crate) active: bool,
     /// The last successful `setupProcessing`, cleared when the bus
-    /// arrangement changes under it.
+    /// arrangement changes under it or a later setup is refused.
     pub(crate) setup: Option<Setup>,
+    /// The channel count of every audio bus, read when the plugin was
+    /// activated: what `process` holds the bound buses to.
+    pub(crate) buses: Option<Arrangement>,
+}
+
+/// The audio bus layout of an active plugin, per direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Arrangement {
+    pub(crate) inputs: Box<[usize]>,
+    pub(crate) outputs: Box<[usize]>,
+}
+
+impl Arrangement {
+    /// Whether buses bound with these channel counts are the plugin's. A
+    /// direction in which the plugin reports no audio bus accepts any binding,
+    /// as the plugin reads none of it.
+    pub(crate) fn matches(&self, inputs: &[usize], outputs: &[usize]) -> bool {
+        let same = |expected: &[usize], bound: &[usize]| expected.is_empty() || expected == bound;
+        same(&self.inputs, inputs) && same(&self.outputs, outputs)
+    }
 }
 
 /// The processor entry, its state and its claim, shared by a plugin and its
@@ -83,10 +103,25 @@ impl Shared {
     /// The claim for one audio-side entry: `None` once retired, or while a
     /// control thread holds it. Never blocks.
     pub(crate) fn try_enter(&self) -> Option<MutexGuard<'_, State>> {
+        self.try_enter_after(|| {})
+    }
+
+    /// [`try_enter`](Self::try_enter), with `between` run after the first
+    /// `retired` check and before the lock is taken: the window in which the
+    /// plugin may be retired and torn down by another thread.
+    fn try_enter_after(&self, between: impl FnOnce()) -> Option<MutexGuard<'_, State>> {
         if self.retired.load(Ordering::Acquire) {
             return None;
         }
-        self.state.try_lock()
+        between();
+        let guard = self.state.try_lock()?;
+        // The flag is checked again under the lock: `teardown` sets it and then
+        // takes this lock, so a guard obtained after the teardown finished
+        // always sees it set, and never reaches the freed processor.
+        if self.retired.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(guard)
     }
 
     /// The claim, for a control-side change: waits out an entry in flight.
@@ -112,6 +147,23 @@ impl Shared {
         self.state.lock()
     }
 
+    /// [`retire`](Self::retire), and returns whether the plugin was active; the
+    /// state is cleared under the lock, so no guard taken later sees an active,
+    /// set-up plugin.
+    pub(crate) fn teardown(&self) -> (MutexGuard<'_, State>, bool) {
+        let mut state = self.retire();
+        let was_active = state.active;
+        *state = State::default();
+        (state, was_active)
+    }
+
+    /// The claim, for a control-side call on the plugin's other interfaces:
+    /// `None` once retired. Serialises with `teardown`.
+    pub(crate) fn lock_live(&self) -> Option<MutexGuard<'_, State>> {
+        let state = self.state.lock();
+        (!self.is_retired()).then_some(state)
+    }
+
     pub(crate) fn is_retired(&self) -> bool {
         self.retired.load(Ordering::Acquire)
     }
@@ -133,8 +185,10 @@ impl Shared {
     ///
     /// # Safety
     ///
-    /// The claim is held (a guard from `try_enter` or `lock*` is alive) and the
-    /// plugin is not retired, so the plugin still holds the object.
+    /// A guard from `try_enter` or `lock_live` is alive: it was obtained with
+    /// `retired` still unset, and `teardown` sets `retired` before it takes the
+    /// lock and destroys the plugin only after releasing it, so while the guard
+    /// is held the plugin still owns the object.
     unsafe fn processor(&self) -> Option<ComRef<'_, IAudioProcessor>> {
         // SAFETY: the pointer is the processor the plugin keeps alive (caller).
         unsafe { ComRef::from_raw(self.processor.0) }
@@ -235,6 +289,13 @@ impl AudioSide {
             (true, Some(setup)) => setup,
             _ => return Err(Vst3Error::NotInitialized),
         };
+        let arrangement_fits = state
+            .buses
+            .as_ref()
+            .is_none_or(|a| a.matches(io.inputs.bus_channels(), io.outputs.bus_channels()));
+        if !arrangement_fits {
+            return Err(Vst3Error::InvalidArgument);
+        }
         if io.inputs.width() != io.outputs.width()
             || io.inputs.width().symbolic_size() != setup.symbolic_size
         {
@@ -282,7 +343,9 @@ impl AudioSide {
         // and their channel tables are the scratch `io` borrows and point at
         // slices of at least `numSamples` samples (checked above, the aux block
         // included), the lists are the live host objects `io` borrows, and the
-        // context is `io`'s exclusive borrow.
+        // context is `io`'s exclusive borrow. The input channels are `*mut` in the
+        // ABI but come from shared slices: the plugin must not write them (see
+        // `BusBuffers::bind_inputs_f32`).
         let result = check(unsafe { processor.process(&mut data) });
         drop(state);
         result
@@ -586,6 +649,64 @@ mod tests {
         let held = shared.lock();
         assert_eq!(rig.run_f32(8), Err(Vst3Error::NotInitialized));
         drop(held);
+        assert_eq!(rig.run_f32(8), Ok(()));
+    }
+
+    /// An audio thread preempted between the `retired` check and the lock, while
+    /// the plugin is retired and torn down, gets no guard: the flag is checked
+    /// again under the lock.
+    ///
+    /// Mutation: delete the second `retired` check in `try_enter_after` and the
+    /// entry succeeds on a plugin whose processor is about to be freed.
+    #[test]
+    fn an_entry_that_loses_the_race_with_teardown_is_refused() {
+        let rig = rig(SampleWidth::F32, BLOCK);
+        let shared = rig.shared.clone();
+        let entered = shared.try_enter_after(|| drop(shared.teardown())).is_some();
+        assert!(!entered);
+    }
+
+    /// Teardown clears the state under the lock, so whoever takes the lock
+    /// afterwards finds the plugin neither active nor set up, and says whether
+    /// it was active.
+    ///
+    /// Mutation: have `teardown` leave the state as it was and the second
+    /// assertion fails.
+    #[test]
+    fn teardown_clears_the_state_it_found() {
+        let rig = rig(SampleWidth::F32, BLOCK);
+        let (state, was_active) = rig.shared.teardown();
+        assert!(was_active);
+        assert!(!state.active && state.setup.is_none() && state.buses.is_none());
+        drop(state);
+        assert!(rig.shared.lock_live().is_none(), "retired for good");
+    }
+
+    /// A binding whose buses are not the plugin's arrangement is refused: a
+    /// scratch with fewer channels than the plugin has would let it read past
+    /// the pointer table.
+    ///
+    /// Mutation: delete the `arrangement_fits` check in `process` and the
+    /// two-channel binding reaches a plugin with three-channel buses.
+    #[test]
+    fn buses_that_are_not_the_plugins_arrangement_are_refused() {
+        let mut rig = rig(SampleWidth::F32, BLOCK);
+        rig.shared.lock().buses = Some(Arrangement {
+            inputs: vec![3].into(),
+            outputs: vec![3].into(),
+        });
+        assert_eq!(rig.run_f32(8), Err(Vst3Error::InvalidArgument));
+        assert_eq!(rig.processed(), 0);
+        rig.shared.lock().buses = Some(Arrangement {
+            inputs: vec![2].into(),
+            outputs: vec![2].into(),
+        });
+        assert_eq!(rig.run_f32(8), Ok(()));
+        // A direction in which the plugin has no audio bus accepts any binding.
+        rig.shared.lock().buses = Some(Arrangement {
+            inputs: Box::new([]),
+            outputs: vec![2].into(),
+        });
         assert_eq!(rig.run_f32(8), Ok(()));
     }
 }

@@ -32,7 +32,7 @@ use vst3::{ComPtr, ComWrapper};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, ParamId, WindowHandle};
 use tutti_types::ChannelLayout;
 
-use crate::audio::{AudioSide, Setup, Shared};
+use crate::audio::{Arrangement, AudioSide, Setup, Shared};
 use crate::com::{BStream, ComponentHandler, HostApplication, HostPlugFrame};
 use crate::error::{Vst3Error, check, check_bool};
 use crate::module::{CreateError, Module};
@@ -91,11 +91,14 @@ impl MidiLearn {
     /// Nothing is sent once the plugin has been torn down (the interface is
     /// terminated by then).
     pub fn live_controller_input(&self, channel: i16, controller: i16) {
-        if self.shared.is_retired() {
+        // Serialised with the plugin's teardown by the claim, and refused once
+        // it has run: the interface is terminated by then.
+        let Some(_claim) = self.shared.lock_live() else {
             return;
-        }
+        };
         // SAFETY: a plain call on an interface of a plugin that is not retired,
-        // so not terminated.
+        // so not terminated; the claim is held, so it cannot be torn down
+        // meanwhile.
         unsafe {
             self.learn.onLiveMIDIControllerInput(0, channel, controller);
         }

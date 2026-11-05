@@ -96,7 +96,7 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
   `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi` and
-  `tutti-vst3-ffi` so far); host crates forbid `unsafe`
+  `tutti-vst3-ffi`); host crates forbid `unsafe`
   (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit

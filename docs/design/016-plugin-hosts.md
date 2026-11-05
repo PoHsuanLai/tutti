@@ -1104,11 +1104,14 @@ parameter.
   `[UI-thread]` entry is a method; `Drop` runs the SDK's teardown order) and one
   `AudioSide` (the audio half, handed out once, and only for a plugin that is set
   up and active). The audio half holds no reference to the plugin, only a pointer
-  it may use under the instance's claim, so the plugin and its module are always
-  destroyed on the thread that drops the `Plugin`. While the audio half exists
-  the plugin's state changes (`setActive`, `setProcessing`, `setupProcessing`,
-  `setBusArrangements`, `activateBus`) are refused, and `process` refuses a block
-  that does not fit the setup (the sample width, the longest block).
+  it may use under the instance's claim, so dropping an audio half destroys
+  nothing, and the plugin's teardown runs on the thread that drops the `Plugin`
+  (its module stays loaded until the last `MidiLearn` handle, which holds it,
+  is dropped too). While the audio half exists the plugin's state changes
+  (`setActive`, `setProcessing`, `setupProcessing`, `setBusArrangements`,
+  `activateBus`) are refused, and `process` refuses a block that does not fit
+  the setup (the sample width, the longest block) or the plugin's bus
+  arrangement.
 - The activation's shell holds no plugin access. The Controller owns the
   `Vst3Loaded`, the Processor owns only the audio half, and a Controller dropped
   while its Processor renders parks the plugin on the shell for the Processor's

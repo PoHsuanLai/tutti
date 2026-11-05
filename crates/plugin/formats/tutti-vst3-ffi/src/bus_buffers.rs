@@ -140,6 +140,13 @@ impl BusBuffers {
     /// are not bound; buses the caller does not supply are backed by zeroed
     /// silence and flagged silent.
     ///
+    /// The ABI types the input channels `*mut`, so the plugin is handed
+    /// pointers it could write through. Its contract is that it does not: an
+    /// input is read-only, and processing in place means the caller supplying
+    /// the same buffer as input and output, which a shared `&[T]` cannot be.
+    /// A plugin that writes an input anyway writes into the caller's shared
+    /// slice, which this crate cannot prevent.
+    ///
     /// # Errors
     ///
     /// [`Vst3Error::InvalidArgument`] if these buffers were built for the other
@@ -359,6 +366,11 @@ impl BoundBuses<'_> {
         self.shortest.min(self.buffers.max_block())
     }
 
+    /// The channel count of each bound bus.
+    pub(crate) fn bus_channels(&self) -> &[usize] {
+        &self.buffers.bus_channels
+    }
+
     /// The number of buses.
     pub(crate) fn num_buses(&self) -> usize {
         self.buffers.num_buses()
@@ -395,7 +407,8 @@ mod tests {
         let ch0_p = ch0.as_mut_ptr();
         let ch1_p = ch1.as_mut_ptr();
         let live = [ch0_p as *mut c_void, ch1_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays;
@@ -419,7 +432,8 @@ mod tests {
         let l_p = l.as_mut_ptr();
         let r_p = r.as_mut_ptr();
         let live = [l_p as *mut c_void, r_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays.add(0);
@@ -457,7 +471,8 @@ mod tests {
         let l_p = l.as_mut_ptr();
         let r_p = r.as_mut_ptr();
         let live = [l_p as *mut c_void, r_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             // zero_aux = false → output direction.
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), false);
@@ -475,7 +490,8 @@ mod tests {
         // One stereo bus, but the caller supplies zero channels.
         let mut bb = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
         let live: [*mut c_void; 0] = [];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), 0, true);
             // Both real channels aux-backed → bits 0 and 1 set, nothing above.
@@ -499,7 +515,8 @@ mod tests {
         let r_p = r.as_mut_ptr();
         let sc_p = sc.as_mut_ptr();
         let live = [l_p as *mut c_void, r_p as *mut c_void, sc_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays.add(0);
@@ -576,11 +593,13 @@ mod tests {
         let live = [l_p as *mut c_void, r_p as *mut c_void];
         // Warm up once outside the guard to mirror the RT discipline of the
         // real process loop.
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let _ = bb.prepare_raw(live.as_ptr(), live.len(), true);
         }
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         assert_no_alloc::assert_no_alloc(|| unsafe {
             for _ in 0..256 {
                 let _ = bb.prepare_raw(live.as_ptr(), live.len(), true);
@@ -598,7 +617,8 @@ mod tests {
         let mut m = [9.0f32; BLOCK];
         let m_p = m.as_mut_ptr();
         let live = [m_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), false);
             let bus0 = &*arrays;
@@ -622,7 +642,8 @@ mod tests {
         let l_p = l.as_mut_ptr();
         let r_p = r.as_mut_ptr();
         let live = [l_p as *mut c_void, r_p as *mut c_void];
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was
+        // filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays;

@@ -154,3 +154,25 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
     assert_eq!(block(&mut side), Err(Vst3Error::NotInitialized));
     assert_eq!(side.set_processing(true), Err(Vst3Error::NotInitialized));
 }
+
+/// `kMisbehaveSetupFails` in `probeids.h`: `setupProcessing` answers
+/// `kResultFalse`.
+const SETUP_FAILS: &str = "7";
+
+/// A setup the plugin answers `kResultFalse` to is tolerated (the host's
+/// activation proceeds, as `a_refused_setup_is_tolerated_by_design` pins), and
+/// the setup is recorded so the audio half is handed out and holds blocks to it.
+///
+/// Mutation: record the setup only for `Ok(true)` and the last assertion fails.
+/// (A setup call that *errors* clears the previous setup; no probe behaviour
+/// makes `setupProcessing` error, so that path is not exercised here.)
+#[test]
+fn a_setup_answered_false_is_tolerated_and_recorded() {
+    // SAFETY: nextest runs each test in its own process, so nothing else reads
+    // the environment while this sets it, and the probe reads it at creation.
+    unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", SETUP_FAILS) };
+    let (_module, mut plugin) = plugin();
+    assert_eq!(plugin.setup_processing(setup()), Ok(false));
+    plugin.set_active(true).expect("activate");
+    assert!(plugin.audio_side().is_some());
+}

@@ -14,7 +14,8 @@ fn edit_gestures_forward_in_order_with_their_operands() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         assert_eq!(ptr.beginEdit(42), kResultOk);
         assert_eq!(ptr.performEdit(42, 0.75), kResultOk);
@@ -47,7 +48,8 @@ fn restart_component_forwards_the_raw_flag_word() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         assert_eq!(ptr.restartComponent(0b1010), kResultOk);
     }
@@ -68,7 +70,8 @@ fn restart_flags_merge_across_calls_and_reset_on_take() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         ptr.restartComponent(RestartFlags_::kLatencyChanged);
         ptr.restartComponent(RestartFlags_::kIoChanged);
@@ -82,7 +85,8 @@ fn restart_flags_merge_across_calls_and_reset_on_take() {
 
     assert_eq!(handler.take_restart_bits(), 0, "a take consumes the flags");
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe { ptr.restartComponent(RestartFlags_::kParamValuesChanged) };
     assert_eq!(
         handler.take_restart_bits(),
@@ -105,7 +109,8 @@ fn overflow_is_counted_and_keeps_the_queued_events() {
     let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
     let extra = 3;
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         for i in 0..(NOTIFICATION_CAPACITY + extra) as u32 {
             ptr.performEdit(i, 0.5);
@@ -127,7 +132,8 @@ fn overflow_is_counted_and_keeps_the_queued_events() {
     );
 
     // Room again once drained; the count is cumulative, and a push that
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     // fits does not raise the flag.
     unsafe { ptr.endEdit(7) };
     assert_eq!(drain(&handler).len(), 1);
@@ -164,7 +170,8 @@ fn callbacks_and_the_host_drain_do_not_allocate() {
         .chain([0])
         .collect();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_no_alloc::assert_no_alloc(|| unsafe {
         let mut id: ID = 0;
         progress.start(0, long.as_ptr(), &mut id);
@@ -243,7 +250,8 @@ fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let out_id = unsafe {
         let mut out_id: ID = 0;
         let desc: [u16; 5] = [b'T' as u16, b'e' as u16, b's' as u16, b't' as u16, 0];
@@ -299,7 +307,8 @@ fn a_long_progress_description_is_truncated_at_a_char_boundary() {
         utf16.push(0x20AC);
     }
     utf16.push(0);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let d = unsafe { ProgressDescription::from_utf16_nul(utf16.as_ptr()) };
     assert!(d.as_str().starts_with("\u{FFFD}a\u{e9}\u{20ac}"));
     assert!(d.len() <= PROGRESS_DESCRIPTION_CAPACITY);
@@ -316,7 +325,8 @@ fn progress_start_accepts_a_null_description() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         let mut out_id: ID = 0;
         assert_eq!(ptr.start(0, std::ptr::null(), &mut out_id), kResultOk);
@@ -335,7 +345,8 @@ fn unit_selection_and_program_list_changes_forward_their_ids() {
     let handler = ComponentHandler::new();
     let ptr = handler.to_com_ptr::<IUnitHandler>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         assert_eq!(ptr.notifyUnitSelection(5), kResultOk);
         assert_eq!(ptr.notifyProgramListChange(10, 3), kResultOk);
@@ -370,7 +381,8 @@ fn notifications_keep_their_order_across_kinds() {
     let progress = handler.to_com_ptr::<IProgress>().unwrap();
     let unit = handler.to_com_ptr::<IUnitHandler>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         unit.notifyUnitSelection(1);
         progress.update(9, 0.5);
@@ -395,7 +407,8 @@ fn concurrent_edits_all_reach_the_host() {
 
     let handles: Vec<_> = (0..4)
         .map(|i| {
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             std::thread::spawn(move || unsafe {
                 let r = vst3::ComRef::<IComponentHandler>::from_raw_unchecked(ptr_addr as *mut _);
                 for j in 0..10 {

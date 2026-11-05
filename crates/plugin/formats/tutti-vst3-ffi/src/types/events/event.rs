@@ -1,9 +1,10 @@
-//! event: part of the VST3 event vocabulary.
+//! The [`Vst3Event`] tagged union and its accessors.
 
 use super::*;
 
 /// Safe tagged-enum form of the VST3 `Event` union. See
-/// [`Vst3Event::to_midi`] for MIDI conversion. Text-bearing variants reference the owning event list's arena
+/// [`Vst3Event::to_midi`] for MIDI conversion. Text-bearing variants reference the owning event
+/// list's arena
 /// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
 pub enum Vst3Event {

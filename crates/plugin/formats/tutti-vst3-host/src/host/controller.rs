@@ -322,7 +322,9 @@ impl Vst3Loaded {
         let Some(audio_side) = loaded.plugin.audio_side() else {
             return Err(Refused {
                 plugin: Some(loaded),
-                reason: PluginError::Other("the plugin's audio half is already out".into()),
+                reason: PluginError::Other(
+                    "the plugin is not set up and active, or its audio half is out".into(),
+                ),
             });
         };
         let context_requirements = loaded.plugin.process_context_requirements();

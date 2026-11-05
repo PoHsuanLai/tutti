@@ -39,7 +39,8 @@ fn key_from_ptr(key: AttrID) -> Option<String> {
     if key.is_null() {
         return None;
     }
-    // SAFETY: `key` is non-null (checked above); the ABI passes an `AttrID` that is a NUL-terminated string valid for the call.
+    // SAFETY: `key` is non-null (checked above); the ABI passes an `AttrID` that is a NUL-
+    // terminated string valid for the call.
     unsafe { CStr::from_ptr(key).to_str().ok().map(|s| s.to_string()) }
 }
 
@@ -169,7 +170,9 @@ impl IAttributeListTrait for AttributeList {
                     // leaving the caller with an unterminated buffer — write one back
                     // into the final slot so the returned string is always valid.
                     if v.len() > max_chars {
-                        // SAFETY: `string` is non-null with room for `max_chars` units (`size_in_bytes` / 2, at least 1 as checked above), so the last slot is in bounds.
+                        // SAFETY: `string` is non-null with room for `max_chars` units
+                        // (`size_in_bytes` / 2, at least 1 as checked above), so the last slot
+                        // is in bounds.
                         unsafe { *string.add(max_chars - 1) = 0 };
                     }
                     kResultOk
@@ -221,12 +224,14 @@ impl IAttributeListTrait for AttributeList {
             match self.attributes.lock().get(&k) {
                 Some(AttributeValue::Binary(v)) => {
                     if !data.is_null() {
-                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call,
+                        // per the
                         // VST3 ABI.
                         unsafe { *data = v.as_ptr() as *const c_void };
                     }
                     if !size_in_bytes.is_null() {
-                        // SAFETY: `size_in_bytes` is non-null (checked just above) and a valid out-pointer for the call.
+                        // SAFETY: `size_in_bytes` is non-null (checked just above) and a valid
+                        // out-pointer for the call.
                         unsafe { *size_in_bytes = v.len() as u32 };
                     }
                     kResultOk
@@ -252,7 +257,8 @@ mod tests {
         let attrs = AttributeList::new();
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), std::ptr::null());
             assert_ne!(result, kResultOk);
@@ -265,13 +271,15 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("name");
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);
         }
         let mut out = [0u16; 32];
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.getString(
                 key.as_ptr(),
@@ -291,14 +299,16 @@ mod tests {
         let key = make_key("name");
         // Store "hello" (5 chars + terminator).
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);
         }
         // Provide a buffer that only fits 3 TChars — forces truncation.
         let mut out = [0xFFFFu16; 3];
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.getString(
                 key.as_ptr(),
@@ -319,7 +329,8 @@ mod tests {
         let attrs = AttributeList::new();
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.getString(key.as_ptr(), std::ptr::null_mut(), 10);
             assert_ne!(result, kResultOk);
@@ -332,7 +343,8 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
         let mut out = [0u16; 1];
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.getString(key.as_ptr(), out.as_mut_ptr() as *mut TChar, 0);
             assert_ne!(result, kResultOk);
@@ -355,7 +367,8 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("name");
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             assert_eq!(
                 ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar),
@@ -367,7 +380,8 @@ mod tests {
         // would be caught by the guard page or by ASan, but on a normal build
         // the observable damage is a neighbouring slot, so check them.
         let mut buf = [0xFFFFu16; 3];
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let result = unsafe {
             // Point at the middle element and claim ONE byte — half a TChar.
             ptr.getString(
@@ -401,7 +415,8 @@ mod tests {
         let key = make_key("long");
         let mut utf16: Vec<u16> = vec![0x41; 70_000];
         utf16.push(0);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);

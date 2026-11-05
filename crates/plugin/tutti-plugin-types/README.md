@@ -6,7 +6,7 @@ The shared value vocabulary underneath Tutti's four plugin-host crates.
 
 Everything a VST2 / VST3 / CLAP / AU host needs to speak that is *not* specific
 to one format: [`PluginDescriptor`] and [`LoadedPlugin`] (identity and the
-load-time wiring snapshot), [`ParameterInfo`] with its [`ParamAddress`] /
+load-time wiring snapshot), [`ParameterInfo`] with its [`ParamId`] /
 [`ParamRange`] / [`ParamFlags`] parts, [`ProcessContext`] and [`ProcessOutput`],
 [`TransportInfo`], [`ParameterChanges`] automation queues, note expression and
 harmony changes, [`AudioBuffer`] in its f32/f64 forms, editor vocabulary
@@ -59,7 +59,7 @@ differ, and the reading path is the same for both:
 
 ```rust
 use tutti_plugin_types::{
-    Normalized, ParamAddress, ParamFlags, ParamId, ParamSteps, ParameterInfo,
+    Normalized, ParamFlags, ParamId, ParamSteps, ParameterInfo,
 };
 
 // VST3/CLAP/AU: a plugin-chosen handle, often a hash of the name. Not an
@@ -69,9 +69,9 @@ let cutoff = ParameterInfo::new(ParamId::new(0x8000_0001), "Cutoff")
     .with_steps(ParamSteps::Continuous)
     .with_flags(ParamFlags::AUTOMATABLE, ParamFlags::AUTOMATABLE);
 
-// VST2 alone: a dense position in `[0, numParams)`, and a format that
-// declined `effGetParameterProperties` — so it declared no range at all.
-let mix = ParameterInfo::new(ParamAddress::Index(3), "Mix")
+// VST2: the id is the parameter's position in `[0, numParams)`, and a
+// plugin that declined `effGetParameterProperties` declared no range at all.
+let mix = ParameterInfo::new(ParamId::new(3), "Mix")
     .with_normalized_default(0.5);
 
 // An absent declaration is `None`, never a substituted number.
@@ -143,7 +143,7 @@ MIT OR Apache-2.0
 [`PluginDescriptor`]: crate::PluginDescriptor
 [`LoadedPlugin`]: crate::LoadedPlugin
 [`ParameterInfo`]: crate::ParameterInfo
-[`ParamAddress`]: crate::ParamAddress
+[`ParamId`]: crate::ParamId
 [`ParamRange`]: crate::ParamRange
 [`ParamFlags`]: crate::ParamFlags
 [`ParamSteps`]: crate::ParamSteps

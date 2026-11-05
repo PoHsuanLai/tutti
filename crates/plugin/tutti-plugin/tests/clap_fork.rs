@@ -33,7 +33,7 @@ use tutti_graph::{
 };
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
-use tutti_plugin_types::{Normalized, ParamAddress, ParamId};
+use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
 
@@ -49,7 +49,7 @@ const PACE: Duration = PERIOD.saturating_mul(20);
 
 /// The probe's applied gain (`GAIN_PARAM_ID` in the plugin), and its range in
 /// dB. Mirrored rather than imported: this crate links no probe rlib.
-const GAIN: ParamAddress = ParamAddress::Opaque(ParamId::new(77));
+const GAIN: ParamId = ParamId::new(77);
 const GAIN_DB_MIN: f64 = -60.0;
 const GAIN_DB_MAX: f64 = 12.0;
 

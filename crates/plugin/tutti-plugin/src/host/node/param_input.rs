@@ -12,7 +12,7 @@
 use tutti_graph::{Cx, Event, EventKind, Offset, ParamSegment};
 use tutti_types::{ParamAddr, Samples};
 
-use crate::protocol::{ParamAddress, ParamId, ParameterQueue};
+use crate::protocol::{ParamId, ParameterQueue};
 
 use super::param_delivery::ParamDelivery;
 use super::segment_points::SegmentPoints;
@@ -44,10 +44,8 @@ use super::segment_points::SegmentPoints;
 ///
 /// `cx` is the node's call: its `Env::frame` is the absolute frame of block
 /// frame 0 (where a segment in flight is along itself), and its play clock
-/// classifies a segment's first point. `indexed` says how a parameter
-/// event's number is read: a VST2 index, or an opaque handle. A parameter
-/// event with an address of the other kind, or with no value for this
-/// plugin, is skipped. Allocation-free.
+/// classifies a segment's first point. A parameter event with no value for this
+/// plugin is skipped. Allocation-free.
 #[allow(
     clippy::too_many_arguments,
     reason = "the two plugin nodes keep the delivery and the segments in \
@@ -59,7 +57,6 @@ pub(crate) fn take(
     n: usize,
     at: usize,
     cx: &Cx<'_>,
-    indexed: bool,
     segments: &mut SegmentPoints,
     params: &mut ParamDelivery,
     mut other: impl FnMut(&Event, usize),
@@ -98,8 +95,7 @@ pub(crate) fn take(
                 let ParamAddr::Id(id) = ramp.addr() else {
                     continue;
                 };
-                let (Some(address), Some(value)) = (address(id, indexed), ramp.foreign_target(id))
-                else {
+                let (Some(address), Some(value)) = (address(id), ramp.foreign_target(id)) else {
                     continue;
                 };
                 // Where the parameter stood at the end of the frame before
@@ -129,7 +125,7 @@ pub(crate) fn take(
                 let ParamAddr::Id(id) = seg.addr() else {
                     continue;
                 };
-                let Some(address) = address(id, indexed) else {
+                let Some(address) = address(id) else {
                     continue;
                 };
                 // Noted before the segment moves it, for a ramp later on
@@ -153,7 +149,7 @@ pub(crate) fn take(
 fn stood(
     segments: &SegmentPoints,
     params: &mut ParamDelivery,
-    address: ParamAddress,
+    address: ParamId,
     o: usize,
     abs: u64,
 ) -> Option<f32> {
@@ -164,23 +160,18 @@ fn stood(
     })
 }
 
-/// The address a ramp's or segment's number names on a plugin that
-/// addresses its parameters by VST2 index (`indexed`) or by opaque handle:
-/// the plugin reads a foreign lane's `u32` (`ParamAddr::Id`) back in its
-/// own model.
-fn address(id: u32, indexed: bool) -> Option<ParamAddress> {
-    if indexed {
-        i32::try_from(id).ok().map(ParamAddress::Index)
-    } else {
-        Some(ParamAddress::Opaque(ParamId::new(id)))
-    }
+/// The parameter a ramp's or segment's number names: the plugin reads a foreign
+/// lane's `u32` (`ParamAddr::Id`) back as its own id (a VST2 plugin's is its
+/// parameter's index).
+fn address(id: u32) -> Option<ParamId> {
+    Some(ParamId::new(id))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::node::param_delivery::DeliveryCounters;
-    use crate::protocol::{ParamAddress, ParamId};
+    use crate::protocol::ParamId;
     use std::sync::Arc;
     use tutti_graph::{
         Env, ParamRamp, PlayClock, PlayReading, SegmentShape, Transport, TransportChanges,
@@ -226,7 +217,7 @@ mod tests {
     #[test]
     fn a_ramp_reaches_a_plugin_along_its_shape() {
         const TOL: f64 = 1e-6;
-        let address = ParamAddress::Opaque(ParamId::new(7));
+        let address = ParamId::new(7);
         let counters = Arc::new(DeliveryCounters::default());
         let mut params = ParamDelivery::new([address], Arc::clone(&counters));
         params.prepare(64);
@@ -258,7 +249,6 @@ mod tests {
             len,
             0,
             &cx,
-            false,
             &mut segments,
             &mut params,
             |_, _| {},
@@ -297,7 +287,7 @@ mod tests {
     #[test]
     fn a_ramp_starts_from_the_value_before_its_frame() {
         const TOL: f64 = 1e-6;
-        let address = ParamAddress::Opaque(ParamId::new(7));
+        let address = ParamId::new(7);
         let counters = Arc::new(DeliveryCounters::default());
         let mut params = ParamDelivery::new([address], Arc::clone(&counters));
         params.prepare(64);
@@ -329,7 +319,6 @@ mod tests {
             len,
             0,
             &cx,
-            false,
             &mut segments,
             &mut params,
             |_, _| {},
@@ -355,7 +344,7 @@ mod tests {
     }
 
     /// The queue of `address` in the chunk being filled, as `(frame, value)`.
-    fn queue(params: &mut ParamDelivery, address: ParamAddress) -> Vec<(i32, f64)> {
+    fn queue(params: &mut ParamDelivery, address: ParamId) -> Vec<(i32, f64)> {
         params
             .changes()
             .queues
@@ -384,7 +373,7 @@ mod tests {
             arrival: Latency::ZERO,
             history: TransportHistory::none(),
         };
-        take(events, 0, len, 0, &cx, false, segments, params, |_, _| {});
+        take(events, 0, len, 0, &cx, segments, params, |_, _| {});
     }
 
     /// **A parameter the plugin's list did not name keeps its start too.**
@@ -398,7 +387,7 @@ mod tests {
     /// from the step's 0.4 and sends 0.55 and 1 on frame 13 → fails.
     #[test]
     fn an_unlisted_parameter_keeps_its_start_on_the_frame() {
-        let address = ParamAddress::Opaque(ParamId::new(9));
+        let address = ParamId::new(9);
         let mut params =
             ParamDelivery::new(std::iter::empty(), Arc::new(DeliveryCounters::default()));
         params.prepare(64);
@@ -428,7 +417,7 @@ mod tests {
     /// ramp jumps to 1 on frame 10 → fails.
     #[test]
     fn a_frame_start_is_not_kept_from_an_earlier_block() {
-        let address = ParamAddress::Opaque(ParamId::new(7));
+        let address = ParamId::new(7);
         let mut params = ParamDelivery::new([address], Arc::new(DeliveryCounters::default()));
         params.prepare(64);
         let mut segments = SegmentPoints::default();
@@ -470,7 +459,7 @@ mod tests {
     /// land on 0, 32, .. → fails.
     #[test]
     fn a_full_queue_drops_the_play_grid_first() {
-        let address = ParamAddress::Opaque(ParamId::new(7));
+        let address = ParamId::new(7);
         let counters = Arc::new(DeliveryCounters::default());
         let mut params = ParamDelivery::new([address], Arc::clone(&counters));
         let room = params.prepare(64);
@@ -499,7 +488,6 @@ mod tests {
             len,
             0,
             &cx,
-            false,
             &mut segments,
             &mut params,
             |_, _| {},

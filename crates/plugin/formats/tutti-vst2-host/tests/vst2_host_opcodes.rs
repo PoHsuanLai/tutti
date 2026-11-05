@@ -9,7 +9,8 @@
 //! - `audioMasterUpdateDisplay` (42) — fired after a preset or program change
 //!   from the plugin's own editor. `Host::update_display` was declared with
 //!   nothing routing to it, so the host's cached parameter view silently drifted
-//!   from the plugin's.
+//!   from the plugin's. It is a request the host takes
+//!   (`Vst2Loaded::take_requests`).
 //! - `audioMasterCurrentId` (2) — a shell plugin asks this during
 //!   `VSTPluginMain` to learn which sub-plugin to become. Returning 0 means "no
 //!   particular id", so every shell loaded its default effect — while
@@ -39,10 +40,14 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::Vst2Instance;
+use tutti_plugin_types::{Request, RescanScope};
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;
@@ -69,7 +74,7 @@ fn set_fire_update_display(enable: bool) {
     // Leak the handle, deliberately. The switch this just set is a `static` in
     // the probe's image, and it only survives while that image stays mapped —
     // dropping `lib` decrements the refcount that keeps it mapped. With no
-    // `Vst2Instance` holding the probe open at that moment, the value is
+    // `Active` holding the probe open at that moment, the value is
     // written and then discarded with the unload, and the next load maps a
     // fresh image reading the default.
     //
@@ -95,9 +100,8 @@ impl Probe {
         set_fire_update_display(true);
     }
 
-    fn load(&self) -> Vst2Instance {
-        Vst2Instance::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK)
-            .expect("the probe must load")
+    fn load(&self) -> Active {
+        Active::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK).expect("the probe must load")
     }
 }
 
@@ -107,11 +111,22 @@ impl Drop for Probe {
     }
 }
 
-/// `audioMasterUpdateDisplay` reaches the host and raises the stale flag.
+/// The requests the plugin has raised since the last call.
+fn requests(instance: &Active) -> Vec<Request> {
+    let mut asked = Vec::new();
+    instance.take_requests(&mut asked);
+    asked
+}
+
+/// `audioMasterUpdateDisplay` reaches the host and asks for the parameters to be
+/// read again.
 ///
-/// The probe fires it from `resume`, which `Vst2Instance::load` dispatches, so
-/// a loaded instance has already seen one. Before the routing arm existed the
-/// opcode hit the `trace!` fall-through and the flag stayed clear.
+/// The probe fires it from `resume`, which the activation dispatches, so a
+/// loaded instance has already seen one. Before the routing arm existed the
+/// opcode hit the `trace!` fall-through and nothing was asked.
+///
+/// Mutation (run): `HostState::update_display` raising nothing -> the plugin's
+/// request is lost -> fails.
 #[test]
 fn update_display_reaches_the_host() {
     let probe = Probe::acquire();
@@ -119,44 +134,53 @@ fn update_display_reaches_the_host() {
 
     let instance = probe.load();
 
+    let asked = requests(&instance);
     assert!(
-        instance.take_display_stale(),
+        asked.contains(&Request::RescanParams(RescanScope::Info)),
         "audioMasterUpdateDisplay fell through to the unhandled-opcode arm, so \
-         the host never learned its parameter view was stale"
+         the host never learned its parameter view was stale: {asked:?}"
     );
+    assert!(asked.contains(&Request::RescanParams(RescanScope::Values)));
 }
 
-/// The flag is consumed, so one request produces one re-read.
+/// The requests are consumed, so one request produces one re-read.
 ///
-/// A latch that stayed set would make every later poll re-read the whole
+/// A level that stayed raised would make every later pass re-read the whole
 /// parameter list for a change already handled.
+///
+/// Mutation (run): `take_requests` reading the word without taking it (a
+/// `peek`) -> the second call sees the request again -> fails.
 #[test]
-fn the_stale_flag_is_consumed_by_reading_it() {
+fn the_requests_are_consumed_by_taking_them() {
     let probe = Probe::acquire();
     probe.fires_update_display();
 
     let instance = probe.load();
 
-    assert!(instance.take_display_stale(), "first read sees the request");
     assert!(
-        !instance.take_display_stale(),
-        "the flag must clear on read, or a single request re-reads forever"
+        !requests(&instance).is_empty(),
+        "first take sees the request"
+    );
+    assert!(
+        requests(&instance).is_empty(),
+        "the word must clear on take, or a single request re-reads forever"
     );
 }
 
-/// A plugin that asks for nothing leaves the flag clear.
+/// A plugin that asks for nothing leaves the word clear.
 ///
-/// The negative half: without it, a host that always reported "stale" would
+/// The negative half: without it, a host that always reported a rescan would
 /// pass the test above.
 #[test]
-fn a_quiet_plugin_leaves_the_display_flag_clear() {
+fn a_quiet_plugin_asks_for_nothing() {
     let probe = Probe::acquire();
     // No `fires_update_display` — the probe's default.
 
     let instance = probe.load();
 
-    assert!(
-        !instance.take_display_stale(),
+    assert_eq!(
+        requests(&instance),
+        [],
         "nothing asked for a refresh, so nothing should be reported"
     );
 }

@@ -16,7 +16,7 @@
 //! Re-entrancy is the governing constraint: the plugin calls `audioMasterGetTime`
 //! from inside `processReplacing`, on the same thread that just wrote, and a
 //! seqlock reader cannot make progress against a write in flight on its own
-//! thread. [`Vst2Instance::process_f32`] runs `update_transport` to completion
+//! thread. [`Vst2Processor::process_f32`] runs `update_transport` to completion
 //! before entering the plugin, so the sequence is already even by then. Writes
 //! never overlap by construction: the one [`TransportWriter`] lives in the
 //! instance and writes through `&mut self`.
@@ -31,7 +31,7 @@
 //! gives up only when a write overlapped every copy, which the audio thread's
 //! own reads (the usual caller) never see.
 //!
-//! [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
+//! [`Vst2Processor::process_f32`]: crate::Vst2Processor::process_f32
 
 use bytemuck::{Pod, Zeroable};
 use tutti_types::{SeqReader, SeqWriter};

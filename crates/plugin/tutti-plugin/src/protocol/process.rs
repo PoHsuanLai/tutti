@@ -56,12 +56,12 @@ mod tests {
     fn golden_block() -> ProcessAudioData {
         use crate::protocol::{
             ChordValue, IpcMidiEvent, NoteExpressionIntValue, NoteExpressionTextValue,
-            NoteExpressionType, NoteExpressionValue, ParamAddress, ScaleValue,
+            NoteExpressionType, NoteExpressionValue, ParamId, ScaleValue,
         };
         let mut param_changes = ParameterChanges::reserved(2, 2);
-        param_changes.add_change(ParamAddress::Index(3), 0, 0.25);
-        param_changes.add_change(ParamAddress::Index(3), 32, 0.75);
-        param_changes.add_change(ParamAddress::Opaque(0xDEAD_BEEFu32.into()), 16, 1.0);
+        param_changes.add_change(ParamId::new(3), 0, 0.25);
+        param_changes.add_change(ParamId::new(3), 32, 0.75);
+        param_changes.add_change(0xDEAD_BEEFu32.into(), 16, 1.0);
         let mut note_expression = NoteExpressionChanges::new();
         note_expression.add_change(NoteExpressionValue {
             sample_offset: 4,

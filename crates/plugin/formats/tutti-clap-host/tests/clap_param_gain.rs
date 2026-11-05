@@ -40,7 +40,7 @@ use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::params_state::{GAIN_DB_MAX, GAIN_DB_MIN, GAIN_PARAM_ID};
-use tutti_plugin_types::{ParamAddress, ParamId, ParameterChanges};
+use tutti_plugin_types::{ParamId, ParameterChanges};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -194,8 +194,8 @@ fn drive(inst: &mut Active<f32>, params: &ParameterChanges) -> Vec<f32> {
 /// probe's ids are deliberately sparse and out of index order precisely so a
 /// host that confuses the two fails. Addressing it as an index here would make
 /// this suite assert against the same confusion.
-fn gain_addr() -> ParamAddress {
-    ParamAddress::Opaque(ParamId::new(GAIN_PARAM_ID))
+fn gain_addr() -> ParamId {
+    ParamId::new(GAIN_PARAM_ID)
 }
 
 // ---------------------------------------------------------------------------

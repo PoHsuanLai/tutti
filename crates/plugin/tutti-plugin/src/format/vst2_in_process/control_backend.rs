@@ -1,7 +1,7 @@
 //! Host-side capability backend for the in-process VST2 host.
 //!
 //! Implements [`HostParams`], [`HostState`], [`HostEditor`] (VST2 has an
-//! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
+//! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Instance>>` the audio unit
 //! holds. GUI thread calls take the lock for the duration of one plugin operation
 //! — short for parameter / state methods, potentially long for editor ones. The
 //! audio thread always uses `try_lock` (in `super::client`) and falls back to
@@ -12,12 +12,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use parking_lot::Mutex;
-use tutti_vst2_host::Vst2Instance;
+use tutti_plugin_types::Control;
 
+use super::instance::Instance;
 use crate::error::{EditorError, StateError};
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
+use crate::protocol::{Normalized, ParamId, ParameterInfo, RenderMode};
 use crate::protocol::{Preset, PresetId};
 use crate::util::window::{ContentScale, EditorSize};
 
@@ -25,7 +26,7 @@ use crate::util::window::{ContentScale, EditorSize};
 /// idle calls can drain plugin-internal automation events and notify
 /// the user-installed callback.
 pub(crate) struct InProcessVst2Backend {
-    pub(crate) inner: Arc<Mutex<Vst2Instance>>,
+    pub(super) inner: Arc<Mutex<Instance>>,
     pub(crate) param_sink: ParameterChangeSink,
     /// The cell the audio unit parks a rate change in, shared with the
     /// node. Drained here because telling a VST2 plugin its rate runs
@@ -39,21 +40,21 @@ pub(crate) struct InProcessVst2Backend {
 impl HostParams for InProcessVst2Backend {
     fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
         // Reuse the host crate's single narrow→shared map (the same one the
-        // server loader's `get_parameter_list` calls) rather than re-mapping
+        // server loader's `Control::parameters` calls) rather than re-mapping
         // `types::ParameterInfo` here. One mapping, two callers.
-        Some(self.inner.lock().get_parameter_list())
+        Some(self.inner.lock().parameter_list())
     }
 
-    fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
-        // Forwarded, not re-wrapped: `Vst2Instance::parameter` already returns
+    fn parameter_value(&self, id: ParamId) -> Option<f32> {
+        // Forwarded, not re-wrapped: `Control::parameter` already returns
         // `None` for a plugin exposing no `getParameter`, which is exactly this
         // trait's "unavailable". Wrapping it in `Some` would report a missing
-        // accessor as a present value. An opaque id addresses nothing in VST2
-        // and takes the same `None`.
-        self.inner.lock().get_parameter(id.index()?)
+        // accessor as a present value. An id the plugin does not have takes the
+        // same `None`.
+        Control::parameter(&**self.inner.lock(), id).map(|v| v.get() as f32)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
+    fn set_parameter_value(&self, id: ParamId, value: Normalized) {
         // The audio thread can take this path (PluginHandle is shared);
         // use `try_lock` so we never block audio. Lost writes are
         // recoverable — the GUI thread will retry on the next idle.
@@ -63,9 +64,8 @@ impl HostParams for InProcessVst2Backend {
         // the value passes through as-is — but it is a `Normalized` rather
         // than a bare float precisely because nothing downstream would catch
         // one that was not.
-        let Some(index) = id.index() else { return };
         if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(index, value.get() as f32);
+            let _ = instance.write_parameter(id, value);
         }
     }
 
@@ -82,13 +82,9 @@ impl HostParams for InProcessVst2Backend {
     /// [`set_parameter_value`](Self::set_parameter_value): `PluginHandle` is
     /// shared and the audio thread can reach this. A lost text lookup shows a
     /// number for one frame.
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
-        let index = id.index()?;
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let instance = self.inner.try_lock()?;
-        let current = instance.get_parameter(index)?;
-        (f64::from(current) == value.get())
-            .then(|| instance.parameter_display(index))
-            .flatten()
+        Control::parameter_text(&**instance, id, value)
     }
 
     /// Parse through the plugin's own `effString2Parameter`.
@@ -96,11 +92,9 @@ impl HostParams for InProcessVst2Backend {
     /// **This writes**, since that opcode parses by applying — see the trait
     /// method. It therefore takes the same `try_lock` the other write on this
     /// backend does.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
-        let index = id.index()?;
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let instance = self.inner.try_lock()?;
-        let value = instance.set_parameter_from_string(index, text)?;
-        Some(Normalized::new(f64::from(value)))
+        instance.set_parameter_from_string(id, text)
     }
 
     fn is_crashed(&self) -> bool {
@@ -126,9 +120,7 @@ impl HostState for InProcessVst2Backend {
     /// failed". The in-process path cannot hit the transport's size limit, so
     /// `Rejected` is the only failure it can produce.
     fn save_state(&self) -> Result<Vec<u8>, StateError> {
-        self.inner
-            .lock()
-            .get_state()
+        Control::save_state(&mut **self.inner.lock())
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 
@@ -137,9 +129,7 @@ impl HostState for InProcessVst2Backend {
     /// This is the whole change on the in-process path: the `Result` was
     /// already in hand and discarded on the previous line.
     fn load_state(&self, data: &[u8]) -> Result<(), StateError> {
-        self.inner
-            .lock()
-            .set_state(data)
+        Control::load_state(&mut **self.inner.lock(), data)
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }
@@ -153,12 +143,7 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// inventing a bank name to fill the field would be a claim the format
     /// never made.
     fn presets(&self) -> Vec<Preset> {
-        self.inner
-            .lock()
-            .programs()
-            .into_iter()
-            .map(|(index, name)| Preset::new(PresetId::Number(index), name))
-            .collect()
+        Control::presets(&mut **self.inner.lock())
     }
 
     /// Switch program, bracketed by `effBeginSetProgram` / `effEndSetProgram`.
@@ -167,14 +152,11 @@ impl crate::backend::HostPresets for InProcessVst2Backend {
     /// belongs to another format and names no VST2 program, so it is refused
     /// rather than coerced into an index.
     fn load_preset(&self, id: &PresetId) -> bool {
-        match id.number() {
-            Some(index) => self.inner.lock().set_program(index),
-            None => false,
-        }
+        Control::load_preset(&mut **self.inner.lock(), id)
     }
 
     fn current_preset(&self) -> Option<PresetId> {
-        Some(PresetId::Number(self.inner.lock().current_program()))
+        Control::current_preset(&mut **self.inner.lock())
     }
 }
 

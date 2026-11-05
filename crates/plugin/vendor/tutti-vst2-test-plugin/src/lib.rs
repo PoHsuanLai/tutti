@@ -495,7 +495,7 @@ impl Plugin for ProbePlugin {
 
     fn can_do(&self, can_do: CanDo) -> Supported {
         // Answers every query alike, including the receiveVstMidiEvent /
-        // sendVstMidiEvent pair the host asks during `Vst2Instance::load`,
+        // sendVstMidiEvent pair the host asks during `Vst2Loaded::load`,
         // so a test can watch `PluginInfo::receives_midi` flip.
         //
         // VST 2.4: 1 = yes, 0 = don't know, -1 = explicitly no. Reading `No`

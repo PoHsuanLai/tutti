@@ -12,7 +12,7 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    ContentScale, EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps,
+    ContentScale, EditorSize, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps,
     ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets,
     PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
     RenderMode, WindowHandle,
@@ -785,11 +785,7 @@ impl PluginAudio for AuInstance {
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
-                    // `AudioUnitParameterID` is opaque; a VST2 positional index
-                    // addresses nothing here.
-                    let Some(id) = queue.param_id.opaque().map(|i| i.get()) else {
-                        continue;
-                    };
+                    let id = queue.param_id.get();
                     if let Some(bounds) = lookup_bounds(&self.param_ranges, id) {
                         let _ = self
                             .inner
@@ -882,9 +878,7 @@ impl PluginParams for AuInstance {
     /// against; its plain value is reported unchanged rather than scaled by a
     /// guess. `read_param_ranges` lists every parameter the AU declares, so an
     /// absence means the AU did not declare it.
-    fn get_parameter(&self, id: ParamAddress) -> f64 {
-        // A VST2 index addresses nothing here; `AudioUnitParameterID` is opaque.
-        let Some(id) = id.opaque() else { return 0.0 };
+    fn get_parameter(&self, id: ParamId) -> f64 {
         let Ok(plain) = parameters::get(self.inner.raw_unit(), id.get()) else {
             return 0.0;
         };
@@ -897,8 +891,7 @@ impl PluginParams for AuInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
     /// the value is denormalized against the same table.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        let Some(id) = id.opaque() else { return };
+    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
@@ -919,8 +912,7 @@ impl PluginParams for AuInstance {
     /// third-party AUs do implement it, and the alternative is a host that
     /// cannot display their values. See
     /// `tutti-au-host`'s `au_param_display` suite, which pins the absence.
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
-        let id = id.opaque()?;
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
@@ -933,8 +925,7 @@ impl PluginParams for AuInstance {
     ///
     /// As with [`parameter_text`](Self::parameter_text), no Apple AU implements
     /// the underlying property on macOS 15.6.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
-        let id = id.opaque()?;
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let plain = parameters::value_from_string(self.inner.raw_unit(), id.get(), text)?;
         let normalized = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_normalized(plain),
@@ -976,7 +967,7 @@ impl PluginParams for AuInstance {
                 ParameterInfo {
                     // `AudioUnitParameterID` — AU's opaque plugin-chosen handle,
                     // the same concept as VST3's `ParamID` and CLAP's `clap_id`.
-                    id: ParamAddress::Opaque(p.id.into()),
+                    id: p.id.into(),
                     name: p.name,
                     unit: p.unit.to_string(),
                     range: ParamRange::Plain {
@@ -1722,7 +1713,7 @@ mod tests {
             playhead: Default::default(),
             meta: Meta::default(),
         };
-        let addr = ParamAddress::Opaque(cutoff_id.into());
+        let addr = cutoff_id.into();
 
         au.set_parameter(addr, Normalized::new(1.0));
         let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
@@ -1932,7 +1923,7 @@ mod tests {
             (0.5f64, min + 0.5 * (max - min)),
         ] {
             let mut changes = ParameterChanges::new();
-            // The queue is keyed by the same `ParamAddress` the descriptor
+            // The queue is keyed by the same `ParamId` the descriptor
             // carries, so nothing here has to restate that AU is opaque.
             let mut queue = ParameterQueue::with_capacity(target.id, 1);
             queue.add_point(0, normalized);
@@ -1964,7 +1955,7 @@ mod tests {
             // unit rather than through `get_parameter`, which now normalizes —
             // going through it would assert the identity of two conversions and
             // pass even if both were wrong.
-            let opaque = target.id.opaque().expect("AU ids are opaque").get();
+            let opaque = target.id.get();
             let native =
                 f64::from(parameters::get(au.inner.raw_unit(), opaque).expect("param is readable"));
             assert!(
@@ -2041,7 +2032,7 @@ mod tests {
             .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
             .expect("AUDelay should expose a wide-range parameter");
         let (min, max) = target.range.bounds().expect("AU declares a plain range");
-        let opaque = target.id.opaque().expect("AU ids are opaque").get();
+        let opaque = target.id.get();
 
         // The impl's conversion, driven here against the same table. Full scale
         // must reach the AU as `max`, not as the raw `1.0` — that is the bug

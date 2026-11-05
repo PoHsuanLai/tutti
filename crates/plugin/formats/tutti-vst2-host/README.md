@@ -20,19 +20,20 @@ callbacks upstream swallowed. This crate adds what a host actually needs on top:
 pre-allocated render scratch buffers, the MIDI codec, callback wiring,
 transport-info bookkeeping, state save/restore, and editor lifecycle.
 
-One type carries the whole lifecycle: [`Vst2Instance`]. That is the format's own
-contract showing through, not a shortcut — see
-[Why one type carries the whole lifecycle](#why-one-type-carries-the-whole-lifecycle).
+A plugin is three types, as in the other three hosts (design 016): [`Vst2Loaded`]
+is the plugin after `effOpen` and before the first `effMainsChanged(1)`;
+activating it splits it into a [`Vst2Processor`], which renders on the audio
+thread, and a [`Vst2Controller`], which runs the dispatcher on the main thread
+and derefs to the `Vst2Loaded`. Rejoining them is `deactivate`.
 
 The main types:
 
-- [`Vst2Instance`]: a loaded plugin; process, parameters, programs, state,
-  editor.
-- [`RenderScratch`]: the pre-allocated buffers each process call renders
-  through.
+- [`Vst2Loaded`]: a loaded plugin; parameters, programs, state, editor.
+- [`Vst2Processor`]: the realtime half; process, with its own render scratch.
+- [`Vst2Controller`]: the main-thread half; the whole control surface beside a
+  running `process`.
 - [`Vst2ProcessContext`]: per-block MIDI input, transport and sample rate.
-- [`PluginInfo`]: metadata read at load (name, vendor, channel counts, latency,
-  tail, category).
+- [`PluginInfo`]: what the plugin declared at load (name, vendor, category).
 - [`Vst2Error`]: the error type, with [`LoadStage`] for load failures.
 
 ## What it does not own
@@ -61,22 +62,26 @@ below.
 `no_run`: the load needs a real VST2 binary on disk.
 
 ```rust,no_run
-use std::path::Path;
-use tutti_vst2_host::{Vst2ProcessContext, RenderScratch, Vst2Instance};
+use tutti_plugin_types::{Loaded, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 
-let mut plugin = Vst2Instance::load(
-    Path::new("/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst"),
-    48_000.0,
-    512,
-)?;
+let plugin = Vst2Loaded::load("/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst")?;
+let (inputs_width, outputs_width) = plugin.pins();
 
-let meta = plugin.metadata().clone();
-let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, 512);
+// The rate, block size and precision are the activation's.
+let Ok((mut processor, controller)) = plugin.activate(Prepare {
+    rate: SampleRate(48_000.0),
+    max_block: Samples(512),
+    format: SampleFormat::Float32,
+    mode: RenderMode::Realtime,
+}) else {
+    panic!("the plugin refused to run");
+};
 
 let inputs: Vec<Vec<f32>> =
-    (0..meta.num_inputs.count()).map(|_| vec![0.0; 512]).collect();
+    (0..inputs_width.count()).map(|_| vec![0.0; 512]).collect();
 let mut outputs: Vec<Vec<f32>> =
-    (0..meta.num_outputs.count()).map(|_| vec![0.0; 512]).collect();
+    (0..outputs_width.count()).map(|_| vec![0.0; 512]).collect();
 
 let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
 let mut out_refs: Vec<&mut [f32]> =
@@ -84,51 +89,56 @@ let mut out_refs: Vec<&mut [f32]> =
 
 let ctx = Vst2ProcessContext::new(48_000.0);
 let _midi_out: &tutti_vst2_host::MidiEventVec =
-    plugin.process_f32(&in_refs, &mut out_refs, 512, &ctx, &mut scratch);
+    processor.process_f32(&in_refs, &mut out_refs, 512, &ctx);
+
+// Ending it rejoins the halves.
+let Ok(_plugin) = Vst2Loaded::deactivate(processor, controller) else {
+    panic!("the plugin would not stop");
+};
 # Ok::<(), tutti_vst2_host::Vst2Error>(())
 ```
 
-### Parameters address positionally — VST2 alone among the four
+[`Lifecycle`](tutti_plugin_types::Lifecycle) drives the same transitions from
+the plugin's own requests (`audioMasterIOChanged`, `audioMasterUpdateDisplay`),
+which [`Vst2Loaded::take_requests`] collects; VST2 re-reads the figures instead of
+restarting ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
+
+### A parameter id is its position — VST2 alone among the four
 
 `getParameter(effect, index)` and `numParams` are both `i32` in the ABI, and
-consecutive parameters really are consecutive. That is the whole reason
-[`tutti_plugin_types::ParamAddress`] has two arms: the other three formats hand
-out an opaque, plugin-chosen handle on which arithmetic means nothing.
+consecutive parameters really are consecutive. The shared [`ParamId`] carries
+that index (this crate converts at its boundary); the other three formats hand
+out an opaque, plugin-chosen handle on which arithmetic means nothing, and so
+does the type.
 
 ```rust,no_run
-# use std::path::Path;
-# use tutti_plugin_types::ParamAddress;
-# use tutti_vst2_host::Vst2Instance;
+# use tutti_plugin_types::{Control, Normalized};
+# use tutti_vst2_host::Vst2Loaded;
 # fn ex() -> tutti_vst2_host::Result<()> {
-let plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
+let mut plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
 
-for info in plugin.get_parameter_list() {
-    // Always the `Index` arm here. A VST2 host may iterate positions; a
-    // VST3/CLAP/AU host may not, which is what the enum keeps apart.
-    let ParamAddress::Index(index) = info.id else {
-        unreachable!("VST2 addresses parameters positionally")
-    };
-    println!("{index}: {} ({:?})", info.qualified_name(), info.bounds());
+for info in plugin.parameters() {
+    println!("{}: {} ({:?})", info.id, info.qualified_name(), info.bounds());
 }
 
-// The write takes the raw `i32` position and a normalized `0..=1` value —
-// a C ABI, which is where the engine's unit newtypes stop.
-plugin.set_parameter(0, 0.5);
+// A normalized `0..=1` value, written to the parameter at position 0.
+let first = plugin.parameters()[0].id;
+plugin.set_parameter(first, Normalized::new(0.5));
 # Ok(()) }
 ```
 
 ### State and editor
 
 ```rust,no_run
-# use std::path::Path;
-# use tutti_vst2_host::{Vst2Instance, WindowHandle};
+# use tutti_plugin_types::Control;
+# use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst2_host::Result<()> {
-# let mut plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
+# let mut plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
-// fallback; `set_state` reads the header back and reports a refusal rather
+// fallback; `load_state` reads the header back and reports a refusal rather
 // than swallowing it.
-let saved = plugin.get_state()?;
-plugin.set_state(&saved)?;
+let saved = plugin.save_state().expect("saves");
+plugin.load_state(&saved).expect("restores");
 
 // The editor is the same `AEffect` the audio path drives — hence in-process.
 let size = plugin.open_editor(unsafe { WindowHandle::from_raw(native_view_ptr) })?;
@@ -137,38 +147,24 @@ plugin.close_editor();
 # Ok(()) }
 ```
 
-## Why one type carries the whole lifecycle
+## Why the Controller calls the plugin beside `process`
 
-VST2's own forced constraint, and the reason this crate has no `Vst2Loaded`.
+VST2 gives no threading guarantee for the dispatcher: the SDK says the dispatcher
+is called from the UI thread and `process` from the audio thread, that
+`setParameter` and `getParameter` may be called from either, and nothing about
+any other opcode against `process`. Every major host runs the dispatcher on the
+main thread while `process` runs on the audio thread, and plugins are written and
+tested against that, so the [`Vst2Controller`] does the same: chunks, programs,
+parameter display, the editor and the reads of latency and tail all run beside a
+rendering Processor, with no gate and no dropped block. That is a convention, not
+a rule the format states (see the invariant on the crate's private `Shell`), and
+a plugin that breaks it misbehaves in every host.
 
-`effOpen`, `effSetSampleRate`, `effSetBlockSize` and the first
-`effMainsChanged(1)` all run inside [`Vst2Instance::load`], so the instance is
-ready to process the moment it exists. A `Vst2Loaded` type would sit over a
-window no caller can observe and would carry no operations the fused type does
-not — the split would buy a type boundary that guards nothing.
-
-### Suspend and resume are a bracket, not a stage
-
-[`suspend`][`Vst2Instance::suspend`] and [`resume`][`Vst2Instance::resume`] are
-ordinary `&mut self` methods over a `resumed` flag, and the flag is not a demoted
-lifecycle stage. In VST2 the suspended state is a *reconfiguration bracket* — the
-thing a host does around a sample-rate or block-size change, because plugins
-reallocate rate-dependent buffers in `effMainsChanged` and assume they are not
-concurrently processing. It is not a state a host parks in: no VST2 operation is
-legal only while suspended and interesting to a host, which is exactly what a
-stage would need in order to be worth naming.
-
-That is why the bracket is spelled as a private `suspend_for_reconfigure` /
-`restore_after_reconfigure` pair rather than as two public transitions, and why it
-is **edge-triggered**: the suspend half reports whether it actually dispatched,
-and the restore half takes that answer, so a plugin already suspended on entry
-stays suspended on exit. [`set_sample_rate`][`Vst2Instance::set_sample_rate`],
-[`set_block_size`][`Vst2Instance::set_block_size`] and
-[`reset_processing_state`][`Vst2Instance::reset_processing_state`] all share it.
-An unconditional `suspend(); set(); resume()` would instead resume a plugin the
-caller had deliberately stopped, and — since `effMainsChanged` is not documented
-as idempotent — churn a full buffer teardown and reallocation on every setter
-call.
+Only what the plugin cannot take while processing is exclusive: `effSetSampleRate`,
+`effSetBlockSize`, `effSetProcessPrecision` and `effMainsChanged` are the
+activation and the rejoin, with the Processor recalled first. The bracket is
+edge-triggered: `effStopProcess` is sent once, by whoever started processing,
+and `effMainsChanged(0)` once, by the rejoin.
 
 ## Parameter and MIDI metadata
 
@@ -183,31 +179,31 @@ None. The crate is the VST2 loader.
 
 ## Threading and real-time safety
 
-[`Vst2Instance::process_f32`] and [`Vst2Instance::process_f64`] do not
-allocate or lock, and are meant for the audio thread. Loading, the editor, and
-anything that suspends the plugin ([`Vst2Instance::set_sample_rate`],
-[`Vst2Instance::reset_processing_state`]) belong on the main thread; debug
-builds assert it once `tutti_plugin_types::mark_main_thread` has been called.
-The plugin is not thread-safe, so callers serialize access to an instance.
+[`Vst2Processor::process_f32`] and [`Vst2Processor::process_f64`] do not
+allocate or lock, and are meant for the audio thread; a block the plugin cannot
+take (a channel shorter than the block, a 32-bit block for a 64-bit activation)
+is an error and renders nothing. Loading, the editor, and the activation and
+rejoin belong on the main thread; debug builds assert it once
+`tutti_plugin_types::mark_main_thread` has been called. The plugin is not
+thread-safe: the Controller and the Processor are the two threads it is
+reached from, and nothing else touches it. A Processor that outlives its
+Controller does not destroy the plugin on the audio thread: it queues it for the
+next control-side call (`activate`, a `flush_edits` tick) to destroy.
 
 ## License
 
 MIT OR Apache-2.0
 
-[`Vst2Instance`]: crate::Vst2Instance
-[`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
-[`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
-[`RenderScratch`]: crate::RenderScratch
+[`Vst2Loaded`]: crate::Vst2Loaded
+[`Vst2Loaded::take_requests`]: crate::Vst2Loaded::take_requests
+[`Vst2Processor`]: crate::Vst2Processor
+[`Vst2Processor::process_f32`]: crate::Vst2Processor::process_f32
+[`Vst2Processor::process_f64`]: crate::Vst2Processor::process_f64
+[`Vst2Controller`]: crate::Vst2Controller
 [`Vst2ProcessContext`]: crate::Vst2ProcessContext
 [`PluginInfo`]: crate::PluginInfo
 [`Vst2Error`]: crate::Vst2Error
 [`LoadStage`]: crate::LoadStage
-[`Vst2Instance::load`]: crate::Vst2Instance::load
-[`Vst2Instance::suspend`]: crate::Vst2Instance::suspend
-[`Vst2Instance::resume`]: crate::Vst2Instance::resume
-[`Vst2Instance::set_sample_rate`]: crate::Vst2Instance::set_sample_rate
-[`Vst2Instance::set_block_size`]: crate::Vst2Instance::set_block_size
-[`Vst2Instance::reset_processing_state`]: crate::Vst2Instance::reset_processing_state
 [`ParameterProperties`]: crate::ParameterProperties
 [`MidiProgram`]: crate::MidiProgram
 [`MidiKeyName`]: crate::MidiKeyName
@@ -218,5 +214,5 @@ MIT OR Apache-2.0
 [`EditorSize`]: crate::EditorSize
 [`Samples`]: crate::Samples
 [`MidiEvent`]: crate::MidiEvent
-[`tutti_plugin_types::ParamAddress`]: tutti_plugin_types::ParamAddress
+[`ParamId`]: tutti_plugin_types::ParamId
 [`tutti_midi_types::MidiEvent`]: tutti_midi_types::MidiEvent

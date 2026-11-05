@@ -1,6 +1,6 @@
 //! In-process VST2 host.
 //!
-//! Pairs `tutti_vst2_host::Vst2Instance` with the same `PluginHandle` API the
+//! Pairs the halves of an activated `tutti_vst2_host::Vst2Loaded` with the same `PluginHandle` API the
 //! out-of-process backends expose. The audio thread reaches the plugin
 //! through `try_lock` — when the GUI thread is in the middle of a long
 //! `editor_idle` call the audio thread emits silence and bumps a
@@ -9,6 +9,7 @@
 mod client;
 mod control_backend;
 mod fork;
+mod instance;
 mod loader;
 mod node;
 

@@ -24,7 +24,6 @@ use tutti_mod::{
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::Result;
 use tutti_plugin::catalog::{Plugin, PluginRole};
-use tutti_plugin::handles::ParamAddress;
 
 use tutti_core::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, ProjectMeter, SampleRate};
 
@@ -79,10 +78,7 @@ fn main() -> Result<()> {
         .parameter_descriptors()
         .and_then(|list| list.first().map(|p| p.id));
     let _automation = first_param.and_then(|address| {
-        let id = match address {
-            ParamAddress::Opaque(id) => id.get(),
-            ParamAddress::Index(i) => u32::try_from(i).ok()?,
-        };
+        let id = address.get();
         let lfo = Layer {
             id: LayerId(1),
             clock: Clock::Beats {

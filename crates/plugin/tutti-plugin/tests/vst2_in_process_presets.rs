@@ -4,7 +4,7 @@
 //! `Plugin` at load, so a preset browser holds a handle and nothing else. These
 //! tests drive that route end to end — `handle.presets()` → `handle.load_preset`
 //! → the program the plugin actually switched to — rather than the
-//! `Vst2Instance` methods underneath, which `tutti-vst2-host`'s own suite
+//! `Vst2Loaded` methods underneath, which `tutti-vst2-host`'s own suite
 //! already covers.
 //!
 //! # What makes the round trip meaningful

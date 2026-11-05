@@ -602,8 +602,8 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        Normalized, ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams,
-        PluginState, PluginTail, Samples,
+        Normalized, ParamId, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
+        PluginTail, Samples,
     };
 
     #[test]
@@ -695,10 +695,10 @@ mod tests {
         }
     }
     impl PluginParams for NanPlugin {
-        fn get_parameter(&self, _id: ParamAddress) -> f64 {
+        fn get_parameter(&self, _id: ParamId) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
+        fn set_parameter(&mut self, _id: ParamId, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -776,10 +776,10 @@ mod tests {
         }
     }
     impl PluginParams for EchoProbe {
-        fn get_parameter(&self, _id: ParamAddress) -> f64 {
+        fn get_parameter(&self, _id: ParamId) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
+        fn set_parameter(&mut self, _id: ParamId, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -1314,8 +1314,6 @@ mod tests {
     ///   this panics at the cap.
     #[test]
     fn copying_emitted_events_into_a_warm_output_does_not_allocate() {
-        use tutti_plugin::server::ParamAddress;
-
         // Points well past any small reservation, so the buffers are genuinely
         // on the heap and a lost capacity is a real reallocation rather than a
         // no-op; MIDI past its cap, so the drop path runs inside the gate.
@@ -1331,11 +1329,7 @@ mod tests {
         let mut emitted_params = ParameterChanges::reserved(PARAMS, POINTS);
         for p in 0..PARAMS {
             for pt in 0..POINTS {
-                emitted_params.add_change(
-                    ParamAddress::Opaque((p as u32).into()),
-                    pt as i32,
-                    pt as f64 / POINTS as f64,
-                );
+                emitted_params.add_change((p as u32).into(), pt as i32, pt as f64 / POINTS as f64);
             }
         }
 

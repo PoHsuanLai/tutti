@@ -93,7 +93,7 @@ static LATE_LATENCY: AtomicI32 = AtomicI32::new(0);
 
 /// Declare `samples` of latency, but only from `effSetSampleRate` onwards.
 ///
-/// Set before `Vst2Instance::load` and restore afterwards — like every switch
+/// Set before `Vst2Loaded::load` and restore afterwards — like every switch
 /// here, this mutates the loaded image the whole process shares.
 #[unsafe(no_mangle)]
 pub extern "C" fn tutti_vst2_probe_set_late_latency(samples: i32) {

@@ -621,8 +621,7 @@ mod tests {
     #[cfg(feature = "clap")]
     use tutti_plugin::server::Features;
     use tutti_plugin::server::{
-        IpcMidiEventVec, NoteExpressionChanges, ParamAddress, ParamId, ParameterChanges,
-        TransportInfo,
+        IpcMidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -673,7 +672,7 @@ mod tests {
             (
                 "GetParameter",
                 HostMessage::GetParameter {
-                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                    param_id: ParamId::new(0),
                 },
                 EmptyPayload,
             ),
@@ -685,7 +684,7 @@ mod tests {
             (
                 "GetParameterInfo",
                 HostMessage::GetParameterInfo {
-                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                    param_id: ParamId::new(0),
                 },
                 EmptyPayload,
             ),
@@ -714,7 +713,7 @@ mod tests {
             (
                 "SetParameter",
                 HostMessage::SetParameter {
-                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                    param_id: ParamId::new(0),
                     value: 0.5,
                 },
                 Silent,
@@ -1236,7 +1235,7 @@ mod tests {
 
     /// Fetch any param_id from the loaded plugin's parameter list.
     #[cfg(feature = "clap")]
-    fn first_param_id(s: &mut Session) -> ParamAddress {
+    fn first_param_id(s: &mut Session) -> ParamId {
         let reply = s
             .handle(HostMessage::GetParameterList)
             .unwrap()
@@ -1605,6 +1604,35 @@ mod tests {
     fn an_idle_drain_does_not_allocate_clap() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("idle_clap", SampleFormat::Float32);
+        assert!(s.drain_async_events().is_empty());
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..64 {
+                assert!(s.drain_async_events().is_empty());
+            }
+        });
+    }
+
+    /// As above, for VST2: the plugin asked for nothing and moved no parameter,
+    /// so the drain (its request pass and the editor-knob queue) allocates
+    /// nothing.
+    ///
+    /// Mutation (run): the bridge cloning its `State` for each `drive` again
+    /// together with `serve` driving a tick on every pass aborts inside the
+    /// gate; and `poll` collecting the plugin's parameter moves into a
+    /// `Vec::with_capacity(1)` aborts it too.
+    #[test]
+    #[cfg(feature = "vst2")]
+    fn an_idle_drain_does_not_allocate_vst2() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut s = Session::new();
+        s.handle(HostMessage::LoadPlugin {
+            path: std::path::PathBuf::from(crate::test_utils::vst2_probe_path()),
+            sample_rate: 48_000.0,
+            block_size: 512,
+            preferred_format: SampleFormat::Float32,
+            shm_name: "idle_vst2".to_string(),
+        })
+        .unwrap();
         assert!(s.drain_async_events().is_empty());
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {

@@ -23,7 +23,7 @@ mod thread;
 use crate::error::{Delivered, Result, StateError};
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
+    NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, Preset, PresetId,
     ScaleChanges, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
@@ -235,7 +235,7 @@ impl AudioBridge {
 
     // --- RT fire-and-forget ---
 
-    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: f32) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamId, value: f32) -> bool {
         !self.lifecycle.is_crashed()
             && self
                 .channels
@@ -565,7 +565,7 @@ impl AudioBridge {
         ask_resp.recv_timeout(timeout).ok().flatten()
     }
 
-    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamId) -> Option<f32> {
         if self.lifecycle.is_crashed() {
             return None;
         }
@@ -584,7 +584,7 @@ impl AudioBridge {
     /// `None` when the subprocess is gone, the request could not be queued, or
     /// the plugin declined — all three mean there is no text, and a caller
     /// renders the raw number.
-    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+    pub fn parameter_text(&self, param_id: ParamId, value: Normalized) -> Option<String> {
         if self.lifecycle.is_crashed() {
             return None;
         }
@@ -604,11 +604,7 @@ impl AudioBridge {
     /// `None` when it cannot parse the string, on the same three failure paths
     /// as [`parameter_text`](Self::parameter_text). A caller must leave its
     /// field unchanged rather than substituting a fallback.
-    pub fn parameter_value_from_text(
-        &self,
-        param_id: ParamAddress,
-        text: &str,
-    ) -> Option<Normalized> {
+    pub fn parameter_value_from_text(&self, param_id: ParamId, text: &str) -> Option<Normalized> {
         if self.lifecycle.is_crashed() {
             return None;
         }

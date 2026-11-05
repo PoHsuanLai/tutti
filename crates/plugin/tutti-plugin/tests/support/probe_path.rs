@@ -13,7 +13,7 @@ const CANDIDATES: &str = env!("TUTTI_VST2_PROBE_CANDIDATES");
 
 /// Absolute path to the freshest built copy of the reference plugin.
 ///
-/// Returns `&'static PathBuf` — it derefs to `&Path` for `Vst2Instance::load`
+/// Returns `&'static PathBuf` — it derefs to `&Path` for `Vst2Loaded::load`
 /// and is accepted by `Path::new`, which is what the call sites here want. The
 /// CLAP side returns `&str`, which is what `libloading` wants.
 ///

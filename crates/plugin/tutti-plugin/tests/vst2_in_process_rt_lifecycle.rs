@@ -3,7 +3,7 @@
 //! `Node::reset` and `Node::prepare` may run while the plugin is rendering
 //! (a graph resets and re-prepares a node between blocks, on another thread
 //! from the one that renders it), so neither may reach
-//! `Vst2Instance::set_sample_rate`: that brackets `effSetSampleRate`(10) in
+//! `Instance::set_sample_rate`: that brackets `effSetSampleRate`(10) in
 //! `effMainsChanged`(12) — the opcode plugins allocate and free their
 //! rate-dependent buffers in. Routing there dispatches two main-thread-only
 //! opcodes, plus `effStopProcess`(71) / `effStartProcess`(72), racing the
@@ -71,7 +71,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Vst2Loaded` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
@@ -156,7 +156,7 @@ fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
 
 /// `Node::reset` must dispatch nothing.
 ///
-/// It ran `Vst2Instance::set_sample_rate`, so pre-fix this saw the full
+/// It ran `Instance::set_sample_rate`, so pre-fix this saw the full
 /// `effStopProcess` → `effMainsChanged(0)` → `effSetSampleRate` →
 /// `effMainsChanged(1)` → `effStartProcess` cycle: `suspend_count` and
 /// `resume_count` each up by one, from the audio thread, with an allocation
@@ -197,12 +197,13 @@ fn reset_dispatches_no_opcode_to_the_plugin() {
 /// Blocks of any length up to the prepared maximum reach the plugin, and a
 /// re-prepare for a longer maximum dispatches nothing to it.
 ///
-/// The node sizes its scratch in `prepare`, to the graph's `MaxBlock`, and
-/// never grows it on the audio thread.
+/// The render scratch is the Processor's, sized at the activation to the block
+/// the plugin was told, so a prepare has nothing to resize and never grows
+/// anything on the audio thread.
 ///
-/// Mutation (run): `ensure_scratch_size` not resizing the render scratch
-/// (`RenderScratch` left at its load-time size) → the 1 000-frame block
-/// renders past it → fails.
+/// Mutation (run): the node's `prepare` dispatching a rate to the plugin
+/// (`self.inner.lock().set_sample_rate(..)`) → the re-prepare suspends and
+/// resumes it → fails.
 #[test]
 fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
     let _guard = lock_probe();
@@ -556,7 +557,7 @@ fn the_handle_counts_lost_parameter_reports() {
 /// 8192-frame block is rendered as two calls of 4096, and the largest call
 /// the plugin saw is the announced maximum.
 ///
-/// Mutation (run): `Vst2Instance::process_f32` rendering the block in one call
+/// Mutation (run): `Vst2Processor::process_f32` rendering the block in one call
 /// -> the plugin is entered with 8192 against an announced 4096 -> fails.
 #[test]
 fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
@@ -582,7 +583,7 @@ fn a_block_past_the_announced_maximum_is_split_before_the_plugin() {
 /// next editor pump (the main-thread tick an in-process plugin has), and the
 /// node's shape declares the new latency.
 ///
-/// Mutation (run): the pump not calling `Vst2Instance::poll_changes` -> no
+/// Mutation (run): the pump not calling `Instance::poll_changes` -> no
 /// invalidation -> fails. Mutation (run): `shape` reading the load-time
 /// `metadata.latency_samples` -> the shape still declares 0 -> fails.
 #[test]

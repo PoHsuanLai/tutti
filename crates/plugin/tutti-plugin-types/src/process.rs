@@ -9,7 +9,7 @@
 
 use crate::{
     ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionTextChanges,
-    ParamAddress, ParameterChanges, ScaleChanges, TransportInfo,
+    ParamId, ParameterChanges, ScaleChanges, TransportInfo,
 };
 
 /// Sequencer-context inputs for one block: chords, scales, per-note text and
@@ -182,16 +182,11 @@ impl ProcessOutput {
     /// [`reserve_params`](Self::reserve_params) gave
     /// [`param_changes`](Self::param_changes)
     /// ([`ParameterChanges::add_change`]: same matching on the full
-    /// [`ParamAddress`], same clamping of `value`). Never allocates: past the
+    /// [`ParamId`], same clamping of `value`). Never allocates: past the
     /// room the parameter keeps its latest value, or a parameter past every
     /// queue is dropped, and `false` is returned, counted in the set's
     /// [`ParameterChanges::points_overflowed`].
-    pub fn emit_param_point(
-        &mut self,
-        param_id: ParamAddress,
-        sample_offset: i32,
-        value: f64,
-    ) -> bool {
+    pub fn emit_param_point(&mut self, param_id: ParamId, sample_offset: i32, value: f64) -> bool {
         self.param_changes
             .add_change(param_id, sample_offset, value)
     }

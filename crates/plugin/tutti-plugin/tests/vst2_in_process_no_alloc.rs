@@ -154,12 +154,12 @@ fn process_with_midi_does_not_allocate() {
 /// for each of them (frames 0 and 32), every value new: the node's slots,
 /// its block's queues and their point room, and the segment slots are all
 /// reserved at load and prepare, and the plugin is set through
-/// `Vst2Instance::set_parameter`, which reads its bound without allocating.
+/// the Processor's automation write, which reads its bound without allocating.
 /// After the gate the plugin holds each parameter's last value, and nothing
 /// was dropped or merged for want of room.
 ///
 /// Mutations (run), each fails (aborts inside the gate): the parameter
-/// bound read through `get_info()` again in `Vst2Instance::param_index`
+/// bound read through `get_info()` again in `Vst2Loaded::param_index`
 /// (it clones the plugin's name and vendor); the node's staged list rebuilt
 /// per block (`self.staged = Vec::new()` for `clear()` in
 /// `ParamDelivery::settle`).
@@ -207,7 +207,7 @@ fn two_hundred_moving_parameters_do_not_allocate() {
         assert_eq!(
             handle
                 .params()
-                .parameter_value(tutti_plugin::handles::ParamAddress::Index(id as i32)),
+                .parameter_value(tutti_plugin::handles::ParamId::new((id as i32) as u32)),
             Some(value(71, 1, id)),
             "parameter {id}"
         );

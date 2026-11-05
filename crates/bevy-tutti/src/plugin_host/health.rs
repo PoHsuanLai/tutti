@@ -294,7 +294,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tutti_plugin::Liveness;
-    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress, PluginHandle};
+    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamId, PluginHandle};
     use tutti_plugin::server::ParameterInfo;
 
     /// A backend whose liveness is whatever the test says it is.
@@ -316,10 +316,10 @@ mod tests {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
             None
         }
-        fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
+        fn parameter_value(&self, _id: ParamId) -> Option<f32> {
             None
         }
-        fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
+        fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
             self.cause.is_some()
         }

@@ -25,8 +25,7 @@ use super::PluginBridge;
 use crate::error::StateError;
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, PROTOCOL_VERSION, ParamAddress, ParamId,
-    SampleFormat, SlabLayout,
+    BridgeMessage, ChannelLayout, HostMessage, PROTOCOL_VERSION, ParamId, SampleFormat, SlabLayout,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::io::{Read, Write};
@@ -418,7 +417,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
         _ => Action::Silent,
     });
 
-    let first = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let first = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         first,
         Some(0.5),
@@ -431,7 +430,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
     );
 
     // Second request: the server dies instead of replying.
-    let second = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let second = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         second, None,
         "a request to a dead server returned a value: {second:?}"
@@ -466,7 +465,7 @@ fn a_crash_latches_a_cause_that_outlives_the_call() {
         "a bridge reported a cause before anything went wrong"
     );
 
-    let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let _ = mock.bridge.parameter(ParamId::new(1));
     assert!(
         mock.wait_for_crash(),
         "the peer died but the bridge did not notice"
@@ -512,7 +511,7 @@ fn a_listener_hears_the_crash_with_its_cause() {
         }
     })));
 
-    let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let _ = mock.bridge.parameter(ParamId::new(1));
     assert!(
         wait_until(|| !heard.lock().is_empty()),
         "the peer died but no crash notification arrived within {NOTICE_TIMEOUT:?} \
@@ -552,7 +551,7 @@ fn a_crash_before_any_listener_is_still_reported_by_the_query() {
     let mock = MockServer::start("pre-listener", |_| Action::Die);
 
     // No listener is ever installed. Provoke the death.
-    let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let _ = mock.bridge.parameter(ParamId::new(1));
     assert!(
         mock.wait_for_crash(),
         "the peer died but the bridge did not notice"
@@ -575,7 +574,7 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
     let mock = MockServer::start("fail-fast", |_| Action::Die);
 
     // First call establishes the crash.
-    let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let _ = mock.bridge.parameter(ParamId::new(1));
     assert!(
         mock.wait_for_crash(),
         "the bridge never noticed the server was gone"
@@ -586,7 +585,7 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
     let start = Instant::now();
     for _ in 0..5 {
         assert_eq!(
-            mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1))),
+            mock.bridge.parameter(ParamId::new(1)),
             None,
             "a crashed bridge returned a parameter value"
         );
@@ -655,13 +654,12 @@ fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
 
     let bridge = Arc::clone(&mock.bridge);
     let (value, elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|waited| {
-                panic!(
-                    "a 4 GiB length prefix left the host blocked after {waited:?} — it \
+        call_within(move || bridge.parameter(ParamId::new(1))).unwrap_or_else(|waited| {
+            panic!(
+                "a 4 GiB length prefix left the host blocked after {waited:?} — it \
              is allocating on an unvalidated wire length"
-                )
-            });
+            )
+        });
     assert_eq!(
         value, None,
         "the host returned a parameter value from a frame it could not have \
@@ -705,9 +703,8 @@ fn the_frame_cap_is_the_boundary_it_claims_to_be() {
         _ => Action::Silent,
     });
     let bridge = Arc::clone(&over.bridge);
-    let (_, over_elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|w| panic!("an over-cap frame blocked the caller for {w:?}"));
+    let (_, over_elapsed) = call_within(move || bridge.parameter(ParamId::new(1)))
+        .unwrap_or_else(|w| panic!("an over-cap frame blocked the caller for {w:?}"));
     assert!(
         over_elapsed < Duration::from_secs(1),
         "MAX_FRAME_BYTES + 1 took {over_elapsed:?} to reject — the transport is \
@@ -719,9 +716,8 @@ fn the_frame_cap_is_the_boundary_it_claims_to_be() {
         _ => Action::Silent,
     });
     let bridge = Arc::clone(&under.bridge);
-    let (_, under_elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|w| panic!("an at-cap frame blocked the caller for {w:?}"));
+    let (_, under_elapsed) = call_within(move || bridge.parameter(ParamId::new(1)))
+        .unwrap_or_else(|w| panic!("an at-cap frame blocked the caller for {w:?}"));
     assert!(
         under_elapsed >= Duration::from_secs(1),
         "a frame of exactly MAX_FRAME_BYTES was refused in {under_elapsed:?} \
@@ -771,13 +767,12 @@ fn a_dribbling_peer_cannot_hold_the_bridge_thread_open() {
 
     let bridge = Arc::clone(&mock.bridge);
     let (value, elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|waited| {
-                panic!(
-                    "a dribbling peer left the caller blocked after {waited:?} — the \
+        call_within(move || bridge.parameter(ParamId::new(1))).unwrap_or_else(|waited| {
+            panic!(
+                "a dribbling peer left the caller blocked after {waited:?} — the \
                      host entered a multi-syscall read on an unvalidated length"
-                )
-            });
+            )
+        });
     assert_eq!(value, None, "a dribbled frame produced a value");
 
     // The assertion that matters. The caller returning is not evidence: it has
@@ -811,7 +806,7 @@ fn a_garbage_payload_is_rejected_rather_than_decoded() {
         _ => Action::Silent,
     });
 
-    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let value = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         value, None,
         "the host decoded a parameter value out of 64 bytes of 0xAB"
@@ -838,13 +833,12 @@ fn a_truncated_body_is_not_mistaken_for_a_complete_message() {
 
     let bridge = Arc::clone(&mock.bridge);
     let (value, elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|waited| {
-                panic!(
-                    "a truncated frame left the host blocked after {waited:?}, waiting \
+        call_within(move || bridge.parameter(ParamId::new(1))).unwrap_or_else(|waited| {
+            panic!(
+                "a truncated frame left the host blocked after {waited:?}, waiting \
              for a body the server never finished sending"
-                )
-            });
+            )
+        });
     assert_eq!(
         value, None,
         "a truncated frame produced a value (after {elapsed:?})"
@@ -870,7 +864,7 @@ fn a_valid_but_wrong_reply_type_does_not_satisfy_the_request() {
         _ => Action::Silent,
     });
 
-    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let value = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         value, None,
         "a StateData reply was accepted as the answer to GetParameter — the \
@@ -889,13 +883,12 @@ fn a_silent_server_is_bounded_by_the_timeout() {
 
     let bridge = Arc::clone(&mock.bridge);
     let (value, elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|waited| {
-                panic!(
-                    "a server that never replies left the caller blocked for {waited:?} \
+        call_within(move || bridge.parameter(ParamId::new(1))).unwrap_or_else(|waited| {
+            panic!(
+                "a server that never replies left the caller blocked for {waited:?} \
              — the request timeout is not bounding this path"
-                )
-            });
+            )
+        });
     assert_eq!(
         value, None,
         "a silent server produced a value (after {elapsed:?})"
@@ -971,7 +964,7 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
     // The bridge reads the stream when it has something to do: the next
     // command finds the late answer ahead of its own reply and applies it.
     std::thread::sleep(Duration::from_millis(1_000));
-    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
+    let value = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(value, Some(0.5), "the reply is its own, not the late one");
     assert!(
         wait_until(|| mock.bridge.rate_refusal().is_none()),
@@ -1078,10 +1071,9 @@ fn an_under_cap_dribble_is_stopped_by_the_total_deadline() {
 
     let bridge = Arc::clone(&mock.bridge);
     let (value, elapsed) =
-        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
-            .unwrap_or_else(|waited| {
-                panic!("an under-cap dribbled frame left the caller blocked after {waited:?}")
-            });
+        call_within(move || bridge.parameter(ParamId::new(1))).unwrap_or_else(|waited| {
+            panic!("an under-cap dribbled frame left the caller blocked after {waited:?}")
+        });
     assert_eq!(value, None, "a dribbled frame produced a value");
     assert!(
         mock.wait_for_crash(),

@@ -748,7 +748,7 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Normalized, ParamAddress, ParameterInfo, Preset, PresetId};
+    use crate::protocol::{Normalized, ParamId, ParameterInfo, Preset, PresetId};
 
     /// A test backend that reaches presets. Doubles as proof the capability is
     /// implementable from outside this crate's own backends.
@@ -784,10 +784,10 @@ mod tests {
             fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
                 None
             }
-            fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
+            fn parameter_value(&self, _id: ParamId) -> Option<f32> {
                 None
             }
-            fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
+            fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
             fn is_crashed(&self) -> bool {
                 false
             }

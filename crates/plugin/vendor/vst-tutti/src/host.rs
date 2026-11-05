@@ -854,6 +854,49 @@ impl PluginInstance {
         }
     }
 
+    fn entry(&self) -> RenderEntry {
+        RenderEntry {
+            effect: self.params.get_effect(),
+            inputs: self.info.inputs.max(0) as usize,
+            outputs: self.info.outputs.max(0) as usize,
+            can_replacing: self.can_replacing,
+            can_double_replacing: self.can_double_replacing,
+        }
+    }
+
+    /// The audio-thread entries of this plugin, with the pin counts read from the
+    /// `AEffect` now: a plugin settles them in `effOpen` and may change them
+    /// later, and a block must carry what it has at this moment.
+    ///
+    /// The handle owns nothing. The instance must not be dropped (`effClose`)
+    /// while the handle can still render.
+    pub fn render_handle(&self) -> RenderHandle {
+        let (inputs, outputs) = self.read_pin_counts();
+        RenderHandle {
+            entry: RenderEntry {
+                inputs: inputs.max(0) as usize,
+                outputs: outputs.max(0) as usize,
+                ..self.entry()
+            },
+            name: Arc::from(self.info.name.as_str()),
+        }
+    }
+
+    /// Read `AEffect::numInputs` and `numOutputs` as they stand *now*, as
+    /// [`read_initial_delay`](Self::read_initial_delay) reads its field.
+    pub fn read_pin_counts(&self) -> (i32, i32) {
+        // SAFETY: `self.params` owns the `*mut AEffect` for this instance's
+        // lifetime; these are plain `i32` fields, not calls into the plugin.
+        let effect = unsafe { &*self.params.get_effect() };
+        (effect.numInputs, effect.numOutputs)
+    }
+
+    /// Read `AEffect::numParams` as it stands *now*.
+    pub fn read_num_params(&self) -> i32 {
+        // SAFETY: as for `read_pin_counts`.
+        unsafe { (*self.params.get_effect()).numParams }
+    }
+
     fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {
         use plugin::OpCode as op;
 
@@ -1352,6 +1395,210 @@ unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Result<Vec<u8>, ChunkError> {
     Ok(unsafe { slice::from_raw_parts(ptr, len as usize) }.to_vec())
 }
 
+/// What a block needs of a plugin: its `AEffect` and the flags and pin counts
+/// the render entries check. `Copy`, and carrying no ownership: whoever holds
+/// one keeps the plugin alive.
+#[derive(Clone, Copy)]
+struct RenderEntry {
+    effect: *mut AEffect,
+    inputs: usize,
+    outputs: usize,
+    can_replacing: bool,
+    can_double_replacing: bool,
+}
+
+impl RenderEntry {
+    fn dispatch(
+        &self,
+        opcode: plugin::OpCode,
+        index: i32,
+        value: isize,
+        ptr: *mut c_void,
+        opt: f32,
+    ) -> isize {
+        // SAFETY: `effect` is the plugin's `AEffect`, live for as long as the
+        // holder keeps the plugin (see the type's docs).
+        let Some(dispatcher) = (unsafe { (*self.effect).dispatcher }) else {
+            panic!("Plugin was not loaded correctly.");
+        };
+        // SAFETY: as for `Dispatch::dispatch`: the effect is the dispatcher's
+        // own, and `ptr` and `value` are the caller's to get right.
+        unsafe { dispatcher(self.effect, opcode.into(), index, value, ptr, opt) }
+    }
+
+    /// Render one block.
+    ///
+    /// Prefers `processReplacing`, but only when the plugin both advertises
+    /// `effFlagsCanReplacing` *and* actually installed the pointer. VST2.4
+    /// makes the replacing path mandatory, so the check looks redundant — it is
+    /// not: an unguarded call to a null `processReplacing` is a jump to address
+    /// 0 in-process, which takes the whole DAW down, and a plugin can report
+    /// api version >= 2400 while leaving the slot null. When replacing is
+    /// unavailable we fall back to the deprecated *accumulating* `process` the
+    /// same way JUCE does — that entry point adds into the output buffers, so
+    /// they must be zeroed first. If neither pointer exists there is nothing to
+    /// call; the outputs are left silent rather than filled with whatever the
+    /// caller's scratch held.
+    ///
+    /// The presence check is `Option`, not `(p as *const u8).is_null()`. That
+    /// idiom silently did nothing: a bare `extern "C" fn` is non-nullable, so the
+    /// compiler folded the comparison to `false` under `-O` and the guard shipped
+    /// only in debug builds.
+    fn process(&self, name: &str, buffer: &mut AudioBuffer<f32>) {
+        if buffer.input_count() < self.inputs {
+            panic!("Too few inputs in AudioBuffer");
+        }
+        if buffer.output_count() < self.outputs {
+            panic!("Too few outputs in AudioBuffer");
+        }
+        let effect = self.effect;
+        let samples = buffer.samples() as i32;
+        unsafe {
+            if let Some(replacing) = (*effect).processReplacing.filter(|_| self.can_replacing) {
+                replacing(
+                    effect,
+                    buffer.raw_inputs().as_ptr(),
+                    buffer.raw_outputs().as_mut_ptr(),
+                    samples,
+                );
+                return;
+            }
+
+            let Some(accumulating) = (*effect)._process else {
+                error!(
+                    "plugin '{name}' installed neither processReplacing nor process; \
+                     rendering silence"
+                );
+                zero_outputs(buffer);
+                return;
+            };
+
+            warn!(
+                "plugin '{name}' does not support processReplacing; \
+                 falling back to the deprecated accumulating process"
+            );
+            // Accumulating mode *adds* to the outputs, so they must start at 0.
+            zero_outputs(buffer);
+            accumulating(
+                effect,
+                buffer.raw_inputs().as_ptr(),
+                buffer.raw_outputs().as_mut_ptr(),
+                samples,
+            );
+        }
+    }
+
+    /// Render one block in `f64`.
+    ///
+    /// There is no accumulating counterpart for double precision in VST2.4 —
+    /// `processDoubleReplacing` is the only `f64` entry point — so an absent
+    /// `effFlagsCanDoubleReplacing` or a null pointer leaves the caller to
+    /// re-render through the `f32` path. Silence is returned rather than
+    /// jumping to a null pointer; callers should consult
+    /// `get_info().f64_precision` before choosing this path.
+    fn process_f64(&self, name: &str, buffer: &mut AudioBuffer<f64>) {
+        if buffer.input_count() < self.inputs {
+            panic!("Too few inputs in AudioBuffer");
+        }
+        if buffer.output_count() < self.outputs {
+            panic!("Too few outputs in AudioBuffer");
+        }
+        let effect = self.effect;
+        unsafe {
+            let replacing = (*effect)
+                .processReplacingF64
+                .filter(|_| self.can_double_replacing);
+            let Some(replacing) = replacing else {
+                error!("plugin '{name}' does not support f64 processing; rendering silence");
+                zero_outputs(buffer);
+                return;
+            };
+            replacing(
+                effect,
+                buffer.raw_inputs().as_ptr(),
+                buffer.raw_outputs().as_mut_ptr(),
+                buffer.samples() as i32,
+            );
+        }
+    }
+
+    fn process_events(&self, events: &api::Events) {
+        self.dispatch(
+            plugin::OpCode::ProcessEvents,
+            0,
+            0,
+            events as *const _ as *mut _,
+            0.0,
+        );
+    }
+}
+
+/// The audio-thread entries of a loaded plugin, held apart from its
+/// [`PluginInstance`]: a host that renders on one thread while another runs the
+/// plugin's dispatcher keeps the instance on the control side and this on the
+/// audio side, so neither holds a Rust reference the other's calls alias.
+///
+/// It is the `AEffect` pointer and the flags the render entries check, and it
+/// owns nothing: the plugin must outlive it (closing the instance with `effClose`
+/// while a handle renders is the caller's to prevent).
+pub struct RenderHandle {
+    entry: RenderEntry,
+    name: Arc<str>,
+}
+
+impl fmt::Debug for RenderHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RenderHandle")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: the handle is a pointer to the plugin's `AEffect` and plain flags. VST
+// 2.4 lets `process`, `processReplacing`, `effProcessEvents`, `effStartProcess`
+// and `effStopProcess` run on the audio thread, so moving the handle to one is
+// what the format expects; the holder calls it from one thread at a time (every
+// method takes `&mut self`).
+unsafe impl Send for RenderHandle {}
+
+impl RenderHandle {
+    /// Render one block in `f32`; see [`Plugin::process`].
+    ///
+    /// # Panics
+    ///
+    /// If the buffer has fewer channels than the plugin had pins when the handle
+    /// was made.
+    pub fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
+        self.entry.process(&self.name, buffer);
+    }
+
+    /// Render one block in `f64`; see [`Plugin::process_f64`].
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process).
+    pub fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
+        self.entry.process_f64(&self.name, buffer);
+    }
+
+    /// Delivers MIDI events, `effProcessEvents`.
+    pub fn process_events(&mut self, events: &api::Events) {
+        self.entry.process_events(events);
+    }
+
+    /// `effStartProcess`. Only legal while the plugin is resumed.
+    pub fn start_process(&mut self) {
+        self.entry
+            .dispatch(plugin::OpCode::StartProcess, 0, 0, ptr::null_mut(), 0.0);
+    }
+
+    /// `effStopProcess`. Only legal while the plugin is resumed.
+    pub fn stop_process(&mut self) {
+        self.entry
+            .dispatch(plugin::OpCode::StopProcess, 0, 0, ptr::null_mut(), 0.0);
+    }
+}
+
 impl Plugin for PluginInstance {
     fn get_info(&self) -> plugin::Info {
         self.info.clone()
@@ -1445,115 +1692,18 @@ impl Plugin for PluginInstance {
         self.opcode(plugin::OpCode::GetTailSize)
     }
 
-    /// Render one block.
-    ///
-    /// Prefers `processReplacing`, but only when the plugin both advertises
-    /// `effFlagsCanReplacing` *and* actually installed the pointer. VST2.4
-    /// makes the replacing path mandatory, so the check looks redundant — it is
-    /// not: an unguarded call to a null `processReplacing` is a jump to address
-    /// 0 in-process, which takes the whole DAW down, and a plugin can report
-    /// api version >= 2400 while leaving the slot null. When replacing is
-    /// unavailable we fall back to the deprecated *accumulating* `process` the
-    /// same way JUCE does — that entry point adds into the output buffers, so
-    /// they must be zeroed first. If neither pointer exists there is nothing to
-    /// call; the outputs are left silent rather than filled with whatever the
-    /// caller's scratch held.
-    ///
-    /// The presence check is `Option`, not `(p as *const u8).is_null()`. That
-    /// idiom silently did nothing: a bare `extern "C" fn` is non-nullable, so the
-    /// compiler folded the comparison to `false` under `-O` and the guard shipped
-    /// only in debug builds.
+    /// Render one block; see [`RenderEntry::process`].
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
-        if buffer.input_count() < self.info.inputs as usize {
-            panic!("Too few inputs in AudioBuffer");
-        }
-        if buffer.output_count() < self.info.outputs as usize {
-            panic!("Too few outputs in AudioBuffer");
-        }
-        let effect = self.get_effect();
-        let samples = buffer.samples() as i32;
-        unsafe {
-            if let Some(replacing) = (*effect).processReplacing.filter(|_| self.can_replacing) {
-                replacing(
-                    effect,
-                    buffer.raw_inputs().as_ptr(),
-                    buffer.raw_outputs().as_mut_ptr(),
-                    samples,
-                );
-                return;
-            }
-
-            let Some(accumulating) = (*effect)._process else {
-                error!(
-                    "plugin '{}' installed neither processReplacing nor process; \
-                     rendering silence",
-                    self.info.name
-                );
-                zero_outputs(buffer);
-                return;
-            };
-
-            warn!(
-                "plugin '{}' does not support processReplacing; \
-                 falling back to the deprecated accumulating process",
-                self.info.name
-            );
-            // Accumulating mode *adds* to the outputs, so they must start at 0.
-            zero_outputs(buffer);
-            accumulating(
-                effect,
-                buffer.raw_inputs().as_ptr(),
-                buffer.raw_outputs().as_mut_ptr(),
-                samples,
-            );
-        }
+        self.entry().process(&self.info.name, buffer);
     }
 
-    /// Render one block in `f64`.
-    ///
-    /// There is no accumulating counterpart for double precision in VST2.4 —
-    /// `processDoubleReplacing` is the only `f64` entry point — so an absent
-    /// `effFlagsCanDoubleReplacing` or a null pointer leaves the caller to
-    /// re-render through the `f32` path. Silence is returned rather than
-    /// jumping to a null pointer; callers should consult
-    /// `get_info().f64_precision` before choosing this path.
+    /// Render one block in `f64`; see [`RenderEntry::process_f64`].
     fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
-        if buffer.input_count() < self.info.inputs as usize {
-            panic!("Too few inputs in AudioBuffer");
-        }
-        if buffer.output_count() < self.info.outputs as usize {
-            panic!("Too few outputs in AudioBuffer");
-        }
-        let effect = self.get_effect();
-        unsafe {
-            let replacing = (*effect)
-                .processReplacingF64
-                .filter(|_| self.can_double_replacing);
-            let Some(replacing) = replacing else {
-                error!(
-                    "plugin '{}' does not support f64 processing; rendering silence",
-                    self.info.name
-                );
-                zero_outputs(buffer);
-                return;
-            };
-            replacing(
-                effect,
-                buffer.raw_inputs().as_ptr(),
-                buffer.raw_outputs().as_mut_ptr(),
-                buffer.samples() as i32,
-            );
-        }
+        self.entry().process_f64(&self.info.name, buffer);
     }
 
     fn process_events(&mut self, events: &api::Events) {
-        self.dispatch(
-            plugin::OpCode::ProcessEvents,
-            0,
-            0,
-            events as *const _ as *mut _,
-            0.0,
-        );
+        self.entry().process_events(events);
     }
 
     fn get_input_info(&self, input: i32) -> ChannelInfo {

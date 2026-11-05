@@ -127,8 +127,7 @@ use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::subprocess;
 use crate::protocol::{
-    LoadedPlugin, MidiEventVec, Normalized, ParamAddress, PluginDescriptor, SampleFormat,
-    TransportInfo,
+    LoadedPlugin, MidiEventVec, Normalized, ParamId, PluginDescriptor, SampleFormat, TransportInfo,
 };
 use crate::util::config::BridgeConfig;
 use batcher::Batcher;
@@ -270,7 +269,7 @@ pub struct PluginClient<S = Unbound> {
     /// [`bind`](PluginClient::bind) sizes the node's parameter delivery by.
     /// Empty when the plugin-server could not list them; the delivery then
     /// learns addresses into its spare slots.
-    params: Arc<[ParamAddress]>,
+    params: Arc<[ParamId]>,
     /// [`Unbound`] or [`Bound`].
     state: S,
 }
@@ -321,10 +320,6 @@ impl PluginClient<Unbound> {
         let sample_rate = sample_rate.into();
         // `.get()` at the wire: `launch` hands the rate to the subprocess.
         let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
-        // VST2 addresses its parameters by position, every other format by
-        // an opaque handle: what a parameter ramp's number means to this node.
-        let indexed = crate::host::discovery::format_from_path(&plugin_path)
-            == Some(crate::host::discovery::PluginFormat::Vst2);
         // Guard the process before the first fallible step below: an `Err`
         // from `PluginBridge::new` would otherwise drop a bare `Child`, which
         // std neither kills nor waits.
@@ -353,7 +348,6 @@ impl PluginClient<Unbound> {
             server.loaded.latency_samples,
             server.loaded.tail,
             sample_rate,
-            indexed,
         );
         // The chunk ceiling, matching the slab — `slab_layout_for` clamps to
         // `MAX_CHUNK` for the same reason. The raw `max_buffer_size` would
@@ -420,7 +414,7 @@ impl PluginClient<Unbound> {
         // The parameter list, once, while loading blocks anyway: the node's
         // per-parameter delivery is sized from it at bind. A `prepare` may
         // not make this round trip; a load already has.
-        let params: Arc<[ParamAddress]> = match bridge.parameters() {
+        let params: Arc<[ParamId]> = match bridge.parameters() {
             Some(list) => list.into_iter().map(|p| p.id).collect(),
             None => {
                 tracing::warn!(
@@ -652,7 +646,7 @@ impl<S> PluginClient<S> {
     /// Main-thread parameter reads and writes are on
     /// [`PluginHandle`](crate::host::handles::PluginHandle); this lets a
     /// builder set initial values before any handle exists.
-    pub fn set_parameter(&self, param_id: ParamAddress, value: Normalized) {
+    pub fn set_parameter(&self, param_id: ParamId, value: Normalized) {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 

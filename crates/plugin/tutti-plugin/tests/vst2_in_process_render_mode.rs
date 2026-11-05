@@ -78,7 +78,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Vst2Loaded` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //

@@ -20,10 +20,15 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{Samples, Vst2Instance};
+use tutti_plugin_types::Control;
+use tutti_vst2_host::Samples;
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;
@@ -58,7 +63,7 @@ fn set_late_latency(samples: i32) {
     // Leak the handle, deliberately. The switch this just set is a `static` in
     // the probe's image, so it only survives while that image stays mapped —
     // and dropping `lib` decrements the refcount that keeps it mapped. When no
-    // `Vst2Instance` happens to hold the probe open at the same moment, the
+    // `Active` happens to hold the probe open at the same moment, the
     // value is written and then discarded with the unload, and the next load
     // starts a fresh image reading zero.
     //
@@ -89,9 +94,8 @@ impl Probe {
         set_late_latency(samples);
     }
 
-    fn load(&self) -> Vst2Instance {
-        Vst2Instance::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK)
-            .expect("the probe must load")
+    fn load(&self) -> Active {
+        Active::load(probe_path::probe_path(), SAMPLE_RATE, BLOCK).expect("the probe must load")
     }
 }
 
@@ -101,12 +105,15 @@ impl Drop for Probe {
     }
 }
 
-/// Latency declared during `effSetSampleRate` reaches the load-time metadata.
+/// Latency declared during `effSetSampleRate` reaches the wiring.
 ///
-/// This is D-4. The host built `PluginInfo.latency_samples` from
-/// `get_info().initial_delay` — the pre-`effOpen` snapshot — so a plugin
-/// declaring here reported 0, and PDC compensated nothing for exactly the
-/// plugins that need it.
+/// This is D-4. The host built the latency from `get_info().initial_delay` — the
+/// pre-`effOpen` snapshot — so a plugin declaring here reported 0, and PDC
+/// compensated nothing for exactly the plugins that need it. The wiring now
+/// reads the `AEffect` when asked.
+///
+/// Mutation (run): `Vst2Loaded::latency_samples` reading `get_info()
+/// .initial_delay` (the snapshot) -> 0 -> fails.
 #[test]
 fn latency_declared_after_construction_reaches_the_metadata() {
     let probe = Probe::acquire();
@@ -115,7 +122,7 @@ fn latency_declared_after_construction_reaches_the_metadata() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.metadata().latency_samples,
+        instance.wiring().latency_samples,
         Samples(LATE_LATENCY as usize),
         "the host read `initialDelay` from the construction-time snapshot, \
          before the plugin had been told its sample rate"
@@ -134,18 +141,18 @@ fn a_plugin_with_no_latency_reports_none() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.metadata().latency_samples,
+        instance.wiring().latency_samples,
         Samples(0),
         "a probe declaring no latency must not acquire one"
     );
 }
 
-/// `latency()` re-reads the live `AEffect` rather than replaying the snapshot.
+/// `latency_samples()` re-reads the live `AEffect` rather than replaying the snapshot.
 ///
 /// The accessor exists because VST2 has no latency-changed callback: a plugin
 /// may alter `initialDelay` on a sample-rate change and tell nobody, so the
-/// host has to ask again. Agreeing with the metadata here is what shows both
-/// read the same live field.
+/// host has to ask again. Agreeing with the wiring here is what shows both read
+/// the same live field.
 #[test]
 fn the_latency_accessor_reads_the_live_field() {
     let probe = Probe::acquire();
@@ -154,14 +161,14 @@ fn the_latency_accessor_reads_the_live_field() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.latency(),
+        instance.latency_samples(),
         Samples(LATE_LATENCY as usize),
         "the accessor must see what the plugin declared during init"
     );
     assert_eq!(
-        instance.latency(),
-        instance.metadata().latency_samples,
-        "the accessor and the metadata read the same field"
+        instance.latency_samples(),
+        instance.wiring().latency_samples,
+        "the accessor and the wiring read the same field"
     );
 }
 
@@ -170,7 +177,7 @@ fn the_latency_accessor_reads_the_live_field() {
 /// The "never refreshed" half of the finding. `set_sample_rate` suspends and
 /// resumes, which is precisely when a plugin resizes a rate-dependent filter;
 /// the host has no callback to learn that, so a caller re-reads through
-/// [`Vst2Instance::latency`].
+/// [`Vst2Loaded::latency_samples`](tutti_vst2_host::Vst2Loaded::latency_samples).
 ///
 /// The probe recomputes on every `effSetSampleRate`, so switching the declared
 /// figure between the load and the rate change is what makes the re-read
@@ -182,7 +189,7 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
     probe.declares_late(LATE_LATENCY);
 
     let mut instance = probe.load();
-    assert_eq!(instance.latency(), Samples(LATE_LATENCY as usize));
+    assert_eq!(instance.latency_samples(), Samples(LATE_LATENCY as usize));
 
     // A plugin that halves its filter length at a higher rate.
     let recomputed = LATE_LATENCY / 2;
@@ -190,7 +197,7 @@ fn a_sample_rate_change_can_be_followed_by_a_fresh_read() {
     instance.set_sample_rate(96_000.0);
 
     assert_eq!(
-        instance.latency(),
+        instance.latency_samples(),
         Samples(recomputed as usize),
         "after a rate change the host must re-ask; the load-time figure is stale"
     );

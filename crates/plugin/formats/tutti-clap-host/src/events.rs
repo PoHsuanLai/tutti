@@ -33,7 +33,7 @@ use clap_sys::events::{
 };
 use std::ptr;
 use tutti_plugin_types::{
-    Normalized, ParamAddress, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
+    Normalized, ParamId, RtMidiEvents, SYSEX_MESSAGE_CAPACITY, StableOrder, SysExAssembler,
     SysExStep, note_id_for, note_id_to_channel_note, push_sysex, unframed,
 };
 
@@ -1027,12 +1027,7 @@ impl InputEventList {
     ) -> &mut Self {
         let mut pushed = 0usize;
         for queue in &changes.queues {
-            // `clap_id` is opaque; a VST2 positional index addresses nothing
-            // here, so it is skipped rather than reaching the plugin as though
-            // it were a real id.
-            let Some(param_id) = queue.param_id.opaque().map(|id| id.get()) else {
-                continue;
-            };
+            let param_id = queue.param_id.get();
             let range = ranges
                 .binary_search_by_key(&param_id, |&(id, _, _)| id)
                 .ok()
@@ -1525,7 +1520,7 @@ impl OutputEventList {
     /// queue sized to its points; off the audio thread only.
     #[must_use]
     pub fn to_param_changes(&self) -> ParameterChanges {
-        let mut grouped: Vec<(ParamAddress, Vec<ParameterPoint>)> = Vec::new();
+        let mut grouped: Vec<(ParamId, Vec<ParameterPoint>)> = Vec::new();
         for (addr, point) in self.param_points() {
             match grouped.iter_mut().find(|(a, _)| *a == addr) {
                 Some((_, points)) => points.push(point),
@@ -1592,7 +1587,7 @@ impl OutputEventList {
     /// Each `PARAM_VALUE` event in the list as the queue it belongs to and
     /// the point it adds, in list order, then each parameter's latest value
     /// pushed past the parameter room.
-    fn param_points(&self) -> impl Iterator<Item = (ParamAddress, ParameterPoint)> + '_ {
+    fn param_points(&self) -> impl Iterator<Item = (ParamId, ParameterPoint)> + '_ {
         let listed = self.events.iter().filter_map(|event| match event {
             ClapEvent::ParamValue(e) => Some(e),
             _ => None,
@@ -1614,7 +1609,7 @@ impl OutputEventList {
             };
             // Outbound: a CLAP id is opaque, so it is tagged as such rather
             // than travelling as a number the receiver has to guess about.
-            (ParamAddress::Opaque(e.param_id.into()), point)
+            (e.param_id.into(), point)
         })
     }
 
@@ -1927,7 +1922,7 @@ mod tests {
         let point = changes
             .queues
             .iter()
-            .find(|q| q.param_id == ParamAddress::Opaque(7u32.into()))
+            .find(|q| q.param_id == 7u32.into())
             .and_then(|q| q.points.first())
             .expect("the param value must survive into a queue");
         assert!(
@@ -1968,8 +1963,8 @@ mod tests {
     fn add_param_changes_finds_each_range_in_a_sorted_list() {
         let ranges = [(1, 0.0, 1.0), (5, 0.0, 10.0), (9, 100.0, 1100.0)];
         let mut changes = ParameterChanges::reserved(2, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
-        changes.add_change(ParamAddress::Opaque(5u32.into()), 1, 0.25);
+        changes.add_change(9u32.into(), 0, 0.5);
+        changes.add_change(5u32.into(), 1, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &ranges, true);
         let got: Vec<(u32, f64)> = list
@@ -2065,7 +2060,7 @@ mod tests {
             for k in 0..points {
                 // Every parameter on the same frames: many ties.
                 changes.add_change(
-                    ParamAddress::Opaque(id.into()),
+                    id.into(),
                     (k * 25) as i32,
                     (id as f64 + k as f64) / 1000.0 % 1.0,
                 );
@@ -2133,12 +2128,12 @@ mod tests {
     fn add_param_changes_stays_within_its_room() {
         let mut changes = ParameterChanges::reserved(3, 4);
         for k in 0..4 {
-            changes.add_change(ParamAddress::Opaque(1u32.into()), k, 0.5);
+            changes.add_change(1u32.into(), k, 0.5);
         }
         for (k, v) in [0.1, 0.2, 0.3].into_iter().enumerate() {
-            changes.add_change(ParamAddress::Opaque(2u32.into()), k as i32, v);
+            changes.add_change(2u32.into(), k as i32, v);
         }
-        changes.add_change(ParamAddress::Opaque(3u32.into()), 0, 0.9);
+        changes.add_change(3u32.into(), 0, 0.9);
         let mut list = InputEventList::new();
         list.reserve(5);
         list.set_param_point_room(5);
@@ -2161,48 +2156,11 @@ mod tests {
         assert_eq!(list.param_points_dropped(), 3);
     }
 
-    /// A VST2 positional index addresses no CLAP parameter and must be dropped,
-    /// not read as a `clap_id`.
-    ///
-    /// The two models are numerically identical — `Index(9)` and the opaque id
-    /// `9` are the same number — so while the queue carried a bare `u32` this
-    /// arm could not exist: a wrong-model address was indistinguishable from a
-    /// real id and reached the plugin as one. Index 9 here would denormalize
-    /// against param 9's `[100, 1100]` range and set a parameter the caller
-    /// never named.
-    ///
-    /// Mutation that catches it: replacing the `opaque()` guard with
-    /// `.unwrap_or(0)` — the index is then accepted and an event is emitted.
-    #[test]
-    fn add_param_changes_refuses_a_vst2_index() {
-        // Index 0 rather than 9, and a declared range for param 0: an index
-        // that fell through to `unwrap_or(0)` would find a real range and be
-        // emitted. Picking an index with no matching range would let the
-        // existing `plugin_claims_params` arm drop it, and the test would pass
-        // without the model check ever running.
-        let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Index(0), 0, 0.25);
-        let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(0, 100.0, 1100.0)], true);
-        assert!(
-            list.events.is_empty(),
-            "a VST2 index addresses nothing in CLAP; it must not become an event"
-        );
-
-        // The same number as an opaque id is a real address, so the refusal is
-        // about the model and not about the value being rejected outright.
-        let mut ok = ParameterChanges::reserved(1, 1);
-        ok.add_change(ParamAddress::Opaque(0u32.into()), 0, 0.25);
-        let mut list2 = InputEventList::new();
-        list2.add_param_changes(&ok, &[(0, 100.0, 1100.0)], true);
-        assert!((first_param_value(&list2) - 350.0).abs() < 1e-6);
-    }
-
     #[test]
     fn add_param_changes_denormalizes_against_range() {
         // Param 9 has plain range [100, 1100]; a normalized 0.25 → 350.
         let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.25);
+        changes.add_change(9u32.into(), 0, 0.25);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
         assert!((first_param_value(&list) - 350.0).abs() < 1e-6);
@@ -2212,7 +2170,7 @@ mod tests {
     fn add_param_changes_clamps_denormalized_value_into_range() {
         // A normalized 1.5 (over-range) must clamp to the plain max, not overshoot.
         let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 1.5);
+        changes.add_change(9u32.into(), 0, 1.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
         assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
@@ -2224,7 +2182,7 @@ mod tests {
         // plugin reported. A malformed plugin must not take down the audio
         // thread — the value lands inside the range either way round.
         let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.5);
+        changes.add_change(9u32.into(), 0, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
         let v = first_param_value(&list);
@@ -2236,7 +2194,7 @@ mod tests {
         // No range for this param id → value forwarded unchanged (safe fallback
         // for the common normalized-0..1 param).
         let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), 0, 0.42);
+        changes.add_change(9u32.into(), 0, 0.42);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
         assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
@@ -2258,7 +2216,7 @@ mod tests {
     #[test]
     fn negative_sample_offset_does_not_wrap_to_four_billion_h3() {
         let mut changes = ParameterChanges::reserved(1, 1);
-        changes.add_change(ParamAddress::Opaque(9u32.into()), -1, 0.5);
+        changes.add_change(9u32.into(), -1, 0.5);
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[], false);
         assert_eq!(
@@ -2932,10 +2890,7 @@ mod tests {
             "nothing past the room"
         );
         assert_eq!(changes.queues.len(), 1, "only the PARAM_VALUE queued");
-        assert_eq!(
-            changes.queues[0].param_id,
-            ParamAddress::Opaque(5u32.into())
-        );
+        assert_eq!(changes.queues[0].param_id, 5u32.into());
 
         // Draining clears the pool.
         output.fill_gestures(&mut gestures);
@@ -3495,7 +3450,7 @@ mod tests {
     fn pooled_chunk(params: u32, room: usize) -> ParameterChanges {
         let mut changes = ParameterChanges::reserved(params as usize, room);
         for id in 0..params {
-            assert!(changes.open_queue(ParamAddress::Opaque(id.into())));
+            assert!(changes.open_queue(id.into()));
         }
         for k in 0..room {
             for id in 0..params {
@@ -3669,7 +3624,7 @@ mod tests {
         });
         assert_eq!(changes.queues.len(), PARAMS as usize);
         for q in &changes.queues {
-            let id = q.param_id.opaque().expect("opaque").get();
+            let id = q.param_id.get();
             let n = if (id as usize) < ParameterChanges::POOLED_QUEUES {
                 room
             } else {
@@ -3689,9 +3644,7 @@ mod tests {
         let mut dropped = 0;
         assert_no_alloc::assert_no_alloc(|| dropped = block(&mut output, &mut changes, true));
         assert_eq!(dropped, 1);
-        let last = changes
-            .queue(ParamAddress::Opaque((PARAMS - 1).into()))
-            .expect("queued");
+        let last = changes.queue((PARAMS - 1).into()).expect("queued");
         assert_eq!(last.points.len(), floor);
         let k = floor;
         assert_eq!(

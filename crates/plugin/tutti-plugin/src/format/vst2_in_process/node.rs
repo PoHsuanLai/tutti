@@ -56,18 +56,12 @@ impl Node for InProcessVst2Client {
         // keeps them current), falling back to this node's copy while the
         // control thread holds the instance.
         let (latency, tail) = match self.inner.try_lock() {
-            Some(instance) => {
-                let m = instance.metadata();
-                (Latency::new(m.latency_samples), m.tail)
-            }
-            None => (
-                Latency::new(self.metadata.latency_samples),
-                self.metadata.tail,
-            ),
+            Some(instance) => (Latency::new(instance.latency_samples()), instance.tail()),
+            None => (Latency::new(self.declared.latency), self.declared.tail),
         };
         Shape::audio(
-            ChannelLayout::from_count(self.metadata.num_inputs.count()),
-            ChannelLayout::from_count(self.metadata.num_outputs.count()),
+            ChannelLayout::from_count(self.declared.inputs.count()),
+            ChannelLayout::from_count(self.declared.outputs.count()),
         )
         .with_events(1, midi_out)
         .with_latency(latency)
@@ -75,25 +69,23 @@ impl Node for InProcessVst2Client {
     }
 
     /// The rate (parked for the plugin, dispatched from the main thread; a
-    /// fork's dispatched here), and scratch for the largest block. Control
-    /// thread.
+    /// fork's dispatched here). Control thread.
     ///
     /// The parameter delivery's point room follows the largest block, and
     /// the segments in flight are dropped (as a re-prepare starts the node
     /// over); what was delivered to the plugin is kept.
     fn prepare(&mut self, p: &Prepare) {
         self.set_rate(p.sample_rate());
-        self.ensure_scratch_size(p.max_block().get());
         self.params.prepare(p.max_block().get());
         self.segments.prepare(self.params.room());
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
-        let n_in = (self.metadata.num_inputs.count() as usize).min(MAX_CHANNELS);
-        let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
-        // No clamp and no size check: `prepare` sized the scratch to the
-        // prepared `MaxBlock`, and a block is never longer.
+        let n_in = (self.declared.inputs.count() as usize).min(MAX_CHANNELS);
+        let n_out = (self.declared.outputs.count() as usize).min(MAX_CHANNELS);
+        // No clamp and no size check: the Processor splits a block longer than
+        // the one the plugin was told.
         // The event input: its MIDI, in its (sorted) order, past the cap
         // dropped and counted (the list is inline and cannot grow; a SysEx
         // that lost a packet loses the rest of it, `MidiIntake`); its
@@ -116,7 +108,6 @@ impl Node for InProcessVst2Client {
             size,
             0,
             cx,
-            true,
             &mut self.segments,
             &mut self.params,
             |e, _| match e.kind {
@@ -177,7 +168,6 @@ impl Node for InProcessVst2Client {
                     }
                 },
                 &transport,
-                &mut self.scratch,
                 &ins,
                 &mut outs,
                 size,
@@ -228,8 +218,8 @@ impl Node for InProcessVst2Client {
         // rate-dependent buffers, and the `effStartProcess`/`effStopProcess`
         // pair, which announces an interruption rather than a clear and is only
         // legal while resumed. Neither may race the audio thread's `process`.
-        // `Vst2Instance::reset_processing_state` is that cycle, on the main
-        // thread, for a host that wants it on a locate or a loop wrap.
+        // A rejoin and an activation is that cycle, on the main thread, for a
+        // host that wants it on a locate or a loop wrap.
     }
 }
 
@@ -350,7 +340,7 @@ mod owed_tests {
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset, ParamRamp};
 
-    use crate::handles::{ParamAddress, PluginHandle};
+    use crate::handles::{ParamId, PluginHandle};
 
     const BLOCK: usize = 64;
 
@@ -367,7 +357,7 @@ mod owed_tests {
     }
 
     fn read(handle: &PluginHandle, i: i32) -> Option<f32> {
-        handle.params().parameter_value(ParamAddress::Index(i))
+        handle.params().parameter_value(ParamId::new(i as u32))
     }
 
     /// **A block the instance is locked for owes its values to the next.**

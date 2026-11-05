@@ -28,7 +28,7 @@ use std::ffi::c_void;
 
 use crate::error::{EditorError, StateError};
 use crate::protocol::{
-    AutomationMode, Normalized, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode,
+    AutomationMode, Normalized, ParamId, ParameterInfo, Preset, PresetId, RenderMode,
 };
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 
@@ -52,8 +52,8 @@ pub trait HostParams: Send + Sync {
     ///
     /// `None` if unavailable, including when `id` uses the other addressing
     /// model, which addresses no parameter of this backend. See
-    /// [`ParamAddress`].
-    fn parameter_value(&self, id: ParamAddress) -> Option<f32>;
+    /// [`ParamId`].
+    fn parameter_value(&self, id: ParamId) -> Option<f32>;
 
     /// Writes one parameter value, for a UI knob or an initial value.
     ///
@@ -71,7 +71,7 @@ pub trait HostParams: Send + Sync {
     /// The subprocess path clamps again on receipt, but in-process backends
     /// write straight through to the plugin, so [`Normalized`] is what stops an
     /// out-of-range or NaN value there.
-    fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
+    fn set_parameter_value(&self, id: ParamId, value: Normalized);
 
     /// Returns the plugin's own display string for `value`, such as `"800 Hz"`
     /// or `"Bandpass"`.
@@ -87,7 +87,7 @@ pub trait HostParams: Send + Sync {
     /// [`PluginParams::parameter_text`](tutti_plugin_types::PluginParams::parameter_text)
     /// for the domain rule — `value` is normalized here and each loader
     /// converts at its own edge.
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let _ = (id, value);
         None
     }
@@ -102,7 +102,7 @@ pub trait HostParams: Send + Sync {
     /// **Not a pure query on every format.** VST2's `effString2Parameter` is a
     /// setter with no parse-only counterpart, so on that backend asking applies
     /// the value.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let _ = (id, text);
         None
     }

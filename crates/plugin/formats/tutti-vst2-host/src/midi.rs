@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tutti_midi_types::UmpMessageType;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, SysExAssembler, SysExRef, SysExStep};
 
-/// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
+/// Per-block MIDI plumbing for one [`crate::Vst2Processor`]: the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
 /// to callers. All RT-reused so steady-state processing never allocates.
 pub(crate) struct MidiIo {

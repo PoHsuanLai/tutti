@@ -6,7 +6,7 @@
 //! not crash" into "the host read the plugin's answer correctly".
 //!
 //! `ProbeConfig::from_env()` runs inside `Plugin::new`, i.e. during
-//! `Vst2Instance::load`, so a test reshapes the plugin by setting
+//! `Active::load`, so a test reshapes the plugin by setting
 //! `TUTTI_VST2_PROBE_*` immediately before loading. `set_var` is process-global
 //! and the probe's switches and capture are too, so every test holds
 //! [`PROBE_LOCK`] across the whole set→load→assert sequence.
@@ -15,13 +15,20 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{
-    ChannelLayout, MidiEvent, ParamAddress, RenderScratch, TimeSignature, TransportInfo,
-    Vst2Instance, Vst2ProcessContext,
-};
+use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2ProcessContext};
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
+
+/// The id of the parameter at `index`.
+fn pid(index: i32) -> ParamId {
+    ParamId::new(index as u32)
+}
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;
@@ -68,11 +75,11 @@ fn set_probe_env(pairs: &[(&str, &str)]) {
 
 /// Load the probe with the given `TUTTI_VST2_PROBE_*` overrides applied, then
 /// clear them so the next load starts from the well-behaved defaults.
-fn load_probe_with(env: &[(&str, &str)]) -> Vst2Instance {
+fn load_probe_with(env: &[(&str, &str)]) -> Active {
     let path = probe_path::probe_path().clone();
     reset_switches(&path);
     set_probe_env(env);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     // The AEffect is already built; clearing now keeps the variable from
     // outliving this load.
@@ -81,7 +88,7 @@ fn load_probe_with(env: &[(&str, &str)]) -> Vst2Instance {
 }
 
 /// Load the well-behaved probe.
-fn load_probe() -> Vst2Instance {
+fn load_probe() -> Active {
     load_probe_with(&[])
 }
 
@@ -110,7 +117,7 @@ where
     // Leak the handle, deliberately. The switches these helpers set are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Active` holding the probe open at that moment, the
     // value is written and then discarded with the unload, and the next load
     // maps a fresh image reading the default.
     //
@@ -180,14 +187,9 @@ mod can_do {
     pub const CUSTOM: i32 = 3;
 }
 
-fn render_block(
-    instance: &mut Vst2Instance,
-    scratch: &mut RenderScratch,
-    midi: &[MidiEvent],
-) -> Vec<Vec<f32>> {
-    let meta = instance.metadata().clone();
-    let inputs = (meta.num_inputs.count() as usize).max(1);
-    let outputs = (meta.num_outputs.count() as usize).max(1);
+fn render_block(instance: &mut Active, midi: &[MidiEvent]) -> Vec<Vec<f32>> {
+    let inputs = (instance.pins().0.count() as usize).max(1);
+    let outputs = (instance.pins().1.count() as usize).max(1);
 
     let input_data = vec![vec![0.0f32; BLOCK]; inputs];
     let mut output_data = vec![vec![0.0f32; BLOCK]; outputs];
@@ -197,7 +199,7 @@ fn render_block(
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE).midi(midi);
-    instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx, scratch);
+    instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx);
 
     output_data
 }
@@ -278,7 +280,7 @@ fn an_explicit_can_do_refusal_beats_the_synth_category() {
     set_can_do(&path, can_do::NO, 0);
 
     set_probe_env(&[("TUTTI_VST2_PROBE_IS_SYNTH", "1")]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     let meta = instance.metadata();
@@ -307,7 +309,7 @@ fn a_silent_can_do_still_defers_to_the_synth_category() {
     set_can_do(&path, can_do::MAYBE, 0);
 
     set_probe_env(&[("TUTTI_VST2_PROBE_IS_SYNTH", "1")]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     assert!(
@@ -329,7 +331,7 @@ fn an_affirmative_can_do_beats_the_effect_category() {
     reset_switches(&path);
     set_can_do(&path, can_do::YES, 0);
 
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
         instance.metadata().receives_midi,
         "the plugin answered effCanDo = 1 but the host ignored it"
@@ -359,7 +361,7 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
         ("TUTTI_VST2_PROBE_MIDI_INPUTS", "0"),
         ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "0"),
     ]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     assert!(
@@ -391,7 +393,7 @@ fn a_maybe_answer_with_declared_output_pins_emits_midi() {
     set_can_do(&path, can_do::MAYBE, 0);
 
     set_probe_env(&[("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "2")]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     assert!(
@@ -422,7 +424,7 @@ fn a_maybe_answer_without_output_pins_does_not_emit_midi() {
         ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "0"),
         ("TUTTI_VST2_PROBE_IS_SYNTH", "1"),
     ]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     assert!(
@@ -449,7 +451,7 @@ fn declared_input_pins_make_a_non_synth_a_midi_receiver() {
     set_can_do(&path, can_do::MAYBE, 0);
 
     set_probe_env(&[("TUTTI_VST2_PROBE_MIDI_INPUTS", "1")]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     assert!(
@@ -483,7 +485,7 @@ fn an_out_of_range_midi_count_is_not_an_answer() {
         ("TUTTI_VST2_PROBE_MIDI_INPUTS", "0"),
         ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "99"),
     ]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     let counts = instance.midi_channel_counts();
@@ -516,7 +518,7 @@ fn an_in_range_midi_count_is_reported_verbatim() {
         ("TUTTI_VST2_PROBE_MIDI_INPUTS", "1"),
         ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "15"),
     ]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     let counts = instance.midi_channel_counts();
@@ -547,7 +549,7 @@ fn an_explicit_refusal_beats_declared_midi_pins() {
         ("TUTTI_VST2_PROBE_MIDI_INPUTS", "4"),
         ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "4"),
     ]);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
     let meta = instance.metadata();
@@ -572,7 +574,7 @@ fn an_explicit_refusal_beats_declared_midi_pins() {
 #[test]
 fn chunk_state_round_trips() {
     let _guard = lock_probe();
-    let instance = load_probe();
+    let mut instance = load_probe();
 
     // Give the plugin a chunk to save by restoring one first — the probe's
     // chunk starts empty, and an empty chunk legitimately falls back to a
@@ -580,10 +582,10 @@ fn chunk_state_round_trips() {
     let mut seeded = b"CHK\0".to_vec();
     seeded.extend_from_slice(b"probe-state-v1");
     instance
-        .set_state(&seeded)
+        .load_state(&seeded)
         .expect("probe accepts any chunk");
 
-    let saved = instance.get_state().expect("get_state should succeed");
+    let saved = instance.save_state().expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
         b"CHK\0",
@@ -592,7 +594,7 @@ fn chunk_state_round_trips() {
     );
     assert_eq!(&saved[4..], b"probe-state-v1");
 
-    instance.set_state(&saved).expect("restore should succeed");
+    instance.load_state(&saved).expect("restore should succeed");
 }
 
 /// The benign half of the `copy_chunk` split: "nothing saved" must still fall
@@ -608,10 +610,10 @@ fn chunk_state_round_trips() {
 #[test]
 fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let _guard = lock_probe();
-    let instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
+    let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let saved = instance
-        .get_state()
+        .save_state()
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
@@ -632,7 +634,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
 #[test]
 fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
     let _guard = lock_probe();
-    let instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
+    let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let mut chunk = b"CHK\0".to_vec();
     chunk.extend_from_slice(b"state-for-a-plugin-that-cannot-take-it");
@@ -640,7 +642,7 @@ fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
     // The probe's `load_preset_data` is unconditional, so it accepts; what is
     // asserted is that the host relayed that answer rather than inventing one.
     instance
-        .set_state(&chunk)
+        .load_state(&chunk)
         .expect("the probe accepts chunks, so the host must report success");
 }
 
@@ -648,40 +650,43 @@ fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
 #[test]
 fn parameter_state_round_trips() {
     let _guard = lock_probe();
-    let instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
+    let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
-    assert!(instance.set_parameter(0, 0.25));
-    assert!(instance.set_parameter(1, 0.75));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.25)));
+    assert!(instance.write_parameter(pid(1), Normalized::new(0.75)));
 
-    let state = instance.get_state().expect("get_state should succeed");
+    let state = instance.save_state().expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\0");
 
-    assert!(instance.set_parameter(0, 0.9));
-    assert!(instance.set_parameter(1, 0.1));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.9)));
+    assert!(instance.write_parameter(pid(1), Normalized::new(0.1)));
 
     instance
-        .set_state(&state)
+        .load_state(&state)
         .expect("set_state should succeed");
 
-    assert!((instance.get_parameter(0).unwrap() - 0.25).abs() < 0.02);
-    assert!((instance.get_parameter(1).unwrap() - 0.75).abs() < 0.02);
+    assert!((instance.parameter(pid(0)).map(|n| n.get() as f32).unwrap() - 0.25).abs() < 0.02);
+    assert!((instance.parameter(pid(1)).map(|n| n.get() as f32).unwrap() - 0.75).abs() < 0.02);
 }
 
 /// Malformed state blobs are rejected rather than half-applied.
 #[test]
 fn state_restore_rejects_malformed_blobs() {
     let _guard = lock_probe();
-    let instance = load_probe();
+    let mut instance = load_probe();
 
-    assert!(instance.set_state(&[]).is_err(), "empty blob");
-    assert!(instance.set_state(&[0, 1, 2]).is_err(), "short header");
-    assert!(instance.set_state(&[0xFF; 4]).is_err(), "unknown header");
-    assert!(instance.set_state(b"CHK\0").is_err(), "empty chunk payload");
+    assert!(instance.load_state(&[]).is_err(), "empty blob");
+    assert!(instance.load_state(&[0, 1, 2]).is_err(), "short header");
+    assert!(instance.load_state(&[0xFF; 4]).is_err(), "unknown header");
+    assert!(
+        instance.load_state(b"CHK\0").is_err(),
+        "empty chunk payload"
+    );
 
     let mut bad = b"PRM\0".to_vec();
     bad.extend_from_slice(&2i32.to_le_bytes()); // claims 2 params
     bad.extend_from_slice(&0.5f32.to_le_bytes()); // only 1 value follows
-    assert!(instance.set_state(&bad).is_err(), "count/length mismatch");
+    assert!(instance.load_state(&bad).is_err(), "count/length mismatch");
 }
 
 /// A plugin declaring a negative `numParams` must not take the host down.
@@ -696,13 +701,13 @@ fn state_restore_rejects_malformed_blobs() {
 #[test]
 fn a_negative_parameter_count_does_not_abort_the_save() {
     let _guard = lock_probe();
-    let instance = load_probe_with(&[
+    let mut instance = load_probe_with(&[
         ("TUTTI_VST2_PROBE_PARAMS", "-1"),
         ("TUTTI_VST2_PROBE_NO_CHUNKS", "1"),
     ]);
 
     let state = instance
-        .get_state()
+        .save_state()
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
     assert_eq!(&state[..4], b"PRM\0");
@@ -721,7 +726,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 
     // The blob must survive the round trip it just claimed to be.
     instance
-        .set_state(&state)
+        .load_state(&state)
         .expect("a state blob this host wrote must be one it can read");
 }
 
@@ -736,7 +741,7 @@ fn load_and_metadata() {
     let meta = instance.metadata();
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
-    assert!(meta.num_outputs.count() > 0);
+    assert!(instance.pins().1.count() > 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -759,7 +764,7 @@ fn a_program_switch_is_bracketed_in_order() {
     let path = probe_path::probe_path().clone();
     reset_switches(&path);
 
-    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(instance.set_program(1), "program 1 is in range");
 
     assert_eq!(
@@ -783,7 +788,7 @@ fn an_out_of_range_program_dispatches_nothing() {
     let path = probe_path::probe_path().clone();
     reset_switches(&path);
 
-    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(!instance.set_program(999), "999 is past numPrograms");
     assert!(
         !instance.set_program(-1),
@@ -861,7 +866,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     reset_switches(&path);
     set_accept_soft_bypass(&path, true);
 
-    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
         instance.set_bypass(true),
@@ -898,7 +903,7 @@ fn a_refused_soft_bypass_is_reported() {
     reset_switches(&path);
     set_accept_soft_bypass(&path, false);
 
-    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
         !instance.set_bypass(true),
@@ -930,7 +935,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
 
     reset_switches(&path);
     set_can_do(&path, can_do::YES, 0);
-    let advertising = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let advertising = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
         advertising.supports_soft_bypass(),
         "the probe answered effCanDo(bypass) = 1 and the host ignored it"
@@ -939,7 +944,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
 
     reset_switches(&path);
     set_can_do(&path, can_do::MAYBE, 0);
-    let silent = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let silent = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
         !silent.supports_soft_bypass(),
         "effCanDo = 0 is 'don't know', not a yes; a host that treats it as one \
@@ -1008,7 +1013,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let _guard = lock_probe();
     let instance = load_probe();
 
-    let before = instance.get_parameter_list();
+    let before = instance.parameter_list();
     let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
     assert!(
         defaults.iter().any(|&d| d != 0.0),
@@ -1018,11 +1023,10 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 
     // Move every parameter well away from where it started.
     for p in &before {
-        let index = p.id.index().expect("VST2 addresses parameters by index");
-        assert!(instance.set_parameter(index, 0.9));
+        assert!(instance.write_parameter(p.id, Normalized::new(0.9)));
     }
 
-    let after = instance.get_parameter_list();
+    let after = instance.parameter_list();
     for (i, p) in after.iter().enumerate() {
         assert_eq!(
             p.range.default_value(),
@@ -1036,7 +1040,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     // And the live value really did move, so the assertion above is not
     // passing because the writes were dropped.
     assert!(
-        (instance.get_parameter(0).unwrap() - 0.9).abs() < 0.02,
+        (instance.parameter(pid(0)).map(|n| n.get() as f32).unwrap() - 0.9).abs() < 0.02,
         "the set_parameter writes did not land, so nothing was proven"
     );
 }
@@ -1045,7 +1049,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 fn parameter_count_and_names() {
     let _guard = lock_probe();
     let instance = load_probe();
-    let params = instance.get_parameter_list();
+    let params = instance.parameter_list();
     assert_eq!(params.len(), 4, "the probe declares four parameters");
     for param in &params {
         assert!(
@@ -1063,12 +1067,13 @@ fn parameter_set_get_roundtrip() {
 
     let read = |i| {
         instance
-            .get_parameter(i)
+            .parameter(pid(i))
+            .map(|n| n.get() as f32)
             .expect("the probe must expose getParameter")
     };
     let write = |i, v| {
         assert!(
-            instance.set_parameter(i, v),
+            instance.write_parameter(pid(i), Normalized::new(v)),
             "the probe must expose setParameter"
         );
     };
@@ -1086,12 +1091,12 @@ fn parameter_info_lookup() {
     let _guard = lock_probe();
     let instance = load_probe();
     let info = instance
-        .get_parameter_info(0)
+        .parameter_info(pid(0))
         .expect("param 0 should exist");
-    assert_eq!(info.id, ParamAddress::Index(0));
+    assert_eq!(info.id, pid(0));
     assert!(!info.name.is_empty());
     assert!(
-        instance.get_parameter_info(99_999).is_none(),
+        instance.parameter_info(pid(99_999)).is_none(),
         "an out-of-range index must not be serviced"
     );
 }
@@ -1103,10 +1108,8 @@ fn parameter_info_lookup() {
 fn process_delivers_the_expected_audio() {
     let _guard = lock_probe();
     let mut instance = load_probe();
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
-    let out = render_block(&mut instance, &mut scratch, &[]);
+    let out = render_block(&mut instance, &[]);
 
     // Silent input, so every output sample is exactly the channel tag.
     for (ch, samples) in out.iter().enumerate() {
@@ -1124,8 +1127,6 @@ fn process_delivers_the_expected_audio() {
 fn process_forwards_midi_without_panicking() {
     let _guard = lock_probe();
     let mut instance = load_probe();
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     let note_on = [MidiEvent::note_on(
         MidiGroup::FIRST,
@@ -1133,7 +1134,7 @@ fn process_forwards_midi_without_panicking() {
         60,
         100,
     )];
-    render_block(&mut instance, &mut scratch, &note_on);
+    render_block(&mut instance, &note_on);
 
     let note_off = [MidiEvent::note_off(
         MidiGroup::FIRST,
@@ -1141,15 +1142,13 @@ fn process_forwards_midi_without_panicking() {
         60,
         0,
     )];
-    render_block(&mut instance, &mut scratch, &note_off);
+    render_block(&mut instance, &note_off);
 }
 
 #[test]
 fn process_with_transport() {
     let _guard = lock_probe();
     let mut instance = load_probe();
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     let transport = TransportInfo::new()
         .with_playing(true)
@@ -1159,35 +1158,31 @@ fn process_with_transport() {
         .with_time_signature(TimeSignature::default())
         .with_loop(true, 0.0, 4.0);
 
-    let input_data = vec![vec![0.0f32; BLOCK]; meta.num_inputs.count() as usize];
-    let mut output_data = vec![vec![0.0f32; BLOCK]; meta.num_outputs.count() as usize];
+    let input_data = vec![vec![0.0f32; BLOCK]; instance.pins().0.count() as usize];
+    let mut output_data = vec![vec![0.0f32; BLOCK]; instance.pins().1.count() as usize];
 
     let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
     let mut output_slices: Vec<&mut [f32]> =
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE).transport(&transport);
-    instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx, &mut scratch);
+    instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx);
 }
 
 #[test]
 fn process_empty_buffer() {
     let _guard = lock_probe();
     let mut instance = load_probe();
-    let mut scratch =
-        RenderScratch::new(ChannelLayout::from(0u16), ChannelLayout::from(0u16), BLOCK);
     let input_slices: Vec<&[f32]> = vec![];
     let mut output_slices: Vec<&mut [f32]> = vec![];
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
-    instance.process_f32(&input_slices, &mut output_slices, 0, &ctx, &mut scratch);
+    instance.process_f32(&input_slices, &mut output_slices, 0, &ctx);
 }
 
 #[test]
 fn many_midi_events_in_one_block() {
     let _guard = lock_probe();
     let mut instance = load_probe();
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     let events: Vec<MidiEvent> = (0..10u32)
         .map(|i| {
@@ -1195,16 +1190,16 @@ fn many_midi_events_in_one_block() {
                 .with_frame_offset(i)
         })
         .collect();
-    render_block(&mut instance, &mut scratch, &events);
+    render_block(&mut instance, &events);
 
     let note_offs: Vec<MidiEvent> = (0..10)
         .map(|i| MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60 + i as u8, 0))
         .collect();
-    render_block(&mut instance, &mut scratch, &note_offs);
+    render_block(&mut instance, &note_offs);
 }
 
 #[test]
 fn load_nonexistent_path() {
-    let result = Vst2Instance::load(Path::new("/nonexistent/plugin.vst"), SAMPLE_RATE, BLOCK);
+    let result = Active::load(Path::new("/nonexistent/plugin.vst"), SAMPLE_RATE, BLOCK);
     assert!(result.is_err());
 }

@@ -65,7 +65,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
-use tutti_plugin_types::{ParamAddress, ParamId};
+use tutti_plugin_types::ParamId;
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     AudioBuffer, LoadOptions, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
@@ -960,8 +960,8 @@ const K_PARAM_WARN_BIT_COUNT: u32 = 24;
 /// The tags above stay bare `u32` because they are arithmetic (`TAG + i`) and
 /// bounds checks; only the queue lookups need the address form. VST3 ids are
 /// `Opaque` — the format hands out numbers whose meaning only the plugin knows.
-fn param_address(tag: u32) -> ParamAddress {
-    ParamAddress::Opaque(ParamId::new(tag))
+fn param_address(tag: u32) -> ParamId {
+    ParamId::new(tag)
 }
 
 /// Decode the log ids HostChecker packed into one `outputParameterChanges`

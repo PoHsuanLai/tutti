@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the VST2 host is a `Loaded`, a `Processor` and a `Controller`
+
+`Vst2Loaded` (the plugin after `effOpen`) implements `Loaded` and `Control`;
+activating it gives a `Vst2Processor` (the realtime half) and a `Vst2Controller`
+(the main-thread half, which derefs to `Vst2Loaded`). `Vst2Instance`,
+`Precision`, `Vst2Changes`, `poll_changes`, `take_display_stale`, `HostLink`,
+`suspend`, `resume`, `suspend_for_reconfigure`, `reset_processing_state`,
+`set_sample_rate`, `set_block_size` and `load_with_precision` are gone, and so is
+the public `RenderScratch`: the Processor owns its scratch, sized at the
+activation. `Vst2Loaded::load(path)` takes no rate or block size; the rate, block
+size, precision (64-bit only for a plugin that declared
+`effFlagsCanDoubleReplacing`) and render mode are the `Prepare` of
+`Loaded::activate`, which sends `effSetSampleRate`, `effSetBlockSize` and
+`effSetProcessPrecision` while the plugin is suspended, then
+`effMainsChanged(1)` and `effStartProcess`. A rate or block-size change is
+`deactivate` then `activate`, with `effStopProcess` and `effMainsChanged(0)`
+sent once each by the rejoin; a refused activation (a rate that is no rate, a
+block of no frames) hands the plugin back in `Refused`, suspended and
+untouched. `Vst2Instance` loses `Sync` and the halves are `Send` only.
+
+The Controller runs the dispatcher beside a rendering Processor by the host
+convention (chunks, programs, parameter display, the editor, the latency and
+tail reads), which the VST2 SDK does not state; the shell's `// SAFETY:` says so.
+A parameter write is a direct `setParameter` (the SDK allows it from either
+thread), so there is no edit ring for VST2 yet and nothing for a rejoin to carry
+(the quirk's `Edit::Cheap` is step 9). A block's automation is written at its
+head, the last point of each queue, as a host write whose echo through
+`audioMasterAutomate` is not reported. `audioMasterIOChanged` raises
+`Request::{IoChanged, LatencyChanged, TailChanged}` and `audioMasterUpdateDisplay`
+a rescan of the parameters' values and names, on a `RequestWord` that
+`Vst2Loaded::take_requests` takes; VST2 re-reads the figures instead of
+restarting (`RestartRules::NONE`). A request about pins, latency or tail raised
+inside an activation is answered by the reads after it and dropped. The render
+mode is live (`Vst2Loaded::set_offline_render`), with no restart.
+
+A block the plugin cannot take (a channel shorter than the block, a 32-bit block
+for a 64-bit activation) is `PluginError::Block`, built without allocating, where
+it panicked or entered the plugin. A Processor dropped after its Controller
+retires the plugin to the control side instead of destroying it on its thread,
+and `effStopProcess` and `effMainsChanged(0)` are each sent once, whichever half
+goes last. The pin counts, latency and tail are read from the plugin when asked
+(`Vst2Loaded::pins`, `latency_samples`, `tail`, and `Control::wiring`);
+`PluginInfo` keeps what the plugin declared at load and loses `num_inputs`,
+`num_outputs`, `latency_samples` and `tail`. `Vst2Processor` has the drop
+counters (`dropped_midi_out`, `dropped_sysex`, `dropped_midi_in`).
+
+Renames (design 016 §2.5): `get_parameter`, `set_parameter`,
+`parameter_display` and `set_parameter_from_string` are `Control::parameter`,
+`set_parameter`, `parameter_text` and `parameter_value_from_text` (the writes
+that report a refusal are `write_parameter` and `set_parameter_from_string`),
+`get_parameter_list` is `parameter_list`, `get_parameter_info` is
+`parameter_info`, `get_state` and `set_state` are `Control::save_state` and
+`load_state`, `latency` is `latency_samples`, `is_resumed` is `is_active`, and
+`parameter_count` returns a `usize`. The programs are `Control::presets`,
+`load_preset` and `current_preset`.
+
+`tutti-plugin-server`'s `Vst2Instance` drives a `Lifecycle<Vst2Loaded>` as the
+CLAP and VST3 bridges do; `Lifecycle::drive` replaces `poll_changes`, the idle
+pass does not enter the lifecycle and allocates nothing, a refused rate is rolled
+back to the previous configuration, and a render-mode change is the live switch
+and is kept across a restart. `Vst2Instance::probe` reads the plugin's identity
+without activating it. The in-process VST2 node (`tutti-plugin`) holds the pair
+behind its one lock; its scratch is the Processor's, and a rate change is a
+rejoin and an activation under the lock. `vst-tutti` gains `RenderHandle`
+(`PluginInstance::render_handle`, `read_pin_counts`, `read_num_params`): the
+audio-thread entries, held apart from the instance so the Controller's
+`&mut Vst2Loaded` has no Rust-level alias of what the Processor calls.
+
+### Removed — `ParamAddress`
+
+`ParamAddress::{Opaque, Index}` is `ParamId`. VST2's `i32` index is its
+parameter's `ParamId` (`tutti-vst2-host` converts at its boundary, and refuses an
+id past `i32::MAX`), so `ParameterInfo::id`, `ParameterQueue::param_id`, the
+`PluginParams` methods and the IPC messages carry a `ParamId`, which serializes
+as the bare `u32`: the wire changes for a VST2 plugin, and an old and a new
+build do not talk. `ParamAddress::{opaque, index}` and `From<ParamId>` go, and so
+does the plumbing that told a plugin node which model it addressed
+(`PluginControls::indexed`, `param_input::take`'s argument). The "wrong model
+addresses nothing" refusals are gone with the mismatch they refused, and so are
+their tests (`clap_refuses_a_vst2_index`, `add_param_changes_refuses_a_vst2_index`,
+and the half of `the_addressing_model_survives_the_wire` that told two models
+apart; the half that a high id survives the wire stays).
+`ParameterInfo::new` takes a `ParamId`. `tutti_au_host::parameters::ParamAddress`
+(a scope and element) is a different type and stays.
+
 ### Changed — the VST3 host is a `Loaded`, a `Processor` and a `Controller`
 
 `Vst3Loaded` implements `Loaded` and `Control`; activating it gives a

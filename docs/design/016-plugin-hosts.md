@@ -865,6 +865,91 @@ one; what differs is VST3's.
   out of `handle` and ended the loop. The log line is the first failure and every
   1024th, on the audio-phase thread.
 
+**As built (step 3, VST2).** The AU half is not in this change (the last bullet);
+VST2 is, with `ParamAddress` collapsing to `ParamId`. What differs from the sketch
+and from CLAP and VST3:
+
+- `Vst2Loaded` implements `Loaded` and `Control`; activating it gives a `Vst2Processor`
+  and a `Vst2Controller`, which derefs to `Vst2Loaded`. `Vst2Instance`, `Precision`,
+  `Vst2Changes` and the public `RenderScratch` are gone. `Vst2Loaded::load(path)` takes
+  no rate or block size, and `Vst2Quirks` is step 9's. `RESTARTS` is
+  `RestartRules::NONE`: the core reads a changed pin count, latency or tail again.
+- The Processor holds a `vst_tutti::RenderHandle` (a copy of the `AEffect` pointer and
+  the flags `process` checks; `PluginInstance::render_handle`), so the Controller's
+  `&mut Vst2Loaded` has no Rust-level alias of anything the Processor calls, and its
+  own clone of the plugin's parameter object (`Sync`) for the block's automation. The
+  `PluginInfo` it keeps is what the plugin declared at load; the pins, latency and tail
+  are read from the plugin when asked (`pins`, `latency_samples`, `tail`, `wiring`).
+- The shell is an `Arc` owning the `Vst2Loaded` and an `AtomicBool` for "`effStartProcess`
+  is the plugin's last word", written by the Processor's `stop` and by its first block
+  after one. It is what makes `effStopProcess` and `effMainsChanged(0)` go once each
+  whichever half goes last: a rejoin stops through the Processor and suspends once
+  (`resumed`), and a shell dropped with the plugin still processing stops it in its own
+  drop. Clause 3 of the invariant is stated as what it is, the host convention, and
+  clause 4 is VST3's: a Processor that is the last holder queues the shell for
+  `reap`, which `activate` and the Controller's `flush_edits` call.
+- An activation sends `effSetSampleRate`, `effSetBlockSize`, `effSetProcessPrecision`
+  (64 only when `Prepare::format` asks and the plugin declared
+  `effFlagsCanDoubleReplacing`), `effMainsChanged(1)` and `effStartProcess`, in that
+  order, and so does a reconfigure after its stop and suspend: a changed rate is no longer
+  one opcode but the whole activation. A plugin cannot decline `effMainsChanged`, so
+  `Refused` is for what the host can see is no configuration (a rate that is not a
+  positive finite number, a block of no frames): the plugin comes back suspended and
+  untouched. A request about pins, latency or tail that the plugin raises inside the
+  activation is dropped (the reads after it answer it); the rest (a rescan) is kept.
+- There is no edit ring for VST2 yet. A write is a direct `setParameter`, which the
+  SDK allows from either thread, on the Controller and on the loaded plugin alike, so a
+  rejoin has nothing to carry and a state or preset load has nothing to clear
+  (`Edit::Reset`). The ring and `Edit::Cheap` arrive with the quirk (step 9), which is
+  where VST2 first needs a write to cross to the Processor. A block's automation is
+  written at its head, the latest point of each queue, as a host write
+  (`host_write`: the plugin's `audioMasterAutomate` echo from inside the call is not
+  reported).
+- `audioMasterIOChanged` raises `IoChanged`, `LatencyChanged` and `TailChanged` (VST2
+  has one notice for all three) and `audioMasterUpdateDisplay` a rescan of the values and
+  of the names, on a `RequestWord`; `Vst2Loaded::take_requests` is the shell's one pass.
+  The knob moves the plugin reports through `audioMasterAutomate` stay a bounded queue
+  (`drain_param_changes`) that the server forwards as `ParameterChanged`.
+- The render mode is live: `audioMasterGetCurrentProcessLevel` answers from a flag, so
+  `set_offline_render` records it with no restart and the bridge also records it in the
+  core's `Prepare` (`State::set_mode`), so a later restart keeps it. A refused rate is
+  rolled back to the previous `Prepare` by the bridge, as in VST3.
+- `PluginError::Block` is also the error of a block the plugin cannot take: a channel
+  slice shorter than the block, or a 32-bit block for a 64-bit activation (a 64-bit
+  block for a 32-bit activation is still the narrowing fallback). Neither enters the
+  plugin or allocates.
+- The server's `Vst2Instance` is a bridge over `Lifecycle<Vst2Loaded>` like the other
+  two; its `poll` also forwards the plugin's parameter moves, and the idle pass does not
+  enter the lifecycle and allocates nothing (gated through a session's
+  `drain_async_events`). `Vst2Instance::probe` reads the identity without activating.
+- The in-process node keeps the one lock: a private `Instance` holds both halves under
+  it, the audio thread `try_lock`s for the Processor, and a rate change is a rejoin and an
+  activation under the lock, on the editor pump as before. The scratch is the
+  Processor's, sized at the activation to the block the plugin was told (a longer
+  graph block is split before it reaches the plugin), so the node's own scratch and
+  `ensure_scratch_size` are gone.
+- `ParamAddress` is `ParamId`: VST2's index is its `ParamId`, converted in
+  `tutti-vst2-host` (an id past `i32::MAX` addresses nothing). The wire carries the bare
+  `u32`; `PluginControls::indexed` and the node's `address(id, indexed)` are gone, and
+  so are the tests of the refusals the mismatch needed (`clap_refuses_a_vst2_index`,
+  `add_param_changes_refuses_a_vst2_index`, and the model half of
+  `the_addressing_model_survives_the_wire`).
+- Renames (§2.5): `get_parameter`, `set_parameter`, `parameter_display` and
+  `set_parameter_from_string` are `Control`'s `parameter`, `set_parameter`,
+  `parameter_text` and `parameter_value_from_text`; `get_parameter_list` is
+  `parameter_list`; `get_parameter_info` is `parameter_info`; `get_state` and `set_state`
+  are `save_state` and `load_state`; `latency` is `latency_samples`; `is_resumed` is
+  `is_active`; path arguments are `impl AsRef<Path>`.
+- **Not in this change: AU.** `AuLoaded`'s `Loaded` and `Control`, the
+  `AuProcessor` / `AuController` split, the façade's deletion (with the editor and the
+  SysEx assembler moving as §3.4 says), `AuComponentRef` and the borrowed listener, the
+  server's `AuInstance` as a bridge, and `tutti-au-host`'s renames. `tutti-au-host`
+  cannot be type-checked on a Linux machine: `coreaudio-sys`'s build script needs the
+  Apple SDK headers, so none of it builds without macOS, and a change of that size
+  written blind is not one to merge unverified. It remains one follow-up. The only AU
+  code this change touches is the mechanical `ParamAddress` to `ParamId` edit in the
+  server's `loaders/au.rs` and `tutti-plugin`'s `format/gui/au.rs`.
+
 - **The control surface is `Control`, once.** `Loaded` and `Controller` both
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared
   once and a caller reaches them in either state. What an active plugin adds is

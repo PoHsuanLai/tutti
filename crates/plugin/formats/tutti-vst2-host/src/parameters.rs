@@ -1,24 +1,25 @@
 //! Parameter read / write + shared-`ParameterInfo` exposure.
 //!
-//! VST2 parameters are identified by a dense `i32` index in
-//! `[0, get_info().parameters)` and the value is a normalized `f32` in
-//! `[0, 1]`. Names and labels come from the plugin's `PluginParameters`
-//! table.
+//! VST2 parameters are addressed by a dense `i32` index in
+//! `[0, numParams)` and the value is a normalized `f32` in `[0, 1]`. The shared
+//! vocabulary's [`ParamId`] carries that index (the plugin has no other
+//! identifier), converted here at the boundary. Names and labels come from the
+//! plugin's `PluginParameters` table.
 //!
 //! Real min/max/step metadata is *optional* in VST2 rather than absent:
 //! `effGetParameterProperties` (opcode 56) reports it for plugins that
-//! implement it, and [`Vst2Instance::get_parameter_list`] reads it per parameter.
+//! implement it, and [`Vst2Loaded::parameter_list`] reads it per parameter.
 //! A plugin that declines is reported as normalized with unknown steps, which
 //! is what the ABI alone says.
 
 use std::sync::Arc;
 
 use tutti_plugin_types::{
-    ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
+    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
 };
 
 use crate::host::ParameterChange;
-use crate::instance::Vst2Instance;
+use crate::loaded::Vst2Loaded;
 
 /// Wrapper to make `Arc<dyn PluginParameters>` `Send`.
 ///
@@ -35,64 +36,48 @@ impl std::ops::Deref for SendParams {
     }
 }
 
-impl Vst2Instance {
-    /// Confirm a caller-supplied **index** addresses a parameter this plugin
-    /// declares, or `None` if it does not.
+impl Vst2Loaded {
+    /// Confirm a caller-supplied id addresses a parameter this plugin declares,
+    /// and give its index, or `None` if it does not.
     ///
     /// VST2 is the one hosted format whose parameter address is a dense,
     /// ordered index rather than an opaque id — `getParameter(effect, index)`
-    /// and `numParams` are both `i32` in the ABI, and this crate's entry points
-    /// take the same `i32` so no conversion stands between a caller's index and
-    /// the dispatch. `ParamAddress::Index` carries that distinction at the
-    /// shared boundary, but says nothing about whether an index is *in range*:
-    /// neither this crate nor the vendored dispatch bounds-checks before the
-    /// number reaches the plugin's own array indexing, which is what this
-    /// guards. A negative index is refused here for the same reason.
+    /// and `numParams` are both `i32` in the ABI — so a [`ParamId`] here *is*
+    /// that index, widened. Nothing bounds-checks it before the number reaches
+    /// the plugin's own array indexing, neither this crate nor the vendored
+    /// dispatch, which is what this guards. An id past `i32::MAX` is refused for
+    /// the same reason.
     ///
     /// One helper rather than a check per entry point, so that a site without the
     /// guard reads as an omission rather than a convention.
     ///
-    /// Allocation-free, so the audio thread may call it (the in-process node
-    /// sets parameters there): the count is the length of `initial_values`,
-    /// read at load from the same `numParams` the plugin instance caches,
-    /// never a fresh `get_info()`, which clones the plugin's name and vendor
-    /// strings.
-    fn param_index(&self, id: i32) -> Option<i32> {
-        let count = i32::try_from(self.initial_values.len()).unwrap_or(i32::MAX);
-        (id >= 0 && id < count).then_some(id)
+    /// Allocation-free, so the audio thread may call it (automation writes
+    /// there): the count is the length of `initial_values`, read at load from the
+    /// same `numParams` the plugin instance caches, never a fresh `get_info()`,
+    /// which clones the plugin's name and vendor strings.
+    pub(crate) fn param_index(&self, id: ParamId) -> Option<i32> {
+        index_of(id, self.initial_values.len())
     }
 
-    /// Returns a parameter's current normalized value, in `[0.0, 1.0]`.
-    ///
-    /// `None` when `id` addresses no declared parameter, or when the plugin
-    /// exposes no `getParameter` at all — which VST 2.4 permits for a plugin
-    /// declaring no parameters. That is not the same as a parameter sitting at
-    /// zero, so it is not flattened to `0.0` here; a caller that genuinely does
-    /// not care can say `unwrap_or(0.0)` and be seen to have decided.
-    pub fn get_parameter(&self, id: i32) -> Option<f32> {
-        self.params.get_parameter(self.param_index(id)?)
-    }
-
-    /// Sets a parameter's normalized value, in `[0.0, 1.0]`.
-    ///
-    /// Out-of-range values are passed through; clamping is up to the plugin.
-    /// Returns `false` when `id` addresses no declared parameter, or the plugin
-    /// exposes no `setParameter`: either way the value was discarded rather
-    /// than applied.
+    /// Writes a parameter's normalized value. `false` when `id` addresses no
+    /// declared parameter, or the plugin exposes no `setParameter`: either way
+    /// the value was discarded rather than applied.
     ///
     /// A plugin that echoes the write through `audioMasterAutomate` from
     /// inside the call is not reported in
     /// [`drain_param_changes`](Self::drain_param_changes): the host set the
     /// value, so it is not the plugin's edit.
-    pub fn set_parameter(&self, id: i32, value: f32) -> bool {
+    pub fn write_parameter(&self, id: ParamId, value: Normalized) -> bool {
         match self.param_index(id) {
-            Some(index) => crate::host::host_write(|| self.params.set_parameter(index, value)),
+            Some(index) => {
+                crate::host::host_write(|| self.params.set_parameter(index, value.get() as f32))
+            }
             None => false,
         }
     }
 
-    /// Returns the plugin's own display string for a parameter's **current**
-    /// value, with its unit label appended — `"800 Hz"`, `"Plate"`, `"-6.0 dB"`.
+    /// The plugin's own display string for a parameter's **current** value,
+    /// with its unit label appended — `"800 Hz"`, `"Plate"`, `"-6.0 dB"`.
     ///
     /// `None` when `id` addresses no declared parameter, or the plugin returns
     /// an empty string.
@@ -103,16 +88,18 @@ impl Vst2Instance {
     /// it currently holds, and VST 2.4 offers no way to ask it about a value it
     /// is not set to. The other three formats do take one
     /// (`getParamStringByValue`, `value_to_text`, `ParameterStringFromValue`),
-    /// so this is the format's limit rather than this crate's.
-    ///
-    /// To format some other value, a caller would have to set the parameter
-    /// first, which makes a display query audible and races automation writing
-    /// the same parameter; this method never does that.
+    /// so this is the format's limit rather than this crate's. To format some
+    /// other value, a caller would have to set the parameter first, which makes
+    /// a display query audible and races automation writing the same parameter;
+    /// this never does that. [`Control::parameter_text`] answers only for the
+    /// value the plugin is already at.
     ///
     /// The unit comes from the separate `effGetParamLabel` opcode — VST2 splits
     /// the number and its unit across two calls, so a caller joining them
     /// itself would have to know that. An empty label yields no trailing space.
-    pub fn parameter_display(&self, id: i32) -> Option<String> {
+    ///
+    /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
+    pub fn parameter_display(&self, id: ParamId) -> Option<String> {
         let index = self.param_index(id)?;
         let text = self.params.get_parameter_text(index);
         let label = self.params.get_parameter_label(index);
@@ -138,21 +125,22 @@ impl Vst2Instance {
     /// Unlike the other three formats' parse calls, `effString2Parameter` is a
     /// *setter*: there is no VST2 opcode that parses without applying. So a
     /// caller cannot preview a typed string here — asking is committing.
-    pub fn set_parameter_from_string(&self, id: i32, text: &str) -> Option<f32> {
+    pub fn set_parameter_from_string(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let index = self.param_index(id)?;
         if !self.params.string_to_parameter(index, text.to_string()) {
             return None;
         }
-        self.params.get_parameter(index)
+        self.params
+            .get_parameter(index)
+            .map(|v| Normalized::new(f64::from(v)))
     }
 
     /// Returns a descriptor for every parameter, as the format-neutral
     /// [`ParameterInfo`](crate::ParameterInfo).
     ///
-    /// Each entry's [`id`](crate::ParameterInfo::id) is
-    /// [`ParamAddress::Index`], the position to pass
-    /// to [`get_parameter`](Self::get_parameter) and
-    /// [`set_parameter`](Self::set_parameter). The list dispatches several
+    /// Each entry's [`id`](crate::ParameterInfo::id) is the parameter's index as
+    /// a [`ParamId`], to pass to [`Control::parameter`] and
+    /// [`Control::set_parameter`]. The list dispatches several
     /// opcodes per parameter, so call it from the main thread, not per block.
     ///
     /// Range and steps come from `effGetParameterProperties` (opcode 56) per
@@ -178,15 +166,15 @@ impl Vst2Instance {
     /// `default_value` comes from the load-time snapshot, not the live value.
     /// VST2 has no default-value opcode, so a plugin's initial state is the only
     /// place its defaults are observable.
-    pub fn get_parameter_list(&self) -> Vec<SharedParameterInfo> {
-        (0..self.parameter_count())
+    pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
+        (0..self.parameter_count() as i32)
             .map(|id| self.build_parameter_info(id))
             .collect()
     }
 
     /// The shared descriptor for one parameter index, the single
-    /// `narrow -> shared` map both [`get_parameter_list`](Self::get_parameter_list)
-    /// and [`get_parameter_info`](Self::get_parameter_info) go through.
+    /// `narrow -> shared` map both [`parameter_list`](Self::parameter_list)
+    /// and [`parameter_info`](Self::parameter_info) go through.
     fn build_parameter_info(&self, id: i32) -> SharedParameterInfo {
         // Falls back to the live value only if the snapshot has no entry for
         // this id, which means the parameter count grew after load — a shell
@@ -202,7 +190,7 @@ impl Vst2Instance {
                 .copied()
                 .unwrap_or_else(|| self.params.get_parameter(id).unwrap_or(0.0)) as f64;
 
-        let props = self.parameter_properties(id);
+        let props = self.parameter_properties(ParamId::new(id as u32));
         let int_range = props.as_ref().and_then(|q| q.integer_range);
 
         // The declared default is normalized, so it maps through the range
@@ -235,9 +223,8 @@ impl Vst2Instance {
 
         SharedParameterInfo {
             // The one format that addresses by position. `id` is bounded by
-            // `get_info().parameters`, so it is an index by construction — see
-            // `param_index`.
-            id: ParamAddress::Index(id),
+            // `numParams`, so it is an index by construction — see `param_index`.
+            id: ParamId::new(id as u32),
             name: self.params.get_parameter_name(id),
             unit: self.params.get_parameter_label(id),
             range,
@@ -268,10 +255,12 @@ impl Vst2Instance {
     /// declared parameter.
     ///
     /// The descriptor is a *catalog* entry — name, unit, range, steps, flags —
-    /// and carries no live value. Read that with
-    /// [`get_parameter`](Self::get_parameter), which returns an `Option` and so
-    /// can say "this plugin has no accessor" rather than reporting zero.
-    pub fn get_parameter_info(&self, id: i32) -> Option<SharedParameterInfo> {
+    /// and carries no live value. Read that with [`Control::parameter`], which
+    /// returns an `Option` and so can say "this plugin has no accessor" rather
+    /// than reporting zero.
+    ///
+    /// [`Control::parameter`]: tutti_plugin_types::Control::parameter
+    pub fn parameter_info(&self, id: ParamId) -> Option<SharedParameterInfo> {
         let index = self.param_index(id)?;
         Some(self.build_parameter_info(index))
     }
@@ -289,8 +278,8 @@ impl Vst2Instance {
     /// [`dropped_param_changes`](Self::dropped_param_changes) when that
     /// distinction matters.
     pub fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        let mut out = Vec::with_capacity(self.host_link.param_rx.len());
-        while let Some(change) = self.host_link.param_rx.pop() {
+        let mut out = Vec::with_capacity(self.param_rx.len());
+        while let Some(change) = self.param_rx.pop() {
             out.push(change);
         }
         out
@@ -305,38 +294,12 @@ impl Vst2Instance {
     /// indicates a host that has stopped draining, not a busy plugin — the
     /// capacity is sized for a whole-preset burst.
     pub fn dropped_param_changes(&self) -> u64 {
-        self.host_link.state.dropped_param_changes()
+        self.host.dropped_param_changes()
     }
+}
 
-    /// Returns how many plugin-emitted MIDI events were **dropped** since load
-    /// because the MIDI-out queue was full. Monotonic.
-    ///
-    /// Counted apart from [`dropped_param_changes`](Self::dropped_param_changes)
-    /// because the consequence differs: a dropped note-off whose note-on landed
-    /// is a stuck note.
-    pub fn dropped_midi_out(&self) -> u64 {
-        self.host_link.state.dropped_midi_out() + self.midi.out_overflow()
-    }
-
-    /// Returns how many SysEx messages were **dropped** whole since load
-    /// rather than handed to the plugin truncated: longer than
-    /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
-    /// left without their `END` by a later `START` or by a `SINGLE` on their
-    /// own group, or one whose packet found the reassembly buffer's room
-    /// full (more packets in one block than it reserves for). Monotonic.
-    ///
-    /// The host reassembles a SysEx that spans several UMP packets (and
-    /// blocks) and hands the plugin one complete `0xF0 … 0xF7` message, as a
-    /// `kVstSysExType` event, at its `END` packet's frame.
-    pub fn dropped_sysex(&self) -> u64 {
-        self.midi.send.sysex_dropped()
-    }
-
-    /// Returns how many incoming MIDI events were **dropped** since load
-    /// because one `process` call carried more than
-    /// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) (the
-    /// plugin node never hands it more). Monotonic.
-    pub fn dropped_midi_in(&self) -> u64 {
-        self.midi.send.events_dropped()
-    }
+/// The index `id` stands for, if the plugin declares that many parameters.
+pub(crate) fn index_of(id: ParamId, count: usize) -> Option<i32> {
+    let index = i32::try_from(id.get()).ok()?;
+    ((index as usize) < count).then_some(index)
 }

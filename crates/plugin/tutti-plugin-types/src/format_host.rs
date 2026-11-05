@@ -72,9 +72,9 @@
 //! docs compare all four and give the rule for choosing between them.
 
 use crate::{
-    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamAddress,
-    ParameterInfo, PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext,
-    ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, ContentScale, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
+    PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext, ProcessOutput,
+    RenderMode, WindowHandle,
 };
 
 /// A plugin's catalog identity and load-time wiring snapshot.
@@ -202,29 +202,28 @@ pub trait PluginParams {
     /// normalized, so the conversion is the identity and no information is
     /// invented.
     ///
-    /// `id` is the [`ParamAddress`] from [`ParameterInfo::id`]. For VST3, CLAP
+    /// `id` is the [`ParamId`] from [`ParameterInfo::id`]. For VST3, CLAP
     /// and AU that is an opaque plugin-chosen handle under no obligation to be
     /// dense or ordered, so a loop counter reads whichever parameter happens to
-    /// own that numeric slot; only VST2 addresses by position.
+    /// own that numeric slot; VST2's id is its parameter's position.
     ///
-    /// An address whose model does not match the implementing format addresses
-    /// no parameter — a VST2 index means nothing to a CLAP plugin. Each impl
-    /// reports that as it reports any unknown parameter: `0.0` here, a dropped
-    /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
-    fn get_parameter(&self, id: ParamAddress) -> f64;
+    /// An id the plugin does not have addresses no parameter. Each impl reports
+    /// that as it reports any unknown parameter: `0.0` here, a dropped write in
+    /// [`set_parameter`](Self::set_parameter).
+    fn get_parameter(&self, id: ParamId) -> f64;
 
     /// Writes a parameter value.
     ///
     /// See [`get_parameter`](Self::get_parameter) for why
     /// every format speaks the normalized convention here, and for how an
-    /// address of the wrong model is treated.
+    /// unknown id is treated.
     ///
     /// The domain is in the signature rather than only in this sentence:
     /// [`Normalized`] cannot be built from a plain value without passing its
     /// clamp, so the plain-for-normalized mistake described above is not
     /// expressible at this seam. The clamp is silent, so a plain value passed
     /// anyway arrives saturated rather than rejected.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
+    fn set_parameter(&mut self, id: ParamId, value: Normalized);
 
     /// Returns the plugin's own display string for `value` (`"800 Hz"`,
     /// `"Bandpass"`, `"-inf dB"`), or `None` if it will not say.
@@ -249,7 +248,7 @@ pub trait PluginParams {
     ///
     /// Defaulted rather than required so a loader opts in as its format's call
     /// is bound, and an out-of-tree implementor keeps compiling.
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         let _ = (id, value);
         None
     }
@@ -278,7 +277,7 @@ pub trait PluginParams {
     /// the value; the other three parse without writing. A caller that wants a
     /// preview before committing cannot get one on every format, and one that
     /// does not intend to write must not call this speculatively.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let _ = (id, text);
         None
     }

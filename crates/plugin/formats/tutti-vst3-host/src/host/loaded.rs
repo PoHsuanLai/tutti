@@ -53,7 +53,7 @@ use crate::com::{
     BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
 };
 use tutti_plugin_types::{
-    Control, Normalized, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
+    Control, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
     PluginDescriptor, Request,
 };
 use tutti_types::{ArcLend, ChannelTopology};
@@ -560,7 +560,7 @@ impl Vst3Loaded {
     /// This is the single VST3 `narrow -> shared` mapping. VST3 addresses
     /// parameters by an opaque `ParamID` but *enumerates* them by index, so
     /// this walks `0 .. parameter_count()` and carries each descriptor's own
-    /// `id` into [`ParamAddress::Opaque`] — index `n` is not id `n`, and a
+    /// `id` into the entry's [`ParamId`] — index `n` is not id `n`, and a
     /// caller must address through the entry rather than its position.
     ///
     /// The unit tree is read **once**, not once per parameter: `units()` is a
@@ -3098,7 +3098,7 @@ fn build_param_info(
     ParameterInfo {
         // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
         // the ParamID-vs-index note above.
-        id: ParamAddress::Opaque(info.id.into()),
+        id: info.id.into(),
         name: info.title_string(),
         unit: info.units_string(),
         range,

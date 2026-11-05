@@ -9,9 +9,9 @@
 use std::path::Path;
 use tutti_clap_host::{ClapLoaded, ClapProcessorAny, LoadOptions};
 use tutti_plugin::server::{
-    ContentScale, EditorPresence, EditorSize, LoadedPlugin, Normalized, ParamAddress,
-    ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, PresetId, WindowHandle,
+    ContentScale, EditorPresence, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
+    PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
+    PluginPresets, PluginResult, PluginState, PresetId, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -547,9 +547,7 @@ impl PluginAudio for ClapInstance {
 
 impl PluginParams for ClapInstance {
     /// Normalized `0..=1`, per the [`PluginParams`] contract.
-    fn get_parameter(&self, id: ParamAddress) -> f64 {
-        // A VST2 index addresses nothing here; `clap_id` is opaque.
-        let Some(id) = id.opaque() else { return 0.0 };
+    fn get_parameter(&self, id: ParamId) -> f64 {
         self.loaded_ref()
             .and_then(|loaded| Control::parameter(loaded, id))
             .map_or(0.0, Normalized::get)
@@ -557,20 +555,17 @@ impl PluginParams for ClapInstance {
 
     /// Normalized `0..=1` in. On an active plugin the write is queued to the
     /// Processor and reaches the plugin at the head of the next block.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        let Some(id) = id.opaque() else { return };
+    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
         if let Some(control) = self.lifecycle.control() {
             control.set_parameter(id, value);
         }
     }
 
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
-        let id = id.opaque()?;
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         Control::parameter_text(self.loaded_ref()?, id, value)
     }
 
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
-        let id = id.opaque()?;
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
 
@@ -1435,9 +1430,8 @@ mod tests {
 
     /// Only a path-shaped id reaches CLAP's loader.
     ///
-    /// The preset analogue of `clap_refuses_a_vst2_index`: `from_location`
-    /// takes a filesystem path and nothing else, so a `Number` or `Program`
-    /// names no CLAP preset. There is not even a number to coerce it *to*,
+    /// `from_location` takes a filesystem path and nothing else, so a `Number`
+    /// or `Program` names no CLAP preset. There is not even a number to coerce it *to*,
     /// which is why the id is opaque rather than an integer.
     #[test]
     fn clap_refuses_an_id_that_is_not_a_path() {
@@ -1448,45 +1442,6 @@ mod tests {
 
         // And the whole path still refuses, which is what a caller sees.
         assert!(!instance.load_preset(&PresetId::Number(0)));
-    }
-
-    /// A VST2 index reaching a CLAP plugin addresses nothing, and must be
-    /// refused rather than read as an id.
-    ///
-    /// `ParamAddress` makes the two models distinguishable; this pins that the
-    /// loader acts on the distinction instead of unwrapping the number. Without
-    /// it the enum is only documentation — the shared `u32` this replaced would
-    /// have handed index 0 straight to `clap_id` 0.
-    #[test]
-    fn clap_refuses_a_vst2_index() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(clap_plugin());
-        let mut instance =
-            ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
-
-        let params = instance.get_parameter_list();
-        assert!(!params.is_empty(), "Need at least one parameter");
-        let opaque = params[0].id;
-        let before = instance.get_parameter(opaque);
-
-        // Same number, wrong model.
-        let raw = opaque.opaque().expect("CLAP ids are opaque").get();
-        let as_index = ParamAddress::Index(raw as i32);
-
-        assert_eq!(
-            instance.get_parameter(as_index),
-            0.0,
-            "an index addresses no CLAP parameter, so the read reports the              unknown-parameter value rather than reading id {raw}"
-        );
-
-        // And the write must not land either.
-        let target = if before > 0.5 { 0.1 } else { 0.9 };
-        instance.set_parameter(as_index, Normalized::new(target));
-        assert_eq!(
-            instance.get_parameter(opaque),
-            before,
-            "a write addressed by index must be dropped, not applied to the              parameter that happens to own that number"
-        );
     }
 
     #[test]
@@ -2156,7 +2111,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
-        let clap_id = param_id.opaque().expect("CLAP ids are opaque").get();
+        let clap_id = param_id.get();
         let original = instance.get_parameter(param_id);
 
         // Set to a different value

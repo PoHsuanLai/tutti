@@ -27,12 +27,9 @@ pub(crate) struct Meta {
 // The module is reachable in a loaderless *test* build, because
 // `audio_pipeline`'s tests build a `Meta`. They do not build a `BusChannels`
 // through this, so it alone needs the narrower gate: a loader that builds a
-// bus list itself (CLAP asks the plugin per port and VST3's host crate
-// builds its own, so neither uses it).
-#[cfg_attr(
-    not(any(all(feature = "au", target_os = "macos"), feature = "vst2")),
-    allow(dead_code)
-)]
+// bus list itself (CLAP asks the plugin per port, and the VST2 and VST3 host
+// crates build their own, so none of those uses it).
+#[cfg_attr(not(all(feature = "au", target_os = "macos")), allow(dead_code))]
 pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
     vec![layout.into()]
 }

@@ -4,7 +4,7 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs, Sub
 use crate::error::{Delivered, EditorError, Result, StateError};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
-    MidiEventVec, Normalized, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
+    MidiEventVec, Normalized, NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo,
     Preset, PresetId, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
@@ -119,7 +119,7 @@ impl PluginBridge {
         self.audio.set_listener(listener);
     }
 
-    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: Normalized) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamId, value: Normalized) -> bool {
         // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
         // block. The `_rt` contract must stay non-blocking — a blocking
         // `lock()` here could stall the caller behind a multi-millisecond
@@ -402,19 +402,15 @@ impl PluginBridge {
         self.audio.parameters()
     }
 
-    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamId) -> Option<f32> {
         self.audio.parameter(param_id)
     }
 
-    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+    pub fn parameter_text(&self, param_id: ParamId, value: Normalized) -> Option<String> {
         self.audio.parameter_text(param_id, value)
     }
 
-    pub fn parameter_value_from_text(
-        &self,
-        param_id: ParamAddress,
-        text: &str,
-    ) -> Option<Normalized> {
+    pub fn parameter_value_from_text(&self, param_id: ParamId, text: &str) -> Option<Normalized> {
         self.audio.parameter_value_from_text(param_id, text)
     }
 
@@ -507,11 +503,11 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameters()
     }
 
-    fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
+    fn parameter_value(&self, id: ParamId) -> Option<f32> {
         self.bridge.parameter(id)
     }
 
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         self.bridge.parameter_text(id, value)
     }
 
@@ -522,11 +518,11 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
     /// the value lands where a knob poke would, and the GUI mirror follows
     /// through the existing `PluginParamValuesChanged` refresh rather than a
     /// second write from here.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         self.bridge.parameter_value_from_text(id, text)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
+    fn set_parameter_value(&self, id: ParamId, value: Normalized) {
         // Stays `Normalized` all the way to the bridge, which narrows to the
         // `f32` the wire carries. The subprocess re-clamps on receipt — it
         // must, since the wire is a foreign boundary and the peer is another

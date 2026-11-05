@@ -40,7 +40,7 @@ const RATE: f64 = 48_000.0;
 fn automation(curve: impl Curve + 'static) -> ControlLaneNode {
     ControlLaneNode::for_param(
         ParamKey::<Hz>::CUTOFF,
-        ControlProgram::from_automation(Arc::new(curve)),
+        ControlProgram::from_curve(Arc::new(curve)),
         None,
         None,
     )

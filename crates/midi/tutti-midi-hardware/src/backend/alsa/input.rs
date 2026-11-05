@@ -62,7 +62,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     // Non-blocking, so the pump can notice `running` going false. One client per
     // connection — see `SeqClient`.
     let seq = SeqClient::open("tutti-in", true)?;
-    let port = seq.create_port(
+    let port = seq.open_port(
         "tutti-in",
         sys::SND_SEQ_PORT_CAP_WRITE | sys::SND_SEQ_PORT_CAP_SUBS_WRITE,
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,

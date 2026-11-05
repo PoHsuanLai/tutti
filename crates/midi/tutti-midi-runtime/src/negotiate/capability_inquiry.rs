@@ -402,7 +402,8 @@ impl CiResponder {
     /// that NAKs: the resource, not the message, is unsupported, and no retry
     /// will change that.
     fn subscription_reply(&self, dest: Muid, request_id: u8, header: &[u8]) -> Vec<CiMessage> {
-        let command = header_str_field(header, "command").and_then(SubscriptionCommand::parse);
+        let command: Option<SubscriptionCommand> =
+            header_str_field(header, "command").and_then(|s| s.parse().ok());
 
         // §11.1 makes partial/full/notify Responder-only. Arriving here they are
         // inbound *to* the responder, so an initiator sent one out of turn.

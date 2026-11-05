@@ -97,7 +97,7 @@ jack = ["device", "tutti-cpal/jack"]
 
 # --- codecs -----------------------------------------------------------------
 #
-# The decoder is `tutti-io`'s, so a codec turns on `io` (below): `Wave::load`
+# The decoder is `tutti-io`'s, so a codec turns on `io` (below): `Wave::read`
 # and `FileIn` are reached as `tutti::io::…`. bevy-tutti forwards with
 # `tutti-io?/` instead, because there `tutti-io` arrives only with an edge
 # that uses it.

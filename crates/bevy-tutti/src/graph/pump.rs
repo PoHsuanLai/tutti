@@ -103,7 +103,7 @@
 //! one: it already had the width check, the `Drop` finalization and the
 //! driver seam its tests count passes through, and it gained the three
 //! non-blocking methods a frame loop needs ([`Recorder::request_stop`],
-//! [`Recorder::is_finished`], [`Recorder::shutdown`]). An [`AudioPump`] is a
+//! [`Recorder::is_finished`], [`Recorder::finish_in_place`]). An [`AudioPump`] is a
 //! `Recorder` plus the element type that keys its drain system.
 
 use std::marker::PhantomData;
@@ -249,7 +249,7 @@ impl<S> AudioPump<S> {
     /// double-finalize unrepresentable rather than a panic.
     fn join(&mut self) -> Option<std::io::Result<()>> {
         match &mut self.take {
-            Take::Running(recorder) => recorder.shutdown(),
+            Take::Running(recorder) => recorder.finish_in_place(),
             Take::Refused(error) => error.take().map(Err),
         }
     }

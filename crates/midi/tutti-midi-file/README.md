@@ -6,20 +6,20 @@ MIDI **file** codecs for the Tutti audio engine: Standard MIDI File ([`smf`],
 
 ## What the two codecs cover
 
-- [`smf`]: SMF 1.0. Parse to beat-positioned events ([`ParsedMidiFile`]) or
-  per-track paired notes ([`smf::tracks`]), and write ([`encode_midi_file`] /
-  [`write_midi_file`]). Metrical timing only; the tempo map is reported, not
-  applied.
+- [`smf`]: SMF 1.0. Read to beat-positioned events ([`ParsedMidiFile`]) or
+  per-track paired notes ([`SmfFile`]), with `read(path)` and
+  `from_bytes(&[u8])` on each, and write ([`smf::to_bytes`] / [`smf::write`]).
+  Metrical timing only; the tempo map is reported, not applied.
 - [`clip`]: the *file-level* (path) half of the MIDI 2.0 Clip File codec
-  ([`read_clip_file_from_path`], [`write_clip_file_to_path`]). The byte-level
-  codec is in `tutti-midi-types` and is re-exported here ([`read_clip_file`],
-  [`write_clip_file`]), so a clip round-trips through a path with one import.
+  ([`clip::write`]; [`MidiFile::read`] reads one back). The byte-level codec is
+  in `tutti-midi-types` and is re-exported here ([`ParsedClipFile::from_bytes`],
+  [`write_clip_file`]).
 
-[`MidiFileKind::sniff`] tells the two formats apart by magic bytes, not by
-extension. [`MidiFile`] reads either one, sniffed, and its `timed()` yields
+[`MidiFileKind::detect`] tells the two formats apart by magic bytes, not by
+extension. [`MidiFile`] reads either one, detected, and its `iter()` yields
 the file as `(Beat, MidiEvent)` in the engine's MIDI 2.0 vocabulary (an SMF's
 7-bit velocities widened), with `tempo()` (at beat 0), `tempo_map()` and
-`end()` beside it. Errors are
+`end_beat()` beside it. Errors are
 [`Error`](enum@Error).
 
 Nothing here touches an OS MIDI API, and nothing is `cfg`-gated, so a consumer
@@ -36,7 +36,7 @@ what lets an imported clip be placed without a conversion step:
 ```rust
 use tutti_core::{Beat, BeatDuration, Bpm};
 use tutti_midi_file::{
-    encode_midi_file, smf, MidiFileKind, MidiWriteConfig, SmfMessage, SmfTimedEvent,
+    smf, MidiFileKind, MidiWriteConfig, SmfFile, SmfMessage, SmfTimedEvent,
 };
 
 let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: 0, msg };
@@ -45,16 +45,16 @@ let track = vec![
     note(1.5, SmfMessage::NoteOff { key: 60.into(), vel: 0.into() }),
 ];
 
-let bytes = encode_midi_file(
+let bytes = smf::to_bytes(
     &[track],
     &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
 
 // Recognised by magic bytes rather than by extension.
-assert_eq!(MidiFileKind::sniff(&bytes), Some(MidiFileKind::StandardMidiFile));
+assert_eq!(MidiFileKind::detect(&bytes), Some(MidiFileKind::StandardMidiFile));
 
 // Note-on/off paired into whole notes, one per track.
-let tracks = smf::tracks(&bytes)?;
+let tracks = SmfFile::from_bytes(&bytes)?.into_tracks();
 assert_eq!(tracks[0].notes.len(), 1);
 assert_eq!(tracks[0].notes[0].start_beats, Beat(0.0));
 assert_eq!(tracks[0].notes[0].duration_beats, BeatDuration(1.5));
@@ -69,19 +69,19 @@ not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing more is
 lost after the wire).
 
 ```rust
-# use tutti_midi_file::{encode_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
+# use tutti_midi_file::{smf, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
 # use tutti_core::{Beat, Bpm};
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),
 #     channel: 0,
 #     msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
 # }];
-let bytes = encode_midi_file(
+let bytes = smf::to_bytes(
     &[track],
     &MidiWriteConfig { tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
 // A file with no tempo event reads back as the SMF default, `Bpm(120.0)`.
-let parsed = ParsedMidiFile::parse(&bytes)?;
+let parsed = ParsedMidiFile::from_bytes(&bytes)?;
 assert_ne!(parsed.tempo_bpm, Bpm(174.0));
 assert!(!parsed.tempo_bpm.differs_from(Bpm(174.0), 0.001));
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -89,23 +89,24 @@ assert!(!parsed.tempo_bpm.differs_from(Bpm(174.0), 0.001));
 
 ### Reading from a path
 
-Sniffing a real file needs one to exist, so this half is `no_run`:
+Detecting a real file needs one to exist, so this half is `no_run`:
 
 ```rust,no_run
-use tutti_midi_file::{smf, MidiFileKind};
+use tutti_midi_file::{MidiFile, MidiFileKind, SmfFile};
 
 // Which format is this? By magic bytes, not by extension — a `.mid` extension
 // on a Clip File is a real thing that happens.
-match MidiFileKind::sniff_path("song.mid")? {
+match MidiFileKind::detect_path("song.mid")? {
     Some(MidiFileKind::StandardMidiFile) => {
         // Per-track paired notes, positioned in beats.
-        for track in smf::tracks_from_path("song.mid")? {
+        for track in SmfFile::read("song.mid")?.tracks() {
             println!("{:?}: {} notes", track.name, track.notes.len());
         }
     }
     Some(MidiFileKind::ClipFile) => {
-        let clip = tutti_midi_file::read_clip_file_from_path("song.mid")?;
-        println!("{} events", clip.events.len());
+        if let MidiFile::Clip(clip) = MidiFile::read("song.mid")? {
+            println!("{} events", clip.events.len());
+        }
     }
     Some(_) | None => println!("not a MIDI file we read"),
 }

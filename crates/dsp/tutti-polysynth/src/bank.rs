@@ -34,7 +34,7 @@
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
 use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
-use tutti_nodes::{SvfType, compute_ladder_coeffs, compute_svf_coeffs};
+use tutti_nodes::{LadderCoeffs, SvfCoeffs, SvfType};
 use wide::u32x8;
 
 /// The longest run of frames rendered between two control steps.
@@ -273,7 +273,7 @@ impl VoiceBank {
                 };
                 // The output mix depends on the tap and `Q` alone, so any
                 // cutoff gives the same `m`.
-                let c = compute_svf_coeffs(ty, Hz(1000.0), q, Db(0.0), sample_rate);
+                let c = SvfCoeffs::new(ty, Hz(1000.0), q, Db(0.0), sample_rate);
                 Filter::Svf {
                     ty,
                     q,
@@ -496,11 +496,11 @@ impl VoiceBank {
         let coef = match self.filter {
             Filter::None => return,
             Filter::Svf { ty, q, .. } => {
-                let s = compute_svf_coeffs(ty, cutoff, q, Db(0.0), self.sample_rate);
+                let s = SvfCoeffs::new(ty, cutoff, q, Db(0.0), self.sample_rate);
                 [s.a1 as f32, s.a2 as f32, s.a3 as f32]
             }
             Filter::Ladder => {
-                let l = compute_ladder_coeffs(cutoff, resonance, self.sample_rate);
+                let l = LadderCoeffs::new(cutoff, resonance, self.sample_rate);
                 [(l.g / (1.0 + l.g)) as f32, l.k as f32, 0.0]
             }
         };
@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     /// The lane SVF is `SvfFilterNode`'s filter: same coefficients (from the
-    /// shared `compute_svf_coeffs`), same recurrence, same taps.
+    /// shared `SvfCoeffs::new`), same recurrence, same taps.
     ///
     /// *Mutations, each run:* `c[2] * v3` for `c[1] * v3` in the `v1` line of
     /// the recurrence fails; swapping the `m[1]`/`m[2]` output weights fails.

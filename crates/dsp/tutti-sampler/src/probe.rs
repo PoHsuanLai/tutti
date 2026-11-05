@@ -12,11 +12,11 @@
 //! seek in it, given the codecs compiled into this build" — three conditions the
 //! butler already applies internally when a stream is registered
 //! (`butler::handlers::open_stream`). A host deriving the same verdict from
-//! `Wave::probe_metadata` would be re-implementing a rule it cannot see, and the
+//! `Wave::read_metadata` would be re-implementing a rule it cannot see, and the
 //! two would drift the moment the butler's capabilities changed. Butler and host
 //! read the **same function** — which is the point of it being public.
 //!
-//! This is not a decode: `Wave::probe_metadata` reads the container head and
+//! This is not a decode: `Wave::read_metadata` reads the container head and
 //! stops. Deciding *how much* of a file to keep resident is the caller's policy;
 //! this only reports what the file allows.
 
@@ -120,7 +120,7 @@ pub enum ProbeError {
 /// ```
 pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     let path = path.as_ref();
-    let meta = tutti_io::Wave::probe_metadata(path).map_err(|e| ProbeError::Unreadable {
+    let meta = tutti_io::Wave::read_metadata(path).map_err(|e| ProbeError::Unreadable {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;

@@ -75,7 +75,7 @@ fn automation_reaches_the_plugin_through_its_event_input() {
     let probe = load_probe(SAMPLE_RATE);
     let automation = ControlLaneNode::for_foreign(
         GAIN,
-        ControlProgram::from_automation(Arc::new(Constant(0.75))),
+        ControlProgram::from_curve(Arc::new(Constant(0.75))),
         None,
         (0.0, 1.0),
     );
@@ -360,7 +360,7 @@ fn a_lane_drives_a_plugin_parameter_along_its_curve() {
     env.add_point(AutomationPoint::new(0.0625, 0.75));
     let lane = ControlLaneNode::for_foreign(
         GAIN,
-        ControlProgram::from_automation(Arc::new(env.clone())),
+        ControlProgram::from_curve(Arc::new(env.clone())),
         None,
         (0.0, 1.0),
     );

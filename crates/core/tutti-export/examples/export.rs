@@ -80,7 +80,7 @@ fn main() -> tutti_export::Result<()> {
     // placed voices takes the `OfflineTimeline` those voices read — the clock is
     // a required argument precisely so a silent render is not something you can
     // get by forgetting one.
-    let written = render_to_file(tone(), &config, &FrozenClock, &dir.join("tone.flac"))?;
+    let written = render_to_file(tone(), &config, &FrozenClock, dir.join("tone.flac"))?;
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
     // Every format goes through the same call. FLAC streams through flacenc's
@@ -97,7 +97,7 @@ fn main() -> tutti_export::Result<()> {
             },
             ..config.clone()
         };
-        let w = render_to_file(tone(), &s, &FrozenClock, &dir.join(format!("tone.{ext}")))?;
+        let w = render_to_file(tone(), &s, &FrozenClock, dir.join(format!("tone.{ext}")))?;
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);
     }
 

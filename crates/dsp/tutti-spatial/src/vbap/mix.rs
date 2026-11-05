@@ -30,7 +30,7 @@ const LFE_Q: Q = Q(0.707);
 ///
 /// Generic over the node handle because the mix is built in more than one
 /// graph: `N` is a graph [`NodeKey`] for [`build_vbap_mix`] (the default),
-/// and whatever handle another graph uses for [`vbap_mix_parts`]. The mix
+/// and whatever handle another graph uses for [`VbapMixParts::new`]. The mix
 /// never reads it; it is carried so a caller keeps each source's handle
 /// beside its position, in the order [`VbapMixNode::Source`] indexes.
 #[derive(Debug, Clone, Copy)]
@@ -61,7 +61,7 @@ impl<N> VbapSource<N> {
 /// one of the caller's sources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VbapMixNode {
-    /// The caller's `i`th source, in the order passed to [`vbap_mix_parts`].
+    /// The caller's `i`th source, in the order passed to [`VbapMixParts::new`].
     /// Only ever an edge's `from`: the mix reads its sources, never feeds them.
     Source(usize),
     /// The `i`th [`VbapPannerNode`] ([`VbapMixParts::panners`]), one per
@@ -109,7 +109,7 @@ pub struct VbapLfeSend {
 /// [`edges`](Self::edges) there, resolving [`VbapMixNode::Source`]`(i)` to its
 /// `i`th source. The mix's output is the [`sum`](Self::sum), `layout`-wide.
 /// [`insert_into`](Self::insert_into) is that step for a [`GraphBuilder`], and
-/// `build_vbap_mix` is exactly `vbap_mix_parts(..)?.insert_into(..)`.
+/// `build_vbap_mix` is exactly `VbapMixParts::new(..)?.insert_into(..)`.
 #[derive(Debug)]
 pub struct VbapMixParts {
     /// One panner per source, placed at the source's position, in source
@@ -124,6 +124,108 @@ pub struct VbapMixParts {
 }
 
 impl VbapMixParts {
+    /// Builds a VBAP surround mix's nodes and edges without inserting them into
+    /// any graph.
+    ///
+    /// The graph-agnostic form of [`build_vbap_mix`] (see [`VbapMixParts`]). The
+    /// sources' `node` handles are not read — only their positions, and their
+    /// order, which [`VbapMixNode::Source`] indexes. Allocates; call it on the
+    /// control thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
+    /// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
+    /// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
+    /// rejected.
+    pub fn new<N>(
+        layout: tutti_types::ChannelLayout,
+        sources: &[VbapSource<N>],
+    ) -> Result<VbapMixParts> {
+        let channels = layout.count() as usize;
+        let mut edges = Vec::new();
+
+        let mut panners = Vec::with_capacity(sources.len());
+        for (i, src) in sources.iter().enumerate() {
+            let panner = VbapPannerNode::for_layout(layout)?;
+            panner.set_position(src.azimuth, src.elevation);
+            panners.push(panner);
+            // Stereo-in: feed the source's first two outputs into the panner.
+            for port in 0..2 {
+                edges.push(VbapMixEdge {
+                    from: VbapMixNode::Source(i),
+                    from_port: port,
+                    to: VbapMixNode::Panner(i),
+                    to_port: port,
+                });
+            }
+        }
+
+        // Bass management: layouts with an LFE (.1) channel get a dedicated
+        // low-passed send, because LFE is NOT a spatialized speaker — the panners
+        // leave that channel silent (see `speaker_channel_map`). Every source is
+        // summed to mono, low-passed (~120 Hz), and routed into the LFE channel as
+        // one extra input group on the main sum. Without this, a 5.1/7.1 export's
+        // LFE channel would be empty.
+        let lfe = crate::layout::lfe_channel(layout).map(|channel| {
+            // Mono-sum the sources' first channel, then low-pass.
+            for s in 0..sources.len() {
+                edges.push(VbapMixEdge {
+                    from: VbapMixNode::Source(s),
+                    from_port: 0,
+                    to: VbapMixNode::LfeSum,
+                    to_port: s,
+                });
+            }
+            edges.push(VbapMixEdge {
+                from: VbapMixNode::LfeSum,
+                from_port: 0,
+                to: VbapMixNode::LfeLowpass,
+                to_port: 0,
+            });
+            VbapLfeSend {
+                sum: ChannelSumNode::new(sources.len().max(1), ChannelLayout::MONO),
+                lowpass: SvfFilterNode::<f32>::new(SvfType::LowPass, LFE_CUTOFF_HZ, LFE_Q),
+                channel,
+            }
+        });
+
+        // The main sum folds every panner (each an N-wide group) plus, when present,
+        // one extra group carrying only the LFE send. `ChannelSumNode::new` clamps a
+        // zero source count to 1, so an empty mix is a valid silent N-wide node.
+        let groups = panners.len() + usize::from(lfe.is_some());
+        for s in 0..panners.len() {
+            for c in 0..channels {
+                edges.push(VbapMixEdge {
+                    from: VbapMixNode::Panner(s),
+                    from_port: c,
+                    to: VbapMixNode::Sum,
+                    to_port: s * channels + c,
+                });
+            }
+        }
+        // The LFE send occupies the last input group: only its LFE-channel slot is
+        // wired; the rest of that group reads zeros.
+        if let Some(send) = &lfe {
+            edges.push(VbapMixEdge {
+                from: VbapMixNode::LfeLowpass,
+                from_port: 0,
+                to: VbapMixNode::Sum,
+                to_port: panners.len() * channels + send.channel,
+            });
+        }
+
+        Ok(VbapMixParts {
+            panners,
+            lfe,
+            // `layout`, not the degraded `channels` count: the width is already in
+            // hand here, so hand the bus the declaration rather than a number it
+            // has to re-interpret.
+            sum: ChannelSumNode::new(groups, layout),
+            edges,
+        })
+    }
+
     /// Returns every audio edge of the mix, including the ones from the caller's
     /// sources ([`VbapMixNode::Source`]) into the panners and the LFE send.
     /// A port not named here reads silence: that is the rest of the LFE
@@ -138,7 +240,7 @@ impl VbapMixParts {
     /// Nodes are added in order: panners, the LFE send, the sum. The panners
     /// are graph nodes,
     /// added with their controls, which are dropped here with the low-pass's:
-    /// the placement is the one [`vbap_mix_parts`] set, and the send's cutoff
+    /// the placement is the one [`VbapMixParts::new`] set, and the send's cutoff
     /// is fixed. A caller that moves sources later takes each panner's
     /// [`VbapPannerNode::controls`] from [`panners`](Self::panners) before
     /// inserting.
@@ -170,108 +272,6 @@ impl VbapMixParts {
     }
 }
 
-/// Builds a VBAP surround mix's nodes and edges without inserting them into
-/// any graph.
-///
-/// The graph-agnostic form of [`build_vbap_mix`] (see [`VbapMixParts`]). The
-/// sources' `node` handles are not read — only their positions, and their
-/// order, which [`VbapMixNode::Source`] indexes. Allocates; call it on the
-/// control thread.
-///
-/// # Errors
-///
-/// Returns [`VbapError::UnsupportedSpeakerLayout`](super::VbapError::UnsupportedSpeakerLayout)
-/// if `layout` has no VBAP preset (only 2, 4, 6, 8 and 12 channels do), and
-/// [`VbapError::Vbap`](super::VbapError::Vbap) if the preset geometry is
-/// rejected.
-pub fn vbap_mix_parts<N>(
-    layout: tutti_types::ChannelLayout,
-    sources: &[VbapSource<N>],
-) -> Result<VbapMixParts> {
-    let channels = layout.count() as usize;
-    let mut edges = Vec::new();
-
-    let mut panners = Vec::with_capacity(sources.len());
-    for (i, src) in sources.iter().enumerate() {
-        let panner = VbapPannerNode::for_layout(layout)?;
-        panner.set_position(src.azimuth, src.elevation);
-        panners.push(panner);
-        // Stereo-in: feed the source's first two outputs into the panner.
-        for port in 0..2 {
-            edges.push(VbapMixEdge {
-                from: VbapMixNode::Source(i),
-                from_port: port,
-                to: VbapMixNode::Panner(i),
-                to_port: port,
-            });
-        }
-    }
-
-    // Bass management: layouts with an LFE (.1) channel get a dedicated
-    // low-passed send, because LFE is NOT a spatialized speaker — the panners
-    // leave that channel silent (see `speaker_channel_map`). Every source is
-    // summed to mono, low-passed (~120 Hz), and routed into the LFE channel as
-    // one extra input group on the main sum. Without this, a 5.1/7.1 export's
-    // LFE channel would be empty.
-    let lfe = crate::layout::lfe_channel(layout).map(|channel| {
-        // Mono-sum the sources' first channel, then low-pass.
-        for s in 0..sources.len() {
-            edges.push(VbapMixEdge {
-                from: VbapMixNode::Source(s),
-                from_port: 0,
-                to: VbapMixNode::LfeSum,
-                to_port: s,
-            });
-        }
-        edges.push(VbapMixEdge {
-            from: VbapMixNode::LfeSum,
-            from_port: 0,
-            to: VbapMixNode::LfeLowpass,
-            to_port: 0,
-        });
-        VbapLfeSend {
-            sum: ChannelSumNode::new(sources.len().max(1), ChannelLayout::MONO),
-            lowpass: SvfFilterNode::<f32>::new(SvfType::LowPass, LFE_CUTOFF_HZ, LFE_Q),
-            channel,
-        }
-    });
-
-    // The main sum folds every panner (each an N-wide group) plus, when present,
-    // one extra group carrying only the LFE send. `ChannelSumNode::new` clamps a
-    // zero source count to 1, so an empty mix is a valid silent N-wide node.
-    let groups = panners.len() + usize::from(lfe.is_some());
-    for s in 0..panners.len() {
-        for c in 0..channels {
-            edges.push(VbapMixEdge {
-                from: VbapMixNode::Panner(s),
-                from_port: c,
-                to: VbapMixNode::Sum,
-                to_port: s * channels + c,
-            });
-        }
-    }
-    // The LFE send occupies the last input group: only its LFE-channel slot is
-    // wired; the rest of that group reads zeros.
-    if let Some(send) = &lfe {
-        edges.push(VbapMixEdge {
-            from: VbapMixNode::LfeLowpass,
-            from_port: 0,
-            to: VbapMixNode::Sum,
-            to_port: panners.len() * channels + send.channel,
-        });
-    }
-
-    Ok(VbapMixParts {
-        panners,
-        lfe,
-        // `layout`, not the degraded `channels` count: the width is already in
-        // hand here, so hand the bus the declaration rather than a number it
-        // has to re-interpret.
-        sum: ChannelSumNode::new(groups, layout),
-        edges,
-    })
-}
-
 /// Builds a VBAP surround mix into `g` and returns the summed mix node.
 ///
 /// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
@@ -283,7 +283,7 @@ pub fn vbap_mix_parts<N>(
 /// routed into the LFE channel.
 ///
 /// It builds the whole mix at once, so it suits offline assembly and tests. It
-/// is [`vbap_mix_parts`] followed by [`VbapMixParts::insert_into`]; a graph
+/// is [`VbapMixParts::new`] followed by [`VbapMixParts::insert_into`]; a graph
 /// built another way uses the first half alone. The panners' controls are
 /// dropped, so positions are fixed at the ones given here.
 ///
@@ -303,7 +303,7 @@ pub fn build_vbap_mix(
     sources: &[VbapSource],
 ) -> Result<NodeKey> {
     let nodes: Vec<NodeKey> = sources.iter().map(|s| s.node).collect();
-    Ok(vbap_mix_parts(layout, sources)?.insert_into(g, &nodes))
+    Ok(VbapMixParts::new(layout, sources)?.insert_into(g, &nodes))
 }
 
 #[cfg(test)]

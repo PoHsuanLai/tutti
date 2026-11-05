@@ -1,7 +1,7 @@
-//! `vbap_mix_parts` builds the same mix as `build_vbap_mix` when a graph
+//! `VbapMixParts::new` builds the same mix as `build_vbap_mix` when a graph
 //! wires the parts its own way.
 //!
-//! `build_vbap_mix` is `vbap_mix_parts(..).insert_into(g, ..)`, so its graph
+//! `build_vbap_mix` is `VbapMixParts::new(..).insert_into(g, ..)`, so its graph
 //! is one description of the mix by construction. What that cannot show is
 //! that a *second* wiring of [`VbapMixParts::edges`] — a host inserting the
 //! units through its own graph, as bevy-tutti does — gets the same mix: every
@@ -16,7 +16,7 @@
 use tutti_core::SampleRate;
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
-use tutti_spatial::{VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix, vbap_mix_parts};
+use tutti_spatial::{VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix};
 use tutti_types::{Amplitude, ChannelLayout, Hz, NodeKey, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -84,7 +84,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
         .zip(positions)
         .map(|(&k, &az)| VbapSource::at(k, az))
         .collect();
-    let parts = vbap_mix_parts(layout, &sources).expect("a preset layout");
+    let parts = VbapMixParts::new(layout, &sources).expect("a preset layout");
     let mix = insert(&mut g, parts, &keys);
     g.pipe_output(mix);
     (a, render(g))
@@ -159,7 +159,7 @@ fn a_7_1_4_mix_from_parts_renders_as_build_vbap_mix_does() {
 /// LFE edge dropped → the count fails.
 #[test]
 fn the_parts_list_every_edge_of_the_mix() {
-    let parts = vbap_mix_parts(ChannelLayout::from(6u16), &[VbapSource::at((), 0.0)])
+    let parts = VbapMixParts::new(ChannelLayout::from(6u16), &[VbapSource::at((), 0.0)])
         .expect("5.1 is a preset");
     let edges = parts.edges();
     assert_eq!(edges.len(), 11, "{edges:#?}");
@@ -185,7 +185,7 @@ fn the_parts_list_every_edge_of_the_mix() {
 /// (quad has no LFE send), and silent.
 #[test]
 fn an_empty_mix_is_a_silent_sum() {
-    let parts = vbap_mix_parts::<()>(ChannelLayout::QUAD, &[]).expect("quad");
+    let parts = VbapMixParts::new::<()>(ChannelLayout::QUAD, &[]).expect("quad");
     assert!(parts.panners.is_empty());
     assert!(parts.edges().is_empty());
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);

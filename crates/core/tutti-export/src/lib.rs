@@ -163,9 +163,13 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// [`Error::UnsupportedFormat`] if the format's feature is off or it cannot
 /// write the bit depth; [`Error::InvalidConfig`], [`Error::Resample`],
 /// [`Error::Encoding`] or [`Error::Io`] from the resample and encode stages.
-pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) -> Result<Written> {
+pub fn write_buffers(
+    rendered: &Rendered,
+    config: &ExportConfig,
+    path: impl AsRef<Path>,
+) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    encode::encode_planes(rendered, config, path)
+    encode::encode_planes(rendered, config, path.as_ref())
 }
 
 /// Renders `graph` and writes it to `path`.
@@ -194,9 +198,10 @@ pub fn render_to_file(
     mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
-    path: &Path,
+    path: impl AsRef<Path>,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
+    let path = path.as_ref();
     let plan = render::RenderPlan::new(&config.render);
     render::with_source(
         graph.borrow_mut(),

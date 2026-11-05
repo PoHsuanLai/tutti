@@ -125,7 +125,7 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     // Blocking: a send should apply back-pressure rather than silently drop when
     // the destination's queue is full. Only the *input* pump needs to poll.
     let seq = SeqClient::open("tutti-out", false)?;
-    let port = seq.create_port(
+    let port = seq.open_port(
         "tutti-out",
         sys::SND_SEQ_PORT_CAP_READ | sys::SND_SEQ_PORT_CAP_SUBS_READ,
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,

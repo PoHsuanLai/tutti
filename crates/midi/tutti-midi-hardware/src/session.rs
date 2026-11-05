@@ -229,7 +229,7 @@ impl MidiSession {
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI input with id {}", id.raw())))?;
 
         // One ring per connection, and its only producer goes to the backend.
-        let producer = self.inner.ports.create_input_port(info.name.as_str());
+        let producer = self.inner.ports.open_input_port(info.name.as_str());
         let port = producer.port_id();
         let connection = match self.inner.backend.open_input(id, producer) {
             Ok(connection) => connection,

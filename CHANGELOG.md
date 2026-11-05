@@ -23,6 +23,43 @@ plugin (design 016 §2.1). New in `tutti-plugin-types`: `Event`, `HostOp`,
 re-exports it). The CLAP loader's private `BusLayout` is
 `tutti_plugin_types::Layout`, with public fields.
 
+
+### Changed — std-idiomatic names in io, mod, export, dsp and midi
+
+No aliases are left behind.
+
+| Old | New |
+| --- | --- |
+| `AudioFormat::from_path(&Path)` | `AudioFormat::from_path(impl AsRef<Path>)`, over the new `AudioFormat::from_extension(&str)` |
+| `write_buffers`, `render_to_file`, `render_normalized_to_file` `path: &Path` | `path: impl AsRef<Path>` |
+| `Recorder::stop(self)` (signals and joins) | `Recorder::finish` (`request_stop(&self)` keeps its name) |
+| `Recorder::shutdown(&mut self)` | `Recorder::finish_in_place` |
+| `Wave::load` | `Wave::read` |
+| `Wave::probe_metadata` | `Wave::read_metadata` |
+| `ControlProgram::from_automation` | `ControlProgram::from_curve` |
+| `MidiFileKind::sniff`, `sniff_path` | `MidiFileKind::detect`, `detect_path` |
+| `ParsedMidiFile::load(path)`, `parse(bytes)` | `ParsedMidiFile::read(path)`, `from_bytes(bytes)` |
+| `smf::tracks(bytes)`, `smf::tracks_from_path(path)` | `SmfFile::from_bytes(bytes)`, `SmfFile::read(path)`, then `tracks()` or `into_tracks()` |
+| `SmfFile::stream()` | `SmfFile::as_parsed()` |
+| `read_clip_file(bytes)` | `ParsedClipFile::from_bytes(bytes)` |
+| `read_clip_file_from_path(path)` | `clip::read(path)` |
+| `write_clip_file_to_path` | `clip::write` |
+| `write_midi_file`, `encode_midi_file` | `smf::write`, `smf::to_bytes` |
+| (new) | `ParsedClipFile::to_bytes` |
+| `MidiFile::timed()` (boxed iterator) | `MidiFile::iter()` (`impl Iterator`, no boxing) |
+| `ParsedClipFile::timed()` | `ParsedClipFile::iter()` |
+| `MidiFile::end()` | `MidiFile::end_beat()` |
+| `SubscriptionCommand::parse(&str) -> Option` | `impl FromStr` (`Err = UnknownSubscriptionCommand`) |
+| `Direction::from_reverse(bool)` | `impl From<bool> for Direction` |
+| `BandState::from_enabled(bool)` | the existing `impl From<bool> for BandState` |
+| `AutomationLaneNode::get_value_at` | `value_at` |
+| `get_sample_into`, `get_sample_raw_into` (sampler memory source) | `sample_into`, `sample_raw_into` |
+| `ParsedMidiFile::get_events_in_range` | `events_in_range` |
+| `MpeChannelVoiceMap::get_note_for_channel`, `get_channel_for_note` | `note_for_channel`, `channel_for_note` |
+| `HardwareMidiInputs::get_port_info` | `port_info` |
+| `HardwareMidiInputs::create_input_port` | `open_input_port` |
+| `vbap_mix_parts` | `VbapMixParts::new` |
+| `compute_svf_coeffs`, `compute_ladder_coeffs` | `SvfCoeffs::new`, `LadderCoeffs::new` |
 ### Changed — std-idiomatic names in tutti-types, tutti-core, tutti-cpal and tutti-graph
 
 Booleans are `is_*`, counters are `*_count`, and one operation has one name.

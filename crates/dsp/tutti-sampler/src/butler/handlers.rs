@@ -213,7 +213,7 @@ fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, t
     // Streamable, so both of these succeed — but they are still fallible calls
     // and are handled rather than unwrapped: the probe read the header a moment
     // ago, and a file can be replaced between the two reads.
-    let meta = tutti_io::Wave::probe_metadata(file_path).ok()?;
+    let meta = tutti_io::Wave::read_metadata(file_path).ok()?;
     let decoder = tutti_io::FileIn::open(file_path).ok()?;
     Some((meta, decoder))
 }

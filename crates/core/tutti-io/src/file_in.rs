@@ -22,7 +22,7 @@
 //! [`poll_into`]: FileIn::poll_into
 //! [`seek`]: FileIn::seek
 //!
-//! It shares [`decode`](crate::Wave::load)'s codec feature gates, its probe
+//! It shares [`decode`](crate::Wave::read)'s codec feature gates, its probe
 //! head and its one-packet helper. All decode/seek/file I/O runs on the butler
 //! thread; the audio thread never touches this type.
 
@@ -42,7 +42,7 @@ use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 /// [`AudioIn`].
 ///
 /// Decodes sequentially without loading the whole file into memory (compare
-/// [`Wave::load`](crate::Wave::load)). [`poll_into`](AudioIn::poll_into) fills a
+/// [`Wave::read`](crate::Wave::read)). [`poll_into`](AudioIn::poll_into) fills a
 /// flat interleaved `f32` buffer **at the file's own channel width** and
 /// returns the frames produced; a short count and then `0` mark the end of the
 /// file. It does not downmix: a caller wanting stereo folds each frame through
@@ -133,7 +133,7 @@ impl FileIn {
 
     /// Returns whether [`seek`](Self::seek) can serve arbitrary positions:
     /// `true` when the container reports a frame count. When `false`, load the
-    /// whole file with [`Wave::load`](crate::Wave::load) instead.
+    /// whole file with [`Wave::read`](crate::Wave::read) instead.
     pub fn seekable(&self) -> bool {
         self.seekable
     }
@@ -141,7 +141,7 @@ impl FileIn {
     /// Opens `path` at its first audio track, positioned at frame 0.
     ///
     /// Probes the container and creates a decoder; no audio is decoded yet.
-    /// It reads the same track [`Wave::load`](crate::Wave::load) decodes.
+    /// It reads the same track [`Wave::read`](crate::Wave::read) decodes.
     ///
     /// # Errors
     ///
@@ -462,7 +462,7 @@ mod tests {
     }
 
     fn loaded_stereo(path: &std::path::Path) -> Vec<[f32; 2]> {
-        let w = Wave::load(path).expect("load");
+        let w = Wave::read(path).expect("load");
         (0..w.len()).map(|i| [w.at(0, i), w.at(1, i)]).collect()
     }
 

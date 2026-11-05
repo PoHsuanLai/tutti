@@ -15,7 +15,7 @@
 //! needs on top: polling for the end without blocking
 //! ([`is_finished`](Recorder::is_finished)), asking for the end without
 //! blocking ([`request_stop`](Recorder::request_stop)), and joining in place
-//! ([`shutdown`](Recorder::shutdown)) so a despawn can finalize. That is the
+//! ([`finish_in_place`](Recorder::finish_in_place)) so a despawn can finalize. That is the
 //! whole of the difference, so it is three methods here and not a second loop.
 //!
 //! # It takes a source, not a device
@@ -36,7 +36,7 @@
 //! [`finalize`](tutti_core::io::AudioOut::finalize) a clear home: it consumes
 //! the sink by value and may run only once, so the thread breaks its loop on the
 //! stop flag, finalizes, and returns the `io::Result` that
-//! [`stop`](Recorder::stop) recovers by joining.
+//! [`finish`](Recorder::finish) recovers by joining.
 //!
 //! *How* the loop runs is separated from *what it does*. [`PumpLoop`] is one
 //! pass over both endpoints — poll, write, decide — and holds no thread and no
@@ -54,8 +54,8 @@
 //!
 //! Ending a take is the *only* way `finalize` runs, so it cannot be left to a
 //! caller remembering to ask. [`Drop`] performs the same stop-and-join
-//! [`stop`](Recorder::stop) does — the two share one
-//! [`shutdown`](Recorder::shutdown), and the taken `JoinHandle` is what stops
+//! [`finish`](Recorder::finish) does — the two share one
+//! [`finish_in_place`](Recorder::finish_in_place), and the taken `JoinHandle` is what stops
 //! them joining twice.
 //!
 //! This is not defensive tidiness. The loop exits on its own only for a finite
@@ -67,8 +67,8 @@
 //!
 //! `Drop` cannot return the finalize `Result` and this workspace does not panic
 //! in `Drop`, so that path stores its outcome in a
-//! [`FinalizeStatus`] handle taken beforehand. [`stop`](Recorder::stop) and
-//! [`shutdown`](Recorder::shutdown) remain the paths that hand the result
+//! [`FinalizeStatus`] handle taken beforehand. [`finish`](Recorder::finish) and
+//! [`finish_in_place`](Recorder::finish_in_place) remain the paths that hand the result
 //! straight back.
 //!
 //! The scratch buffer is allocated once before the loop, sized
@@ -318,7 +318,7 @@ impl PumpDriver for ThreadDriver {
                 }
             }
             // Finalize exactly once, here, where the loop is owned. The result
-            // rides the joined thread back to `stop`.
+            // rides the joined thread back to `finish`.
             loop_.finalize()
         })
     }
@@ -365,7 +365,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(2))));
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Starved));
 ///
-/// rec.stop()?;
+/// rec.finish()?;
 /// assert_eq!(pump.pump_once(), None); // finalized
 /// # Ok(())
 /// # }
@@ -526,15 +526,15 @@ impl PumpDriver for ManualDriver {
 ///
 /// End a take with one of:
 ///
-/// - [`stop`](Self::stop) — for a live source (a microphone, [`TapIn`](crate::TapIn)):
+/// - [`finish`](Self::finish) — for a live source (a microphone, [`TapIn`](crate::TapIn)):
 ///   stops the thread wherever it is, finalizes the sink and returns the result.
 /// - [`wait`](Self::wait) — for a finite source (a decoded file): lets the
 ///   source reach its end, then finalizes.
-/// - [`shutdown`](Self::shutdown) — `stop` without consuming the recorder, for
+/// - [`finish_in_place`](Self::finish_in_place) — `finish` without consuming the recorder, for
 ///   a host that stores the take in place (a Bevy component). Pair it with
 ///   [`request_stop`](Self::request_stop) and
 ///   [`is_finished`](Self::is_finished) to end a take without blocking.
-/// - dropping the recorder — does what `stop` does and stores the finalize
+/// - dropping the recorder — does what `finish` does and stores the finalize
 ///   result in [`finalize_status`](Self::finalize_status).
 ///
 /// The sample rate is not checked — [`AudioIn`] carries none — so build the
@@ -550,7 +550,7 @@ impl PumpDriver for ManualDriver {
 ///     .expect("sink opens");
 /// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
 /// // ... later ...
-/// rec.stop()
+/// rec.finish()
 /// # }
 /// ```
 pub struct Recorder {
@@ -558,8 +558,8 @@ pub struct Recorder {
     /// shutdown) to break the pump loop.
     running: Arc<AtomicBool>,
     /// The running pump, joinable for the `finalize` result. `Option` because
-    /// taking it is what makes the shutdown once-only: `stop`, `wait`,
-    /// `shutdown` and `drop` all join through it, and whichever runs first
+    /// taking it is what makes the shutdown once-only: `finish`, `wait`,
+    /// `finish_in_place` and `drop` all join through it, and whichever runs first
     /// leaves `None` behind for the others.
     ///
     /// Boxed rather than generic on the driver: `Recorder` is one type a caller
@@ -592,7 +592,7 @@ impl std::fmt::Debug for Recorder {
 /// stopped.
 ///
 /// Take it from [`Recorder::finalize_status`] *before* the recorder is
-/// dropped, and read it afterwards. [`Recorder::stop`] returns the same result
+/// dropped, and read it afterwards. [`Recorder::finish`] returns the same result
 /// directly and is the path to prefer; `Drop` cannot return anything, and a
 /// failed finalize means an unpatched WAV header — an unreadable file — so the
 /// error is stored here rather than lost.
@@ -611,7 +611,7 @@ pub struct FinalizeStatus {
 impl FinalizeStatus {
     /// Returns whether a drop-path finalize has completed.
     ///
-    /// `false` after [`Recorder::stop`]: that path returns the result directly
+    /// `false` after [`Recorder::finish`]: that path returns the result directly
     /// and deliberately leaves nothing here.
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Acquire)
@@ -747,49 +747,49 @@ impl Recorder {
     /// Blocks for at most one pass (or one park). Frames the source has not
     /// yet delivered are not recorded; for a finite source that should run to
     /// its end, use [`wait`](Self::wait). Dropping the recorder does the same
-    /// as `stop` but can only store the result in
+    /// as `finish` but can only store the result in
     /// [`finalize_status`](Self::finalize_status). After
-    /// [`shutdown`](Self::shutdown) has already returned the result, this
+    /// [`finish_in_place`](Self::finish_in_place) has already returned the result, this
     /// returns `Ok(())`.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
     /// unpatched and the file is unreadable) or the pump thread panicked.
-    pub fn stop(mut self) -> Result<()> {
+    pub fn finish(mut self) -> Result<()> {
         // `self` is consumed, so the `Drop` that follows finds `handle` already
         // taken and does nothing — the join happens exactly once.
-        Ok(self.shutdown().unwrap_or(Ok(()))?)
+        Ok(self.finish_in_place().unwrap_or(Ok(()))?)
     }
 
     /// Waits for a **finite** take to reach its own end, then finalizes.
     ///
-    /// [`stop`](Self::stop) cuts a source off wherever the pump happens to be,
+    /// [`finish`](Self::finish) cuts a source off wherever the pump happens to be,
     /// which silently truncates a finite one. This instead lets the loop run
     /// until the source reports
     /// [`OnEmpty::EndOfStream`], then
-    /// returns the finalize result as `stop` does.
+    /// returns the finalize result as `finish` does.
     ///
     /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
     /// forever**, and every microphone capture is one — the pump parks and
     /// re-polls rather than ending. Choose the method that matches your
-    /// source's `ON_EMPTY`. After [`shutdown`](Self::shutdown) has already
+    /// source's `ON_EMPTY`. After [`finish_in_place`](Self::finish_in_place) has already
     /// returned the result, this returns `Ok(())` without blocking.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] if finalizing failed or the pump thread panicked.
     pub fn wait(mut self) -> Result<()> {
-        // Deliberately not `shutdown()`: the one line that differs is the one
+        // Deliberately not `finish_in_place()`: the one line that differs is the one
         // that would truncate the take.
         Ok(self.join_pump().unwrap_or(Ok(()))?)
     }
 
-    /// Asks the pump to finish, without waiting for it. Idempotent.
+    /// Signals the pump to stop, without waiting for it. Idempotent.
     ///
     /// The driver notices on its next pass, finalizes, and stops;
     /// [`is_finished`](Self::is_finished) then reads `true`, and
-    /// [`shutdown`](Self::shutdown) collects the result without blocking.
+    /// [`finish_in_place`](Self::finish_in_place) collects the result without blocking.
     pub fn request_stop(&self) {
         self.running.store(false, Ordering::Release);
     }
@@ -806,7 +806,7 @@ impl Recorder {
     }
 
     /// Whether the pump has stopped running passes, so
-    /// [`shutdown`](Self::shutdown) will not block.
+    /// [`finish_in_place`](Self::finish_in_place) will not block.
     ///
     /// Never blocks. `true` once a finite source has ended its own take, or
     /// once a requested stop has been noticed. `false` after a shutdown, since
@@ -820,8 +820,8 @@ impl Recorder {
     /// Stops the pump, joins it and returns the sink's finalize result, leaving
     /// the recorder in place.
     ///
-    /// [`stop`](Self::stop) for a host that stores the take where it cannot be
-    /// moved out (a component, a field). `None` when a shutdown already ran,
+    /// [`finish`](Self::finish) for a host that stores the take where it cannot be
+    /// moved out (a component, a field). `None` once the result was already collected,
     /// which is what makes a second finalize unrepresentable rather than a
     /// panic. Blocks for at most one pass (or one park); after
     /// [`is_finished`](Self::is_finished) it does not block at all.
@@ -831,7 +831,7 @@ impl Recorder {
     /// ([`OnEmpty::EndOfStream`] breaks); a starving source — every microphone
     /// capture — parks and re-polls forever, so nothing else ever reaches the
     /// `finalize` below it.
-    pub fn shutdown(&mut self) -> Option<std::io::Result<()>> {
+    pub fn finish_in_place(&mut self) -> Option<std::io::Result<()>> {
         self.request_stop();
         self.join_pump()
     }
@@ -839,8 +839,8 @@ impl Recorder {
     /// Returns the handle where a drop-path finalize leaves its outcome.
     ///
     /// Take it *before* dropping the recorder; it outlives the recorder. After
-    /// [`stop`](Self::stop), [`wait`](Self::wait) or
-    /// [`shutdown`](Self::shutdown) it stays untouched, since those return the
+    /// [`finish`](Self::finish), [`wait`](Self::wait) or
+    /// [`finish_in_place`](Self::finish_in_place) it stays untouched, since those return the
     /// result directly.
     pub fn finalize_status(&self) -> Arc<FinalizeStatus> {
         Arc::clone(&self.status)
@@ -849,7 +849,7 @@ impl Recorder {
     /// Join the pump and surface its finalize result, leaving `running`
     /// alone.
     ///
-    /// The half [`shutdown`](Self::shutdown) and [`wait`](Self::wait) share,
+    /// The half [`finish_in_place`](Self::finish_in_place) and [`wait`](Self::wait) share,
     /// and the whole difference between them is the flag clear before this
     /// call. Taking `handle` is what makes either once-only.
     fn join_pump(&mut self) -> Option<std::io::Result<()>> {
@@ -871,10 +871,10 @@ impl Recorder {
 /// caller reads through a handle taken before the drop.
 impl Drop for Recorder {
     fn drop(&mut self) {
-        // `stop`, `wait` and `shutdown` already took `handle`, so this is a
+        // `finish`, `wait` and `finish_in_place` already took `handle`, so this is a
         // no-op on those paths and must not overwrite the status they
         // deliberately left clear.
-        if let Some(result) = self.shutdown() {
+        if let Some(result) = self.finish_in_place() {
             self.status.set(result);
         }
     }
@@ -1005,7 +1005,7 @@ mod tests {
         let ok_path = dir.path().join("match.wav");
         let ok = WavOut::create(&ok_path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
         let rec = Recorder::start(stereo_src(), ok).expect("matching widths must be accepted");
-        rec.stop().expect("finalize");
+        rec.finish().expect("finalize");
     }
 
     /// A non-stereo pairing records end to end, and every count on the way
@@ -1037,7 +1037,7 @@ mod tests {
         let (driver, pump) = ManualDriver::new();
         let rec = Recorder::start_with(src, wav, driver).expect("matching 6ch widths");
 
-        // Drain by counting, not by sleeping: `stop` clears the run flag
+        // Drain by counting, not by sleeping: `finish` clears the run flag
         // immediately and a threaded pump can exit before its first pass. Here
         // the passes are the caller's, so "drained" is a fact.
         let written = pump.pump_until_dry(16);
@@ -1047,7 +1047,7 @@ mod tests {
             "the pump moved {written} frames of {FRAMES} -- a short drain here would \
              make the header assertion below measure the harness"
         );
-        rec.stop().expect("finalize");
+        rec.finish().expect("finalize");
 
         let reader = hound::WavReader::open(&path).expect("readable");
         assert_eq!(reader.spec().channels, 6);
@@ -1123,7 +1123,7 @@ mod tests {
         }
         assert_eq!(wrote, Samples(3), "three yielding passes, one frame each");
 
-        rec.stop().expect("finalize should succeed");
+        rec.finish().expect("finalize should succeed");
 
         let reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
         let frames = reader.len() as usize / 2; // two samples per stereo frame
@@ -1137,7 +1137,7 @@ mod tests {
     ///
     /// [`Starved`](OnEmpty::Starved) is the whole point: a finite source's pump
     /// loop breaks by itself, so a `Drop` bug is invisible with one. This never
-    /// runs dry, so only `Drop` (or `stop`) can end the take.
+    /// runs dry, so only `Drop` (or `finish`) can end the take.
     struct AlwaysLive;
 
     impl AudioIn for AlwaysLive {
@@ -1159,7 +1159,7 @@ mod tests {
         }
     }
 
-    /// **The `Drop` guarantee.** A live recorder dropped without `stop` still
+    /// **The `Drop` guarantee.** A live recorder dropped without `finish` still
     /// finalizes, so the WAV is readable.
     ///
     /// Before the `Drop` impl this file was unreadable: the pump loop for a
@@ -1181,7 +1181,7 @@ mod tests {
             let rec =
                 Recorder::start_with(AlwaysLive, wav, driver).expect("matching stereo widths");
             let status = rec.finalize_status();
-            // Land a known number of frames, then drop without calling `stop`.
+            // Land a known number of frames, then drop without calling `finish`.
             // Three passes is a count, not a sleep.
             for _ in 0..3 {
                 assert!(
@@ -1278,10 +1278,10 @@ mod tests {
         );
     }
 
-    /// `stop` and `Drop` cannot both join: `stop` consumes the recorder, so the
+    /// `finish` and `Drop` cannot both join: `finish` consumes the recorder, so the
     /// `Drop` that immediately follows finds the handle already taken.
     ///
-    /// The observable half is that `stop` still returns the finalize result and
+    /// The observable half is that `finish` still returns the finalize result and
     /// the drop path leaves `FinalizeStatus` untouched — a second join would
     /// panic on the already-consumed `JoinHandle` long before this assertion,
     /// so reaching it at all is most of the proof.
@@ -1295,16 +1295,16 @@ mod tests {
         let rec = Recorder::start_with(AlwaysLive, wav, driver).expect("matching stereo widths");
         let status = rec.finalize_status();
         assert!(matches!(pump.pump_once(), Some(PumpPass::Wrote(_))));
-        rec.stop().expect("stop returns the finalize result");
+        rec.finish().expect("finish returns the finalize result");
 
         // Same observation as the drop test, and it is what makes this one
-        // non-vacuous: `stop` took the loop, so there is nothing left to join a
+        // non-vacuous: `finish` took the loop, so there is nothing left to join a
         // second time.
-        assert_eq!(pump.pump_once(), None, "`stop` must take the pump loop");
+        assert_eq!(pump.pump_once(), None, "`finish` must take the pump loop");
 
         assert!(
             !status.is_done(),
-            "`stop` returns the result itself; the drop path must not also \
+            "`finish` returns the result itself; the drop path must not also \
              record one, or a caller cannot tell which shutdown ran"
         );
         assert!(hound::WavReader::open(&path).is_ok());
@@ -1388,7 +1388,7 @@ mod tests {
         }
         assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(40))));
         assert_eq!(pump.pump_once(), Some(PumpPass::Ended));
-        rec.stop().expect("a collecting sink finalizes cleanly");
+        rec.finish().expect("a collecting sink finalizes cleanly");
 
         let got = seen.0.lock().unwrap();
         assert_eq!(got.len(), 2000, "1000 stereo frames are 2000 samples");
@@ -1420,14 +1420,14 @@ mod tests {
 
         assert_eq!(pump.pump_until_dry(16), Samples(3));
         assert_eq!(pump.pump_once(), Some(PumpPass::Ended));
-        rec.stop().expect("finalize");
+        rec.finish().expect("finalize");
         assert_eq!(*seen.0.lock().unwrap(), [0, 0, 1, -1, 2, -2]);
     }
 
-    /// **`shutdown` finalizes in place, once.**
+    /// **`finish_in_place` finalizes in place, once.**
     ///
-    /// A component holding a take cannot move it into `stop`, so it calls
-    /// `shutdown` from a `&mut`. The first call returns the finalize result;
+    /// A component holding a take cannot move it into `finish`, so it calls
+    /// `finish_in_place` from a `&mut`. The first call returns the finalize result;
     /// every later one returns `None`, and the `Drop` that follows records
     /// nothing, since the caller already holds the result.
     ///
@@ -1436,7 +1436,7 @@ mod tests {
     /// `self.status.set(Ok(()))` unconditionally (the `is_done` assertion
     /// fails).
     #[test]
-    fn shutdown_finalizes_in_place_exactly_once() {
+    fn finish_in_place_finalizes_in_place_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("in_place.wav");
         let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
@@ -1449,12 +1449,12 @@ mod tests {
 
         assert!(rec.is_running());
         assert!(
-            matches!(rec.shutdown(), Some(Ok(()))),
+            matches!(rec.finish_in_place(), Some(Ok(()))),
             "the first shutdown returns the finalize result"
         );
         assert!(!rec.is_running(), "a shutdown clears the run flag");
         assert!(
-            rec.shutdown().is_none(),
+            rec.finish_in_place().is_none(),
             "a second shutdown has nothing to join and must say so"
         );
         assert!(!rec.is_finished(), "no pump is left to report on");

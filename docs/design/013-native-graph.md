@@ -901,7 +901,7 @@ dropped:
   `Sink<N>`), with widths taken from `ChannelLayout`.
 - **`Wave`, `FileIn`, `WaveAsset`, `WaveMetadata`, `WaveError`**: rehomed
   to `tutti-io` when the surface shrank (see there). The sampler uses `Wave` only as a
-  resident buffer (`new`/`zero`/`from_samples`/`at`/`load`/`probe_metadata`),
+  resident buffer (`new`/`zero`/`from_samples`/`at`/`read`/`read_metadata`),
   so the moved `Wave` is that planar buffer plus the symphonia decode, not the
   855-line original.
 
@@ -1369,7 +1369,7 @@ the `Net` arm is the subject: `tests/graph_source.rs` (the equivalence
 suite, now the one thing carrying the oracle suites' checks over to the `Net`
 arm), `NetSource`'s unit tests in `render/driver.rs`, and the doc examples of
 the `Net`-taking `reported_latency` / `reported_tail`. `tutti-spatial` gained
-`vbap_mix_parts` (the mix's owned units plus every edge as data, sources
+`VbapMixParts::new` (the mix's owned units plus every edge as data, sources
 included; `param_mod_parts`' shape), and `build_vbap_mix` is now that plus
 `VbapMixParts::insert_into(&mut Net, ..)`, so bevy-tutti keeps its `Net`
 form until it drops `Net`; `tests/vbap_mix_parts.rs` renders the two bit-identical at
@@ -4342,7 +4342,7 @@ dangling pointer. And a disconnect never retired its port: each hot-plug cycle
 added a 2048-slot ring the audio thread kept draining.
 
 - **One producer, by ownership.** A port's `HeapRb` is split once.
-  `create_input_port` returns the only `InputProducerHandle`, which owns the
+  `open_input_port` returns the only `InputProducerHandle`, which owns the
   producer half, is not `Clone` and pushes through `&mut self`; the port keeps
   the consumer in an `AudioThreadCell`, the drain being its one reader. Both
   halves hold the ring by `Arc`, so a handle that outlives its port (or the

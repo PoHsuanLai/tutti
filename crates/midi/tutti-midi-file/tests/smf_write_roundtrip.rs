@@ -1,7 +1,7 @@
 //! The writer, checked with a decoder that is not `midly`.
 //!
 //! `smf.rs`'s inline write tests assert byte-exact output for one hand-picked
-//! delta sequence and round-trip through `ParsedMidiFile::parse`. Both are
+//! delta sequence and round-trip through `ParsedMidiFile::from_bytes`. Both are
 //! useful; neither can catch an asymmetry the reader and writer *share*,
 //! because both halves are the same code's opinion of itself. Reading the
 //! bytes back with `support`'s independent decoder closes that.
@@ -83,7 +83,7 @@ fn a_tick_is_rounded_to_nearest_not_truncated() {
     );
 
     let events: Vec<SmfTimedEvent> = beats.iter().map(|&b| note_on(b, 60)).collect();
-    let bytes = smf::encode_midi_file(&[events], &config()).expect("encodes");
+    let bytes = smf::to_bytes(&[events], &config()).expect("encodes");
 
     let decoded = decode_smf(&bytes).expect("the writer must emit decodable SMF");
     let ticks = decoded.note_on_ticks();
@@ -120,9 +120,9 @@ fn parse_write_parse_is_byte_stable() {
         events.push(note_off(2.0, key));
     }
 
-    let first = smf::encode_midi_file(&[events], &config()).expect("encodes");
-    let parsed = smf::ParsedMidiFile::parse(&first).expect("parses");
-    let reencoded = smf::encode_midi_file(
+    let first = smf::to_bytes(&[events], &config()).expect("encodes");
+    let parsed = smf::ParsedMidiFile::from_bytes(&first).expect("parses");
+    let reencoded = smf::to_bytes(
         std::slice::from_ref(&parsed.events),
         &MidiWriteConfig {
             ticks_per_beat: parsed.ticks_per_beat,
@@ -149,7 +149,7 @@ fn parse_write_parse_is_byte_stable() {
 /// not `u32::MAX`, which it would report as an absurd-but-finite tempo.
 #[test]
 fn a_nonpositive_bpm_writes_the_wire_zero() {
-    let bytes = smf::encode_midi_file(
+    let bytes = smf::to_bytes(
         &[vec![note_on(0.0, 60), note_off(1.0, 60)]],
         &MidiWriteConfig {
             ticks_per_beat: TPQ,
@@ -168,7 +168,7 @@ fn a_nonpositive_bpm_writes_the_wire_zero() {
     );
 
     // And the reader's half: absent, not infinite, not 0 BPM.
-    let parsed = smf::ParsedMidiFile::parse(&bytes).expect("parses");
+    let parsed = smf::ParsedMidiFile::from_bytes(&bytes).expect("parses");
     assert!(
         parsed.tempo_bpm.get().is_finite() && parsed.tempo_bpm.get() > 0.0,
         "a file declaring a degenerate tempo must fall back to a usable one, \
@@ -183,8 +183,8 @@ fn a_nonpositive_bpm_writes_the_wire_zero() {
 /// Cheap, and it is the assumption every other test in this file rests on.
 #[test]
 fn the_writers_framing_is_decodable_by_a_foreign_reader() {
-    let bytes = smf::encode_midi_file(&[vec![note_on(0.0, 60), note_off(4.0, 60)]], &config())
-        .expect("encodes");
+    let bytes =
+        smf::to_bytes(&[vec![note_on(0.0, 60), note_off(4.0, 60)]], &config()).expect("encodes");
 
     let decoded = decode_smf(&bytes).expect("an independent decoder must accept the framing");
     assert_eq!(
@@ -203,8 +203,7 @@ fn the_writers_framing_is_decodable_by_a_foreign_reader() {
 /// An empty track list is refused rather than producing a headerless file.
 #[test]
 fn an_empty_track_list_is_refused() {
-    let err =
-        smf::encode_midi_file(&[], &config()).expect_err("a file with no tracks is not a file");
+    let err = smf::to_bytes(&[], &config()).expect_err("a file with no tracks is not a file");
     assert!(
         matches!(err, tutti_midi_file::Error::InvalidConfig(_)),
         "expected InvalidConfig, got {err:?}"

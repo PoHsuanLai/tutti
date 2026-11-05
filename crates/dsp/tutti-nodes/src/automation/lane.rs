@@ -79,7 +79,7 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// per frame, for anything that reads a signal (a node's audio input, a
 /// meter). A param port is driven by a [`ControlLaneNode`](super::ControlLaneNode) instead
 /// (`ControlLaneNode::for_param` over
-/// [`ControlProgram::from_automation`](tutti_mod::ControlProgram::from_automation)),
+/// [`ControlProgram::from_curve`](tutti_mod::ControlProgram::from_curve)),
 /// which sends the curve as curve-segment events
 /// ([`ParamSegment`](tutti_graph::ParamSegment)).
 ///
@@ -170,13 +170,13 @@ impl AutomationLaneNode {
     /// Returns `0.0` where the curve has no value — before its first point, or
     /// on an empty envelope. Use [`update_to`](Self::update_to) to evaluate and
     /// record in one step.
-    pub fn get_value_at(&self, beat: Beat) -> f32 {
+    pub fn value_at(&self, beat: Beat) -> f32 {
         self.curve.value_at(beat).unwrap_or(0.0)
     }
 
     /// Evaluates at `beat` and records it as the last value.
     pub fn update_to(&mut self, beat: Beat) -> f32 {
-        self.last_value = self.get_value_at(beat);
+        self.last_value = self.value_at(beat);
         self.last_value
     }
 

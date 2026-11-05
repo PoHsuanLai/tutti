@@ -115,7 +115,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     }
     let lane = ControlLaneNode::for_foreign(
         78,
-        ControlProgram::from_automation(Arc::new(env)),
+        ControlProgram::from_curve(Arc::new(env)),
         None,
         (0.0, 1.0),
     );

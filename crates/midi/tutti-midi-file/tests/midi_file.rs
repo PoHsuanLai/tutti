@@ -1,4 +1,4 @@
-//! [`MidiFile`]: either container, sniffed by magic, read as one timed
+//! [`MidiFile`]: either container, detected by magic, read as one timed
 //! MIDI 2.0 event stream.
 //!
 //! SMF inputs come from `support`, the spec-written encoder (see its header),
@@ -13,7 +13,7 @@ use support::{Division, RawEvent, build_smf};
 use tutti_core::{Beat, Bpm};
 use tutti_midi_file::{
     ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
-    SmfTimedEvent, encode_midi_file, write_clip_file_from_beats, write_clip_file_with_header,
+    SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
@@ -27,7 +27,7 @@ fn metrical(tracks: &[Vec<RawEvent>]) -> Vec<u8> {
 
 /// A one-note SMF's bytes, through this crate's own writer.
 fn smf_bytes() -> Vec<u8> {
-    encode_midi_file(
+    smf::to_bytes(
         &[vec![
             SmfTimedEvent {
                 time_beats: Beat(0.0),
@@ -62,7 +62,7 @@ fn smf_bytes() -> Vec<u8> {
 /// velocities the Min-Center-Max figures the spec fixes for 7-bit 127 and 64:
 /// `0xFFFF` and `0x8000`.
 ///
-/// Mutation (run): `timed`'s SMF arm returning the parsed event without
+/// Mutation (run): `iter`'s SMF arm returning the parsed event without
 /// `normalize` (MIDI 1.0 Channel Voice, 7-bit) → the lists differ → fails.
 /// Mutation (run): the SMF arm dropping the second track's channel-3 events
 /// (a `filter` on channel 0 before the conversion) → fails.
@@ -95,8 +95,8 @@ fn an_smf_and_a_clip_file_of_the_same_notes_yield_the_same_events() {
     assert_eq!(smf.kind(), MidiFileKind::StandardMidiFile);
     assert_eq!(clip.kind(), MidiFileKind::ClipFile);
 
-    let from_smf: Vec<(Beat, MidiEvent)> = smf.timed().collect();
-    let from_clip: Vec<(Beat, MidiEvent)> = clip.timed().collect();
+    let from_smf: Vec<(Beat, MidiEvent)> = smf.iter().collect();
+    let from_clip: Vec<(Beat, MidiEvent)> = clip.iter().collect();
     assert_eq!(from_smf.len(), 4, "every channel message of both tracks");
     assert_eq!(from_smf, from_clip);
     assert_eq!(
@@ -118,11 +118,11 @@ fn a_note_on_at_tick_480_of_a_480_ppq_file_lands_at_beat_one() {
         RawEvent::note_off(BEAT, 0, 60, 0),
     ]]))
     .expect("decodes");
-    let timed: Vec<(Beat, MidiEvent)> = file.timed().collect();
+    let timed: Vec<(Beat, MidiEvent)> = file.iter().collect();
     assert_eq!(timed[0].0, Beat(1.0));
     assert_eq!(timed[0].1.note(), Some(60));
     assert_eq!(timed[1].0, Beat(2.0));
-    assert_eq!(file.end(), Beat(2.0), "the last event, the note-off");
+    assert_eq!(file.end_beat(), Beat(2.0), "the last event, the note-off");
 }
 
 /// **`tempo` is the declared tempo at beat 0, and an SMF always has one.**
@@ -237,7 +237,7 @@ fn a_file_of_neither_format_is_named_as_such() {
 ///
 /// The complement of the test above: the magic is right, so the container is
 /// known — what failed is the decode. Distinguishing the two is the whole point
-/// of sniffing separately from parsing.
+/// of detecting separately from parsing.
 #[test]
 fn a_truncated_smf_is_a_parse_error() {
     let mut bytes = smf_bytes();
@@ -298,7 +298,7 @@ fn seconds_integrate_over_the_tempo_map() {
     assert_eq!(file.seconds_at(Beat(2.0)), 1.0);
     assert_eq!(file.seconds_at(Beat(4.0)), 2.0);
     assert_eq!(file.seconds_at(Beat(8.0)), 6.0);
-    assert_eq!(file.seconds_at(file.end()), 6.0);
+    assert_eq!(file.seconds_at(file.end_beat()), 6.0);
 }
 
 /// **A Set Tempo after beat 0 does not govern beat 0.** The file's only Set
@@ -363,12 +363,12 @@ fn a_clip_files_tempo_map_is_its_set_tempos() {
 // ── the merged stream carries more than notes ───────────────────────────────
 
 /// **An SMF's controllers, bends, program changes and running-status notes
-/// reach `timed()`, widened to MIDI 2.0.** The figures are the spec's
+/// reach `iter()`, widened to MIDI 2.0.** The figures are the spec's
 /// Min-Center-Max upscales: CC value 100 → `0xC924_9249`, the bend centre
 /// (`0x2000`) → `0x8000_0000`, velocity 1 → 512; a running-status velocity-0
 /// note-on is a note-off.
 ///
-/// Mutation (run): `timed()`'s SMF arm keeping note-on and note-off only (a
+/// Mutation (run): `iter()`'s SMF arm keeping note-on and note-off only (a
 /// `filter` on the message before the conversion) → two events, not five →
 /// fails. This is the test that shows `stream` is needed: the paired notes
 /// carry no controller.
@@ -382,7 +382,7 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
         RawEvent::running_status(BEAT, vec![60, 0]), // 0x92 60 0: a note-off
     ]]))
     .unwrap();
-    let timed: Vec<(Beat, MidiEvent)> = file.timed().collect();
+    let timed: Vec<(Beat, MidiEvent)> = file.iter().collect();
     assert_eq!(timed.len(), 5, "every channel message: {timed:?}");
 
     // MIDI 2.0 Channel Voice: type 4, the opcode in word 0, the value in word 1.
@@ -414,9 +414,9 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
 
 /// **A NaN beat is refused by the SMF writer, not a panic.** The sort used
 /// `partial_cmp(..).unwrap()`, which panics the moment a NaN is compared;
-/// a NaN has no tick, so `encode_midi_file` rejects it at the boundary.
+/// a NaN has no tick, so `smf::to_bytes` rejects it at the boundary.
 ///
-/// Mutation (run): drop the non-finite check in `encode_midi_file` and
+/// Mutation (run): drop the non-finite check in `smf::to_bytes` and
 /// restore the `partial_cmp(..).unwrap()` sort → the call panics instead
 /// of returning `InvalidConfig`.
 #[test]
@@ -430,7 +430,7 @@ fn a_nan_beat_is_an_smf_encode_error() {
         },
     };
     let tracks = [vec![note(1.0, 60), note(f64::NAN, 61), note(0.0, 62)]];
-    let got = encode_midi_file(&tracks, &MidiWriteConfig::default());
+    let got = smf::to_bytes(&tracks, &MidiWriteConfig::default());
     assert!(
         matches!(got, Err(Error::InvalidConfig(_))),
         "a NaN beat must be refused, got {got:?}"
@@ -470,7 +470,7 @@ fn a_non_finite_beat_sorts_without_moving_a_clip() {
         ],
     );
     let clip = MidiFile::from_bytes(&bytes).expect("the clip decodes");
-    let got: Vec<(Beat, Option<u8>)> = clip.timed().map(|(b, e)| (b, e.note())).collect();
+    let got: Vec<(Beat, Option<u8>)> = clip.iter().map(|(b, e)| (b, e.note())).collect();
     assert_eq!(
         got,
         vec![

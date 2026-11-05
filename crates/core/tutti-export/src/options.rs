@@ -32,19 +32,15 @@ pub enum AudioFormat {
 }
 
 impl AudioFormat {
-    /// Detect format from a file path's extension, with that format's defaults.
-    /// `.aif` aliases `.aiff`.
+    /// The format a file extension names, with that format's defaults. Case
+    /// does not matter, and `aif` aliases `aiff`.
     ///
     /// # Errors
     ///
     /// [`Error::UnsupportedFormat`] if the extension is not `wav`, `flac`,
-    /// `aiff`, `aif` or `ogg`, or is missing.
-    pub fn from_path(path: &Path) -> Result<Self> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+    /// `aiff`, `aif` or `ogg`.
+    pub fn from_extension(ext: &str) -> Result<Self> {
+        let ext = ext.to_lowercase();
         match ext.as_str() {
             "wav" => Ok(Self::Wav),
             "flac" => Ok(Self::Flac(Flac::default())),
@@ -55,6 +51,22 @@ impl AudioFormat {
                 reason: crate::UnsupportedReason::UnknownExtension,
             }),
         }
+    }
+
+    /// The format a file path's extension names, with that format's defaults.
+    /// See [`from_extension`](Self::from_extension).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedFormat`] if the extension is not a supported one, or
+    /// is missing.
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_extension(
+            path.as_ref()
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or(""),
+        )
     }
 }
 

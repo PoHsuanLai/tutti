@@ -119,7 +119,7 @@ fn main() -> tutti_export::Result<()> {
     let mut count = 0usize;
     let mut write =
         |name: String, graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
-            let w = render_to_file(graph, cfg, &tutti_export::FrozenClock, &dir.join(&name))?;
+            let w = render_to_file(graph, cfg, &tutti_export::FrozenClock, dir.join(&name))?;
             println!("wrote {name} ({} bytes)", w.bytes);
             count += 1;
             Ok(())

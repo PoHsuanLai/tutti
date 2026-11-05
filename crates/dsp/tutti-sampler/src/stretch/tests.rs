@@ -830,7 +830,7 @@ fn render_440(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
 /// source from `sin(TAU·f·pos/sr)` while stepping `pos` by the read rate makes
 /// the *generator* perform the resampling, which pre-cancels the very
 /// transposition under test and reports a clean 440 Hz for every setting. A
-/// table read is what `MemorySource::get_sample_into` does, and it is the only
+/// table read is what `MemorySource::sample_into` does, and it is the only
 /// form that can observe the effect.
 #[cfg(test)]
 fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {

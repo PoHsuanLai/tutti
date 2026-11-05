@@ -464,7 +464,9 @@ impl Pages {
                     .latch(fail(format!("seek to frame {start}: {e}")));
                 return;
             }
-            if let Err(e) = self.decoder.fill_sequential_interleaved(&mut page.data) {
+            // Frames read before a fault stay in the page.
+            let _ = self.decoder.fill_sequential_interleaved(&mut page.data);
+            if let Some(e) = self.decoder.error() {
                 self.fault
                     .latch(fail(format!("decode at frame {start}: {e}")));
             }
@@ -608,5 +610,41 @@ mod tests {
             &mut out,
         );
         assert!(!read.is_open(), "a read past the end opened it again");
+    }
+
+    /// **A damaged file latches a fault** instead of rendering silence as if
+    /// the file ended there: the FLAC fixture cut to 90% ends short of its
+    /// frame count, the page keeps the frames before the cut, and the latch
+    /// holds the decode failure.
+    ///
+    /// Mutation (run): not checking `decoder.error()` after the fill leaves
+    /// the latch empty and fails.
+    #[test]
+    fn a_damaged_file_latches_a_fault_and_keeps_its_frames() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/audio/stereo.flac");
+        let bytes = std::fs::read(source).expect("fixture");
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("cut.flac");
+        std::fs::write(&path, &bytes[..bytes.len() * 9 / 10]).expect("write");
+
+        let fault = Arc::<FaultLatch>::default();
+        let mut read = OfflineRead::new(
+            StreamFile {
+                path,
+                file_rate: SampleRate(44_100.0),
+                loop_: LoopSetting::Off,
+                resident: None,
+            },
+            Arc::clone(&fault),
+        );
+        let mut out = [0.0f32; 2];
+        read.read_into(SamplePosition(100.0), Direction::Forward, &mut out);
+        assert!(
+            out.iter().any(|&s| s != 0.0),
+            "frames before the cut are kept"
+        );
+        let latched = fault.fault().expect("the cut is latched").to_string();
+        assert!(latched.contains("frame count"), "{latched}");
     }
 }

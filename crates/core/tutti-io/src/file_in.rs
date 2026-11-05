@@ -29,7 +29,7 @@
 use std::path::Path;
 
 use symphonia::core::audio::{AudioBuffer, Signal};
-use symphonia::core::codecs::{Decoder, DecoderOptions};
+use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_core::io::{AudioIn, OnEmpty};
@@ -40,6 +40,18 @@ use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 
 /// What [`FileIn::error`] reports when the stream ends before the container's
 /// frame count.
+/// A copy of `error` for a call that reports a fault the stream already
+/// holds: symphonia's error is not `Clone`.
+fn repeat(error: &WaveError) -> WaveError {
+    match error {
+        Error::IoError(io) => Error::IoError(std::io::Error::new(io.kind(), error.to_string())),
+        Error::DecodeError(msg) => Error::DecodeError(msg),
+        Error::Unsupported(msg) => Error::Unsupported(msg),
+        Error::LimitError(msg) => Error::LimitError(msg),
+        _ => Error::DecodeError("the stream failed earlier; see FileIn::error"),
+    }
+}
+
 const TRUNCATED: &str = "stream ended before the container's frame count";
 
 /// A streaming decoder over an audio file's first audio track, as an
@@ -100,6 +112,11 @@ pub struct FileIn {
     /// early, kept for [`error`](Self::error). Sticky until a
     /// [`seek`](Self::seek) succeeds.
     fault: Option<WaveError>,
+    /// Whether `total_frames` is exact, so a stream that ends short of it is
+    /// damaged. Only FLAC's is (its STREAMINFO count); MP3 delay and padding,
+    /// Vorbis priming and a WAV header's data length can all disagree with
+    /// the frames a file really holds.
+    exact_length: bool,
 }
 
 impl std::fmt::Debug for FileIn {
@@ -175,6 +192,7 @@ impl FileIn {
         // Seekable only when the container reports a frame count. Formats
         // without n_frames (some VBR/streamed) fall back to whole-file load.
         let seekable = total_frames.is_some();
+        let exact_length = track.codec_params.codec == CODEC_TYPE_FLAC;
 
         // Reserve leftover for a typical packet's worth of frames so
         // sequential reads don't reallocate after warmup. WAV packets are
@@ -195,6 +213,7 @@ impl FileIn {
             seekable,
             skipped_primer: None,
             fault: None,
+            exact_length,
         })
     }
 
@@ -267,16 +286,16 @@ impl FileIn {
         }
     }
 
-    /// The decode error that cut a [`poll_into`](AudioIn::poll_into) stream
-    /// short, if one did: a packet that failed to decode, or a stream that
-    /// ended before the container's frame count (where a damaged frame can
-    /// read as a clean end of file).
+    /// The fault that cut a sequential read short, if one did: a packet that
+    /// failed to decode, or (FLAC only, whose frame count is exact) a stream
+    /// that ended before that count, where a damaged frame can read as a
+    /// clean end of file. A [`WaveError`] is symphonia's error type.
     ///
-    /// `poll_into` has no error channel: a failed read returns the frames
-    /// decoded before it and then `0`, the same as end-of-file. A consumer
-    /// that sees `0` asks here to tell a corrupt file from a finished one.
-    /// The fault is sticky (later polls return `0` without decoding on) and
-    /// cleared by a successful [`seek`](Self::seek).
+    /// [`poll_into`](AudioIn::poll_into) has no error channel: a failed read
+    /// returns the frames decoded before it and then `0`, the same as
+    /// end-of-file, so a consumer that sees `0` asks here to tell a corrupt
+    /// file from a finished one. The fault is sticky (later reads return it
+    /// without decoding on) and cleared by a successful [`seek`](Self::seek).
     pub fn error(&self) -> Option<&WaveError> {
         self.fault.as_ref()
     }
@@ -292,16 +311,25 @@ impl FileIn {
     ///
     /// `out.len()` should be a multiple of [`channels`](Self::channels); a
     /// partial trailing frame is not filled. This is the fallible form of
-    /// [`poll_into`](AudioIn::poll_into), which ends the stream on a decode
-    /// error and keeps it for [`error`](Self::error).
+    /// [`poll_into`](AudioIn::poll_into).
     ///
     /// # Errors
     ///
-    /// A [`WaveError`] if reading or decoding a packet fails.
+    /// A [`WaveError`] if reading or decoding a packet fails. Frames filled
+    /// before the failure are returned as `Ok` first, and the failure comes
+    /// with the next call (and stays, see [`error`](Self::error)). The same
+    /// goes for a FLAC stream that ends before its frame count.
     pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<usize, WaveError> {
-        match self.fill(out) {
-            (_, Some(error)) => Err(error),
-            (filled, None) => Ok(filled),
+        if let Some(fault) = &self.fault {
+            return Err(repeat(fault));
+        }
+        let (filled, fault) = self.fill(out);
+        self.fault = fault;
+        match &self.fault {
+            // The frames before the fault are the caller's; the fault is
+            // reported by the next call, which finds nothing more to read.
+            Some(fault) if filled == 0 => Err(repeat(fault)),
+            _ => Ok(filled),
         }
     }
 
@@ -310,7 +338,7 @@ impl FileIn {
     /// A damaged frame can read as a clean end of file: the demuxer reports
     /// end-of-stream where it lost sync, so the only evidence is the count.
     fn truncation(&self) -> bool {
-        self.total_frames.is_some_and(|total| self.cursor < total)
+        self.exact_length && self.total_frames.is_some_and(|total| self.cursor < total)
     }
 
     /// [`fill_sequential_interleaved`](Self::fill_sequential_interleaved),
@@ -337,7 +365,10 @@ impl FileIn {
             // Need another packet.
             match self.decode_next_packet() {
                 // End-of-stream: leave the untouched tail for the caller.
-                Ok((0, _)) => break,
+                Ok((0, _)) => {
+                    let fault = self.truncation().then_some(Error::DecodeError(TRUNCATED));
+                    return (filled, fault);
+                }
                 Ok(_) => {}
                 Err(error) => return (filled, Some(error)),
             }
@@ -455,16 +486,7 @@ impl AudioIn for FileIn {
     /// The inherent [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved)
     /// returns the same count as a bare `usize`.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        if self.fault.is_some() {
-            return Samples::ZERO;
-        }
-        let (filled, mut fault) = self.fill(out);
-        let ended = filled < out.len() / self.channels.max(1);
-        if fault.is_none() && ended && self.truncation() {
-            fault = Some(Error::DecodeError(TRUNCATED));
-        }
-        self.fault = fault;
-        Samples(filled)
+        Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
     }
 }
 
@@ -472,6 +494,7 @@ impl AudioIn for FileIn {
 mod tests {
     use super::*;
     use crate::Wave;
+    use crate::decode::probe_path;
 
     /// Write `wave` as a 16-bit WAV named `name` and return its path.
     ///
@@ -618,59 +641,195 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The repo's FLAC fixture with one byte flipped in its middle: the
-    /// container still opens, and a later frame fails its checksum.
-    fn corrupt_flac(tag: &str) -> std::path::PathBuf {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../assets/audio/stereo.flac");
-        let mut bytes = std::fs::read(src).expect("fixture");
-        let mid = bytes.len() / 2;
-        bytes[mid] ^= 0xFF;
+    fn asset(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/audio")
+            .join(name)
+    }
+
+    /// The repo's `name` fixture cut to its first `keep` fraction.
+    fn truncated_asset(name: &str, keep: f64) -> std::path::PathBuf {
+        let bytes = std::fs::read(asset(name)).expect("fixture");
         let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(format!("{tag}.flac"));
-        std::fs::write(&path, bytes).expect("write");
+        let path = dir.join(format!("cut_{name}"));
+        std::fs::write(&path, &bytes[..(bytes.len() as f64 * keep) as usize]).expect("write");
         path
     }
 
-    /// A decode error ends the stream as `0`, but leaves the cause on
-    /// [`FileIn::error`], keeps the frames read before it, and stays ended.
-    ///
-    /// The fixture's damaged frame reads as end-of-stream to the demuxer, so
-    /// this pins the frame-count check.
-    ///
-    /// Mutation (run): `truncation` returning `false`, or `poll_into` storing
-    /// `fault` as `None` (the old `unwrap_or(0)`), fails the `error()`
-    /// assertion.
-    #[test]
-    fn a_decode_error_is_kept_not_folded_into_end_of_file() {
-        let clean = FileIn::open(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../assets/audio/stereo.flac"),
-        )
-        .expect("open clean");
-        let total = clean.total_frames().expect("flac reports a length") as usize;
-        assert!(clean.error().is_none());
-
-        let path = corrupt_flac("corrupt");
-        let mut dec = FileIn::open(&path).expect("a corrupt body still opens");
-        let ch = dec.channels();
-        let mut buf = vec![0.0f32; 1024 * ch];
-        let mut frames = 0usize;
+    /// Frames a poll loop reads before `0`.
+    fn drain(dec: &mut FileIn) -> usize {
+        let mut buf = vec![0.0f32; 1024 * dec.channels()];
+        let mut frames = 0;
         loop {
             let n = dec.poll_into(&mut buf).get();
             if n == 0 {
-                break;
+                return frames;
             }
             frames += n;
         }
-        assert!(dec.error().is_some(), "the stream ended on a decode error");
-        assert!(
-            frames > 0 && frames < total,
-            "kept the good prefix: {frames} of {total}"
-        );
-        assert_eq!(dec.poll_into(&mut buf), Samples::ZERO, "sticky");
+    }
+
+    /// A FLAC cut short ends the stream early, and that is a fault: the
+    /// demuxer reports a cut (or a damaged frame) as a clean end of file, so
+    /// the evidence is the STREAMINFO frame count. The frames before the cut
+    /// are kept, the cause is readable, the fallible read reports it after
+    /// them and keeps reporting it, and a seek clears it.
+    ///
+    /// Mutation (run): `exact_length` always `false` fails the `error()`
+    /// assertion.
+    #[test]
+    fn a_truncated_flac_is_a_fault_not_a_clean_end() {
+        let path = truncated_asset("stereo.flac", 0.9);
+        let mut dec = FileIn::open(&path).expect("a cut file still opens");
+        let total = dec.total_frames().expect("flac reports a length") as usize;
+        let mut buf = vec![0.0f32; 1024 * dec.channels()];
+        let mut frames = 0;
+        loop {
+            match dec.fill_sequential_interleaved(&mut buf) {
+                Ok(0) => panic!("a fault must surface as Err, not as a bare end"),
+                Ok(n) => frames += n,
+                Err(e) => {
+                    assert!(e.to_string().contains("frame count"), "{e}");
+                    break;
+                }
+            }
+        }
+        assert!(frames > 0 && frames < total, "{frames} of {total}");
         assert!(dec.error().is_some());
+        assert!(dec.fill_sequential_interleaved(&mut buf).is_err(), "sticky");
+        assert_eq!(dec.poll_into(&mut buf), Samples::ZERO);
+        dec.seek(0).expect("seek");
+        assert!(dec.error().is_none(), "a successful seek clears the fault");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Where the container's frame count is not exact, a short stream is not
+    /// a fault: a trimmed or zero-padded MP3, a trimmed WAV (its header still
+    /// claims the full data length) and a whole Ogg (Vorbis priming) all read
+    /// to their end clean. Ogg cannot be trimmed: the demuxer needs its last
+    /// page to open.
+    ///
+    /// Mutation (run): `exact_length` always `true` fails the WAV case.
+    #[test]
+    fn a_file_without_an_exact_count_reads_clean() {
+        let mut padded = std::fs::read(asset("stereo.mp3")).expect("fixture");
+        padded.extend_from_slice(&[0; 4096]);
+        let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let padded_path = dir.join("padded.mp3");
+        std::fs::write(&padded_path, padded).expect("write");
+
+        let cases = [
+            ("trimmed mp3", truncated_asset("stereo.mp3", 0.9)),
+            ("padded mp3", padded_path),
+            ("trimmed wav", truncated_asset("stereo_s16.wav", 0.9)),
+            ("whole ogg", asset("stereo.ogg")),
+        ];
+        for (what, path) in cases {
+            let mut dec = FileIn::open(&path).expect("open");
+            assert!(drain(&mut dec) > 0, "{what}");
+            assert_eq!(dec.error().map(ToString::to_string), None, "{what}");
+        }
+    }
+
+    /// A demuxer that fails with a decode error after `left` packets.
+    struct FailAfter {
+        inner: Box<dyn symphonia::core::formats::FormatReader>,
+        left: usize,
+    }
+
+    impl symphonia::core::formats::FormatReader for FailAfter {
+        fn try_new(
+            _: symphonia::core::io::MediaSourceStream,
+            _: &symphonia::core::formats::FormatOptions,
+        ) -> Result<Self, Error> {
+            Err(Error::Unsupported("test double"))
+        }
+        fn cues(&self) -> &[symphonia::core::formats::Cue] {
+            self.inner.cues()
+        }
+        fn metadata(&mut self) -> symphonia::core::meta::Metadata<'_> {
+            self.inner.metadata()
+        }
+        fn seek(
+            &mut self,
+            mode: SeekMode,
+            to: SeekTo,
+        ) -> Result<symphonia::core::formats::SeekedTo, Error> {
+            self.inner.seek(mode, to)
+        }
+        fn tracks(&self) -> &[symphonia::core::formats::Track] {
+            self.inner.tracks()
+        }
+        fn next_packet(&mut self) -> Result<symphonia::core::formats::Packet, Error> {
+            if self.left == 0 {
+                return Err(Error::DecodeError("injected"));
+            }
+            self.left -= 1;
+            self.inner.next_packet()
+        }
+        fn into_inner(self: Box<Self>) -> symphonia::core::io::MediaSourceStream {
+            self.inner.into_inner()
+        }
+    }
+
+    /// A decode error in mid-stream keeps the frames before it: the first
+    /// read returns them as `Ok`, the next returns the cause, `poll_into`
+    /// returns the same frames then `0`, and `error()` holds the cause.
+    ///
+    /// Mutation (run): returning `Err` at once when the fill is cut short
+    /// (dropping `filled`, as `unwrap_or(0)` did) fails the frame-count
+    /// assertion.
+    #[test]
+    fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
+        let path = write_test_wav(20_000, "inject");
+        let open = |left| {
+            let mut dec = FileIn::open(&path).expect("open");
+            let reader = std::mem::replace(
+                &mut dec.reader,
+                Box::new(FailAfter {
+                    inner: probe_path(&path).expect("probe"),
+                    left,
+                }),
+            );
+            drop(reader);
+            dec
+        };
+
+        let mut clean = FileIn::open(&path).expect("open");
+        let mut first = vec![0.0f32; 4096 * 2];
+        assert_eq!(clean.poll_into(&mut first).get(), 4096);
+
+        // Fail on the packet after the first: the first packet's frames are
+        // what the stream holds. Read more than they cover.
+        let mut dec = open(1);
+        let mut buf = vec![0.0f32; 20_000 * 2];
+        let got = dec
+            .fill_sequential_interleaved(&mut buf)
+            .expect("frames first");
+        assert!(got > 0 && got < 20_000, "{got}");
+        assert!(
+            dec.error()
+                .map(ToString::to_string)
+                .unwrap()
+                .contains("injected")
+        );
+        let again = dec.fill_sequential_interleaved(&mut buf).unwrap_err();
+        assert!(again.to_string().contains("injected"), "{again}");
+        assert_eq!(
+            &buf[..got * 2],
+            &{
+                let mut c = FileIn::open(&path).expect("open");
+                let mut v = vec![0.0f32; got * 2];
+                c.poll_into(&mut v);
+                v
+            }[..]
+        );
+
+        let mut dec = open(1);
+        assert_eq!(dec.poll_into(&mut buf).get(), got);
+        assert_eq!(dec.poll_into(&mut buf), Samples::ZERO);
         let _ = std::fs::remove_file(&path);
     }
 

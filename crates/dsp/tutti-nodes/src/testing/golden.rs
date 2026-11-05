@@ -27,8 +27,8 @@ pub const RECORDED_GLIBC: (u32, u32) = (2, 39);
 /// The `target_arch` the goldens were recorded on.
 pub const RECORDED_ARCH: &str = "x86_64";
 
-// The crate's only `unsafe`: glibc offers its version only through a C symbol,
-// and a libc-binding dependency for one call is worse than two audited lines.
+// The crate's only `unsafe`: one extern block and one call into it. glibc
+// offers its version only through this C symbol.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[allow(unsafe_code)]
 unsafe extern "C" {

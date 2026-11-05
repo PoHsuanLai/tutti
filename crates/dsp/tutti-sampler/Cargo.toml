@@ -104,7 +104,7 @@ criterion.workspace = true
 # workspace's testing policy names outright: a test that cannot fail claims
 # coverage it does not have, and one that silently does not run is the same
 # claim with fewer clues.
-tutti-sampler = { path = ".", features = ["test-support"] }
+tutti-sampler = { path = ".", features = ["test-support", "flac"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }

@@ -52,7 +52,7 @@ impl MidiFileKind {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`](crate::Error::Io) if the file cannot be opened or read. A
+    /// [`Error::Io`] if the file cannot be opened or read. A
     /// file shorter than a header is not an error; it returns `Ok(None)`.
     pub fn detect_path(path: impl AsRef<Path>) -> Result<Option<Self>> {
         use std::io::Read;
@@ -78,8 +78,8 @@ impl MidiFileKind {
 ///
 /// # Errors
 ///
-/// [`Error::Io`](crate::Error::Io) if the file cannot be read, or
-/// [`Error::MidiFileParse`](crate::Error::MidiFileParse) (prefixed with the
+/// [`Error::Io`] if the file cannot be read, or
+/// [`Error::MidiFileParse`] (prefixed with the
 /// path) if the bytes are not a valid Clip File.
 pub fn read(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
     let path = path.as_ref();
@@ -97,7 +97,7 @@ pub fn read(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
 ///
 /// # Errors
 ///
-/// [`Error::Io`](crate::Error::Io) if the file cannot be written.
+/// [`Error::Io`] if the file cannot be written.
 pub fn write(
     path: impl AsRef<Path>,
     ticks_per_quarter: u16,

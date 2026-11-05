@@ -179,6 +179,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
         },
         Vst2Error::EditorError(s) => BridgeError::EditorError(s),
         Vst2Error::StateError(s) => BridgeError::StateRestoreError(s),
+        // Deliberate fallback: `Vst2Error` is `#[non_exhaustive]`.
         other => BridgeError::ProcessError(other.to_string()),
     }
 }

@@ -46,7 +46,7 @@ impl AudioFormat {
             "aiff" | "aif" => Ok(Self::Aiff),
             "ogg" => Ok(Self::OggVorbis(Ogg::default())),
             _ => Err(Error::UnsupportedFormat {
-                format: ext,
+                format: if ext.is_empty() { "(none)".into() } else { ext },
                 reason: crate::UnsupportedReason::UnknownExtension,
             }),
         }

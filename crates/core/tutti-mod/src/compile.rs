@@ -217,8 +217,10 @@ pub struct SourceNode {
 }
 
 /// A signal-driven source's node kind and params.
+///
+/// Exhaustive: each kind needs a node in `tutti-nodes`, so a new kind is a
+/// change that crate has to see.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub enum SignalKind {
     /// An envelope follower: one-pole attack and release on its audio
     /// input's level, sent raw in `[0, 1]` on the play-clock grid.

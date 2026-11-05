@@ -63,7 +63,6 @@
 /// host selects, and a plugin treats it like realtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
 pub enum RenderMode {
     /// Blocks arrive at a realtime cadence; the plugin should process as fast
     /// as it can so other plugins get their slice. The default, because it is

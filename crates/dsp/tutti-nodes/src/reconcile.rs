@@ -865,8 +865,6 @@ impl Modulation {
                         self.resync.insert(source);
                     }
                 }
-                // Every kind `tutti_mod::compile` yields has its node above.
-                _ => unreachable!("a signal kind with no node"),
             }
             wire_feed(editor, plan.key, plan.feed);
             self.sources.insert(
@@ -1026,12 +1024,10 @@ impl Modulation {
                 port: 0,
             };
             if let Err(e) = editor.schedule(At::NextBlock, to, EventKind::Resync) {
-                match e {
-                    ScheduleError::Backpressure | ScheduleError::NoPlan => {
-                        self.resync.insert(s);
-                    }
-                    // Any other refusal will not clear by retrying.
-                    _ => self.resyncs_dropped += 1,
+                if e.is_transient() {
+                    self.resync.insert(s);
+                } else {
+                    self.resyncs_dropped += 1;
                 }
                 if first.is_ok() {
                     first = Err(e);

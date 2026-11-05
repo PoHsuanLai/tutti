@@ -104,7 +104,7 @@ impl EnvelopeFollowerNode {
             SignalKind::Follower { attack, release } => {
                 Some(Self::new(decl.id, attack, release, input))
             }
-            _ => None,
+            SignalKind::NoteEnvelope { .. } => None,
         }
     }
 

@@ -24,8 +24,9 @@ pub enum Error {
     /// not support the configured bit depth (FLAC refuses `Float32`).
     #[error("Unsupported format {format}: {reason}")]
     UnsupportedFormat {
-        /// The format's name (`"FLAC"`), or for an unrecognised extension the
-        /// extension as given, without its dot.
+        /// The format's name (`"FLAC"`); for an unrecognised extension, the
+        /// extension lowercased and without its dot, or `"(none)"` when the
+        /// path has none.
         format: String,
         /// Why it cannot be written.
         reason: UnsupportedReason,

@@ -160,6 +160,20 @@ pub enum ScheduleError {
     },
 }
 
+impl ScheduleError {
+    /// Whether retrying the same command later can succeed: no plan yet, or
+    /// the queue full.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::NoPlan | Self::Backpressure => true,
+            Self::NoSuchPort { .. }
+            | Self::ResolutionTooCoarse { .. }
+            | Self::Poisoned
+            | Self::UnknownCommand { .. } => false,
+        }
+    }
+}
+
 impl std::fmt::Display for ScheduleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -617,6 +631,27 @@ mod tests {
     use super::*;
     use crate::event::Ump;
     use tutti_types::{Frame, NodeKey};
+
+    // Mutation: make `is_transient` return true for `Poisoned` (or false for
+    // `Backpressure`); this fails.
+    #[test]
+    fn only_a_missing_plan_or_a_full_queue_is_transient() {
+        let to = EventIn {
+            node: NodeKey(1),
+            port: 0,
+        };
+        assert!(ScheduleError::NoPlan.is_transient());
+        assert!(ScheduleError::Backpressure.is_transient());
+        assert!(!ScheduleError::NoSuchPort { to }.is_transient());
+        assert!(
+            !ScheduleError::ResolutionTooCoarse {
+                to,
+                sink: Resolution::Frames(64)
+            }
+            .is_transient()
+        );
+        assert!(!ScheduleError::Poisoned.is_transient());
+    }
 
     fn send(tx: &mut CommandTx, frame: u64) -> CommandId {
         tx.send(

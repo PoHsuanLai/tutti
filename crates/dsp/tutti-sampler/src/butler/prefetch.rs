@@ -66,6 +66,7 @@ pub(crate) const HISTORY_FRAMES: u64 = 4;
 
 /// Why a live voice could not be taken from a channel's stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TakeVoiceError {
     /// The channel streams nothing yet: the butler has not applied its
     /// `Command::Stream`. Poll again next frame.

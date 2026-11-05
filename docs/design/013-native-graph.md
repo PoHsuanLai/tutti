@@ -3814,6 +3814,11 @@ Decisions:
 5. **`Cost` and `Schedule` are `#[non_exhaustive]`.** A finer class, or a
    schedule with per-level wake counts, can come later without a breaking
    change; a `match` outside the crate needs a wildcard arm.
+   The same holds for every public error enum and for stage, kind and
+   format enums a new variant is plausible for. An enum the workspace must
+   handle in full (a closed domain such as `Polarity`, or a kind each of
+   whose variants needs an implementation, such as `SignalKind`) stays
+   exhaustive, so a new variant is a compile error where it matters.
 6. **The constants are a calibration, not a contract.** `TASK_DISPATCH`
    (400), `BLOCK_DISPATCH` (6 000), `GRAIN` (2 000) and the class weights
    (`Light` 100 + 1/sample·channel, `Moderate` 200 + 8, `Heavy` 20 000 +

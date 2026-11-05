@@ -309,7 +309,6 @@ impl From<PluginError> for BridgeError {
             PluginError::Process(msg) => BridgeError::ProcessError(msg),
             PluginError::Editor(err) => BridgeError::EditorError(err.to_string()),
             PluginError::Other(msg) => BridgeError::ProcessError(msg),
-            other => BridgeError::ProcessError(other.to_string()),
         }
     }
 }

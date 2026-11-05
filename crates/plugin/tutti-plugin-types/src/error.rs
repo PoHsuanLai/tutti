@@ -20,7 +20,6 @@ use crate::load_stage::LoadStage;
 /// `tutti-plugin` host crate widens this into its `BridgeError` (which adds
 /// the IPC/subprocess variants) via `From<PluginError>`.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum PluginError {
     /// A plugin failed to load at a specific phase. `reason` carries the
     /// format-native error text.

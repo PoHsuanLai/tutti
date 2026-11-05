@@ -73,7 +73,6 @@ pub enum Then {
 /// about the motion after landing. Neither constrains the other, which is what
 /// makes them parameters rather than more variants.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub enum MotionEvent {
     /// Roll from the current position. A no-op while already rolling.
     Play,

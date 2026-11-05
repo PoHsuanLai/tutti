@@ -4,9 +4,9 @@
 //! [`PluginRecord::probe`](record::PluginRecord::probe) turns one path into one
 //! record. Neither touches a store. Every decision about a candidate
 //! ([`classify`], [`needs_rescan`], [`blacklist_record`], [`missing`]) is a pure
-//! function of a [`FileFacts`] read once at the edge and a catalog record. An app that wants to own persistence
-//! entirely (records in a CRDT, a database, or just a `Vec`) needs nothing else
-//! from this module.
+//! function of a [`FileFacts`] read once at the edge and a catalog record. An app
+//! that wants to own persistence entirely (records in a CRDT, a database, or just
+//! a `Vec`) needs nothing else from this module.
 //!
 //! **Stateful** — [`PluginScanner`] walks directories and probes each plugin in
 //! a sandboxed subprocess, recording results in any [`PluginCatalog`]. This
@@ -31,7 +31,7 @@ pub mod scanner;
 
 pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
-pub use database::JsonCatalog;
+pub use database::{JsonCatalog, parse_records};
 pub use facts::{
     FileFacts, ScanDecision, blacklist_record, classify, is_blacklisted_and_unchanged, missing,
     needs_rescan,

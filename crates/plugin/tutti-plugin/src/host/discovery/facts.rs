@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 /// What the scan found on disk for one candidate, read once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileFacts {
-    /// Whether the path exists.
+    /// Whether the path exists. Only [`Plugins::prune_missing`] reads it.
+    ///
+    /// [`Plugins::prune_missing`]: crate::catalog::Plugins::prune_missing
     pub exists: bool,
     /// Seconds since the Unix epoch of the file's last modification, if it has
     /// one. An absent time compares as `0`, the value an unstamped record holds.
@@ -28,8 +30,9 @@ impl FileFacts {
 }
 
 /// What a scan does with one discovered plugin.
+///
+/// Exhaustive: these three are the whole outcome, and callers match on them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ScanDecision {
     /// Blacklisted, and the file has not changed since: skip it.
     Blacklisted,
@@ -212,6 +215,19 @@ mod tests {
         assert_eq!(out.path, r.path);
         assert_eq!(out.format, PluginFormat::Clap);
         assert!(is_blacklisted_and_unchanged(&out, &facts(Some(T + 9))));
+    }
+
+    /// Facts at T2 over a record at T1, then `blacklist`: the classification
+    /// skips it. This is the scanner's path (probe fails, `blacklist` with the
+    /// facts the decision saw). Mutation: keep the old record's time in
+    /// `blacklist_record`; `classify` then returns `Probe`.
+    #[test]
+    fn blacklisting_a_changed_record_with_the_facts_makes_it_skipped() {
+        let r = record(T, Blacklist::Ok);
+        let f = facts(Some(T + 9));
+        assert_eq!(classify(Some(&r), &f), ScanDecision::Probe);
+        let out = blacklist_record(Some(&r), &r.path, "boom".into(), &f);
+        assert_eq!(classify(Some(&out), &f), ScanDecision::Blacklisted);
     }
 
     /// Mutation: stamp `0` instead of the facts' time; or take the format from

@@ -39,23 +39,51 @@ pub fn format_from_path(path: impl AsRef<Path>) -> Option<PluginFormat> {
 }
 
 impl FileFacts {
-    /// Reads the facts for `path` with one `stat`.
+    /// Reads the facts for `path`.
     ///
     /// The scan's filesystem edge: every decision after it is a pure function of
-    /// the value.
+    /// the value. For a VST2 or VST3 bundle (a directory) the modification time
+    /// is the later of the directory's and its module's, since replacing the
+    /// binary inside leaves the directory's own time alone. The module is found
+    /// by `tutti_plugin_types::bundle`, the one bundle walk.
     pub fn read(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         let metadata = std::fs::metadata(path);
+        let format = format_from_path(path);
+        let mut mtime = metadata.as_ref().ok().and_then(modified_secs);
+        if metadata.as_ref().is_ok_and(|m| m.is_dir())
+            && let Some(module) = module_in_bundle(path, format)
+        {
+            let inner = std::fs::metadata(module)
+                .ok()
+                .and_then(|m| modified_secs(&m));
+            mtime = mtime.max(inner);
+        }
         Self {
             exists: metadata.is_ok(),
-            mtime: metadata
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs()),
-            format: format_from_path(path),
+            mtime,
+            format,
         }
     }
+}
+
+fn modified_secs(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+/// The module inside a bundle directory, preferring the one this target loads.
+fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathBuf> {
+    use tutti_plugin_types::bundle::{ModuleKind, any_module_in_bundle, native_module_in_bundle};
+    let kind = match format? {
+        PluginFormat::Vst3 => ModuleKind::Vst3,
+        PluginFormat::Vst2 => ModuleKind::Vst2,
+        _ => return None,
+    };
+    native_module_in_bundle(bundle, kind).or_else(|| any_module_in_bundle(bundle, kind))
 }
 
 /// Recursively discovers plugin files across `dirs`, with the format each
@@ -233,6 +261,45 @@ mod tests {
 
         let found = discover_plugins(dir.path());
         assert_eq!(found.len(), 1);
+    }
+
+    /// Replacing a bundle's binary leaves the directory's own time alone; the
+    /// facts must still move. Mutation: return the directory's time alone (drop
+    /// the `max` with the module's).
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_whose_binary_changed_reads_as_changed() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join("Reverb.vst3");
+        let arch = bundle
+            .join("Contents")
+            .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
+        std::fs::create_dir_all(&arch).unwrap();
+        let module = arch.join(if cfg!(target_os = "linux") {
+            "Reverb.so"
+        } else {
+            "Reverb"
+        });
+        std::fs::write(&module, b"x").unwrap();
+
+        let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
+        let set = |p: &Path, secs: u64| {
+            std::fs::File::open(p)
+                .unwrap()
+                .set_modified(at(secs))
+                .unwrap();
+        };
+        set(&module, 2_000_000_000);
+        set(&bundle, 1_000_000_000);
+
+        let facts = FileFacts::read(&bundle);
+        assert_eq!(facts.mtime, Some(2_000_000_000));
+        assert_eq!(facts.format, Some(PluginFormat::Vst3));
+
+        // The directory later than the binary still wins.
+        set(&bundle, 3_000_000_000);
+        assert_eq!(FileFacts::read(&bundle).mtime, Some(3_000_000_000));
     }
 
     #[test]

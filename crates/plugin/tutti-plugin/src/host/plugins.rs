@@ -710,4 +710,33 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
     }
+
+    /// The real edge: `prune_missing` stats each record's path and removes only
+    /// the absent one. Mutation: drop the `.filter(|r| FileFacts::read(..).exists)`
+    /// so every record counts as present (nothing is pruned).
+    #[test]
+    fn prune_missing_removes_only_records_whose_file_is_gone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let here = dir.path().join("here.vst3");
+        std::fs::write(&here, b"x").unwrap();
+        let gone = dir.path().join("gone.vst3");
+
+        let mut mem = MemCatalog::default();
+        for path in [&here, &gone] {
+            mem.upsert(PluginRecord {
+                path: path.clone(),
+                format: crate::host::discovery::record::PluginFormat::Vst3,
+                descriptor: PluginDescriptor::default(),
+                modification_time: 0,
+                blacklist: Blacklist::Ok,
+            });
+        }
+        let mut plugins = Plugins::with_catalog(
+            Box::new(mem),
+            CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
+        );
+
+        assert_eq!(plugins.prune_missing(), vec![gone]);
+        assert_eq!(plugins.iter().count(), 1);
+    }
 }

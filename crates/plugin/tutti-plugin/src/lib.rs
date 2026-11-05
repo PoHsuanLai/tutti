@@ -81,6 +81,8 @@ pub use format::vst2_in_process::{
 pub mod catalog {
     #[cfg(feature = "json")]
     pub use crate::host::discovery::JsonCatalog;
+    #[cfg(feature = "json")]
+    pub use crate::host::discovery::parse_records;
     pub use crate::host::discovery::{
         AuComponentType, Blacklist, CatalogExt, ClapFeature, FileFacts, PluginCatalog, PluginClass,
         PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanDecision,

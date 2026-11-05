@@ -32,11 +32,21 @@ all exported from `tutti_plugin::catalog`, plus `JsonCatalog`'s `parse_records`.
 | `blacklist(&Path, String)` | `blacklist(impl AsRef<Path>, String, &FileFacts)` |
 | `prune_missing(&mut self)` (stat-ed each path) | `prune_missing(&mut self, present: &HashSet<PathBuf>) -> Vec<PathBuf>` |
 | `file_modification_time(&Path)` | removed; `FileFacts::read(path).mtime` |
-| `discover(&[PathBuf])`, `format_from_path(&Path)`, `PluginRecord::probe(&Path)`, `Plugins::{is_blacklisted, open, blacklist, unblacklist, remove, register_path}(&Path, ..)` | `impl AsRef<Path>` |
+| `discover(&[PathBuf])` (now `impl IntoIterator<Item = impl AsRef<Path>>`), `format_from_path(&Path)`, `PluginRecord::probe(&Path)`, `Plugins::{is_blacklisted, open, blacklist, unblacklist, remove, register_path}(&Path, ..)` | `impl AsRef<Path>` |
 
 Fixed: blacklisting an existing record kept its old modification time, so a
-plugin that failed after its file changed was re-probed on every scan; the
-blacklist now stamps the file's current time, as it did for a new stub.
+plugin that failed after its file changed was re-probed on every scan. The
+blacklist now stamps the file's current time, as it did for a new stub. A
+dead-man's-pedal misfire on a changed file therefore stays blacklisted until
+`unblacklist` or the file's next change. The probe's stamp is now taken before the
+probe, so a file modified during a probe is re-probed on the next scan.
+
+Fixed: a VST2 or VST3 bundle's modification time was its directory's, which does
+not move when the binary inside is replaced, so an updated bundle was never
+re-probed. `FileFacts::read` now uses the later of the directory's time and the
+module's (found by `tutti_plugin_types::bundle`). Every existing bundle record
+re-probes once after upgrading. `parse_records` is also exported from
+`tutti_plugin::catalog` with the `json` feature.
 
 ### Changed — SampleFormat and Layout move to tutti-plugin-types
 

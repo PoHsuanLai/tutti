@@ -188,6 +188,18 @@ impl Onset {
     }
 }
 
+/// How far after the start of its frame the onset a spectral-flux peak marks
+/// sits: `3 * window / 4 - hop / 2`.
+///
+/// Flux is the rise in the Hann-weighted magnitude from one frame to the next.
+/// An onset at `p` into a frame was `p + hop` into the last, so the rise is
+/// `w(p) - w(p + hop)`, about `-hop * w'` at `p + hop / 2`, and `w' = sin(2πp/W)
+/// π/W` falls fastest at `3W/4`. The frame grid then places the peak to within
+/// half a hop. (Not `window / 2`: that is right only when `hop = window / 2`.)
+pub(crate) fn onset_lag(geometry: StftGeometry) -> usize {
+    (geometry.window().get() * 3 / 4).saturating_sub(geometry.hop().get() / 2)
+}
+
 /// What the detector carries between frames.
 ///
 /// Explicit, so a batch run cannot inherit a streaming run's history — the
@@ -239,6 +251,18 @@ impl OnsetState {
     #[inline]
     pub fn frames_seen(&self) -> usize {
         self.novelty.len()
+    }
+
+    /// The detection curve so far: one `(position, novelty)` pair per pushed
+    /// frame, in analysis order.
+    ///
+    /// The raw values [`finish`] thresholds, after the config's sensitivity
+    /// and before any peak picking, so a tempo or beat tracker can read the
+    /// curve itself. The scale depends on the [`DetectionFunction`] and is
+    /// only comparable within one run. Empty after [`reset`](Self::reset).
+    #[inline]
+    pub fn novelty(&self) -> &[(Samples, f32)] {
+        &self.novelty
     }
 }
 
@@ -430,6 +454,50 @@ mod tests {
     use super::*;
 
     const SAMPLE_RATE: f64 = 44100.0;
+
+    /// The curve has one entry per frame, at the frame's start sample, scaled by
+    /// the config's sensitivity, and a click raises the frame that holds it.
+    ///
+    /// Mutation checked: pushing `value` without the sensitivity gain fails the
+    /// ratio; pushing `Samples(frame.get())` as the position fails the grid.
+    #[test]
+    fn the_novelty_curve_is_readable_per_frame_and_scaled_by_sensitivity() {
+        let samples = signal(0.5, &[0.2]);
+        let run = |gain: f32| {
+            let cfg = OnsetConfig::new(geometry(), DetectionFunction::Energy)
+                .with_sensitivity(Amplitude(gain));
+            let mut state = OnsetState::new();
+            let window = cfg.geometry().window().get();
+            let mut fft = FftScratch::new();
+            for frame in cfg.geometry().frames_for(Samples(samples.len())).indices() {
+                let offset = frame.get() * cfg.geometry().hop().get();
+                step_onset(
+                    &cfg,
+                    &mut state,
+                    frame,
+                    &samples[offset..offset + window],
+                    &mut fft,
+                );
+            }
+            state
+        };
+        let (one, three) = (run(1.0), run(3.0));
+        assert_eq!(one.novelty().len(), one.frames_seen());
+        for (i, &(position, _)) in one.novelty().iter().enumerate() {
+            assert_eq!(position, Samples(i * 512));
+        }
+        for (a, b) in one.novelty().iter().zip(three.novelty()) {
+            assert!((b.1 - 3.0 * a.1).abs() <= 1e-4 * a.1.max(1.0));
+        }
+        // Frames holding the click (samples 8820..8870) carry its energy; a
+        // frame wholly before it carries none.
+        let at = |s: usize| one.novelty()[s / 512].1;
+        assert!(at(8820) > 1.0 && at(2048) == 0.0);
+
+        let mut cleared = one;
+        cleared.reset();
+        assert!(cleared.novelty().is_empty());
+    }
 
     fn geometry() -> StftGeometry {
         StftGeometry::new(SAMPLE_RATE, Samples(2048), Samples(512)).unwrap()

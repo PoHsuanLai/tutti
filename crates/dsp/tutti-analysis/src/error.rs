@@ -5,7 +5,7 @@
 //! invariant broke, and a caller feeding a short buffer deserves better than a
 //! panic on the audio path.
 
-use tutti_types::{Hz, Samples};
+use tutti_types::{Bpm, Db, Hz, Samples};
 
 use crate::window::{CosineWindow, Window};
 
@@ -52,6 +52,12 @@ pub enum Error {
     /// A sample rate of zero or below.
     #[error("sample rate must be positive")]
     NonPositiveSampleRate,
+    /// A threshold in decibels that is NaN or infinite.
+    #[error("threshold {threshold} is not finite")]
+    InvalidThreshold {
+        /// The offending threshold, in [`Db`].
+        threshold: Db,
+    },
     /// `min >= max`, or either bound at or below zero. Refused at construction
     /// because a detector that accepts it reports "unvoiced" forever instead.
     #[error("empty frequency range: min {min} is not below max {max}")]
@@ -69,6 +75,22 @@ pub enum Error {
         /// Half the sample rate, in [`Hz`].
         nyquist: Hz,
     },
+    /// A tempo range with `min` not below `max`, or a bound that is not finite
+    /// and above zero, or one that leaves no whole-frame lag to search.
+    #[error("empty tempo range: min {min} is not below max {max}, or no lag falls in it")]
+    EmptyTempoRange {
+        /// The slower bound, in [`Bpm`].
+        min: Bpm,
+        /// The faster bound, in [`Bpm`].
+        max: Bpm,
+    },
+    /// A tempo setting that is not finite or not above zero.
+    #[error("invalid tempo parameter: {0}")]
+    InvalidTempoParameter(&'static str),
+    /// A note-transcription setting or input that is out of range; the text
+    /// names it.
+    #[error("invalid note parameter: {0}")]
+    InvalidNoteParameter(&'static str),
     /// A grid's data length disagrees with `frames * bins`.
     #[error("grid has {len} values but its shape is {rows}x{cols} = {}", rows * cols)]
     GridShapeMismatch {
@@ -82,6 +104,12 @@ pub enum Error {
     /// Two grids that must share a shape do not.
     #[error("grids that must share a shape have different shapes")]
     GridShapeDisagreement,
+    /// A sample that is NaN or infinite.
+    #[error("input holds a NaN or infinite sample")]
+    NonFiniteInput,
+    /// Nothing to correlate: silent input, or a band holding no spectrum bin.
+    #[error("no signal to correlate: silent input or an empty band")]
+    NoSignal,
     /// Input shorter than the algorithm's minimum.
     #[error("need at least {needed} samples, got {got}")]
     InsufficientInput {

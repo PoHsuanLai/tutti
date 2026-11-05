@@ -395,7 +395,7 @@ impl CcRoute {
     /// `Some((filtered_midi, merged_params))` borrowing the scratch.
     ///
     /// More than [`MIDI_STACK_CAPACITY`] events in drop the rest, which the
-    /// returned list's `overflowed()` reports; the plugin node never
+    /// returned list's `is_overflowed()` reports; the plugin node never
     /// delivers more.
     ///
     /// Returns `None` when the plugin has no mapping — the common case for

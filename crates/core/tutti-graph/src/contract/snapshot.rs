@@ -27,7 +27,7 @@
 //! hear would pass step 3 whether or not the fork severed it, so a row
 //! whose control is inaudible fails loudly instead of claiming coverage.
 //!
-//! Every render is prepared at [`SAMPLE_RATE`](super::SAMPLE_RATE), reset,
+//! Every render is prepared at [`SAMPLE_RATE`], reset,
 //! and driven through [`drive_input`](super::drive_input) in blocks of [`BLOCK`]
 //! frames. Comparisons are within one run on one machine, so bit equality
 //! is sound on every platform.

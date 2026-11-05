@@ -626,8 +626,13 @@ impl Engine {
     ///
     /// It also follows a re-prepare's rate change with the engine's clock and
     /// the transport's frame-timed commands — what the first block after it
-    /// would do, done now. Returns whether the graph is running a plan with no
-    /// re-prepare between its halves.
+    /// would do, done now. Returns `true` when the graph is running a plan
+    /// with no re-prepare between its halves, `false` while a re-prepare is
+    /// still half done.
+    ///
+    /// Not [`Executor::apply_pending`](tutti_graph::Executor::apply_pending),
+    /// which drains only the executor's commit queue: this is the engine-level
+    /// call that also moves the clock and the transport.
     ///
     /// A device restart calls it between the two halves of
     /// `Editor::reprepare` so the re-prepare finishes before the first block

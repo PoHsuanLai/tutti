@@ -16,7 +16,7 @@ No aliases are kept.
 |---|---|
 | `TaskGraph::aborted` | `is_aborted` |
 | `RtVec::overflowed` | `is_overflowed` |
-| `Editor::poisoned` | `poison` (the reason, as `Option<&str>`) |
+| `Editor::poisoned` | `poison_cause` (the cause, as `Option<&str>`) |
 | `Interleaved::frames` (iterator), `frames_mut` | `iter_frames`, `iter_frames_mut` (`frames()` on planes stays the count) |
 | `MidiChannel::as_display_number` | `display_number` |
 | `RealFft::make_scratch`, `StagedRealFft::make_scratch` | `new_scratch` |
@@ -32,7 +32,7 @@ No aliases are kept.
 | `late_commands`, `unrouted_commands`, `cancelled_commands` (`Executor`, `Reference`, `Transport`) | `late_command_count`, `unrouted_command_count`, `cancelled_command_count` |
 | `Executor::dropped_events`, `Reference::dropped_events` | `dropped_event_count` |
 | `WorkerPoolBuilder::spin` | `spin_budget` |
-| `TimeSignature::from_parts` (raw numbers, not an inverse of `into_parts`) | `from_raw` |
+| `TimeSignature::from_parts` (clamps raw numbers) | `from_numbers` |
 | `TuttiDriver::from_parts` | `new` |
 | `tutti_graph::verify`, `verify_fades` | `Plan::verify`, `Plan::verify_fades` |
 | `contract::drive_in`, `Row::expect_latency` | `drive_input`, `with_expected_latency` |

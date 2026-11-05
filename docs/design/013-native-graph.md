@@ -1786,7 +1786,7 @@ graph) runs on both backends through `both_backends!`.
 
 **Review of #32.** `Editor::replace` refuses while a re-prepare is between
 its commits (and on a poisoned editor) and consumes its node. The native
-`replace` asks first (`Editor::is_repreparing`, `Editor::poison`) and hands
+`replace` asks first (`Editor::is_repreparing`, `Editor::poison_cause`) and hands
 the unit back as `ReplaceRefused::Busy`; `crossfade_audio_node` binds the
 incoming unit's captured controls only when the replace lands, parks a busy
 one in `PendingCrossfades` (applied on the first frame after the re-prepare
@@ -4573,7 +4573,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   `tutti_types::BlockWaits` holds the caller's `caller_yield_after`
   (250 µs) and the helper's `helper_leave_after` (15 µs);
   `WorkerPoolBuilder::caller_yield_after` and `::helper_leave_after` set
-  them beside `spin` and `idle` (the waits between jobs). The pool's
+  them beside `spin_budget` and `idle` (the waits between jobs). The pool's
   `JobGate` holds them (`JobGate::with_waits`): its close waits by
   `caller_yield_after`, and `Pool::waits` (a required method, so a pool
   that wraps another forwards its inner pool's rather than silently

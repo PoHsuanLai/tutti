@@ -441,7 +441,7 @@ impl EventList {
         for event in inner.events.iter() {
             if let Vst3Event::SysEx(e) = event {
                 // Whole or not at all; a message that does not fit is dropped
-                // (reported through `overflowed`, counted in `dropped`) and
+                // (reported through `is_overflowed`, counted in `dropped`) and
                 // later events still get the room that is left.
                 let frame = u32::try_from(e.header.sample_offset).unwrap_or(0);
                 if !push_sysex(out, frame, &inner.sysex_out[e.bytes.range()]) {
@@ -980,7 +980,7 @@ mod tests {
     }
 
     /// **A SysEx the host's MIDI pool has no room for is dropped whole and
-    /// counted in `dropped`** (and latches the pool's `overflowed`); the
+    /// counted in `dropped`** (and latches the pool's `is_overflowed`); the
     /// message before it arrives intact.
     ///
     /// Mutation (run): drop `inner.dropped += refused` in `fill_midi_events`

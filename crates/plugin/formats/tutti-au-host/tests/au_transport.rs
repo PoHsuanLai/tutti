@@ -397,7 +397,7 @@ fn every_transport_field_reaches_the_callbacks() {
         .with_position_samples(240_000)
         .with_loop(true, 4.0, 20.0)
         .with_bar(8.0, BarNumber::new(3))
-        .with_time_signature(TimeSignature::from_raw(7, 8));
+        .with_time_signature(TimeSignature::from_numbers(7, 8));
     state.set_transport(&info, true);
     state.set_samples_to_next_beat(123);
 
@@ -725,7 +725,7 @@ fn an_au_pulls_the_published_transport_through_audiotoolbox() {
         .with_position_samples(240_000)
         .with_loop(true, 4.0, 20.0)
         .with_bar(8.0, BarNumber::new(3))
-        .with_time_signature(TimeSignature::from_raw(7, 8));
+        .with_time_signature(TimeSignature::from_numbers(7, 8));
     au.transport()
         .expect("installed")
         .set_samples_to_next_beat(321);

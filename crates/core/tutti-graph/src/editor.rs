@@ -584,8 +584,8 @@ impl Editor {
         self.repreparing.is_some()
     }
 
-    /// Why the editor is poisoned, if it is ([`CommitError::Poisoned`]).
-    pub fn poison(&self) -> Option<&str> {
+    /// The cause the editor was poisoned by, if it is ([`CommitError::Poisoned`]).
+    pub fn poison_cause(&self) -> Option<&str> {
         self.poisoned.as_deref()
     }
 

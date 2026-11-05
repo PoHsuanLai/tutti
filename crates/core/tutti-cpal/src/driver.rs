@@ -49,7 +49,9 @@ impl Stopped<'_> {
     /// Installs every commit the graph's editor has sent, moving the engine's
     /// clock to a re-prepare's rate
     /// ([`Engine::apply_pending`](tutti_core::Engine::apply_pending)). Returns
-    /// whether the graph now runs a plan with no re-prepare pending.
+    /// whether the graph now runs a plan with no re-prepare pending (`false`
+    /// while a re-prepare is half done). It is the engine's call, not
+    /// `Executor::apply_pending`, which drains only the commit queue.
     ///
     /// A host drives a re-prepare's two halves through it — settle (the
     /// executor checks its units out), let the editor collect and resume,

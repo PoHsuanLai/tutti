@@ -1469,7 +1469,7 @@ impl OutputEventList {
         for e in &self.events {
             if let Some((bytes, time)) = e.sysex_bytes() {
                 // Whole or not at all: a message that does not fit is dropped
-                // (and reported through `overflowed`), and later events
+                // (and reported through `is_overflowed`), and later events
                 // still get the room that is left.
                 push_sysex(out, time, bytes);
             } else if let Some(midi) = e.to_midi()
@@ -2907,7 +2907,7 @@ mod tests {
     /// A plugin emitting more events than the return pool holds must not grow
     /// it — `try_push` is the *plugin's* callback, so an unbounded pool would
     /// let a plugin provoke a `malloc` inside the audio callback. Events past
-    /// the cap are dropped and reported through `overflowed()`.
+    /// the cap are dropped and reported through `is_overflowed()`.
     ///
     /// Before the pool was an `RtVec`, the bound existed only as a `reserve`
     /// performed off-RT in `activate()` and then trusted; nothing stopped this.

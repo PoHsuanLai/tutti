@@ -146,7 +146,7 @@ mod tests {
         let slot = MeterSlot::following_meter(Some(meter.clone()));
         let old = Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::from_raw(3, 4),
+            TimeSignature::from_numbers(3, 4),
         )]));
         let gone = Arc::downgrade(&old);
         meter.set_meter(old);

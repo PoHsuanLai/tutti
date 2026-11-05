@@ -15,11 +15,16 @@ use std::f64::consts::{PI, TAU};
 use tutti_core::{
     Amplitude, AudioNode, ChannelLayout, InterleavedMut, MotionEvent, SampleRate, Samples,
 };
+#[cfg(feature = "modulation")]
 use tutti_mod::Lfo;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{MultibandCompressorNode, MultibandControls};
-use tutti_session::{GraphSource, ParamRef, Session};
-use tutti_types::{BeatDuration, Db, Depth, Hz, UnitAddr, UnitParam};
+#[cfg(feature = "modulation")]
+use tutti_session::ParamRef;
+use tutti_session::{GraphSource, Session};
+#[cfg(feature = "modulation")]
+use tutti_types::{BeatDuration, Depth};
+use tutti_types::{Db, Hz, UnitAddr, UnitParam};
 
 const RATE: f64 = 48_000.0;
 /// The tones' amplitude.
@@ -228,6 +233,7 @@ fn the_meter_of_band_1_follows_its_threshold() {
 /// - the route resolved to band 0's make-up (index dropped) → the left
 ///   swings and the right does not;
 /// - the lane's events addressed to index 0 → the same.
+#[cfg(feature = "modulation")]
 #[test]
 fn a_route_to_band_1_modulates_band_1_only() {
     let (mut s, mb, _) = rig();

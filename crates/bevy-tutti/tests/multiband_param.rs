@@ -17,7 +17,7 @@ const MAKEUP1: UnitAddr = UnitAddr::new(UnitParam::GainDb, 1);
 type Makeup1 = AudioParam<Db, { UnitAddr::new(UnitParam::GainDb, 1).to_u16() }>;
 
 /// **A band-1 `AudioParam` writes band 1's make-up cell of the engine node**
-/// and leaves band 0's, which a write to the set sets apart, alone.
+/// and leaves band 0's cell alone.
 ///
 /// Mutation (run): `MultibandCompressorNode::param_set` addressing band 1's
 /// make-up with band 0's cell → the band-0 cell takes the value and band 1's

@@ -601,6 +601,22 @@ mod tests {
         assert_param_fork(CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1).with_makeup(3.0));
     }
 
+    /// The block reads a raw ratio cell below 1 as 1 and a knee below 0 as 0,
+    /// as the setters clamp.
+    ///
+    /// Mutation (run): drop the `CompressionRatio::new_clamped` in
+    /// `begin_block` → the ratio reads 0.25 → fails; drop the `k.max(0.0)` →
+    /// the knee reads -6 → fails.
+    #[test]
+    fn begin_block_clamps_a_raw_ratio_and_knee() {
+        let mut core = CompressorCore::new(-20.0, 4.0, 0.001, 0.1);
+        core.ratio.store(CompressionRatio(0.25));
+        core.threshold.knee.store(Db(-6.0));
+        let block = core.begin_block([None, None, None]);
+        assert_eq!(block.ratio, CompressionRatio(1.0));
+        assert_eq!(block.knee, Db(0.0));
+    }
+
     /// A block longer than 64 frames renders whole: the
     /// gain lane is sized from the prepared `MaxBlock`, not a constant.
     ///

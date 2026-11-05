@@ -77,6 +77,41 @@ pub struct MultibandControls {
 }
 
 impl MultibandControls {
+    /// Bypasses band `band` (see [`UnitParam::Bypass`]); `false` past the last
+    /// band, and nothing is written then.
+    pub fn set_bypass(&self, band: usize, on: bool) -> bool {
+        self.toggle(UnitParam::Bypass, band, on)
+    }
+
+    /// Whether band `band` is bypassed; `false` past the last band.
+    #[must_use]
+    pub fn is_bypassed(&self, band: usize) -> bool {
+        self.is_toggled(UnitParam::Bypass, band)
+    }
+
+    /// Solos band `band` (see [`UnitParam::Solo`]); `false` past the last
+    /// band, and nothing is written then.
+    pub fn set_solo(&self, band: usize, on: bool) -> bool {
+        self.toggle(UnitParam::Solo, band, on)
+    }
+
+    /// Whether band `band` is soloed; `false` past the last band.
+    #[must_use]
+    pub fn is_soloed(&self, band: usize) -> bool {
+        self.is_toggled(UnitParam::Solo, band)
+    }
+
+    fn toggle(&self, kind: UnitParam, band: usize, on: bool) -> bool {
+        u8::try_from(band).is_ok_and(|b| self.params.set(UnitAddr::new(kind, b), f32::from(on)))
+    }
+
+    fn is_toggled(&self, kind: UnitParam, band: usize) -> bool {
+        u8::try_from(band)
+            .ok()
+            .and_then(|b| self.params.get(UnitAddr::new(kind, b)))
+            .is_some_and(|v| v >= 0.5)
+    }
+
     /// The node's params by address (see [`MultibandCompressorNode`]).
     #[must_use]
     pub fn params(&self) -> &ParamSet {
@@ -130,9 +165,9 @@ struct Band {
 ///
 /// # Crossover and phase
 ///
-/// The split is IIR and **not linear-phase**: the bands have different phase
-/// responses, and only their sum is allpass (flat magnitude, phase rotating
-/// through each crossover). With every band at unity ratio and 0 dB makeup the
+/// The split is IIR and **not linear-phase**: the bands share one phase
+/// response (see [`Crossover`]), which rotates with frequency, and their sum
+/// is allpass (flat magnitude, phase rotating through each crossover). With every band at unity ratio and 0 dB makeup the
 /// output has the input's magnitude at every frequency. The node adds no
 /// latency.
 ///
@@ -159,7 +194,9 @@ struct Band {
 /// rest once per block, with the make-up, the crossover frequencies and a
 /// solo's mute ramped across it. A non-finite write reads as unchanged. The
 /// crossovers follow [`CrossoverNode`](crate::CrossoverNode)'s rules: a set
-/// not strictly increasing is refused as a whole.
+/// not strictly increasing is refused as a whole, after each frequency is
+/// fitted under the rate (so `[30000, 25000]` at 48 kHz is clamped into order
+/// and accepted).
 ///
 /// The toggles are cells with no port, as [`BusStripNode`](crate::BusStripNode)'s
 /// mute is: they are a block-rate on/off a lane would only flap, and with
@@ -786,7 +823,7 @@ mod tests {
     /// bypass compresses again.
     ///
     /// Mutation (run): ignore `bypass` in `process` → the DC is reduced →
-    /// fails.
+    /// fails; drop the makeup from the released figure → fails.
     #[test]
     fn bypass_passes_the_band_unprocessed() {
         let (n, c) = node(4);
@@ -804,9 +841,14 @@ mod tests {
         assert_eq!(n.gain_reduction_db(0), Db::UNITY);
         b0.set_bypass(false);
         let out = render_chunked(&mut n, &[x], 512);
+        // Over -30 dB at 8:1 the 0.5 DC (-6.02 dB) is reduced by
+        // `(30 - 6.02) * 7/8`, and the 6 dB makeup rides on it.
+        let reduction = (30.0 + 20.0 * libm::log10(0.5)) * 7.0 / 8.0;
+        let want = 0.5 * libm::pow(10.0, (6.0 - reduction) / 20.0);
         let dc = mean(&out[0][SETTLE..]);
-        assert!(dc < 0.4 || dc > 0.6, "compressing again: {dc}");
-        assert!(n.gain_reduction_db(0) > Db(1.0));
+        assert!((dc - want).abs() < 5e-6 * want, "{dc} vs {want}");
+        let meter = f64::from(n.gain_reduction_db(0).get());
+        assert!((meter - reduction).abs() < 1e-3, "{meter} vs {reduction}");
     }
 
     /// Toggling bypass on a band reducing 12 dB steps no more than one ramp
@@ -1493,10 +1535,37 @@ mod tests {
             c.set_crossover(0, Hz(bad));
             assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0], "{bad}");
         }
+        // Written top-down with a block between: the set stays out of order
+        // (`[0, 1000, 9000]`, then `[0, 8000, 9000]`) until the last write.
         c.set_crossover(2, Hz(9_000.0));
+        assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0]);
         c.set_crossover(1, Hz(8_000.0));
+        assert_eq!(held(&mut n), [120.0, 1_000.0, 6_000.0]);
         c.set_crossover(0, Hz(5_000.0));
         assert_eq!(held(&mut n), [5_000.0, 8_000.0, 9_000.0]);
+    }
+
+    /// The typed toggles write the band's own cell and read it back; past the
+    /// last band they write nothing and read false.
+    ///
+    /// Mutation (run): `toggle` writing `UnitAddr::new(kind, 0)` → band 1's
+    /// bypass reads false → fails; `is_toggled` with `> 0.5` → the 0.5 write
+    /// through the set reads false → fails.
+    #[test]
+    fn the_controls_toggle_bands_by_type() {
+        let (n, _) = node(3);
+        let c = n.into_parts().controls;
+        assert!(c.set_bypass(1, true) && c.set_solo(2, true));
+        assert!(c.is_bypassed(1) && !c.is_bypassed(0) && !c.is_bypassed(2));
+        assert!(c.is_soloed(2) && !c.is_soloed(1));
+        assert_eq!(
+            c.params().get(UnitAddr::new(UnitParam::Bypass, 1)),
+            Some(1.0)
+        );
+        assert!(!c.set_bypass(3, true) && !c.is_bypassed(3) && !c.set_solo(300, true));
+        c.params().set(UnitAddr::new(UnitParam::Bypass, 0), 0.5);
+        assert!(c.is_bypassed(0));
+        assert!(c.set_bypass(1, false) && !c.is_bypassed(1));
     }
 
     /// A driven make-up port moves its own band: band 1 alone heard (band 0

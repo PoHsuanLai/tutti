@@ -99,7 +99,7 @@ impl fmt::Display for CrossoverError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Bands { bands, min, max } => {
-                write!(f, "{bands} bands: a crossover has {min} to {max}")
+                write!(f, "{bands} bands: {min} to {max} are supported")
             }
             Self::Count { got, expected } => {
                 write!(f, "{got} frequencies given for {expected} crossovers")
@@ -598,7 +598,9 @@ impl Splits {
 /// allows is held just under it (about 0.499 of the rate) without disturbing
 /// the others; a non-finite one reads as unchanged. A set that is not
 /// strictly increasing and above 0 is refused as a whole, so every channel
-/// keeps the last good set until the writes are consistent again.
+/// keeps the last good set until the writes are consistent again. The
+/// frequencies are fitted under the rate first, so `[30000, 25000]` at 48 kHz
+/// is clamped into increasing order and accepted.
 pub struct CrossoverNode {
     layout: ChannelLayout,
     bands: usize,
@@ -1187,6 +1189,29 @@ mod tests {
         set.set(c1, 8_000.0);
         set.set(c0, 5_000.0);
         assert_eq!(held(&mut node), (Some(Hz(5_000.0)), Some(Hz(8_000.0))));
+    }
+
+    /// Frequencies over what the rate allows are fitted under it before the
+    /// set is checked, so `[30000, 25000]` at 48 kHz lands clamped in order.
+    ///
+    /// Mutation (run): drop `fit_to_rate` in `Splits::read` → the set is
+    /// refused (over Nyquist) and the old split stays → fails.
+    #[test]
+    fn frequencies_over_the_rate_are_fitted_before_the_set_is_checked() {
+        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(4_000.0)]).unwrap();
+        let set = node.param_set();
+        let mut node = prepared(node);
+        set.set(Splits::addr(0), 30_000.0);
+        set.set(Splits::addr(1), 25_000.0);
+        render(&mut node, &[vec![0.0f32; 64]]);
+        let (a, b) = (
+            node.filters[0].frequency(0).unwrap(),
+            node.filters[0].frequency(1).unwrap(),
+        );
+        assert!(
+            a > Hz(20_000.0) && a < b && b.get() <= 0.499 * 48_000.0 + 1e-2,
+            "{a:?} {b:?}"
+        );
     }
 
     /// A fork starts from the frequencies set and shares no cell with the

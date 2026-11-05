@@ -27,9 +27,10 @@ pub use bus_buffers::{BoundBuses, BusBuffers};
 #[cfg(feature = "conformance")]
 pub use com::RunLoopActivity;
 pub use com::{
-    ComponentHandler, EventList, MIN_POINT_ROOM, NOTIFICATION_CAPACITY,
-    PROGRESS_DESCRIPTION_CAPACITY, ParameterChangesImpl, ParameterEditEvent, PluginNotification,
-    ProgressDescription, ProgressEvent, RestartFlags, UnitEvent, event_list_ptr, param_changes_ptr,
+    ComponentHandler, EVENT_CAPACITY, EventList, MIN_POINT_ROOM, NOTE_EXPRESSION_ROOM,
+    NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterChangesImpl, ParameterEditEvent,
+    PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, SYSEX_OUT_ROOM, Staged,
+    Staging, UnitEvent, event_list_ptr, param_changes_ptr,
 };
 #[cfg(feature = "conformance")]
 pub use conformance::{Observer, clear_observer, set_observer};

@@ -1,12 +1,11 @@
-//! The sequencer context of a block (chords, scales, per-note texts and
-//! integer note expressions) in the form VST3's event list takes.
+//! The sequencer context of a block (chords, scales and per-note texts) in the
+//! form VST3's event list takes.
 //!
 //! The Processor converts a block's [`ExpressiveContext`](tutti_plugin_types::ExpressiveContext) into these buffers
-//! and stages them as [`Vst3InputEvents`](crate::types::Vst3InputEvents).
+//! and stages them as [`Vst3InputEvents`](crate::Vst3InputEvents).
 
-use tutti_plugin_types::{
-    ChordChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ScaleChanges,
-};
+use crate::events::{Utf16Chord, Utf16Scale, Utf16Text};
+use tutti_plugin_types::{ChordChanges, NoteExpressionTextChanges, ScaleChanges};
 
 /// Reusable buffers for the sequencer-context conversion in `Vst3Processor::process_shared`.
 ///
@@ -23,10 +22,9 @@ use tutti_plugin_types::{
 /// kind of event.
 #[derive(Default)]
 pub(super) struct SeqScratch {
-    pub(super) chords: Vec<crate::types::ChordValue>,
-    pub(super) scales: Vec<crate::types::ScaleValue>,
-    pub(super) expr_texts: Vec<crate::types::NoteExpressionText>,
-    pub(super) expr_ints: Vec<crate::types::NoteExpressionIntValue>,
+    pub(super) chords: Vec<Utf16Chord>,
+    pub(super) scales: Vec<Utf16Scale>,
+    pub(super) expr_texts: Vec<Utf16Text>,
 }
 
 /// Refill `out` from `chords`, reusing both the outer buffer and each entry's
@@ -41,7 +39,7 @@ pub(super) struct SeqScratch {
 /// The same three-part shape appears in the two siblings below; the types have
 /// no common trait to hoist it onto, and a macro would hide four short bodies
 /// behind an indirection worth less than it costs.
-pub(super) fn convert_chords_into(chords: &ChordChanges, out: &mut Vec<crate::types::ChordValue>) {
+pub(super) fn convert_chords_into(chords: &ChordChanges, out: &mut Vec<Utf16Chord>) {
     let src = &chords.changes;
     for (dst, c) in out.iter_mut().zip(src.iter()) {
         dst.sample_offset = c.sample_offset;
@@ -52,7 +50,7 @@ pub(super) fn convert_chords_into(chords: &ChordChanges, out: &mut Vec<crate::ty
     }
     out.truncate(src.len());
     for c in src.iter().skip(out.len()) {
-        out.push(crate::types::ChordValue {
+        out.push(Utf16Chord {
             sample_offset: c.sample_offset,
             root: c.root,
             bass_note: c.bass_note,
@@ -70,7 +68,7 @@ fn encode_utf16_into(src: &str, dst: &mut Vec<u16>) {
 
 /// Refill `out` from `scales`. Same buffer-reuse shape as
 /// [`convert_chords_into`].
-pub(super) fn convert_scales_into(scales: &ScaleChanges, out: &mut Vec<crate::types::ScaleValue>) {
+pub(super) fn convert_scales_into(scales: &ScaleChanges, out: &mut Vec<Utf16Scale>) {
     let src = &scales.changes;
     for (dst, s) in out.iter_mut().zip(src.iter()) {
         dst.sample_offset = s.sample_offset;
@@ -80,7 +78,7 @@ pub(super) fn convert_scales_into(scales: &ScaleChanges, out: &mut Vec<crate::ty
     }
     out.truncate(src.len());
     for s in src.iter().skip(out.len()) {
-        out.push(crate::types::ScaleValue {
+        out.push(Utf16Scale {
             sample_offset: s.sample_offset,
             root: s.root,
             mask: s.mask,
@@ -91,10 +89,7 @@ pub(super) fn convert_scales_into(scales: &ScaleChanges, out: &mut Vec<crate::ty
 
 /// Refill `out` from `texts`. Same buffer-reuse shape as
 /// [`convert_chords_into`].
-pub(super) fn convert_expr_texts_into(
-    texts: &NoteExpressionTextChanges,
-    out: &mut Vec<crate::types::NoteExpressionText>,
-) {
+pub(super) fn convert_expr_texts_into(texts: &NoteExpressionTextChanges, out: &mut Vec<Utf16Text>) {
     let src = &texts.changes;
     for (dst, t) in out.iter_mut().zip(src.iter()) {
         dst.sample_offset = t.sample_offset;
@@ -104,35 +99,13 @@ pub(super) fn convert_expr_texts_into(
     }
     out.truncate(src.len());
     for t in src.iter().skip(out.len()) {
-        out.push(crate::types::NoteExpressionText {
+        out.push(Utf16Text {
             sample_offset: t.sample_offset,
             note_id: t.note_id,
             type_id: t.type_id,
             text: t.text.encode_utf16().collect(),
         });
     }
-}
-
-/// Refill `out` from `ints`.
-///
-/// `NoteExpressionIntValue` is `Copy` with no nested buffer, so this is the
-/// plain `clear()` + `extend` the other three cannot use — there is nothing per
-/// entry to preserve, only the outer capacity.
-pub(super) fn convert_expr_ints_into(
-    ints: &NoteExpressionIntChanges,
-    out: &mut Vec<crate::types::NoteExpressionIntValue>,
-) {
-    out.clear();
-    out.extend(
-        ints.changes
-            .iter()
-            .map(|i| crate::types::NoteExpressionIntValue {
-                sample_offset: i.sample_offset,
-                note_id: i.note_id,
-                type_id: i.type_id,
-                value: i.value,
-            }),
-    );
 }
 
 /// Sequencer-context conversion, exercised without a plugin binary: the
@@ -225,27 +198,5 @@ mod seq_scratch_tests {
 
         convert_chords_into(&changes(&[]), &mut out);
         assert!(out.is_empty(), "no chords this block means none are staged");
-    }
-
-    /// `NoteExpressionIntValue` has no nested buffer, so its converter is the
-    /// plain clear+extend. Covered so the divergence stays deliberate.
-    #[test]
-    fn int_expressions_refill_without_nesting() {
-        use tutti_plugin_types::NoteExpressionIntValue;
-        let mut src = NoteExpressionIntChanges::new();
-        assert!(src.add_change(NoteExpressionIntValue {
-            sample_offset: 4,
-            note_id: 7,
-            type_id: 2,
-            value: 41,
-        }));
-
-        let mut out = Vec::new();
-        convert_expr_ints_into(&src, &mut out);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].value, 41);
-
-        convert_expr_ints_into(&NoteExpressionIntChanges::new(), &mut out);
-        assert!(out.is_empty());
     }
 }

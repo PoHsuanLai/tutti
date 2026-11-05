@@ -44,10 +44,6 @@ core-foundation-sys = "0.8"
 assert_no_alloc = { version = "1", default-features = false }
 # `module_entry`'s macOS bundle-directory test builds a bundle on disk.
 tempfile = "3"
-# The CLAP host, to feed one MIDI stream to both formats' event lists and
-# check they read a per-note bend at the same range. Acyclic: it does not
-# depend on this crate.
-tutti-clap-host = { path = "../tutti-clap-host" }
 
 [package.metadata.docs.rs]
 all-features = true

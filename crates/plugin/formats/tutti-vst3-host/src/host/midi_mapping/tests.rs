@@ -789,12 +789,13 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     assert_eq!(first.len(), MIDI_STACK_CAPACITY);
     let mut route = CcRoute::new(mod_wheel_mapping(500), 1, 64);
     let list = EventList::input();
+    let mut stager = Stager::default();
 
     let one = Vst3InputEvents {
         midi: &first,
         ..Default::default()
     };
-    let params = stage_input_events(&mut route, &list, &one, None);
+    let params = stage_input_events(&mut route, &mut stager, &list, &one, None);
     assert_eq!(
         params.map(|p| p.queues.len()),
         Some(1),
@@ -806,7 +807,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
         midi: &packets[MIDI_STACK_CAPACITY - 1..],
         ..Default::default()
     };
-    stage_input_events(&mut route, &list, &two, None);
+    stage_input_events(&mut route, &mut stager, &list, &two, None);
     let mut framed = vec![0xF0];
     framed.extend_from_slice(&payload);
     framed.push(0xF7);
@@ -829,18 +830,19 @@ fn a_route_overflow_drops_the_open_sysex() {
     assert_eq!(packets.len(), 400);
     let mut route = CcRoute::new(mod_wheel_mapping(500), 1, 64);
     let list = EventList::input();
+    let mut stager = Stager::default();
     // 300 packets in one call: the route keeps 256 and loses 44.
     let one = Vst3InputEvents {
         midi: &packets[..300],
         ..Default::default()
     };
-    stage_input_events(&mut route, &list, &one, None);
+    stage_input_events(&mut route, &mut stager, &list, &one, None);
     assert_eq!(list.sysex_dropped(), 1);
     let two = Vst3InputEvents {
         midi: &packets[300..],
         ..Default::default()
     };
-    stage_input_events(&mut route, &list, &two, None);
+    stage_input_events(&mut route, &mut stager, &list, &two, None);
     assert!(sysex_in(&list).is_empty(), "no message with a gap in it");
     assert_eq!(list.sysex_dropped(), 1);
 }

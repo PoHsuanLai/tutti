@@ -40,7 +40,10 @@ pub use component_handler::{
     ComponentHandler, NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent,
     PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
-pub use event_list::{EventList, event_list_ptr};
+pub use event_list::{
+    EVENT_CAPACITY, EventList, NOTE_EXPRESSION_ROOM, SYSEX_OUT_ROOM, Staged, Staging,
+    event_list_ptr,
+};
 pub(crate) use host_application::HostApplication;
 pub use param_changes::{ParameterChangesImpl, param_changes_ptr};
 pub use param_queue::MIN_POINT_ROOM;

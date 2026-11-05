@@ -19,6 +19,7 @@ use tutti_plugin_types::{PointPool, RtMidiEvents};
 use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::error::{LoadStage, Result, Vst3Error};
+use crate::events::Stager;
 use crate::types::{ParameterChanges, ProcessMode, Vst3Sample};
 use tutti_vst3_ffi::{
     BusBuffers, BusDirection, EventList, MIN_POINT_ROOM, MediaType, ParameterChangesImpl,
@@ -193,6 +194,7 @@ impl<T: Vst3Sample> Staged<T> {
             input: InputStaging {
                 buses: in_scratch,
                 events: EventList::input(),
+                stager: Stager::default(),
                 param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {

@@ -105,7 +105,7 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
     if let Some(d) = drive {
         let at = ParamIn {
             node: SYNTH,
-            param: d.param,
+            param: d.param.into(),
         };
         ed.set_param_range(at, d.range)
             .expect("the synth is placed");

@@ -87,7 +87,7 @@ scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no be
 scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # no CLAP unsafe outside tutti-clap-ffi; the forbid is there
+scripts/check-plugin-ffi.sh        # CLAP: no unsafe outside tutti-clap-ffi (VST3: the FFI lints)
 ```
 
 `just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
@@ -95,8 +95,9 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 `--cfg loom`.
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
-  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi` so far);
-  host crates forbid `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
+  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`, and
+  `tutti-vst3-ffi`, which is taking over the VST3 host's); host crates forbid
+  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
@@ -223,7 +224,8 @@ crates/
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
                  formats/{vst2,vst3,clap,au}-host, formats/clap-ffi (all CLAP
-                 unsafe), vendor/{vst-tutti,vst3-sdk}
+                 unsafe), formats/vst3-ffi (the VST3 host's COM objects),
+                 vendor/{vst-tutti,vst3-sdk}
   vendor/        rustysynth-tutti, tutti-clap-test-plugin
 ```
 
@@ -361,8 +363,14 @@ Scalars use `Param<U>`.
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
-  `App::add_audio_param::<U, P>()`. They reach a node through its
-  `ParamSet` (`SessionNode::params`): a node without the param takes nothing.
+  `App::add_audio_param::<U, P>()`. `P` is a packed `UnitAddr` (a
+  `UnitParam` kind in the low byte, an index among the node's params of
+  that kind in the high byte; index 0 is the plain `UnitParam as u16`, so
+  `{ UnitParam::Cutoff as u16 }` still names a node's only cutoff). They reach
+  a node through its `ParamSet` (`SessionNode::params`): a node without the
+  param takes nothing. A node with several params of a kind adds each with
+  `ParamSetBuilder::param` and declares each modulatable with
+  `Shape::with_param_addrs`; a route names one with `ParamRef::unit_at`.
   Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
   `ParamRef`): each modulated param gets a control lane on its port, whose
   knob is the node's own cell (a plugin parameter's lane, its own knob on

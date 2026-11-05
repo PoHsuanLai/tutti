@@ -251,7 +251,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
         ed.spec_mut().connect_param(
             ParamIn {
                 node: p,
-                param: UnitParam::Cutoff,
+                param: UnitParam::Cutoff.into(),
             },
             EventOut { node: l, port: 0 },
         );
@@ -558,7 +558,7 @@ fn lanes_200(
     let (mut ed, exec) = tutti_graph::Editor::new(Prepare::new(SampleRate(48_000.0), Samples(max)));
     let at = |k: usize| ParamIn {
         node: NodeKey(1000 + (k / 8) as u64),
-        param: PROBE8[k % 8],
+        param: PROBE8[k % 8].into(),
     };
     for j in 0..25u64 {
         ed.insert(NodeKey(1000 + j), "probe", Unforkable(Probe8));
@@ -609,7 +609,7 @@ fn lane_moves(
         for k in (block % 9..200).step_by(9) {
             let at = ParamIn {
                 node: NodeKey(1000 + (k / 8) as u64),
-                param: PROBE8[k % 8],
+                param: PROBE8[k % 8].into(),
             };
             let hi = 800.0 + ((k + block) % 5) as f32 * 100.0;
             ed.set_param_range(at, ParamRange::new(0.0, hi))
@@ -835,7 +835,7 @@ fn signal_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     let probe = |k: usize| NodeKey(5000 + k as u64);
     let cutoff = |k: usize| ParamIn {
         node: probe(k),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     for k in 0..2 * CHAINS {
         ed.insert(probe(k), "probe", ForkByClone(ParamProbe));
@@ -1120,9 +1120,9 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     }
     impl ModHost for Host {
         fn target(&self, t: TargetKey) -> Option<Target> {
-            let knob = match t.param {
-                ParamAddr::Unit(UnitParam::Cutoff) => self.knobs[0].clone(),
-                ParamAddr::Unit(UnitParam::Q) => self.knobs[1].clone(),
+            let knob = match t.param.as_unit() {
+                Some(a) if a == UnitParam::Cutoff => self.knobs[0].clone(),
+                Some(a) if a == UnitParam::Q => self.knobs[1].clone(),
                 _ => return None,
             };
             Some(Target::Native {

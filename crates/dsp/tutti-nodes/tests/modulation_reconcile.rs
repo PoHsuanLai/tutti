@@ -652,7 +652,7 @@ fn range_and_depth_edits_need_no_commit_and_a_follower_route_one() {
     assert!(Arc::ptr_eq(&plan, ed.base().expect("committed")));
     let at = ParamIn {
         node: key(1),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     let cell = ed.param_range_cell(at).expect("a cell").load();
     assert_eq!((cell.min, cell.max), (0.0, 2000.0), "the store landed");
@@ -1115,7 +1115,7 @@ fn a_port_with_another_event_source_is_refused() {
     r.ed.spec_mut().connect_param(
         ParamIn {
             node: key(3),
-            param: UnitParam::Cutoff,
+            param: UnitParam::Cutoff.into(),
         },
         EventOut {
             node: key(30),
@@ -1725,7 +1725,7 @@ fn a_range_edit_after_a_steady_state_is_stored() {
     reapply(&mut r);
     let at = ParamIn {
         node: key(1),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     assert_eq!(r.ed.spec().params[&at].range.max, 2_000.0);
 }
@@ -1760,7 +1760,7 @@ fn a_rebind_after_a_steady_state_moves_the_lane() {
     assert!(reapply(&mut r).commit, "the lane is rebuilt");
     let at = ParamIn {
         node: key(3),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
     assert_eq!(
@@ -1999,7 +1999,7 @@ fn a_native_target_on_another_node_without_a_knob_moves_the_lane() {
     assert!(reapply(&mut r).commit, "the lane is rebuilt");
     let at = ParamIn {
         node: key(3),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     let lane = r.m.lane(cutoff_of(1)).expect("a lane").0;
     assert_eq!(

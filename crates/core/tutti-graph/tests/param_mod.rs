@@ -342,7 +342,7 @@ fn ev(node: u64) -> EventOut {
 fn param(node: u64, p: UnitParam) -> ParamIn {
     ParamIn {
         node: NodeKey(node),
-        param: p,
+        param: p.into(),
     }
 }
 
@@ -2436,7 +2436,7 @@ fn run_differential(g: &Gen) {
         for e in &g.edges {
             let at = ParamIn {
                 node: NodeKey(300 + e.probe as u64),
-                param: PARAMS[e.param],
+                param: PARAMS[e.param].into(),
             };
             let from = match e.source {
                 Ok(s) => ev(100 + s as u64),
@@ -2488,7 +2488,7 @@ fn run_differential(g: &Gen) {
             if s == step {
                 let at = ParamIn {
                     node: NodeKey(300 + p as u64),
-                    param: PARAMS[k],
+                    param: PARAMS[k].into(),
                 };
                 let r = r.map_or(ParamRange::UNBOUNDED, |(lo, hi)| ParamRange::new(lo, hi));
                 ed.set_param_range(at, r).expect("a range");

@@ -220,7 +220,7 @@ fn refused_activation(active: Active<f32>, rate: f64, frames: u32) -> (ClapLoade
 
 /// A refused activation must be *reported*, not swallowed.
 ///
-/// Mutation (run): `activate_typed` returning `Ok` after a failed
+/// Mutation (run): `activate_now` returning `Ok` after a failed
 /// `activate_plugin` → the `expect_err` fails.
 #[test]
 fn refused_sample_rate_change_is_reported() {
@@ -258,7 +258,7 @@ fn refused_sample_rate_change_is_reported() {
 /// second on the base rate.
 ///
 /// Mutation (run): drop the `self.audio = previous;` restore on the refusal
-/// paths of `ClapLoaded::activate_typed` → the handed-back plugin reports the
+/// paths of `ClapLoaded::activate_now` → the handed-back plugin reports the
 /// refused rate and the first assertion fails.
 #[test]
 fn a_refused_activation_leaves_the_accepted_configuration_reported() {

@@ -529,7 +529,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 /// `restart_cycle_...` has the embedder do
 /// the cycle by hand (`inst.deactivate()`, then `loaded.activate()`), whereas
 /// here the host does it internally inside
-/// [`set_sample_rate`](tutti_clap_host::ClapActive::set_sample_rate) and the
+/// the rate change and the
 /// caller never sees a `ClapLoaded`. A host that changed the rate *without*
 /// the cycle would pass the hand-driven test and fail here — and CLAP requires
 /// deactivation around a rate change, so it is exactly the mistake worth
@@ -804,7 +804,7 @@ fn host_routes_plugin_log_lines_at_every_severity() {
 /// The instance is *borrowed* into a scoped thread rather than moved: `Drop`
 /// runs `close_editor`, which asserts main-thread too, so a moved instance
 /// would panic a second time while unwinding and report the wrong call.
-/// `ClapLoaded` rather than `ClapActive` for the same borrow reason —
+/// `ClapLoaded` rather than `ClapProcessor` for the same borrow reason —
 /// `ClapLoaded` is the type that carries the `unsafe impl Send`, and neither
 /// method under test needs activation.
 #[test]

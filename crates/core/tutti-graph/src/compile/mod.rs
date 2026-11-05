@@ -348,7 +348,7 @@ enum Pre {
 /// value it reads.
 struct PPort {
     port: u16,
-    param: tutti_types::UnitParam,
+    param: tutti_types::UnitAddr,
     from: EventOut,
     value: u32,
 }

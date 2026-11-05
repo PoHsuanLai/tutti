@@ -1,0 +1,46 @@
+[package]
+name = "tutti-vst3-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe half of the VST3 host: safe handles over the vst3 crate's COM bindings"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-vst3-ffi"
+readme = "README.md"
+keywords = ["vst3", "audio", "plugin", "ffi"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# Exposes the run loop's activity counters (`RunLoopActivity`), which the
+# host-conformance tests read. Off in a production build; the host crate's
+# `conformance` feature turns it on.
+conformance = []
+
+[dependencies]
+parking_lot = "0.12"
+crossbeam-queue = "0.3"
+arrayvec = "0.7"
+tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
+tutti-plugin-types = { path = "../../tutti-plugin-types" }
+tutti-types = { path = "../../../core/tutti-types" }
+vst3 = "0.3"
+
+# `IRunLoop` (Linux-only, and mandatory there per the VST3 docs) polls the
+# plugin-registered file descriptors.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+# The CLAP host, to feed one MIDI stream to both formats' event lists and
+# check they read a per-note bend at the same range. Acyclic: it does not
+# depend on this crate.
+tutti-clap-host = { path = "../tutti-clap-host" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

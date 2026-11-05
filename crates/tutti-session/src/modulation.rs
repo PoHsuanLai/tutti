@@ -40,7 +40,7 @@ use tutti_mod::{
 };
 use tutti_nodes::automation::{LaneControls, RecordMode, Recorder};
 use tutti_nodes::{Feed, ReconcileError};
-use tutti_types::{Depth, NodeKey, ParamAddr, UnitParam};
+use tutti_types::{Depth, NodeKey, ParamAddr, UnitAddr, UnitParam};
 
 use crate::ModKeys;
 use crate::graph::{Graph, key};
@@ -71,11 +71,21 @@ impl ParamRef {
         }
     }
 
-    /// A native param of `node`.
+    /// A native param of `node`, at index 0.
     pub const fn unit(node: AudioNode, param: UnitParam) -> Self {
         Self {
             node,
             param: ParamAddr::Unit(param),
+        }
+    }
+
+    /// A native param of `node` at `index` among the node's params of that
+    /// kind (a multiband compressor's threshold of band `index`).
+    /// [`unit`](Self::unit) is index 0.
+    pub const fn unit_at(node: AudioNode, param: UnitParam, index: u8) -> Self {
+        Self {
+            node,
+            param: ParamAddr::unit(UnitAddr::new(param, index)),
         }
     }
 

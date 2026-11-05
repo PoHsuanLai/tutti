@@ -134,10 +134,9 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
 
 /// The butler's conditions for streaming a file, in the order it applies them.
 ///
-/// Mirrors `butler::handlers::open_stream` — and the mirroring is the reason this
-/// is a named function rather than an inline `&&`: if the butler's conditions
-/// change, this is the one other place that must move, and a grep for either name
-/// finds both.
+/// The one place these conditions live: `butler::handlers::open_stream` asks
+/// [`probe`] for its verdict instead of re-deriving it, so a host picking a
+/// playback tier and the butler cannot disagree.
 fn streamable(path: &Path, meta: &tutti_io::WaveMetadata) -> bool {
     // 1. No frame count means no seekable end — the butler falls back whole-file.
     if meta.total_frames.is_none() {

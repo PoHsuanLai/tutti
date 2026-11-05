@@ -66,18 +66,15 @@ fn endpoint_capability(object: &coremidi::Object) -> UmpCapability {
     }
 }
 
-/// A stable id for an endpoint.
+/// A stable id for an endpoint, or `None` when the OS gives it no unique id.
 ///
 /// `kMIDIPropertyUniqueID` survives a device list refresh; the enumeration index
-/// does not. Falling back to the index when the property is unreadable keeps a
-/// nameless device openable within one enumeration, which is strictly better
-/// than dropping it from the list.
-fn endpoint_id(object: &coremidi::Object, index: usize) -> EndpointId {
+/// does not, and an [`EndpointId`] promises the same endpoint across a refresh.
+/// An endpoint without a unique id is therefore left out of the list rather than
+/// handed an index that would name a different device after a hot-plug.
+fn endpoint_id(object: &coremidi::Object) -> Option<EndpointId> {
     let unique: std::result::Result<i32, _> = Properties::unique_id().value_from(object);
-    match unique {
-        Ok(id) => EndpointId::from_raw(id as u32 as u64),
-        Err(_) => EndpointId::from_raw(index as u64),
-    }
+    unique.ok().map(|id| EndpointId::from_raw(id as u32 as u64))
 }
 
 /// The macOS [`MidiEndpoints`] implementation.
@@ -121,17 +118,13 @@ impl CoreMidiEndpoints {
     fn find_source(id: EndpointId) -> Option<Source> {
         (0..Sources::count())
             .filter_map(Source::from_index)
-            .enumerate()
-            .find(|(i, s)| endpoint_id(s, *i) == id)
-            .map(|(_, s)| s)
+            .find(|s| endpoint_id(s) == Some(id))
     }
 
     fn find_destination(id: EndpointId) -> Option<coremidi::Destination> {
         (0..Destinations::count())
             .filter_map(coremidi::Destination::from_index)
-            .enumerate()
-            .find(|(i, d)| endpoint_id(d, *i) == id)
-            .map(|(_, d)| d)
+            .find(|d| endpoint_id(d) == Some(id))
     }
 }
 
@@ -140,10 +133,12 @@ impl MidiEndpoints for CoreMidiEndpoints {
         (0..Sources::count())
             .filter_map(Source::from_index)
             .enumerate()
-            .map(|(index, source)| EndpointInfo {
-                id: endpoint_id(&source, index),
-                name: endpoint_name(&source, index),
-                capability: endpoint_capability(&source),
+            .filter_map(|(index, source)| {
+                Some(EndpointInfo {
+                    id: endpoint_id(&source)?,
+                    name: endpoint_name(&source, index),
+                    capability: endpoint_capability(&source),
+                })
             })
             .collect()
     }
@@ -152,10 +147,12 @@ impl MidiEndpoints for CoreMidiEndpoints {
         (0..Destinations::count())
             .filter_map(coremidi::Destination::from_index)
             .enumerate()
-            .map(|(index, dest)| EndpointInfo {
-                id: endpoint_id(&dest, index),
-                name: endpoint_name(&dest, index),
-                capability: endpoint_capability(&dest),
+            .filter_map(|(index, dest)| {
+                Some(EndpointInfo {
+                    id: endpoint_id(&dest)?,
+                    name: endpoint_name(&dest, index),
+                    capability: endpoint_capability(&dest),
+                })
             })
             .collect()
     }

@@ -466,8 +466,12 @@ despawn system.
 Params are `AudioParam<U, const P: u16>` — one generic component per scalar,
 registered with `App::add_audio_param::<U, P>()` and written in the `Params`
 phase through the node's `ParamSet` (`SessionNode::params`); a node without the
-param takes nothing. `AudioNode` is the only thing `tutti-core` gates behind its
-`bevy` feature: one `derive(Component)` on one struct.
+param takes nothing. `P` is a packed `UnitAddr` (index in the high byte, the
+`UnitParam` discriminant in the low), so a node's only param of a kind is the
+plain `{ UnitParam::X as u16 }` and a node with several names the others with
+`{ UnitAddr::new(UnitParam::X, i).to_u16() }` (doc 013, "Param addresses").
+`AudioNode` is the only thing `tutti-core` gates behind its `bevy` feature: one
+`derive(Component)` on one struct.
 
 The session runs a frame as the phases of `tutti_session::PHASES`, and
 `bevy-tutti` schedules each in a `SessionPhaseSystems(Phase)` set chained

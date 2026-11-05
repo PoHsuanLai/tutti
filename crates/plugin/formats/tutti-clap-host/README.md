@@ -16,8 +16,9 @@ when you want a CLAP host without the rest of the engine.
 
 Three types carry the lifecycle: [`ClapLoaded`] is the mapped, instantiated
 plugin, which is not rendering. Activating it takes `self` by value and splits it
-into a [`ClapProcessor<T>`][`ClapProcessor`], the realtime half, where
-[`process`][`ClapProcessor::process`] lives, and a [`ClapController`], the
+into a [`ClapProcessor`], the realtime half, where
+[`process`][`ClapProcessor::process`] lives and whose sample format is the
+activation's `Prepare::format`, and a [`ClapController`], the
 main-thread half, which derefs to [`ClapLoaded`] so the whole control surface
 stays reachable while audio runs. Both halves hold one plugin instance; the
 reasoning for that is on `tutti_clap_ffi::Plugin`, which owns the instance and
@@ -27,8 +28,9 @@ what `Lifecycle` drives.
 
 The other types you will meet first:
 
-- [`AudioBuffer32`] / [`AudioBuffer64`]: the per-block audio a
-  [`process`][`ClapProcessor::process`] call reads and writes.
+- `AudioBufferMut` (`tutti-plugin-types`): the per-block audio, `F32` or `F64`,
+  a [`process`][`ClapProcessor::process`] call reads and writes; its width is
+  the processor's. [`AudioBuffer32`] / [`AudioBuffer64`] build the two.
 - [`ClapProcessContext`]: per-block MIDI, parameter changes and transport.
 - [`PluginInfo`]: the descriptor (id, name, vendor, features) read at load.
 - [`ClapError`]: the error type, with [`LoadStage`] for load failures.
@@ -64,7 +66,7 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
 };
-use tutti_plugin_types::{Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{AudioBufferMut, Loaded, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
 
 // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 // length are not load parameters: they are the activation's.
@@ -80,7 +82,7 @@ let prepare = Prepare {
     mode: RenderMode::Realtime,
 };
 let (mut processor, controller) = loaded
-    .activate_typed::<f32>(prepare)
+    .activate(prepare)
     .map_err(|refused| tutti_clap_host::ClapError::ProcessError(refused.reason.to_string()))?;
 
 // 512 is the block length in FRAMES; each channel slice holds that many.
@@ -92,15 +94,15 @@ let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
 
 let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
-processor.process(&mut buffer, &ClapProcessContext {
+processor.process(&mut AudioBufferMut::F32(buffer), &ClapProcessContext {
     midi: &midi,
     transport: Some(&transport),
     ..Default::default()
 })?;
 
 // The halves rejoin into the plugin, deactivated.
-let _loaded = ClapLoaded::deactivate_typed(processor, controller)
-    .map_err(|(_, _, reason)| tutti_clap_host::ClapError::ProcessError(reason.to_string()))?;
+let _loaded = ClapLoaded::deactivate(processor, controller)
+    .map_err(|stuck| tutti_clap_host::ClapError::ProcessError(stuck.reason.to_string()))?;
 # Ok::<(), tutti_clap_host::ClapError>(())
 ```
 
@@ -174,7 +176,9 @@ tree.
 
 A plain `Result<_, PluginError>` would have destroyed the `ClapLoaded` on the one
 path where it is still perfectly good, making "ask, and fall back" strictly more
-expensive than "guess from [`supports_f64`][`ClapLoaded::supports_f64`] and hope".
+expensive than guessing from [`supports_f64`][`ClapLoaded::supports_f64`] and
+hoping. [`ClapLoaded::negotiate_format`] is the ask: it reads the ports again
+and answers the format to activate at.
 Both failure paths preserve it: the `f64`-unsupported check returns before any
 FFI runs, and a plugin-side `activate` refusal leaves the instance untouched and
 not active. Activation never leaves half a pair: the Processor and the
@@ -253,6 +257,7 @@ MIT OR Apache-2.0
 [`ClapLoaded`]: crate::ClapLoaded
 [`ClapLoaded::parameter_list`]: crate::ClapLoaded::parameter_list
 [`ClapLoaded::supports_f64`]: crate::ClapLoaded::supports_f64
+[`ClapLoaded::negotiate_format`]: crate::ClapLoaded::negotiate_format
 [`ClapLoaded::flush_params`]: crate::ClapLoaded::flush_params
 [`ClapController`]: crate::ClapController
 [`ClapController::set_thread_pool`]: crate::ClapController::set_thread_pool

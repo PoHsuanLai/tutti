@@ -14,7 +14,7 @@ use tutti_graph::{
 use tutti_mod::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
 use tutti_types::{
     ArcLend, AtomicF32, Beat, Frame, PackedAtomic, ParamAddr, ParamKey, Reader, SamplePosition,
-    Samples, Tail, Unit, UnitParam,
+    Samples, Tail, Unit, UnitAddr,
 };
 
 use super::lane::segment_shape;
@@ -394,20 +394,22 @@ impl ControlLaneNode {
         knob: Option<Arc<AtomicF32>>,
         range: Option<ParamRangeReader>,
     ) -> Self {
-        Self::for_unit(key.id(), program, knob, range)
+        Self::for_unit(key.addr(), program, knob, range)
     }
 
-    /// A lane for built-in parameter `param`, its values the param's raw
+    /// A lane for built-in parameter `param` (a `UnitParam`, which is its
+    /// index-0 address, or a [`UnitAddr`]), its values the param's raw
     /// `f32`s ([`ParamSegment::unit`]), as [`for_param`](Self::for_param)
     /// otherwise. For a caller that holds a `ParamAddr` rather than a typed
     /// key (the [`Modulation`](crate::Modulation) reconciler), and for a
     /// param with no `ParamKey` yet (`RoomSize`, `Pan`, …).
     pub fn for_unit(
-        param: UnitParam,
+        param: impl Into<UnitAddr>,
         program: ControlProgram,
         knob: Option<Arc<AtomicF32>>,
         range: Option<ParamRangeReader>,
     ) -> Self {
+        let param: UnitAddr = param.into();
         Self::build(
             Arc::new(program),
             knob,

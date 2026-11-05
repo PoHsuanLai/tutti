@@ -121,7 +121,10 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
         .expect("builds");
     if let Some((param, v)) = fed {
-        let at = ParamIn { node: n, param };
+        let at = ParamIn {
+            node: n,
+            param: param.into(),
+        };
         drive(r.editor_mut(), at, Arc::new(AtomicF32::new(v)), vec![]);
     }
     let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
@@ -741,7 +744,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
         node: n,
-        param: UnitParam::Drive,
+        param: UnitParam::Drive.into(),
     };
     g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
     let mut r = g
@@ -784,7 +787,7 @@ fn a_crossed_range_is_survivable() {
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
         node: n,
-        param: UnitParam::Drive,
+        param: UnitParam::Drive.into(),
     };
     g.spec_mut().set_param_range(at, ParamRange::new(4.0, 2.0));
     let mut r = g
@@ -835,7 +838,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 
     let at = ParamIn {
         node: n,
-        param: UnitParam::Drive,
+        param: UnitParam::Drive.into(),
     };
     let from = EventOut {
         node: LANE,
@@ -897,7 +900,7 @@ fn a_fork_modulates_as_the_live_graph_does() {
     let (mut editor, _exec) = g.build(prepare).expect("builds");
     let at = ParamIn {
         node: n,
-        param: UnitParam::Drive,
+        param: UnitParam::Drive.into(),
     };
     drive(&mut editor, at, Arc::new(AtomicF32::new(3.0)), vec![]);
     let (fed, fexec) = editor

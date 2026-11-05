@@ -19,7 +19,7 @@ mod pool;
 mod roles;
 mod stream;
 
-pub use audio::{AudioSide, PortScratch, ProcessCall, ProcessError, Sample};
+pub use audio::{AudioSide, Planar, PortScratch, ProcessCall, ProcessError};
 pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
 #[cfg(feature = "test-support")]
 #[doc(hidden)]

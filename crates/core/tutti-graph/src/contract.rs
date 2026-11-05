@@ -76,7 +76,7 @@
 
 use tutti_types::graph::OutPort;
 use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
+    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitAddr,
 };
 
 use crate::builder::GraphBuilder;
@@ -165,8 +165,9 @@ pub enum Excite {
     /// source is the early path, delayed to the node's arrival by the
     /// compiler. Runs the audio paths.
     Param {
-        /// The node's declared param.
-        param: UnitParam,
+        /// The node's declared param (a bare `UnitParam` is its index-0
+        /// address: `param.into()`).
+        param: UnitAddr,
         /// The impulse's height.
         amplitude: f32,
     },
@@ -887,7 +888,7 @@ impl Row {
     /// The [`Excite::Param`] graph: a [`ParamPulse`] armed for `at` driving
     /// `param`, and behind PDC a [`Latent`] sibling on the node's audio
     /// input 0.
-    fn build_param(&self, topo: Topo, param: UnitParam, at: Frame, amplitude: f32) -> Rig {
+    fn build_param(&self, topo: Topo, param: UnitAddr, at: Frame, amplitude: f32) -> Rig {
         let node = (self.make)();
         let shape = node.shape();
         assert!(
@@ -1108,20 +1109,22 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
 /// sibling) is ignored.
 #[derive(Clone, Debug)]
 pub struct ParamEcho {
-    param: UnitParam,
+    param: UnitAddr,
 }
 
 impl ParamEcho {
     /// An echo of `param`.
     #[must_use]
-    pub fn new(param: UnitParam) -> Self {
-        Self { param }
+    pub fn new(param: impl Into<UnitAddr>) -> Self {
+        Self {
+            param: param.into(),
+        }
     }
 }
 
 impl Node for ParamEcho {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_params(&[self.param])
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_param_addrs(&[self.param])
     }
 
     fn prepare(&mut self, _: &Prepare) {}
@@ -1378,14 +1381,14 @@ impl Node for Emitter {
 #[derive(Clone, Copy, Debug)]
 pub struct ParamPulse {
     at: Frame,
-    param: UnitParam,
+    param: UnitAddr,
     amplitude: f32,
 }
 
 impl ParamPulse {
     /// A pulse of `amplitude` on `param` at `at`.
     #[must_use]
-    pub fn new(at: Frame, param: UnitParam, amplitude: f32) -> Self {
+    pub fn new(at: Frame, param: UnitAddr, amplitude: f32) -> Self {
         Self {
             at,
             param,
@@ -1669,7 +1672,7 @@ pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
 pub fn assert_param_fork<N: ParamNode + Clone>(node: N) {
     let fork = ParamFork::new(&node);
     let live = fork.params().clone();
-    let params: Vec<UnitParam> = live.params().collect();
+    let params: Vec<UnitAddr> = live.params().collect();
     assert!(!params.is_empty(), "a ParamNode with no params");
     // A distinct value per param, away from anything a constructor picks.
     let set = |i: usize| 0.37 + i as f32 * 1.13;

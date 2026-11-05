@@ -11,10 +11,10 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
-use crate::com::HostApplication;
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::{c_str_to_string, guid_as_tuid, utf16_to_string};
 use crate::host::module_entry::ModuleEntry;
+use tutti_vst3_ffi::HostApplication;
 
 type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
 
@@ -43,7 +43,7 @@ pub struct Vst3Library {
     /// editor exists and it must outlive every `HostPlugFrame`. Linux only —
     /// other platforms have an ambient OS run loop.
     #[cfg(target_os = "linux")]
-    run_loop: std::sync::Arc<crate::com::run_loop::RunLoop>,
+    run_loop: std::sync::Arc<tutti_vst3_ffi::RunLoop>,
     /// Runs the paired module exit point (`bundleExit` / `ModuleExit` /
     /// `ExitDll`) on drop. Held only for that side effect.
     _entry: ModuleEntry,
@@ -93,7 +93,7 @@ impl Vst3Library {
     /// `HostPlugFrame` so handlers registered through either object are pumped
     /// by one loop. Linux only.
     #[cfg(target_os = "linux")]
-    pub(crate) fn run_loop(&self) -> std::sync::Arc<crate::com::run_loop::RunLoop> {
+    pub(crate) fn run_loop(&self) -> std::sync::Arc<tutti_vst3_ffi::RunLoop> {
         self.run_loop.clone()
     }
 
@@ -149,7 +149,7 @@ impl Vst3Library {
         // IPluginFactory2 has nothing to set, which is not an error.
         let factory3 = factory.cast::<IPluginFactory3>();
         #[cfg(target_os = "linux")]
-        let run_loop = crate::com::run_loop::RunLoop::new();
+        let run_loop = tutti_vst3_ffi::RunLoop::new();
         let host_context = HostApplication::new(
             HOST_NAME,
             #[cfg(target_os = "linux")]

@@ -1,43 +1,42 @@
-//! The realtime half of an activation: [`ClapProcessor<T>`] at a fixed sample
-//! type, and [`ClapProcessorAny`], the trait's `Processor`, which picks the type
-//! at activation.
+//! The realtime half of an activation: [`ClapProcessor`], whose sample format
+//! is a value chosen at activation, and the trait's `Processor` impl on it.
 
 use tutti_plugin_types::{
     AudioBufferMut, Edit, EditDrain, Normalized, NoteExpressionChanges, ParamId, PluginError,
-    PluginIo, PluginResult, Processor, TransportInfo as SharedTransport,
+    PluginIo, PluginResult, Processor, SampleFormat, TransportInfo as SharedTransport,
 };
 use tutti_types::Reader;
 
 use tutti_clap_ffi::AudioSide;
 
+use super::ClapProcessContext;
 use super::audio::ProcessOutputRef;
 use super::config::{AudioScratch, RangeTable};
 use super::thread_pool::PoolCell;
-use super::{ClapProcessContext, ClapSample};
-use crate::types::{AudioBuffer, ClapNoteExpression, TransportInfo};
+use crate::types::{ClapNoteExpression, TransportInfo};
 
 /// What activation hands [`ClapProcessor::new`].
-pub(crate) struct ProcessorParts<T: ClapSample> {
+pub(crate) struct ProcessorParts {
     pub audio_side: AudioSide,
     pub pool: Reader<PoolCell>,
     pub input_ports: Vec<u32>,
     pub output_ports: Vec<u32>,
     pub max_frames: u32,
-    pub scratch: AudioScratch<T>,
+    pub scratch: AudioScratch,
     pub ranges: Reader<RangeTable>,
     pub drain: EditDrain,
 }
 
-/// The realtime half of an activation at sample type `T`: it renders blocks and
-/// nothing else.
+/// The realtime half of an activation: it renders blocks and nothing else. Its
+/// sample [`format`](Self::format) is a value chosen at activation.
 ///
 /// `Send` to move to the realtime thread, not `Sync`. It holds the audio half
 /// of the plugin ([`AudioSide`]), which can call only the audio-thread entries
 /// and takes the `[audio-thread]` claim for every call, so it never touches the
 /// `ClapLoaded` its [`ClapController`](super::ClapController) holds. Dropping it
 /// releases its share of the activation and calls nothing in the plugin.
-pub struct ClapProcessor<T: ClapSample> {
-    pub(crate) scratch: AudioScratch<T>,
+pub struct ClapProcessor {
+    pub(crate) scratch: AudioScratch,
     pub(crate) ranges: Reader<RangeTable>,
     pub(crate) drain: EditDrain,
     pub(crate) audio_side: AudioSide,
@@ -47,9 +46,10 @@ pub struct ClapProcessor<T: ClapSample> {
     pub(crate) max_frames: u32,
 }
 
-impl<T: ClapSample> std::fmt::Debug for ClapProcessor<T> {
+impl std::fmt::Debug for ClapProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClapProcessor")
+            .field("format", &self.format())
             .field("max_frames", &self.max_frames)
             .field("input_ports", &self.input_ports)
             .field("output_ports", &self.output_ports)
@@ -57,8 +57,8 @@ impl<T: ClapSample> std::fmt::Debug for ClapProcessor<T> {
     }
 }
 
-impl<T: ClapSample> ClapProcessor<T> {
-    pub(crate) fn new(parts: ProcessorParts<T>) -> Self {
+impl ClapProcessor {
+    pub(crate) fn new(parts: ProcessorParts) -> Self {
         let ProcessorParts {
             audio_side,
             pool,
@@ -150,57 +150,20 @@ impl<T: ClapSample> ClapProcessor<T> {
     }
 }
 
-/// The trait's Processor: the sample type is chosen at activation, so the two
-/// typed processors sit in one enum and `process` matches the buffer's width to
-/// the arm.
-#[derive(Debug)]
-pub enum ClapProcessorAny {
-    /// Activated at 32-bit.
-    F32(ClapProcessor<f32>),
-    /// Activated at 64-bit; every port of the plugin advertises it.
-    F64(ClapProcessor<f64>),
-}
-
-impl ClapProcessorAny {
-    pub(crate) fn audio_side(&self) -> &AudioSide {
-        match self {
-            Self::F32(p) => p.audio_side(),
-            Self::F64(p) => p.audio_side(),
-        }
-    }
-
-    /// Whether `start_processing` has run and `stop_processing` has not.
-    pub fn is_processing(&self) -> bool {
-        match self {
-            Self::F32(p) => p.is_processing(),
-            Self::F64(p) => p.is_processing(),
-        }
-    }
-
-    /// [`ClapProcessor::take_edits`].
-    pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
-        match self {
-            Self::F32(p) => p.take_edits(out),
-            Self::F64(p) => p.take_edits(out),
-        }
-    }
-
-    /// [`ClapProcessor::reset`].
-    pub fn reset(&mut self) {
-        match self {
-            Self::F32(p) => p.reset(),
-            Self::F64(p) => p.reset(),
-        }
+impl ClapProcessor {
+    /// The format this processor was activated at: a value, fixed at
+    /// activation, that every block's buffers are matched against.
+    #[must_use]
+    pub fn format(&self) -> SampleFormat {
+        self.scratch.process.format()
     }
 
     /// Whether this processor renders 64-bit audio.
     #[must_use]
     pub fn is_f64(&self) -> bool {
-        matches!(self, Self::F64(_))
+        self.format() == SampleFormat::Float64
     }
-}
 
-impl ClapProcessorAny {
     /// Renders one block, with the buffers, the context and the output taken
     /// apart. [`Processor::process`] is this with a [`PluginIo`]; a caller whose
     /// channel tables have distinct lifetimes, as `AudioBufferMut` allows, calls
@@ -208,69 +171,28 @@ impl ClapProcessorAny {
     ///
     /// # Errors
     ///
-    /// [`PluginError::Process`] when the plugin failed the block or the buffer's
-    /// sample format is not the one the processor was activated with.
+    /// [`PluginError::Process`] when the buffer's sample format is not the one
+    /// the processor was activated with; [`PluginError::Block`] when the plugin
+    /// failed the block.
     pub fn render(
         &mut self,
         buffer: &mut AudioBufferMut<'_, '_>,
         ctx: &tutti_plugin_types::ProcessContext<'_>,
         out: &mut tutti_plugin_types::ProcessOutput,
     ) -> PluginResult<()> {
-        match (buffer, self) {
-            (AudioBufferMut::F32(buf), Self::F32(p)) => {
-                let sample_rate = buf.sample_rate;
-                let mut clap_buffer = crate::AudioBuffer32 {
-                    inputs: buf.inputs,
-                    outputs: buf.outputs,
-                    num_samples: buf.num_samples,
-                    sample_rate,
-                };
-                p.process_shared(&mut clap_buffer, ctx, sample_rate, out)
-            }
-            (AudioBufferMut::F64(buf), Self::F64(p)) => {
-                let sample_rate = buf.sample_rate;
-                let mut clap_buffer = crate::AudioBuffer64 {
-                    inputs: buf.inputs,
-                    outputs: buf.outputs,
-                    num_samples: buf.num_samples,
-                    sample_rate,
-                };
-                p.process_shared(&mut clap_buffer, ctx, sample_rate, out)
-            }
-            // The message is built only on this path, which is a negotiation bug
-            // upstream and not steady state.
-            (AudioBufferMut::F32(_), Self::F64(_)) | (AudioBufferMut::F64(_), Self::F32(_)) => {
-                Err(PluginError::Process(
-                    "audio buffer sample format does not match the format the CLAP \
-                     plugin was activated with"
-                        .to_string(),
-                ))
-            }
-        }
-    }
-}
-
-impl Processor for ClapProcessorAny {
-    fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
-        let PluginIo { buffer, ctx, out } = io;
-        self.render(buffer, ctx, out)
+        let sample_rate = match buffer {
+            AudioBufferMut::F32(b) => b.sample_rate,
+            AudioBufferMut::F64(b) => b.sample_rate,
+        };
+        self.process_shared(buffer, ctx, sample_rate, out)
     }
 
-    fn stop(&mut self) {
-        match self {
-            Self::F32(p) => p.stop(),
-            Self::F64(p) => p.stop(),
-        }
-    }
-}
-
-impl<T: ClapSample> ClapProcessor<T> {
     /// One block from the shared vocabulary: converts the context into CLAP's
     /// (note expressions into scratch, transport on the stack), processes, and
     /// copies what the plugin emitted into `out`.
     fn process_shared(
         &mut self,
-        buffer: &mut AudioBuffer<'_, '_, T>,
+        buffer: &mut AudioBufferMut<'_, '_>,
         ctx: &tutti_plugin_types::ProcessContext<'_>,
         sample_rate: f64,
         out: &mut tutti_plugin_types::ProcessOutput,
@@ -316,6 +238,7 @@ fn block_reason(error: &crate::ClapError) -> &'static str {
         ClapError::StartProcessingFailed => "the plugin refused to start processing",
         ClapError::NotActive => "the plugin is no longer active",
         ClapError::BufferTooShort => "a channel buffer is shorter than the block",
+        ClapError::FormatMismatch => "the block's sample format is not the activated one",
         ClapError::LayoutMismatch => "the port layout is larger than the activation sized for",
         _ => "the plugin failed the block",
     }
@@ -399,5 +322,16 @@ fn copy_process_output(output: ProcessOutputRef<'_>, out: &mut tutti_plugin_type
                 expression_type: expr.expression_type,
                 value: expr.value,
             });
+    }
+}
+
+impl Processor for ClapProcessor {
+    fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
+        let PluginIo { buffer, ctx, out } = io;
+        self.render(buffer, ctx, out)
+    }
+
+    fn stop(&mut self) {
+        ClapProcessor::stop(self);
     }
 }

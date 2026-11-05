@@ -686,11 +686,11 @@ fn modulated_params_are_allocation_free_on(workers: usize) {
     }
     let cut = ParamIn {
         node: NodeKey(1),
-        param: tutti_types::UnitParam::Cutoff,
+        param: tutti_types::UnitParam::Cutoff.into(),
     };
     let q = ParamIn {
         node: NodeKey(1),
-        param: tutti_types::UnitParam::Q,
+        param: tutti_types::UnitParam::Q.into(),
     };
     // The ramps are the early path: the sink sits behind the lag's PDC, so
     // the plan delays its event source.

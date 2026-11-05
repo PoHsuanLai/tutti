@@ -33,10 +33,14 @@
 //!   at a lag or for its [`CorrelationPeak`].
 //! - Take alignment: [`align()`] with an [`AlignConfig`] finds an [`Alignment`]
 //!   (whole-sample lag, sub-sample offset, confidence) by GCC-PHAT.
+//! - Tempo: [`estimate_tempo()`] with a [`TempoConfig`] finds a [`Tempo`] (BPM,
+//!   confidence, runner-up octaves); [`track_beats()`] places a [`BeatGrid`] by
+//!   dynamic programming; the `_from_novelty` forms take your own curve.
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod align;
+mod beat;
 mod error;
 mod features;
 mod fft;
@@ -50,6 +54,7 @@ mod peaks;
 mod pitch;
 mod silence;
 mod stereo;
+mod tempo;
 mod transform;
 mod vectorscope;
 mod window;
@@ -87,6 +92,10 @@ pub use silence::{
 };
 pub use stereo::{
     Ballistics, BallisticsState, StereoLevels, StereoReading, correlate, step_ballistics,
+};
+pub use tempo::{
+    BeatGrid, Tempo, TempoCandidate, TempoConfig, estimate_tempo, estimate_tempo_from_novelty,
+    track_beats, track_beats_from_novelty,
 };
 pub use transform::{
     HopPolicy, NormalizedMagnitudes, RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar,

@@ -87,6 +87,10 @@ name = "vst3_conformance"
 path = "tests/vst3_conformance.rs"
 
 [[test]]
+name = "vst3_ffi_plugin"
+path = "tests/vst3_ffi_plugin.rs"
+
+[[test]]
 name = "vst3_gui_lifecycle"
 path = "tests/vst3_gui_lifecycle.rs"
 

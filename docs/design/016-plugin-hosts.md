@@ -1089,41 +1089,38 @@ parameter.
   `ClapLoaded::negotiate_format(requested)` is `negotiate` over the plugin's
   capability, the fallback to 32-bit a caller applies before it activates.
 
-**As built (the VST3 FFI crate).** `tutti-vst3-ffi` is the second format's
-`-ffi` crate under §2.9. It holds the COM objects the host implements for a
-plugin (`IBStream`, `IEventList`, `IParameterChanges`, `IComponentHandler`,
-`IHostApplication`, `IAttributeList`/`IMessage`, `IPlugFrame`, `IRunLoop`), the
-panic guard that every one of their methods runs under, and the event, info and
-process-context vocabulary. The host crate still calls the plugin's own
-interfaces directly; they move next.
+**As built (the VST3 FFI crate).** The second format moved to the rule of §2.9.
+
+- `tutti-vst3-ffi` holds all of `tutti-vst3-host`'s VST3 `unsafe`; the host
+  crate is `#![forbid(unsafe_code)]`, which `scripts/check-plugin-ffi.sh` checks,
+  as it does for the server's and the GUI's `vst3.rs` outside their test
+  modules.
+- The COM objects the host implements for a plugin (`IBStream`, `IEventList`,
+  `IParameterChanges`, `IComponentHandler` and its extensions,
+  `IHostApplication`, `IAttributeList`/`IMessage`, `IPlugFrame`, `IRunLoop`) are
+  concrete Rust types there. The vtable, the panic guard every method runs under
+  and the argument conversion are the FFI crate's.
+- A plugin is a `Plugin` (the main-thread half: `Send`, not `Sync`; every
+  `[UI-thread]` entry is a method; `Drop` runs the SDK's teardown order) and one
+  `AudioSide` (the audio half, handed out once, and only for a plugin that is set
+  up and active). The audio half holds no reference to the plugin, only a pointer
+  it may use under the instance's claim, so the plugin and its module are always
+  destroyed on the thread that drops the `Plugin`. While the audio half exists
+  the plugin's state changes (`setActive`, `setProcessing`, `setupProcessing`,
+  `setBusArrangements`, `activateBus`) are refused, and `process` refuses a block
+  that does not fit the setup (the sample width, the longest block).
+- The activation's shell holds no plugin access. The Controller owns the
+  `Vst3Loaded`, the Processor owns only the audio half, and a Controller dropped
+  while its Processor renders parks the plugin on the shell for the Processor's
+  drop to retire (`host/shell.rs`).
+- The sample width is a runtime tag in the FFI crate (`SampleWidth`); the host's
+  `Vst3Sample` is the host's own seam.
 
 #### The split reaches one instance: why that is sound
 
-**As built (the VST3 FFI crate).** The second format moved to the rule of §2.9.
-
-- `tutti-vst3-ffi` holds all of `tutti-vst3-host`'s VST3 `unsafe` (about 300
-  production sites before in the host's `src/`, none after: `#![forbid(unsafe_code)]`
-  on the host, which the gate checks). The host-implemented interfaces
-  (`IBStream`, `IEventList`, `IParameterChanges`/`IParamValueQueue`,
-  `IComponentHandler` and its extensions, `IHostApplication`, `IAttributeList`
-  and `IMessage`, `IPlugFrame`, `IRunLoop`) are concrete Rust types there; the
-  vtable, the panic guard and the argument conversion are the FFI crate's. A
-  plugin is a `Plugin` (main-thread half, `Send`, not `Sync`) and one
-  `AudioSide` (audio half, taken once), under one claim that the plugin's
-  `Drop` also takes, so a block never overlaps its teardown.
-- **The shell holds no plugin access.** The CLAP-era `Shell` (an `UnsafeCell`
-  with an `unsafe impl Sync`) is a safe hand-off: the Controller owns the
-  `Vst3Loaded`, the Processor owns only the `AudioSide`, and a Controller dropped
-  while its Processor renders parks the plugin on the shell for the Processor's
-  drop to retire (`shell.rs`).
-- Width is a runtime tag in the FFI crate (`SampleWidth`); the host's
-  `Vst3Sample` stays the host's seam, ahead of a runtime-format follow-up.
-
-
-Both halves hold an `Arc` of one private shell per activation, and the shell holds
-the raw plugin instance. That is shared mutable access to a plugin from two
-threads, which is sound only because of the format's own thread rules and the
-invariant below. The table names the rule per format; "audio-side" is what the
+The two halves of an activation reach one plugin instance from two threads. That
+is sound only because of the format's own thread rules and the invariant
+below. The table names the rule per format; "audio-side" is what the
 Processor calls, "main-side" what the Controller calls while the Processor is on
 the realtime thread.
 

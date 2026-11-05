@@ -405,7 +405,7 @@ impl<T: Vst3Sample> Staged<T> {
                     Err(_) => true,
                 };
                 if wants {
-                    plugin.activate_bus(media, direction, i);
+                    let _ = plugin.activate_bus(media, direction, i);
                 }
             }
         }
@@ -461,7 +461,7 @@ impl<T: Vst3Sample> Staged<T> {
             // notification reports failure here. Treating that as fatal rejects
             // valid plugins — 7 of Steinberg's 11 reference plugins among them.
             // Nothing downstream depends on the result, so ignore it.
-            self.loaded.plugin.set_processing(true);
+            let _ = self.loaded.plugin.set_processing(true);
         }
         Ok(())
     }

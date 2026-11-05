@@ -16,7 +16,7 @@ workspace = true
 
 [features]
 # Exposes the run loop's activity counters (`RunLoopActivity`), which the
-# host-conformance tests read. Off in a production build; the host crate's
+# host-conformance tests read. Off in a production build; the host's
 # `conformance` feature turns it on.
 conformance = []
 

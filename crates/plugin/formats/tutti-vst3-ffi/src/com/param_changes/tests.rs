@@ -5,7 +5,7 @@ use super::super::MIN_POINT_ROOM;
 /// **A queued write that has no room is counted, not grown into**, and
 /// reported with the other input-list drops
 /// ([`points_dropped`](ParameterChangesImpl::points_dropped), which
-/// `Vst3Processor::param_points_dropped` adds in): the queue of its
+/// the host processor's dropped-point total adds in): the queue of its
 /// parameter is full, or the list has no queue left for a parameter the
 /// block's automation does not name. One with room lands ahead of the
 /// automation.

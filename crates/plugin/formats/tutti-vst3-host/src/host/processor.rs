@@ -199,11 +199,6 @@ impl<T: Vst3Sample> std::fmt::Debug for Vst3Processor<T> {
     }
 }
 
-// SAFETY: clause 2 of the invariant on `Shell`. The `ComPtr` and the COM
-// wrappers in the scratch are reached from one thread at a time (every method
-// takes `&mut self`), and the plugin takes the processing-thread calls from
-// whichever thread holds the Processor.
-
 /// Everything a Processor is built from.
 pub(super) struct ProcessorParts {
     pub shell: Arc<Shell>,
@@ -254,7 +249,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// [`process`](Self::process) starts it again.
     pub fn stop(&mut self) {
         if std::mem::take(&mut self.processing) {
-            // SAFETY: the plugin is alive while this Processor holds the shell.
+            // A refusal (the plugin is gone or deactivated) leaves nothing to stop.
             let _ = self.audio_side.set_processing(false);
             // The plugin forgets its input across the stop: a SysEx open in the
             // input list must not complete on the far side of it.
@@ -396,8 +391,17 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // Bind each direction to this block's channel slices: bus 0 maps onto
         // the live channels, extra input buses get silence, extra output buses
         // a sink. Channels beyond the scratch's flat width are dropped.
-        let inputs = T::bind_inputs(&mut self.audio.input.buses, buffer.inputs);
-        let outputs = T::bind_outputs(&mut self.audio.output.buses, buffer.outputs);
+        let bound = T::bind_inputs(&mut self.audio.input.buses, buffer.inputs).and_then(|inputs| {
+            T::bind_outputs(&mut self.audio.output.buses, buffer.outputs)
+                .map(|outputs| (inputs, outputs))
+        });
+        let (inputs, outputs) = match bound {
+            Ok(buses) => buses,
+            Err(error) => {
+                buffer.clear_outputs();
+                return Err(ProcessFailed { code: error.code() });
+            }
+        };
         let result = self.audio_side.process(ProcessIo {
             mode: self.audio.config.block_mode,
             num_samples: buffer.num_samples,

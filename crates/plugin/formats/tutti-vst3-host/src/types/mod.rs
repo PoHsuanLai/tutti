@@ -5,6 +5,7 @@
 //! info with VST3 flags, `BusInfo`, `PluginInfo`).
 
 pub(crate) use tutti_vst3_ffi::K_SAMPLE_64_INT;
+use tutti_vst3_ffi::Vst3Error as FfiError;
 use tutti_vst3_ffi::{BoundBuses, BusBuffers, K_SAMPLE_32_INT, SampleWidth};
 pub use tutti_vst3_ffi::{
     BusInfo, ChordEvent, ChordValue, DataEvent, EventHeader, K_CHORD_EVENT, K_DATA_EVENT,
@@ -237,28 +238,34 @@ pub trait Vst3Sample: tutti_plugin_types::Sample {
 
     /// Binds the input channels of a block.
     #[doc(hidden)]
-    fn bind_inputs<'a>(buses: &'a mut BusBuffers, channels: &'a [&'a [Self]]) -> BoundBuses<'a>;
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [Self]],
+    ) -> Result<BoundBuses<'a>, FfiError>;
 
     /// Binds the output channels of a block.
     #[doc(hidden)]
     fn bind_outputs<'a, 'b: 'a>(
         buses: &'a mut BusBuffers,
         channels: &'a mut [&'b mut [Self]],
-    ) -> BoundBuses<'a>;
+    ) -> Result<BoundBuses<'a>, FfiError>;
 }
 
 impl Vst3Sample for f32 {
     const WIDTH: SampleWidth = SampleWidth::F32;
     const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_32_INT;
 
-    fn bind_inputs<'a>(buses: &'a mut BusBuffers, channels: &'a [&'a [f32]]) -> BoundBuses<'a> {
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [f32]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
         buses.bind_inputs_f32(channels)
     }
 
     fn bind_outputs<'a, 'b: 'a>(
         buses: &'a mut BusBuffers,
         channels: &'a mut [&'b mut [f32]],
-    ) -> BoundBuses<'a> {
+    ) -> Result<BoundBuses<'a>, FfiError> {
         buses.bind_outputs_f32(channels)
     }
 }
@@ -267,14 +274,17 @@ impl Vst3Sample for f64 {
     const WIDTH: SampleWidth = SampleWidth::F64;
     const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_64_INT;
 
-    fn bind_inputs<'a>(buses: &'a mut BusBuffers, channels: &'a [&'a [f64]]) -> BoundBuses<'a> {
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [f64]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
         buses.bind_inputs_f64(channels)
     }
 
     fn bind_outputs<'a, 'b: 'a>(
         buses: &'a mut BusBuffers,
         channels: &'a mut [&'b mut [f64]],
-    ) -> BoundBuses<'a> {
+    ) -> Result<BoundBuses<'a>, FfiError> {
         buses.bind_outputs_f64(channels)
     }
 }

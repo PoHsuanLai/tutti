@@ -488,14 +488,12 @@ impl PluginEditorHost for Vst3Instance {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        // The handle was validated at the IPC boundary in server.rs, and is the
-        // host's own `WindowHandle`.
-        let handle = parent;
+        // `parent` was validated at the IPC boundary in server.rs.
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
         loaded
-            .open_editor(handle, scale)
+            .open_editor(parent, scale)
             .map(|size| EditorSize {
                 width: size.width,
                 height: size.height,

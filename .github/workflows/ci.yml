@@ -93,7 +93,8 @@ jobs:
       # guard (python3 over the source, no build).
       - run: scripts/check-guards.sh
       # CLAP and VST3 FFI `unsafe` lives only in `tutti-clap-ffi` and
-      # `tutti-vst3-ffi`: `tutti-clap-host` and `tutti-vst3-host` forbid it and the server and GUI code that drive it carry none
+      # `tutti-vst3-ffi`: `tutti-clap-host` and `tutti-vst3-host` forbid it,
+      # and the server and GUI code that drive them carry none
       # (python3 over the source, no build).
       - run: scripts/check-plugin-ffi.sh
 

@@ -8,7 +8,6 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use vst3::Steinberg::{
     FUnknown, IBStream, IPlugView, IPluginBaseTrait, TUID,
@@ -33,7 +32,7 @@ use vst3::{ComPtr, ComWrapper};
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, ParamId, WindowHandle};
 use tutti_types::ChannelLayout;
 
-use crate::audio::{AudioClaim, AudioSide};
+use crate::audio::{AudioSide, Setup, Shared};
 use crate::com::{BStream, ComponentHandler, HostApplication, HostPlugFrame};
 use crate::error::{Vst3Error, check, check_bool};
 use crate::module::{CreateError, Module};
@@ -45,7 +44,7 @@ use crate::types::{
 use crate::view::{Editor, EditorError};
 
 /// A component created by the factory and not yet made a [`Plugin`].
-pub struct Component(ComPtr<IComponent>);
+pub(crate) struct Component(ComPtr<IComponent>);
 
 impl std::fmt::Debug for Component {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,7 +63,13 @@ impl Component {
 /// `Send` so it can live in the host's instance beside the [`Plugin`] it came
 /// from, but not `Sync`: the SDK marks `onLiveMIDIControllerInput`
 /// `[UI-thread]`, so one thread at a time calls it.
-pub struct MidiLearn(ComPtr<IMidiLearn>);
+pub struct MidiLearn {
+    learn: ComPtr<IMidiLearn>,
+    shared: Arc<Shared>,
+    // Last, so the interface is released before the module that implements it
+    // can unload.
+    _module: Arc<Module>,
+}
 
 impl std::fmt::Debug for MidiLearn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,19 +77,27 @@ impl std::fmt::Debug for MidiLearn {
     }
 }
 
-// SAFETY: see `Plugin`'s `Send`: the pointer is to an object of the same
-// instance, moves with it and is used by one thread at a time (`!Sync` through
-// the `Cell` marker below).
+// SAFETY: the interface pointer is to an object of the same instance as the
+// `Plugin` it came from, moves with it and is used by one thread at a time. It
+// is not `Sync`, because `ComPtr` is not and no `Sync` impl is given. The module
+// is held, so its code stays mapped for as long as this handle lives.
 unsafe impl Send for MidiLearn {}
 
 impl MidiLearn {
     /// `IMidiLearn::onLiveMIDIControllerInput` for the CC `controller` on
     /// `channel`, against bus 0, the first event bus (the contract
     /// `IMidiMapping` uses too).
+    ///
+    /// Nothing is sent once the plugin has been torn down (the interface is
+    /// terminated by then).
     pub fn live_controller_input(&self, channel: i16, controller: i16) {
-        // SAFETY: a plain call on a live interface.
+        if self.shared.is_retired() {
+            return;
+        }
+        // SAFETY: a plain call on an interface of a plugin that is not retired,
+        // so not terminated.
         unsafe {
-            self.0.onLiveMIDIControllerInput(0, channel, controller);
+            self.learn.onLiveMIDIControllerInput(0, channel, controller);
         }
     }
 }
@@ -186,9 +199,7 @@ pub struct Plugin {
     application: ComWrapper<HostApplication>,
     editor: Option<Editor>,
     process_context_requirements: u32,
-    active: bool,
-    audio_out: Arc<AtomicBool>,
-    claim: Arc<AudioClaim>,
+    shared: Arc<Shared>,
     _not_sync: PhantomData<Cell<()>>,
     module: Arc<Module>,
 }
@@ -196,34 +207,44 @@ pub struct Plugin {
 impl std::fmt::Debug for Plugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Plugin")
-            .field("active", &self.active)
+            .field("active", &self.is_active())
             .finish_non_exhaustive()
     }
 }
 
 // SAFETY: every field is a `ComPtr` into the plugin's module, and COM gives
-// the compiler nothing to infer from — `ComPtr` is a raw pointer, so it is
-// neither `Send` nor `Sync` by default regardless of what the object behind it
-// promises. What makes the move sound is that the pointers are only ever
-// dereferenced through `&Plugin` / `&mut Plugin`, which the owner holds
-// exclusively: the consumers (`tutti_plugin`'s GUI bridge and
-// `tutti-plugin-server`) each embed the instance by value, so the whole set
-// moves between threads together and is never aliased across them.
+// the compiler nothing to infer from: `ComPtr` is a raw pointer, so it is
+// neither `Send` nor `Sync` by default whatever the object behind it promises.
 //
-// `Sync` is deliberately not claimed: the `&self` accessors are not read-only
-// underneath — `getParamNormalized`, `getState` and friends re-enter the
-// plugin, and the VST3 spec marks most of them `[UI-thread]`. Calling two of
-// them concurrently through a shared `&` would be a data race inside the
-// plugin, so the type refuses to be shared at all.
+// What makes moving a `Plugin` sound is who can call what, and when:
 //
-// The editor view is the strongest thread affinity: `IPlugView` is UI-thread
-// only by spec, and a toolkit behind the view may hold thread-local X11 or
-// Cocoa state. `Send` lets it sit in a `Plugin` that moves; the host asserts
-// the main thread before each editor call. The one deliberate exception is
-// `Drop`, which has no main-thread guarantee (an owner may drop the instance
-// on any thread), so it detaches the view without the assert: a known,
-// accepted deviation from the spec's UI-thread rule, not something this impl
-// makes safe. The host objects are `ComWrapper`s of `Send + Sync` classes.
+// - Main-thread entries are methods of `Plugin`. It is not `Sync`, so they are
+//   reached through `&Plugin` / `&mut Plugin` held by one thread at a time, and
+//   never overlap each other.
+// - The audio half, `AudioSide`, calls only `IAudioProcessor::process` and
+//   `setProcessing`, through a raw pointer to the processor that `Shared` holds
+//   (not an owning reference: the processor `ComPtr` here is the only owner).
+//   Both run under `Shared`'s claim, which every state change on this type
+//   (`set_active`, `set_processing`, `setup_processing`, `set_bus_arrangements`,
+//   `activate_bus`) and `Drop` take too, and the state changes are refused
+//   while an `AudioSide` exists. So the transitions the SDK reserves for the
+//   non-processing states cannot run beside a block.
+// - What does run beside `process`, from the main thread, is what the SDK lets
+//   run in the `Processing` state: the `[UI-thread]` `IEditController` calls,
+//   `IComponent::getState`/`setState`, the latency, tail and bus-arrangement
+//   reads. A plugin that races one against its own `process` breaks the SDK's
+//   contract, not this type's.
+// - The host objects (`handler`, `application`) are `ComWrapper`s of `Send +
+//   Sync` classes, shared with the plugin, which calls them from whatever thread
+//   it likes; they touch atomics, queues and mutexes only.
+// - The editor view is the strongest affinity: `IPlugView` is UI-thread only by
+//   spec, and a toolkit behind it may hold thread-local X11 or Cocoa state.
+//   `Send` lets it sit in a `Plugin` that moves; the host asserts the main
+//   thread before each editor call. The one deliberate exception is `Drop`,
+//   which has no main-thread guarantee (an owner may drop the instance on any
+//   thread), so it detaches the view without the assert: a known, accepted
+//   deviation from the spec's UI-thread rule, not something this impl makes
+//   safe.
 unsafe impl Send for Plugin {}
 
 impl Plugin {
@@ -253,6 +274,7 @@ impl Plugin {
             prefetchable_support: processor.cast(),
             audio_presentation_latency: processor.cast(),
         };
+        let shared = Arc::new(Shared::new(&processor));
         Ok(Self {
             component,
             processor,
@@ -264,9 +286,7 @@ impl Plugin {
             // The real answer is read in `read_process_context_requirements`; until then the
             // plugin is assumed to need everything.
             process_context_requirements: u32::MAX,
-            active: false,
-            audio_out: Arc::new(AtomicBool::new(false)),
-            claim: Arc::new(AudioClaim::default()),
+            shared,
             _not_sync: PhantomData,
             module: module.clone(),
         })
@@ -446,19 +466,23 @@ impl Plugin {
         }
     }
 
-    /// `IComponent::setActive`. Whether it is on is remembered so that
-    /// dropping the plugin deactivates it.
+    /// `IComponent::setActive`. Whether it is on is remembered, so that
+    /// dropping the plugin deactivates it and an audio half is handed out only
+    /// for an active plugin.
     ///
     /// # Errors
     ///
-    /// The plugin's refusal; a failed activation leaves the plugin inactive.
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; otherwise the plugin's
+    /// refusal, after which a failed activation leaves the plugin inactive.
     pub fn set_active(&mut self, active: bool) -> Result<(), Vst3Error> {
-        // SAFETY: a plain call on a live component.
+        let mut state = self.shared.lock_for_control()?;
+        // SAFETY: a plain call on a live component, under the claim, with no
+        // audio half out.
         let result = check(unsafe { self.component.setActive(u8::from(active)) });
         // Deactivating is recorded whatever the plugin answers: there is no
         // third state to recover to, and teardown must not retry it.
         if result.is_ok() || !active {
-            self.active = active;
+            state.active = active;
         }
         result
     }
@@ -466,36 +490,35 @@ impl Plugin {
     /// Whether `set_active(true)` succeeded and `set_active(false)` has not.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active
+        self.shared.lock().active
     }
 
     /// `IAudioProcessor::setProcessing`, from the main thread, at activation.
-    pub fn set_processing(&self, on: bool) {
-        // SAFETY: a plain call on a live processor. The audio half calls the same
-        // entry under its claim; the host calls this only while no audio half
-        // exists.
-        unsafe {
-            self.processor.setProcessing(u8::from(on));
-        }
+    ///
+    /// # Errors
+    ///
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; otherwise the plugin's
+    /// refusal.
+    pub fn set_processing(&self, on: bool) -> Result<(), Vst3Error> {
+        let _state = self.shared.lock_for_control()?;
+        // SAFETY: a plain call on a live processor, under the claim, with no
+        // audio half out.
+        check(unsafe { self.processor.setProcessing(u8::from(on)) })
     }
 
-    /// The audio half of this plugin, once: `None` while an earlier one lives.
+    /// The audio half of this plugin, once: `None` while an earlier one lives,
+    /// and unless the plugin is set up ([`setup_processing`](Self::setup_processing))
+    /// and active ([`set_active`](Self::set_active)).
     ///
     /// The half names no main-thread entry, and its `process` and
     /// `set_processing` run under the instance's claim, which `Drop` also takes,
     /// so a plugin that is torn down waits out a block in flight and the half
-    /// then answers [`Vst3Error::NotInitialized`].
+    /// then answers [`Vst3Error::NotInitialized`]. While it exists, the state
+    /// changes of this type (`set_active`, `set_processing`, `setup_processing`,
+    /// `set_bus_arrangements`, `activate_bus`) answer [`Vst3Error::Busy`].
     #[must_use]
     pub fn audio_side(&self) -> Option<AudioSide> {
-        if self.audio_out.swap(true, Ordering::AcqRel) {
-            return None;
-        }
-        Some(AudioSide::new(
-            self.processor.clone(),
-            self.claim.clone(),
-            self.audio_out.clone(),
-            self.module.clone(),
-        ))
+        self.shared.take_audio_side()
     }
 
     /// What `IProcessContextRequirements` asked for; everything until
@@ -536,12 +559,24 @@ impl Plugin {
     }
 
     /// `IComponent::activateBus`.
-    pub fn activate_bus(&self, media: MediaType, direction: BusDirection, index: i32) {
-        // SAFETY: a plain call on a live component.
+    ///
+    /// # Errors
+    ///
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists.
+    pub fn activate_bus(
+        &self,
+        media: MediaType,
+        direction: BusDirection,
+        index: i32,
+    ) -> Result<(), Vst3Error> {
+        let _state = self.shared.lock_for_control()?;
+        // SAFETY: a plain call on a live component, under the claim, with no
+        // audio half out.
         unsafe {
             self.component
                 .activateBus(media.raw(), direction.raw(), index, 1);
         }
+        Ok(())
     }
 
     /// Channel layout of **bus 0** of the audio buses in `direction`, exactly
@@ -584,14 +619,18 @@ impl Plugin {
     ///
     /// # Errors
     ///
-    /// The plugin's refusal.
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; otherwise the plugin's
+    /// refusal. A new arrangement invalidates the setup: the plugin must be set
+    /// up again before an audio half is handed out.
     pub fn set_bus_arrangements(
         &self,
         inputs: &mut [SpeakerArrangement],
         outputs: &mut [SpeakerArrangement],
     ) -> Result<(), Vst3Error> {
+        let mut state = self.shared.lock_for_control()?;
+        state.setup = None;
         // SAFETY: each pointer is valid for the length passed beside it, for
-        // the call.
+        // the call, and the claim is held with no audio half out.
         check(unsafe {
             self.processor.setBusArrangements(
                 inputs.as_mut_ptr(),
@@ -633,10 +672,22 @@ impl Plugin {
     ///
     /// # Errors
     ///
-    /// Any other refusal.
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; any other refusal.
+    ///
+    /// What was set up (the sample size and the longest block) is remembered:
+    /// the audio half refuses a block that does not fit it.
     pub fn setup_processing(&self, mut setup: ProcessSetup) -> Result<bool, Vst3Error> {
-        // SAFETY: `setup` is a valid in-parameter for the call.
-        check_bool(unsafe { self.processor.setupProcessing(&mut setup) })
+        let mut state = self.shared.lock_for_control()?;
+        // SAFETY: `setup` is a valid in-parameter for the call, and the claim is
+        // held with no audio half out.
+        let result = check_bool(unsafe { self.processor.setupProcessing(&mut setup) });
+        if result.is_ok() {
+            state.setup = Some(Setup {
+                symbolic_size: setup.symbolicSampleSize,
+                max_block: usize::try_from(setup.maxSamplesPerBlock).unwrap_or(0),
+            });
+        }
+        result
     }
 
     /// `IAudioProcessor::getLatencySamples`.
@@ -1154,7 +1205,11 @@ impl Plugin {
     /// host keeps beside the plugin and forwards captured CCs through.
     #[must_use]
     pub fn midi_learn(&self) -> Option<MidiLearn> {
-        self.ext.midi_learn.clone().map(MidiLearn)
+        self.ext.midi_learn.clone().map(|learn| MidiLearn {
+            learn,
+            shared: self.shared.clone(),
+            _module: self.module.clone(),
+        })
     }
 
     // ── The editor ───────────────────────────────────────────────────────────
@@ -1346,13 +1401,13 @@ impl Plugin {
 
 impl Drop for Plugin {
     fn drop(&mut self) {
-        // Wait out a block in flight, and keep any later one from starting: the
-        // audio half answers `NotInitialized` once the claim is retired.
-        let claim = self.claim.clone();
-        let _retired = claim.retire();
+        // Retire first: the audio half refuses every later block without
+        // touching the claim, and this waits out one in flight.
+        let shared = self.shared.clone();
+        let state = shared.retire();
         // A plugin dropped while activated (its halves were never rejoined)
         // stops and deactivates first: `terminate` is for an inactive component.
-        if self.active {
+        if state.active {
             // SAFETY: plain calls on live interfaces; the claim is held, so the
             // audio half is not inside `process`.
             unsafe {
@@ -1360,6 +1415,10 @@ impl Drop for Plugin {
                 let _ = self.component.setActive(0);
             }
         }
+        // The claim is not needed past this point: every audio-half entry
+        // refuses on the retired flag, and the rest is control-side teardown
+        // that must not hold it.
+        drop(state);
         // No main-thread assert: Drop has no main-thread guarantee.
         self.close_editor();
         // Mirror the load-time connect in reverse: for a separate controller,
@@ -1377,7 +1436,13 @@ impl Drop for Plugin {
             // host attached.
             unsafe {
                 let _ = ctrl.setComponentHandler(std::ptr::null_mut());
-                ctrl.terminate();
+            }
+            // A component that is its own controller is terminated once, below
+            // (the SDK's own host terminates a single-component plugin once).
+            if matches!(self.controller, ControllerLink::Separate(_)) {
+                // SAFETY: a separate controller is a distinct live object,
+                // terminated once, before the component.
+                unsafe { ctrl.terminate() };
             }
         }
         // SAFETY: the component is live and is terminated once, last.

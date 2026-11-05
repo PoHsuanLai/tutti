@@ -36,7 +36,7 @@ pub const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample64);
 /// ([`Prepare::mode`](tutti_plugin_types::Prepare::mode)), because reaching it
 /// from any other mode needs a fresh `setupProcessing`, while the
 /// realtime/prefetch pair is switchable on a live instance
-/// (`tutti_vst3_host::Vst3Processor::set_prefetch`).
+/// (the host's prefetch switch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessMode {
     /// `kRealtime` — live playback under a deadline. The default.

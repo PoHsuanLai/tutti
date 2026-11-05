@@ -13,6 +13,7 @@ use vst3::Steinberg::Vst::AudioBusBuffers;
 
 use tutti_types::ChannelLayout;
 
+use crate::error::Vst3Error;
 use crate::sdk::zeroed;
 use crate::types::SampleWidth;
 
@@ -139,65 +140,67 @@ impl BusBuffers {
     /// are not bound; buses the caller does not supply are backed by zeroed
     /// silence and flagged silent.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If these buffers were built for [`SampleWidth::F64`].
-    pub fn bind_inputs_f32<'a>(&'a mut self, channels: &'a [&'a [f32]]) -> BoundBuses<'a> {
-        assert_eq!(
-            self.width,
-            SampleWidth::F32,
-            "buffers built for another width"
-        );
-        self.bind_in(channels)
+    /// [`Vst3Error::InvalidArgument`] if these buffers were built for the other
+    /// [`SampleWidth`].
+    pub fn bind_inputs_f32<'a>(
+        &'a mut self,
+        channels: &'a [&'a [f32]],
+    ) -> Result<BoundBuses<'a>, Vst3Error> {
+        self.expect_width(SampleWidth::F32)?;
+        Ok(self.bind_in(channels))
     }
 
     /// As [`bind_inputs_f32`](Self::bind_inputs_f32) for 64-bit samples.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If these buffers were built for [`SampleWidth::F32`].
-    pub fn bind_inputs_f64<'a>(&'a mut self, channels: &'a [&'a [f64]]) -> BoundBuses<'a> {
-        assert_eq!(
-            self.width,
-            SampleWidth::F64,
-            "buffers built for another width"
-        );
-        self.bind_in(channels)
+    /// [`Vst3Error::InvalidArgument`] if these buffers were built for the other
+    /// [`SampleWidth`].
+    pub fn bind_inputs_f64<'a>(
+        &'a mut self,
+        channels: &'a [&'a [f64]],
+    ) -> Result<BoundBuses<'a>, Vst3Error> {
+        self.expect_width(SampleWidth::F64)?;
+        Ok(self.bind_in(channels))
     }
 
     /// Binds a 32-bit output direction; buses the caller does not supply are
     /// backed by a sink the plugin may write to.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If these buffers were built for [`SampleWidth::F64`].
+    /// [`Vst3Error::InvalidArgument`] if these buffers were built for the other
+    /// [`SampleWidth`].
     pub fn bind_outputs_f32<'a, 'b: 'a>(
         &'a mut self,
         channels: &'a mut [&'b mut [f32]],
-    ) -> BoundBuses<'a> {
-        assert_eq!(
-            self.width,
-            SampleWidth::F32,
-            "buffers built for another width"
-        );
-        self.bind_out(channels)
+    ) -> Result<BoundBuses<'a>, Vst3Error> {
+        self.expect_width(SampleWidth::F32)?;
+        Ok(self.bind_out(channels))
     }
 
     /// As [`bind_outputs_f32`](Self::bind_outputs_f32) for 64-bit samples.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If these buffers were built for [`SampleWidth::F32`].
+    /// [`Vst3Error::InvalidArgument`] if these buffers were built for the other
+    /// [`SampleWidth`].
     pub fn bind_outputs_f64<'a, 'b: 'a>(
         &'a mut self,
         channels: &'a mut [&'b mut [f64]],
-    ) -> BoundBuses<'a> {
-        assert_eq!(
-            self.width,
-            SampleWidth::F64,
-            "buffers built for another width"
-        );
-        self.bind_out(channels)
+    ) -> Result<BoundBuses<'a>, Vst3Error> {
+        self.expect_width(SampleWidth::F64)?;
+        Ok(self.bind_out(channels))
+    }
+
+    fn expect_width(&self, width: SampleWidth) -> Result<(), Vst3Error> {
+        if self.width == width {
+            Ok(())
+        } else {
+            Err(Vst3Error::InvalidArgument)
+        }
     }
 
     /// The width these buffers were built for.
@@ -389,18 +392,17 @@ mod tests {
 
         let mut ch0 = [1.0f32; BLOCK];
         let mut ch1 = [2.0f32; BLOCK];
-        let live = [
-            ch0.as_mut_ptr() as *mut c_void,
-            ch1.as_mut_ptr() as *mut c_void,
-        ];
+        let ch0_p = ch0.as_mut_ptr();
+        let ch1_p = ch1.as_mut_ptr();
+        let live = [ch0_p as *mut c_void, ch1_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays;
             assert_eq!(bus0.numChannels, 2);
             let ptrs = bus0.__field0.channelBuffers32 as *const *mut f32;
-            assert_eq!(*ptrs.add(0), ch0.as_mut_ptr());
-            assert_eq!(*ptrs.add(1), ch1.as_mut_ptr());
+            assert_eq!(*ptrs.add(0), ch0_p);
+            assert_eq!(*ptrs.add(1), ch1_p);
         }
     }
 
@@ -414,7 +416,9 @@ mod tests {
 
         let mut l = [5.0f32; BLOCK];
         let mut r = [6.0f32; BLOCK];
-        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        let l_p = l.as_mut_ptr();
+        let r_p = r.as_mut_ptr();
+        let live = [l_p as *mut c_void, r_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
@@ -424,14 +428,14 @@ mod tests {
             assert_eq!(bus1.numChannels, 1);
 
             let p0 = bus0.__field0.channelBuffers32 as *const *mut f32;
-            assert_eq!(*p0.add(0), l.as_mut_ptr());
-            assert_eq!(*p0.add(1), r.as_mut_ptr());
+            assert_eq!(*p0.add(0), l_p);
+            assert_eq!(*p0.add(1), r_p);
 
             // Sidechain channel points into the aux silence block, and its
             // sample reads as zero.
             let p1 = bus1.__field0.channelBuffers32 as *const *mut f32;
             let sc = *p1.add(0);
-            assert!(sc != l.as_mut_ptr() && sc != r.as_mut_ptr());
+            assert!(sc != l_p && sc != r_p);
             assert_eq!(*sc, 0.0);
 
             // Bus 0 has real audio on both channels → no silence declared.
@@ -450,7 +454,9 @@ mod tests {
         let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 2], ChannelLayout::from(2u16), BLOCK);
         let mut l = [0.0f32; BLOCK];
         let mut r = [0.0f32; BLOCK];
-        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        let l_p = l.as_mut_ptr();
+        let r_p = r.as_mut_ptr();
+        let live = [l_p as *mut c_void, r_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             // zero_aux = false → output direction.
@@ -478,10 +484,9 @@ mod tests {
     }
 
     /// Multi-bus input WITH the sidechain channel supplied flat: bus 0 takes
-    /// the first 2 live channels, bus 1 (sidechain) takes the 3rd. This is the
-    /// Stage-3 delivery path — the flat caller buffer carries main + sidechain
-    /// in bus order, so the running flat index hands bus 1 the real channel
-    /// rather than aux silence.
+    /// the first 2 live channels, bus 1 (sidechain) takes the 3rd. The flat
+    /// caller buffer carries main + sidechain in bus order, so the running flat
+    /// index hands bus 1 the real channel rather than aux silence.
     #[test]
     fn sidechain_bus_reads_supplied_channel() {
         // main = stereo, sidechain = mono.
@@ -490,11 +495,10 @@ mod tests {
         let mut l = [5.0f32; BLOCK];
         let mut r = [6.0f32; BLOCK];
         let mut sc = [7.0f32; BLOCK];
-        let live = [
-            l.as_mut_ptr() as *mut c_void,
-            r.as_mut_ptr() as *mut c_void,
-            sc.as_mut_ptr() as *mut c_void,
-        ];
+        let l_p = l.as_mut_ptr();
+        let r_p = r.as_mut_ptr();
+        let sc_p = sc.as_mut_ptr();
+        let live = [l_p as *mut c_void, r_p as *mut c_void, sc_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
@@ -502,14 +506,14 @@ mod tests {
             let bus1 = &*arrays.add(1);
 
             let p0 = bus0.__field0.channelBuffers32 as *const *mut f32;
-            assert_eq!(*p0.add(0), l.as_mut_ptr());
-            assert_eq!(*p0.add(1), r.as_mut_ptr());
+            assert_eq!(*p0.add(0), l_p);
+            assert_eq!(*p0.add(1), r_p);
 
             // Sidechain channel now points at the supplied buffer, reading 7.0,
             // NOT the aux silence block.
             let p1 = bus1.__field0.channelBuffers32 as *const *mut f32;
             let scp = *p1.add(0);
-            assert_eq!(scp, sc.as_mut_ptr());
+            assert_eq!(scp, sc_p);
             assert_eq!(*scp, 7.0);
         }
     }
@@ -517,11 +521,10 @@ mod tests {
     /// More caller channels than table slots: only the filled slots reach
     /// the bus, and the surplus channel is never read.
     ///
-    /// Mutation: bind `channels.len()` (4) channels instead of capping at the
-    /// flat width (3) in `bind_inputs` -> `fill_bus` hands bus 0 a fourth
-    /// pointer it has no slot for and the `live` table is overrun (the
-    /// `zip` is the cap; removing it panics on the index, and miri reports the
-    /// overrun), so the assertions below fail.
+    /// Mutation: in `bind_in`, drop the `zip` cap (index `live` by the channel
+    /// number instead) -> the fourth channel indexes past the three-slot table
+    /// and panics (miri reports the overrun), so the assertions below never
+    /// hold.
     #[test]
     fn surplus_caller_channels_are_not_read_past_the_table() {
         let mut bb = BusBuffers::new(SampleWidth::F32, &[3], ChannelLayout::from(3u16), BLOCK);
@@ -533,7 +536,7 @@ mod tests {
             [4.0f32; BLOCK],
         );
         let channels: [&[f32]; 4] = [&a, &b, &c, &d];
-        let mut bound = bb.bind_inputs_f32(&channels);
+        let mut bound = bb.bind_inputs_f32(&channels).unwrap();
         assert_eq!(bound.live_len, 3);
         let bus = bound.finish();
         // SAFETY: `bus` is bus 0 of the one-bus scratch; its table has 3 slots.
@@ -556,22 +559,24 @@ mod tests {
         let mut bb = BusBuffers::new(SampleWidth::F32, &[2], ChannelLayout::from(2u16), BLOCK);
         let (long, short) = ([0.0f32; BLOCK], [0.0f32; BLOCK / 2]);
         let channels: [&[f32]; 2] = [&long, &short];
-        assert_eq!(bb.bind_inputs_f32(&channels).capacity(), BLOCK / 2);
+        assert_eq!(bb.bind_inputs_f32(&channels).unwrap().capacity(), BLOCK / 2);
         let none: [&[f32]; 0] = [];
-        assert_eq!(bb.bind_inputs_f32(&none).capacity(), BLOCK);
+        assert_eq!(bb.bind_inputs_f32(&none).unwrap().capacity(), BLOCK);
     }
 
-    /// The per-block `prepare` must not allocate — it only refills pre-sized
+    /// The per-block `prepare_raw` must not allocate — it only refills pre-sized
     /// pointer tables and re-zeros the aux block.
     #[test]
     fn prepare_is_alloc_free() {
         let mut bb = BusBuffers::new(SampleWidth::F32, &[2, 1], ChannelLayout::from(2u16), BLOCK);
         let mut l = [0.5f32; BLOCK];
         let mut r = [0.5f32; BLOCK];
-        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        let l_p = l.as_mut_ptr();
+        let r_p = r.as_mut_ptr();
+        let live = [l_p as *mut c_void, r_p as *mut c_void];
         // Warm up once outside the guard to mirror the RT discipline of the
-        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         // real process loop.
+        // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let _ = bb.prepare_raw(live.as_ptr(), live.len(), true);
         }
@@ -591,13 +596,14 @@ mod tests {
         let mut bb = BusBuffers::new(SampleWidth::F32, &[1], ChannelLayout::from(1u16), BLOCK);
         assert!(bb.ptr_tables[0].len() >= MIN_PTR_COUNT);
         let mut m = [9.0f32; BLOCK];
-        let live = [m.as_mut_ptr() as *mut c_void];
+        let m_p = m.as_mut_ptr();
+        let live = [m_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), false);
             let bus0 = &*arrays;
             let p = bus0.__field0.channelBuffers32 as *const *mut f32;
-            assert_eq!(*p.add(0), m.as_mut_ptr());
+            assert_eq!(*p.add(0), m_p);
             // Padding slot is non-null (points at aux); a defensive over-read
             // stays in-bounds even though the plugin sees numChannels=1.
             assert!(!(*p.add(1)).is_null());
@@ -613,19 +619,21 @@ mod tests {
         let mut bb = BusBuffers::new(SampleWidth::F64, &[2], ChannelLayout::from(2u16), BLOCK);
         let mut l = [1.0f64; BLOCK];
         let mut r = [2.0f64; BLOCK];
-        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        let l_p = l.as_mut_ptr();
+        let r_p = r.as_mut_ptr();
+        let live = [l_p as *mut c_void, r_p as *mut c_void];
         // SAFETY: the test's tables and channel arrays are live locals, and every slot read was filled by `prepare_raw` just above.
         unsafe {
             let arrays = bb.prepare_raw(live.as_ptr(), live.len(), true);
             let bus0 = &*arrays;
             // Read back through the 64-bit member.
             let p64 = bus0.__field0.channelBuffers64 as *const *mut f64;
-            assert_eq!(*p64.add(0), l.as_mut_ptr());
-            assert_eq!(*p64.add(1), r.as_mut_ptr());
+            assert_eq!(*p64.add(0), l_p);
+            assert_eq!(*p64.add(1), r_p);
             // The union aliases, so the 32-bit view sees the same machine
             // pointers (just relabeled) — confirms it's one slot, not two.
             let p32 = bus0.__field0.channelBuffers32 as *const *mut f64;
-            assert_eq!(*p32.add(0), l.as_mut_ptr());
+            assert_eq!(*p32.add(0), l_p);
         }
     }
 }

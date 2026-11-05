@@ -358,10 +358,11 @@ impl Module {
 
     /// Creates the component of a class.
     ///
-    /// # Errors
-    ///
-    /// The factory's error.
-    pub fn create_component(&self, cid: &[i8; 16]) -> Result<Component, Vst3Error> {
+    /// Crate-private because the component is a bare COM reference: it does not
+    /// keep the module loaded, so it must not outlive the `Arc<Module>` it came
+    /// from. Callers here either drop it at once or hand it to a [`Plugin`],
+    /// which holds the module.
+    pub(crate) fn create_component(&self, cid: &[i8; 16]) -> Result<Component, Vst3Error> {
         self.create_instance::<vst3::Steinberg::Vst::IComponent>(cid)
             .map(Component::new)
     }

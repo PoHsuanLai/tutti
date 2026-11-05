@@ -27,6 +27,9 @@ pub enum Vst3Error {
     OutOfMemory,
     /// `kNoInterface`: a `queryInterface` the object does not answer.
     NoInterface,
+    /// Not a `tresult`: the audio half of the plugin is out, so the plugin's
+    /// state cannot change under it.
+    Busy,
     /// Any other code, passed through unmapped.
     Other(i32),
 }
@@ -58,6 +61,7 @@ impl Vst3Error {
             Self::NotInitialized => kNotInitialized,
             Self::OutOfMemory => kOutOfMemory,
             Self::NoInterface => kNoInterface,
+            Self::Busy => kInternalError,
             Self::Other(code) => code,
         }
     }
@@ -73,6 +77,7 @@ impl std::fmt::Display for Vst3Error {
             Self::NotInitialized => f.write_str("kNotInitialized"),
             Self::OutOfMemory => f.write_str("kOutOfMemory"),
             Self::NoInterface => f.write_str("kNoInterface"),
+            Self::Busy => f.write_str("the audio half is out"),
             Self::Other(code) => write!(f, "tresult {code}"),
         }
     }

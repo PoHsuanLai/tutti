@@ -360,7 +360,7 @@ mod tests {
     }
 
     /// Entering twice and dropping both must be safe — a single bundle commonly
-    /// backs several `Vst3Library` loads.
+    /// backs several module loads.
     #[test]
     fn entry_and_exit_are_paired_per_load() {
         let lib = this_process();

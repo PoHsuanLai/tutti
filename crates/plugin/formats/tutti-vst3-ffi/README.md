@@ -2,7 +2,7 @@
 
 The unsafe half of the VST3 host. Every `unsafe` the host needs to talk to a
 VST3 plugin lives here, behind safe handles over the [`vst3`] crate's COM
-bindings; the host crate above it, `tutti-vst3-host`, is
+bindings; the host crate above it is
 `#![forbid(unsafe_code)]` and holds the logic (the lifecycle, the shell, the
 MIDI mapping, the edit ring).
 

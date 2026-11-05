@@ -52,9 +52,6 @@ impl std::fmt::Debug for Vst3Controller {
     }
 }
 
-// SAFETY: the Controller runs on one thread at a time (every method takes
-// `&mut self` or a shared reference of a type that is not `Sync`), and clause 2
-// of the invariant on `Shell` keeps its calls to the main-thread set.
 impl Vst3Controller {
     fn new(loaded: Vst3Loaded, shell: Arc<Shell>, edits: EditSink) -> Self {
         Self {

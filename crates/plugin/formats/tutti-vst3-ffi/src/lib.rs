@@ -32,7 +32,7 @@ pub use com::{
 pub use conformance::{Observer, clear_observer, set_observer};
 pub use error::Vst3Error;
 pub use module::{ClassInfo, CreateError, FactoryInfo, LoadError, Module, factory_flags};
-pub use plugin::{BusDirection, Component, MediaType, MidiLearn, Plugin};
+pub use plugin::{BusDirection, MediaType, MidiLearn, Plugin};
 pub use sdk::{
     SdkEnum, Zeroable, c_str_to_string, cid_to_string, guid_as_tuid, sdk_enum_i32, utf16_to_string,
     zeroed,

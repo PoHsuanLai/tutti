@@ -438,6 +438,10 @@ struct Step {
     /// Whether the step gave up its core of its own accord: slept, or
     /// blocked in the kernel. Always `false` off Linux, where it is not read.
     blocked: bool,
+    /// On Linux, wall time less on-CPU time less runqueue time: how long the
+    /// step was off a core of its own accord. Zero elsewhere. See
+    /// [`StepClock`].
+    slept: Duration,
 }
 
 /// What [`drive_series`] measured: each plugin's step in each block, each
@@ -506,6 +510,11 @@ impl Run {
 ///   thread switches voluntarily when it sleeps or blocks in the kernel, and
 ///   not when it is preempted.
 ///
+/// A step also records [`Step::slept`], the time it was off a core of its own
+/// accord (wall, less on-CPU, less runqueue time), and `report` prints it for
+/// each blocked step, so a failed blocked-step bound shows whether the
+/// switches were waits or incidental.
+///
 /// **On Linux both must be readable, or the test fails** rather than falling
 /// back: the blocked-step bound in [`assert_no_waiting`] and the cost bound
 /// in [`assert_working_steps_cheap`] are Linux's, and a quiet fallback to
@@ -557,7 +566,7 @@ impl StepClock {
             let clock = Self { schedstat };
             // Both read once here, so an unreadable one fails before any
             // timing rather than inside it.
-            clock.run_delay();
+            clock.sched();
             Self::voluntary_switches();
             clock
         }
@@ -565,8 +574,10 @@ impl StepClock {
         Self {}
     }
 
+    /// The thread's `schedstat`: time on a CPU, then time runnable but not
+    /// running.
     #[cfg(target_os = "linux")]
-    fn run_delay(&self) -> Duration {
+    fn sched(&self) -> (Duration, Duration) {
         use std::os::unix::fs::FileExt;
         let mut buf = [0u8; 96];
         let n = self
@@ -574,12 +585,15 @@ impl StepClock {
             .read_at(&mut buf, 0)
             .unwrap_or_else(|e| panic!("reading schedstat failed: {e}"));
         let text = std::str::from_utf8(&buf[..n]).expect("schedstat is ASCII");
-        let ns: u64 = text
-            .split_whitespace()
-            .nth(1)
-            .and_then(|f| f.parse().ok())
-            .unwrap_or_else(|| panic!("schedstat has no run_delay field: {text:?}"));
-        Duration::from_nanos(ns)
+        let field = |i: usize, what: &str| -> Duration {
+            let ns: u64 = text
+                .split_whitespace()
+                .nth(i)
+                .and_then(|f| f.parse().ok())
+                .unwrap_or_else(|| panic!("schedstat has no {what} field: {text:?}"));
+            Duration::from_nanos(ns)
+        };
+        (field(0, "on-CPU"), field(1, "run_delay"))
     }
 
     #[cfg(target_os = "linux")]
@@ -603,13 +617,17 @@ impl StepClock {
         {
             let switches = Self::voluntary_switches();
             let start = Instant::now();
-            let before = self.run_delay();
+            let (cpu_before, delay_before) = self.sched();
             f();
-            let after = self.run_delay();
+            let (cpu_after, delay_after) = self.sched();
             let wall = start.elapsed();
+            let delayed = delay_after.saturating_sub(delay_before);
             Step {
-                took: wall.saturating_sub(after.saturating_sub(before)),
+                took: wall.saturating_sub(delayed),
                 blocked: Self::voluntary_switches() > switches,
+                slept: wall
+                    .saturating_sub(cpu_after.saturating_sub(cpu_before))
+                    .saturating_sub(delayed),
             }
         }
         #[cfg(not(target_os = "linux"))]
@@ -619,6 +637,7 @@ impl StepClock {
             Step {
                 took: start.elapsed(),
                 blocked: false,
+                slept: Duration::ZERO,
             }
         }
     }
@@ -755,6 +774,12 @@ fn report(label: &str, run: &Run) {
         StepClock::MODE,
         run.steps.len()
     );
+    for (i, s) in run.steps.iter().enumerate().filter(|(_, s)| s.blocked) {
+        eprintln!(
+            "{label}: blocked step {i}: took {:?}  slept {:?}",
+            s.took, s.slept
+        );
+    }
 }
 
 /// What a synchronous design spent per plugin per block: half the block period

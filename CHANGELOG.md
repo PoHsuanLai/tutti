@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — ALSA UMP bindings are their own `-sys` crate
+
+The hand-written `snd_seq_*` / `snd_ump_*` FFI and the alsa-lib probe moved from
+`tutti-midi-hardware` into the new `tutti-alsa-ump-sys` (`links = "asound"`,
+Linux only). `tutti-midi-hardware::backend` is now private; reach the backend
+through `MidiSession`.
+
 ### Fixed — VST2 loads no longer race on a global
 
 `vst-tutti`'s `static mut LOAD_POINTER` is a thread-local that points at the

@@ -4231,6 +4231,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-alsa-ump-sys"
+version = "0.0.1"
+
+[[package]]
 name = "tutti-analysis"
 version = "0.0.1"
 dependencies = [
@@ -4410,6 +4414,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "tutti-alsa-ump-sys",
  "tutti-core",
  "tutti-graph",
  "tutti-midi-hardware",

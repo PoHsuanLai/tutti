@@ -215,7 +215,8 @@ crates/
                  serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
-  midi/          tutti-midi-{types,runtime,hardware,file}
+  midi/          tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
+                 (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
                  formats/{vst2,vst3,clap,au}-host, vendor/{vst-tutti,vst3-sdk}
   vendor/        rustysynth-tutti, tutti-clap-test-plugin

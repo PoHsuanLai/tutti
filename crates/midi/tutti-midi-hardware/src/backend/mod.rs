@@ -34,7 +34,16 @@ pub mod coremidi;
 #[cfg(all(target_os = "linux", alsa_ump))]
 pub mod alsa;
 
-pub mod stub;
+// Always compiled so its tests run everywhere; only `active` picks it where no
+// native backend exists.
+#[cfg_attr(
+    any(target_os = "macos", all(target_os = "linux", alsa_ump)),
+    allow(
+        dead_code,
+        reason = "a native backend is active, so only the tests use the stub"
+    )
+)]
+mod stub;
 
 /// Returns this platform's MIDI backend (the stub where there is none).
 ///

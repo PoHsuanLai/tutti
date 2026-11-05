@@ -21,11 +21,11 @@
 //! the frame is per-editor-session and comes and goes with `open_editor`, while
 //! handlers registered through the host context outlive it. Pumping is
 //! therefore driven from the library-scoped loop, via
-//! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
+//! the host's editor loop iteration.
 
 use crate::guard::guard;
 use parking_lot::Mutex;
-use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kResultOk, tresult};
+use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kInvalidArgument, kResultOk, tresult};
 use vst3::{Class, ComWrapper};
 
 use tutti_plugin_types::EditorSize;
@@ -40,6 +40,8 @@ use vst3::Steinberg::Linux::{
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
 
+/// The host's `IPlugFrame` (and, on Linux, `IRunLoop`): what the plugin's view is
+/// given, and where its `resizeView` requests land until the host takes them.
 pub struct HostPlugFrame {
     /// The latest `resizeView` request not yet taken.
     resize_request: Mutex<Option<EditorSize>>,
@@ -61,6 +63,7 @@ impl Class for HostPlugFrame {
 }
 
 impl HostPlugFrame {
+    /// A frame with no pending request and, on Linux, the shared `run_loop`.
     pub fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
@@ -81,11 +84,22 @@ impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
             if new_size.is_null() {
                 return kResultOk;
             }
+            // SAFETY: `new_size` is non-null (checked above) and the ABI passes a
+            // `ViewRect` valid for reads for the call.
             let rect = unsafe { *new_size };
-            *self.resize_request.lock() = Some(EditorSize {
-                width: (rect.right - rect.left) as u32,
-                height: (rect.bottom - rect.top) as u32,
-            });
+            // A rect that is inverted, or whose extent does not fit in `i32`
+            // arithmetic, is not a size: refuse it and keep the last request.
+            let (Some(width), Some(height)) = (
+                rect.right
+                    .checked_sub(rect.left)
+                    .and_then(|w| u32::try_from(w).ok()),
+                rect.bottom
+                    .checked_sub(rect.top)
+                    .and_then(|h| u32::try_from(h).ok()),
+            ) else {
+                return kInvalidArgument;
+            };
+            *self.resize_request.lock() = Some(EditorSize { width, height });
             kResultOk
         })
     }
@@ -99,7 +113,9 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         fd: FileDescriptor,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.register_event_handler(handler, fd)
+            // SAFETY: the plugin passes a handler it keeps alive until it
+            // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
+            unsafe { self.run_loop.register_event_handler(handler, fd) }
         })
     }
 
@@ -115,7 +131,9 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         milliseconds: TimerInterval,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.register_timer(handler, milliseconds)
+            // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
+            // thread.
+            unsafe { self.run_loop.register_timer(handler, milliseconds) }
         })
     }
 
@@ -123,6 +141,12 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         guard(vst3::Steinberg::kInternalError, || {
             self.run_loop.unregister_timer(handler)
         })
+    }
+}
+
+impl std::fmt::Debug for HostPlugFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostPlugFrame").finish_non_exhaustive()
     }
 }
 
@@ -159,6 +183,7 @@ mod tests {
         let frame = frame();
         let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
 
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         unsafe {
             for (w, h) in [(300, 200), (640, 480), (800, 600)] {
                 let mut r = rect(w, h);
@@ -175,6 +200,7 @@ mod tests {
         );
         assert_eq!(frame.take_resize_request(), None);
 
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         // A null rect is ignored rather than clearing or corrupting the cell.
         unsafe {
             let mut r = rect(320, 240);
@@ -186,6 +212,50 @@ mod tests {
             Some(EditorSize {
                 width: 320,
                 height: 240
+            })
+        );
+    }
+
+    /// A rect that is inverted, or whose extent overflows `i32`, is refused and
+    /// does not replace the pending request.
+    ///
+    /// Mutation: go back to `(right - left) as u32` and the inverted rect is
+    /// stored as a ~4-billion-wide size (and the overflowing one panics in
+    /// debug builds, caught by the guard, or wraps in release).
+    #[test]
+    fn an_inverted_or_overflowing_rect_is_refused() {
+        let frame = frame();
+        let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
+        let mut good = rect(640, 480);
+        let mut inverted = ViewRect {
+            left: 100,
+            top: 0,
+            right: 50,
+            bottom: 10,
+        };
+        let mut overflowing = ViewRect {
+            left: i32::MIN,
+            top: 0,
+            right: i32::MAX,
+            bottom: 10,
+        };
+        // SAFETY: each rect is a valid local, and the frame is live.
+        unsafe {
+            assert_eq!(ptr.resizeView(std::ptr::null_mut(), &mut good), kResultOk);
+            assert_eq!(
+                ptr.resizeView(std::ptr::null_mut(), &mut inverted),
+                kInvalidArgument
+            );
+            assert_eq!(
+                ptr.resizeView(std::ptr::null_mut(), &mut overflowing),
+                kInvalidArgument
+            );
+        }
+        assert_eq!(
+            frame.take_resize_request(),
+            Some(EditorSize {
+                width: 640,
+                height: 480
             })
         );
     }

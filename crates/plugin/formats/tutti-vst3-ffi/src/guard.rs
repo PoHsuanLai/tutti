@@ -31,7 +31,7 @@ pub(crate) fn guard<R>(fallback: R, f: impl FnOnce() -> R) -> R {
             if !REPORTED.swap(true, Ordering::Relaxed) {
                 let _ = writeln!(
                     std::io::stderr(),
-                    "[tutti-vst3-host] a host COM method panicked; answered 'not handled'"
+                    "[tutti-vst3-ffi] a host COM method panicked; answered 'not handled'"
                 );
             }
             fallback

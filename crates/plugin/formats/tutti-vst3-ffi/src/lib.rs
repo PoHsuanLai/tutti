@@ -4,8 +4,6 @@
 // asks of its caller.
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![warn(unsafe_op_in_unsafe_fn)]
-// Step 1 of the move: the documentation pass lands with the safe handles.
-#![allow(missing_docs, missing_debug_implementations, dead_code)]
 
 mod com;
 mod guard;

@@ -1,9 +1,7 @@
-//! Host-side COM interface implementations for VST3 hosting.
-//!
-//! Every type here is reachable from the consumer's perspective only through
-//! re-exports at the crate root (notably [`ParameterEditEvent`],
-//! [`ProgressEvent`], [`UnitEvent`]). Internally each type lives behind a
-//! `ComWrapper<T>` so plugins see the standard `IFoo` vtables.
+//! The COM objects the host implements for a plugin: each is a Rust type
+//! behind a `ComWrapper<T>`, so a plugin sees the standard `IFoo` vtables, with
+//! every method body under the panic guard. The crate root re-exports what a
+//! caller needs.
 
 mod attr_list;
 mod component_handler;

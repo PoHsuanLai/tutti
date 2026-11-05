@@ -4741,10 +4741,8 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "assert_no_alloc",
- "core-foundation-sys",
  "crossbeam-queue",
  "libc",
- "libloading 0.9.0",
  "parking_lot",
  "tutti-clap-host",
  "tutti-midi-types",
@@ -4757,15 +4755,12 @@ dependencies = [
 name = "tutti-vst3-host"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "assert_no_alloc",
  "cc",
  "core-foundation-sys",
  "crossbeam-channel",
  "crossbeam-queue",
- "libc",
  "libloading 0.9.0",
- "parking_lot",
  "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",

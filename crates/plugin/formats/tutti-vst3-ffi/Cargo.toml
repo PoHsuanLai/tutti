@@ -15,13 +15,12 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# Exposes the observation seams the host-conformance tests use: the
-# `ProcessData` observer and the run loop's activity counters. Off in a
-# production build; `tutti-vst3-host`'s `conformance` feature turns it on.
+# Exposes the run loop's activity counters (`RunLoopActivity`), which the
+# host-conformance tests read. Off in a production build; the host crate's
+# `conformance` feature turns it on.
 conformance = []
 
 [dependencies]
-libloading = "0.9"
 parking_lot = "0.12"
 crossbeam-queue = "0.3"
 arrayvec = "0.7"
@@ -34,11 +33,6 @@ vst3 = "0.3"
 # plugin-registered file descriptors.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
-
-# The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
-# CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation-sys = "0.8"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

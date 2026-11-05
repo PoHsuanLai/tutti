@@ -37,10 +37,8 @@ conformance = ["tutti-vst3-ffi/conformance"]
 [dependencies]
 libloading = "0.9"
 thiserror = "2"
-parking_lot = "0.12"
 crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
-arrayvec = "0.7"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
@@ -49,11 +47,6 @@ tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
 
 # The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
 # CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
-# `IRunLoop` (Linux-only, and mandatory there per the VST3 docs) polls the
-# plugin-registered file descriptors.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
-
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
 

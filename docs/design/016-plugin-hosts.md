@@ -1089,6 +1089,14 @@ parameter.
   `ClapLoaded::negotiate_format(requested)` is `negotiate` over the plugin's
   capability, the fallback to 32-bit a caller applies before it activates.
 
+**As built (the VST3 FFI crate).** `tutti-vst3-ffi` is the second format's
+`-ffi` crate under §2.9. It holds the COM objects the host implements for a
+plugin (`IBStream`, `IEventList`, `IParameterChanges`, `IComponentHandler`,
+`IHostApplication`, `IAttributeList`/`IMessage`, `IPlugFrame`, `IRunLoop`), the
+panic guard that every one of their methods runs under, and the event, info and
+process-context vocabulary. The host crate still calls the plugin's own
+interfaces directly; they move next.
+
 #### The split reaches one instance: why that is sound
 
 Both halves hold an `Arc` of one private shell per activation, and the shell holds

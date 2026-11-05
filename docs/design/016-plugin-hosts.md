@@ -1702,8 +1702,8 @@ splits: `AuProcessor` (render and MIDI from the render thread) and `AuController
 - The filesystem-reading default methods of `CatalogExt`.
 - `Vst2Instance`'s `Sync`.
 
-Each break is recorded in `CHANGELOG.md` with migration notes, in the change that
-makes it.
+Each break is recorded with migration notes in the description of the pull
+request that makes it.
 
 ## 5. Realtime constraints
 
@@ -1852,7 +1852,7 @@ Each step is reviewable in one sitting and leaves `just ci` green.
 
 The renames of §2.5 land with step 2, 3 and 5 for the crates each touches. The
 API carries no compatibility commitment: each step changes the signature it
-needs and records it in `CHANGELOG.md`.
+needs and records it in its pull request's description.
 
 ## 8. Out of scope
 

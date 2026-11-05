@@ -1451,7 +1451,7 @@ fn a_pinned_unit_is_not_dropped_on_a_worker_that_panics() {
 /// deferred build would fail, key 2's gather fails; the gather runs first,
 /// so the fork's error names key 2, through `fork` and `fork_gather` alike,
 /// and key 1's build never runs. (Before the split, the first failing
-/// source in key order was named; see the CHANGELOG.)
+/// source in key order was named.)
 ///
 /// Mutation (run): `fork_gather` running each deferred build at once → key
 /// 1's build fails first and is named → fails.

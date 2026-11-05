@@ -36,6 +36,10 @@
 //!   sequence lock, for a value whose writer may not allocate or free. The
 //!   writer is not `Clone`, so there is only one; a read that keeps losing
 //!   to writes says so ([`Contended`]) rather than spinning.
+//! - [`RequestWord`] — up to 32 kinds of request a callee raises from any
+//!   thread (one `fetch_or`) and a control thread takes whole.
+//! - [`edit_ring()`] — a bounded single-producer single-consumer queue of small
+//!   `Copy` values, for edits the control thread hands the audio thread.
 //! - [`RtScope`] — a per-thread "inside a block" marker, which a `Drop`
 //!   impl checks ([`RtScope::check_outside`]) so a value that must be
 //!   freed on the control thread panics, in debug builds, when it is not.
@@ -54,9 +58,11 @@
 
 pub mod cell;
 pub mod denormals;
+mod edits;
 pub mod job_gate;
 pub mod packed_atomic;
 pub mod pos_ring;
+pub mod request_word;
 pub mod scope;
 pub mod seq_cell;
 mod spin;
@@ -66,11 +72,13 @@ pub mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
+pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{
     MAX_POS_RING_FRAMES, PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow,
 };
+pub use request_word::{REQUEST_BITS, RequestBit, RequestBits, RequestWord};
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{Contended, SeqReader, SeqWriter};
 pub use spin::BlockWaits;

@@ -212,6 +212,9 @@ pub enum Request {
     Reload,
     /// `request_callback` (CLAP): run `on_main_thread`.
     Callback,
+    /// VST3 `kMidiCCAssignmentChanged` and `kNoteExpressionChanged`.
+    MidiCcAssignmentChanged,
+    NoteExpressionChanged,
     Timer(TimerId),
     Fd(FdId),
 }
@@ -245,6 +248,8 @@ pub enum Effect {
     ReadTail,
     ReadLayout,
     ReadParams(RescanScope),
+    /// Rebuild the host's MIDI controller mapping from the plugin.
+    RebuildMidiMapping,
     RunMainThread,
     RunTimer(TimerId),
     ServiceFd(FdId),
@@ -282,6 +287,7 @@ pub enum Notice {
     IoChanged,
     ParamValuesChanged,
     ParamTitlesChanged,
+    NoteExpressionChanged,
     Reloaded,
     Refused { rate: SampleRate, reason: PluginError },
     Stuck { reason: PluginError },
@@ -307,7 +313,7 @@ pub enum SwapPhase { Idle, Loading, Fading }
 pub enum Stage { Loaded, Active, Refused { rate: SampleRate }, Poisoned }
 
 /// Effects one `step` can emit: a bound, so a step never allocates.
-pub const EFFECT_CAPACITY: usize = 12;
+pub const EFFECT_CAPACITY: usize = 14;
 pub type Effects = arrayvec::ArrayVec<Effect, EFFECT_CAPACITY>;
 
 pub fn step(state: State, event: Event) -> (State, Effects);
@@ -357,7 +363,7 @@ Four things the block leaves open are fixed as follows.
   `FDS_PER_TICK` (3 each) so the effect bound holds, and the rest stay pending:
   `State::has_backlog` tells the shell to tick again. None is dropped, which
   does not depend on whether a format's timers advance their deadline when
-  raised or its descriptors are level-triggered. `MAX_STEP_EFFECTS` (12, the
+  raised or its descriptors are level-triggered. `MAX_STEP_EFFECTS` (14, the
   busiest tick) is asserted at compile time to fit `EFFECT_CAPACITY`, and `emit`
   asserts rather than drops. A `Callback` makes the tick emit `RunMainThread` alone, because it may
   ask for the rest; the `Replied(Done)` that answers it plans the remainder as
@@ -608,6 +614,41 @@ pub struct PluginIo<'a> {
     pub out: &'a mut ProcessOutput,
 }
 ```
+
+**As built (step 2a).** These details differ from the sketch above.
+
+- `Control` has no `note_ports` or `editor` yet: `NotePorts` and the safe `Editor`
+  do not exist before step 5, which adds both to `Control`.
+- `Refused`'s `rate` on `Lifecycle::Refused` is an `Option<SampleRate>`: a refused
+  *rebuild* has no rate of its own.
+- `Layout` is read from `Control::wiring` (`Layout::from(&LoadedPlugin)`), so
+  `ReadLayout` has no separate trait method.
+- `Lifecycle::Active` has no `swap` field and `Hosted` gains
+  `initial_state()` (`State::new(L::RESTARTS)`); step 9 adds the `Swap`.
+  `seat` is declared before `controller`, so a dropped `Lifecycle` drops a held
+  Processor before the Controller that destroys the plugin (invariant clause 4).
+  A lent Processor is not in the enum; the threaded `Hand` (step 8) recalls it
+  before the `Lifecycle` is dropped.
+- `Control` gains `flush_edits` (default nothing), which `drive` calls on every
+  `Tick`: it is the Controller's retry of the parameter edits a full ring
+  refused, latest value per parameter (§2.6). It also gains
+  `rebuild_midi_mapping`.
+- The VST3 restart flags `kMidiCCAssignmentChanged` and `kNoteExpressionChanged`
+  are `Request::{MidiCcAssignmentChanged, NoteExpressionChanged}`. A tick turns
+  the first into `Effect::RebuildMidiMapping` (after the activation when a
+  restart is planned) and the second into `Notice::NoteExpressionChanged`;
+  neither restarts. `EFFECT_CAPACITY` and `MAX_STEP_EFFECTS` are 14.
+- `drive` does not step `Event::Returned` itself: that is the threaded `Hand`'s
+  (step 8). `apply` takes the `hand` and ignores it until then.
+- Every call into the plugin that is not a transition (the reads, the main-thread
+  work, `flush_edits`) is guarded like one: a panic leaves `Poisoned`, and
+  `drive` steps `Event::Died`, so the `State` it owns is never lost to an unwind.
+
+- `FakePlugin` is `tutti_plugin_types::fake`, behind the `test-support` feature, so
+  the server's tests can use it at step 4.
+
+The capability traits of `format_host.rs` stay until step 4: VST2 and AU, and the
+server's `Plugin` enum, still use them.
 
 - **The control surface is `Control`, once.** `Loaded` and `Controller` both
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared
@@ -915,6 +956,17 @@ impl RequestWord {
     pub fn take(&self) -> RequestBits;
 }
 ```
+
+`RequestBit` is a position in the word, and `tutti-plugin-types` maps `Request`
+to one (`Request::bit`, `taken(&word)`); timers and descriptors carry an id and
+have none. The `EditRing` is `tutti_types::edit_ring::<T>(capacity)`, a writer
+and a reader end over `Copy` values, and `tutti-plugin-types` types it as
+`Edit` with `edits(capacity)` (`EditSink`, `EditDrain`). Both are in
+`tutti-types` as the lock-free rule asks. `RequestWord` is safe atomics; the
+ring's slots are `UnsafeCell` words (loom's under the flag, with a `Sync`
+argument in `// SAFETY:`), so its model sees each slot's hand-over and checks
+the `Release`/`Acquire` on `head` and `tail`. `EditDrain::drain` applies what
+was queued when it began, so a hot producer cannot hold the audio thread.
 
 A callback body is `word.raise(..)` and a return value. The main-thread pass
 `take`s the word and feeds `Event::Request`s, then `Event::Tick`. Timers and file
@@ -1453,7 +1505,11 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    `State`, `step`, `Prepare`, `Layout`, `SampleFormat` moved down, the proptest
    dev-dependency, the properties and their mutations. No behavior change: nothing
    calls it yet.
-2. **The traits, `Lifecycle`, and the CLAP and VST3 impls.** `Control`, `Loaded`,
+2. **The traits, `Lifecycle`, and the CLAP and VST3 impls**, in two changes.
+   **2a** builds everything that needs no format: the traits, `Lifecycle`,
+   `Hand` (local), `Hosted`, `RequestWord` and the edit ring with their loom
+   models, and the `FakePlugin`, with the contract tests of §6.
+   **2b** is the CLAP and VST3 impls and the server loaders' switch. `Control`, `Loaded`,
    `Processor`, `Controller`, `Refused`, `Stuck`, `PluginIo`, `Lifecycle`, `Hand`
    (local only) and `Hosted`; `RequestWord` and `EditRing` with their loom models;
    `ClapProcessorAny`, `ClapController`, `Vst3ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands

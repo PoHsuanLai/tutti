@@ -118,6 +118,7 @@ test-features:
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
+    cargo nextest run --locked -p tutti-plugin-types --features test-support
     cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
@@ -171,6 +172,8 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test split_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test request_word_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test edit_ring_loom
 
 # The `ArcLend` loom models, after changing `arc-lend`'s protocol code: eight
 # of the nine unbounded (exhaustive, about 10 s; CI runs them so too), and

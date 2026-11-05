@@ -207,6 +207,8 @@ jobs:
       #                         `export,modulation` so the render mode and the
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
+      #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
+      #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
       #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
@@ -257,6 +259,7 @@ jobs:
           cargo nextest run --locked -p tutti --features clap,export,modulation
           cargo nextest run --locked -p tutti-io --features bevy
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
+          cargo nextest run --locked -p tutti-plugin-types --features test-support
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
       # pool runs each task inside `spawn`, on the main thread: a render's
@@ -722,3 +725,8 @@ jobs:
       - run: cargo test --locked -p tutti-types --release --test split_loom
       - run: cargo test --locked -p tutti-types --release --test job_gate_loom
       - run: cargo test --locked -p tutti-types --release --test task_graph_loom
+      # `RequestWord` (no bit lost, each taken once, a raise orders what
+      # preceded it) and `edit_ring` (each edit applied once, in order, no torn
+      # slot), against the shipped code.
+      - run: cargo test --locked -p tutti-types --release --test request_word_loom
+      - run: cargo test --locked -p tutti-types --release --test edit_ring_loom

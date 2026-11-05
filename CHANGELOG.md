@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — host traits, `Lifecycle` and `FakePlugin` in tutti-plugin-types
+
+`Control`, `Loaded`, `Processor`, `Controller`, `Refused`, `Stuck` and `PluginIo`
+are the traits a plugin format implements: `Loaded::activate` splits a plugin
+into a realtime `Processor` and a main-thread `Controller`, `Loaded::deactivate`
+rejoins them. `Lifecycle<L>` holds a plugin in whichever state it is in and
+`drive`s the pure `step` core, applying each effect and feeding its reply back;
+`Hand::local()`, `Seat` and `Hosted` come with it (design 016 §2.2, §2.3).
+`RequestWord` and `edit_ring` (in `tutti-types`, with loom models) carry a
+plugin's calls into the host and the host's parameter edits to the Processor;
+`Request::bit`, `taken`, `Edit` and `edits` type them for plugins. `Request` gains `MidiCcAssignmentChanged` and `NoteExpressionChanged` (VST3), `Effect` gains `RebuildMidiMapping`, `Notice` gains `NoteExpressionChanged`, and `EFFECT_CAPACITY` is 14. `Control::flush_edits` retries refused edits on each tick. The
+`test-support` feature adds `fake::FakePlugin`. Nothing implements the traits
+for a real format yet, and the capability traits of `format_host.rs` remain.
+
+### Changed — `ParameterChanges::get_queue` is `queue`
+
+`get_queue` and `get_queue_mut` are `queue` and `queue_mut`. No alias is left.
+
 ### Added — the pure plugin-host core in tutti-plugin-types
 
 `step(State, Event) -> (State, Effects)` decides activation, restart, rescan and

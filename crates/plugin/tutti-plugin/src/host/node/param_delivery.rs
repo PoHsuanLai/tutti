@@ -1378,7 +1378,7 @@ mod tests {
                 d.point(op(id), k, (2 * k + 1) as f32 / 16.0);
             }
         }
-        let last = d.changes.get_queue(op(moving)).expect("queued");
+        let last = d.changes.queue(op(moving)).expect("queued");
         assert_eq!(last.points.len(), ParameterChanges::FLOOR_POINTS);
         assert_eq!(last.points.last().map(|p| p.value.get()), Some(5.0 / 16.0));
         assert_eq!(last.points.last().map(|p| p.sample_offset), Some(2));

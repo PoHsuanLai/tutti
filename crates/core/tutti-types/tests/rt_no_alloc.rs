@@ -69,3 +69,33 @@ fn audio_thread_cell_borrows_neither_allocate_nor_free() {
     });
     assert_eq!(*cell.borrow(), (0..10_000u64).sum::<u64>());
 }
+
+/// `RequestWord::raise` and `take`, and an `edit_ring` push and pop (full and
+/// empty answers included), neither allocate nor free: the whole of what a
+/// host callback and the block-head drain do.
+///
+/// Mutations (run): box the value in `EditWriter::push` (a `Box::new(value)`
+/// kept alive across the store) → the gate aborts on the first push; a
+/// `vec!` in `RequestBits::iter` → it aborts.
+#[test]
+fn request_word_and_edit_ring_are_allocation_free() {
+    use tutti_types::{RequestBit, RequestWord, edit_ring};
+
+    let word = RequestWord::new();
+    let (mut writer, mut reader) = edit_ring::<[u32; 3]>(4);
+    assert_no_alloc::assert_no_alloc(|| {
+        for round in 0..1_000u32 {
+            word.raise(RequestBit::new((round % 32) as u8));
+            let taken = word.take();
+            assert_eq!(taken.iter().count(), 1);
+            for n in 0..6 {
+                let _ = writer.push([round, n, 0]);
+            }
+            while let Some(edit) = reader.pop() {
+                core::hint::black_box(edit);
+            }
+            assert!(reader.pop().is_none());
+        }
+    });
+    assert!(writer.refused() > 0);
+}

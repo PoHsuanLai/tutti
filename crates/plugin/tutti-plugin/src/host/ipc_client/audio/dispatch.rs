@@ -926,7 +926,7 @@ mod tests {
         }
         owed.merge_carried(&mut block);
 
-        let carried = block.get_queue(ParamAddress::Index(7)).expect("carried");
+        let carried = block.queue(ParamAddress::Index(7)).expect("carried");
         assert_eq!(carried.points.len(), 1);
         assert_eq!(carried.points[0].sample_offset, 0);
         assert!((carried.points[0].value.get() - 0.25).abs() < 1e-12);
@@ -972,9 +972,7 @@ mod tests {
         assert_eq!(placeholder.queues.len(), 2);
         assert_eq!(placeholder.points_overflowed(), 0);
         for (id, value) in [(7, 0.25), (8, 0.5)] {
-            let q = placeholder
-                .get_queue(ParamAddress::Index(id))
-                .expect("queued");
+            let q = placeholder.queue(ParamAddress::Index(id)).expect("queued");
             assert_eq!(q.points.len(), 1);
             assert_eq!(
                 (q.points[0].sample_offset, q.points[0].value.get()),

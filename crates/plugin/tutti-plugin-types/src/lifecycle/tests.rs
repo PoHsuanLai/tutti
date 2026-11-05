@@ -37,6 +37,8 @@ enum Fx {
     IoNotice,
     ParamValues,
     ParamTitles,
+    MidiMapping,
+    NoteExprNotice,
     Reloaded,
     RefusedNotice,
     StuckNotice,
@@ -53,6 +55,7 @@ fn tag(effect: &Effect) -> Fx {
         Effect::ReadTail => Fx::Tail,
         Effect::ReadLayout => Fx::Layout,
         Effect::ReadParams(s) => Fx::Params(*s),
+        Effect::RebuildMidiMapping => Fx::MidiMapping,
         Effect::RunMainThread => Fx::Main,
         Effect::RunTimer(id) => Fx::Timer(id.0),
         Effect::ServiceFd(id) => Fx::Fd(id.0),
@@ -61,6 +64,7 @@ fn tag(effect: &Effect) -> Fx {
         Effect::Notify(Notice::IoChanged) => Fx::IoNotice,
         Effect::Notify(Notice::ParamValuesChanged) => Fx::ParamValues,
         Effect::Notify(Notice::ParamTitlesChanged) => Fx::ParamTitles,
+        Effect::Notify(Notice::NoteExpressionChanged) => Fx::NoteExprNotice,
         Effect::Notify(Notice::Reloaded) => Fx::Reloaded,
         Effect::Notify(Notice::Refused { .. }) => Fx::RefusedNotice,
         Effect::Notify(Notice::Stuck { .. }) => Fx::StuckNotice,
@@ -393,6 +397,8 @@ fn request() -> impl Strategy<Value = Request> {
         Just(Request::TailChanged),
         Just(Request::Reload),
         Just(Request::Callback),
+        Just(Request::MidiCcAssignmentChanged),
+        Just(Request::NoteExpressionChanged),
         (0u32..6).prop_map(|i| Request::Timer(TimerId(i))),
         (0i32..6).prop_map(|i| Request::Fd(FdId(i))),
     ]
@@ -1033,6 +1039,8 @@ fn rule_7_a_request_on_a_plugin_that_is_not_running_changes_nothing() {
         Request::TailChanged,
         Request::Reload,
         Request::RescanParams(RescanScope::All),
+        Request::MidiCcAssignmentChanged,
+        Request::NoteExpressionChanged,
     ];
     let (poisoned, _) = go(State::new(REST), Event::Died);
     for (s, name) in [
@@ -1300,7 +1308,7 @@ fn timers_and_descriptors_over_the_cap_wait_for_the_next_tick() {
 }
 
 // Mutation: make `MAX_STEP_EFFECTS` one less (`+ 5`), or delete the
-// `ReadLayout` branch of `read_without_restart`; the count no longer equals it.
+// `ReadLayout` branch of `read_without_restart`, or the `midi_cc` one; the count no longer equals it.
 #[test]
 fn the_busiest_tick_emits_exactly_the_documented_maximum() {
     let mut s = active(REST, prep(1));
@@ -1316,6 +1324,8 @@ fn the_busiest_tick_emits_exactly_the_documented_maximum() {
         Request::IoChanged,
         Request::RescanParams(RescanScope::Values),
         Request::RescanParams(RescanScope::Info),
+        Request::MidiCcAssignmentChanged,
+        Request::NoteExpressionChanged,
     ] {
         s = req(s, r);
     }
@@ -1526,5 +1536,47 @@ fn a_callback_raised_on_a_refused_plugin_is_dropped() {
     // Nor is it kept for the activation that follows.
     let (s, _) = go(s, Event::Op(HostOp::Activate(prep(1))));
     let (s, _) = reply(s, Reply::Activated);
+    assert!(go(s, Event::Tick).1.is_empty());
+}
+
+/// A MIDI-mapping change is rebuilt in place, once, with no restart; a
+/// note-expression change is told to the host once.
+///
+/// Mutation: in `read_without_restart` drop the `p.midi_cc = false` reset and
+/// the second tick repeats the rebuild; drop the `p.note_expr = false` reset
+/// and the second tick repeats the notice; delete the `if p.midi_cc` block and
+/// the rebuild is never emitted.
+#[test]
+fn a_midi_mapping_or_note_expression_change_needs_no_restart() {
+    for rules in [REST, RESTARTS] {
+        let s = req(active(rules, prep(1)), Request::MidiCcAssignmentChanged);
+        let s = req(s, Request::NoteExpressionChanged);
+        let (s, fx) = go(s, Event::Tick);
+        assert_eq!(fx, [Fx::MidiMapping, Fx::NoteExprNotice]);
+        assert!(go(s, Event::Tick).1.is_empty());
+    }
+}
+
+/// Raised beside a restart, the mapping is rebuilt once after the activation
+/// and the note-expression notice is told once.
+///
+/// Mutation: delete the `if midi_cc { tasks.push(..) }` in `plan_restart` and
+/// the rebuild is lost; delete the notice emit there and the notice is lost.
+#[test]
+fn a_mapping_change_beside_a_restart_is_rebuilt_after_the_activation() {
+    let s = req(active(RESTARTS, prep(1)), Request::Restart);
+    let s = req(s, Request::MidiCcAssignmentChanged);
+    let s = req(s, Request::NoteExpressionChanged);
+    let (s, fx) = go(s, Event::Tick);
+    assert_eq!(fx, [Fx::NoteExprNotice, Fx::Recall]);
+    let (s, fx) = reply(s, Reply::Returned);
+    assert_eq!(fx, [Fx::Deactivate]);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert_eq!(fx, [Fx::Activate(prep(1))]);
+    let (s, fx) = reply(s, Reply::Activated);
+    assert_eq!(
+        fx,
+        [Fx::Latency, Fx::Tail, Fx::Layout, Fx::Lend, Fx::MidiMapping]
+    );
     assert!(go(s, Event::Tick).1.is_empty());
 }

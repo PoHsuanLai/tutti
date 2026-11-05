@@ -580,7 +580,7 @@ impl ParameterChanges {
     ///
     /// Appends unconditionally: it does not merge into an existing queue for the
     /// same address, so a duplicate address leaves two queues that
-    /// [`get_queue`](Self::get_queue) resolves to the first of.
+    /// [`queue`](Self::queue) resolves to the first of.
     pub fn add_queue(&mut self, queue: ParameterQueue) -> &mut Self {
         self.queues.push(queue);
         self
@@ -630,13 +630,13 @@ impl ParameterChanges {
     }
 
     /// Returns the queue addressed by `param_id`, if one has been created.
-    pub fn get_queue(&self, param_id: ParamAddress) -> Option<&ParameterQueue> {
+    pub fn queue(&self, param_id: ParamAddress) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
     }
 
     /// Returns the queue addressed by `param_id` for mutation, if one has been
     /// created.
-    pub fn get_queue_mut(&mut self, param_id: ParamAddress) -> Option<&mut ParameterQueue> {
+    pub fn queue_mut(&mut self, param_id: ParamAddress) -> Option<&mut ParameterQueue> {
         self.queues.iter_mut().find(|q| q.param_id == param_id)
     }
 }
@@ -723,13 +723,10 @@ mod serde_tests {
         let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(
-            got.get_queue(opaque).expect("opaque").points[0].value.get(),
+            got.queue(opaque).expect("opaque").points[0].value.get(),
             0.25
         );
-        assert_eq!(
-            got.get_queue(index).expect("index").points[0].value.get(),
-            0.75
-        );
+        assert_eq!(got.queue(index).expect("index").points[0].value.get(), 0.75);
 
         // An opaque id above `i32::MAX` is routine (these are often name
         // hashes) and is exactly what a bare number could not carry: read as
@@ -739,7 +736,7 @@ mod serde_tests {
         one.add_change(high, 0, 1.0);
         let back: ParameterChanges =
             bincode::deserialize(&bincode::serialize(&one).expect("serialize")).expect("de");
-        assert_eq!(back.get_queue(high).expect("high id survives").len(), 1);
+        assert_eq!(back.queue(high).expect("high id survives").len(), 1);
         assert_eq!(back.queues[0].param_id.index(), None);
     }
 
@@ -757,7 +754,7 @@ mod serde_tests {
         let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
 
         let q = got
-            .get_queue(ParamAddress::Opaque(ParamId::new(1)))
+            .queue(ParamAddress::Opaque(ParamId::new(1)))
             .expect("queue 1");
         assert_eq!(q.points[0].sample_offset, 0);
         assert_eq!(q.points[1].sample_offset, 32);
@@ -1149,7 +1146,7 @@ mod pool_tests {
         fill(&mut changes, pooled..2 * pooled);
         let past = ParamAddress::Index((2 * pooled) as i32);
         assert!(!changes.add_change(past, 7, 0.875), "the pool is spent");
-        let q = changes.get_queue(past).expect("queued");
+        let q = changes.queue(past).expect("queued");
         assert_eq!(q.points.len(), floor);
         assert_eq!(
             q.points.last().map(|p| (p.sample_offset, p.value.get())),

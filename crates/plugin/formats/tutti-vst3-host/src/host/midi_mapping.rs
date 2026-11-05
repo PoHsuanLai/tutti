@@ -592,7 +592,7 @@ mod tests {
 
         // Mod wheel went to params.
         let queue = params
-            .get_queue(ParamAddress::Opaque(500u32.into()))
+            .queue(ParamAddress::Opaque(500u32.into()))
             .expect("mod wheel mapped to param 500");
         assert_eq!(queue.points.len(), 1);
         assert_eq!(queue.points[0].sample_offset, 8);
@@ -624,15 +624,11 @@ mod tests {
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
         assert!(
-            params
-                .get_queue(ParamAddress::Opaque(42u32.into()))
-                .is_some(),
+            params.queue(ParamAddress::Opaque(42u32.into())).is_some(),
             "host param survived"
         );
         assert!(
-            params
-                .get_queue(ParamAddress::Opaque(500u32.into()))
-                .is_some(),
+            params.queue(ParamAddress::Opaque(500u32.into())).is_some(),
             "mapped CC added"
         );
         assert!(filtered.is_empty(), "the only event was a mapped CC");
@@ -678,7 +674,7 @@ mod tests {
 
         for param_id in [500, 42] {
             let q = params
-                .get_queue(ParamAddress::Opaque(param_id.into()))
+                .queue(ParamAddress::Opaque(param_id.into()))
                 .expect("queue present");
             let offsets: Vec<i32> = q.points.iter().map(|p| p.sample_offset).collect();
             let mut sorted = offsets.clone();
@@ -688,7 +684,7 @@ mod tests {
         // Param 500 carries all three merged points (1 host + 2 CC).
         assert_eq!(
             params
-                .get_queue(ParamAddress::Opaque(500u32.into()))
+                .queue(ParamAddress::Opaque(500u32.into()))
                 .unwrap()
                 .points
                 .len(),
@@ -746,7 +742,7 @@ mod tests {
 
         sort_param_points(&mut params);
 
-        let q = params.get_queue(param).expect("queue present");
+        let q = params.queue(param).expect("queue present");
         let got: Vec<(i32, f64)> = q
             .points
             .iter()
@@ -856,7 +852,7 @@ mod tests {
             assert_eq!(midi.len(), 1, "the note passes through");
             assert_eq!(params.queues.len(), 2, "host automation + the CC");
             let host_queue = params
-                .get_queue(ParamAddress::Opaque(7u32.into()))
+                .queue(ParamAddress::Opaque(7u32.into()))
                 .expect("host queue");
             assert_eq!(host_queue.points.len(), 4);
         });
@@ -914,7 +910,7 @@ mod tests {
         assert_eq!(route.points_overflowed(), 1);
         let (_, params) = route.route(&four, Some(&measured)).expect("mapped");
         let q = params
-            .get_queue(ParamAddress::Opaque(MAPPED.into()))
+            .queue(ParamAddress::Opaque(MAPPED.into()))
             .expect("the CC");
         assert_eq!(q.points.len(), ParameterChanges::FLOOR_POINTS + 1);
         assert_eq!(
@@ -987,7 +983,7 @@ mod tests {
                 assert_eq!(got.param_id, want.param_id);
                 assert_eq!(got.points.len(), want.points.len());
             }
-            let cc = params.get_queue(ParamAddress::Opaque(MAPPED.into()));
+            let cc = params.queue(ParamAddress::Opaque(MAPPED.into()));
             assert_eq!(
                 cc.map(|q| q.points.len()),
                 (!events.is_empty()).then_some(1)
@@ -1070,7 +1066,7 @@ mod tests {
         let mut ends = |events: &[MidiEvent]| {
             let (_, params) = route.route(events, Some(&host)).expect("mapped");
             let q = params
-                .get_queue(ParamAddress::Opaque(MAPPED.into()))
+                .queue(ParamAddress::Opaque(MAPPED.into()))
                 .expect("queued");
             assert!(
                 q.points
@@ -1128,7 +1124,7 @@ mod tests {
         let sorted = assert_no_alloc::assert_no_alloc(|| {
             let (_, params) = route.route(&events, Some(&host)).expect("mapped");
             let q = params
-                .get_queue(ParamAddress::Opaque(MAPPED.into()))
+                .queue(ParamAddress::Opaque(MAPPED.into()))
                 .expect("queued");
             q.points
                 .iter()
@@ -1141,7 +1137,7 @@ mod tests {
         assert_eq!(route.points_overflowed(), 0);
         let (_, params) = route.route(&events, Some(&host)).expect("mapped");
         let q = params
-            .get_queue(ParamAddress::Opaque(MAPPED.into()))
+            .queue(ParamAddress::Opaque(MAPPED.into()))
             .expect("queued");
         // A shared frame: the host's point, then the CC's.
         for k in (0..CCS as i32).step_by(2) {

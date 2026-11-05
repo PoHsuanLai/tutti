@@ -2,7 +2,7 @@
 //! plugin, cross threads.
 //!
 //! A plugin calls its host from any thread. Each such call is one bit of a
-//! [`RequestWord`](tutti_types::RequestWord): [`Request::bit`] names it, the
+//! [`RequestWord`]: [`Request::bit`] names it, the
 //! callback raises it, and the main thread's idle pass turns the taken bits
 //! back into [`Request`]s ([`taken`]) and feeds them to the core. Timers and
 //! file descriptors carry an id, so they are main-thread registrations and
@@ -13,7 +13,7 @@
 
 use tutti_types::{EditReader, EditWriter, RequestBit, RequestWord, RingFull, edit_ring};
 
-use crate::{Normalized, ParamId, RescanScope, Request};
+use crate::{Normalized, ParamId, Request, RescanScope};
 
 const RESTART: RequestBit = RequestBit::new(0);
 const IO_CHANGED: RequestBit = RequestBit::new(1);
@@ -91,7 +91,9 @@ const PARAM_TAG: u64 = 1;
 impl Edit {
     fn encode(self) -> [u64; 2] {
         match self {
-            Self::Param { id, value } => [PARAM_TAG << 32 | u64::from(id.get()), value.get().to_bits()],
+            Self::Param { id, value } => {
+                [PARAM_TAG << 32 | u64::from(id.get()), value.get().to_bits()]
+            }
         }
     }
 
@@ -186,8 +188,14 @@ mod tests {
     #[test]
     fn edits_round_trip_in_order() {
         let (mut sink, mut drain) = edits(2);
-        let a = Edit::Param { id: ParamId::new(7), value: Normalized::new(0.25) };
-        let b = Edit::Param { id: ParamId::new(u32::MAX), value: Normalized::new(1.0) };
+        let a = Edit::Param {
+            id: ParamId::new(7),
+            value: Normalized::new(0.25),
+        };
+        let b = Edit::Param {
+            id: ParamId::new(u32::MAX),
+            value: Normalized::new(1.0),
+        };
         sink.send(a).unwrap();
         sink.send(b).unwrap();
         assert!(sink.send(a).is_err());

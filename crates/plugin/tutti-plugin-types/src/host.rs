@@ -131,8 +131,10 @@ pub trait Loaded: Control + Sized + Send {
     /// # Errors
     ///
     /// [`Refused`] when the plugin will not run at `prepare`.
-    fn activate(self, prepare: Prepare)
-    -> Result<(Self::Processor, Self::Controller), Refused<Self>>;
+    fn activate(
+        self,
+        prepare: Prepare,
+    ) -> Result<(Self::Processor, Self::Controller), Refused<Self>>;
 
     /// Rejoins the halves of one activation.
     ///

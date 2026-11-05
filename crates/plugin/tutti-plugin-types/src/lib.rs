@@ -62,14 +62,14 @@ pub use classification::{
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use driver::{Hand, Hosted, Lifecycle, Seat};
-pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
-pub use requests::{Edit, EditDrain, EditSink, edits, taken};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,
 };
+pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
 pub use order::{StableOrder, insertion_sort_by_key};
 pub use points::{PointBuf, PointPool};
+pub use requests::{Edit, EditDrain, EditSink, edits, taken};
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};

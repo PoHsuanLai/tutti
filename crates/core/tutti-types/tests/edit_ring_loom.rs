@@ -70,7 +70,10 @@ fn every_edit_is_applied_once_in_order() {
         for _ in 0..6 {
             if let Some([a, b, c]) = reader.pop() {
                 assert!(a == b && b == c, "a torn slot: {:?}", [a, b, c]);
-                assert!(a > last && a <= 3, "out of order or repeated: {a} after {last}");
+                assert!(
+                    a > last && a <= 3,
+                    "out of order or repeated: {a} after {last}"
+                );
                 last = a;
             } else {
                 thread::yield_now();
@@ -81,7 +84,10 @@ fn every_edit_is_applied_once_in_order() {
         assert_eq!(refused, counted, "refusals miscounted");
         while let Some([a, b, c]) = reader.pop() {
             assert!(a == b && b == c, "a torn slot");
-            assert!(a > last && a <= 3, "out of order or repeated: {a} after {last}");
+            assert!(
+                a > last && a <= 3,
+                "out of order or repeated: {a} after {last}"
+            );
             last = a;
         }
         assert!(last >= 1, "nothing was applied");

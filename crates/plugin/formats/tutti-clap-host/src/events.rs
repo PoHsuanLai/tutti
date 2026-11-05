@@ -3650,7 +3650,7 @@ mod tests {
         assert_no_alloc::assert_no_alloc(|| dropped = block(&mut output, &mut changes, true));
         assert_eq!(dropped, 1);
         let last = changes
-            .get_queue(ParamAddress::Opaque((PARAMS - 1).into()))
+            .queue(ParamAddress::Opaque((PARAMS - 1).into()))
             .expect("queued");
         assert_eq!(last.points.len(), floor);
         let k = floor;

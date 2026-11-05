@@ -402,7 +402,11 @@ fn nothing_runs_after_died() {
     assert_eq!(rig.state.stage(), Stage::Poisoned);
     rig.op(HostOp::Reconfigure(prepare(44_100.0)));
     assert_eq!(rig.state.stage(), Stage::Poisoned);
-    assert_eq!(activations(&rig.plugin.calls()), 1, "nothing runs after Died");
+    assert_eq!(
+        activations(&rig.plugin.calls()),
+        1,
+        "nothing runs after Died"
+    );
 }
 
 /// **The control surface is reachable in every state that has a plugin.**
@@ -459,7 +463,14 @@ fn the_processor_renders_without_allocating() {
         processor.stop();
     });
     let _ = id;
-    assert_eq!(rig.plugin.calls().iter().filter(|c| matches!(c, Call::Process(_))).count(), 100);
+    assert_eq!(
+        rig.plugin
+            .calls()
+            .iter()
+            .filter(|c| matches!(c, Call::Process(_)))
+            .count(),
+        100
+    );
 }
 
 /// Requests raised from another thread while the main thread ticks all arrive

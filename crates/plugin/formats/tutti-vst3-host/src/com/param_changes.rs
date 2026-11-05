@@ -608,7 +608,7 @@ mod tests {
             assert_eq!(q.points.len(), want, "parameter {id}");
         }
         let third = out
-            .get_queue(ParamAddress::Opaque((2 * pooled).into()))
+            .queue(ParamAddress::Opaque((2 * pooled).into()))
             .expect("queued");
         let last = floor as i32;
         assert_eq!(third.points.last().map(|p| p.sample_offset), Some(last));

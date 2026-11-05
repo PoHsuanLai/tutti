@@ -610,6 +610,23 @@ pub struct PluginIo<'a> {
 }
 ```
 
+**As built (step 2a).** Four details differ from the sketch above.
+
+- `Control` has no `note_ports` or `editor` yet: `NotePorts` and the safe `Editor`
+  do not exist before step 5, which adds both to `Control`.
+- `Refused`'s `rate` on `Lifecycle::Refused` is an `Option<SampleRate>`: a refused
+  *rebuild* has no rate of its own.
+- `Layout` is read from `Control::wiring` (`Layout::from(&LoadedPlugin)`), so
+  `ReadLayout` has no separate trait method.
+- `Lifecycle::Active` has no `swap` field and `Hosted` gains
+  `initial_state()` (`State::new(L::RESTARTS)`); step 9 adds the `Swap`.
+
+- `FakePlugin` is `tutti_plugin_types::fake`, behind the `test-support` feature, so
+  the server's tests can use it at step 4.
+
+The capability traits of `format_host.rs` stay until step 4: VST2 and AU, and the
+server's `Plugin` enum, still use them.
+
 - **The control surface is `Control`, once.** `Loaded` and `Controller` both
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared
   once and a caller reaches them in either state. What an active plugin adds is
@@ -916,6 +933,15 @@ impl RequestWord {
     pub fn take(&self) -> RequestBits;
 }
 ```
+
+`RequestBit` is a position in the word, and `tutti-plugin-types` maps `Request`
+to one (`Request::bit`, `taken(&word)`); timers and descriptors carry an id and
+have none. The `EditRing` is `tutti_types::edit_ring::<T>(capacity)`, a writer
+and a reader end over `Copy` values, and `tutti-plugin-types` types it as
+`Edit` with `edits(capacity)` (`EditSink`, `EditDrain`). Both are safe
+atomics-only code (no `unsafe`), in `tutti-types` as the lock-free rule asks.
+The loom mutation record notes the two `tail` orderings that loom cannot
+distinguish.
 
 A callback body is `word.raise(..)` and a return value. The main-thread pass
 `take`s the word and feeds `Event::Request`s, then `Event::Tick`. Timers and file
@@ -1444,7 +1470,11 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    `State`, `step`, `Prepare`, `Layout`, `SampleFormat` moved down, the proptest
    dev-dependency, the properties and their mutations. No behavior change: nothing
    calls it yet.
-2. **The traits, `Lifecycle`, and the CLAP and VST3 impls.** `Control`, `Loaded`,
+2. **The traits, `Lifecycle`, and the CLAP and VST3 impls**, in two changes.
+   **2a** builds everything that needs no format: the traits, `Lifecycle`,
+   `Hand` (local), `Hosted`, `RequestWord` and the edit ring with their loom
+   models, and the `FakePlugin`, with the contract tests of §6.
+   **2b** is the CLAP and VST3 impls and the server loaders' switch. `Control`, `Loaded`,
    `Processor`, `Controller`, `Refused`, `Stuck`, `PluginIo`, `Lifecycle`, `Hand`
    (local only) and `Hosted`; `RequestWord` and `EditRing` with their loom models;
    `ClapProcessorAny`, `ClapController`, `Vst3ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands

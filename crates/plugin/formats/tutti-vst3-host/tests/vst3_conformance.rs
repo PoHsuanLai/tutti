@@ -965,7 +965,7 @@ fn param_address(tag: u32) -> ParamAddress {
 fn decode_hostchecker_warnings(out: &ParameterChanges) -> Vec<i32> {
     let mut ids = Vec::new();
     for i in 0..K_PARAM_WARN_COUNT {
-        let Some(queue) = out.get_queue(param_address(K_PROCESS_WARN_TAG + i)) else {
+        let Some(queue) = out.queue(param_address(K_PROCESS_WARN_TAG + i)) else {
             continue;
         };
         let Some(point) = queue.points.last() else {
@@ -2241,7 +2241,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
         let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
         if let Some(queue) = out
             .parameter_changes
-            .get_queue(param_address(K_PARAM_PROCESS_MODE_TAG))
+            .queue(param_address(K_PARAM_PROCESS_MODE_TAG))
             && let Some(point) = queue.points.last()
         {
             reported = Some(point.value.get());

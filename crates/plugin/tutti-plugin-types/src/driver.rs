@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, Layout, LoadedPlugin, Loaded, Normalized, Notice, ParamId,
+    Control, Controller, Effect, Event, Layout, Loaded, LoadedPlugin, Normalized, Notice, ParamId,
     ParameterInfo, PluginDescriptor, PluginError, PluginResult, Prepare, Processor, Refused, Reply,
     SampleRate, State, Stuck, step,
 };
@@ -407,7 +407,9 @@ impl<L: Loaded> Hosted for Lifecycle<L> {
     }
 
     fn parameters(&self) -> Vec<ParameterInfo> {
-        self.control_ref().map(Control::parameters).unwrap_or_default()
+        self.control_ref()
+            .map(Control::parameters)
+            .unwrap_or_default()
     }
 
     fn parameter(&self, id: ParamId) -> Option<Normalized> {

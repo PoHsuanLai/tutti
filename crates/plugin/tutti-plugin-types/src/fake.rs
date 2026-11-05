@@ -19,10 +19,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use tutti_types::RequestWord;
 
 use crate::{
-    AudioBufferMut, ChannelLayout, Control, Controller, EditDrain, EditSink, Layout, Loaded,
+    AudioBufferMut, ChannelLayout, Control, Controller, EditDrain, EditSink, FdId, Layout, Loaded,
     LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginIo,
     PluginResult, PluginTail, Prepare, Processor, Refused, RescanScope, RestartRules, SampleRate,
-    Samples, Stuck, TimerId, FdId, edits,
+    Samples, Stuck, TimerId, edits,
 };
 
 /// One call the fake received.

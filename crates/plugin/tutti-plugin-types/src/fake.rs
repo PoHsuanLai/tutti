@@ -603,8 +603,11 @@ impl Controller for FakeController {
 impl Processor for FakeProcessor {
     fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
         let log = &self.shared.log;
-        self.drain
-            .drain(|crate::Edit::Param { id, value }| log.push(Call::Edit(id, value)));
+        self.drain.drain(|edit| {
+            if let crate::Edit::Param { id, value } = edit {
+                log.push(Call::Edit(id, value));
+            }
+        });
         let frames = match &mut io.buffer {
             AudioBufferMut::F32(buffer) => {
                 buffer.clear_outputs();

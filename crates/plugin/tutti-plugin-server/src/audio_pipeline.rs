@@ -212,6 +212,7 @@ impl AudioPipeline {
     }
 
     /// Blocks the plugin failed since the pipeline was built.
+    #[cfg(test)]
     pub(crate) fn failed_blocks(&self) -> u64 {
         self.failed_blocks
     }
@@ -525,7 +526,7 @@ impl AudioPipeline {
 /// is not logged.
 fn note_failed_block(count: &mut u64, error: &tutti_plugin::server::PluginError) {
     *count += 1;
-    if *count == 1 || *count % 1024 == 0 {
+    if *count == 1 || count.is_multiple_of(1024) {
         tracing::warn!("the plugin failed {} block(s), the latest: {error}", *count);
     }
 }

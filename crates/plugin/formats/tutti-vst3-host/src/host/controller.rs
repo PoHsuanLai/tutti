@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use vst3::Steinberg::Vst::{IAudioProcessorTrait, IComponentTrait};
+use vst3::Steinberg::Vst::IComponentTrait;
 
 use tutti_plugin_types::{
     AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
@@ -37,6 +37,9 @@ pub struct Vst3Controller {
     /// Writes a full ring refused, latest value per parameter, retried on the
     /// next tick ([`flush_edits`](Control::flush_edits)).
     unsent: Vec<(ParamId, Normalized)>,
+    /// A [`Edit::Reset`] the full ring refused: sent before anything in `unsent`,
+    /// which is everything written since.
+    reset_pending: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -59,6 +62,7 @@ impl Vst3Controller {
             shell: Some(shell),
             edits,
             unsent: Vec::new(),
+            reset_pending: false,
             _not_sync: PhantomData,
         }
     }
@@ -89,13 +93,35 @@ impl Vst3Controller {
     /// A value already waiting to be retried is replaced by the newer one; a
     /// full ring keeps the value for the next tick.
     fn queue_edit(&mut self, id: ParamId, value: Normalized) {
-        if let Some(slot) = self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
-            slot.1 = value;
+        if self.reset_pending {
+            self.keep(id, value);
+            return;
+        }
+        if self.unsent.iter().any(|(waiting, _)| *waiting == id) {
+            self.keep(id, value);
             return;
         }
         if self.edits.send(Edit::Param { id, value }).is_err() {
-            self.unsent.push((id, value));
+            self.keep(id, value);
         }
+    }
+
+    /// Holds a write for the next tick, replacing an earlier one to the same
+    /// parameter.
+    fn keep(&mut self, id: ParamId, value: Normalized) {
+        match self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
+            Some(slot) => slot.1 = value,
+            None => self.unsent.push((id, value)),
+        }
+    }
+
+    /// Makes every write made so far stale: a state or a preset load replaced
+    /// the values they were written against, and the next block must not put
+    /// them back. The ring's order makes a [`Edit::Reset`] exact; a full ring
+    /// holds it for the next tick, and every write after it waits behind it.
+    fn reset_edits(&mut self) {
+        self.unsent.clear();
+        self.reset_pending = self.edits.send(Edit::Reset).is_err();
     }
 }
 
@@ -155,8 +181,11 @@ impl Control for Vst3Controller {
         Control::save_state(&mut **self)
     }
 
+    /// Restores the state, and makes the writes queued before it stale.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut **self, bytes)
+        let result = Control::load_state(&mut **self, bytes);
+        self.reset_edits();
+        result
     }
 
     fn presets(&mut self) -> Vec<Preset> {
@@ -166,6 +195,9 @@ impl Control for Vst3Controller {
     fn load_preset(&mut self, id: &PresetId) -> bool {
         match self.program_write(id) {
             Some((param, value)) => {
+                // A program replaces the plugin's other parameters too: what
+                // was queued before it is stale.
+                self.reset_edits();
                 Control::set_parameter(self, param, value);
                 true
             }
@@ -193,6 +225,15 @@ impl Control for Vst3Controller {
     /// midi-mapping tables go.
     fn flush_edits(&mut self) {
         self.midi_cc.reclaim();
+        // A tick is a control-side moment: plugins whose last holder was a
+        // Processor are destroyed here, not on its thread.
+        super::shell::reap();
+        if self.reset_pending {
+            if self.edits.send(Edit::Reset).is_err() {
+                return;
+            }
+            self.reset_pending = false;
+        }
         let waiting = std::mem::take(&mut self.unsent);
         for (id, value) in waiting {
             if self.edits.send(Edit::Param { id, value }).is_err() {
@@ -246,6 +287,8 @@ impl Vst3Loaded {
         prepare: Prepare,
     ) -> std::result::Result<(Vst3Processor<T>, Vst3Controller), Refused<Self>> {
         tutti_plugin_types::assert_main_thread();
+        super::shell::warm_retirement();
+        super::shell::reap();
         let mode = if prepare.mode.is_offline() {
             ProcessMode::Offline
         } else {
@@ -355,7 +398,9 @@ impl Vst3Loaded {
         )
     }
 
-    /// `setProcessing(0)` and `setActive(0)`, if the plugin is active.
+    /// `setActive(0)`, if the plugin is active. The Processor has stopped
+    /// processing by now (`rejoin` stops it, and sends `setProcessing(0)` only
+    /// if it was on), so it is not told twice.
     fn deactivate_plugin(&mut self) {
         if !self.active.active {
             return;
@@ -365,7 +410,6 @@ impl Vst3Loaded {
         // legal. (The asymmetry with `setActive(1)`, where a refusal is a
         // failure.)
         unsafe {
-            self.interfaces.processor.setProcessing(0);
             let _ = self.interfaces.component.setActive(0);
         }
         self.active = Activation::default();

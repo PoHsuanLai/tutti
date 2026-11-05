@@ -38,6 +38,15 @@ Renames (design 016 §2.5): `info` is `plugin_info`, `read_latency_samples` and
 `get_class_info` are `factory_info` and `class_info`, and path arguments are
 `impl AsRef<Path>`.
 
+A block a plugin fails is counted and answered with silence, and no longer ends
+the server loop (it did for CLAP's errored blocks, and would have for VST3's).
+The server's idle poll takes the state instead of cloning it and skips the
+lifecycle when nothing was asked, so it allocates nothing, for CLAP too. A
+Processor dropped after its Controller retires the plugin to the control side
+(`Vst3Loaded::reap_retired`) instead of destroying it on its thread. New in the
+core: `Edit::Reset` (a state or preset load makes the writes queued before it
+stale, for VST3 and CLAP) and `State::is_quiet`.
+
 New: `Vst3Loaded::take_requests`, `is_active`, `program_change_parameter`,
 `descriptor_of`, `LoadOptions`, `ProcessFailed`, `Vst3Processor::take_edits`.
 

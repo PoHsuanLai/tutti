@@ -236,6 +236,10 @@ impl Control for Vst3Loaded {
     /// with no controller has nothing to write to.
     fn set_parameter(&mut self, id: ParamId, value: Normalized) {
         self.write_normalized(id, value);
+        // A write the last activation left undelivered is older than this one.
+        if let Some(slot) = self.carried.iter_mut().find(|(waiting, _)| *waiting == id) {
+            slot.1 = value;
+        }
     }
 
     /// The plugin's own display string for `value`: the value is a *parameter*
@@ -280,7 +284,10 @@ impl Control for Vst3Loaded {
         self.read_state().map_err(plugin_error)
     }
 
+    /// Restores the state. The writes a rejoin carried are older than it, and
+    /// are dropped.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
+        self.carried.clear();
         self.write_state(bytes).map_err(plugin_error)
     }
 
@@ -318,6 +325,8 @@ impl Control for Vst3Loaded {
     fn load_preset(&mut self, id: &PresetId) -> bool {
         match self.program_write(id) {
             Some((param, value)) => {
+                // A program replaces the plugin's other parameters too.
+                self.carried.clear();
                 self.set_parameter(param, value);
                 true
             }

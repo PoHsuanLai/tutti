@@ -765,7 +765,20 @@ one; what differs is VST3's.
   and deactivates first), so a Processor whose Controller went keeps rendering
   against a live plugin instead of racing a teardown, and nothing on the audio
   thread takes a lock for it. `Lifecycle` rejoins the halves before it drops
-  either, so on the supported path the last drop is on the main thread.
+  either, so on the supported path the last drop is on the control side. A
+  Processor that is the last holder (its Controller was dropped first) does not
+  tear the plugin down on the thread it renders on: it moves the shell into a
+  bounded retirement queue (`Arc::into_inner`, so the check and the release are
+  one step), and `Vst3Loaded::reap_retired` destroys what is queued on the
+  calling thread; `load`, `activate_typed` and the Controller's `flush_edits`
+  tick call it. Only a full queue (64 retired plugins, never reaped) destroys
+  in place.
+- The threading argument on the shell is stated per call: the Controller runs
+  the `IEditController` interface, `IComponent` state and the `[UI-thread &
+  Setup Done]` getters (latency, tail, bus arrangements) beside `process`, which
+  the SDK permits in the `Processing` state; the transitions (`setActive`,
+  `setupProcessing`, `setBusArrangements`, `activateBus`) run only in the
+  activation and the rejoin.
 - A write to the Controller is applied to the edit controller at once
   (`setParamNormalized`) and queued in the edit ring. The Processor drains the
   ring at the head of the block, the latest write to each parameter winning,
@@ -777,7 +790,15 @@ one; what differs is VST3's.
 - VST3 has no `params.flush`, so a rejoin cannot write the ring's leftovers into
   the plugin: they are kept (with the writes a full ring refused, latest per
   parameter) in `Vst3Loaded::carried` and delivered in the first block of the next
-  activation. The bridge's `settle_edits` before a state save or a fork is
+  activation. A write on the loaded plugin overwrites its carried entry, and a
+  state or preset load drops them all, so an older write never goes in over a
+  newer one.
+- `Edit::Reset` (new in the core) says every write queued before it is stale. A
+  Controller's `load_state` and `load_preset` send one (CLAP's too), the ring's
+  order makes it exact, and a drain applies none of the writes ahead of it. A
+  full ring holds the reset for the next tick with every later write behind it,
+  so in that case the writes already in the ring still reach one block before it
+  lands. The bridge's `settle_edits` before a state save or a fork is
   `flush_edits` only: the write already reached the edit controller, which is
   what the state a save reads belongs to, and a separate component's state lags a
   write by at most a block, which VST3 gives no way to close.
@@ -790,8 +811,9 @@ one; what differs is VST3's.
   `IoChanged`, `kLatencyChanged` `LatencyChanged`, `kParamValuesChanged`
   `RescanParams(Values)`, `kParamTitlesChanged` and `kParamIDMappingChanged`
   `RescanParams(Info)`, `kMidiCCAssignmentChanged` and `kNoteExpressionChanged`
-  their own, and `kPrefetchableSupportChanged` `Restart`, which is the
-  deactivate and activate it asks for. Bus titles, routing and keyswitch changes
+  their own, and `kPrefetchableSupportChanged` `Restart`: the SDK says the host
+  "has to deactivate the plug-in, calls `getPrefetchableSupport` and reactivate"
+  (`ivsteditcontroller.h`), and the old `poll_restart` ran that cycle too. Bus titles, routing and keyswitch changes
   raise nothing, as before. `Vst3Loaded::take_requests` is the shell's one pass.
   A latency change raised inside `activate` is answered by the reads after it and
   dropped there, as the core's rule 4 expects.
@@ -831,11 +853,17 @@ one; what differs is VST3's.
   `get_factory_info` and `get_class_info` are `factory_info` and `class_info`,
   and path arguments are `impl AsRef<Path>`.
 - The server's `Vst3Instance` is a bridge over `Lifecycle<Vst3Loaded>` as
-  `ClapInstance` is. Its poll allocates when the plugin asked for something (the
-  core copies its state and queues the effects), so the no-allocation gate that
-  guarded the old `poll_restart` is on the two reads the pass makes of the host
-  crate (`take_requests`, `discard_notifications`), with the edits of a dragged
-  knob waiting in the queue.
+  `ClapInstance` is. The idle pass every dispatch takes (the plugin asked for
+  nothing, `State::is_quiet`) does not enter the lifecycle and allocates
+  nothing, for both bridges; `drive` takes the state instead of cloning it. A
+  pass with work allocates (the core queues its effects), which a restart may.
+  The gate is the whole `drain_async_events` of a session, for each bridge.
+- A block the plugin fails no longer ends the server: `AudioPipeline::process`
+  counts it (`failed_blocks`), clears the MIDI and publishes nothing, so the
+  host reads silence and the reply is the usual `AudioProcessed` (the wire has
+  no failure flag). This holds for CLAP's errored blocks too, which propagated
+  out of `handle` and ended the loop. The log line is the first failure and every
+  1024th, on the audio-phase thread.
 
 - **The control surface is `Control`, once.** `Loaded` and `Controller` both
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared

@@ -88,9 +88,14 @@ pub enum Edit {
         /// To what.
         value: Normalized,
     },
+    /// Every write queued before this one is stale: a state or a preset load
+    /// replaced the values they were written against. A drain applies none of
+    /// the writes that precede it, which the ring's order makes exact.
+    Reset,
 }
 
 const PARAM_TAG: u64 = 1;
+const RESET_TAG: u64 = 2;
 
 impl Edit {
     pub(crate) fn encode(self) -> [u64; 2] {
@@ -98,14 +103,19 @@ impl Edit {
             Self::Param { id, value } => {
                 [PARAM_TAG << 32 | u64::from(id.get()), value.get().to_bits()]
             }
+            Self::Reset => [RESET_TAG << 32, 0],
         }
     }
 
     pub(crate) fn decode(raw: [u64; 2]) -> Option<Self> {
-        (raw[0] >> 32 == PARAM_TAG).then(|| Self::Param {
-            id: ParamId::new(raw[0] as u32),
-            value: Normalized::new(f64::from_bits(raw[1])),
-        })
+        match raw[0] >> 32 {
+            PARAM_TAG => Some(Self::Param {
+                id: ParamId::new(raw[0] as u32),
+                value: Normalized::new(f64::from_bits(raw[1])),
+            }),
+            RESET_TAG => Some(Self::Reset),
+            _ => None,
+        }
     }
 }
 
@@ -239,6 +249,26 @@ mod tests {
     /// Mutation (run): `drain` applying nothing for `None` but not counting →
     /// the count assertion fails; `decode` accepting any tag → the unknown
     /// entry is applied and the sequence assertion fails.
+    /// A `Reset` survives the ring in order, between the writes it separates.
+    ///
+    /// Mutation: `decode` answering `None` for `RESET_TAG` → the reset is
+    /// dropped and counted, not delivered → fails.
+    #[test]
+    fn a_reset_round_trips_between_writes() {
+        let (mut sink, mut drain) = edits(4);
+        let a = Edit::Param {
+            id: ParamId::new(1),
+            value: Normalized::new(0.5),
+        };
+        sink.send(a).unwrap();
+        sink.send(Edit::Reset).unwrap();
+        sink.send(a).unwrap();
+        let mut got = Vec::new();
+        drain.drain(|e| got.push(e));
+        assert_eq!(got, [a, Edit::Reset, a]);
+        assert_eq!(drain.undecodable(), 0);
+    }
+
     #[test]
     fn an_unknown_entry_is_dropped_and_counted() {
         assert_eq!(Edit::decode([99 << 32, 0]), None);

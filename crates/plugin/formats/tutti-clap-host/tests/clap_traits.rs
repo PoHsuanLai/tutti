@@ -281,6 +281,37 @@ fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
     assert!((event.value - 350.0).abs() < 1e-9, "100 + 0.25 * 1000");
 }
 
+/// **A state load makes the writes queued before it stale**: they were written
+/// against values the load replaced, and the next block must not put them
+/// back over it.
+///
+/// Mutation (run): `ClapController::load_state` not calling `reset_edits` → the
+/// block carries the stale write → fails; `ClapProcessor` ignoring
+/// `Edit::Reset` (the `truncate` removed) → the same.
+#[test]
+fn a_state_load_makes_queued_writes_stale() {
+    let probe = Probe::acquire();
+    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    let cutoff = &probe_params()[0];
+    let id = ParamId::new(cutoff.id);
+
+    render(&mut processor, SampleFormat::Float32).expect("block");
+    controller.set_parameter(id, Normalized::new(0.25));
+    let saved = controller.save_state().expect("saves");
+    controller.load_state(&saved).expect("restores");
+    controller.set_parameter(id, Normalized::new(0.75));
+
+    render(&mut processor, SampleFormat::Float32).expect("block");
+    let cap = process_capture();
+    let writes: Vec<f64> = cap.events[..cap.event_count as usize]
+        .iter()
+        .filter(|e| e.event_type == PARAM_VALUE && e.param_id == cutoff.id)
+        .map(|e| e.value)
+        .collect();
+    assert_eq!(writes.len(), 1, "only the write after the load: {writes:?}");
+    assert!((writes[0] - 850.0).abs() < 1e-9, "100 + 0.75 * 1000");
+}
+
 /// **A full ring keeps the latest value per parameter and retries on the next
 /// tick.** Far more writes than the ring holds arrive before a block; the first
 /// block drains the ring, `flush_edits` sends what was kept, and the next block

@@ -29,7 +29,7 @@ use super::sequencer::{
     SeqScratch, convert_chords_into, convert_expr_ints_into, convert_expr_texts_into,
     convert_scales_into,
 };
-use super::shell::Shell;
+use super::shell::{Hold, Shell};
 
 /// How many of the Controller's writes the ring holds between two blocks.
 pub(super) const EDIT_CAPACITY: usize = 256;
@@ -169,8 +169,11 @@ impl ProcessConfig {
 /// `Send` to move to the realtime thread, not `Sync`. It reaches the plugin only
 /// through its own reference to `IAudioProcessor`, so it never touches the
 /// [`Vst3Loaded`](super::Vst3Loaded) its [`Vst3Controller`](super::Vst3Controller)
-/// holds. Dropping it ends its share of the activation; the plugin is destroyed
-/// when the last half goes.
+/// holds. Dropping it ends its share of the activation. The plugin is destroyed
+/// when the last half goes, on the control side: a Processor that is the last
+/// hands the plugin to a retirement queue that
+/// [`Vst3Loaded::reap_retired`](super::Vst3Loaded::reap_retired) empties, so
+/// dropping it on the realtime thread does not tear a plugin down there.
 pub struct Vst3Processor<T: Vst3Sample> {
     // The scratch is listed first so it drops before the rest.
     pub(super) audio: AudioIO<T>,
@@ -187,8 +190,9 @@ pub struct Vst3Processor<T: Vst3Sample> {
     edits_dropped: u64,
     /// Whether `setProcessing(1)` is the plugin's last word.
     processing: bool,
-    /// Last: the plugin outlives everything above.
-    shell: Arc<Shell>,
+    /// Last: the plugin outlives everything above, and a last holder retires
+    /// it instead of destroying it here.
+    shell: Hold,
 }
 
 impl<T: Vst3Sample> std::fmt::Debug for Vst3Processor<T> {
@@ -236,13 +240,13 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             pending: carried,
             edits_dropped: 0,
             processing: true,
-            shell,
+            shell: Hold::new(shell),
         }
     }
 
     /// The shell both halves of this activation hold; `deactivate` compares it.
     pub(super) fn shell(&self) -> &Arc<Shell> {
-        &self.shell
+        self.shell.shell()
     }
 
     /// Whether `setProcessing(1)` is the plugin's last word: true from
@@ -289,10 +293,15 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             ..
         } = self;
         drain.drain(|edit| {
-            let Edit::Param { id, value } = edit else {
-                return;
+            let (id, value) = match edit {
+                Edit::Param { id, value } => (id.get(), value),
+                // What came before is stale; what came after is not.
+                Edit::Reset => {
+                    pending.clear();
+                    return;
+                }
+                _ => return,
             };
-            let id = id.get();
             if let Some(slot) = pending.iter_mut().find(|(waiting, _)| *waiting == id) {
                 slot.1 = value;
             } else if pending.len() < pending.capacity() {
@@ -503,12 +512,12 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         self.audio.input.events.dropped()
     }
 
-    /// SysEx messages not handed to the plugin since this instance was
-    /// activated (an in-place re-activation does not zero it), each dropped
-    /// whole rather than truncated: longer than
+    /// SysEx messages not handed to the plugin since this Processor was built
+    /// (an activation builds a new one, so a re-activation starts at zero),
+    /// each dropped whole rather than truncated: longer than
     /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
     /// left without their `END` by a later `START`, open when the plugin was
-    /// re-activated, or cut by more than a block's MIDI cap routed through the
+    /// stopped ([`stop`](Self::stop)), or cut by more than a block's MIDI cap routed through the
     /// plugin's CC mapping. The input list
     /// reassembles a multi-packet SysEx (across blocks if it spans them) and
     /// hands the plugin one complete `0xF0 … 0xF7` message at its `END`.

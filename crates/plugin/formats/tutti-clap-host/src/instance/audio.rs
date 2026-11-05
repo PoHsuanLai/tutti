@@ -449,12 +449,16 @@ impl<T: ClapSample> ClapProcessor<T> {
             // has the last word.
             let table = self.ranges.lend();
             let input_events = &mut self.scratch.input_events;
-            self.drain.drain(|edit| {
-                // An edit this host does not know is dropped; the drain counts
-                // what cannot decode, and a new variant is a new host's to add.
-                if let tutti_plugin_types::Edit::Param { id, value } = edit {
+            // Where the edits start: a reset takes back the ones before it.
+            let edits_from = input_events.events.len();
+            self.drain.drain(|edit| match edit {
+                tutti_plugin_types::Edit::Param { id, value } => {
                     input_events.add_param_edit(id.get(), value.get(), &table.ranges, table.claims);
                 }
+                tutti_plugin_types::Edit::Reset => input_events.events.truncate(edits_from),
+                // An edit this host does not know is dropped; the drain counts
+                // what cannot decode, and a new variant is a new host's to add.
+                _ => {}
             });
             if !param_changes.is_empty() {
                 input_events.add_param_changes(param_changes, &table.ranges, table.claims);

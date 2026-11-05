@@ -600,3 +600,103 @@ fn the_control_surface_is_the_same_loaded_and_active() {
     );
     Vst3Loaded::deactivate(processor, controller).expect("a pair");
 }
+
+/// The probe's state at its defaults: the mode is the tagged passthrough, so a
+/// block renders `probe_tag(0, 0) == 1.0` from silence.
+fn default_state(probe: &Probe) -> Vec<u8> {
+    let mut fresh = probe.load();
+    Control::save_state(&mut fresh).expect("the probe saves")
+}
+
+/// What a block renders from silence in the probe's default mode.
+const PASSTHROUGH: f64 = 1.0;
+
+/// **A write on a loaded plugin overrides the one a rejoin carried** for the
+/// same parameter: the user's later value is not put back under by the earlier
+/// one at the next activation.
+///
+/// Mutation (run): `Control::set_parameter` for `Vst3Loaded` not updating
+/// `carried` → the next activation renders the carried 0.3 → fails.
+#[test]
+fn a_write_on_a_loaded_plugin_overrides_a_carried_one() {
+    let probe = Probe::behaving();
+    let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    let mut loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
+    Control::set_parameter(&mut loaded, id(PARAM_RAMP), Normalized::new(0.9));
+    let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
+    let rendered = render_f32(&mut processor);
+    assert!((rendered - 0.9).abs() < 1e-6, "{rendered}");
+    Vst3Loaded::deactivate(processor, controller).expect("a pair");
+}
+
+/// **A state load on a loaded plugin makes the carried writes stale**: they
+/// were written against a state it replaced.
+///
+/// Mutation (run): `Control::load_state` for `Vst3Loaded` keeping `carried` →
+/// the carried ramp mode is applied over the loaded state → fails.
+#[test]
+fn a_state_load_on_a_loaded_plugin_drops_the_carried_writes() {
+    let probe = Probe::behaving();
+    let state = default_state(&probe);
+    let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    let mut loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
+    Control::load_state(&mut loaded, &state).expect("restores");
+    let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
+    assert_eq!(render_f32(&mut processor), PASSTHROUGH);
+    Vst3Loaded::deactivate(processor, controller).expect("a pair");
+}
+
+/// **A state load on the Controller makes the writes queued before it stale**,
+/// and a write after it is not.
+///
+/// Mutation (run): `Vst3Controller::load_state` not calling `reset_edits` → the
+/// stale ramp mode reaches the block → fails; `drain_ring` ignoring
+/// `Edit::Reset` (the `pending.clear()` removed) → the same.
+#[test]
+fn a_state_load_makes_the_queued_writes_stale() {
+    let probe = Probe::behaving();
+    let state = default_state(&probe);
+    let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    controller.load_state(&state).expect("restores");
+    assert_eq!(
+        render_f32(&mut processor),
+        PASSTHROUGH,
+        "the stale writes did not land"
+    );
+    // What is written after the load is not stale.
+    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.6));
+    let rendered = render_f32(&mut processor);
+    assert!((rendered - 0.6).abs() < 1e-6, "{rendered}");
+    Vst3Loaded::deactivate(processor, controller).expect("a pair");
+}
+
+/// **A Processor that outlives its Controller does not destroy the plugin
+/// when it drops**: it hands it to a retirement queue that a control-side call
+/// empties. The Processor is dropped on another thread, as a realtime thread
+/// would drop it; the plugin is still there to be reaped on this one.
+///
+/// Mutation (run): `retire` dropping the shell in place → the plugin is gone
+/// before the reap, which finds nothing → fails.
+#[test]
+fn a_processor_dropped_last_leaves_the_teardown_to_the_control_side() {
+    let probe = Probe::behaving();
+    let (mut processor, controller) = probe.load().activate(prepare()).expect("activates");
+    render_f32(&mut processor);
+    drop(controller);
+    std::thread::spawn(move || drop(processor))
+        .join()
+        .expect("the drop does not panic");
+    assert_eq!(
+        Vst3Loaded::reap_retired(),
+        1,
+        "the plugin was waiting to be destroyed"
+    );
+    assert_eq!(Vst3Loaded::reap_retired(), 0);
+}

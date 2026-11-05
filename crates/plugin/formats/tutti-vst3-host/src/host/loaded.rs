@@ -332,6 +332,7 @@ impl Vst3Loaded {
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+        Self::reap_retired();
         let path = path.as_ref();
         let class_name = options.class.as_deref();
         check_exists(path)?;
@@ -2147,6 +2148,19 @@ impl Vst3Loaded {
 }
 
 impl Vst3Loaded {
+    /// Destroys, on the calling thread, the plugins whose last holder was a
+    /// [`Vst3Processor`](crate::Vst3Processor) dropped after its Controller, and
+    /// says how many. A Processor does not tear a plugin down on the thread it
+    /// renders on; it retires the plugin here instead. [`load`](Self::load),
+    /// [`activate_typed`](Self::activate_typed) and the Controller's
+    /// [`flush_edits`](tutti_plugin_types::Control::flush_edits) reap too, so a
+    /// host that ticks never needs to call it.
+    ///
+    /// Control thread.
+    pub fn reap_retired() -> usize {
+        super::shell::reap()
+    }
+
     /// What the plugin has asked of the host since the last take, as the
     /// core's requests, appended to `out`: every `restartComponent` flag that
     /// has a request ([`RestartFlags::raise_into`] says which). A host that

@@ -55,30 +55,58 @@ impl Sample for f64 {}
 /// Pre-allocated channel-pointer arrays handed to a C plugin API on each
 /// process call — one array per process direction (input / output).
 ///
-/// Each `Vec<*mut T>` is the backing store for a `void**`: it holds one pointer
-/// per channel (each pointing at that channel's deinterleaved sample buffer),
-/// and [`prepare`](Self::prepare) returns the `Vec`'s base as a
-/// `*mut *mut c_void` for the C API.
+/// Each `Vec` is the backing store for a `void**`: it holds one pointer per
+/// channel (each pointing at that channel's deinterleaved sample buffer), and
+/// [`prepare`](Self::prepare) returns the `Vec`s' bases for the C API. The
+/// input table holds `*const T` and the output table `*mut T`, so the type
+/// itself never makes a read-only buffer writable; the one `*const` to `*mut`
+/// cast an ABI that wants `**mut` for inputs needs belongs at the FFI call,
+/// where its safety argument is made.
 ///
 /// Allocated once per plugin instance and reused, so the realtime `process`
 /// path only *refills* the pointer slots (never grows the `Vec`s) and stays
 /// allocation-free. An instance that can process at both widths holds one of
 /// these per width.
+///
+/// The slots keep whatever the last [`prepare`](Self::prepare) wrote, so they
+/// dangle between blocks; they are only valid for the block they were filled
+/// from.
+///
+/// Sendable for the plugin sample widths:
+///
+/// ```
+/// fn send_sync<T: Send + Sync>() {}
+/// send_sync::<tutti_plugin_types::BufferPtrs<f32>>();
+/// send_sync::<tutti_plugin_types::BufferPtrs<f64>>();
+/// ```
+///
+/// but not for an element type that is not a [`Sample`]:
+///
+/// ```compile_fail
+/// fn send<T: Send>() {}
+/// send::<tutti_plugin_types::BufferPtrs<std::rc::Rc<u8>>>();
+/// ```
+///
+/// and its slots are not reachable from safe code:
+///
+/// ```compile_fail
+/// let mut p = tutti_plugin_types::BufferPtrs::<f32>::new(1, 1);
+/// p.output[0] = std::ptr::null_mut();
+/// ```
 pub struct BufferPtrs<T> {
-    /// One slot per input channel, refilled each block by
-    /// [`prepare`](Self::prepare). Null between calls — the pointers are only
-    /// valid for the block they were filled from.
-    pub input: Vec<*mut T>,
-    /// One slot per output channel, with the same per-block validity as
-    /// [`input`](Self::input).
-    pub output: Vec<*mut T>,
+    input: Vec<*const T>,
+    output: Vec<*mut T>,
 }
 
-// Sound because the `Vec`s hold no owned data — only pointer slots that are
-// null except within a single `prepare`-then-process window on one thread. The
-// raw pointers are what makes the auto-impls absent; nothing here is shared.
-unsafe impl<T> Send for BufferPtrs<T> {}
-unsafe impl<T> Sync for BufferPtrs<T> {}
+// SAFETY: the tables are plain pointer slots. Nothing here dereferences them,
+// and no `&self` method exposes them (`prepare` takes `&mut self`), so
+// sharing a `&BufferPtrs` between threads reveals nothing. Moving the table
+// moves pointers to `T` samples, which only a plugin call dereferences, and
+// that call's caller answers for the pointee being valid and `T: Send`
+// (the `Sample` bound) for the thread it runs on.
+unsafe impl<T: Sample> Send for BufferPtrs<T> {}
+// SAFETY: see `Send`; there is no shared-reference API at all.
+unsafe impl<T: Sample> Sync for BufferPtrs<T> {}
 
 impl<T> BufferPtrs<T> {
     /// Allocates null-filled pointer arrays for the given channel counts.
@@ -86,7 +114,7 @@ impl<T> BufferPtrs<T> {
     /// Allocating: call at instance setup, never on the audio thread.
     pub fn new(num_inputs: usize, num_outputs: usize) -> Self {
         Self {
-            input: vec![std::ptr::null_mut(); num_inputs],
+            input: vec![std::ptr::null(); num_inputs],
             output: vec![std::ptr::null_mut(); num_outputs],
         }
     }
@@ -96,7 +124,7 @@ impl<T> BufferPtrs<T> {
     ///
     /// Allocating: call when a bus is renegotiated, never on the audio thread.
     pub fn resize_inputs(&mut self, count: usize) {
-        self.input = vec![std::ptr::null_mut(); count];
+        self.input = vec![std::ptr::null(); count];
     }
 
     /// Reallocates the output array for a new channel count, discarding any
@@ -107,35 +135,43 @@ impl<T> BufferPtrs<T> {
         self.output = vec![std::ptr::null_mut(); count];
     }
 
+    /// Number of input channel slots.
+    pub fn input_len(&self) -> usize {
+        self.input.len()
+    }
+
+    /// Number of output channel slots.
+    pub fn output_len(&self) -> usize {
+        self.output.len()
+    }
+
     /// Fills the pointer arrays from buffer slices, returning the
-    /// `(inputs, outputs)` raw `*mut *mut c_void` pair for FFI.
+    /// `(inputs, outputs)` raw pair for FFI.
     ///
     /// Allocation-free, so it is the one method here that belongs on the audio
     /// thread. Channels beyond the arrays' capacity are **silently dropped** —
     /// this refills, it never grows, which is what keeps it RT-safe; size the
     /// arrays with [`new`](Self::new) or the `resize_*` methods first.
     ///
-    /// Input slices are cast to `*mut T` because the C APIs use
-    /// `*mut *mut c_void` for both directions; a well-behaved plugin must not
-    /// mutate through the input pointers. The returned pointers borrow both
-    /// `self` and the passed slices and are valid only until either moves.
+    /// The input pointers are `*const`: they point into shared borrows, and
+    /// writing through them is undefined behaviour. A caller whose C API types
+    /// inputs `*mut` must cast at the call and state in its `// SAFETY:` that
+    /// the plugin's ABI contract is read-only inputs. The returned pointers
+    /// borrow both `self` and the passed slices and are valid only until
+    /// either moves or the slices' borrows end.
     pub fn prepare(
         &mut self,
         inputs: &[&[T]],
         outputs: &mut [&mut [T]],
-    ) -> (*mut *mut c_void, *mut *mut c_void) {
-        for (i, input_slice) in inputs.iter().enumerate() {
-            if i < self.input.len() {
-                self.input[i] = input_slice.as_ptr() as *mut T;
-            }
+    ) -> (*const *const c_void, *mut *mut c_void) {
+        for (slot, input_slice) in self.input.iter_mut().zip(inputs) {
+            *slot = input_slice.as_ptr();
         }
-        for (i, output_slice) in outputs.iter_mut().enumerate() {
-            if i < self.output.len() {
-                self.output[i] = output_slice.as_mut_ptr();
-            }
+        for (slot, output_slice) in self.output.iter_mut().zip(outputs.iter_mut()) {
+            *slot = output_slice.as_mut_ptr();
         }
         (
-            self.input.as_mut_ptr() as *mut *mut c_void,
+            self.input.as_ptr() as *const *const c_void,
             self.output.as_mut_ptr() as *mut *mut c_void,
         )
     }
@@ -253,5 +289,45 @@ impl<'t, 'd: 't> AudioBufferMut<'t, 'd> {
             Self::F32(b) => b.sample_rate,
             Self::F64(b) => b.sample_rate,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The sendable widths stay sendable (a regression here breaks every
+    // plugin host that moves its scratch to the audio thread).
+    const _: () = {
+        const fn send_sync<T: Send + Sync>() {}
+        send_sync::<BufferPtrs<f32>>();
+        send_sync::<BufferPtrs<f64>>();
+    };
+
+    /// `prepare` points each slot at its channel, leaves surplus channels out,
+    /// and the input table is a `*const` table.
+    ///
+    /// Mutation: write `output_slice.as_mut_ptr()` into the input slot (or
+    /// drop the `zip`, indexing past `input_len`) → the pointer checks fail
+    /// or the surplus-channel call panics.
+    #[test]
+    fn prepare_fills_slots_and_drops_surplus_channels() {
+        let mut p = BufferPtrs::<f32>::new(1, 1);
+        assert_eq!((p.input_len(), p.output_len()), (1, 1));
+        let (a, b) = ([1.0f32; 4], [2.0f32; 4]);
+        let (mut o0, mut o1) = ([0.0f32; 4], [0.0f32; 4]);
+        let (o0p, o1p) = (o0.as_mut_ptr(), o1.as_mut_ptr());
+        let (ins, outs) = p.prepare(&[&a, &b], &mut [&mut o0, &mut o1]);
+        // SAFETY: one slot per table, filled just above; the buffers live on.
+        // The slots' neighbours are not read: the tables have exactly one entry.
+        unsafe {
+            assert_eq!(*(ins as *const *const f32), a.as_ptr());
+            assert_eq!(*(outs as *const *mut f32), o0p);
+        }
+        // Surplus channels did not grow or land in the tables.
+        assert_eq!((p.input_len(), p.output_len()), (1, 1));
+        assert_ne!(*unsafe { &*(ins as *const *const f32) }, b.as_ptr());
+        assert_ne!(*unsafe { &*(outs as *const *mut f32) }, o1p);
+        assert_ne!(o0p, o1p);
     }
 }

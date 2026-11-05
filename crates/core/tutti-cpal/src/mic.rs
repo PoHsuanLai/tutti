@@ -43,6 +43,7 @@ use tutti_io::{MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};
 use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
+use crate::owner::Owned;
 
 /// Capture-ring capacity in stereo frames — ~1s at 48kHz. Large enough that a
 /// briefly descheduled pump thread doesn't overrun, small enough to bound
@@ -58,17 +59,12 @@ const RING_FRAMES: usize = 48_000;
 /// failure — always hear "now", never a growing delay.
 const MONITOR_RING_FRAMES: usize = 480;
 
-/// Keeps the `cpal` input [`Stream`](cpal::Stream) alive. The callback runs for
+/// Keeps the `cpal` input stream alive on its own thread. The callback runs for
 /// as long as this value exists; dropping it stops capture. The field is never
 /// read — ownership *is* the API, as with the output side's `CpalStream`.
 struct StreamHandle(
-    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
+    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] Owned,
 );
-
-// SAFETY: `cpal::Stream` is not `Send` on every platform, but we only ever hold
-// it (never touch it across threads) and stop it by dropping on the owning
-// thread — the same contract the output side's `CpalStream` relies on.
-unsafe impl Send for StreamHandle {}
 
 /// A live microphone as an [`AudioIn`]. Requires the `capture` feature.
 ///
@@ -182,46 +178,45 @@ impl MicIn {
         let channel_count = channels.count() as usize;
 
         let sample_format = config.sample_format();
-        let cfg = config.into();
-        let stream = match sample_format {
-            cpal::SampleFormat::I8 => {
-                build_input::<i8>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::I16 => {
-                build_input::<i16>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::I32 => {
-                build_input::<i32>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::U8 => {
-                build_input::<u8>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::U16 => {
-                build_input::<u16>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::U32 => {
-                build_input::<u32>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::F32 => {
-                build_input::<f32>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            cpal::SampleFormat::F64 => {
-                build_input::<f64>(&device, &cfg, channel_count, prod, mon_prod)?
-            }
-            format => {
-                return Err(Error::InvalidConfig(format!(
-                    "Unsupported input sample format: {format:?}"
-                )));
-            }
-        };
-
-        stream.play()?;
+        let cfg: cpal::StreamConfig = config.into();
+        if !matches!(
+            sample_format,
+            cpal::SampleFormat::I8
+                | cpal::SampleFormat::I16
+                | cpal::SampleFormat::I32
+                | cpal::SampleFormat::U8
+                | cpal::SampleFormat::U16
+                | cpal::SampleFormat::U32
+                | cpal::SampleFormat::F32
+                | cpal::SampleFormat::F64
+        ) {
+            return Err(Error::InvalidConfig(format!(
+                "Unsupported input sample format: {sample_format:?}"
+            )));
+        }
+        let owned = Owned::spawn("tutti-input-stream", move || {
+            let (d, c, n) = (&device, &cfg, channel_count);
+            let stream = match sample_format {
+                cpal::SampleFormat::I8 => build_input::<i8>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::I16 => build_input::<i16>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::I32 => build_input::<i32>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::U8 => build_input::<u8>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::U16 => build_input::<u16>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::U32 => build_input::<u32>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::F32 => build_input::<f32>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::F64 => build_input::<f64>(d, c, n, prod, mon_prod)?,
+                // Checked above, before the thread is spawned.
+                _ => unreachable!("sample format checked before spawn"),
+            };
+            stream.play()?;
+            Ok(stream)
+        })?;
 
         Ok((
             Self {
                 cons,
                 sample_rate,
-                _stream: StreamHandle(stream),
+                _stream: StreamHandle(owned),
             },
             monitor,
         ))

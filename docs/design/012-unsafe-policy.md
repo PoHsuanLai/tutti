@@ -61,9 +61,9 @@ be checked against the tree.
 - **`tutti-sampler/src/butler/prefetch.rs`** — `unsafe impl Send`/`Sync` on
   `SendProd`, the ring producer handed to the disk butler. The file says it
   "concentrates the unsafe impls in one place", which is the right shape.
-- **`tutti-cpal/src/driver_seam.rs`** — `unsafe impl Send for CpalStream`.
-  cpal's stream handle is not `Send` on every backend; the driver owns it and
-  never shares it, which is what makes the claim true.
+- **`tutti-cpal`** — no longer a site. cpal's stream is not `Send` on every
+  backend, so `CpalStream` and the mic handle hold a channel to an owner
+  thread that creates and drops the stream (`owner.rs`), with no `unsafe`.
 - **`tutti-core/src/engine.rs`** — no longer a site. `Engine::settle_graph`
   was an `unsafe fn` whose `unsafe` was a *contract*: it borrows the
   executor and the transport schedule the audio thread owns, from the

@@ -25,6 +25,7 @@ use crate::MAX_FRAMES;
 use crate::block::OutputBlock;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
+use crate::owner::Owned;
 
 /// The configuration an output stream is opened with: rate, width, sample
 /// format and callback size.
@@ -172,15 +173,13 @@ impl CpalDriver {
 
 /// The running handle of a [`CpalDriver`] stream. CPAL runs the callback for
 /// as long as this value exists; dropping it stops the stream.
+///
+/// The `cpal::Stream` is created, played and dropped on a thread of its own
+/// (some backends tie a stream to its creating thread); this handle is `Send`
+/// and dropping it, from any thread, drops the stream there and waits for it.
 pub struct CpalStream(
-    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
+    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] Owned,
 );
-
-// SAFETY: a `cpal::Stream` is not `Send` because some backends tie it
-// to the thread that created it; this crate only ever creates one on the
-// control thread and only ever drops it there, and the handle is moved into
-// `AudioEngine`, which lives on that thread.
-unsafe impl Send for CpalStream {}
 
 impl RunningStream for CpalStream {
     fn stop(self: Box<Self>) {
@@ -198,23 +197,39 @@ impl StreamDriver for CpalDriver {
         faults: Arc<StreamFaults>,
     ) -> Result<CpalStream> {
         let config = spec.stream_config();
-        let stream = match spec.sample_format {
-            cpal::SampleFormat::I8 => self.build::<i8>(&config, block, faults)?,
-            cpal::SampleFormat::I16 => self.build::<i16>(&config, block, faults)?,
-            cpal::SampleFormat::I32 => self.build::<i32>(&config, block, faults)?,
-            cpal::SampleFormat::U8 => self.build::<u8>(&config, block, faults)?,
-            cpal::SampleFormat::U16 => self.build::<u16>(&config, block, faults)?,
-            cpal::SampleFormat::U32 => self.build::<u32>(&config, block, faults)?,
-            cpal::SampleFormat::F32 => self.build::<f32>(&config, block, faults)?,
-            cpal::SampleFormat::F64 => self.build::<f64>(&config, block, faults)?,
-            format => {
-                return Err(Error::InvalidConfig(format!(
-                    "Unsupported sample format: {format:?}"
-                )));
-            }
-        };
-        stream.play()?;
-        Ok(CpalStream(stream))
+        let format = spec.sample_format;
+        if !matches!(
+            format,
+            cpal::SampleFormat::I8
+                | cpal::SampleFormat::I16
+                | cpal::SampleFormat::I32
+                | cpal::SampleFormat::U8
+                | cpal::SampleFormat::U16
+                | cpal::SampleFormat::U32
+                | cpal::SampleFormat::F32
+                | cpal::SampleFormat::F64
+        ) {
+            return Err(Error::InvalidConfig(format!(
+                "Unsupported sample format: {format:?}"
+            )));
+        }
+        Owned::spawn("tutti-output-stream", move || {
+            let stream = match format {
+                cpal::SampleFormat::I8 => self.build::<i8>(&config, block, faults)?,
+                cpal::SampleFormat::I16 => self.build::<i16>(&config, block, faults)?,
+                cpal::SampleFormat::I32 => self.build::<i32>(&config, block, faults)?,
+                cpal::SampleFormat::U8 => self.build::<u8>(&config, block, faults)?,
+                cpal::SampleFormat::U16 => self.build::<u16>(&config, block, faults)?,
+                cpal::SampleFormat::U32 => self.build::<u32>(&config, block, faults)?,
+                cpal::SampleFormat::F32 => self.build::<f32>(&config, block, faults)?,
+                cpal::SampleFormat::F64 => self.build::<f64>(&config, block, faults)?,
+                // Checked above, before the thread is spawned.
+                _ => unreachable!("sample format checked before spawn"),
+            };
+            stream.play()?;
+            Ok(stream)
+        })
+        .map(CpalStream)
     }
 }
 

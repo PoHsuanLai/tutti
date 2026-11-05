@@ -308,7 +308,7 @@ mod tests {
     fn meter_of(n: u32) -> Arc<MeterMap> {
         Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::from_parts(n, 4),
+            TimeSignature::from_numbers(n, 4),
         )]))
     }
 
@@ -364,12 +364,12 @@ mod tests {
         assert!(read(&slots[0]).is_none(), "unfollowed reads none");
         assert_eq!(
             read(&slots[1]).unwrap().changes()[0].signature,
-            TimeSignature::from_parts(4, 4),
+            TimeSignature::from_numbers(4, 4),
             "a moved slot reads its new meter"
         );
         assert_eq!(
             read(&slots[2]).unwrap().changes()[0].signature,
-            TimeSignature::from_parts(5, 4)
+            TimeSignature::from_numbers(5, 4)
         );
         assert!(slots[1].following().unwrap().ptr_eq(&other));
         assert!(!slots[0].is_following());
@@ -393,7 +393,7 @@ mod tests {
         project.set_meter(meter_of(6));
         assert_eq!(
             read(&slot).unwrap().changes()[0].signature,
-            TimeSignature::from_parts(6, 4),
+            TimeSignature::from_numbers(6, 4),
             "still following"
         );
     }
@@ -439,7 +439,7 @@ mod tests {
             project.set_meter(meter_of(5));
             assert_eq!(
                 held.0.changes()[0].signature,
-                TimeSignature::from_parts(3, 4)
+                TimeSignature::from_numbers(3, 4)
             );
         }
         assert!(gone.upgrade().is_some(), "retired, pinned until a scan");

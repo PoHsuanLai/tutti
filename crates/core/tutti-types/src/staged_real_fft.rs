@@ -156,7 +156,7 @@ impl StagedRealFft {
     }
 
     /// A zeroed scratch of [`scratch_len`](Self::scratch_len) elements.
-    pub fn make_scratch(&self) -> Vec<Complex32> {
+    pub fn new_scratch(&self) -> Vec<Complex32> {
         vec![Complex32::new(0.0, 0.0); self.scratch_len()]
     }
 
@@ -327,7 +327,7 @@ mod tests {
     }
 
     fn run_forward(f: &StagedRealFft, x: &[f32]) -> Vec<Complex32> {
-        let mut scratch = f.make_scratch();
+        let mut scratch = f.new_scratch();
         let mut bins = vec![Complex32::new(0.0, 0.0); f.bins()];
         for step in 0..f.forward_steps() {
             f.forward_step(step, x, &mut bins, &mut scratch);
@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn run_inverse(f: &StagedRealFft, mut bins: Vec<Complex32>) -> Vec<f32> {
-        let mut scratch = f.make_scratch();
+        let mut scratch = f.new_scratch();
         let mut out = vec![0.0f32; f.size()];
         for step in 0..f.inverse_steps() {
             f.inverse_step(step, &mut bins, &mut out, &mut scratch);
@@ -363,7 +363,7 @@ mod tests {
             let f = StagedRealFft::new(n, 1);
             assert_eq!((f.forward_steps(), f.inverse_steps()), (1, 1));
             let plain = RealFft::new(n);
-            let mut scratch = plain.make_scratch();
+            let mut scratch = plain.new_scratch();
             let mut want = vec![Complex32::new(0.0, 0.0); plain.bins()];
             plain.forward(&x, &mut want, &mut scratch);
             let got = run_forward(&f, &x);
@@ -464,7 +464,7 @@ mod tests {
         let f = StagedRealFft::new(512, 4);
         let (x, y) = (signal(512), signal(1024)[512..].to_vec());
         let (alone_x, alone_y) = (run_forward(&f, &x), run_forward(&f, &y));
-        let (mut sx, mut sy) = (f.make_scratch(), f.make_scratch());
+        let (mut sx, mut sy) = (f.new_scratch(), f.new_scratch());
         let zero = Complex32::new(0.0, 0.0);
         let (mut bx, mut by) = (vec![zero; f.bins()], vec![zero; f.bins()]);
         for step in 0..f.forward_steps() {

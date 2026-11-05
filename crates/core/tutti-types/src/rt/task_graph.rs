@@ -285,7 +285,7 @@ impl TaskGraph {
     }
 
     /// Whether [`abort`](Self::abort) was called this block.
-    pub fn aborted(&self) -> bool {
+    pub fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::Acquire)
     }
 
@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(ran, 1);
         assert!(!g.done());
         g.begin();
-        assert!(!g.aborted());
+        assert!(!g.is_aborted());
         let mut ran = 0;
         g.work(Participant::Caller, BlockWaits::DEFAULT, |_| ran += 1);
         assert_eq!(ran, 5);

@@ -954,7 +954,10 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
         &[],
         &mut [&mut l[..], &mut r[..]],
     );
-    assert!(fx.dropped_events() > 0, "the fork has the live capacity");
+    assert!(
+        fx.dropped_event_count() > 0,
+        "the fork has the live capacity"
+    );
 }
 
 /// **A node fork of a graph with no global outputs is `NoOutputs`**, not an

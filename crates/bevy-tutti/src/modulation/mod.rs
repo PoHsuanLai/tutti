@@ -7,7 +7,7 @@
 //! each in one call. Add [`TuttiModulationPlugin`] yourself: `TuttiPlugin`
 //! does not.
 //!
-//! Every frame [`reconcile`] collects them and hands them, keyed by
+//! Every frame [`reconcile()`] collects them and hands them, keyed by
 //! entities, to the session's modulation phases (`tutti_session`'s
 //! `Phase::Modulation` and `Phase::AfterCommit`), which apply them through
 //! `tutti_nodes::Modulation`: each modulated param gets one control
@@ -111,7 +111,7 @@ use crate::graph::{GraphReconcileSystems, SessionPhaseSystems, engine_ready};
 /// Where the modulation systems run, for a host's own to order against.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum ModulationSystems {
-    /// [`close_takes`], [`note_declaration_changes`] then [`reconcile`]:
+    /// [`close_takes`], [`note_declaration_changes`] then [`reconcile()`]:
     /// after
     /// [`GraphReconcileSystems::Spawn`], before
     /// [`GraphReconcileSystems::Params`], in the session's `Modulation`

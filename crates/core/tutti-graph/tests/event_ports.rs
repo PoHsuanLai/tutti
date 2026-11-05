@@ -197,14 +197,14 @@ impl Rig {
             for &n in blocks {
                 exec.process(n, &transport, &[], &mut []);
             }
-            exec.dropped_events()
+            exec.dropped_event_count()
         } else {
             let mut r = Reference::new(prep);
             r.set_graph(&valid, self.units());
             for &n in blocks {
                 r.process(n, &transport, &[], &mut []);
             }
-            r.dropped_events()
+            r.dropped_event_count()
         };
         (seen.lock().unwrap().clone(), dropped)
     }
@@ -821,7 +821,7 @@ fn a_fifo_whose_bound_a_swap_lowered_delivers_its_backlog_on_time() {
         .map(|&(f, _, tag)| (0, f + LATE as u64, tag))
         .collect();
     assert_eq!(landed(&seen), want, "every event on its frame");
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
     assert_eq!(refused.load(Ordering::Relaxed), 0);
 }
 
@@ -904,7 +904,7 @@ fn a_fifo_whose_bound_a_reprepare_lowered_delivers_its_backlog_on_time() {
         want,
         "every event on its frame, on both paths"
     );
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
     assert_eq!(refused.load(Ordering::Relaxed), 0);
 }
 
@@ -969,6 +969,6 @@ fn a_flush_into_a_port_a_lowered_bound_widened_drops_nothing() {
     want.extend([(0, 256, 9_001), (0, 257, 9_002), (0, 258, 9_003)]);
     want.sort_unstable();
     assert_eq!(landed(&seen), want, "every event, none dropped");
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
     assert_eq!(refused.load(Ordering::Relaxed), 0);
 }

@@ -423,7 +423,7 @@ mod tests {
         let mix = build_vbap_mix(&mut g, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
         // ChannelSumNode clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
-        assert_eq!(g.outputs_in(mix), 4);
+        assert_eq!(g.output_count(mix), 4);
     }
 
     /// Render a 5.1 `build_vbap_mix` graph and return settled per-channel

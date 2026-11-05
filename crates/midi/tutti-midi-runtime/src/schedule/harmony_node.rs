@@ -37,7 +37,7 @@ use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 
 /// The most events a [`HarmonyNode`] writes in one block, its declared
 /// event capacity: past it the rest are refused and counted
-/// (`Executor::dropped_events`).
+/// (`Executor::dropped_event_count`).
 pub const HARMONY_EVENT_CAPACITY: u32 = 64;
 
 /// A chord or scale taking effect at a beat.

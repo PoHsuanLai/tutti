@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use common::{Kind, Pair, SpecBehaviour, bits, input_signal};
 use tutti_graph::{
     CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, Op,
-    PortKind, Shape, Shapes, Unforkable, compile, verify,
+    PortKind, Shape, Shapes, Unforkable, compile,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
 use tutti_types::latency;
@@ -501,7 +501,7 @@ fn feedback_edges_break_cycles() {
     let valid = g.validate().expect("feedback breaks the cycle");
     let (plan, _) =
         compile(&valid, &gain_kinds(&[A, B]), &common::prepare(PREP), None).expect("compiles");
-    verify(&plan).expect("sound");
+    plan.verify().expect("sound");
     assert_eq!(plan.feedback(PortKind::Audio).len(), 1);
     assert_eq!(plan.feedback(PortKind::Event).len(), 1);
     let captures = plan
@@ -585,7 +585,7 @@ fn a_chain_reuses_slots() {
     }
     t.outputs = vec![Source::Node(out(keys[39], 0))];
     let plan = compiled(&t);
-    verify(&plan).expect("sound");
+    plan.verify().expect("sound");
     // Zero slot + at most two alternating coloured slots.
     assert!(
         plan.slots(PortKind::Audio) <= 3,
@@ -629,7 +629,7 @@ fn colouring_respects_the_partial_order_not_the_serial_one() {
             .unwrap()
     };
     assert_ne!(slot_of(A), slot_of(C), "C may run beside B, which reads A");
-    verify(&plan).expect("sound");
+    plan.verify().expect("sound");
 }
 
 fn in_place_spec(ports_read_twice: bool) -> (GraphSpec, Shapes) {
@@ -1073,7 +1073,7 @@ fn removing_a_node_removes_its_resolution_marks() {
 ///
 /// Mutation: in `GraphSpec::disconnect_events`, keep the mark → the next
 /// commit is `Invalid(RequirementWithoutEdge)` → fails. Mutation: make
-/// `unrequire_resolution` a no-op → the block-rate sink still refuses the
+/// `clear_resolution` a no-op → the block-rate sink still refuses the
 /// edge → fails.
 #[test]
 fn disconnecting_an_edge_drops_its_resolution_mark() {
@@ -1101,11 +1101,11 @@ fn disconnecting_an_edge_drops_its_resolution_mark() {
     assert_eq!(ed.commit(), Ok(()));
     assert!(ed.spec().required_resolution.is_empty());
 
-    // `unrequire_resolution`: the edge stays, the requirement goes.
+    // `clear_resolution`: the edge stays, the requirement goes.
     let mut g = two_node_spec();
     g.connect_events(at, EventEdge::Direct(from));
     g.require_resolution(at, from, tutti_graph::Resolution::Sample);
-    g.unrequire_resolution(at, from);
+    g.clear_resolution(at, from);
     let mono = || Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO);
     let shapes: Shapes = [
         (A, mono().with_events(0, 1)),

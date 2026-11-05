@@ -14,8 +14,8 @@
 //!
 //! // 4/4 for two bars, then 7/8.
 //! let map = MeterMap::new([
-//!     MeterChange::new(Beat(0.0), TimeSignature::from_parts(4, 4)),
-//!     MeterChange::new(Beat(8.0), TimeSignature::from_parts(7, 8)),
+//!     MeterChange::new(Beat(0.0), TimeSignature::from_numbers(4, 4)),
+//!     MeterChange::new(Beat(8.0), TimeSignature::from_numbers(7, 8)),
 //! ]);
 //!
 //! let pos = map.bar_at(Beat(9.0));
@@ -295,7 +295,7 @@ impl TimeSignature {
     /// compile error.
     #[inline]
     #[must_use]
-    pub fn from_parts(beats_per_bar: u32, note_value: u32) -> Self {
+    pub fn from_numbers(beats_per_bar: u32, note_value: u32) -> Self {
         Self::new(BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value))
     }
 
@@ -895,7 +895,7 @@ mod tests {
         assert_eq!(NoteValue::new(5).get(), 8);
         assert_eq!(NoteValue::new(0).get(), 1);
         assert_eq!(NoteValue::new(999).get(), MAX_NOTE_VALUE);
-        assert!(TimeSignature::from_parts(0, 5).bar_length().get() > 0.0);
+        assert!(TimeSignature::from_numbers(0, 5).bar_length().get() > 0.0);
         // Above 2^31 `next_power_of_two` overflows — panicking in debug, and
         // returning 0 in release, which would make `bar_length` infinite. The
         // clamp has to happen first.

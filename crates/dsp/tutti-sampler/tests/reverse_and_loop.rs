@@ -97,7 +97,7 @@ impl Clock {
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };
-        contract::drive_in(node, &env, &[], &[], &[]).audio
+        contract::drive_input(node, &env, &[], &[], &[]).audio
     }
 }
 

@@ -53,7 +53,7 @@ fn latent_pulse_row() -> Row {
         note(),
         Detect::Exact(vec![1.0]),
     )
-    .expect_latency(Samples(37))
+    .with_expected_latency(Samples(37))
 }
 
 /// Declares `Frames(8)` (a SoundFont's resolution) and quantizes on its own
@@ -90,7 +90,7 @@ fn lookahead_row() -> Row {
         },
         Detect::Exact(vec![0.5]),
     )
-    .expect_latency(Samples(45))
+    .with_expected_latency(Samples(45))
 }
 
 /// Compiler-owned param modulation: a step in a modulator
@@ -325,14 +325,14 @@ fn resolution_is_held_as_declared() {
 /// renders, and an audio row asked for an event-only path refuses rather
 /// than passing a path it did not run.
 ///
-/// Mutation (run): skip the `expect_latency` comparison in `Row::run` → the
+/// Mutation (run): skip the `with_expected_latency` comparison in `Row::run` → the
 /// first half passes → fails. Drop the `needs_events` assert in
 /// `Row::check` → the second half fails on another message → fails.
 #[test]
 fn a_row_cannot_pass_what_it_does_not_run() {
     let msg = failure(|| {
         latent_pulse_row()
-            .expect_latency(Samples(36))
+            .with_expected_latency(Samples(36))
             .check(Path::Direct)
     })
     .expect("a mispinned latency passed");
@@ -383,7 +383,7 @@ fn a_fan_in_tie_goes_by_source_order() {
                 at,
                 EventKind::Midi(Ump([tag, 0, 0, 0])),
             )));
-            g.event_connect(e, 0, sink, 0);
+            g.connect_events(e, 0, sink, 0);
         }
         g.connect_output(sink, 0, 0);
         let mut r = g
@@ -423,17 +423,17 @@ fn rolling_at_two() -> tutti_graph::Transport {
     tutti_graph::Transport::new(true, tutti_types::Bpm(120.0), tutti_types::Beat(2.0), None)
 }
 
-/// `drive_in`, `Direct::block_in` and `BlockRig::block_in` hand the node
-/// the transport they are given (and `drive_in` its changes), where
+/// `drive_input`, `Direct::block_in` and `BlockRig::block_in` hand the node
+/// the transport they are given (and `drive_input` its changes), where
 /// `Direct::block` and `BlockRig::block` hand it a stopped one at beat 0.
 ///
-/// Mutation (run): `drive_in` building its `Cx` over a stopped `Env` of its
+/// Mutation (run): `drive_input` building its `Cx` over a stopped `Env` of its
 /// own → frame 0 reads 0, not 2 → fails. Mutation (run): `Direct::block_in`
 /// ignoring its `env` → fails. Mutation (run): `BlockRig::block_in` passing
 /// `Transport::default()` to the executor → fails.
 #[test]
 fn the_transport_harnesses_hand_the_node_their_transport() {
-    use tutti_graph::contract::{BlockRig, Direct, drive_in, prepared};
+    use tutti_graph::contract::{BlockRig, Direct, drive_input, prepared};
     use tutti_graph::{Env, Offset, TransportChanges};
     use tutti_types::{Beat, Bpm, SampleRate};
     let rate = SampleRate(48_000.0);
@@ -457,7 +457,7 @@ fn the_transport_harnesses_hand_the_node_their_transport() {
         changes,
         play: tutti_graph::PlayClock::ZERO,
     };
-    let out = drive_in(&mut node, &env, &[], &[], &[]).audio;
+    let out = drive_input(&mut node, &env, &[], &[], &[]).audio;
     let want = [2.0, 2.0 + per_frame, 10.0, 10.0 + per_frame];
     for (got, want) in out[0].iter().zip(want) {
         assert_eq!(*got, want as f32);

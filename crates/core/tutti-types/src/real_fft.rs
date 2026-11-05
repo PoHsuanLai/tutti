@@ -136,7 +136,7 @@ impl RealFft {
     }
 
     /// A zeroed scratch of [`scratch_len`](Self::scratch_len) elements.
-    pub fn make_scratch(&self) -> Vec<Complex32> {
+    pub fn new_scratch(&self) -> Vec<Complex32> {
         vec![Complex32::new(0.0, 0.0); self.scratch_len()]
     }
 
@@ -391,7 +391,7 @@ mod tests {
         for n in 1..=64usize {
             let frame = frame(n);
             let fft = RealFft::new(n);
-            let mut scratch = fft.make_scratch();
+            let mut scratch = fft.new_scratch();
             let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
             fft.forward(&frame, &mut bins, &mut scratch);
             for (k, bin) in bins.iter().enumerate() {
@@ -427,7 +427,7 @@ mod tests {
         for n in [127usize, 255, 301] {
             let frame: Vec<f32> = (0..n).map(|i| (i as f32 * 0.37).sin() + 0.1).collect();
             let fft = RealFft::new(n);
-            let mut scratch = fft.make_scratch();
+            let mut scratch = fft.new_scratch();
             let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
             fft.forward(&frame, &mut bins, &mut scratch);
             for (k, bin) in bins.iter().enumerate() {
@@ -453,7 +453,7 @@ mod tests {
     fn the_inverse_ignores_dc_and_nyquist_imaginary_parts() {
         for n in [64usize, 63] {
             let fft = RealFft::new(n);
-            let mut scratch = fft.make_scratch();
+            let mut scratch = fft.new_scratch();
             let mut tone = |im_dc: f32, im_ny: f32| {
                 let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
                 bins[0] = Complex32::new(1.0, im_dc);
@@ -490,7 +490,7 @@ mod tests {
             let fft = RealFft::new(n);
             assert!(fft.scratch_len() >= fft.forward_scratch_len(), "size {n}");
             assert!(fft.scratch_len() >= fft.inverse_scratch_len(), "size {n}");
-            assert_eq!(fft.make_scratch().len(), fft.scratch_len());
+            assert_eq!(fft.new_scratch().len(), fft.scratch_len());
         }
     }
 
@@ -524,7 +524,7 @@ mod tests {
             })
             .collect();
         let fft = RealFft::new(n);
-        let mut scratch = fft.make_scratch();
+        let mut scratch = fft.new_scratch();
         let mut bins = vec![Complex32::new(0.0, 0.0); n / 2 + 1];
         fft.forward(&frame, &mut bins, &mut scratch);
         let mut back = vec![0.0f32; n];
@@ -561,7 +561,7 @@ mod tests {
             })
             .collect();
         let fft = RealFft::new(n);
-        let mut scratch = fft.make_scratch();
+        let mut scratch = fft.new_scratch();
         let mut bins = vec![Complex32::new(0.0, 0.0); fft.bins()];
         fft.forward(&frame, &mut bins, &mut scratch);
         let mut back = vec![0.0f32; n];

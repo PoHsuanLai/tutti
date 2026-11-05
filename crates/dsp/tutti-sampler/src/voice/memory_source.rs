@@ -2034,7 +2034,7 @@ mod tests {
             )
             .unwrap();
         env.changes = changes;
-        let out = tutti_graph::contract::drive_in(&mut u, &env, &[], &[], &[]).audio;
+        let out = tutti_graph::contract::drive_input(&mut u, &env, &[], &[], &[]).audio;
         assert!(
             out[0][..40].iter().all(|&s| s > 0.0),
             "plays up to the stop"

@@ -245,7 +245,7 @@ fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> 
         )
         .expect("one change");
     env.changes = changes;
-    let left = tutti_graph::contract::drive_in(node, &env, &[], &[], &[])
+    let left = tutti_graph::contract::drive_input(node, &env, &[], &[], &[])
         .audio
         .swap_remove(0);
     clock.set_beat(Beat::new(beat));

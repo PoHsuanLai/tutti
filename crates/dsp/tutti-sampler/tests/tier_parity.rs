@@ -262,7 +262,7 @@ fn render(unit: &mut dyn Node, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> 
 /// One block of `unit` under `clock`, appended to `out` as frames; the clock
 /// then advances.
 fn push_block(unit: &mut dyn Node, clock: &Clock, out: &mut Vec<(f32, f32)>) {
-    let b = contract::drive_in(unit, &clock.env(), &[], &[], &[]).audio;
+    let b = contract::drive_input(unit, &clock.env(), &[], &[], &[]).audio;
     out.extend(b[0].iter().copied().zip(b[1].iter().copied()));
     clock.advance(BLOCK);
 }

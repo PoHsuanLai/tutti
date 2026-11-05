@@ -11,7 +11,7 @@
 //!
 //! - the graph: both halves of `Editor::reprepare`, inside the hook (the
 //!   engine settled from the control side while no callback runs,
-//!   `Stopped::settle_graph`), so the first block at the new rate renders
+//!   `Stopped::apply_pending`), so the first block at the new rate renders
 //!   the re-prepared graph, not the silent block of a re-prepare with its
 //!   units out;
 //! - the engine follows by itself: it adopts the new rate on the first block
@@ -268,7 +268,7 @@ impl Session {
         // Both halves of the re-prepare, now, while no callback runs: the
         // executor checks its units out, the editor re-prepares them and
         // sends the resumed plan, and the executor adopts it.
-        stopped.settle_graph();
+        stopped.apply_pending();
         self.graph.collect();
         // A unit that panicked in `prepare`, or shapes that no longer
         // compile, poison the editor here: refuse, the stream still stopped.
@@ -282,7 +282,7 @@ impl Session {
             self.graph.widen_outputs(width);
             self.commit();
         }
-        let running = stopped.settle_graph();
+        let running = stopped.apply_pending();
         debug_assert!(running, "the re-prepare resumed inside the hook");
         // The figures the first block runs at, published before it.
         self.publish_sent();

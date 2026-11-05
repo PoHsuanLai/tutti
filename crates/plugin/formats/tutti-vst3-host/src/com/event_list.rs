@@ -433,7 +433,7 @@ impl EventList {
     /// Drains the plugin's emitted MIDI events into a caller-supplied pool.
     /// Clears `out` first and never grows it: the plugin decides how many
     /// events it emits, so events past the pool's cap are dropped rather than
-    /// heap-allocated on the audio thread. `out.overflowed()` reports it.
+    /// heap-allocated on the audio thread. `out.is_overflowed()` reports it.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         let mut inner = self.inner.borrow_mut();
@@ -441,7 +441,7 @@ impl EventList {
         for event in inner.events.iter() {
             if let Vst3Event::SysEx(e) = event {
                 // Whole or not at all; a message that does not fit is dropped
-                // (reported through `overflowed`, counted in `dropped`) and
+                // (reported through `is_overflowed`, counted in `dropped`) and
                 // later events still get the room that is left.
                 let frame = u32::try_from(e.header.sample_offset).unwrap_or(0);
                 if !push_sysex(out, frame, &inner.sysex_out[e.bytes.range()]) {
@@ -873,7 +873,7 @@ mod tests {
             assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk, "{len} bytes");
             let mut pool = RtMidiEvents::new();
             list.fill_midi_events(&mut pool);
-            assert!(!pool.overflowed());
+            assert!(!pool.is_overflowed());
             assert!(pool.iter().all(|m| m.frame_offset == 11));
             assert_eq!(reassembled(pool.as_slice()), vec![message], "{len} bytes");
             assert_eq!(list.dropped(), 0);
@@ -980,7 +980,7 @@ mod tests {
     }
 
     /// **A SysEx the host's MIDI pool has no room for is dropped whole and
-    /// counted in `dropped`** (and latches the pool's `overflowed`); the
+    /// counted in `dropped`** (and latches the pool's `is_overflowed`); the
     /// message before it arrives intact.
     ///
     /// Mutation (run): drop `inner.dropped += refused` in `fill_midi_events`
@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(list.dropped(), 0);
         let mut pool = RtMidiEvents::new();
         list.fill_midi_events(&mut pool);
-        assert!(pool.overflowed());
+        assert!(pool.is_overflowed());
         assert_eq!(list.dropped(), 1);
         assert_eq!(reassembled(pool.as_slice()), vec![framed(&first)]);
     }

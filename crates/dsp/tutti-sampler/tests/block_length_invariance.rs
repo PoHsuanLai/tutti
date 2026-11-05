@@ -133,7 +133,7 @@ fn render<N: Node>(node: N, max_block: usize, schedule: &[usize]) -> [Vec<f32>; 
     out
 }
 
-/// [`FRAMES`] of `node` driven by hand (`contract::drive_in`) in blocks of
+/// [`FRAMES`] of `node` driven by hand (`contract::drive_input`) in blocks of
 /// `schedule`, prepared for `prepared` frames first or not at all: the
 /// cold path, a block longer than the node's scratch, rendered in pieces.
 fn render_by_hand<N: Node>(
@@ -151,7 +151,7 @@ fn render_by_hand<N: Node>(
             break;
         }
         let len = len.min(FRAMES - frame);
-        let audio = contract::drive_in(&mut node, &env_at(frame, len), &[], &[], &[]).audio;
+        let audio = contract::drive_input(&mut node, &env_at(frame, len), &[], &[], &[]).audio;
         for (c, o) in out.iter_mut().enumerate() {
             o.extend_from_slice(&audio[c]);
         }

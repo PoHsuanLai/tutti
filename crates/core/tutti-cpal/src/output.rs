@@ -50,7 +50,7 @@ impl AudioCallbackState {
 /// and denormals are flushed for the duration of the call. This is the render
 /// the output stream runs each callback; call it directly only on a state no
 /// running stream is also rendering (see
-/// [`TuttiDriver::from_parts`](crate::TuttiDriver::from_parts)).
+/// [`TuttiDriver::new`](crate::TuttiDriver::new)).
 ///
 /// # Real-time
 ///

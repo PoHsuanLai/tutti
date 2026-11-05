@@ -55,7 +55,7 @@ use super::walk::{Beated, Visit, Walk};
 /// The most events a [`MidiClipNode`] writes to its port in one block, its
 /// declared [`event_capacity`](Shape::event_capacity). A block that reaches
 /// more (a dense clip in a long block) has the rest refused, and the graph
-/// counts them (`Executor::dropped_events`); note-offs the node owes are
+/// counts them (`Executor::dropped_event_count`); note-offs the node owes are
 /// retried the next block.
 pub const CLIP_EVENT_CAPACITY: u32 = 256;
 

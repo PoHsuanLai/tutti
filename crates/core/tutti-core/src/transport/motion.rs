@@ -108,7 +108,7 @@ impl MotionEvent {
 
     /// Returns a stop that takes effect on the next buffer, unfaded. For
     /// teardown, and for tests that assert the unfaded path.
-    pub const fn stop_now() -> Self {
+    pub const fn stop_unfaded() -> Self {
         Self::Stop {
             fade: FadeOut::Immediate,
         }
@@ -125,7 +125,7 @@ impl MotionEvent {
     }
 
     /// Returns a jump to `beat` that then rolls from there.
-    pub const fn locate_and_play(beat: Beat) -> Self {
+    pub const fn play_from(beat: Beat) -> Self {
         Self::Locate {
             beat,
             fade: FadeOut::Declick,
@@ -139,7 +139,7 @@ impl MotionEvent {
     /// The Stop button. Sending a stop and a locate as two events drains both
     /// in one callback, so the seek lands immediately and the fade ramps down
     /// audio rendered from the *new* position — protecting nothing.
-    pub const fn stop_and_return(beat: Beat) -> Self {
+    pub const fn stop_then_locate(beat: Beat) -> Self {
         Self::Locate {
             beat,
             fade: FadeOut::Declick,
@@ -277,7 +277,7 @@ impl MotionFsm {
     /// command past a block's cut bound
     /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)) lands
     /// at the start of the next block and is counted
-    /// ([`late_commands`](Self::late_commands)); an `At::NextBlock` needs no
+    /// ([`late_command_count`](Self::late_command_count)); an `At::NextBlock` needs no
     /// cut and is never late. A beat a seek or loop jumped over waits until
     /// playback reaches it, holding its credit;
     /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
@@ -334,7 +334,7 @@ impl MotionFsm {
     /// Scheduled commands that were already past due when the engine first
     /// saw them, and so landed at the start of that block instead of on
     /// their frame. Never dropped.
-    pub fn late_commands(&self) -> u64 {
+    pub fn late_command_count(&self) -> u64 {
         self.timed.late()
     }
 
@@ -620,7 +620,7 @@ mod tests {
         drop(a);
 
         let mut again = clone.audio().expect("handed back on drop");
-        let _ = m.try_send(MotionEvent::stop_now());
+        let _ = m.try_send(MotionEvent::stop_unfaded());
         again.drain();
         assert!(m.is_stopped(), "the returned FSM knew it was rolling");
     }
@@ -679,7 +679,7 @@ mod tests {
 
         let _ = m.try_send(MotionEvent::Play);
         a.drain();
-        let _ = m.try_send(MotionEvent::stop_now());
+        let _ = m.try_send(MotionEvent::stop_unfaded());
         a.drain();
         assert!(m.is_stopped(), "StopNow stops immediately");
         assert!(!m.declick.is_active(), "StopNow must not fade");
@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn locate_and_play_rolls_after_the_jump() {
         let (m, mut a) = fsm();
-        let _ = m.try_send(MotionEvent::locate_and_play(Beat(4.0)));
+        let _ = m.try_send(MotionEvent::play_from(Beat(4.0)));
         a.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(4.0)));
@@ -709,7 +709,7 @@ mod tests {
         // `Stopped` sends both stop arms into their `None` case, and the
         // transport cannot be stopped at all. Proving it *stops* is what pins
         // the real property.
-        let _ = m.try_send(MotionEvent::stop_now());
+        let _ = m.try_send(MotionEvent::stop_unfaded());
         a.drain();
         assert!(
             m.is_stopped(),
@@ -734,7 +734,7 @@ mod tests {
         a.drain();
         m.settings.set_beat(12.0);
 
-        let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
+        let _ = m.try_send(MotionEvent::stop_then_locate(Beat(0.0)));
         a.drain();
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
@@ -774,7 +774,7 @@ mod tests {
         let (m, mut a) = fsm();
         m.settings.set_beat(9.0);
 
-        let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
+        let _ = m.try_send(MotionEvent::stop_then_locate(Beat(0.0)));
         a.drain();
 
         assert!(m.is_stopped());

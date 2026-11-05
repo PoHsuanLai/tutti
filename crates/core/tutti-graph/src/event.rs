@@ -983,7 +983,7 @@ impl std::ops::Deref for SortedEvents<'_> {
 pub enum EventRejected {
     /// The port's preallocated buffer is full. The event is dropped; the
     /// executor counts it (see
-    /// [`Executor::dropped_events`](crate::Executor::dropped_events)).
+    /// [`Executor::dropped_event_count`](crate::Executor::dropped_event_count)).
     Full,
     /// `offset` is at or past the end of the block.
     OutOfBlock,
@@ -1063,7 +1063,7 @@ impl<'a> EventWriter<'a> {
     /// [`EventRejected::OutOfBlock`], [`EventRejected::OutOfOrder`], or
     /// [`EventRejected::Full`] when the port's declared capacity is reached.
     /// A refused event is dropped and counted in
-    /// [`Executor::dropped_events`](crate::Executor::dropped_events); the
+    /// [`Executor::dropped_event_count`](crate::Executor::dropped_event_count); the
     /// events already written stand.
     pub fn push(&mut self, event: Event) -> Result<(), EventRejected> {
         if event.offset.get() >= self.frames {

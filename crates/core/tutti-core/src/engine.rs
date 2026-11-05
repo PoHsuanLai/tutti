@@ -21,7 +21,7 @@
 //! A block holds at most
 //! [`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES) cuts. A command due past
 //! that lands at the start of the next block and is counted late, like any
-//! command already past due ([`MotionFsm::late_commands`]). (`At::NextBlock`
+//! command already past due ([`MotionFsm::late_command_count`]). (`At::NextBlock`
 //! commands, late ones and crossed beats all land at the block's first frame
 //! and need no cut, so they are never deferred.) Commands due on one frame
 //! apply in send order.
@@ -216,7 +216,7 @@ struct GraphRender {
     scratch: Vec<f32>,
     stride: usize,
     playhead: Playhead,
-    /// The executor's [`dropped_events`](Executor::dropped_events) already
+    /// The executor's [`dropped_event_count`](Executor::dropped_event_count) already
     /// forwarded to the load meter.
     dropped_seen: u64,
 }
@@ -324,7 +324,7 @@ impl Engine {
         let rate = executor.prepare().sample_rate();
         // Seeded from the executor; no test here can cover it, since the
         // executor is always fresh at `Engine::new`.
-        let dropped_seen = executor.dropped_events();
+        let dropped_seen = executor.dropped_event_count();
         Ok(Self {
             settings: transport.settings.clone(),
             timed: transport.motion.timed().clone(),
@@ -404,7 +404,7 @@ impl Engine {
         let frames = output.len();
         let output = output.samples_mut();
         // Refused only while the control side holds the graph
-        // (`settle_graph` racing a callback): this block is silent.
+        // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
             self.load.record_silenced();
@@ -457,12 +457,12 @@ impl Engine {
         let frames = output.len();
         let output = output.samples_mut();
         // The audio thread never panics on a borrow. The graph is refused
-        // only while the control side holds it (`settle_graph` racing a
+        // only while the control side holds it (`apply_pending` racing a
         // callback): this block is silent, and the motion queue, which the
         // render state's motion machine drains, is left for the next one.
         // The fader and the schedule's pending list need no `try_`:
         // the fader is private to this method, and the pending list is
-        // reached only under the graph borrow (here, or `settle_graph`'s).
+        // reached only under the graph borrow (here, or `apply_pending`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
             self.load.record_silenced();
@@ -626,14 +626,19 @@ impl Engine {
     ///
     /// It also follows a re-prepare's rate change with the engine's clock and
     /// the transport's frame-timed commands — what the first block after it
-    /// would do, done now. Returns whether the graph is running a plan with no
-    /// re-prepare between its halves.
+    /// would do, done now. Returns `true` when the graph is running a plan
+    /// with no re-prepare between its halves, `false` while a re-prepare is
+    /// still half done.
+    ///
+    /// Not [`Executor::apply_pending`](tutti_graph::Executor::apply_pending),
+    /// which drains only the executor's commit queue: this is the engine-level
+    /// call that also moves the clock and the transport.
     ///
     /// A device restart calls it between the two halves of
     /// `Editor::reprepare` so the re-prepare finishes before the first block
     /// at the new rate, which then renders the re-prepared graph rather than
     /// the executor's silent checked-out block.
-    /// Hosts reach it through `tutti_cpal::Stopped::settle_graph`, which only
+    /// Hosts reach it through `tutti_cpal::Stopped::apply_pending`, which only
     /// a restart hook is handed.
     ///
     /// Allocates nothing itself; a commit it installs was built on the
@@ -652,7 +657,7 @@ impl Engine {
     ///
     /// [`process`]: Self::process
     /// [`process_segment`]: Self::process_segment
-    pub fn settle_graph(&self) -> bool {
+    pub fn apply_pending(&self) -> bool {
         let graph = &mut *self.graph.borrow_mut();
         graph.settle(&self.timed);
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
@@ -982,7 +987,7 @@ impl GraphRender {
     /// The events the executor dropped since the last call: a port past its
     /// capacity, or a full delay or feedback FIFO.
     fn take_dropped_events(&mut self) -> u64 {
-        let total = self.exec.dropped_events();
+        let total = self.exec.dropped_event_count();
         let new = total.wrapping_sub(self.dropped_seen);
         self.dropped_seen = total;
         new
@@ -1125,7 +1130,7 @@ mod tests {
     }
 
     /// The audio thread is never the side that panics: a block that meets
-    /// the graph held on the control side (`settle_graph` racing a callback)
+    /// the graph held on the control side (`apply_pending` racing a callback)
     /// renders silence and leaves the motion queue for the next block, which
     /// applies it.
     ///
@@ -1178,7 +1183,7 @@ mod tests {
         }
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
-        let _ = transport.motion.try_send(MotionEvent::stop_now());
+        let _ = transport.motion.try_send(MotionEvent::stop_unfaded());
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
         assert!(
             transport.motion.is_stopped(),

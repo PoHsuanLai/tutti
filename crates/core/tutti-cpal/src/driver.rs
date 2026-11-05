@@ -48,16 +48,18 @@ pub struct Stopped<'a> {
 impl Stopped<'_> {
     /// Installs every commit the graph's editor has sent, moving the engine's
     /// clock to a re-prepare's rate
-    /// ([`Engine::settle_graph`](tutti_core::Engine::settle_graph)). Returns
-    /// whether the graph now runs a plan with no re-prepare pending.
+    /// ([`Engine::apply_pending`](tutti_core::Engine::apply_pending)). Returns
+    /// whether the graph now runs a plan with no re-prepare pending (`false`
+    /// while a re-prepare is half done). It is the engine's call, not
+    /// `Executor::apply_pending`, which drains only the commit queue.
     ///
     /// A host drives a re-prepare's two halves through it — settle (the
     /// executor checks its units out), let the editor collect and resume,
     /// settle again (the executor adopts the resumed plan) — so the first
     /// block at the new rate renders the re-prepared graph instead of the
     /// silent block a re-prepare otherwise costs.
-    pub fn settle_graph(&self) -> bool {
-        // `Engine::settle_graph` panics if a callback renders this engine at
+    pub fn apply_pending(&self) -> bool {
+        // `Engine::apply_pending` panics if a callback renders this engine at
         // the same moment (the engine's cells refuse the second borrow), and
         // none can: a `Stopped` is constructed only in
         // `TuttiDriver::rerate_or_restore` (its field is private to this
@@ -69,16 +71,16 @@ impl Stopped<'_> {
         // `ManualRunning`'s drop takes the slot lock a callback renders
         // under. What this driver's type cannot see is a host rendering the
         // same `AudioCallbackState` by hand (`process_audio` on a clone of
-        // the `Arc` it handed `from_parts`) during a restart; `from_parts`
+        // the `Arc` it handed `new`) during a restart; `new`
         // documents that the driver's streams are the state's only renderer.
-        self.state.engine.settle_graph()
+        self.state.engine.apply_pending()
     }
 }
 
 /// The output device lifecycle a host holds: start, restart on another device
 /// or rate, stop, and fault reporting.
 ///
-/// Built with [`from_parts`](Self::from_parts) from an opened [`AudioEngine`]
+/// Built with [`new`](Self::new) from an opened [`AudioEngine`]
 /// and the [`AudioCallbackState`] its callback renders. A host may
 /// [`set_device`](Self::set_device) / [`select_device`](Self::select_device)
 /// and [`restart`](Self::restart) to switch device without rebuilding the
@@ -122,9 +124,9 @@ impl TuttiDriver {
     /// `callback_state`: a host must not also call
     /// [`process_audio`](crate::process_audio) on a clone of it. A restart
     /// relies on that — its hook reaches the engine from the control side
-    /// ([`Stopped::settle_graph`]) because the stream it stopped was the only
+    /// ([`Stopped::apply_pending`]) because the stream it stopped was the only
     /// renderer.
-    pub fn from_parts(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {
+    pub fn new(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {
         Self {
             graph_rate: audio_engine.sample_rate(),
             audio_engine,
@@ -134,7 +136,7 @@ impl TuttiDriver {
 
     /// Returns the rate the graph runs at, as far as this driver knows.
     ///
-    /// This is the device's rate at [`from_parts`](Self::from_parts), then the
+    /// This is the device's rate at [`new`](Self::new), then the
     /// rate of the last restart whose hook returned `Ok`. A plain
     /// [`restart`](Self::restart) compares the new device against it.
     pub fn graph_rate(&self) -> tutti_core::SampleRate {
@@ -202,7 +204,7 @@ impl TuttiDriver {
     /// The hook is also handed a [`Stopped`]: the engine, reachable from the
     /// control side for as long as the hook runs and no callback can, so the
     /// host can finish a graph re-prepare before the first block
-    /// ([`Stopped::settle_graph`]).
+    /// ([`Stopped::apply_pending`]).
     ///
     /// # Errors
     ///
@@ -399,7 +401,7 @@ mod tests {
             MasterMeter::new(),
             AudioTap::new(),
         ));
-        let mut driver = TuttiDriver::from_parts(AudioEngine::from_spec(spec_at(44_100.0)), state);
+        let mut driver = TuttiDriver::new(AudioEngine::from_spec(spec_at(44_100.0)), state);
         let graph = SampleRate(44_100.0);
 
         // Twice onto the same 48 kHz device: the second attempt must not

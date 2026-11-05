@@ -28,7 +28,7 @@ question is the other 5%.
 There are five sites: the five code bullets below. (Earlier revisions said
 eight, then seven, counting the prose-only last bullet too; design doc 013
 deleted `tutti-node` and its planar buffers, and #116 made
-`Engine::settle_graph` safe.) Each exists because a safe construct would have
+`Engine::apply_pending` safe.) Each exists because a safe construct would have
 cost something on the audio thread, and each is named here so the list can
 be checked against the tree.
 
@@ -40,7 +40,7 @@ be checked against the tree.
   `try_borrow_mut`); a conflicting borrow panics, or its `try_` form returns
   `None`, instead of aliasing. The word is what makes the `Sync` true; until
   the change that made it unconditional it was `#[cfg(debug_assertions)]`,
-  and safe code sharing a cell (`tutti_core::Engine::settle_graph` racing
+  and safe code sharing a cell (`tutti_core::Engine::apply_pending` racing
   a callback's `Engine::process`) could make two `&mut T` in release. The audio thread and the
   VST3 COM entry points take the `try_` forms, so a conflict there is a
   skipped step or a failure code, never a panic. The RT-safe alternative to
@@ -64,7 +64,7 @@ be checked against the tree.
 - **`tutti-cpal`** — no longer a site. cpal's stream is not `Send` on every
   backend, so `CpalStream` and the mic handle hold a channel to an owner
   thread that creates and drops the stream (`owner.rs`), with no `unsafe`.
-- **`tutti-core/src/engine.rs`** — no longer a site. `Engine::settle_graph`
+- **`tutti-core/src/engine.rs`** — no longer a site. `Engine::apply_pending`
   was an `unsafe fn` whose `unsafe` was a *contract*: it borrows the
   executor and the transport schedule the audio thread owns, from the
   control side, so a device restart can finish a graph re-prepare before the

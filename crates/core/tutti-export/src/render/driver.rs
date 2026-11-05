@@ -380,7 +380,7 @@ mod tests {
         let mut out = Vec::new();
         with_source(graph, RATE, clock, |src| {
             drive(src, ChannelLayout::from(ch), &plan, |b| {
-                out.extend(b.frames().map(<[f32]>::to_vec));
+                out.extend(b.iter_frames().map(<[f32]>::to_vec));
                 Ok(())
             })
         })

@@ -495,7 +495,7 @@ impl Graph {
     /// already between its halves, or on a poisoned editor.
     #[cfg(feature = "device")]
     pub(crate) fn check_reprepare(&self, max_block: Option<Samples>) -> Result<(), CommitError> {
-        if let Some(cause) = self.editor.poisoned() {
+        if let Some(cause) = self.editor.poison_cause() {
             return Err(CommitError::Poisoned {
                 cause: cause.to_owned(),
             });
@@ -662,7 +662,7 @@ impl Graph {
     ) -> Result<(), ReplaceRefused<Box<tutti_plugin::handles::PluginClient>>> {
         // Asked here, before binding: `replace` hands back what it refuses,
         // and a bound plugin cannot be unbound.
-        if let Some(cause) = self.editor.poisoned() {
+        if let Some(cause) = self.editor.poison_cause() {
             return Err(ReplaceRefused::Failed(format!(
                 "the graph is poisoned ({cause}); build a new one"
             )));
@@ -814,7 +814,7 @@ impl Graph {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<N::Controls, ReplaceRefused<N>> {
-        if let Some(cause) = self.editor.poisoned() {
+        if let Some(cause) = self.editor.poison_cause() {
             return Err(ReplaceRefused::Failed(format!(
                 "the graph is poisoned ({cause}); build a new one"
             )));

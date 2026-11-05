@@ -589,7 +589,7 @@ impl Pair {
                 idx: u.idx,
             })
             .collect();
-        tutti_graph::verify(&plan).expect("verifies");
+        plan.verify().expect("verifies");
         delta.fades = delta
             .replace
             .iter()
@@ -673,8 +673,8 @@ impl Pair {
         // preallocated capacity — would surface as a divergence far from its
         // cause, so the two counts are asserted equal here, where it happens.
         assert_eq!(
-            self.exec.dropped_events(),
-            self.reference.dropped_events(),
+            self.exec.dropped_event_count(),
+            self.reference.dropped_event_count(),
             "the executor dropped events the reference did not"
         );
         (a, b)

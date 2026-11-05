@@ -94,7 +94,8 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
                 transport.seek(Beat::new(5.0));
             }
         }
-        let block = contract::drive_in(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
+        let block =
+            contract::drive_input(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
         for (&l, &r) in block[0].iter().zip(&block[1]) {
             out.push(l);
             out.push(r);

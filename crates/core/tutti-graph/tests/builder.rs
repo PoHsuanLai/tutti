@@ -265,7 +265,7 @@ fn builder_builds_what_a_hand_written_spec_builds() {
         .connect(mix, 0, lp, 0)
         .set_output(0, Source::Node(OutPort { node: lp, port: 0 }))
         .connect_output(fold, 0, 1)
-        .event_connect(emit, 0, fold, 0);
+        .connect_events(emit, 0, fold, 0);
     assert_eq!(
         [mix, lp, emit, fold],
         [NodeKey(0), NodeKey(1), NodeKey(2), NodeKey(3)],

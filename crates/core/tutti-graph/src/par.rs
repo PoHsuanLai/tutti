@@ -378,7 +378,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         };
         let wake = (*wake).clamp(1, pool.participants());
         pool.run(wake, &|w| shared.participate(w));
-        shared.graph.aborted() || !shared.graph.done()
+        shared.graph.is_aborted() || !shared.graph.done()
     };
     assert!(
         !aborted,

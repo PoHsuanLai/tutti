@@ -364,7 +364,7 @@ mod tests {
         ));
 
         // Stop while rolling
-        let result = fsm.transition(MotionEvent::stop_now());
+        let result = fsm.transition(MotionEvent::stop_unfaded());
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Stopped))
@@ -390,7 +390,7 @@ mod tests {
             })
         ));
 
-        let result = fsm.transition(MotionEvent::locate_and_play(Beat(4.0)));
+        let result = fsm.transition(MotionEvent::play_from(Beat(4.0)));
         assert!(matches!(
             result,
             Some(TransitionResult::Located {
@@ -477,10 +477,10 @@ mod tests {
         let events = [
             MotionEvent::Play,
             MotionEvent::stop(),
-            MotionEvent::stop_now(),
+            MotionEvent::stop_unfaded(),
             MotionEvent::locate(Beat(16.0)),
-            MotionEvent::locate_and_play(Beat(16.0)),
-            MotionEvent::stop_and_return(Beat(0.0)),
+            MotionEvent::play_from(Beat(16.0)),
+            MotionEvent::stop_then_locate(Beat(0.0)),
             MotionEvent::Locate {
                 beat: Beat(2.0),
                 fade: FadeOut::Immediate,
@@ -580,10 +580,10 @@ mod tests {
     fn stopping_discards_a_pending_locate() {
         let mut fsm = TransportFsm::new();
         fsm.transition(MotionEvent::Play);
-        fsm.transition(MotionEvent::stop_and_return(Beat(8.0)));
+        fsm.transition(MotionEvent::stop_then_locate(Beat(8.0)));
         assert!(fsm.pending.is_some(), "the fade armed a pending locate");
 
-        fsm.transition(MotionEvent::stop_now());
+        fsm.transition(MotionEvent::stop_unfaded());
         assert!(
             fsm.take_declick_outcome().is_none(),
             "a discarded locate must not resurface"
@@ -600,7 +600,7 @@ mod tests {
         // Locate-fade, then asked to stop instead.
         let mut fsm = TransportFsm::new();
         fsm.transition(MotionEvent::Play);
-        fsm.transition(MotionEvent::stop_and_return(Beat(0.0)));
+        fsm.transition(MotionEvent::stop_then_locate(Beat(0.0)));
         assert_eq!(fsm.motion, MotionState::DeclickToLocate);
 
         let result = fsm.transition(MotionEvent::stop());

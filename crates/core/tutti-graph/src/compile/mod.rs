@@ -444,7 +444,7 @@ impl Emitted {
 ///
 /// # Panics
 ///
-/// In debug builds, if the plan it produced fails [`verify`](crate::verify)
+/// In debug builds, if the plan it produced fails [`Plan::verify`]
 /// — a compiler bug, never a property of the input.
 pub fn compile(
     graph: &ValidGraph,

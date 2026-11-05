@@ -240,12 +240,12 @@ impl GraphBuilder {
     }
 
     /// Audio inputs of `node`.
-    pub fn inputs_in(&self, node: NodeKey) -> usize {
+    pub fn input_count(&self, node: NodeKey) -> usize {
         self.shape(node).audio_in.count() as usize
     }
 
     /// Audio outputs of `node`.
-    pub fn outputs_in(&self, node: NodeKey) -> usize {
+    pub fn output_count(&self, node: NodeKey) -> usize {
         self.shape(node).audio_out.count() as usize
     }
 
@@ -280,7 +280,7 @@ impl GraphBuilder {
     }
 
     fn check_in(&self, node: NodeKey, port: usize) -> InPort {
-        let n = self.inputs_in(node);
+        let n = self.input_count(node);
         assert!(
             port < n,
             "{node:?} has {n} audio inputs; port {port} is out of range"
@@ -292,7 +292,7 @@ impl GraphBuilder {
     }
 
     fn check_out(&self, node: NodeKey, port: usize) -> OutPort {
-        let n = self.outputs_in(node);
+        let n = self.output_count(node);
         assert!(
             port < n,
             "{node:?} has {n} audio outputs; port {port} is out of range"
@@ -414,8 +414,8 @@ impl GraphBuilder {
     /// and a wider source's extra channels go unused. A source with no
     /// outputs feeds silence.
     pub fn pipe(&mut self, from: NodeKey, to: NodeKey) -> &mut Self {
-        let outs = self.outputs_in(from);
-        for c in 0..self.inputs_in(to) {
+        let outs = self.output_count(from);
+        for c in 0..self.input_count(to) {
             let source = if outs > 0 {
                 Source::Node(OutPort {
                     node: from,
@@ -435,7 +435,7 @@ impl GraphBuilder {
     /// silence.
     pub fn pipe_input(&mut self, node: NodeKey) -> &mut Self {
         let globals = self.inputs();
-        for c in 0..self.inputs_in(node) {
+        for c in 0..self.input_count(node) {
             let source = if globals > 0 {
                 Source::Global((c % globals) as u16)
             } else {
@@ -453,7 +453,7 @@ impl GraphBuilder {
     /// clamp to the last channel), a node wider than the graph has its
     /// extra channels unused, and a node with no outputs feeds silence.
     pub fn pipe_output(&mut self, node: NodeKey) -> &mut Self {
-        let outs = self.outputs_in(node);
+        let outs = self.output_count(node);
         for c in 0..self.outputs() {
             let source = if outs > 0 {
                 Source::Node(OutPort {
@@ -487,7 +487,7 @@ impl GraphBuilder {
             }
         } else {
             let outputs = self.spec.topology.outputs.clone();
-            for c in 0..self.inputs_in(key) {
+            for c in 0..self.input_count(key) {
                 let source = if outputs.is_empty() {
                     Source::Zero
                 } else {
@@ -508,7 +508,7 @@ impl GraphBuilder {
     /// # Panics
     ///
     /// If either event port is out of range.
-    pub fn event_connect(
+    pub fn connect_events(
         &mut self,
         from: NodeKey,
         from_port: usize,

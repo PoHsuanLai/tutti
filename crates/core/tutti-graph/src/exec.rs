@@ -184,7 +184,7 @@ use tutti_types::PlayReading;
 /// it the port refuses the newest event
 /// ([`EventRejected::Full`](crate::EventRejected::Full), returned to the
 /// node), and the executor counts it in
-/// [`dropped_events`](Executor::dropped_events); an engine forwards that
+/// [`dropped_event_count`](Executor::dropped_event_count); an engine forwards that
 /// count to its load meter. A node that can emit more per block declares
 /// its own capacity.
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
@@ -841,25 +841,25 @@ impl Executor {
     /// Events refused so far: writer overflow, and delay or feedback FIFO
     /// overflow (which never drops a note-off while anything else can go).
     /// A merge never drops: its slot holds all its inputs.
-    pub fn dropped_events(&self) -> u64 {
+    pub fn dropped_event_count(&self) -> u64 {
         self.dropped
     }
 
     /// Scheduled commands that were already past due when the executor
     /// first saw them, and so landed at offset 0 of that block instead of on
     /// their frame. Never dropped — see [`Editor::schedule`](crate::Editor::schedule).
-    pub fn late_commands(&self) -> u64 {
+    pub fn late_command_count(&self) -> u64 {
         self.commands.late()
     }
 
     /// Scheduled commands whose node or event port was gone by the time they
     /// fell due, so there was nowhere to deliver them.
-    pub fn unrouted_commands(&self) -> u64 {
+    pub fn unrouted_command_count(&self) -> u64 {
         self.commands.unrouted()
     }
 
     /// Scheduled commands cancelled before they landed.
-    pub fn cancelled_commands(&self) -> u64 {
+    pub fn cancelled_command_count(&self) -> u64 {
         self.commands.cancelled()
     }
 
@@ -2509,13 +2509,17 @@ mod tests {
         let mut has_due = vec![false; plan.units.len()];
         exec.commands
             .gather(&env, &plan, exec.applied, &mut has_due);
-        assert_eq!(exec.unrouted_commands(), 0, "judged against a stale plan");
+        assert_eq!(
+            exec.unrouted_command_count(),
+            0,
+            "judged against a stale plan"
+        );
         assert_eq!(ed.commands_outstanding(), 1, "it waits");
 
         // Then the commit lands, and the command with it.
         exec.process(64, &Transport::default(), &[], &mut []);
         assert_eq!(seen.load(Ordering::Relaxed), 1);
         assert_eq!(ed.commands_outstanding(), 0);
-        assert_eq!(exec.unrouted_commands(), 0);
+        assert_eq!(exec.unrouted_command_count(), 0);
     }
 }

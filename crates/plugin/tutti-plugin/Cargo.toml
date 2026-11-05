@@ -124,7 +124,7 @@ optional = true
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 
 [dev-dependencies]
-# `contract::{drive_in, Direct}`: the in-process VST2 node driven by hand, as
+# `contract::{drive_input, Direct}`: the in-process VST2 node driven by hand, as
 # a graph drives it, in its tests, allocation gate and bench.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 # `clap_fork.rs` exports through a forked plugin, to pin that a fork failing

@@ -57,7 +57,8 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
         if out.len() == seek_at {
             transport.seek(Beat::new(5.0));
         }
-        let block = contract::drive_in(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
+        let block =
+            contract::drive_input(&mut pool, &transport.env(BLOCK, SR), &[], &[], &[]).audio;
         out.extend_from_slice(&block[0]);
         transport.advance(BLOCK as i64, SR);
     }

@@ -177,13 +177,13 @@ impl GraphSpec {
     /// [`Resolution::Sample`]. A marked edge must exist ([`validate`](Self::validate)
     /// checks it): remove edges with [`disconnect_events`](Self::disconnect_events),
     /// which drops the mark too (editing `events` by hand does not), or drop
-    /// a mark alone with [`unrequire_resolution`](Self::unrequire_resolution).
+    /// a mark alone with [`clear_resolution`](Self::clear_resolution).
     pub fn require_resolution(&mut self, at: EventIn, from: EventOut, resolution: Resolution) {
         self.required_resolution.insert((at, from), resolution);
     }
 
     /// Drops the resolution mark on `from → at`, if any.
-    pub fn unrequire_resolution(&mut self, at: EventIn, from: EventOut) {
+    pub fn clear_resolution(&mut self, at: EventIn, from: EventOut) {
         self.required_resolution.remove(&(at, from));
     }
 

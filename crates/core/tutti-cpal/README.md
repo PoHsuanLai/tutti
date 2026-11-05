@@ -28,7 +28,7 @@ for device in TuttiDriver::devices()? {
 ```
 
 Play a graph: open a device, build the graph at the device's rate, and hand
-both to a [`TuttiDriver`] with [`TuttiDriver::from_parts`]:
+both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 
 ```rust,no_run
 use std::sync::Arc;
@@ -62,7 +62,7 @@ let state = Arc::new(AudioCallbackState::new(
 ));
 
 audio_engine.start(Arc::clone(&state))?;
-let driver = TuttiDriver::from_parts(audio_engine, state);
+let driver = TuttiDriver::new(audio_engine, state);
 assert!(driver.is_running());
 # Ok(())
 # }

@@ -1,4 +1,4 @@
-//! [`edit_ring`]: a bounded single-producer single-consumer queue of small
+//! [`edit_ring()`]: a bounded single-producer single-consumer queue of small
 //! `Copy` values, for edits the control thread hands the audio thread.
 //!
 //! The producer is the control thread (a parameter edit on an active plugin);
@@ -9,10 +9,13 @@
 //!
 //! # The storage
 //!
-//! Each slot is a run of `u64` words, written and read `Relaxed`. Handing a
-//! slot over is the index that follows it, so there is no data race to make
-//! undefined and the module has no `unsafe`; `T` is [`NoUninit`] and
-//! [`AnyBitPattern`], so the conversion both ways is `bytemuck`'s.
+//! Each slot is a run of `u64` words in `UnsafeCell`s, written by the producer
+//! and read by the consumer through plain accesses. Under `--cfg loom` the
+//! cells are loom's, so the model sees every hand-over of a slot and reports a
+//! causality violation if one is not ordered by the indices. `T` is
+//! [`NoUninit`] and [`AnyBitPattern`], so the conversion to and from words is
+//! `bytemuck`'s; the only `unsafe` is the two word accesses and the `Sync`
+//! impl below.
 //!
 //! # The protocol
 //!
@@ -49,6 +52,53 @@ mod sync {
 
 const WORD: usize = std::mem::size_of::<u64>();
 
+/// One word of a slot.
+#[cfg(loom)]
+#[derive(Debug)]
+struct Word(loom::cell::UnsafeCell<u64>);
+#[cfg(not(loom))]
+#[derive(Debug)]
+struct Word(std::cell::UnsafeCell<u64>);
+
+impl Word {
+    fn new() -> Self {
+        #[cfg(loom)]
+        return Self(loom::cell::UnsafeCell::new(0));
+        #[cfg(not(loom))]
+        Self(std::cell::UnsafeCell::new(0))
+    }
+
+    /// # Safety
+    ///
+    /// No other access to this word may run at the same time: the caller is
+    /// the producer and the slot is free (`head - tail < capacity`).
+    unsafe fn write(&self, value: u64) {
+        #[cfg(loom)]
+        // SAFETY: the caller's.
+        self.0.with_mut(|word| unsafe { *word = value });
+        #[cfg(not(loom))]
+        // SAFETY: the caller's.
+        unsafe {
+            *self.0.get() = value;
+        }
+    }
+
+    /// # Safety
+    ///
+    /// No write to this word may run at the same time: the caller is the
+    /// consumer and the slot was published (`head > tail`).
+    unsafe fn read(&self) -> u64 {
+        #[cfg(loom)]
+        // SAFETY: the caller's.
+        return self.0.with(|word| unsafe { *word });
+        #[cfg(not(loom))]
+        // SAFETY: the caller's.
+        unsafe {
+            *self.0.get()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Shared {
     head: AtomicU64,
@@ -56,8 +106,18 @@ struct Shared {
     refused: AtomicU32,
     words_per_slot: usize,
     capacity: usize,
-    words: Box<[AtomicU64]>,
+    words: Box<[Word]>,
 }
+
+// SAFETY: the words are the only non-`Sync` field. There is one `EditWriter`
+// and one `EditReader`, each `&mut self` in every access. The writer touches
+// a slot's words only while `head - tail < capacity` (the slot is free: the
+// reader finished with it before its `Release` store of `tail`, which the
+// writer `Acquire`-loaded); the reader touches them only while `head > tail`
+// (the slot is published: the writer finished before its `Release` store of
+// `head`, which the reader `Acquire`-loaded). So no two accesses to a word
+// overlap, and the loom model checks it.
+unsafe impl Sync for Shared {}
 
 /// A value that did not fit: the ring was full.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +162,7 @@ pub fn edit_ring<T: NoUninit + AnyBitPattern>(capacity: usize) -> (EditWriter<T>
     assert!(capacity > 0, "an edit ring holds at least one value");
     let words_per_slot = std::mem::size_of::<T>().div_ceil(WORD);
     let words = (0..capacity * words_per_slot)
-        .map(|_| AtomicU64::new(0))
+        .map(|_| Word::new())
         .collect();
     let shared = Arc::new(Shared {
         head: AtomicU64::new(0),
@@ -127,7 +187,7 @@ pub fn edit_ring<T: NoUninit + AnyBitPattern>(capacity: usize) -> (EditWriter<T>
 }
 
 impl Shared {
-    fn slot(&self, count: u64) -> &[AtomicU64] {
+    fn slot(&self, count: u64) -> &[Word] {
         let at = (count % self.capacity as u64) as usize * self.words_per_slot;
         &self.words[at..at + self.words_per_slot]
     }
@@ -150,7 +210,9 @@ impl<T: NoUninit + AnyBitPattern> EditWriter<T> {
         for (word, chunk) in self.shared.slot(self.head).iter().zip(bytes.chunks(WORD)) {
             let mut padded = [0; WORD];
             padded[..chunk.len()].copy_from_slice(chunk);
-            word.store(u64::from_ne_bytes(padded), Ordering::Relaxed);
+            // SAFETY: `head - tail < capacity`, so the slot is free and this
+            // is the only writer (see `Shared`'s `Sync`).
+            unsafe { word.write(u64::from_ne_bytes(padded)) };
         }
         self.head += 1;
         self.shared.head.store(self.head, Ordering::Release);
@@ -165,6 +227,13 @@ impl<T: NoUninit + AnyBitPattern> EditWriter<T> {
 }
 
 impl<T: NoUninit + AnyBitPattern> EditReader<T> {
+    /// How many values are queued now: at least what a pop sees, more if the
+    /// producer pushes meanwhile.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        (self.shared.head.load(Ordering::Acquire) - self.tail) as usize
+    }
+
     /// The oldest queued value, or `None` when the ring is empty. Wait-free;
     /// never allocates.
     pub fn pop(&mut self) -> Option<T> {
@@ -180,7 +249,9 @@ impl<T: NoUninit + AnyBitPattern> EditReader<T> {
             .iter()
             .zip(bytes.chunks_mut(WORD))
         {
-            let loaded = word.load(Ordering::Relaxed).to_ne_bytes();
+            // SAFETY: `head > tail`, so the slot is published and the only
+            // writer is done with it (see `Shared`'s `Sync`).
+            let loaded = unsafe { word.read() }.to_ne_bytes();
             chunk.copy_from_slice(&loaded[..chunk.len()]);
         }
         self.tail += 1;

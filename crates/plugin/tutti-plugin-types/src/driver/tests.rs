@@ -4,6 +4,11 @@
 //! Each test's comment names the mutation that makes it fail. Every mutation
 //! was applied to `driver.rs` (or `fake.rs`), the test watched to fail, and
 //! the code restored.
+//!
+//! The Processor is always held here (a local `Hand`): the lent-Processor paths
+//! (a recall that answers `Lent`, a parked plan resumed by `Event::Returned`)
+//! are covered by the core's own tests and get their `Lifecycle` cases when the
+//! threaded `Hand` lands.
 
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
@@ -222,8 +227,9 @@ fn stuck_restores_both_halves() {
     );
 }
 
-/// **A pair from two activations is refused, never joined, and both halves come
-/// back.**
+/// **What a `Loaded` must do with a pair from two activations: refuse it, and
+/// hand both halves back.** This pins the fake's implementation of the
+/// contract; each format's own `deactivate` carries its own check and test.
 ///
 /// Mutation (run): `FakeLoaded::deactivate` skipping the `Arc::ptr_eq` check →
 /// the second pair's plugin is returned `Ok` and the assertion fails.
@@ -381,8 +387,8 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
         [
             Call::SetParameter(a),
             Call::SetParameter(b),
-            Call::Edit(a),
-            Call::Edit(b),
+            Call::Edit(a, Normalized::new(0.25)),
+            Call::Edit(b, Normalized::new(0.75)),
             Call::Process(64),
             Call::Process(64),
         ]
@@ -410,6 +416,9 @@ fn nothing_runs_after_died() {
 }
 
 /// **The control surface is reachable in every state that has a plugin.**
+///
+/// Mutation (run): `Lifecycle::control` answering `None` for `Refused` → the
+/// last assertion fails; for `Active` → the second fails.
 #[test]
 fn control_is_reachable_loaded_active_and_refused() {
     let mut rig = Rig::new();
@@ -423,7 +432,10 @@ fn control_is_reachable_loaded_active_and_refused() {
     assert!(rig.lifecycle.control().is_some());
 }
 
-/// **State round-trips through the control surface in every state.**
+/// **State round-trips through the control surface, loaded and active.**
+///
+/// Mutation (run): `FakeController::load_state` not storing the bytes → the
+/// saved state is empty and the assertion fails.
 #[test]
 fn state_round_trips_through_hosted() {
     let mut rig = Rig::new();
@@ -448,7 +460,6 @@ fn the_processor_renders_without_allocating() {
     let inputs = [input.as_slice(), input.as_slice()];
     let ctx = ProcessContext::new();
     let mut out = ProcessOutput::default();
-    let id = ParamId::new(1);
     let processor = rig.lifecycle.processor().expect("held");
     let mut outputs = [left.as_mut_slice(), right.as_mut_slice()];
     let mut io = PluginIo {
@@ -462,7 +473,6 @@ fn the_processor_renders_without_allocating() {
         }
         processor.stop();
     });
-    let _ = id;
     assert_eq!(
         rig.plugin
             .calls()
@@ -473,10 +483,13 @@ fn the_processor_renders_without_allocating() {
     );
 }
 
-/// Requests raised from another thread while the main thread ticks all arrive
-/// once.
+/// **Requests raised on another thread, while the main thread takes, arrive
+/// once each.**
+///
+/// Mutation (run): `taken` yielding every request whether or not its bit is
+/// set → the first take returns all twelve and the final comparison fails.
 #[test]
-fn requests_from_another_thread_are_delivered_once() {
+fn requests_raised_while_taking_arrive_once() {
     let word = std::sync::Arc::new(RequestWord::new());
     let raiser = {
         let word = word.clone();
@@ -485,8 +498,173 @@ fn requests_from_another_thread_are_delivered_once() {
             Request::TailChanged.raise(&word);
         })
     };
+    let mut got = Vec::new();
+    while got.len() < 2 {
+        got.extend(taken(&word));
+        std::thread::yield_now();
+    }
     raiser.join().unwrap();
-    let got: Vec<_> = taken(&word).collect();
+    got.extend(taken(&word));
+    got.sort_by_key(|r| format!("{r:?}"));
     assert_eq!(got, [Request::Restart, Request::TailChanged]);
-    assert_eq!(taken(&word).count(), 0);
+}
+
+/// **A panic in `deactivate` poisons and the death is stepped.**
+///
+/// Mutation (run): `Lifecycle::deactivate` without `catch_unwind` → the test
+/// panics.
+#[test]
+fn a_panic_in_deactivate_poisons() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.plugin.panic_in_deactivate(true);
+    rig.op(HostOp::Deactivate);
+    assert!(rig.lifecycle.is_poisoned());
+    assert_eq!(rig.state.stage(), Stage::Poisoned);
+}
+
+/// **A panic in `rebuild` poisons.**
+///
+/// Mutation (run): `Lifecycle::rebuild` without `catch_unwind` → the test
+/// panics.
+#[test]
+fn a_panic_in_rebuild_poisons() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.plugin.panic_in_rebuild(true);
+    Request::Reload.raise(rig.plugin.request_word());
+    rig.tick();
+    assert!(rig.lifecycle.is_poisoned());
+    assert_eq!(rig.state.stage(), Stage::Poisoned);
+}
+
+/// **A panic out of a read poisons, and the `State` is not lost with the
+/// unwind.** `drive` takes the state by value, so a panic that escaped would
+/// drop it.
+///
+/// Mutation (run): `Lifecycle::apply` calling `apply_in_place` without
+/// `guarded` → the test panics.
+#[test]
+fn a_panic_in_a_read_poisons_without_losing_the_state() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.plugin.panic_in_latency(true);
+    rig.plugin.set_latency(Samples(8));
+    Request::LatencyChanged.raise(rig.plugin.request_word());
+    rig.tick();
+    assert!(rig.lifecycle.is_poisoned());
+    assert_eq!(rig.state.stage(), Stage::Poisoned);
+}
+
+/// **A deactivation that is stuck, then a reconfigure, ends active at the new
+/// rate once the plugin lets go.**
+///
+/// Mutation (run): `Lifecycle::deactivate` poisoning on `Err(Stuck)` → the
+/// stage is `Poisoned`.
+#[test]
+fn stuck_then_reconfigure_settles_at_the_new_rate() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.plugin.stick_deactivations(1);
+    rig.op(HostOp::Reconfigure(prepare(96_000.0)));
+    assert_eq!(rig.state.stage(), Stage::Active);
+    assert_eq!(
+        rig.state.prepare().map(|p| p.rate),
+        Some(SampleRate(48_000.0))
+    );
+    rig.op(HostOp::Reconfigure(prepare(96_000.0)));
+    assert_eq!(rig.state.stage(), Stage::Active);
+    assert_eq!(
+        rig.state.prepare().map(|p| p.rate),
+        Some(SampleRate(96_000.0))
+    );
+    rig.render(64).unwrap();
+}
+
+/// **A rebuild that is refused twice stays `Refused` with no rate, and the
+/// attempt that takes revives it.**
+///
+/// Mutation (run): `Lifecycle::rebuild` recording `Some(rate)` from a stale
+/// field instead of carrying `rate` → the `rate: None` match fails.
+#[test]
+fn a_refused_rebuild_is_retried_with_no_rate() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.plugin.fail_rebuild(true);
+    Request::Reload.raise(rig.plugin.request_word());
+    rig.tick();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    assert!(matches!(
+        rig.lifecycle,
+        Lifecycle::Refused { rate: None, .. }
+    ));
+    rig.plugin.fail_rebuild(false);
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    assert_eq!(rig.state.stage(), Stage::Active);
+}
+
+/// **An edit the full ring refused arrives, latest value only, when the idle
+/// pass retries.**
+///
+/// Mutation (run): `drive` not calling `flush_edits` on `Tick` → no `Edit`
+/// after the block; `FakeController::flush_edits` resending zero
+/// instead of the latest → the value assertion fails.
+#[test]
+fn a_refused_edit_is_retried_on_the_next_tick() {
+    let mut rig = Rig::new();
+    rig.plugin.edit_capacity(1);
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    let (a, b) = (ParamId::new(1), ParamId::new(2));
+    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::new(0.1));
+    // The ring holds one: these are refused, `b` twice.
+    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::new(0.2));
+    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::new(0.9));
+    rig.plugin.clear_calls();
+    rig.render(64).unwrap();
+    assert_eq!(
+        rig.plugin.calls(),
+        [Call::Edit(a, Normalized::new(0.1)), Call::Process(64)]
+    );
+
+    rig.plugin.clear_calls();
+    rig.tick();
+    rig.render(64).unwrap();
+    assert_eq!(
+        rig.plugin.calls(),
+        [Call::Edit(b, Normalized::new(0.9)), Call::Process(64)]
+    );
+    assert_eq!(
+        Hosted::parameter(&rig.lifecycle, b).map(Normalized::get),
+        Some(0.9)
+    );
+    rig.tick();
+    rig.plugin.clear_calls();
+    rig.render(64).unwrap();
+    assert_eq!(
+        rig.plugin.calls(),
+        [Call::Process(64)],
+        "nothing left to send"
+    );
+}
+
+/// **A VST3 mapping change reaches the plugin as one rebuild, and a
+/// note-expression change as one notice.**
+///
+/// Mutation (run): `Lifecycle::apply_in_place` answering `RebuildMidiMapping`
+/// with `Done` without calling the control → no `RebuildMidiMapping` call.
+#[test]
+fn a_mapping_change_rebuilds_the_mapping_once() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.take_notices();
+    rig.plugin.clear_calls();
+    Request::MidiCcAssignmentChanged.raise(rig.plugin.request_word());
+    Request::NoteExpressionChanged.raise(rig.plugin.request_word());
+    rig.tick();
+    rig.tick();
+    assert_eq!(rig.plugin.calls(), [Call::RebuildMidiMapping]);
+    assert!(matches!(
+        rig.take_notices().as_slice(),
+        [Notice::NoteExpressionChanged]
+    ));
 }

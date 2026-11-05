@@ -60,11 +60,17 @@ pub enum Lifecycle<L: Loaded> {
     /// Configured, not rendering.
     Loaded(L),
     /// Split. The Controller is here; the Processor is held or lent.
+    ///
+    /// `seat` is declared before `controller` so a dropped `Lifecycle` drops a
+    /// held Processor first: the Controller destroys the plugin, and a
+    /// Processor must not outlive it. A Processor that is `Lent` is not here to
+    /// drop; the main thread recalls it before dropping the `Lifecycle` (the
+    /// threaded `Hand` enforces that, and a local hand never lends).
     Active {
-        /// The main-thread half.
-        controller: L::Controller,
         /// The realtime half, or where it is.
         seat: Seat<L::Processor>,
+        /// The main-thread half.
+        controller: L::Controller,
     },
     /// The plugin refused to run; it is loaded and renders nothing.
     Refused {
@@ -134,12 +140,42 @@ impl<L: Loaded> Lifecycle<L> {
     ///
     /// [`Effect::Notify`] is the driver's: it is delivered by
     /// [`drive`](Self::drive), and here answers [`Reply::Done`].
+    ///
+    /// A panic out of the plugin leaves [`Lifecycle::Poisoned`], not a
+    /// half-moved plugin, whichever call it came from. `hand` is unused until a
+    /// threaded hand exists: a local one needs nothing from the effects that
+    /// move the Processor.
     pub fn apply(&mut self, effect: Effect, hand: &mut Hand<L::Processor>) -> Reply {
         let _ = hand;
         match effect {
             Effect::CallActivate(prepare) => self.activate(prepare),
             Effect::CallDeactivate => self.deactivate(),
             Effect::Rebuild => self.rebuild(),
+            other => self
+                .guarded(|this| this.apply_in_place(other))
+                .unwrap_or(Reply::NotActive),
+        }
+    }
+
+    /// Runs `f`; a panic out of it leaves `Poisoned` and `None`.
+    fn guarded<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        match catch_unwind(AssertUnwindSafe(|| f(self))) {
+            Ok(result) => Some(result),
+            Err(_) => {
+                let lost = std::mem::replace(self, Self::Poisoned);
+                // Destroying a plugin that just panicked may panic too.
+                let _ = catch_unwind(AssertUnwindSafe(|| drop(lost)));
+                None
+            }
+        }
+    }
+
+    /// The effects that act on a plugin where it is.
+    fn apply_in_place(&mut self, effect: Effect) -> Reply {
+        match effect {
+            Effect::CallActivate(_) | Effect::CallDeactivate | Effect::Rebuild => {
+                unreachable!("transitions are applied by `apply`")
+            }
             Effect::Recall => match self {
                 Self::Active {
                     seat: Seat::Held(_),
@@ -173,6 +209,7 @@ impl<L: Loaded> Lifecycle<L> {
                 _ => Reply::NotActive,
             },
             Effect::ReadParams(scope) => self.with_control(|c| c.rescan_parameters(scope)),
+            Effect::RebuildMidiMapping => self.with_control(|c| c.rebuild_midi_mapping()),
             Effect::RunMainThread => self.with_control(|c| c.run_main_thread()),
             Effect::RunTimer(id) => self.with_control(|c| c.run_timer(id)),
             Effect::ServiceFd(id) => self.with_control(|c| c.service_fd(id)),
@@ -201,8 +238,8 @@ impl<L: Loaded> Lifecycle<L> {
         match catch_unwind(AssertUnwindSafe(|| plugin.activate(prepare))) {
             Ok(Ok((processor, controller))) => {
                 *self = Self::Active {
-                    controller,
                     seat: Seat::Held(processor),
+                    controller,
                 };
                 Reply::Activated
             }
@@ -222,8 +259,8 @@ impl<L: Loaded> Lifecycle<L> {
     fn deactivate(&mut self) -> Reply {
         let (controller, processor) = match std::mem::replace(self, Self::Poisoned) {
             Self::Active {
-                controller,
                 seat: Seat::Held(processor),
+                controller,
             } => (controller, processor),
             other => {
                 *self = other;
@@ -241,8 +278,8 @@ impl<L: Loaded> Lifecycle<L> {
                 reason,
             })) => {
                 *self = Self::Active {
-                    controller,
                     seat: Seat::Held(processor),
+                    controller,
                 };
                 Reply::Stuck(reason)
             }
@@ -292,6 +329,18 @@ impl<L: Loaded> Lifecycle<L> {
         hand: &mut Hand<L::Processor>,
         mut notify: impl FnMut(Notice),
     ) -> State {
+        if matches!(event, Event::Tick) {
+            // The idle pass is the Controller's tick to retry what a full edit
+            // ring refused.
+            self.guarded(|this| {
+                if let Some(control) = this.control() {
+                    control.flush_edits();
+                }
+            });
+            if self.is_poisoned() {
+                return step(state, Event::Died).0;
+            }
+        }
         let (mut state, effects) = step(state, event);
         let mut queue: VecDeque<Effect> = effects.into_iter().collect();
         while let Some(effect) = queue.pop_front() {

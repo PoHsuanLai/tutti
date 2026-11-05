@@ -1,95 +1,108 @@
-//! A `loom` model of [`edit_ring`]: the shipped code, whose atomics are
-//! loom's under the flag (see `rt/edit_ring.rs`'s `sync` module).
+//! A `loom` model of [`edit_ring`]: the shipped code, whose atomics and slot
+//! cells are loom's under the flag (see `rt/edits.rs`).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test edit_ring_loom
 //! ```
 //!
-//! A ring of 2 slots holding `[u32; 3]` (twelve bytes: two words, the second
-//! half used). The producer pushes the values 1, 2, 3, each element the
-//! value's number, so a torn slot shows as unequal elements; a push the ring
-//! refuses is retried after the consumer has popped, as the control thread's
-//! next tick would. The consumer pops until it has seen all three. Over every
-//! interleaving:
+//! The ring holds `[u32; 3]` (twelve bytes: two words, the second half used);
+//! each value's elements are its number, so a torn slot shows as unequal
+//! elements. The producer pushes 1, 2, 3, retrying a refused push once after a
+//! yield, and records the values whose push returned `Ok`. The consumer pops,
+//! and after the producer joins drains the rest. Over every interleaving:
 //!
-//! - **applied once, in order**: the consumer sees 1, 2, 3, each once;
+//! - **no accepted value is lost, none repeated, order kept**: the values
+//!   popped equal the values accepted, in order;
 //! - **no torn slot**: every popped value has equal elements;
-//! - **refusals are counted**: the producer's refusal count equals the
-//!   pushes that returned `RingFull`.
+//! - **refusals are counted**: the writer's count equals the pushes that
+//!   returned `RingFull`;
+//! - **slot hand-over is ordered**: the slots are loom `UnsafeCell`s, so a
+//!   write the consumer's read is not ordered after, or a write that races the
+//!   consumer still reading, is a causality violation.
 //!
-//! The ring is smaller than the stream, so the producer reuses a slot the
-//! consumer is finishing with: the case a missing `Release` on `tail` breaks.
+//! Two rings: capacity 2, and capacity 1, where every value reuses the one
+//! slot.
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/edit_ring.rs`; the model failed as noted.
+//! Each was applied to `rt/edits.rs`; the model failed as noted.
 //!
-//! - `push`'s store of `head` weakened to `Relaxed` → "out of order or
-//!   repeated: 1 after 2" (the consumer sees the new `head` before the slot's
-//!   words);
-//! - `pop`'s load of `head` weakened to `Relaxed` → the same family of
-//!   failure;
-//! - `push` ignoring a full ring (no `head - tail` check) → "a torn slot:
-//!   [1, 1, 3]" (a slot rewritten while the consumer reads it);
-//! - `pop` not advancing `tail` → "out of order or repeated: 1 after 1".
+//! - `push`'s store of `head` weakened to `Relaxed` → a causality violation
+//!   (the consumer reads a slot whose write it is not ordered after);
+//! - `pop`'s load of `head` weakened to `Relaxed` → the same;
+//! - `pop`'s store of `tail` weakened to `Relaxed` → a causality violation
+//!   (the producer rewrites a slot the consumer's read is not ordered before);
+//! - `push`'s load of `tail` weakened to `Relaxed` → the same;
+//! - `push` ignoring a full ring (no `head - tail` check) → a causality
+//!   violation (the producer writes a slot the consumer has not finished);
+//! - `pop` not advancing `tail` → the model aborts, as the ring fills and never
+//!   drains (loom's execution-path check);
+//! - `pop` skipping a queued entry (advancing `tail` by two) → the model
+//!   aborts the same way.
 //!
-//! Not covered here: weakening `pop`'s store of `tail` to `Relaxed`, or
-//! `push`'s load of it, **survives**. The `Release` on `tail` keeps the
-//! consumer's slot reads from moving after the store that frees the slot, a
-//! load-then-store reordering that loom does not explore. Those two orderings
-//! are argued from the protocol in `rt/edit_ring.rs`, not shown by this model.
+//! The two orderings on `tail` are caught only because the slots are loom
+//! `UnsafeCell`s: with atomic words the same mutations survived.
 
 #![cfg(loom)]
 
 use loom::thread;
 use tutti_types::edit_ring;
 
-#[test]
-fn every_edit_is_applied_once_in_order() {
-    loom::model(|| {
-        let (mut writer, mut reader) = edit_ring::<[u32; 3]>(2);
+fn run(capacity: usize) {
+    loom::model(move || {
+        let (mut writer, mut reader) = edit_ring::<[u32; 3]>(capacity);
 
         let producer = thread::spawn(move || {
+            let mut accepted = Vec::new();
             let mut refused = 0;
             for n in 1..=3u32 {
-                // A refused push is retried once; the consumer may not have
-                // popped yet, so the value can be dropped: the model keeps
-                // only the order of what is applied.
-                if writer.push([n; 3]).is_err() {
-                    refused += 1;
-                    thread::yield_now();
-                    if writer.push([n; 3]).is_err() {
-                        refused += 1;
+                let mut tries = 0;
+                while tries < 2 {
+                    match writer.push([n; 3]) {
+                        Ok(()) => {
+                            accepted.push(n);
+                            break;
+                        }
+                        Err(_) => {
+                            refused += 1;
+                            tries += 1;
+                            thread::yield_now();
+                        }
                     }
                 }
             }
-            (refused, writer.refused())
+            (accepted, refused, writer.refused())
         });
 
-        let mut last = 0;
-        for _ in 0..6 {
+        let mut popped = Vec::new();
+        let take = |reader: &mut tutti_types::EditReader<[u32; 3]>, popped: &mut Vec<u32>| {
             if let Some([a, b, c]) = reader.pop() {
                 assert!(a == b && b == c, "a torn slot: {:?}", [a, b, c]);
-                assert!(
-                    a > last && a <= 3,
-                    "out of order or repeated: {a} after {last}"
-                );
-                last = a;
+                popped.push(a);
+                true
             } else {
+                false
+            }
+        };
+        for _ in 0..6 {
+            if !take(&mut reader, &mut popped) {
                 thread::yield_now();
             }
         }
 
-        let (refused, counted) = producer.join().unwrap();
+        let (accepted, refused, counted) = producer.join().unwrap();
+        while take(&mut reader, &mut popped) {}
+        assert_eq!(popped, accepted, "popped values differ from accepted");
         assert_eq!(refused, counted, "refusals miscounted");
-        while let Some([a, b, c]) = reader.pop() {
-            assert!(a == b && b == c, "a torn slot");
-            assert!(
-                a > last && a <= 3,
-                "out of order or repeated: {a} after {last}"
-            );
-            last = a;
-        }
-        assert!(last >= 1, "nothing was applied");
     });
+}
+
+#[test]
+fn every_accepted_edit_is_applied_once_in_order() {
+    run(2);
+}
+
+#[test]
+fn a_single_slot_is_reused_in_order() {
+    run(1);
 }

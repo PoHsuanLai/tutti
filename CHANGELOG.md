@@ -17,7 +17,7 @@ rejoins them. `Lifecycle<L>` holds a plugin in whichever state it is in and
 `Hand::local()`, `Seat` and `Hosted` come with it (design 016 §2.2, §2.3).
 `RequestWord` and `edit_ring` (in `tutti-types`, with loom models) carry a
 plugin's calls into the host and the host's parameter edits to the Processor;
-`Request::bit`, `taken`, `Edit` and `edits` type them for plugins. The
+`Request::bit`, `taken`, `Edit` and `edits` type them for plugins. `Request` gains `MidiCcAssignmentChanged` and `NoteExpressionChanged` (VST3), `Effect` gains `RebuildMidiMapping`, `Notice` gains `NoteExpressionChanged`, and `EFFECT_CAPACITY` is 14. `Control::flush_edits` retries refused edits on each tick. The
 `test-support` feature adds `fake::FakePlugin`. Nothing implements the traits
 for a real format yet, and the capability traits of `format_host.rs` remain.
 

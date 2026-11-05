@@ -102,6 +102,14 @@ pub trait Control {
         let _ = scope;
     }
 
+    /// Rebuilds the host's MIDI controller-to-parameter mapping from the plugin
+    /// (VST3 `kMidiCCAssignmentChanged`).
+    fn rebuild_midi_mapping(&mut self) {}
+
+    /// Retries the parameter edits an active plugin's full ring refused,
+    /// latest value per parameter. Called on each idle pass.
+    fn flush_edits(&mut self) {}
+
     /// The plugin's own main-thread work (CLAP `on_main_thread`).
     fn run_main_thread(&mut self) {}
 
@@ -165,6 +173,10 @@ pub trait Loaded: Control + Sized + Send {
 pub trait Processor: Send {
     /// Renders one block. Realtime: no allocation, no lock, no blocking. The
     /// error is built only on the failed-block path.
+    ///
+    /// An implementation drains its edit ring at the head of the block and
+    /// merges the edits with `io.ctx`'s automation in scratch it preallocated at
+    /// activation, so each Processor owns its own and nothing is built here.
     ///
     /// # Errors
     ///

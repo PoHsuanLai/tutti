@@ -38,7 +38,7 @@
 //!   to writes says so ([`Contended`]) rather than spinning.
 //! - [`RequestWord`] — up to 32 kinds of request a callee raises from any
 //!   thread (one `fetch_or`) and a control thread takes whole.
-//! - [`edit_ring`] — a bounded single-producer single-consumer queue of small
+//! - [`edit_ring()`] — a bounded single-producer single-consumer queue of small
 //!   `Copy` values, for edits the control thread hands the audio thread.
 //! - [`RtScope`] — a per-thread "inside a block" marker, which a `Drop`
 //!   impl checks ([`RtScope::check_outside`]) so a value that must be
@@ -58,7 +58,7 @@
 
 pub mod cell;
 pub mod denormals;
-pub mod edit_ring;
+mod edits;
 pub mod job_gate;
 pub mod packed_atomic;
 pub mod pos_ring;
@@ -72,7 +72,7 @@ pub mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
-pub use edit_ring::{EditReader, EditWriter, RingFull, edit_ring};
+pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{

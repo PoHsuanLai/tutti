@@ -29,7 +29,7 @@ use crate::{Layout, PluginError, PluginTail, RenderMode, SampleFormat, SampleRat
 ///
 /// A bound, so a step never allocates its output and never grows with its
 /// input.
-pub const EFFECT_CAPACITY: usize = 12;
+pub const EFFECT_CAPACITY: usize = 14;
 
 /// The effects of one [`step`], in the order to perform them.
 pub type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
@@ -44,9 +44,10 @@ pub const FDS_PER_TICK: usize = 3;
 
 /// The most effects one [`step`] emits: a tick that runs a full set of timers
 /// and descriptors, reads the latency, tail and layout, notifies a values
-/// rescan and reads and notifies an info rescan. No other step comes near it;
+/// rescan, reads and notifies an info rescan, rebuilds the MIDI mapping and
+/// notifies a note-expression change. No other step comes near it;
 /// the assertion below keeps [`EFFECT_CAPACITY`] at or above it.
-pub const MAX_STEP_EFFECTS: usize = TIMERS_PER_TICK + FDS_PER_TICK + 6;
+pub const MAX_STEP_EFFECTS: usize = TIMERS_PER_TICK + FDS_PER_TICK + 8;
 
 const _: () = assert!(MAX_STEP_EFFECTS <= EFFECT_CAPACITY);
 
@@ -160,6 +161,11 @@ pub enum Request {
     /// `request_callback` (CLAP): run `on_main_thread`. Dropped while the
     /// plugin is `Refused`, which has nothing to run.
     Callback,
+    /// VST3 `kMidiCCAssignmentChanged`: the plugin's controller-to-parameter
+    /// mapping changed, so the host rebuilds its own.
+    MidiCcAssignmentChanged,
+    /// VST3 `kNoteExpressionChanged`: the plugin's note-expression types changed.
+    NoteExpressionChanged,
     /// A registered timer is due.
     Timer(TimerId),
     /// A registered file descriptor is ready.
@@ -181,8 +187,9 @@ pub enum RescanScope {
     All,
 }
 
-/// What the shell is asked to do. Each effect is answered by an
-/// [`Event::Replied`].
+/// What the shell is asked to do. Each effect but [`Notify`](Self::Notify) is
+/// answered by an [`Event::Replied`]; `Notify` is delivered to the host and
+/// has no reply.
 ///
 /// Exhaustive: every shell matches every variant.
 #[derive(Debug)]
@@ -207,6 +214,8 @@ pub enum Effect {
     ReadLayout,
     /// Re-read the parameter set.
     ReadParams(RescanScope),
+    /// Rebuild the host's MIDI controller-to-parameter mapping from the plugin.
+    RebuildMidiMapping,
     /// Run the plugin's main-thread work (CLAP `on_main_thread`).
     RunMainThread,
     /// Run a due plugin timer.
@@ -262,6 +271,8 @@ pub enum Notice {
     IoChanged,
     /// Parameter values or their display text changed.
     ParamValuesChanged,
+    /// The plugin's note-expression types changed.
+    NoteExpressionChanged,
     /// Parameters were added, removed or described differently.
     ParamTitlesChanged,
     /// The instance was rebuilt.
@@ -310,6 +321,7 @@ enum Task {
     Rebuild,
     Activate(Prepare),
     ReadParams(RescanScope),
+    RebuildMidiMapping,
 }
 
 /// The effect a plan is waiting on.
@@ -329,7 +341,7 @@ enum Wait {
 
 #[derive(Debug, Clone, Default)]
 struct Plan {
-    tasks: ArrayVec<Task, 4>,
+    tasks: ArrayVec<Task, 5>,
     wait: Wait,
 }
 
@@ -343,6 +355,8 @@ struct Pending {
     reload: bool,
     callback: bool,
     values: bool,
+    midi_cc: bool,
+    note_expr: bool,
     text: bool,
     info: bool,
     all: bool,
@@ -614,6 +628,7 @@ impl State {
                     self.plan.wait = Wait::Activate;
                     return;
                 }
+                Task::RebuildMidiMapping => emit(out, Effect::RebuildMidiMapping),
                 Task::ReadParams(scope) => {
                     emit(out, Effect::ReadParams(scope));
                     if matches!(scope, RescanScope::Info | RescanScope::All) {
@@ -650,6 +665,8 @@ impl State {
             Request::TailChanged => p.tail = true,
             Request::Reload => p.reload = true,
             Request::Callback => p.callback = true,
+            Request::MidiCcAssignmentChanged => p.midi_cc = true,
+            Request::NoteExpressionChanged => p.note_expr = true,
             Request::RescanParams(RescanScope::Values) => p.values = true,
             Request::RescanParams(RescanScope::Text) => p.text = true,
             Request::RescanParams(RescanScope::Info) => p.info = true,
@@ -760,8 +777,12 @@ impl State {
         if scope != Some(RescanScope::All) && (p.values || p.text) {
             emit(out, Effect::Notify(Notice::ParamValuesChanged));
         }
+        if p.note_expr {
+            emit(out, Effect::Notify(Notice::NoteExpressionChanged));
+        }
+        let midi_cc = p.midi_cc;
         self.pending.clear_requests();
-        let mut tasks = ArrayVec::<Task, 4>::new();
+        let mut tasks = ArrayVec::<Task, 5>::new();
         tasks.push(Task::Deactivate);
         if reload {
             tasks.push(Task::Rebuild);
@@ -769,6 +790,9 @@ impl State {
         tasks.push(Task::Activate(prepare));
         if let Some(scope) = scope {
             tasks.push(Task::ReadParams(scope));
+        }
+        if midi_cc {
+            tasks.push(Task::RebuildMidiMapping);
         }
         self.plan.tasks = tasks;
         emit(out, Effect::Recall);
@@ -799,6 +823,14 @@ impl State {
             p.values = false;
             p.text = false;
             emit(out, Effect::Notify(Notice::ParamValuesChanged));
+        }
+        if p.midi_cc {
+            p.midi_cc = false;
+            emit(out, Effect::RebuildMidiMapping);
+        }
+        if p.note_expr {
+            p.note_expr = false;
+            emit(out, Effect::Notify(Notice::NoteExpressionChanged));
         }
         if p.info && !p.all {
             p.info = false;

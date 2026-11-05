@@ -25,9 +25,11 @@ const RESCAN_VALUES: RequestBit = RequestBit::new(6);
 const RESCAN_TEXT: RequestBit = RequestBit::new(7);
 const RESCAN_INFO: RequestBit = RequestBit::new(8);
 const RESCAN_ALL: RequestBit = RequestBit::new(9);
+const MIDI_CC: RequestBit = RequestBit::new(10);
+const NOTE_EXPRESSION: RequestBit = RequestBit::new(11);
 
 /// Every request that has a bit, in the order [`taken`] yields them.
-const WORD_REQUESTS: [(RequestBit, Request); 10] = [
+const WORD_REQUESTS: [(RequestBit, Request); 12] = [
     (RESTART, Request::Restart),
     (IO_CHANGED, Request::IoChanged),
     (LATENCY_CHANGED, Request::LatencyChanged),
@@ -38,6 +40,8 @@ const WORD_REQUESTS: [(RequestBit, Request); 10] = [
     (RESCAN_TEXT, Request::RescanParams(RescanScope::Text)),
     (RESCAN_INFO, Request::RescanParams(RescanScope::Info)),
     (RESCAN_ALL, Request::RescanParams(RescanScope::All)),
+    (MIDI_CC, Request::MidiCcAssignmentChanged),
+    (NOTE_EXPRESSION, Request::NoteExpressionChanged),
 ];
 
 impl Request {
@@ -89,7 +93,7 @@ pub enum Edit {
 const PARAM_TAG: u64 = 1;
 
 impl Edit {
-    fn encode(self) -> [u64; 2] {
+    pub(crate) fn encode(self) -> [u64; 2] {
         match self {
             Self::Param { id, value } => {
                 [PARAM_TAG << 32 | u64::from(id.get()), value.get().to_bits()]
@@ -97,7 +101,7 @@ impl Edit {
         }
     }
 
-    fn decode(raw: [u64; 2]) -> Option<Self> {
+    pub(crate) fn decode(raw: [u64; 2]) -> Option<Self> {
         (raw[0] >> 32 == PARAM_TAG).then(|| Self::Param {
             id: ParamId::new(raw[0] as u32),
             value: Normalized::new(f64::from_bits(raw[1])),
@@ -114,7 +118,13 @@ impl Edit {
 #[must_use]
 pub fn edits(capacity: usize) -> (EditSink, EditDrain) {
     let (writer, reader) = edit_ring(capacity);
-    (EditSink(writer), EditDrain(reader))
+    (
+        EditSink(writer),
+        EditDrain {
+            reader,
+            undecodable: 0,
+        },
+    )
 }
 
 /// The main thread's end of an edit ring.
@@ -141,17 +151,35 @@ impl EditSink {
 
 /// The audio thread's end of an edit ring.
 #[derive(Debug)]
-pub struct EditDrain(EditReader<[u64; 2]>);
+pub struct EditDrain {
+    reader: EditReader<[u64; 2]>,
+    undecodable: u32,
+}
 
 impl EditDrain {
-    /// Hands each queued edit to `apply`, oldest first. Wait-free; never
-    /// allocates.
+    /// Hands each edit queued when the call began to `apply`, oldest first;
+    /// what the producer pushes meanwhile waits for the next block, so a hot
+    /// producer cannot hold the audio thread. Wait-free; never allocates.
+    ///
+    /// An entry that decodes to no known [`Edit`] is dropped and counted in
+    /// [`undecodable`](Self::undecodable): only a producer of another version
+    /// could write one.
     pub fn drain(&mut self, mut apply: impl FnMut(Edit)) {
-        while let Some(raw) = self.0.pop() {
-            if let Some(edit) = Edit::decode(raw) {
-                apply(edit);
+        for _ in 0..self.reader.pending() {
+            let Some(raw) = self.reader.pop() else {
+                break;
+            };
+            match Edit::decode(raw) {
+                Some(edit) => apply(edit),
+                None => self.undecodable = self.undecodable.saturating_add(1),
             }
         }
+    }
+
+    /// Entries dropped because they decoded to no known edit.
+    #[must_use]
+    pub fn undecodable(&self) -> u32 {
+        self.undecodable
     }
 }
 
@@ -203,5 +231,60 @@ mod tests {
         let mut got = Vec::new();
         drain.drain(|e| got.push(e));
         assert_eq!(got, [a, b]);
+    }
+
+    /// An entry with an unknown tag is dropped and counted, and the edits
+    /// around it still arrive.
+    ///
+    /// Mutation (run): `drain` applying nothing for `None` but not counting →
+    /// the count assertion fails; `decode` accepting any tag → the unknown
+    /// entry is applied and the sequence assertion fails.
+    #[test]
+    fn an_unknown_entry_is_dropped_and_counted() {
+        assert_eq!(Edit::decode([99 << 32, 0]), None);
+        let (mut writer, reader) = edit_ring::<[u64; 2]>(4);
+        let good = Edit::Param {
+            id: ParamId::new(1),
+            value: Normalized::new(0.5),
+        };
+        writer.push(good.encode()).unwrap();
+        writer.push([99 << 32, 0]).unwrap();
+        writer.push(good.encode()).unwrap();
+        let mut drain = EditDrain {
+            reader,
+            undecodable: 0,
+        };
+        let mut got = 0;
+        drain.drain(|_| got += 1);
+        assert_eq!(got, 2);
+        assert_eq!(drain.undecodable(), 1);
+    }
+
+    /// A drain applies what was queued when it began, not what arrives during
+    /// it: a producer that pushes from inside `apply` cannot extend the call.
+    ///
+    /// Mutation (run): `drain` looping `while let Some(raw) = pop()` → the
+    /// count is the ring's capacity worth, not 2.
+    #[test]
+    fn a_drain_is_bounded_by_what_was_queued() {
+        let (mut sink, mut drain) = edits(8);
+        let edit = Edit::Param {
+            id: ParamId::new(1),
+            value: Normalized::new(0.5),
+        };
+        sink.send(edit).unwrap();
+        sink.send(edit).unwrap();
+        let mut applied = 0;
+        drain.drain(|_| {
+            applied += 1;
+            let _ = sink.send(edit);
+        });
+        assert_eq!(applied, 2);
+        let mut rest = 0;
+        drain.drain(|_| rest += 1);
+        assert_eq!(
+            rest, 2,
+            "the pushes made during the drain wait for the next"
+        );
     }
 }

@@ -39,7 +39,7 @@ pub enum Call {
     /// `Processor::stop`.
     Stop,
     /// An edit the Processor applied at the head of a block.
-    Edit(ParamId),
+    Edit(ParamId, Normalized),
     /// `Controller::latency`.
     Latency,
     /// `Controller::tail`.
@@ -54,6 +54,8 @@ pub enum Call {
     LoadState(usize),
     /// `Control::rescan_parameters`.
     RescanParameters(RescanScope),
+    /// `Control::rebuild_midi_mapping`.
+    RebuildMidiMapping,
     /// `Control::run_main_thread`.
     RunMainThread,
     /// `Control::run_timer`.
@@ -78,7 +80,7 @@ impl Call {
             Self::Rebuild => [3, 0, 0],
             Self::Process(frames) => [4, frames as u64, 0],
             Self::Stop => [5, 0, 0],
-            Self::Edit(id) => [6, u64::from(id.get()), 0],
+            Self::Edit(id, value) => [6, u64::from(id.get()), value.get().to_bits()],
             Self::Latency => [7, 0, 0],
             Self::Tail => [8, 0, 0],
             Self::Wiring => [9, 0, 0],
@@ -92,6 +94,7 @@ impl Call {
             Self::RunMainThread => [14, 0, 0],
             Self::RunTimer(id) => [15, u64::from(id.0), 0],
             Self::ServiceFd(id) => [16, u64::from(id.0 as u32), 0],
+            Self::RebuildMidiMapping => [17, 0, 0],
         }
     }
 
@@ -102,7 +105,7 @@ impl Call {
             3 => Self::Rebuild,
             4 => Self::Process(a as usize),
             5 => Self::Stop,
-            6 => Self::Edit(ParamId::new(a as u32)),
+            6 => Self::Edit(ParamId::new(a as u32), Normalized::new(f64::from_bits(b))),
             7 => Self::Latency,
             8 => Self::Tail,
             9 => Self::Wiring,
@@ -113,6 +116,7 @@ impl Call {
             14 => Self::RunMainThread,
             15 => Self::RunTimer(TimerId(a as u32)),
             16 => Self::ServiceFd(FdId(a as u32 as i32)),
+            17 => Self::RebuildMidiMapping,
             _ => return None,
         })
     }
@@ -183,6 +187,10 @@ struct Shared {
     stuck: AtomicU32,
     rebuild_fails: AtomicBool,
     block_fails: AtomicBool,
+    panic_in_deactivate: AtomicBool,
+    panic_in_rebuild: AtomicBool,
+    panic_in_latency: AtomicBool,
+    edit_capacity: AtomicUsize,
     latency: AtomicUsize,
     tail: AtomicUsize,
     outputs: AtomicU32,
@@ -237,6 +245,10 @@ impl FakePlugin {
             stuck: AtomicU32::new(0),
             rebuild_fails: AtomicBool::new(false),
             block_fails: AtomicBool::new(false),
+            panic_in_deactivate: AtomicBool::new(false),
+            panic_in_rebuild: AtomicBool::new(false),
+            panic_in_latency: AtomicBool::new(false),
+            edit_capacity: AtomicUsize::new(64),
             latency: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             outputs: AtomicU32::new(2),
@@ -295,6 +307,26 @@ impl FakePlugin {
         self.0.rebuild_fails.store(fail, Ordering::Relaxed);
     }
 
+    /// Makes `deactivate` panic.
+    pub fn panic_in_deactivate(&self, panic: bool) {
+        self.0.panic_in_deactivate.store(panic, Ordering::Relaxed);
+    }
+
+    /// Makes `rebuild` panic.
+    pub fn panic_in_rebuild(&self, panic: bool) {
+        self.0.panic_in_rebuild.store(panic, Ordering::Relaxed);
+    }
+
+    /// Makes `Controller::latency` panic.
+    pub fn panic_in_latency(&self, panic: bool) {
+        self.0.panic_in_latency.store(panic, Ordering::Relaxed);
+    }
+
+    /// How many parameter edits the next activation's ring holds.
+    pub fn edit_capacity(&self, capacity: usize) {
+        self.0.edit_capacity.store(capacity, Ordering::Relaxed);
+    }
+
     /// Makes `process` return an error.
     pub fn fail_blocks(&self, fail: bool) {
         self.0.block_fails.store(fail, Ordering::Relaxed);
@@ -346,6 +378,8 @@ pub struct FakeController {
     descriptor: PluginDescriptor,
     sink: EditSink,
     values: Vec<(ParamId, Normalized)>,
+    /// Parameters whose latest value the full ring refused.
+    unsent: Vec<ParamId>,
 }
 
 /// What the two halves of one activation share, so a pair from two activations
@@ -361,7 +395,7 @@ fn set_value(values: &mut Vec<(ParamId, Normalized)>, id: ParamId, value: Normal
 }
 
 macro_rules! fake_control {
-    ($ty:ty, $set:expr) => {
+    ($ty:ty, $set:expr, $flush:expr) => {
         impl Control for $ty {
             fn info(&self) -> &PluginDescriptor {
                 &self.descriptor
@@ -400,6 +434,15 @@ macro_rules! fake_control {
                 Ok(())
             }
 
+            fn flush_edits(&mut self) {
+                let flush: fn(&mut Self) = $flush;
+                flush(self);
+            }
+
+            fn rebuild_midi_mapping(&mut self) {
+                self.shared.log.push(Call::RebuildMidiMapping);
+            }
+
             fn rescan_parameters(&mut self, scope: RescanScope) {
                 self.shared.log.push(Call::RescanParameters(scope));
             }
@@ -423,13 +466,29 @@ fn poisoned() -> PluginError {
     PluginError::State("the fake's state lock was poisoned".into())
 }
 
-fake_control!(FakeLoaded, |_, _, _| {});
-fake_control!(FakeController, |this, id, value| {
-    // The edit reaches the Processor at the head of its next block. A full ring
-    // is counted and the value stays in `values`, as the real controllers keep
-    // the latest.
-    let _ = this.sink.send(crate::Edit::Param { id, value });
-});
+fake_control!(FakeLoaded, |_, _, _| {}, |_| {});
+fake_control!(
+    FakeController,
+    |this, id, value| {
+        // The edit reaches the Processor at the head of its next block. A full
+        // ring is counted and the latest value stays in `values`, for `flush`.
+        if this.sink.send(crate::Edit::Param { id, value }).is_ok() {
+            this.unsent.retain(|&known| known != id);
+        } else if !this.unsent.contains(&id) {
+            this.unsent.push(id);
+        }
+    },
+    |this| {
+        for id in std::mem::take(&mut this.unsent) {
+            let Some(value) = this.parameter(id) else {
+                continue;
+            };
+            if this.sink.send(crate::Edit::Param { id, value }).is_err() {
+                this.unsent.push(id);
+            }
+        }
+    }
+);
 
 impl Loaded for FakeLoaded {
     type Processor = FakeProcessor;
@@ -453,7 +512,7 @@ impl Loaded for FakeLoaded {
             return Err(Refused { plugin, reason });
         }
         let shell = Arc::new(ActivationShell);
-        let (sink, drain) = edits(64);
+        let (sink, drain) = edits(shared.edit_capacity.load(Ordering::Relaxed).max(1));
         Ok((
             FakeProcessor {
                 shell: shell.clone(),
@@ -466,6 +525,7 @@ impl Loaded for FakeLoaded {
                 descriptor: self.descriptor,
                 sink,
                 values: self.values,
+                unsent: Vec::new(),
             },
         ))
     }
@@ -482,6 +542,10 @@ impl Loaded for FakeLoaded {
             });
         }
         let shared = controller.shared.clone();
+        assert!(
+            !shared.panic_in_deactivate.load(Ordering::Relaxed),
+            "the fake was told to panic in deactivate"
+        );
         if shared
             .stuck
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
@@ -503,6 +567,10 @@ impl Loaded for FakeLoaded {
 
     fn rebuild(self) -> Result<Self, Refused<Self>> {
         self.shared.log.push(Call::Rebuild);
+        assert!(
+            !self.shared.panic_in_rebuild.load(Ordering::Relaxed),
+            "the fake was told to panic in rebuild"
+        );
         if self.shared.rebuild_fails.load(Ordering::Relaxed) {
             return Err(Refused {
                 plugin: Some(self),
@@ -519,6 +587,10 @@ impl Controller for FakeController {
 
     fn latency(&self) -> Samples {
         self.shared.log.push(Call::Latency);
+        assert!(
+            !self.shared.panic_in_latency.load(Ordering::Relaxed),
+            "the fake was told to panic in latency"
+        );
         Samples(self.shared.latency.load(Ordering::Relaxed))
     }
 
@@ -532,7 +604,7 @@ impl Processor for FakeProcessor {
     fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
         let log = &self.shared.log;
         self.drain
-            .drain(|crate::Edit::Param { id, .. }| log.push(Call::Edit(id)));
+            .drain(|crate::Edit::Param { id, value }| log.push(Call::Edit(id, value)));
         let frames = match &mut io.buffer {
             AudioBufferMut::F32(buffer) => {
                 buffer.clear_outputs();

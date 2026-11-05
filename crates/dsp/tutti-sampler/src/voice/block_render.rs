@@ -309,7 +309,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
         }
         let frame = (big * 256) as u64;
         let got =
-            contract::drive_in(&mut long, &env(frame, 256, first, changes), &[], &[], &[]).audio;
+            contract::drive_input(&mut long, &env(frame, 256, first, changes), &[], &[], &[]).audio;
 
         // The same span in 64-frame blocks, each event at a block's start.
         let mut want = [Vec::with_capacity(256), Vec::with_capacity(256)];
@@ -318,7 +318,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
                 apply(&mut host, e);
             }
             let at = frame + (k * 64) as u64;
-            let out = contract::drive_in(
+            let out = contract::drive_input(
                 &mut short,
                 &env(at, 64, host.transport(), TransportChanges::NONE),
                 &[],

@@ -394,7 +394,7 @@ impl SessionBuilder {
             session.tap.clone(),
         ));
         start(&mut audio_engine, Arc::clone(&state))?;
-        let device = crate::Device::new(tutti_cpal::TuttiDriver::from_parts(audio_engine, state));
+        let device = crate::Device::new(tutti_cpal::TuttiDriver::new(audio_engine, state));
         session.faults = Some((device.faults(), device.faults().count()));
         Ok((session, device))
     }

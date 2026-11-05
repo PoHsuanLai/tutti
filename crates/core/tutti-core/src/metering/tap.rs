@@ -65,7 +65,7 @@ impl TapCons {
     /// [`try_pop`](Self::try_pop) pays both per frame. Zero means the same as
     /// an empty `try_pop`: nothing pushed since the last poll.
     #[inline]
-    pub fn pop_interleaved(&mut self, out: &mut [f32]) -> crate::Samples {
+    pub fn pop_into(&mut self, out: &mut [f32]) -> crate::Samples {
         use ringbuf::traits::Consumer;
         crate::Samples(self.0.pop_slice(out.as_chunks_mut::<2>().0))
     }

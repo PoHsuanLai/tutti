@@ -126,7 +126,7 @@ fn load() -> Loaded {
 
 /// Render one block through the node, prepared as a graph prepares it
 /// (`Node::prepare`, which sizes its scratch and parks its rate), then
-/// `Node::process` by hand (`tutti_graph::contract::drive_in`).
+/// `Node::process` by hand (`tutti_graph::contract::drive_input`).
 fn drive_block(unit: &mut InProcessVst2Client) {
     drive_blocks(unit, BLOCK, BLOCK);
 }
@@ -148,7 +148,7 @@ fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };
-    let _ = tutti_graph::contract::drive_in(unit, &env, &inputs, &[], &[]);
+    let _ = tutti_graph::contract::drive_input(unit, &env, &inputs, &[], &[]);
 }
 
 /// The handle carries a render-mode route at all.

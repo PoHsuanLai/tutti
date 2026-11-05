@@ -940,7 +940,7 @@ mod tests {
     }
 
     /// A synth driven by hand the way a graph drives it
-    /// (`tutti_graph::contract::drive_in`): what these tests queue with
+    /// (`tutti_graph::contract::drive_input`): what these tests queue with
     /// [`queue_midi`] is the next block's event input.
     ///
     /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
@@ -1004,7 +1004,7 @@ mod tests {
                 changes: tutti_graph::TransportChanges::NONE,
                 play: tutti_graph::PlayClock::ZERO,
             };
-            let out = tutti_graph::contract::drive_in(self, &env, &[], &[], &[&events]).audio;
+            let out = tutti_graph::contract::drive_input(self, &env, &[], &[], &[&events]).audio;
             for e in &past {
                 self.apply_midi(e);
             }

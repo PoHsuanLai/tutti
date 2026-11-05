@@ -87,7 +87,7 @@ impl MidiOutRes {
     /// Drain the mailbox and return what was in it.
     ///
     /// For integration tests, which are a separate crate and so cannot reach
-    /// [`receiver_for_test`](Self::receiver_for_test); exposed through
+    /// `receiver_for_test`; exposed through
     /// [`test_support::drain_midi_out`](crate::midi::test_support::drain_midi_out)
     /// rather than being called directly. It consumes the events, exactly as the
     /// production pump would, so a test that drains twice sees the second one

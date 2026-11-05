@@ -297,7 +297,7 @@ mod tests {
 
     /// One block of `frames` frames, as `[left, right]`.
     fn block(node: &mut MicMonitorNode, frames: usize) -> Vec<Vec<f32>> {
-        // `drive_in`, not `drive`: with no inputs and no params, the block's
+        // `drive_input`, not `drive`: with no inputs and no params, the block's
         // length comes from its `Env`.
         let env = tutti_graph::Env {
             frame: tutti_core::Frame(0),
@@ -307,7 +307,7 @@ mod tests {
             changes: tutti_graph::TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };
-        tutti_graph::contract::drive_in(node, &env, &[], &[], &[]).audio
+        tutti_graph::contract::drive_input(node, &env, &[], &[], &[]).audio
     }
 
     fn monitor(ring: MicRing) -> MicMonitorNode {

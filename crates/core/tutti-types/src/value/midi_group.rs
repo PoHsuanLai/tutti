@@ -88,7 +88,7 @@ impl MidiGroup {
     }
 }
 
-// Deliberately no `as_display_number`. `MidiChannel` has one because the
+// Deliberately no `display_number`. `MidiChannel` has one because the
 // 1-based channel numbering on hardware panels and in every DAW UI is a
 // universal convention; MIDI 2.0 fixes no such convention for groups, and the
 // spec numbers them 0-15 throughout. Inventing a `+ 1` here would put a

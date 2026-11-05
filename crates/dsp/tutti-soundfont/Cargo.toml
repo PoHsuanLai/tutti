@@ -36,7 +36,7 @@ thiserror = "2"
 # `testing::assert_golden`: the libm-recorded digest gate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 assert_no_alloc = { version = "1", default-features = false }
-# `contract::{drive_in, Direct}`: the unit driven by hand, as a graph drives
+# `contract::{drive_input, Direct}`: the unit driven by hand, as a graph drives
 # it, in its tests and allocation gate.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 # Upstream rustysynth beside the vendored fork, for `tests/oracle_rustysynth.rs`.

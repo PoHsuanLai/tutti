@@ -61,7 +61,7 @@ impl MidiChannel {
     ///
     /// assert_eq!(MidiChannel::new(9).get(), 9);
     /// assert_eq!(MidiChannel::new(16).get(), 0); // masked, like the wire
-    /// assert_eq!(MidiChannel::new(9).as_display_number(), 10);
+    /// assert_eq!(MidiChannel::new(9).display_number(), 10);
     /// ```
     #[inline]
     #[must_use]
@@ -83,7 +83,7 @@ impl MidiChannel {
     /// at a call site hides that it is one.
     #[inline]
     #[must_use]
-    pub const fn as_display_number(self) -> u8 {
+    pub const fn display_number(self) -> u8 {
         self.0 + 1
     }
 }
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn the_display_number_is_one_based() {
-        assert_eq!(MidiChannel::FIRST.as_display_number(), 1);
-        assert_eq!(MidiChannel::LAST.as_display_number(), 16);
+        assert_eq!(MidiChannel::FIRST.display_number(), 1);
+        assert_eq!(MidiChannel::LAST.display_number(), 16);
     }
 }

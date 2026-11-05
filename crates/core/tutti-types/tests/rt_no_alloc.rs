@@ -35,7 +35,7 @@ fn rt_vec_steady_state_is_allocation_free() {
         }
     });
     assert_eq!(buf.borrow().len(), 64);
-    assert!(buf.borrow().overflowed());
+    assert!(buf.borrow().is_overflowed());
 }
 
 /// Every `AudioThreadCell` borrow path — `borrow_mut`, `borrow`, granted

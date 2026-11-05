@@ -22,7 +22,7 @@
 //!
 //! **Frames: late is not lost.** A frame already past when the executor sees
 //! the command lands at offset 0 of that block and is counted
-//! ([`Executor::late_commands`](crate::Executor::late_commands)).
+//! ([`Executor::late_command_count`](crate::Executor::late_command_count)).
 //!
 //! **Beats: reached, not passed.** An `At::Beat` fires when the playhead
 //! reaches or crosses it **through continuous playback** — a loop wrap that
@@ -54,7 +54,7 @@
 //! executor has not applied yet waits for it (the two travel on separate
 //! rings, so the command can be seen first). One whose node or port is gone by
 //! then cannot be delivered, and is counted
-//! ([`Executor::unrouted_commands`](crate::Executor::unrouted_commands)).
+//! ([`Executor::unrouted_command_count`](crate::Executor::unrouted_command_count)).
 //!
 //! **Order.** A scheduled event joins the port's own events as one more
 //! source *after* the port's edges (and after events flushed from a vanished

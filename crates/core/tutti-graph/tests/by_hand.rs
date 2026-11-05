@@ -1,10 +1,10 @@
 //! The by-hand drivers of `tutti_graph::contract` that hand a node what a
-//! graph hands it: `drive_in` (one block under an `Env`, with events) and
+//! graph hands it: `drive_input` (one block under an `Env`, with events) and
 //! `Direct` (block after block, events and a transport, without
 //! allocating). A node's unit tests and allocation gates lean on them to
 //! play MIDI and read the transport, so each promise is pinned here.
 
-use tutti_graph::contract::{Direct, Emitter, drive_in};
+use tutti_graph::contract::{Direct, Emitter, drive_input};
 use tutti_graph::{
     Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, Status, Transport,
     TransportChanges, Ump,
@@ -44,11 +44,11 @@ fn at(k: usize, block: usize) -> Offset {
     Offset::new(k, Samples(block)).expect("inside the block")
 }
 
-/// `drive_in` plays each event on its frame, hands the node the `Env`'s
+/// `drive_input` plays each event on its frame, hands the node the `Env`'s
 /// transport (rolling, so the beat moves across the block), and returns
 /// what the node wrote to its event output.
 ///
-/// Mutations (run): `drive_in` handing `SortedEvents::EMPTY` for every
+/// Mutations (run): `drive_input` handing `SortedEvents::EMPTY` for every
 /// input → no frame is marked → fails; building its `Cx` over a
 /// `Transport::default()` env instead of the caller's → the beat reads 0 →
 /// fails; dropping the event writers (`&mut []`) → the node's `event_out`
@@ -67,7 +67,7 @@ fn drive_in_plays_events_under_the_env() {
         Event::midi(at(3, 64), [0x2090_3c64, 0, 0, 0]),
         Event::midi(at(40, 64), [0x2080_3c00, 0, 0, 0]),
     ];
-    let got = drive_in(&mut Probe, &env, &[], &[], &[&events]);
+    let got = drive_input(&mut Probe, &env, &[], &[], &[&events]);
     let marked: Vec<usize> = (0..64).filter(|&i| got.audio[0][i] == 1.0).collect();
     assert_eq!(marked, [3, 40]);
     assert_eq!(got.audio[1][0], 4.0);

@@ -39,7 +39,7 @@
 //! for a helper queued behind the caller on the caller's core, and it only
 //! helps one at the caller's priority (below).
 //!
-//! The pool's four waits are its builder's: [`spin`](WorkerPoolBuilder::spin)
+//! The pool's four waits are its builder's: [`spin_budget`](WorkerPoolBuilder::spin_budget)
 //! and [`idle`](WorkerPoolBuilder::idle) between jobs, and the two inside a
 //! job above, which the executor reads through `Pool::waits` and the gate
 //! keeps for its close (`tutti_types::BlockWaits`).
@@ -194,7 +194,7 @@ impl WorkerPoolBuilder {
     /// Between jobs, how long a helper spins after its last job before it
     /// starts yielding. Default 50 µs.
     #[must_use]
-    pub fn spin(mut self, d: Duration) -> Self {
+    pub fn spin_budget(mut self, d: Duration) -> Self {
         self.spin = d;
         self
     }
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn helpers_join_jobs_before_and_after_parking() {
         let pool = WorkerPool::builder(3)
-            .spin(Duration::from_micros(10))
+            .spin_budget(Duration::from_micros(10))
             .idle(Duration::from_micros(10))
             .build();
         // Until both helpers have joined a job, or a deadline. The deadline

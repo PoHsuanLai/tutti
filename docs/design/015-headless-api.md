@@ -16,7 +16,7 @@ The user's ask, verbatim:
 every engine crate. A headless host still hand-wires a dozen of them:
 
 - the `Editor`, its `Executor`, the `Engine` and the transport;
-- the device, `AudioCallbackState` and `TuttiDriver::from_parts`;
+- the device, `AudioCallbackState` and `TuttiDriver::new`;
 - `Modulation::apply` with a `ModHost` of its own;
 - PDC publication, plugin loading, MIDI clips and export.
 
@@ -110,7 +110,7 @@ The ordered bootstrap in `build_on`, step by step:
 5. The graph with its workers, and an unwired click.
 6. `Engine::new`.
 7. The MIDI nodes, with the clock fed into hardware out.
-8. Start the device and the streamer, then `TuttiDriver::from_parts`.
+8. Start the device and the streamer, then `TuttiDriver::new`.
 9. Enable the meter and close the tap.
 
 `rerate`, step by step:

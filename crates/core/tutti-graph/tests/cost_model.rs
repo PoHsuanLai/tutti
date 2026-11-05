@@ -244,7 +244,7 @@ fn packed_siblings_render_bit_identically() {
     let serial = {
         let mut exec = build(1);
         let plan = exec.plan().expect("a plan").clone();
-        tutti_graph::verify(&plan).expect("sound");
+        plan.verify().expect("sound");
         // The input, the three heavy gains, the packed light ones (twelve
         // gains in fewer tasks), the sum and its output.
         let heavy = |op: u32| {

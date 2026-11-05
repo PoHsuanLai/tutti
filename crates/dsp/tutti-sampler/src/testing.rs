@@ -5,7 +5,7 @@
 //! holds a [`MockTransport`] — a playhead it moves between blocks, as a host
 //! moves one — and hands each block the `Env` it describes
 //! ([`MockTransport::env`], or [`block`] / [`play`], which drive a node
-//! through `tutti_graph::contract::drive_in`).
+//! through `tutti_graph::contract::drive_input`).
 //!
 //! Constructed from [`Beat`] and [`Bpm`] rather than two bare `f64`s. Position
 //! and tempo have the same primitive representation, so an argument-order slip
@@ -125,7 +125,7 @@ pub fn block(
     frames: usize,
 ) -> Vec<Vec<f32>> {
     let env = t.env(frames, rate);
-    contract::drive_in(node, &env, &[], &[], &[]).audio
+    contract::drive_input(node, &env, &[], &[], &[]).audio
 }
 
 /// `frames` of `node` in blocks of `block_len`, the transport moved after

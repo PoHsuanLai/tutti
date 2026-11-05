@@ -182,7 +182,7 @@ fn a_command_lands_on_its_exact_frame_across_ragged_blocks() {
             .collect();
         assert_eq!(got, want);
     }
-    assert_eq!(rig.exec.late_commands(), 0);
+    assert_eq!(rig.exec.late_command_count(), 0);
     assert_eq!(rig.ed.commands_outstanding(), 0, "every credit came back");
 }
 
@@ -233,8 +233,8 @@ fn a_late_command_lands_at_the_next_block_and_is_counted() {
             "both at offset 0 of the block starting at 128, in scheduling order"
         );
     }
-    assert_eq!(rig.exec.late_commands(), 1);
-    assert_eq!(rig.reference.late_commands(), 1);
+    assert_eq!(rig.exec.late_command_count(), 1);
+    assert_eq!(rig.reference.late_command_count(), 1);
 }
 
 /// `At::Beat` resolves against the transport snapshot of the block where it
@@ -269,7 +269,7 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
             vec![(frame + 10, frame, 10, 3)]
         );
     }
-    assert_eq!(rig.exec.late_commands(), 0);
+    assert_eq!(rig.exec.late_command_count(), 0);
 }
 
 /// Back-pressure: at `COMMAND_CAPACITY` outstanding, `schedule` refuses and
@@ -295,7 +295,7 @@ fn scheduling_back_pressures_at_capacity() {
     rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     assert_eq!(rig.ed.commands_outstanding(), COMMAND_CAPACITY - 28);
     assert!(rig.ed.schedule(At::NextBlock, to(), tag(0)).is_ok());
-    assert_eq!(rig.exec.late_commands(), 0);
+    assert_eq!(rig.exec.late_command_count(), 0);
 }
 
 /// A command must name a port the plan has; one whose node is removed —
@@ -345,7 +345,7 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
         rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     }
     assert_eq!(
-        rig.exec.unrouted_commands(),
+        rig.exec.unrouted_command_count(),
         1,
         "the port went with the unit"
     );
@@ -358,7 +358,11 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
     for _ in 0..40 {
         rig.exec.process(64, &t, &[], &mut []);
     }
-    assert_eq!(rig.exec.unrouted_commands(), 2, "and the key went entirely");
+    assert_eq!(
+        rig.exec.unrouted_command_count(),
+        2,
+        "and the key went entirely"
+    );
     assert_eq!(rig.ed.commands_outstanding(), 0);
     assert!(rig.exec_log.lock().unwrap().is_empty());
 }
@@ -506,7 +510,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
             assert_eq!(hits, vec![120], "both impulses leave on the same frame");
         }
     }
-    assert_eq!(exec.late_commands(), 0);
+    assert_eq!(exec.late_command_count(), 0);
 }
 
 /// The hold, end to end with the editor on its own thread: every round
@@ -584,7 +588,7 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
     let exec = audio.join().expect("the audio thread");
     ed.collect();
     assert_eq!(
-        exec.unrouted_commands(),
+        exec.unrouted_command_count(),
         0,
         "a command was judged against a stale plan"
     );
@@ -616,13 +620,13 @@ fn cancel_takes_commands_back_and_frees_their_credit() {
         rig.exec_log.lock().unwrap().is_empty(),
         "cancelled, not landed"
     );
-    assert_eq!(rig.exec.cancelled_commands(), 1);
+    assert_eq!(rig.exec.cancelled_command_count(), 1);
     // Cancelling one that already landed is a no-op.
     let landed = rig.ed.schedule(At::NextBlock, to(), tag(8)).expect("room");
     rig.block(64, &stopped);
     rig.ed.cancel(landed).expect("room");
     rig.block(64, &stopped);
-    assert_eq!(rig.exec.cancelled_commands(), 1);
+    assert_eq!(rig.exec.cancelled_command_count(), 1);
 
     for i in 0..COMMAND_CAPACITY as u32 {
         rig.ed
@@ -640,7 +644,10 @@ fn cancel_takes_commands_back_and_frees_their_credit() {
         .expect("the cancel ring needs no credit");
     rig.block(64, &stopped);
     assert_eq!(rig.ed.commands_outstanding(), 0);
-    assert_eq!(rig.exec.cancelled_commands(), 1 + COMMAND_CAPACITY as u64);
+    assert_eq!(
+        rig.exec.cancelled_command_count(),
+        1 + COMMAND_CAPACITY as u64
+    );
     assert!(rig.ed.schedule(At::NextBlock, to(), tag(0)).is_ok());
 }
 
@@ -1021,8 +1028,8 @@ fn beat_resolution_matches_a_hand_computed_table() {
         assert_eq!(*log.lock().unwrap(), want, "executor: {}", case.name);
         assert_eq!(*ref_log.lock().unwrap(), want, "reference: {}", case.name);
         let late = u64::from(case.want.is_some_and(|w| w.1));
-        assert_eq!(exec.late_commands(), late, "{}", case.name);
-        assert_eq!(reference.late_commands(), late, "{}", case.name);
+        assert_eq!(exec.late_command_count(), late, "{}", case.name);
+        assert_eq!(reference.late_command_count(), late, "{}", case.name);
     }
 }
 
@@ -1097,9 +1104,13 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
         exec.process(10, &Transport::default(), &[&silence[..]], &mut []);
         reference.process(10, &Transport::default(), &[&silence[..]], &mut []);
         let want = u64::from(block >= 12); // the block holding frame 120
-        assert_eq!(exec.unrouted_commands(), want, "executor, block {block}");
         assert_eq!(
-            reference.unrouted_commands(),
+            exec.unrouted_command_count(),
+            want,
+            "executor, block {block}"
+        );
+        assert_eq!(
+            reference.unrouted_command_count(),
             want,
             "reference, block {block}"
         );
@@ -1155,7 +1166,7 @@ fn cancels_are_never_lost_across_threads() {
     }
     done.store(true, Ordering::Release);
     let exec = audio.join().expect("the audio thread");
-    assert_eq!(exec.cancelled_commands(), u64::from(ROUNDS));
+    assert_eq!(exec.cancelled_command_count(), u64::from(ROUNDS));
     assert!(log.lock().unwrap().is_empty());
 }
 
@@ -1201,7 +1212,7 @@ fn a_command_id_from_another_pair_is_refused() {
     }
     let got: Vec<u32> = new.exec_log.lock().unwrap().iter().map(|e| e.3).collect();
     assert_eq!(got, vec![2], "its own #0 landed; its cancelled #1 did not");
-    assert_eq!(new.exec.cancelled_commands(), 1);
+    assert_eq!(new.exec.cancelled_command_count(), 1);
 }
 
 /// A deterministic differential case for "a wrap leaves the playhead inside
@@ -1272,6 +1283,6 @@ fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
     let reference: Vec<u32> = rig.ref_log.lock().unwrap().iter().map(|e| e.3).collect();
     assert_eq!(exec, reference, "the interpreters agree");
     assert_eq!(exec, vec![2], "only the beat crossed after the seek fires");
-    assert_eq!(rig.exec.late_commands(), 1);
-    assert_eq!(rig.reference.late_commands(), 1);
+    assert_eq!(rig.exec.late_command_count(), 1);
+    assert_eq!(rig.reference.late_command_count(), 1);
 }

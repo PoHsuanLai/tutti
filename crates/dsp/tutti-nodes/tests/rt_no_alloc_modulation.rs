@@ -337,7 +337,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
         let (mut ed, mut exec) = lane_graph(128);
         if let Some(w) = workers {
             let pool = tutti_core::WorkerPool::builder(w)
-                .spin(std::time::Duration::from_micros(1))
+                .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();
             exec.set_pool(Some(Arc::new(GatedPool(pool))));
@@ -707,7 +707,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
         let (mut ed, mut exec, controls) = lanes_200(128);
         if let Some(w) = workers {
             let pool = tutti_core::WorkerPool::builder(w)
-                .spin(std::time::Duration::from_micros(1))
+                .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();
             exec.set_pool(Some(Arc::new(GatedPool(pool))));
@@ -1035,7 +1035,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
         let (mut ed, mut exec) = signal_graph(128);
         if let Some(w) = workers {
             let pool = tutti_core::WorkerPool::builder(w)
-                .spin(std::time::Duration::from_micros(1))
+                .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();
             exec.set_pool(Some(Arc::new(GatedPool(pool))));

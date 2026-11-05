@@ -26,9 +26,9 @@ use arrayvec::ArrayVec;
 /// Dropping events is a real behaviour change, so it is reportable rather
 /// than quiet: [`push`](Self::push) returns whether the item was stored,
 /// [`extend`](Self::extend) returns how many it wrote, and
-/// [`overflowed`](Self::overflowed) stays set for the whole block once
+/// [`is_overflowed`](Self::is_overflowed) stays set for the whole block once
 /// anything has been dropped. A caller that must not lose data checks
-/// `overflowed()` after filling and reports upward — the audio thread still
+/// `is_overflowed()` after filling and reports upward — the audio thread still
 /// does not allocate either way.
 ///
 /// `clear` resets both the contents and the flag, so the flag always
@@ -44,10 +44,10 @@ use arrayvec::ArrayVec;
 /// assert!(due.push(20));
 /// assert!(!due.push(30)); // refused, never grown
 /// assert_eq!(due.as_slice(), &[10, 20]);
-/// assert!(due.overflowed());
+/// assert!(due.is_overflowed());
 ///
 /// due.clear();
-/// assert!(due.is_empty() && !due.overflowed());
+/// assert!(due.is_empty() && !due.is_overflowed());
 /// ```
 pub struct RtVec<T, const N: usize> {
     buf: ArrayVec<T, N>,
@@ -74,7 +74,7 @@ impl<T, const N: usize> RtVec<T, N> {
     /// Appends one item if there is room.
     ///
     /// Returns `false` (dropping `v`, and latching
-    /// [`overflowed`](Self::overflowed)) when already at `N`.
+    /// [`is_overflowed`](Self::is_overflowed)) when already at `N`.
     #[inline]
     pub fn push(&mut self, v: T) -> bool {
         if self.buf.try_push(v).is_err() {
@@ -84,7 +84,7 @@ impl<T, const N: usize> RtVec<T, N> {
         true
     }
 
-    /// Latches [`overflowed`](Self::overflowed) without pushing: the caller
+    /// Latches [`is_overflowed`](Self::is_overflowed) without pushing: the caller
     /// refused a group of items as a whole (one that would have to be split
     /// to fit) and dropped it.
     #[inline]
@@ -124,7 +124,7 @@ impl<T, const N: usize> RtVec<T, N> {
     /// Returns whether anything has been dropped since the last
     /// [`clear`](Self::clear).
     #[inline]
-    pub fn overflowed(&self) -> bool {
+    pub fn is_overflowed(&self) -> bool {
         self.overflowed
     }
 
@@ -194,7 +194,7 @@ impl<T: core::fmt::Debug, const N: usize> core::fmt::Debug for RtVec<T, N> {
         f.debug_struct("RtVec")
             .field("items", &self.as_slice())
             .field("cap", &N)
-            .field("overflowed", &self.overflowed())
+            .field("overflowed", &self.is_overflowed())
             .finish()
     }
 }
@@ -223,24 +223,27 @@ mod tests {
     #[test]
     fn overflow_is_reported_and_latches_for_the_block() {
         let mut v: RtVec<u32, 2> = RtVec::new();
-        assert!(!v.overflowed());
+        assert!(!v.is_overflowed());
         v.push(1);
         v.push(2);
-        assert!(!v.overflowed(), "at capacity but nothing dropped yet");
+        assert!(!v.is_overflowed(), "at capacity but nothing dropped yet");
         v.push(3);
-        assert!(v.overflowed(), "a refused push latches the flag");
-        assert!(v.overflowed(), "and it stays set for the rest of the block");
+        assert!(v.is_overflowed(), "a refused push latches the flag");
+        assert!(
+            v.is_overflowed(),
+            "and it stays set for the rest of the block"
+        );
     }
 
     #[test]
     fn clear_resets_contents_and_the_flag() {
         let mut v: RtVec<u32, 2> = RtVec::new();
         v.extend(0..10);
-        assert!(v.overflowed());
+        assert!(v.is_overflowed());
         v.clear();
         assert!(v.is_empty());
         assert!(
-            !v.overflowed(),
+            !v.is_overflowed(),
             "the flag describes the current block, not history"
         );
     }
@@ -249,9 +252,9 @@ mod tests {
     fn extend_reports_how_many_it_wrote() {
         let mut v: RtVec<u32, 4> = RtVec::new();
         assert_eq!(v.extend(0..2), 2, "everything fits");
-        assert!(!v.overflowed());
+        assert!(!v.is_overflowed());
         assert_eq!(v.extend(100..200), 2, "only the remaining room");
-        assert!(v.overflowed());
+        assert!(v.is_overflowed());
         assert_eq!(v.as_slice(), &[0, 1, 100, 101]);
     }
 
@@ -295,7 +298,7 @@ mod tests {
             v.extend(0..64);
             assert_eq!(v.len(), 4);
             assert_eq!(v.remaining(), 0);
-            assert!(v.overflowed());
+            assert!(v.is_overflowed());
         }
     }
 }

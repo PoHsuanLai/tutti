@@ -416,7 +416,7 @@ fn render_with(
         ed.collect();
         frame += n as u64;
     }
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
     all
 }
 

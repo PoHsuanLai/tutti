@@ -193,8 +193,8 @@ fn by_hand(start: Beat) -> Run {
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };
-        left.extend_from_slice(&contract::drive_in(&mut node, &env, &[], &[], &[]).audio[0]);
-        contract::drive_in(&mut probe, &env, &[], &[], &[]);
+        left.extend_from_slice(&contract::drive_input(&mut node, &env, &[], &[], &[]).audio[0]);
+        contract::drive_input(&mut probe, &env, &[], &[], &[]);
         host.advance(Samples(HAND), None);
     }
     let read = *probe.0.lock().expect("probe");

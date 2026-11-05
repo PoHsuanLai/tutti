@@ -300,7 +300,7 @@ impl IrSpectra {
             .zip(ffts)
             .enumerate()
             .map(|(j, (l, fft))| {
-                let mut scratch = fft.make_scratch();
+                let mut scratch = fft.new_scratch();
                 let mut buffer = vec![0.0f32; 2 * l.part];
                 let segments = (0..l.count)
                     .map(|i| {
@@ -427,7 +427,7 @@ impl LevelState {
             history: vec![vec![zero; lv.part + 1]; lv.segments.len()],
             current: 0,
             buffer: vec![0.0; 2 * lv.part],
-            scratch: lv.fft.make_scratch(),
+            scratch: lv.fft.new_scratch(),
             building: zeros(lv.part + 1),
             accumulated: 0,
             begun: false,

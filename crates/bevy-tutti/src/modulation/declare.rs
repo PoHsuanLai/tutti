@@ -1,7 +1,7 @@
 //! The declarations: sources, routes, ranges and automation as components,
 //! keyed by entities (doc 014 §8.1).
 //!
-//! Each is plain data. [`reconcile`](super::reconcile) collects them every
+//! Each is plain data. [`reconcile()`](fn@super::reconcile) collects them every
 //! frame into a `tutti_mod::Declarations` whose keys are the entities' bits
 //! (a `SourceKey` is a source entity's, a `RouteKey` a route entity's, a
 //! `TargetKey` the target entity's with the param), so no table maps an

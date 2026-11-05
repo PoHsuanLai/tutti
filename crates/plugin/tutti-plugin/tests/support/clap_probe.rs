@@ -95,11 +95,11 @@ impl Rig {
         g.pipe_input(key).pipe_output(key);
         for lane in lanes {
             let (from, _lane) = g.add_with_controls(lane);
-            g.event_connect(from, 0, key, 0);
+            g.connect_events(from, 0, key, 0);
         }
         let sender = keys.then(|| {
             let (from, sender) = g.add_with_controls(tutti_midi_runtime::MidiQueueNode::new());
-            g.event_connect(from, 0, key, 0);
+            g.connect_events(from, 0, key, 0);
             sender
         });
         let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");

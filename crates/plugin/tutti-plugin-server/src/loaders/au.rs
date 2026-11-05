@@ -1595,7 +1595,7 @@ mod tests {
         let start = TransportInfo::new()
             .with_sample_rate(RATE)
             .with_tempo(137.5)
-            .with_time_signature(TimeSignature::from_parts(3, 4))
+            .with_time_signature(TimeSignature::from_numbers(3, 4))
             .with_playing(true)
             .with_position_beats(beat0, 0.0);
         run(&mut au, Some(&start));

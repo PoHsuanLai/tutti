@@ -353,7 +353,7 @@ impl Reference {
     }
 
     /// Commands cancelled before they landed.
-    pub fn cancelled_commands(&self) -> u64 {
+    pub fn cancelled_command_count(&self) -> u64 {
         self.cancelled
     }
 
@@ -444,13 +444,13 @@ impl Reference {
         self.resume();
     }
 
-    /// Scheduled commands that landed late (see `Executor::late_commands`).
-    pub fn late_commands(&self) -> u64 {
+    /// Scheduled commands that landed late (see `Executor::late_command_count`).
+    pub fn late_command_count(&self) -> u64 {
         self.late
     }
 
     /// Scheduled commands with nowhere to land.
-    pub fn unrouted_commands(&self) -> u64 {
+    pub fn unrouted_command_count(&self) -> u64 {
         self.unrouted
     }
 
@@ -459,7 +459,7 @@ impl Reference {
     /// place the reference refuses one: its merges, delays and feedback
     /// FIFOs are unbounded. An undeclared port is unbounded here too (the
     /// executor's default is its own configuration, not the node's).
-    pub fn dropped_events(&self) -> u64 {
+    pub fn dropped_event_count(&self) -> u64 {
         self.dropped
     }
 

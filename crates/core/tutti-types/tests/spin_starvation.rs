@@ -175,7 +175,7 @@ fn measure(cpu: usize, caller: Policy, helper: Policy, iters: u64) -> Option<Out
                 return Duration::ZERO;
             }
             // Sleep, not spin, so the helper gets the core to take task 0.
-            while !holding.load(Ordering::Acquire) && !g.aborted() {
+            while !holding.load(Ordering::Acquire) && !g.is_aborted() {
                 std::thread::sleep(Duration::from_micros(20));
             }
             let t = Instant::now();

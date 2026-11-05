@@ -297,7 +297,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     ));
     // Parks quickly, so the gated blocks below wake parked helpers.
     let pool = tutti_core::WorkerPool::builder(4)
-        .spin(std::time::Duration::from_micros(1))
+        .spin_budget(std::time::Duration::from_micros(1))
         .idle(std::time::Duration::from_micros(1))
         .build();
     exec.set_pool(Some(Arc::new(GatedPool(pool))));

@@ -19,7 +19,7 @@
 //! [`TransportSettings`] and is not routed through
 //! this queue: nothing decides those, they are just values. The loop region
 //! is the engine's: an edit is a scheduled
-//! [`TransportCommand::Loop`](super::TransportCommand::Loop), and
+//! [`TransportCommand::Loop`], and
 //! [`MotionFsm::loop_region`] reads what the engine published.
 
 use std::sync::Arc;
@@ -321,6 +321,8 @@ impl MotionFsm {
     /// With no engine running over the transport, commands stay in flight,
     /// up to [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) (64), and past
     /// that this returns [`ScheduleFull`].
+    /// Loop edits share those credits and are not coalesced: send a dragged
+    /// brace's edit on release ([`LoopEdit`](super::LoopEdit)).
     ///
     /// # Errors
     ///
@@ -353,7 +355,10 @@ impl MotionFsm {
     }
 
     /// Takes back every scheduled command not yet applied, and frees their
-    /// credit. Takes effect at the engine's next block.
+    /// credit. That includes pending [`LoopEdit`](super::LoopEdit)s: a cancel
+    /// is "nothing sent so far happens", whatever it was, so the loop region
+    /// stays as the engine last applied it. (A rate change does not drop
+    /// commands; it only moves `At::Frame` ones.) Takes effect at the engine's next block.
     pub fn cancel_scheduled(&self) {
         self.timed.cancel_all();
     }

@@ -79,6 +79,19 @@ impl Default for LoopRegion {
 /// not arm looping, and disarming does not forget the bounds. One edit
 /// carries both, so setting the bounds and arming is one command that lands
 /// whole.
+///
+/// # Send on release, not per drag step
+///
+/// An edit holds one of the schedule's [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY)
+/// credits from [`schedule`](super::MotionFsm::schedule) until the engine
+/// applies it, and the credits are shared with play, stop and seek. A UI
+/// dragging a brace should send the edit when the drag ends (or throttle it
+/// to a few a second), not one per frame: with the engine down or restarting
+/// the credits run out and a later `Play` is refused with
+/// [`ScheduleFull`](super::ScheduleFull). Edits are not coalesced: a pending
+/// command lives in a lock-free ring that the control side can only push to,
+/// and merging into it would need a second shared structure beside the
+/// ring.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopEdit {
     bounds: Option<LoopRange>,
@@ -169,8 +182,9 @@ pub(crate) struct LoopReader(SeqReader<Wire>);
 
 impl LoopReader {
     /// The region the engine last published: one write's value, never a
-    /// start of one and an end of another. Retries while a write is in
-    /// flight, which is a few stores long.
+    /// start of one and an end of another. Spins with `yield_now` while a
+    /// write is in flight (a few stores long), so it is for control and UI
+    /// threads, not real-time ones.
     pub(crate) fn read(&self) -> LoopRegion {
         loop {
             match self.0.read(READ_RETRIES) {

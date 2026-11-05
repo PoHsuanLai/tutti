@@ -27,8 +27,9 @@ use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 /// The split is by *who decides*. A motion change goes through a state
 /// machine on the audio thread, which may reject or defer it. A setting is
 /// just a store. The loop region is neither: the engine owns it, an edit is a
-/// scheduled command, and [`MotionFsm::loop_region`] reads what it holds. Fusing the two is what grows a transport into a wall of
-/// atomic getters with no rule for which of them can fail.
+/// scheduled command, and [`MotionFsm::loop_region`] reads what it holds.
+/// Fusing the two is what grows a transport into a wall of atomic getters
+/// with no rule for which of them can fail.
 ///
 /// This type exists because [`Timeline`](super::Timeline) spans both halves — a
 /// reader needs the beat (settings) *and* whether it is rolling (motion) — and

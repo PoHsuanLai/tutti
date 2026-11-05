@@ -29,8 +29,8 @@ const SR: f64 = 48_000.0;
 type Seen = Option<(f64, f64)>;
 
 /// Logs, for every frame it renders, the loop its `Env` gives that frame
-/// (`transport_at`): the audio-side read.
-struct LoopProbe(Arc<Mutex<Vec<Seen>>>);
+/// (`transport_at`): the audio-side read. Logs nothing when given no log.
+struct LoopProbe(Option<Arc<Mutex<Vec<Seen>>>>);
 
 impl Node for LoopProbe {
     fn shape(&self) -> Shape {
@@ -38,10 +38,12 @@ impl Node for LoopProbe {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let mut log = self.0.lock().expect("log");
+        let mut log = self.0.as_ref().map(|l| l.lock().expect("log"));
         for k in cx.env.offsets() {
             let looping = cx.env.transport_at(k).looping;
-            log.push(looping.map(|l| (l.start.get(), l.end.get())));
+            if let Some(log) = log.as_mut() {
+                log.push(looping.map(|l| (l.start.get(), l.end.get())));
+            }
         }
         io.output(0).fill(0.0);
         Status::Modified
@@ -51,15 +53,20 @@ impl Node for LoopProbe {
 
 fn engine(transport: &Transport) -> (Engine, Editor, Arc<Mutex<Vec<Seen>>>) {
     let log = Arc::default();
+    let (engine, ed) = engine_logging(transport, Some(Arc::clone(&log)));
+    (engine, ed, log)
+}
+
+fn engine_logging(transport: &Transport, log: Option<Arc<Mutex<Vec<Seen>>>>) -> (Engine, Editor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
-    ed.insert(NodeKey(1), "probe", Unforkable(LoopProbe(Arc::clone(&log))));
+    ed.insert(NodeKey(1), "probe", Unforkable(LoopProbe(log)));
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
         node: NodeKey(1),
         port: 0,
     })];
     ed.commit().expect("commits");
     let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
-    (engine, ed, log)
+    (engine, ed)
 }
 
 fn render(engine: &Engine, frames: usize) {
@@ -248,16 +255,16 @@ fn a_reader_thread_never_sees_a_torn_region() {
     let a = range(0.0, 4.0);
     let b = range(8.0, 12.0);
     let transport = Transport::new(SR);
-    let (engine, _ed, log) = engine(&transport);
-    // The probe's log would grow without bound over this many blocks.
-    drop(log);
+    // No log: the probe would append for every frame of this many blocks.
+    let (engine, _ed) = engine_logging(&transport, None);
     let done = AtomicBool::new(false);
     let reader_transport = transport.clone();
 
     std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
             let mut reads = 0u64;
-            while !done.load(Ordering::Acquire) {
+            // Reads at least once, whenever the thread starts.
+            loop {
                 let region = reader_transport.motion.loop_region();
                 let bounds = region.bounds();
                 assert!(
@@ -265,6 +272,9 @@ fn a_reader_thread_never_sees_a_torn_region() {
                     "torn bounds {bounds:?}"
                 );
                 reads += 1;
+                if done.load(Ordering::Acquire) {
+                    break;
+                }
             }
             reads
         });

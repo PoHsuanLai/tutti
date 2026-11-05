@@ -83,8 +83,20 @@ name = "vst3_com_dispatch"
 path = "tests/vst3_com_dispatch.rs"
 
 [[test]]
-name = "vst3_conformance"
-path = "tests/vst3_conformance.rs"
+name = "vst3_conformance_blocks"
+path = "tests/vst3_conformance_blocks.rs"
+
+[[test]]
+name = "vst3_conformance_controller"
+path = "tests/vst3_conformance_controller.rs"
+
+[[test]]
+name = "vst3_conformance_interfaces"
+path = "tests/vst3_conformance_interfaces.rs"
+
+[[test]]
+name = "vst3_conformance_modes"
+path = "tests/vst3_conformance_modes.rs"
 
 [[test]]
 name = "vst3_ffi_plugin"

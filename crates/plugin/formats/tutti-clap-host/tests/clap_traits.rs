@@ -353,7 +353,7 @@ fn a_processor_that_outlives_its_controller_renders_nothing() {
 
     drop(controller);
     let error = render(&mut processor, SampleFormat::Float32).expect_err("retired");
-    assert!(matches!(error, PluginError::Process(_)), "{error:?}");
+    assert!(matches!(error, PluginError::Block(_)), "{error:?}");
     assert_eq!(
         thread_capture().sites[Site::Process as usize].visits,
         visits,
@@ -405,4 +405,81 @@ fn the_controller_serves_reads_while_the_processor_renders() {
     let cap = thread_capture();
     let process = cap.sites[Site::Process as usize];
     assert!(process.observed && process.is_audio && !process.is_main);
+}
+
+fn peek_param(id: u32) -> Option<f64> {
+    type F = unsafe extern "C" fn(u32, *mut f64) -> bool;
+    let mut v = 0.0f64;
+    unsafe {
+        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
+        let f: libloading::Symbol<F> = lib.get(b"tutti_test_plugin_param_peek\0").expect("symbol");
+        f(id, &mut v).then_some(v)
+    }
+}
+
+/// **Edits no block has drained survive a rejoin.** A restart before any block
+/// deactivates the plugin; the writes queued in the ring, and those a full ring
+/// had refused, are flushed into the inactive plugin and not lost with the ring.
+///
+/// Mutation (run): drop the `pending` loop in `ClapLoaded::rejoin` → the plugin
+/// still holds its default and the first assertion fails; drop only the
+/// `controller.unsent` append → the ring's contents arrive but not the last
+/// refused value, and the second assertion fails.
+#[test]
+fn queued_edits_survive_a_rejoin() {
+    let probe = Probe::acquire();
+    let cutoff = &probe_params()[0];
+    let id = ParamId::new(cutoff.id);
+
+    let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
+    controller.set_parameter(id, Normalized::new(0.25));
+    assert_eq!(peek_param(cutoff.id), Some(cutoff.default), "queued only");
+    let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
+    assert_eq!(peek_param(cutoff.id), Some(350.0), "100 + 0.25 * 1000");
+
+    // More writes than the ring holds: the last is in `unsent`.
+    let (processor, mut controller) = loaded.activate(prepare()).expect("activates");
+    for step in 0..1000 {
+        controller.set_parameter(id, Normalized::new(f64::from(step) / 1000.0));
+    }
+    let _loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
+    let wanted = cutoff.min + 0.999 * (cutoff.max - cutoff.min);
+    let got = peek_param(cutoff.id).expect("a value");
+    assert!((got - wanted).abs() < 1e-9, "{got} vs {wanted}");
+}
+
+/// **An errored block allocates nothing**, whatever the reason: a block longer
+/// than the activation, and a block after the Controller went.
+///
+/// Mutation (run): build the error with `PluginError::Process(e.to_string())`
+/// in `process_shared` → `assert_no_alloc` aborts the test.
+#[test]
+fn an_errored_block_does_not_allocate() {
+    let probe = Probe::acquire();
+    let (mut processor, controller) = probe.load().activate(prepare()).expect("activates");
+    render(&mut processor, SampleFormat::Float32).expect("warm up");
+
+    // Longer than the activation's 256 frames.
+    const FRAMES: usize = 512;
+    let ctx = ProcessContext::new();
+    let mut out = ProcessOutput::default();
+    let input = [0.0f32; FRAMES];
+    let mut left = [0.0f32; FRAMES];
+    let mut right = [0.0f32; FRAMES];
+    let inputs = [input.as_slice(), input.as_slice()];
+    let mut outputs = [left.as_mut_slice(), right.as_mut_slice()];
+    let mut io = PluginIo {
+        buffer: AudioBufferMut::F32(AudioBuffer::new(&inputs, &mut outputs, 48_000.0)),
+        ctx: &ctx,
+        out: &mut out,
+    };
+    let too_long = assert_no_alloc(|| processor.process(&mut io));
+    assert!(
+        matches!(too_long, Err(PluginError::Block(_))),
+        "{too_long:?}"
+    );
+
+    drop(controller);
+    let retired = assert_no_alloc(|| processor.process(&mut io));
+    assert!(matches!(retired, Err(PluginError::Block(_))), "{retired:?}");
 }

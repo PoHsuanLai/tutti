@@ -587,10 +587,18 @@ unsafe extern "C" fn params_text_to_value(
 /// Record the flush's input list, apply every `PARAM_VALUE` to the value table,
 /// and emit anything the test queued via [`tutti_test_plugin_queue_output`].
 unsafe extern "C" fn params_flush(
-    _plugin: *const clap_plugin,
+    plugin: *const clap_plugin,
     in_: *const clap_input_events,
     out: *const clap_output_events,
 ) {
+    // THREADING: `[active ? audio-thread : main-thread]`.
+    // SAFETY: a CLAP plugin entry point: the host passes the plugin pointer it was handed.
+    unsafe {
+        crate::threading::record_thread_roles(
+            crate::threading::Site::ParamsFlush,
+            crate::plugin_host(plugin),
+        )
+    };
     let mut events = [CapturedParamEvent::default(); MAX_CAPTURED_PARAM_EVENTS];
     let mut count = 0u32;
 

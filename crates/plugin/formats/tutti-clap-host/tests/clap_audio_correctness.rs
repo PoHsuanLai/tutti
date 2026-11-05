@@ -1063,9 +1063,11 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 /// so the open message goes with the old one, and the count restarts.
 ///
 /// Mutation (run): `InputEventList::reset_sysex` a no-op → the packets after
-/// the reset complete the message → fails at the reset; the new Processor
-/// built with the old one's input list (not a fresh `AudioScratch`) → the
-/// open message survives the re-activation and completes → fails there.
+/// the reset complete the message → fails at the reset. The re-activation half
+/// has no mutation that can fail it: the new Processor's `AudioScratch` is
+/// always fresh and one list cannot be shared between Processors, so the
+/// open message cannot survive. That half pins the outcome (nothing completes,
+/// nothing is counted) and cannot catch a regression that is not expressible.
 #[test]
 fn a_sysex_open_across_a_reset_is_dropped() {
     use tutti_midi_types::MidiGroup;

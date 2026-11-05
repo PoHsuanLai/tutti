@@ -5,8 +5,7 @@
 //! these suites want "the active plugin", so [`Active`] holds the pair, derefs
 //! to the Controller (and so to `ClapLoaded`), and forwards the Processor's
 //! calls. [`Active::reconfigure`] is the deactivate/activate pair a rate or
-//! block-size change is, with the previous configuration restored when the
-//! plugin refuses the new one.
+//! block-size change is.
 
 // The error carries the whole plugin back, which is the point of it.
 #![allow(clippy::result_large_err)]
@@ -20,6 +19,7 @@ use tutti_clap_host::{
 use tutti_plugin_types::{PluginError, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
 
 /// The two halves of one activation.
+#[derive(Debug)]
 pub struct Active<T: ClapSample> {
     pair: Option<(ClapProcessor<T>, ClapController)>,
     prepare: Prepare,
@@ -163,13 +163,13 @@ impl<T: ClapSample> Active<T> {
             .expect("the halves are a pair")
     }
 
-    /// Deactivates and activates at `rate` and `frames`. When the plugin
-    /// refuses, it is activated again at the previous configuration and the
-    /// refusal is returned.
+    /// Deactivates and activates at `rate` and `frames`, as a rate change does.
     ///
     /// # Panics
     ///
-    /// If the plugin refuses the previous configuration too.
+    /// If the plugin refuses: a test of a refusal deactivates and activates by
+    /// hand and looks at what the refusal hands back. (The rollback to the
+    /// previous configuration is the server bridge's, tested there.)
     pub fn reconfigure(&mut self, rate: f64, frames: u32) -> Result<(), PluginError> {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
         let loaded = ClapLoaded::deactivate_typed(processor, controller)
@@ -182,15 +182,7 @@ impl<T: ClapSample> Active<T> {
                 self.prepare = wanted;
                 Ok(())
             }
-            Err(refused) => {
-                let loaded = refused.plugin.expect("CLAP hands the plugin back");
-                let pair = loaded
-                    .activate_typed::<T>(self.prepare)
-                    .map_err(|r| r.reason)
-                    .expect("the previous configuration is accepted again");
-                self.pair = Some(pair);
-                Err(refused.reason)
-            }
+            Err(refused) => panic!("the plugin refused {wanted:?}: {}", refused.reason),
         }
     }
 

@@ -295,8 +295,7 @@ fn an_f64_activation_on_dropped_flags_is_refused_with_the_plugin_intact() {
     probe.ports_64bit(0);
     let (loaded, reason) = loaded
         .activate_at::<f64>(44_100.0, 512)
-        .err()
-        .expect("the flags are gone");
+        .expect_err("the flags are gone");
     assert!(matches!(reason, PluginError::Other(_)), "got {reason}");
     assert!(
         !reason.to_string().contains("at :"),
@@ -344,8 +343,7 @@ fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
     let (loaded, _) = loaded
         .activate_at::<f64>(44_100.0, 512)
-        .err()
-        .expect("the flags are gone");
+        .expect_err("the flags are gone");
     assert_eq!(
         loaded.audio_port_count(true),
         2,

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_plugin_types::{
-    AudioBufferMut, EditDrain, NoteExpressionChanges, PluginError, PluginIo, PluginResult,
-    Processor, TransportInfo as SharedTransport,
+    AudioBufferMut, Edit, EditDrain, Normalized, NoteExpressionChanges, ParamId, PluginError,
+    PluginIo, PluginResult, Processor, TransportInfo as SharedTransport,
 };
 use tutti_types::Reader;
 
@@ -146,6 +146,18 @@ impl<T: ClapSample> ClapProcessor<T> {
         self.scratch.input_events.reset_sysex();
     }
 
+    /// Takes the parameter edits the Controller queued that no block has
+    /// drained, oldest first, into `out`. Main thread, with the Processor held
+    /// (nothing is rendering): for a caller that must not lose them, as a
+    /// rejoin must not.
+    pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
+        self.drain.drain(|edit| {
+            if let Edit::Param { id, value } = edit {
+                out.push((id, value));
+            }
+        });
+    }
+
     /// Ends processing (`stop_processing`) if it started, under a fresh
     /// [`AudioThreadClaim`](crate::host::AudioThreadClaim). The next `process`
     /// starts it again.
@@ -197,6 +209,14 @@ impl ClapProcessorAny {
         match self {
             Self::F32(p) => p.is_processing(),
             Self::F64(p) => p.is_processing(),
+        }
+    }
+
+    /// [`ClapProcessor::take_edits`].
+    pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
+        match self {
+            Self::F32(p) => p.take_edits(out),
+            Self::F64(p) => p.take_edits(out),
         }
     }
 
@@ -315,9 +335,22 @@ impl<T: ClapSample> ClapProcessor<T> {
         let result = self.process(buffer, &clap_ctx);
         let result = result
             .map(|output| copy_process_output(output, out))
-            .map_err(|e| PluginError::Process(e.to_string()));
+            .map_err(|e| PluginError::Block(block_reason(&e)));
         self.scratch.in_note_expressions = expressions;
         result
+    }
+}
+
+/// Why a block failed, as a constant: the audio thread builds this for every
+/// errored block, so it must not allocate (`ClapError`'s own text is formatted).
+fn block_reason(error: &crate::ClapError) -> &'static str {
+    use crate::ClapError;
+    match error {
+        ClapError::PluginReturnedError => "the plugin returned CLAP_PROCESS_ERROR",
+        ClapError::BlockTooLarge { .. } => "the block is longer than the activated max_frames",
+        ClapError::StartProcessingFailed => "the plugin refused to start processing",
+        ClapError::NotActive => "the plugin is no longer active",
+        _ => "the plugin failed the block",
     }
 }
 

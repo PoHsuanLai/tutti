@@ -37,10 +37,12 @@ Renames (design 016 §2.5): `get_parameter` is `plain_value`,
 `resource_file_count`, and path arguments are `impl AsRef<Path>`. `HostState::poll`
 is `take`.
 
+New: `State::set_mode`, `PluginError::Block(&'static str)`, `ClapProcessor::take_edits`, `ClapLoaded::param_requires_process`, `ClapLoaded::take_raised`.
+
 `tutti-plugin-server`'s `ClapInstance` drives a `Lifecycle<ClapLoaded>`:
 `Lifecycle::drive` replaces `service_requests`, `take_changes` and
-`take_io_changed`, and a refused rate leaves the plugin silent (as the session
-already treated it) instead of rolling it back to the old rate.
+`take_io_changed`; a refused rate is rolled back by the bridge to the previous
+configuration, as before.
 
 ### Added — `Notice::Lost`
 

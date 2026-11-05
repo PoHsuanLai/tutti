@@ -546,6 +546,57 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Make the reference plugin's `activate` refuse `rate` until the returned
+    /// guard drops, which lifts the refusal.
+    #[cfg(feature = "clap")]
+    #[must_use = "the refusal is lifted when the guard drops"]
+    pub fn clap_probe_refuse_rate(rate: f64) -> ClapProbeRefusal {
+        set_clap_probe_activate_refusal(rate.to_bits());
+        ClapProbeRefusal
+    }
+
+    /// Lifts the refusal on drop; see [`clap_probe_refuse_rate`].
+    #[cfg(feature = "clap")]
+    pub struct ClapProbeRefusal;
+
+    #[cfg(feature = "clap")]
+    impl Drop for ClapProbeRefusal {
+        fn drop(&mut self) {
+            set_clap_probe_activate_refusal(u64::MAX);
+        }
+    }
+
+    #[cfg(feature = "clap")]
+    fn set_clap_probe_activate_refusal(rate_bits: u64) {
+        // SAFETY: `#[no_mangle] extern "C" fn(u64, u32)` in
+        // `tutti-clap-test-plugin`; the handle is leaked as above.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let set: libloading::Symbol<unsafe extern "C" fn(u64, u32)> = lib
+                .get(b"tutti_test_plugin_set_activate_refusal\0")
+                .expect("refusal exported by the reference plugin");
+            set(rate_bits, 0);
+            std::mem::forget(lib);
+        }
+    }
+
+    /// The rate of the reference plugin's most recent accepted `activate`
+    /// since [`clap_probe_reset_activation_count`], if any.
+    #[cfg(feature = "clap")]
+    pub fn clap_probe_last_accepted_rate() -> Option<f64> {
+        // SAFETY: as above.
+        unsafe {
+            let lib = libloading::Library::new(clap_probe_path()).expect("reference plugin opens");
+            let last: libloading::Symbol<unsafe extern "C" fn(*mut u64, *mut u32) -> bool> = lib
+                .get(b"tutti_test_plugin_last_accepted_activation\0")
+                .expect("accessor exported by the reference plugin");
+            let (mut bits, mut frames) = (0u64, 0u32);
+            let seen = last(&mut bits, &mut frames);
+            std::mem::forget(lib);
+            seen.then(|| f64::from_bits(bits))
+        }
+    }
+
     /// Make the reference plugin withhold `clap.tail` until the returned guard
     /// drops, which restores it. Call before loading: the host asks for the
     /// plugin's extensions once, at load.

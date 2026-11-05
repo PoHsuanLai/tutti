@@ -65,10 +65,11 @@ pub enum Site {
     OnMainThread = 4,
     OnTimer = 5,
     Reset = 6,
+    ParamsFlush = 7,
 }
 
 /// Number of [`Site`] variants — the length of [`ThreadCapture::sites`].
-pub const SITE_COUNT: usize = 7;
+pub const SITE_COUNT: usize = 8;
 
 /// What the host's `clap.thread-check` answered at one call site.
 ///
@@ -177,6 +178,7 @@ struct ThreadGlobals {
 
 static THREADING: ThreadGlobals = ThreadGlobals {
     sites: [
+        AtomicAnswer::new(),
         AtomicAnswer::new(),
         AtomicAnswer::new(),
         AtomicAnswer::new(),

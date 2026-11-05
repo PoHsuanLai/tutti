@@ -442,9 +442,11 @@ impl<T: ClapSample> ClapProcessor<T> {
         }
         {
             // Lent once per block and let go before the plugin is called, so it
-            // pins nothing across blocks. The edits come first, at the head of
-            // the block, and the automation after them, so where both set one
-            // parameter at one time the automation has the last word.
+            // pins nothing across blocks. The MIDI is staged above; then the
+            // edits, at the head of the block, and the automation after them.
+            // The list is sorted by time with a stable order, so where an edit
+            // and the automation set one parameter at one time the automation
+            // has the last word.
             let table = self.ranges.lend();
             let input_events = &mut self.scratch.input_events;
             self.drain.drain(|edit| {
@@ -551,9 +553,9 @@ impl<T: ClapSample> ClapProcessor<T> {
         // active `flush_params`, `start_processing` or `stop_processing` on any
         // other thread blocks until this block returns.
         //
-        // Steady state is an uncontended lock/unlock plus one small Arc
-        // allocation per block. `start_processing` runs under the same claim
-        // rather than taking its own.
+        // Steady state is an uncontended lock/unlock and an Arc clone (a
+        // relaxed increment, no allocation) per block. `start_processing` runs
+        // under the same claim rather than taking its own.
         // Clone the Arc into a local so the claim borrows the local, not
         // `self` (the rest of this function needs `&mut self`). An Arc clone is
         // a relaxed atomic increment — no allocation, RT-safe.

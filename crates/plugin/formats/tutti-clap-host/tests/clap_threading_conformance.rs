@@ -398,6 +398,49 @@ fn request_restart_from_process_reaches_the_host() {
     );
 }
 
+/// **A `params.flush` between `activate` and the first `process` is an
+/// audio-thread call; before activation it is a main-thread call.** CLAP tags
+/// `flush` `[active ? audio-thread : main-thread]`, keyed on activation and not
+/// on whether audio has started. Keying it on processing took the main-thread
+/// branch in this window, which TAL-Reverb-4's validation layer reported as
+/// `clap_plugin_params.flush() was called on the wrong thread`.
+///
+/// Mutation (run): change `if self.flags.active` in `ClapLoaded::flush_params`
+/// to `if false` → the active flush is answered as a main-thread call and the
+/// second assertion fails. (The flag lived on `LifecycleFlags` beside a
+/// `processing` flag that has since moved to the shell; this pins the one key
+/// that matters, `active`.)
+#[test]
+fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
+    let probe = Probe::acquire();
+    let id = tutti_clap_test_plugin::params_state::probe_params()[0].id;
+
+    let mut loaded = probe.load();
+    loaded.set_plain_value(id, 1.0);
+    assert_roles(
+        &probe.capture(),
+        Site::ParamsFlush,
+        true,
+        false,
+        "flush before activation",
+    );
+
+    thread_reset();
+    let mut inst = loaded
+        .activate_at::<f32>(48_000.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    assert!(!inst.is_processing(), "no block has run");
+    inst.set_plain_value(id, 2.0);
+    assert_roles(
+        &probe.capture(),
+        Site::ParamsFlush,
+        false,
+        true,
+        "flush after activation, before the first process",
+    );
+}
+
 /// `request_process` is the other `[thread-safe]` lifecycle request; it must be
 /// recorded and consumed independently of `request_restart`.
 ///

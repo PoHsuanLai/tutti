@@ -224,6 +224,21 @@ impl ClapLoaded {
         unsafe { text_to_value_ffi(ext, self.plugin.as_ptr(), param_id, text) }
     }
 
+    /// Whether the parameter with `param_id` carries the
+    /// `CLAP_PARAM_REQUIRES_PROCESS` flag: its changes must be delivered
+    /// through `process()`, in event order, and not through an out-of-band
+    /// `flush`, while the plugin is processing. `false` if the id is unknown or
+    /// the plugin has no params.
+    ///
+    /// Goes through the same enumeration as `parameter_list`, so the two cannot
+    /// drift about which parameters exist.
+    pub fn param_requires_process(&self, param_id: u32) -> bool {
+        self.native_parameters()
+            .into_iter()
+            .find(|info| info.id == param_id)
+            .is_some_and(|info| info.flags.contains(ClapParamFlags::REQUIRES_PROCESS))
+    }
+
     /// Delivers parameter changes outside of `process()` via
     /// `clap_plugin_params.flush()`, returning the events the plugin produced in
     /// response.

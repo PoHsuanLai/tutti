@@ -1582,3 +1582,29 @@ fn a_mapping_change_beside_a_restart_is_rebuilt_after_the_activation() {
     );
     assert!(go(s, Event::Tick).1.is_empty());
 }
+
+// Mutation (run): make `State::set_mode` a no-op; the restart's activation
+// carries the old mode and this fails. Make it emit an effect (a plan); the
+// emptiness check fails.
+#[test]
+fn set_mode_changes_the_next_activation_and_restarts_nothing() {
+    let p = prep(1);
+    let mut s = active(RESTARTS, p);
+    s.set_mode(RenderMode::Offline);
+    assert_eq!(s.prepare().map(|p| p.mode), Some(RenderMode::Offline));
+    assert_eq!(s.stage(), Stage::Active);
+    assert!(
+        go(s.clone(), Event::Tick).1.is_empty(),
+        "nothing is planned"
+    );
+
+    let s = req(s, Request::Restart);
+    let (s, _) = go(s, Event::Tick);
+    let (s, _) = reply(s, Reply::Returned);
+    let (_, fx) = reply(s, Reply::Deactivated);
+    let want = Prepare {
+        mode: RenderMode::Offline,
+        ..p
+    };
+    assert_eq!(fx, [Fx::Activate(want)]);
+}

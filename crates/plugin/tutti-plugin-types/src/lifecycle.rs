@@ -454,6 +454,22 @@ impl State {
         self.prepare
     }
 
+    /// Records `mode` in the `Prepare` every later activation uses, without
+    /// restarting anything. For a format that applies the render mode live
+    /// (CLAP's `render.set`): the host sets it on the plugin itself, and this
+    /// keeps a later restart or rate change from putting the old mode back.
+    /// An activation already planned takes the new mode too.
+    pub fn set_mode(&mut self, mode: RenderMode) {
+        if let Some(prepare) = self.prepare.as_mut() {
+            prepare.mode = mode;
+        }
+        for task in &mut self.plan.tasks {
+            if let Task::Activate(prepare) = task {
+                prepare.mode = mode;
+            }
+        }
+    }
+
     /// The latency last reported.
     #[must_use]
     pub fn latency(&self) -> Option<Samples> {

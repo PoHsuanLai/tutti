@@ -705,15 +705,33 @@ one.
 - `set_sample_rate`, `set_max_block_size`, `reactivate`, `needs_restart`,
   `run_main_thread_work` and `ClapError::Deactivated` are gone: a rate change is
   `HostOp::Reconfigure`, and a refused activation leaves the plugin loaded, so
-  nothing is "left deactivated" inside an active type. The old in-place rollback
-  to the previous rate is not kept: `Refused` renders silence and the next rate
-  revives, which is what the session already did with a refused rate.
+  nothing is "left deactivated" inside an active type. The in-place rollback to
+  the previous rate is the bridge's: after a refused `Reconfigure` it activates
+  at the previous `Prepare`, and only when that is refused too does the plugin
+  stay `Refused` and silent until the next rate. (The session still renders
+  nothing after any rate error, because its clock follows the rate the host asked
+  for.)
 - `PluginIo<'a>` needs one lifetime for the channel tables and their slices
   (`AudioBufferMut<'a, 'a>`), which a caller holding `AudioBufferMut<'t, 'd>`
   cannot produce without copying the tables. `ClapProcessorAny::render` takes the
   buffer, context and output apart and `Processor::process` is that over a
   `PluginIo`; the server's bridge calls `render` until step 4 settles the
   lifetimes.
+- `State::set_mode` records a render mode in the `Prepare` without a restart,
+  for a format that applies the mode live (CLAP's `render.set`); the bridge's
+  `set_render_mode` uses it, so a toggle does not cycle the plugin and a later
+  restart keeps the mode.
+- A rejoin does not lose edits: the writes still in the ring and those a full ring
+  had refused are flushed into the plugin after it is deactivated
+  (`params.flush` is legal when inactive). The bridge settles pending writes the
+  same way before a state save or a fork, so they see the writes; a parameter
+  flagged `REQUIRES_PROCESS` is not flushed out of band while the plugin is
+  processing and stays queued.
+- `PluginError::Block(&'static str)` is the error of a failed block: the audio
+  thread builds it without allocating (`Process(String)` stays for off-thread
+  failures).
+- `Notice::Lost` reaches the host as `AsyncEvent::IoChanged` and a log line: the
+  wire has no "lost" message, and adding one is a protocol change.
 - The server's `ClapInstance` is a bridge: it owns a `Lifecycle<ClapLoaded>`, its
   `State` and a local `Hand`, feeds each pass's requests and a `Tick` to `drive`,
   and turns the notices into the `AsyncEvent`s the `Plugin` enum already

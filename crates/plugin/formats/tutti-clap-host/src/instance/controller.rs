@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_plugin_types::{
-    Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail, Prepare,
-    Processor, Refused, RestartRules, SampleFormat, Samples, Stuck,
+    Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
+    Prepare, Processor, Refused, RestartRules, SampleFormat, Samples, Stuck,
 };
 use tutti_types::ArcLend;
 
@@ -222,6 +222,7 @@ impl ClapLoaded {
         mut controller: ClapController,
         shell_of: impl Fn(&P) -> &Arc<Shell>,
         stop: impl FnOnce(&mut P),
+        take_edits: impl FnOnce(&mut P, &mut Vec<(ParamId, Normalized)>),
     ) -> Result<ClapLoaded, (P, ClapController, PluginError)> {
         if !Arc::ptr_eq(shell_of(&processor), controller.shell()) {
             return Err((
@@ -239,6 +240,11 @@ impl ClapLoaded {
             ));
         }
         stop(&mut processor);
+        // Edits no block has drained would die with the ring. Older first: what
+        // the ring held, then what a full ring had refused.
+        let mut pending = Vec::new();
+        take_edits(&mut processor, &mut pending);
+        pending.append(&mut std::mem::take(&mut controller.unsent));
         drop(processor);
         let shell = controller
             .shell
@@ -250,6 +256,11 @@ impl ClapLoaded {
             .into_loaded()
             .expect("the plugin stays in the shell until the Controller drops");
         loaded.deactivate_plugin();
+        // An inactive plugin takes a `params.flush` on the main thread, so the
+        // writes land now and the next activation starts from them.
+        for (id, value) in pending {
+            Control::set_parameter(&mut loaded, id, value);
+        }
         Ok(loaded)
     }
 
@@ -264,7 +275,13 @@ impl ClapLoaded {
         processor: ClapProcessor<T>,
         controller: ClapController,
     ) -> Result<ClapLoaded, (ClapProcessor<T>, ClapController, PluginError)> {
-        Self::rejoin(processor, controller, |p| p.shell(), ClapProcessor::stop)
+        Self::rejoin(
+            processor,
+            controller,
+            |p| p.shell(),
+            ClapProcessor::stop,
+            ClapProcessor::take_edits,
+        )
     }
 }
 
@@ -293,12 +310,17 @@ impl Loaded for ClapLoaded {
         processor: ClapProcessorAny,
         controller: ClapController,
     ) -> Result<Self, Stuck<ClapProcessorAny, ClapController>> {
-        Self::rejoin(processor, controller, |p| p.shell(), Processor::stop).map_err(
-            |(processor, controller, reason)| Stuck {
-                processor,
-                controller,
-                reason,
-            },
+        Self::rejoin(
+            processor,
+            controller,
+            |p| p.shell(),
+            Processor::stop,
+            ClapProcessorAny::take_edits,
         )
+        .map_err(|(processor, controller, reason)| Stuck {
+            processor,
+            controller,
+            reason,
+        })
     }
 }

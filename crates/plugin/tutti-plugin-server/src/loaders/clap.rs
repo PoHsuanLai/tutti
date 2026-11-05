@@ -17,7 +17,7 @@ use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
     Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Stage, State,
+    Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;
@@ -97,11 +97,19 @@ pub struct ClapInstance {
     requests: Vec<Request>,
     /// What the host has not yet been told.
     events: Vec<AsyncEvent>,
+    /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
+    refused: bool,
 }
 
 // SAFETY: the host instances are `Send`, and the instance is driven from one
 // thread at a time.
 unsafe impl Send for ClapInstance {}
+
+/// Whether a pending write may be flushed out of band: not when the parameter
+/// requires `process` and the plugin is processing.
+fn flush_out_of_band(requires_process: bool, processing: bool) -> bool {
+    !(requires_process && processing)
+}
 
 fn resolve(path: &Path) -> Result<(std::path::PathBuf, bool)> {
     let resolved = tutti_plugin::server::resolve_bundle(path)?;
@@ -211,6 +219,7 @@ impl ClapInstance {
             meta: Meta::default(),
             requests: Vec::new(),
             events: Vec::new(),
+            refused: false,
         };
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
@@ -263,9 +272,10 @@ impl ClapInstance {
             Notice::NoteExpressionChanged => {}
             Notice::Refused { rate, reason } => {
                 tracing::warn!("CLAP plugin refused {} Hz: {reason}", rate.0);
-                // The instance now renders silence, so the host re-reads it.
+                // Whether the host must re-read the instance depends on whether
+                // a rollback revives it: `finish_refusals` decides.
                 self.refresh_meta();
-                self.events.push(AsyncEvent::IoChanged);
+                self.refused = true;
                 return Some(reason);
             }
             Notice::Stuck { reason } => {
@@ -273,11 +283,62 @@ impl ClapInstance {
             }
             Notice::Lost { reason } => {
                 tracing::error!("CLAP plugin lost: {reason}");
+                // The wire has no "lost" message, and a new one would be a
+                // protocol change. `IoChanged` is the closest signal: it makes
+                // the host re-read an instance that now renders silence.
                 self.events.push(AsyncEvent::IoChanged);
                 return Some(reason);
             }
         }
         None
+    }
+
+    /// Tells the host a plugin that stayed inactive after a refusal now renders
+    /// silence, so it re-reads it. A refusal a rollback undid tells nothing.
+    fn finish_refusals(&mut self) {
+        if std::mem::take(&mut self.refused) && !self.is_active() {
+            self.events.push(AsyncEvent::IoChanged);
+        }
+    }
+
+    /// Delivers the writes the Processor has not drained, so a state save or a
+    /// fork sees them. The server serves requests on the thread that renders, so
+    /// without this a save right after a write would read the old value until
+    /// the next block.
+    ///
+    /// Each is applied through an out-of-band `params.flush`, except that a
+    /// parameter flagged `REQUIRES_PROCESS` is never flushed while the plugin is
+    /// processing (CLAP wants it in event order, in a block): it goes back to the
+    /// queue. Only what was pending is flushed, at the moment it is asked for,
+    /// so a value the plugin or its editor has since moved is not re-asserted by
+    /// every write.
+    fn settle_edits(&mut self) {
+        if let Some(control) = self.lifecycle.control() {
+            control.flush_edits();
+        }
+        let mut pending = Vec::new();
+        let processing = match &mut self.lifecycle {
+            Lifecycle::Active {
+                seat: Seat::Held(processor),
+                ..
+            } => {
+                processor.take_edits(&mut pending);
+                processor.is_processing()
+            }
+            _ => return,
+        };
+        for (id, value) in pending {
+            let requires = self
+                .loaded_ref()
+                .is_some_and(|loaded| loaded.param_requires_process(id.get()));
+            if flush_out_of_band(requires, processing) {
+                if let Some(loaded) = self.loaded_mut() {
+                    Control::set_parameter(loaded, id, value);
+                }
+            } else if let Some(control) = self.lifecycle.control() {
+                control.set_parameter(id, value);
+            }
+        }
     }
 
     /// Reads the plugin's wiring again into the metadata the host is given.
@@ -336,6 +397,7 @@ impl ClapInstance {
             self.drive(Event::Tick);
         }
         self.requests = requests;
+        self.finish_refusals();
     }
 
     /// The plugin, whichever half of an activation holds it.
@@ -413,46 +475,57 @@ impl PluginAudio for ClapInstance {
             .loaded_mut()
             .is_some_and(|loaded| loaded.set_render_mode(offline));
         // The mode is a field of the `Prepare` every later activation (a
-        // restart, a rate change) applies, so the core must hold the new one or
-        // the next restart would put the old mode back.
-        if let Some(mut prepare) = self.state.prepare()
-            && prepare.mode != mode
-        {
-            prepare.mode = mode;
-            self.drive(Event::Op(HostOp::Reconfigure(prepare)));
-        }
+        // restart, a rate change) applies, so the core holds the new one or the
+        // next restart would put the old mode back. Nothing restarts now: the
+        // plugin took the mode live above.
+        self.state.set_mode(mode);
         accepted
     }
 
     /// The rate the plugin already runs at is a no-op, so a per-frame caller
     /// does not tear it down sixty times a second.
     ///
-    /// A refusal leaves the plugin loaded and silent: `process` renders
-    /// nothing and the host is told through
-    /// [`AsyncEvent::IoChanged`]. It is not rolled back to the old rate,
-    /// because the session's clock follows the rate the host asked for and a
-    /// rolled-back plugin would render at a rate that clock does not run at. The
-    /// next rate revives it.
+    /// A refusal is rolled back: the plugin is activated again at the
+    /// configuration it already accepted, and the error says it is running there.
+    /// (The session still renders nothing after an error, because its clock
+    /// follows the rate the host asked for.) When the rollback is refused too the
+    /// plugin is left loaded and silent, and the host is told through
+    /// [`AsyncEvent::IoChanged`]; the next rate revives it.
     ///
     /// The plugin may also change its bus layout across the re-activation; the
     /// metadata follows it and the host is told the same way.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        let Some(mut prepare) = self.state.prepare() else {
+        let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "CLAP plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (prepare.rate.0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        prepare.rate = SampleRate(rate);
-        let refusal = self.drive(Event::Op(HostOp::Reconfigure(prepare)));
-        match refusal {
-            Some(reason) => Err(PluginError::Other(format!(
-                "CLAP plugin refused sample rate {rate} (deactivated): {reason}"
-            ))),
+        let mut wanted = previous;
+        wanted.rate = SampleRate(rate);
+        let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
             None => Ok(()),
-        }
+            Some(reason) => {
+                // Put back what the plugin accepted once.
+                let rolled_back =
+                    self.drive(Event::Op(HostOp::Activate(previous))).is_none() && self.is_active();
+                if rolled_back {
+                    self.refresh_meta();
+                }
+                Err(PluginError::Other(format!(
+                    "CLAP plugin refused sample rate {rate} ({}): {reason}",
+                    if rolled_back {
+                        format!("running at {}", previous.rate.0)
+                    } else {
+                        "deactivated".to_string()
+                    }
+                )))
+            }
+        };
+        self.finish_refusals();
+        result
     }
 }
 
@@ -470,17 +543,8 @@ impl PluginParams for ClapInstance {
     /// Processor and reaches the plugin at the head of the next block.
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
         let Some(id) = id.opaque() else { return };
-        let active = self.is_active();
         if let Some(control) = self.lifecycle.control() {
             control.set_parameter(id, value);
-        }
-        // The server serves requests on the thread that renders, so a state
-        // save or a fork right after this write would see the old value until
-        // the next block drains the queued edit. The write is also applied
-        // now, through `params.flush`, as it was before the split; the queued
-        // copy lands on the same value.
-        if active && let Some(loaded) = self.loaded_mut() {
-            Control::set_parameter(loaded, id, value);
         }
     }
 
@@ -545,6 +609,7 @@ impl PluginPresets for ClapInstance {
 
 impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+        self.settle_edits();
         self.lifecycle
             .control()
             .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
@@ -684,7 +749,7 @@ mod tests {
     /// from it cut off every such plugin's decay. A plugin that does answer
     /// keeps its figure.
     ///
-    /// Mutation (run): in `ClapInstance::activate`, change
+    /// Mutation (run): in `ClapLoaded::tail_figure`, change
     /// `.map_or(PluginTail::Unknown, PluginTail::from_clap_samples)` to
     /// `.map_or(PluginTail::None, PluginTail::from_clap_samples)` → the first
     /// assertion sees `None` → fails.
@@ -710,10 +775,10 @@ mod tests {
     /// The buses were read before `activate` and never refreshed, so a plugin
     /// that changed its layout in between was described by the old one.
     ///
-    /// Mutation (run): read the input buses in `ClapInstance::open`
-    /// (`per_bus_channels(&loaded, true)`), carry them in `Opened`, and use
-    /// them in `ClapInstance::activate` → the one-port layout of the open →
-    /// the assertions fail.
+    /// Mutation (run): delete `instance.refresh_meta()` after the activation in
+    /// `ClapInstance::activate` → the metadata is the default, not the
+    /// activated plugin's → the assertions fail. (No open-time copy of the
+    /// buses exists any more to go stale: the wiring is read from the plugin.)
     #[test]
     fn the_buses_are_those_the_plugin_has_at_activation() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -735,9 +800,10 @@ mod tests {
     /// 32-bit.** The session asked for 64-bit on the answer the plugin gave at
     /// open; activation asks again, and the refusal is not a failed load.
     ///
-    /// Mutation (run): in `ClapInstance::activate`, turn the
-    /// `ClapError::NotSupported` fallback arm into `return Err(..)` → the load
-    /// fails → the `expect` fails.
+    /// Mutation (run): in `ClapInstance::activate`, delete the
+    /// `rescan_audio_ports()` call → the format is chosen from the flags read at
+    /// open, the 64-bit activation is refused and the load fails → the `expect`
+    /// fails.
     #[test]
     fn a_plugin_that_drops_its_64_bit_flags_after_open_loads_as_32_bit() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -751,7 +817,6 @@ mod tests {
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
         let instance =
             ClapInstance::activate(opened, path, true).expect("falls back to 32-bit audio");
-        assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
     }
 
@@ -1950,6 +2015,112 @@ mod tests {
         assert!(!loaded.take_process_requested());
         assert!(!loaded.take_note_ports_changed());
         assert!(!loaded.take_state_dirty());
+    }
+
+    /// **A write to an active plugin reaches a state save and a readback
+    /// without waiting for a block.** The server serves requests on the thread
+    /// that renders, so a save or a fork right after a write must see it; the
+    /// pending write is flushed when the state is asked for, not at every write.
+    ///
+    /// Mutation (run): delete the `self.settle_edits()` call in
+    /// `ClapInstance::get_state` → the readback is still the original and the
+    /// last assertion fails; flush at every write instead (the old behaviour)
+    /// → the "queued, not applied" assertion fails.
+    #[test]
+    fn test_clap_param_write_is_settled_for_a_state_save() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
+        let params = instance.get_parameter_list();
+        let param_id = params[0].id;
+        let original = instance.get_parameter(param_id);
+        let new_value = if original < 0.5 { 0.75 } else { 0.25 };
+
+        instance.set_parameter(param_id, Normalized::new(new_value));
+        assert_eq!(
+            instance.get_parameter(param_id),
+            original,
+            "queued, not applied out of band"
+        );
+        instance.get_state().expect("state saves");
+        let readback = instance.get_parameter(param_id);
+        assert!(
+            (readback - new_value).abs() < 0.01,
+            "expected {new_value}, got {readback}"
+        );
+    }
+
+    /// A parameter that requires `process` is never flushed out of band while
+    /// the plugin is processing; any other is.
+    ///
+    /// Mutation (run): `flush_out_of_band` returning `true` → the first
+    /// assertion fails; returning `false` → the others fail.
+    #[test]
+    fn a_requires_process_parameter_is_not_flushed_while_processing() {
+        assert!(!flush_out_of_band(true, true));
+        assert!(flush_out_of_band(true, false), "before the first block");
+        assert!(flush_out_of_band(false, true));
+        assert!(flush_out_of_band(false, false));
+    }
+
+    /// **A refused rate is rolled back**: the plugin is activated again at the
+    /// configuration it already accepted, stays active there, renders, and the
+    /// error says where it is running. The core tells the host the instance was
+    /// revived (`IoChanged`), as it does for any revival.
+    ///
+    /// Mutation (run): delete the `HostOp::Activate(previous)` drive in
+    /// `ClapInstance::set_sample_rate` → the plugin stays loaded and silent:
+    /// `is_active` fails.
+    #[test]
+    fn a_refused_rate_is_rolled_back_and_the_plugin_keeps_running() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        let refusal = crate::test_utils::clap_probe_refuse_rate(96000.0);
+        let err = instance
+            .set_sample_rate(96000.0)
+            .expect_err("the plugin refuses 96 kHz");
+        drop(refusal);
+
+        assert!(err.to_string().contains("running at 44100"), "{err}");
+        assert!(instance.is_active(), "rolled back and running");
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+        assert_eq!(
+            crate::test_utils::clap_probe_last_accepted_rate(),
+            Some(44100.0)
+        );
+        assert!(
+            instance.take_io_changed(),
+            "the core tells the host the instance was revived"
+        );
+        process_blocks(&mut instance, 1);
+    }
+
+    /// **A render-mode toggle does not cycle the plugin**, and the mode is kept
+    /// for the activation a later restart makes.
+    ///
+    /// Mutation (run): drive `HostOp::Reconfigure` from `set_render_mode`
+    /// instead of `State::set_mode` → the plugin is activated again and the
+    /// count assertion fails; delete the `set_mode` call → the recorded mode
+    /// stays `Realtime` and the mode assertion fails.
+    #[test]
+    fn a_render_mode_toggle_does_not_cycle_the_plugin() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        instance.set_render_mode(RenderMode::Offline);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+        assert_eq!(
+            instance.state.prepare().map(|p| p.mode),
+            Some(RenderMode::Offline)
+        );
+        instance.set_render_mode(RenderMode::Realtime);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+        assert!(instance.is_active());
     }
 
     // ── Group C: Parameter Get/Set Roundtrip ──

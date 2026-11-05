@@ -1076,9 +1076,12 @@ parameter.
   `activate_typed` and `deactivate_typed` are gone; `ClapProcessor::process` takes
   an `AudioBufferMut` and matches it to the width once per block.
 - The FFI crate's `PortScratch::new(SampleFormat)` holds the pool for that
-  width, and `ProcessCall` carries a `Planar` (`F32` or `F64` tables). One
-  match per block enters a private generic kernel, so each width is a separate
-  monomorphisation behind the match. A buffer of the other width is
+  width, and `ProcessCall` carries a `Planar` (`F32` or `F64` tables). `process`
+  is not generic: one match per block binds the typed slices into the scratch's
+  `clap_audio_buffer` tables (`data32` or `data64`, the only per-width code,
+  with zeroing the outputs on `CLAP_PROCESS_ERROR`), and the rest (claim,
+  checks, `ensure_processing`, event lists, the plugin call, pool serving) runs
+  once for both widths. A buffer of the other width is
   `ProcessError::FormatMismatch` (`ClapError::FormatMismatch` in the host); it
   is not converted.
 - `activate` refuses a 64-bit request on a plugin without 64-bit ports.

@@ -18,39 +18,6 @@ use crate::events::{EventSink, EventSource, with_input, with_output};
 use crate::plugin::Core;
 use crate::pool::{PoolHandle, PoolRequest};
 
-/// A sample width CLAP carries: `f32` through `data32`, `f64` through
-/// `data64`. Private: the width is a runtime [`SampleFormat`], and this only
-/// names the two kernels it selects.
-pub(crate) trait Sample: Copy + Default + Send + 'static {
-    /// A port buffer over `channel_count` channel pointers at `ptrs`.
-    #[doc(hidden)]
-    fn port_buffer(ptrs: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
-}
-
-impl Sample for f32 {
-    fn port_buffer(ptrs: *mut *mut f32, channel_count: u32) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: ptrs,
-            data64: ptr::null_mut(),
-            channel_count,
-            latency: 0,
-            constant_mask: 0,
-        }
-    }
-}
-
-impl Sample for f64 {
-    fn port_buffer(ptrs: *mut *mut f64, channel_count: u32) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: ptr::null_mut(),
-            data64: ptrs,
-            channel_count,
-            latency: 0,
-            constant_mask: 0,
-        }
-    }
-}
-
 /// Why a block did not run, or ran and failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessError {
@@ -82,7 +49,7 @@ pub enum ProcessError {
 /// start of every block from that block's slices and read only inside the same
 /// `process` call, so none outlives the borrow it came from.
 #[derive(Debug)]
-struct Typed<T: Sample> {
+struct Typed<T: Copy + Default + Send + 'static> {
     pad: Vec<Vec<T>>,
     input_ptrs: Vec<*mut T>,
     output_ptrs: Vec<*mut T>,
@@ -90,6 +57,9 @@ struct Typed<T: Sample> {
     output_bufs: Vec<clap_audio_buffer>,
     /// What `resize_for` sized the tables for: channels and ports per side.
     sized: Capacity,
+    /// Wraps a port's channel pointers as the C struct's `data32` or `data64`.
+    /// The one place the width reaches the C layout.
+    port: fn(*mut *mut T, u32) -> clap_audio_buffer,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -103,11 +73,36 @@ struct Capacity {
 // SAFETY: the raw pointers are scratch rewritten and read inside one `process`
 // call and never dereferenced across calls or threads; the rest is `Vec`s of
 // `T: Send`.
-unsafe impl<T: Sample> Send for Typed<T> {}
+unsafe impl<T: Copy + Default + Send + 'static> Send for Typed<T> {}
 
-impl<T: Sample> Typed<T> {
-    /// An empty scratch; `resize_for` before use.
+impl Typed<f32> {
+    /// An empty 32-bit scratch; `resize_for` before use.
     fn new() -> Self {
+        Self::with_port(|ptrs, channel_count| clap_audio_buffer {
+            data32: ptrs,
+            data64: ptr::null_mut(),
+            channel_count,
+            latency: 0,
+            constant_mask: 0,
+        })
+    }
+}
+
+impl Typed<f64> {
+    /// An empty 64-bit scratch; `resize_for` before use.
+    fn new() -> Self {
+        Self::with_port(|ptrs, channel_count| clap_audio_buffer {
+            data32: ptr::null_mut(),
+            data64: ptrs,
+            channel_count,
+            latency: 0,
+            constant_mask: 0,
+        })
+    }
+}
+
+impl<T: Copy + Default + Send + 'static> Typed<T> {
+    fn with_port(port: fn(*mut *mut T, u32) -> clap_audio_buffer) -> Self {
         Self {
             pad: Vec::new(),
             input_ptrs: Vec::new(),
@@ -115,7 +110,13 @@ impl<T: Sample> Typed<T> {
             input_bufs: Vec::new(),
             output_bufs: Vec::new(),
             sized: Capacity::default(),
+            port,
         }
+    }
+
+    /// The port tables `bind` built, for the width-independent call.
+    fn tables(&mut self) -> (&[clap_audio_buffer], &mut [clap_audio_buffer]) {
+        (&self.input_bufs, &mut self.output_bufs)
     }
 
     /// Sizes the tables for ports of `inputs` / `outputs` channels each and
@@ -208,13 +209,13 @@ impl<T: Sample> Typed<T> {
         let mut offset = 0usize;
         for &channels in input_ports {
             let base = self.input_ptrs.as_mut_ptr().wrapping_add(offset);
-            self.input_bufs.push(T::port_buffer(base, channels));
+            self.input_bufs.push((self.port)(base, channels));
             offset += channels as usize;
         }
         let mut offset = 0usize;
         for &channels in output_ports {
             let base = self.output_ptrs.as_mut_ptr().wrapping_add(offset);
-            self.output_bufs.push(T::port_buffer(base, channels));
+            self.output_bufs.push((self.port)(base, channels));
             offset += channels as usize;
         }
         Ok(())
@@ -233,7 +234,8 @@ enum Pool {
 ///
 /// The format is a value chosen when the scratch is made (the activation's
 /// negotiated one); `process` matches it once per block against the width of
-/// the caller's buffers and runs one of two kernels. Sized once off the audio
+/// the caller's buffers and binds them into the tables; the call itself is
+/// width-independent. Sized once off the audio
 /// thread ([`resize_for`](Self::resize_for)) so that `process` allocates
 /// nothing; the pointers it holds are rewritten at the start of every block
 /// and read only inside the same `process` call.
@@ -249,8 +251,8 @@ impl PortScratch {
     pub fn new(format: SampleFormat) -> Self {
         Self {
             pool: match format {
-                SampleFormat::Float32 => Pool::F32(Typed::new()),
-                SampleFormat::Float64 => Pool::F64(Typed::new()),
+                SampleFormat::Float32 => Pool::F32(Typed::<f32>::new()),
+                SampleFormat::Float64 => Pool::F64(Typed::<f64>::new()),
             },
         }
     }
@@ -293,6 +295,22 @@ pub enum Planar<'a, 'b> {
     },
 }
 
+impl Planar<'_, '_> {
+    /// Silences the first `frames` of every output channel.
+    fn silence_outputs(&mut self, frames: usize) {
+        fn zero<T: Copy + Default>(outputs: &mut [&mut [T]], frames: usize) {
+            for channel in outputs {
+                let n = channel.len().min(frames);
+                channel[..n].fill(T::default());
+            }
+        }
+        match self {
+            Self::F32 { outputs, .. } => zero(outputs, frames),
+            Self::F64 { outputs, .. } => zero(outputs, frames),
+        }
+    }
+}
+
 /// Everything one block hands the plugin.
 pub struct ProcessCall<'a, 'b> {
     /// The channel tables, at the activation's format.
@@ -325,18 +343,6 @@ impl std::fmt::Debug for ProcessCall<'_, '_> {
             .field("output_ports", &self.output_ports)
             .finish_non_exhaustive()
     }
-}
-
-/// What a block carries besides its channels, once the width is chosen.
-struct Rest<'a> {
-    input_ports: &'a [u32],
-    output_ports: &'a [u32],
-    frames: u32,
-    steady_time: i64,
-    transport: Option<&'a clap_event_transport>,
-    in_events: &'a dyn EventSource,
-    out_events: &'a mut dyn EventSink,
-    pool: Option<&'a PoolHandle>,
 }
 
 /// The audio-thread half of one activation: the entries `process` runs
@@ -429,7 +435,7 @@ impl AudioSide {
     ) -> Result<clap_process_status, ProcessError> {
         let ProcessCall {
             scratch,
-            audio,
+            mut audio,
             input_ports,
             output_ports,
             frames,
@@ -439,45 +445,6 @@ impl AudioSide {
             out_events,
             pool,
         } = call;
-        let rest = Rest {
-            input_ports,
-            output_ports,
-            frames,
-            steady_time,
-            transport,
-            in_events,
-            out_events,
-            pool,
-        };
-        // One match per block selects the kernel for the block's width.
-        match (&mut scratch.pool, audio) {
-            (Pool::F32(typed), Planar::F32 { inputs, outputs }) => {
-                self.process_typed(typed, inputs, outputs, rest)
-            }
-            (Pool::F64(typed), Planar::F64 { inputs, outputs }) => {
-                self.process_typed(typed, inputs, outputs, rest)
-            }
-            _ => Err(ProcessError::FormatMismatch),
-        }
-    }
-
-    fn process_typed<T: Sample>(
-        &mut self,
-        scratch: &mut Typed<T>,
-        inputs: &[&[T]],
-        outputs: &mut [&mut [T]],
-        rest: Rest<'_>,
-    ) -> Result<clap_process_status, ProcessError> {
-        let Rest {
-            input_ports,
-            output_ports,
-            frames,
-            steady_time,
-            transport,
-            in_events,
-            out_events,
-            pool,
-        } = rest;
         let _claim = self.core.roles.claim();
         if self.is_retired() {
             return Err(ProcessError::Retired);
@@ -485,7 +452,20 @@ impl AudioSide {
         if frames > self.core.max_frames.load(Ordering::Acquire) {
             return Err(ProcessError::BlockTooLarge);
         }
-        scratch.bind(inputs, outputs, input_ports, output_ports, frames as usize)?;
+        // The width is matched here, once per block, and only to bind the
+        // typed slices into the scratch's port tables. Everything after is
+        // width-independent: the tables are `clap_audio_buffer`s.
+        let (input_bufs, output_bufs) = match (&mut scratch.pool, &mut audio) {
+            (Pool::F32(typed), Planar::F32 { inputs, outputs }) => {
+                typed.bind(inputs, outputs, input_ports, output_ports, frames as usize)?;
+                typed.tables()
+            }
+            (Pool::F64(typed), Planar::F64 { inputs, outputs }) => {
+                typed.bind(inputs, outputs, input_ports, output_ports, frames as usize)?;
+                typed.tables()
+            }
+            _ => return Err(ProcessError::FormatMismatch),
+        };
         self.ensure_processing()?;
 
         let plugin = self.core.raw();
@@ -499,20 +479,21 @@ impl AudioSide {
                         steady_time,
                         frames_count: frames,
                         transport: transport.map_or(ptr::null(), ptr::from_ref),
-                        audio_inputs: scratch.input_bufs.as_ptr(),
-                        audio_outputs: scratch.output_bufs.as_mut_ptr(),
-                        audio_inputs_count: scratch.input_bufs.len() as u32,
-                        audio_outputs_count: scratch.output_bufs.len() as u32,
+                        audio_inputs: input_bufs.as_ptr(),
+                        audio_outputs: output_bufs.as_mut_ptr(),
+                        audio_inputs_count: input_bufs.len() as u32,
+                        audio_outputs_count: output_bufs.len() as u32,
                         in_events: in_raw,
                         out_events: out_raw,
                     };
                     // SAFETY: the plugin's own `process` with the instance and
                     // a `clap_process` whose every pointer is valid for the
-                    // call: the buffer tables were bound just above to
-                    // `frames`-long channels (checked) that `inputs`/`outputs`
-                    // /the pad keep borrowed; the lists are the stack lists
-                    // built here; the transport is borrowed from the caller.
-                    // The claim is held, so this is the only audio-side call.
+                    // call: the tables were bound just above to `frames`-long
+                    // channels (checked) that the caller's slices or the pad
+                    // keep borrowed (`audio` is held to the end of this
+                    // function); the lists are the stack lists built here; the
+                    // transport is borrowed from the caller. The claim is held,
+                    // so this is the only audio-side call.
                     let run = || unsafe { process_fn(plugin, &data) };
                     // A handle made for another instance is ignored.
                     match pool.filter(|handle| handle.is_for(&self.core)) {
@@ -526,10 +507,7 @@ impl AudioSide {
         };
 
         if status == CLAP_PROCESS_ERROR {
-            for channel in outputs.iter_mut() {
-                let n = channel.len().min(frames as usize);
-                channel[..n].fill(T::default());
-            }
+            audio.silence_outputs(frames as usize);
             return Err(ProcessError::PluginReturnedError);
         }
         Ok(status)

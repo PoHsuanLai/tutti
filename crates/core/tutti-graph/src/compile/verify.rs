@@ -957,7 +957,7 @@ mod tests {
         let _ = spec.connect_param(
             ParamIn {
                 node: NodeKey(2),
-                param: UnitParam::Cutoff,
+                param: UnitParam::Cutoff.into(),
             },
             EventOut {
                 node: NodeKey(3),
@@ -999,7 +999,7 @@ mod tests {
 
         // A port the unit does not declare there.
         let mut bad = good.clone();
-        bad.param_ports[0].param = tutti_types::UnitParam::Q;
+        bad.param_ports[0].param = tutti_types::UnitParam::Q.into();
         assert!(err(&bad).contains("does not declare"), "{}", err(&bad));
 
         // A port no node op names.

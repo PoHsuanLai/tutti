@@ -47,7 +47,7 @@
 use std::num::NonZeroU32;
 
 use tutti_types::graph::{InPort, OutPort, Source};
-use tutti_types::{Latency, NodeKey, Samples, Tail, UnitParam};
+use tutti_types::{Latency, NodeKey, Samples, Tail, UnitAddr};
 
 use crate::arena::Role;
 use crate::compile::VerifyError;
@@ -402,7 +402,7 @@ pub struct ParamPortOp {
     /// ([`Shape::params`](crate::Shape::params)).
     pub port: u16,
     /// The param.
-    pub param: UnitParam,
+    pub param: UnitAddr,
     /// The event output that drives it: what its running state (the
     /// source's ramp) is kept by, so the executor crossfades a port whose
     /// source changed and leaves one that only moved slots alone.

@@ -113,6 +113,12 @@ required-features = ["device"]
 name = "modulation"
 required-features = ["modulation"]
 
+# Indexed param addresses through the session: a graph write and a modulation
+# route to a node's second param of one kind.
+[[test]]
+name = "indexed_params"
+required-features = ["modulation"]
+
 # Clips, live inputs, routes and the hardware out (`Session::midi`).
 [[test]]
 name = "midi"

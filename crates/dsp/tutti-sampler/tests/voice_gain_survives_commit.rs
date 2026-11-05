@@ -218,7 +218,7 @@ fn a_lane_drives_the_voice_gain_around_its_cell() {
         .expect("the gain");
     let at = ParamIn {
         node: s.key(),
-        param: UnitParam::Volume,
+        param: UnitParam::Volume.into(),
     };
     drive_volume(s.renderer_mut().editor_mut(), at, knob.clone(), 0.5);
 
@@ -299,7 +299,7 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     let knob = s.controls().cell(UnitParam::Volume).expect("the gain");
     let at = ParamIn {
         node: s.key(),
-        param: UnitParam::Volume,
+        param: UnitParam::Volume.into(),
     };
     drive_volume(s.renderer_mut().editor_mut(), at, knob.clone(), 0.5);
     let out = s.render(BLOCK).swap_remove(0);

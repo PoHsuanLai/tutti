@@ -65,7 +65,8 @@ pub use value::{
     Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param,
     Param64, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Q,
     Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread,
-    SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity,
+    SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitAddr, UnitParam, UnitParamOutOfRange,
+    Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
@@ -123,7 +124,7 @@ pub mod prelude {
     pub use crate::value::{
         Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Frame, Hz, MidiChannel,
         MidiGroup, Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, Q, SamplePosition,
-        SampleRate, Samples, Seconds, Semitones, Tail, UnitParam, Velocity,
+        SampleRate, Samples, Seconds, Semitones, Tail, UnitAddr, UnitParam, Velocity,
     };
 
     pub use crate::channels::ChannelLayout;

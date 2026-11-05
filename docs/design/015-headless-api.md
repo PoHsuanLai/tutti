@@ -540,7 +540,7 @@ exists (`tutti-types` `unit_param.rs:204`), with one constant per
 s.graph().set(filter, ParamKey::<Hz>::CUTOFF, Hz(800.0));  // through the node's ParamSet
 ```
 
-The untyped `set_param(node, UnitParam, f32)` stays for plugin and dynamic
+The untyped `set_param(node, impl Into<UnitAddr>, f32)` stays for plugin and dynamic
 addresses.
 
 **Modulation.** These are declarations owned by the session, keyed by ids

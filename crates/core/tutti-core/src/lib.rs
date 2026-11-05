@@ -15,7 +15,7 @@ pub use tutti_types::value::{
     Adsr, Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Db,
     Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Param, Param64, ParamAddr, Phase,
     PhaseIncrement, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, Seconds,
-    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam,
+    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitAddr, UnitParam,
 };
 
 mod engine;

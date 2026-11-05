@@ -5730,7 +5730,8 @@ under both.
 > describes what was.
 
 - **Param ports on `Shape`.** A node declares the params the graph may
-  modulate, by `UnitParam` id, in port order: `Shape::with_params`
+  modulate, by `UnitParam` id (since, by `UnitAddr`: a kind and an index,
+  "Param addresses" below), in port order: `Shape::with_params`
   (`ParamPorts`, at most `MAX_PARAM_PORTS` = 8). `ParamRamp` keeps its
   typed `ParamKey<U>` constructor; a port itself is erased over its unit,
   as the `ParamRamp` wire is.
@@ -7170,6 +7171,71 @@ both formats' lists, across two blocks),
 `a_member_bend_range_fans_out_over_the_zones_ports`,
 `the_mpe_bend_range_fan_out_processes_without_allocating` and, through the
 SDK-built probe, `a_per_note_pitch_bend_reaches_the_plugin_as_tuning`.
+
+## Param addresses: a kind and an index
+
+A node used to hold one param of each kind: `UnitParam` was the whole address, so a
+multiband compressor could not have a `Threshold` per band. The address is now a
+`UnitAddr { param: UnitParam, index: u8 }`, the kind and an index among the node's
+params of that kind. This is the record of the decision and of what it touches.
+
+**The encoding.** Packed into the `u16` an `AudioParam<U, P>` and a persisted id carry,
+**index in the high byte, the `UnitParam` discriminant in the low byte**
+(`UnitAddr::to_u16`, `TryFrom<u16>`). Index 0 is bit-identical to the plain
+discriminant, so every id written before indices existed decodes to the same
+param at index 0, and `{ UnitParam::Cutoff as u16 }` is still the spelling of a
+node's only cutoff. `UnitParam` is `repr(u8)` (it was `repr(u16)`; its largest
+discriminant is 21, and `as u16` casts are unchanged), which makes `UnitAddr`
+two bytes and keeps a `ParamPorts` list the size of a list of `u16`s.
+`UnitParam::try_from(u16)` stays the strict, index-free decode and refuses an
+indexed id; `UnitAddr::try_from(u16)` accepts every index (whether a node has
+one is for its `ParamSet` to answer). One consequence: a `u16` above 255 that
+the old decoder refused as unknown (9999, say) now decodes if its low byte is a
+known kind. Nothing persists such an id.
+
+**`ParamAddr` was already a name.** `tutti_types::ParamAddr` is the modulation
+and event address, `Unit(UnitParam) | Id(u32)` (a foreign plugin id). It is
+kept, and gains `Indexed(UnitParam, NonZeroU8)` for a non-zero index, so a
+native address with index 0 is still `ParamAddr::Unit(p)` and every existing
+construction and match compiles. `NonZeroU8` makes the representation
+canonical: index 0 can only be `Unit`, so `==`, `Ord` and `Hash` mean what they
+say. `ParamAddr::unit(UnitAddr)` picks the variant; `as_unit()` goes back.
+The alternative, `Unit(UnitAddr)`, would have broken every `ParamAddr::Unit(UnitParam::X)`
+literal and pattern for no gain.
+
+**What takes a `UnitAddr`** (each takes `impl Into<UnitAddr>` where a caller
+passes a value, so a bare `UnitParam` is index 0 and existing calls compile):
+
+- `ParamSet::{set, get, cell}` and `ParamSetBuilder::param_at`; `param` is
+  `param_at` at index 0. The duplicate check is on the whole address (one
+  address, one cell); the same kind at another index is accepted. `ParamSet::params`
+  yields `UnitAddr`.
+- `ParamPorts` and `Shape`: the list holds `UnitAddr`, so a node declares a
+  threshold per band as modulatable (`Shape::with_param_addrs`, `ParamPorts::of`;
+  `with_params`/`new` take bare kinds as before). `MAX_PARAM_PORTS` stays 8: it
+  counts addresses, and a node with more indexed params than that declares
+  the ones the graph may drive. `ParamIn::param`, `ParamPortOp::param`, the
+  range cells and the fused step key on the address, so a port takes the events
+  addressed to its own index and no other's.
+- The event wire: `ParamSegment` packs the `UnitAddr`'s `u16` into the `u32` id it
+  already had (no change to the 32-byte `Event`), `ParamSegment::unit` and
+  `ControlLaneNode::for_unit` take `impl Into<UnitAddr>`, and a
+  `ParamKey<U>` can move to another index (`ParamKey::at`) with its unit intact.
+- The session and Bevy sides: `Graph::set_param`, `declares_param`,
+  `set_param_mod`, `clear_param_mod`, `param_mod` (and `AudioGraphRes`'s),
+  `write_param`, `ParamRef::unit_at` (both), and `AudioParam<U, P>` with a packed
+  `P` (`{ UnitAddr::new(UnitParam::Threshold, 1).to_u16() }`). The session's
+  modulation resolves a native target of any index to the node's cell for that
+  address (the lane's knob) and to the port of that address; nothing in
+  `tutti-mod` changes, because a `TargetKey` already held a `ParamAddr`.
+- Capture and restore: a node's params are not captured. Its controls are its
+  `ParamSet`, which the insert addresses by key (`SessionNode::params`), so an
+  indexed set needs no code of its own. `assert_param_fork` covers every
+  address a set lists, and a fork starts from each index's own cell.
+
+**Not here.** The multiband compressor and the crossover adopt this afterwards.
+The test-only nodes with two `Threshold`s are in `tutti-graph/tests/indexed_params.rs`,
+`tutti-session/tests/indexed_params.rs` and `bevy-tutti/tests/indexed_param.rs`.
 
 ## A 64-bit audio path
 

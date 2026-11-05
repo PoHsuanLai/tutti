@@ -124,7 +124,7 @@ fn an_lfo_lane_sweeps_around_a_real_filters_cutoff_cell() {
     })];
     let at = ParamIn {
         node: probe,
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     };
     ed.set_param_range(at, ParamRange::new(lo, hi))
         .expect("a probe");
@@ -208,7 +208,7 @@ fn render_chorus(
         .connect_output(n, 1, 1);
     let at = ParamIn {
         node: n,
-        param: UnitParam::Rate,
+        param: UnitParam::Rate.into(),
     };
     g.spec_mut().set_param_range(at, ParamRange::new(0.0, 10.0));
     let mut r = g
@@ -354,7 +354,10 @@ fn render_lfo(param: UnitParam, range: ParamRange, depth: f32) -> (Vec<f32>, f32
         .with_depth(Depth(0.25));
     let (n, params) = g.add_with_controls(lfo);
     g.connect_output(n, 0, 0);
-    let at = ParamIn { node: n, param };
+    let at = ParamIn {
+        node: n,
+        param: param.into(),
+    };
     g.spec_mut().set_param_range(at, range);
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))
@@ -465,7 +468,10 @@ where
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, params) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
-    let at = ParamIn { node: n, param };
+    let at = ParamIn {
+        node: n,
+        param: param.into(),
+    };
     g.spec_mut().set_param_range(at, range);
     let mut r = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(128)))

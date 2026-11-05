@@ -1,15 +1,28 @@
-//! A node's parameters, addressed by [`UnitParam`]: [`ParamSet`], and the
+//! A node's parameters, addressed by [`UnitAddr`]: [`ParamSet`], and the
 //! fork of a node whose controls are one ([`ParamNode`], [`param_parts`]).
 //!
 //! # Why an address, beside the typed handles
 //!
 //! A node's own API hands out typed `Param<U>` handles (`cutoff: Param<Hz>`),
 //! and a caller that knows the node's type uses those. A host that does not
-//! — bevy-tutti's `AudioParam<U, P>`, which names a param by `UnitParam` and
-//! reaches the node through its graph key — needs the same cells by address.
+//! — bevy-tutti's `AudioParam<U, P>`, which names a param by its packed
+//! [`UnitAddr`] and reaches the node through its graph key — needs the same
+//! cells by address.
 //! A graph node's controls **are** its cells, shared with the running unit, so a write lands
 //! on the next block without a ring and a fork reads the values it needs from
 //! the controls rather than from a shadow copy of the unit.
+//!
+//! # Addresses: a kind and an index
+//!
+//! A param's address is a [`UnitAddr`]: a [`UnitParam`](tutti_types::UnitParam) kind and an index among
+//! the node's params of that kind. A node with one param of a kind adds it at
+//! index 0 ([`ParamSetBuilder::param`], where a bare [`UnitParam`](tutti_types::UnitParam) is that
+//! address); a node with several (a threshold per band) adds each at its own
+//! index ([`ParamSetBuilder::param_at`]). Every method that takes an address
+//! takes `impl Into<UnitAddr>`, so `set.set(UnitParam::Cutoff, v)` stands for
+//! index 0 and `set.set(UnitAddr::new(UnitParam::Threshold, 1), v)` names
+//! another cell. The duplicate check and every lookup are on the whole
+//! address: the same kind at another index is another param.
 //!
 //! # One value per param
 //!
@@ -23,18 +36,20 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_types::{AtomicF32, UnitParam};
+#[cfg(test)]
+use tutti_types::UnitParam;
+use tutti_types::{AtomicF32, UnitAddr};
 
 use crate::fork::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
 use crate::node::{Node, NodeParts};
 
 /// One param: its address and the cell the node reads.
 struct Slot {
-    param: UnitParam,
+    param: UnitAddr,
     live: Arc<AtomicF32>,
 }
 
-/// A node's params by [`UnitParam`]: the cells the running node reads, once
+/// A node's params by [`UnitAddr`]: the cells the running node reads, once
 /// per block, and a fork of it starts from.
 ///
 /// `Clone` shares: every clone addresses the same cells. Control-thread type;
@@ -57,15 +72,15 @@ impl ParamSet {
         ParamSetBuilder { slots: Vec::new() }
     }
 
-    fn slot(&self, param: UnitParam) -> Option<&Slot> {
+    fn slot(&self, param: UnitAddr) -> Option<&Slot> {
         self.slots.iter().find(|s| s.param == param)
     }
 
     /// Sets `param` to `value`: the cell the node reads on its next block,
     /// and a fork taken after this starts from. `false` if the node has no
     /// such param; nothing is written then.
-    pub fn set(&self, param: UnitParam, value: f32) -> bool {
-        let Some(slot) = self.slot(param) else {
+    pub fn set(&self, param: impl Into<UnitAddr>, value: f32) -> bool {
+        let Some(slot) = self.slot(param.into()) else {
             return false;
         };
         slot.live.store(value, Ordering::Release);
@@ -73,19 +88,20 @@ impl ParamSet {
     }
 
     /// `param`'s live value: what the node reads on its next block.
-    pub fn get(&self, param: UnitParam) -> Option<f32> {
-        self.slot(param).map(|s| s.live.load(Ordering::Acquire))
+    pub fn get(&self, param: impl Into<UnitAddr>) -> Option<f32> {
+        self.slot(param.into())
+            .map(|s| s.live.load(Ordering::Acquire))
     }
 
     /// `param`'s live cell, for a reader or writer that holds it directly (a
     /// modulation lane, whose knob it is). Clones the `Arc`: control
     /// thread only.
-    pub fn cell(&self, param: UnitParam) -> Option<Arc<AtomicF32>> {
-        self.slot(param).map(|s| Arc::clone(&s.live))
+    pub fn cell(&self, param: impl Into<UnitAddr>) -> Option<Arc<AtomicF32>> {
+        self.slot(param.into()).map(|s| Arc::clone(&s.live))
     }
 
     /// The params, in the order they were added.
-    pub fn params(&self) -> impl Iterator<Item = UnitParam> + '_ {
+    pub fn params(&self) -> impl Iterator<Item = UnitAddr> + '_ {
         self.slots.iter().map(|s| s.param)
     }
 }
@@ -114,13 +130,29 @@ impl std::fmt::Debug for ParamSetBuilder {
 }
 
 impl ParamSetBuilder {
-    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`.
+    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param` at
+    /// index 0: [`param_at`](Self::param_at) for a node with one param of
+    /// the kind.
     ///
     /// # Panics
     ///
-    /// If `param` was already added: one address, one cell.
+    /// If that address was already added: one address, one cell.
     #[must_use]
-    pub fn param(mut self, param: UnitParam, cell: Arc<AtomicF32>) -> Self {
+    pub fn param(self, param: tutti_types::UnitParam, cell: Arc<AtomicF32>) -> Self {
+        self.param_at(param, cell)
+    }
+
+    /// Address `cell` as `addr`: a [`UnitAddr`], or a bare `UnitParam` for
+    /// index 0. A node with several params of a kind adds each at its own
+    /// index.
+    ///
+    /// # Panics
+    ///
+    /// If `addr` (kind **and** index) was already added: one address, one
+    /// cell. The same kind at another index is a different address.
+    #[must_use]
+    pub fn param_at(mut self, addr: impl Into<UnitAddr>, cell: Arc<AtomicF32>) -> Self {
+        let param = addr.into();
         assert!(
             self.slots.iter().all(|s| s.param != param),
             "{param:?} added to a ParamSet twice"

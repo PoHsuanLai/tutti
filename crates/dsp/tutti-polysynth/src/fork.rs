@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn the_synth_forks_as_a_param_node() {
         let synth = saw();
-        let params: Vec<UnitParam> = tutti_graph::ParamNode::param_set(&synth).params().collect();
+        let params: Vec<_> = tutti_graph::ParamNode::param_set(&synth).params().collect();
         assert_eq!(
             params,
             [

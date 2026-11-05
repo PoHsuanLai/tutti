@@ -320,7 +320,7 @@ fn tap(ed: &mut Editor, from: u64, tap: u64) {
 fn cutoff(node: u64) -> ParamIn {
     ParamIn {
         node: NodeKey(node),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     }
 }
 

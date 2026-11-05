@@ -309,11 +309,11 @@ fn build(ed: &mut Editor) {
     );
     let cut = ParamIn {
         node: NodeKey(30),
-        param: tutti_types::UnitParam::Cutoff,
+        param: tutti_types::UnitParam::Cutoff.into(),
     };
     let q = ParamIn {
         node: NodeKey(30),
-        param: tutti_types::UnitParam::Q,
+        param: tutti_types::UnitParam::Q.into(),
     };
     spec.connect_param(cut, ev_out(31));
     spec.connect_param(q, ev_out(32));
@@ -356,7 +356,7 @@ fn render(ed: &mut Editor, exec: &mut Executor, blocks: &[usize]) -> Vec<Vec<f32
 fn sink_ports() -> [ParamIn; 2] {
     [tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q].map(|param| ParamIn {
         node: NodeKey(30),
-        param,
+        param: param.into(),
     })
 }
 

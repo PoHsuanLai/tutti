@@ -53,7 +53,8 @@ pub trait ModHost {
 /// Where a target's lane delivers ([`ModHost::target`]).
 #[derive(Clone, Debug)]
 pub enum Target {
-    /// A native param port (`TargetKey::param` a `ParamAddr::Unit`): the
+    /// A native param port (`TargetKey::param` a `ParamAddr::Unit` or
+    /// `ParamAddr::Indexed`): the
     /// node, and its own `Param` cell for the param (`ParamSet::cell`), the
     /// lane's knob (doc 014 §4.2). `None`: no knob, the base is automation
     /// alone.
@@ -101,7 +102,7 @@ pub enum ReconcileError {
         /// The route.
         route: RouteKey,
     },
-    /// The host resolved a `ParamAddr::Unit` target to a foreign parameter,
+    /// The host resolved a native (`Unit` or `Indexed`) target to a foreign parameter,
     /// or a `ParamAddr::Id` one to a native port.
     WrongTarget(TargetKey),
     /// A native target whose node does not declare the param.
@@ -1058,11 +1059,15 @@ impl Modulation {
         };
         let shape = |node: NodeKey| editor.shapes().get(&node).copied();
         match (resolved, target.param) {
-            (Target::Native { node, knob }, ParamAddr::Unit(param)) => {
+            (Target::Native { node, knob }, addr) => {
+                // A foreign id is no native param, whatever the host resolved.
+                let Some(param) = addr.as_unit() else {
+                    return Err(ReconcileError::WrongTarget(target));
+                };
                 let Some(shape) = shape(node) else {
                     return Ok(None);
                 };
-                if !shape.params.as_slice().contains(&param) {
+                if shape.params.index_of(param).is_none() {
                     return Err(ReconcileError::NoSuchParam(target));
                 }
                 let at = ParamIn { node, param };

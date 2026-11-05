@@ -47,7 +47,7 @@ use tutti_graph::{
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
-use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
 
 use crate::SessionNode;
 
@@ -1262,8 +1262,10 @@ impl Graph {
     /// [`ParamSet`] (its controls, addressed with
     /// [`set_node_params`](Self::set_node_params)): the cell it reads at the
     /// start of its next block, and the value a fork starts from. A node
-    /// without the param takes nothing.
-    pub fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
+    /// without the param takes nothing. `param` is a [`UnitAddr`] (a kind and
+    /// an index among the node's params of that kind); a bare `UnitParam` is
+    /// index 0.
+    pub fn set_param(&mut self, node: AudioNode, param: impl Into<UnitAddr>, value: f32) {
         if let Some(params) = self.nodes.get(&key(node)).and_then(|e| e.params.as_ref()) {
             params.set(param, value);
         }
@@ -1356,7 +1358,7 @@ impl Graph {
     // --- Param modulation ---
 
     /// Whether `node` declares `param` modulatable (its shape's params).
-    pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
+    pub fn declares_param(&self, node: AudioNode, param: impl Into<UnitAddr>) -> bool {
         self.shape(node)
             .is_some_and(|s| s.params.index_of(param).is_some())
     }
@@ -1375,13 +1377,13 @@ impl Graph {
     pub fn set_param_mod(
         &mut self,
         node: AudioNode,
-        param: UnitParam,
+        param: impl Into<UnitAddr>,
         source: Option<AudioNode>,
         range: ParamRange,
     ) -> Result<(), GraphInvalid> {
         let at = ParamIn {
             node: key(node),
-            param,
+            param: param.into(),
         };
         if range.min.is_nan() || range.max.is_nan() {
             return Err(GraphInvalid::BadParamRange { at, range });
@@ -1409,10 +1411,10 @@ impl Graph {
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again.
-    pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
+    pub fn clear_param_mod(&mut self, node: AudioNode, param: impl Into<UnitAddr>) {
         let at = ParamIn {
             node: key(node),
-            param,
+            param: param.into(),
         };
         if self.editor.spec_mut().params.remove(&at).is_some() {
             self.edited = true;
@@ -1420,13 +1422,13 @@ impl Graph {
     }
 
     /// How `node`'s `param` is modulated, as the graph value holds it.
-    pub fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<ParamMod> {
+    pub fn param_mod(&self, node: AudioNode, param: impl Into<UnitAddr>) -> Option<ParamMod> {
         self.editor
             .spec()
             .params
             .get(&ParamIn {
                 node: key(node),
-                param,
+                param: param.into(),
             })
             .cloned()
     }
@@ -1722,14 +1724,19 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
         let audio_node = self.keys.node(target.node)?;
         let node = key(audio_node);
         Some(match target.param {
-            tutti_types::ParamAddr::Unit(param) => tutti_nodes::Target::Native {
-                node,
-                knob: self
-                    .nodes
-                    .get(&node)
-                    .and_then(|e| e.params.as_ref())
-                    .and_then(|p| p.cell(param)),
-            },
+            // A native param, at any index: the node's own cell for that
+            // address is the lane's knob.
+            tutti_types::ParamAddr::Unit(_) | tutti_types::ParamAddr::Indexed(..) => {
+                let addr = target.param.as_unit().expect("a native address");
+                tutti_nodes::Target::Native {
+                    node,
+                    knob: self
+                        .nodes
+                        .get(&node)
+                        .and_then(|e| e.params.as_ref())
+                        .and_then(|p| p.cell(addr)),
+                }
+            }
             // A plugin target waits for its mirror: a lane built without
             // a knob could not take one later.
             tutti_types::ParamAddr::Id(id) => {

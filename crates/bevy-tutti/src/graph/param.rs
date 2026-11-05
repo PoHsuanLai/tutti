@@ -1,7 +1,8 @@
 //! One component per modulatable parameter, reconciled generically.
 //!
 //! [`AudioParam<U, const P: u16>`] is a scalar param on a node entity: `U` is
-//! its unit, `P` its [`UnitParam`] address. Registering one with
+//! its unit, `P` its packed [`UnitAddr`] (a [`UnitParam`] kind, and an index
+//! among the node's params of that kind, in the high byte). Registering one with
 //! [`add_audio_param`](AudioParamAppExt::add_audio_param) adds a system that
 //! pushes changes into the graph — so a new param is one line, not a new
 //! component type plus a `QueryData` field plus an `Or<Changed<…>>` arm plus an
@@ -66,15 +67,18 @@ use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-use tutti_types::{Unit, UnitParam};
+use tutti_types::{Unit, UnitAddr, UnitParam};
 
 use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
 
 /// A scalar parameter on a node entity: unit `U`, address `P`.
 ///
-/// `P` is a [`UnitParam`] discriminant rather than the enum itself because
-/// const generics cannot yet be arbitrary enums. Spell it
-/// `{ UnitParam::Cutoff as u16 }` at the use site; [`param`](Self::param)
+/// `P` is a [`UnitAddr`] packed into a `u16` ([`UnitAddr::to_u16`]) rather
+/// than the type itself because const generics cannot yet be arbitrary
+/// types. A node's only param of a kind (index 0) is spelled
+/// `{ UnitParam::Cutoff as u16 }`, which is its packed address; the second
+/// of a kind (a multiband compressor's threshold of band 1) is
+/// `{ UnitAddr::new(UnitParam::Threshold, 1).to_u16() }`. [`addr`](Self::addr)
 /// converts back.
 ///
 /// Both parameters are load-bearing. `U` keeps a cutoff in `Hz` from being
@@ -94,14 +98,21 @@ impl<U: Unit<Raw = f32>, const P: u16> AudioParam<U, P> {
         Self { value }
     }
 
-    /// This param's address, or `None` if `P` is not a known [`UnitParam`].
+    /// This param's address (kind and index), or `None` if `P`'s low byte is
+    /// not a known [`UnitParam`].
     ///
     /// `None` is unreachable for a param declared with the
-    /// `{ UnitParam::X as u16 }` idiom; it stays total rather than panicking so
-    /// a stale discriminant degrades to "this param never reaches the graph"
-    /// instead of taking the app down.
+    /// `{ UnitParam::X as u16 }` or `UnitAddr::to_u16` idioms; it stays total
+    /// rather than panicking so a stale discriminant degrades to "this param
+    /// never reaches the graph" instead of taking the app down.
+    pub fn addr(self) -> Option<UnitAddr> {
+        UnitAddr::try_from(P).ok()
+    }
+
+    /// This param's kind, whatever its index (see [`addr`](Self::addr) for
+    /// the whole address), or `None` as `addr` is.
     pub fn param(self) -> Option<UnitParam> {
-        UnitParam::try_from(P).ok()
+        self.addr().map(|a| a.param)
     }
 }
 
@@ -111,7 +122,9 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
     }
 }
 
-/// Writes one scalar to `param` on `node`: the param's knob.
+/// Writes one scalar to `param` on `node`: the param's knob. `param` is a
+/// [`UnitAddr`] (a kind and an index among the node's params of that kind); a
+/// bare [`UnitParam`] is index 0.
 ///
 /// The one path by which a value reaches a node's param. It is public for
 /// params whose address is known only at runtime, which an [`AudioParam`]
@@ -127,7 +140,12 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// Hosted plugin parameters do not go through here: they are
 /// runtime-discovered `u32` ids, and a modulated one's knob is its lane's
 /// (`ModulationState::set_knob`).
-pub fn write_param(graph: &mut AudioGraphRes, node: &AudioNode, param: UnitParam, value: f32) {
+pub fn write_param(
+    graph: &mut AudioGraphRes,
+    node: &AudioNode,
+    param: impl Into<UnitAddr>,
+    value: f32,
+) {
     // Through the node's `ParamSet`, never a handle captured from the unit:
     // that would move the live unit and leave a fork at the value it was
     // built with.
@@ -147,7 +165,7 @@ pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P
     mut graph: ResMut<AudioGraphRes>,
     changed: Query<(&AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
 ) {
-    let Ok(param) = UnitParam::try_from(P) else {
+    let Ok(param) = UnitAddr::try_from(P) else {
         return;
     };
     for (node, value) in &changed {

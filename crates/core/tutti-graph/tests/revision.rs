@@ -82,7 +82,7 @@ fn every_edit_moves_the_revision_and_nothing_else_does() {
         ed.set_param_range(
             ParamIn {
                 node: one,
-                param: UnitParam::Cutoff,
+                param: UnitParam::Cutoff.into(),
             },
             ParamRange::new(0.0, 1.0),
         )

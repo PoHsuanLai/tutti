@@ -106,7 +106,7 @@ fn param_row() -> Row {
         "ParamEcho on Cutoff",
         || Box::new(ParamEcho::new(UnitParam::Cutoff)),
         Excite::Param {
-            param: UnitParam::Cutoff,
+            param: UnitParam::Cutoff.into(),
             amplitude: 0.5,
         },
         Detect::Exact(vec![0.5]),

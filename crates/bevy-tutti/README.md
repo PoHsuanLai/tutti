@@ -52,8 +52,10 @@ yourself in that case.
   channel; `EventSources` names what feeds a node's event (MIDI) input. Nothing
   calls `connect`.
 - **Parameters are components.** `AudioParam<U, P>` holds one parameter value
-  (unit `U`, parameter address `P`); register each type once with
-  `App::add_audio_param`.
+  (unit `U`, parameter address `P`, a packed `UnitAddr`: the plain
+  `{ UnitParam::Cutoff as u16 }` for a node's only param of a kind,
+  `{ UnitAddr::new(UnitParam::Threshold, 1).to_u16() }` for the second);
+  register each type once with `App::add_audio_param`.
 - **One commit per frame.** The reconcile systems run in `Update` in the
   `GraphReconcileSystems` sets (`Spawn`, `Params`, `Despawn`, `Compensate`,
   `Commit`). Direct edits through `AudioGraphRes` mark the session graph

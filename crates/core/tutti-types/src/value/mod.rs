@@ -53,7 +53,7 @@ pub use tail::Tail;
 pub use timeline::{
     FRAME_TOLERANCE, TimelineSegment, first_frame_at_or_after, snap_to_whole_frame,
 };
-pub use unit_param::{ParamAddr, ParamKey, UnitParam, UnitParamOutOfRange};
+pub use unit_param::{ParamAddr, ParamKey, UnitAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
     Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Confidence,
     Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Phase, PhaseIncrement,

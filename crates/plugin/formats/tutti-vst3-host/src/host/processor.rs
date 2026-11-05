@@ -127,7 +127,7 @@ impl<T: Vst3Sample> OutputStaging<T> {
 }
 
 /// All the per-block scratch the realtime `process()` loop needs, grouped to
-/// mirror `ProcessData`'s own input/output split. Separated from [`Vst3Loaded`]
+/// mirror `ProcessData`'s own input/output split. Separated from [`Vst3Loaded`](super::Vst3Loaded)
 /// so GUI-only hosting doesn't pay the allocation cost.
 ///
 /// `ptrs` is shared: its flat per-channel pointers feed both `input.buses` and
@@ -141,7 +141,7 @@ pub(super) struct AudioIO<T: Vst3Sample> {
     pub(super) output: OutputStaging<T>,
     pub(super) cc: CcRoute,
     /// RT-side MIDI-learn CC capture, paired with the
-    /// [`Vst3Loaded`]'s consumer. Inert (a single
+    /// [`Vst3Loaded`](super::Vst3Loaded)'s consumer. Inert (a single
     /// relaxed atomic load) unless learn is armed.
     pub(super) midi_learn: MidiLearnProducer,
 }

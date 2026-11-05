@@ -1,17 +1,17 @@
 //! The sequencer context of a block (chords, scales, per-note texts and
 //! integer note expressions) in the form VST3's event list takes.
 //!
-//! The Processor converts a block's [`ExpressiveContext`] into these buffers
+//! The Processor converts a block's [`ExpressiveContext`](tutti_plugin_types::ExpressiveContext) into these buffers
 //! and stages them as [`Vst3InputEvents`](crate::types::Vst3InputEvents).
 
 use tutti_plugin_types::{
     ChordChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ScaleChanges,
 };
 
-/// Reusable buffers for the sequencer-context conversion in [`process_block`].
+/// Reusable buffers for the sequencer-context conversion in `Vst3Processor::process_shared`.
 ///
 /// Every field is a `Vec` the converters `clear()` and refill rather than
-/// rebuild, so a plugin advertising [`Features::SEQUENCER_CONTEXT`] costs no
+/// rebuild, so a plugin advertising [`Features::SEQUENCER_CONTEXT`](tutti_plugin_types::Features::SEQUENCER_CONTEXT) costs no
 /// allocation per block once the buffers have grown. The nested `text` buffers
 /// matter as much as the outer ones: each chord / scale / note-expression text
 /// is UTF-16 re-encoded, so building these fresh was one heap allocation *per

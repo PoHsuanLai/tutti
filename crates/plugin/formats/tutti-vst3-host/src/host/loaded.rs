@@ -515,7 +515,7 @@ impl Vst3Loaded {
     /// This is the bridge between the two address spaces: anything iterating
     /// `0..parameter_count()` must go through it (or
     /// [`parameter_info`](Self::parameter_info)) before calling
-    /// [`get_parameter`](Self::get_parameter) / [`set_parameter`](Self::set_parameter).
+    /// [`Control::parameter`] / [`Control::set_parameter`].
     pub fn parameter_id_at(&self, index: u32) -> Option<u32> {
         self.parameter_info(index).map(|info| info.id)
     }

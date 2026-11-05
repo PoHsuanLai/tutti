@@ -58,7 +58,7 @@ const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 /// what the plugin chose beats proposing a layout that names the wrong
 /// speakers.
 ///
-/// [`speakers::to_arrangement`] is the conversion for a caller with a real
+/// [`to_arrangement`](super::speakers::to_arrangement) is the conversion for a caller with a real
 /// [`ChannelTopology`]; this is the width-only fallback for the path that
 /// enumerates counts.
 fn default_arrangement_for(layout: ChannelLayout) -> Option<SpeakerArrangement> {

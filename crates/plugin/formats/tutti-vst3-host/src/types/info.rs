@@ -201,7 +201,7 @@ pub mod parameter_flags {
 /// `IAutomationState_::AutomationStates_` from the Steinberg SDK. The host
 /// pushes one of these to the plugin so it can adapt to whether the host is
 /// reading, writing, both, or ignoring automation. Pass to
-/// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
+/// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
 pub mod automation_state {
     use super::AutomationStates_;
     use tutti_plugin_types::AutomationMode;
@@ -219,7 +219,7 @@ pub mod automation_state {
     /// bitmask. This mapping lives here — the VST3 crate is the one that knows
     /// both the mode vocabulary and its `IAutomationState` ABI — so
     /// `tutti-plugin-types` stays format-agnostic. Pass the result to
-    /// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
+    /// [`Control::set_automation_state`](tutti_plugin_types::Control::set_automation_state).
     #[must_use]
     pub fn from_mode(mode: AutomationMode) -> i32 {
         match mode {

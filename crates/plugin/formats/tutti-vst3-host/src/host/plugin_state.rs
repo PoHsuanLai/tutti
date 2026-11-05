@@ -38,7 +38,7 @@ pub(super) struct PluginInterfaces {
     pub note_expression: Option<ComPtr<INoteExpressionController>>,
     /// The plugin's automation-state interface, if it implements one. The host
     /// pushes the current read/write automation mode to it (see
-    /// [`super::loaded::Vst3Loaded::set_automation_state`]).
+    /// [`super::loaded::Vst3Loaded::apply_automation_state`]).
     pub automation_state: Option<ComPtr<IAutomationState>>,
     /// The plugin's keyswitch (articulation) metadata interface, if any. Read
     /// side only — enumerates the plugin's key-switch map per bus/channel.

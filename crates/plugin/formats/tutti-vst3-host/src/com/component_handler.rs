@@ -230,7 +230,7 @@ impl RestartFlags {
     /// `kPrefetchableSupportChanged` asks for the deactivate and activate the
     /// header names, which is a restart. The three that nothing acts on (bus
     /// titles, routing, keyswitches) raise nothing: they stay in the
-    /// coalesced flags of [`ComponentHandler::take_restart_bits`].
+    /// coalesced flags of `ComponentHandler::take_restart_bits`.
     pub fn raise_into(self, word: &RequestWord) {
         let requests = [
             (self.reload_component, Request::Reload),

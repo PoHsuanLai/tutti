@@ -404,7 +404,8 @@ Four things the block leaves open are fixed as follows.
    before the deactivation is answered when the deactivation completes (rule 9):
    the reads in rule 2 answer both.
 7. A request on a `Loaded`, `Refused` or `Poisoned` plugin is consumed and
-   changes nothing, except `Callback`, `Timer` and `Fd` on `Loaded`, which run.
+   changes nothing, except `Callback`, `Timer` and `Fd` on `Loaded`, which run. On
+   `Refused` the `Callback` is dropped with the rest.
 8. `Died`, from any stage, moves to `Poisoned`, which absorbs every later event,
    and drops a parked plan.
 9. A plan that deactivates or rebuilds an `Active` plugin begins with `Recall`.
@@ -418,11 +419,21 @@ Four things the block leaves open are fixed as follows.
    the pending `Restart`, `IoChanged`, `LatencyChanged`, `TailChanged` and
    `RescanParams(All)` are answered by the activation and its reads, an `All`
    adding a parameter re-read, and a `Reload` joins the plan as a `Rebuild`, so
-   the `Tick` after the return plans nothing a second time. `Activate(p)` on a
-   plan in flight is `Reconfigure(p)`: the latest wins.
-   An op raised while a `CallActivate` is in flight is kept (the latest one)
-   and replayed once the activation is answered, `Activated` or `Refused`; a
-   replayed `Reconfigure` or `Deactivate` starts with `Recall`.
+   the `Tick` after the return plans nothing a second time. A `RescanParams(All)`
+   or `Reload` that finds no activation to follow (a `Deactivate` plan) is kept:
+   the next activation reads the parameters.
+   The host's latest *intent*, a final stage and `Prepare`, wins: `Reconfigure(p)`
+   asks for an active plugin at `p`, `Deactivate` for a loaded one, and
+   `Activate(p)` for an active one at `p` only when the intent is not active
+   already, as rule 1 leaves an active plugin as it is. So `Activate(p)` on a
+   plan that ends active changes nothing, and on one that ends loaded
+   (a parked `Deactivate`) adds the activation.
+   An op raised while a `CallActivate` is in flight is kept and replayed once the
+   activation is answered, `Activated` or `Refused`; a replayed `Reconfigure` or
+   `Deactivate` starts with `Recall`. The kept op follows the same intent: a
+   `Reconfigure` or `Deactivate` replaces it, an `Activate` never displaces a
+   kept `Reconfigure` or `Activate`, and after a kept `Deactivate` becomes a
+   `Reconfigure` at its own `Prepare`.
 10. `Replied(Stuck)` leaves the plugin `Active`, abandons the rest of the plan,
     emits `Notify(Stuck)` and `Lend`.
 

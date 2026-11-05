@@ -339,7 +339,7 @@ impl Shell {
         let (mut q, mut all) = (VecDeque::new(), Vec::new());
         self.feed(event, &mut q, &mut all);
         while let Some(effect) = q.pop_front() {
-            if !self.inject.is_empty() && self.pick(2) == 0 {
+            while !self.inject.is_empty() && self.pick(2) == 0 {
                 let op = self.inject.remove(0);
                 self.feed(Event::Op(op), &mut q, &mut all);
             }
@@ -1378,23 +1378,35 @@ fn only_the_answer_to_the_main_thread_work_continues_the_tick() {
 }
 
 proptest! {
-    /// The host's latest op wins: with ops raised between any effect and its
-    /// reply, the plugin settles in the state the last op asked for, idle.
+    /// The host's latest intent wins: with ops raised between any effect and
+    /// its reply, the plugin settles in the state the ops ask for, idle. The
+    /// intent is a final stage and `Prepare`: `Reconfigure(p)` asks for an
+    /// active plugin at `p`, `Deactivate` for a loaded one, and `Activate(p)`
+    /// for an active one at `p` only when the intent is not active already.
+    /// When the plugin may refuse or stick, nothing is promised about the end
+    /// state, only that it settles without breaking a transition.
     ///
     /// Mutation: delete the `self.replay(out);` call from the `Activated` arm
-    /// (an op raised during an activation is lost); or make `HostOp::Reconfigure`
-    /// on a busy plan do nothing (`_ => {}`); this fails.
+    /// (an op raised during an activation is lost); make `HostOp::Reconfigure`
+    /// on a busy plan do nothing (`_ => {}`); let `HostOp::Activate` rewrite a
+    /// plan that ends active (drop the `leads_active` arm); or let `merge_later`
+    /// replace a kept `Reconfigure` with an `Activate` (`(op, _) => op`); this
+    /// fails.
     #[test]
     fn the_latest_op_wins_whenever_it_is_raised(
         rules in rules(),
-        ops in prop::collection::vec((any::<bool>(), any::<u8>()), 1..8),
+        ops in prop::collection::vec((0u8..3, any::<u8>()), 1..8),
         choices in prop::collection::vec(any::<u8>(), 1..16),
         local in any::<bool>(),
+        flaky in any::<bool>(),
     ) {
         let rt = if local { Rt::Local } else { Rt::Thread };
-        let mut shell = Shell::new(rules, Refuse::Never, rt, choices);
-        let op = |(activate, n): (bool, u8)| {
-            if activate { HostOp::Reconfigure(prep(n)) } else { HostOp::Deactivate }
+        let refuse = if flaky { Refuse::Choice } else { Refuse::Never };
+        let mut shell = Shell::new(rules, refuse, rt, choices);
+        let op = |(kind, n): (u8, u8)| match kind {
+            0 => HostOp::Reconfigure(prep(n)),
+            1 => HostOp::Deactivate,
+            _ => HostOp::Activate(prep(n)),
         };
         shell.inject = ops[1..].iter().copied().map(op).collect();
         shell.op(op(ops[0]));
@@ -1406,16 +1418,113 @@ proptest! {
             shell.return_processor();
         }
         prop_assert!(!shell.state.is_busy());
-        match op(*ops.last().unwrap()) {
-            HostOp::Reconfigure(p) => {
-                prop_assert_eq!(shell.state.stage(), Stage::Active);
-                prop_assert_eq!(shell.state.prepare(), Some(p));
-            }
-            _ => prop_assert_eq!(shell.state.stage(), Stage::Loaded),
-        }
         for rec in &shell.trace {
             prop_assert!(!rec.rejoin_while_out);
             prop_assert!(!rec.transition_out_of_turn);
         }
+        if !flaky {
+            let mut want = None;
+            for o in ops {
+                match op(o) {
+                    HostOp::Reconfigure(p) => want = Some(p),
+                    HostOp::Deactivate => want = None,
+                    HostOp::Activate(p) => want = want.or(Some(p)),
+                }
+            }
+            match want {
+                Some(p) => {
+                    prop_assert_eq!(shell.state.stage(), Stage::Active);
+                    prop_assert_eq!(shell.state.prepare(), Some(p));
+                }
+                None => prop_assert_eq!(shell.state.stage(), Stage::Loaded),
+            }
+        }
     }
+}
+
+// Mutation: drop the `_ if self.leads_active() => {}` arm of
+// `HostOp::Activate` in `on_op`; the restart is rewritten to `r`.
+#[test]
+fn an_activate_leaves_an_active_plugins_restart_as_it_is() {
+    let (q, r) = (prep(2), prep(3));
+    let s = active(RESTARTS, prep(1));
+    let (s, _) = go(s, Event::Op(HostOp::Reconfigure(q)));
+    let (s, _) = reply(s, Reply::Lent);
+    let (s, fx) = go(s, Event::Op(HostOp::Activate(r)));
+    assert!(fx.is_empty());
+    let (s, _) = go(s, Event::Returned);
+    let (_, fx) = reply(s, Reply::Deactivated);
+    assert_eq!(fx, [Fx::Activate(q)]);
+}
+
+// Mutation: make `merge_later` return `op` first (`(op, _) => op` as its
+// first arm); the `Activate` displaces the kept `Reconfigure` and the plugin
+// ends at the first `Prepare`. Drop its `Deactivate` arm and the last case
+// stays unloaded.
+#[test]
+fn an_activate_does_not_displace_a_kept_op_that_leaves_the_plugin_active() {
+    let (p, q, r) = (prep(1), prep(2), prep(3));
+    let settle = |s: State| {
+        let (s, _) = reply(s, Reply::Activated);
+        let (s, _) = reply(s, Reply::Returned);
+        let (s, fx) = reply(s, Reply::Deactivated);
+        (s, fx)
+    };
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let (s, _) = go(s, Event::Op(HostOp::Reconfigure(q)));
+    let (s, _) = go(s, Event::Op(HostOp::Activate(r)));
+    let (_, fx) = settle(s);
+    assert_eq!(fx, [Fx::Activate(q)]);
+    // After a kept deactivate, an activate asks for an activation at its own
+    // `Prepare`.
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let (s, _) = go(s, Event::Op(HostOp::Deactivate));
+    let (s, _) = go(s, Event::Op(HostOp::Activate(r)));
+    let (_, fx) = settle(s);
+    assert_eq!(fx, [Fx::Activate(r)]);
+}
+
+// Mutation: delete `self.reread_params = true;` in `settle_requests`; the
+// parameters are not read after the next activation.
+#[test]
+fn a_rescan_raised_before_a_deactivation_is_read_after_the_next_activation() {
+    let q = prep(2);
+    let s = req(
+        active(RESTARTS, prep(1)),
+        Request::RescanParams(RescanScope::All),
+    );
+    let (s, fx) = go(s, Event::Op(HostOp::Deactivate));
+    assert_eq!(fx, [Fx::Recall]);
+    let (s, _) = reply(s, Reply::Returned);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert!(fx.is_empty());
+    let (s, _) = go(s, Event::Op(HostOp::Activate(q)));
+    let (s, fx) = reply(s, Reply::Activated);
+    assert_eq!(
+        fx[4..],
+        [
+            Fx::Params(RescanScope::All),
+            Fx::ParamTitles,
+            Fx::ParamValues
+        ]
+    );
+    // It is read once.
+    let (s, _) = go(s, Event::Op(HostOp::Reconfigure(q)));
+    let (s, _) = reply(s, Reply::Returned);
+    let (s, _) = reply(s, Reply::Deactivated);
+    let (_, fx) = reply(s, Reply::Activated);
+    assert_eq!(fx.len(), 4);
+}
+
+// Mutation: accept `Request::Callback` in every stage (`active ||
+// matches!(self.stage, Stage::Loaded | Stage::Refused { .. })`); the
+// activation that follows then runs it.
+#[test]
+fn a_callback_raised_on_a_refused_plugin_is_dropped() {
+    let s = req(refused(RESTARTS, prep(1)), Request::Callback);
+    assert!(go(s.clone(), Event::Tick).1.is_empty());
+    // Nor is it kept for the activation that follows.
+    let (s, _) = go(s, Event::Op(HostOp::Activate(prep(1))));
+    let (s, _) = reply(s, Reply::Activated);
+    assert!(go(s, Event::Tick).1.is_empty());
 }

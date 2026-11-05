@@ -157,7 +157,8 @@ pub enum Request {
     TailChanged,
     /// `kReloadComponent`: rebuild the instance.
     Reload,
-    /// `request_callback` (CLAP): run `on_main_thread`.
+    /// `request_callback` (CLAP): run `on_main_thread`. Dropped while the
+    /// plugin is `Refused`, which has nothing to run.
     Callback,
     /// A registered timer is due.
     Timer(TimerId),
@@ -383,6 +384,9 @@ pub struct State {
     later: Option<HostOp>,
     /// A rebuild was refused: the next activation rebuilds first.
     rebuild_pending: bool,
+    /// Parameters changed while no activation was to follow: the next
+    /// activation reads them all.
+    reread_params: bool,
     pending: Pending,
     plan: Plan,
 }
@@ -404,6 +408,7 @@ impl State {
             after_main: false,
             later: None,
             rebuild_pending: false,
+            reread_params: false,
             pending: Pending::default(),
             plan: Plan::default(),
         }
@@ -514,13 +519,14 @@ impl State {
         self.after_main = false;
         self.later = None;
         self.rebuild_pending = false;
+        self.reread_params = false;
     }
 
     fn on_op(&mut self, op: HostOp, out: &mut Effects) {
         // An op raised while an activation is in flight cannot change the
         // plan yet: the latest one is replayed once the activation is answered.
         if self.plan.wait == Wait::Activate {
-            self.later = Some(op);
+            self.later = Some(merge_later(self.later, op));
             return;
         }
         match op {
@@ -530,6 +536,9 @@ impl State {
                         self.begin(&[Task::Activate(p)], out);
                     }
                 }
+                // An activate leaves an active plugin as it is, and a plan that
+                // ends active already has its `Prepare`.
+                _ if self.leads_active() => {}
                 _ => self.plan.set_activate(p),
             },
             HostOp::Reconfigure(p) => match (self.plan.wait, self.stage) {
@@ -548,6 +557,19 @@ impl State {
                 (Wait::Deactivate | Wait::Rebuild, _) => self.plan.tasks.clear(),
                 _ => {}
             },
+        }
+    }
+
+    /// Whether the plugin is, or the plan in flight leaves it, active.
+    fn leads_active(&self) -> bool {
+        match self.plan.wait {
+            Wait::Idle => matches!(self.stage, Stage::Active),
+            Wait::Activate => true,
+            _ => self
+                .plan
+                .tasks
+                .iter()
+                .any(|t| matches!(t, Task::Activate(_))),
         }
     }
 
@@ -643,6 +665,19 @@ impl State {
                 }
             }
         }
+    }
+}
+
+/// The op to replay once the activation in flight is answered, given the one
+/// kept so far and a new one. The latest op wins by what it asks for: an
+/// `Activate` asks only for an active plugin, which the activation in flight
+/// already gives, so it never displaces a kept `Reconfigure` or `Activate`, and
+/// after a kept `Deactivate` it asks for an activation at its own `Prepare`.
+fn merge_later(kept: Option<HostOp>, op: HostOp) -> HostOp {
+    match (op, kept) {
+        (HostOp::Activate(p), Some(HostOp::Deactivate)) => HostOp::Reconfigure(p),
+        (HostOp::Activate(_), Some(kept)) => kept,
+        (op, _) => op,
     }
 }
 
@@ -784,6 +819,12 @@ impl State {
                 emit(out, Effect::ReadTail);
                 emit(out, Effect::ReadLayout);
                 emit(out, Effect::Lend);
+                if std::mem::take(&mut self.reread_params) {
+                    self.plan
+                        .tasks
+                        .retain(|t| !matches!(t, Task::ReadParams(_)));
+                    self.plan.tasks.push(Task::ReadParams(RescanScope::All));
+                }
                 self.advance(out);
                 self.replay(out);
             }
@@ -792,6 +833,7 @@ impl State {
                 let rate = prepare.rate;
                 self.stage = Stage::Refused { rate };
                 self.rebuild_pending |= wait == Wait::Rebuild;
+                self.reread_params = false;
                 self.plan = Plan::default();
                 self.pending = Pending::default();
                 self.announced_latency = false;
@@ -876,9 +918,15 @@ impl State {
         if reload && !tasks.contains(&Task::Rebuild) {
             tasks.insert(0, Task::Rebuild);
         }
-        if (reload || all) && tasks.iter().any(|t| matches!(t, Task::Activate(_))) {
-            tasks.retain(|t| !matches!(t, Task::ReadParams(_)));
-            tasks.push(Task::ReadParams(RescanScope::All));
+        if reload || all {
+            if tasks.iter().any(|t| matches!(t, Task::Activate(_))) {
+                tasks.retain(|t| !matches!(t, Task::ReadParams(_)));
+                tasks.push(Task::ReadParams(RescanScope::All));
+            } else {
+                // No activation follows: the parameters are read after the
+                // next one.
+                self.reread_params = true;
+            }
         }
     }
 }

@@ -30,6 +30,7 @@
 //! latest value, counted
 //! ([`points_dropped`](ParameterChangesImpl::points_dropped)); nothing grows.
 
+use crate::guard::guard;
 use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChangesTrait};
 use vst3::{Class, ComWrapper};
 
@@ -212,24 +213,29 @@ impl ParameterChangesImpl {
 impl IParameterChangesTrait for ParameterChangesImpl {
     /// Zero while another thread is adding to the list.
     unsafe fn getParameterCount(&self) -> i32 {
-        self.live
-            .try_borrow()
-            .map_or(0, |live| i32::try_from(*live).unwrap_or(i32::MAX))
+        guard(0, || {
+            self.live
+                .try_borrow()
+                .map_or(0, |live| i32::try_from(*live).unwrap_or(i32::MAX))
+        })
     }
 
     /// Null while another thread is adding to the list.
     unsafe fn getParameterData(&self, index: i32) -> *mut IParamValueQueue {
-        let (Some(queues), Some(live)) = (self.queues.try_borrow(), self.live.try_borrow()) else {
-            return std::ptr::null_mut();
-        };
-        if index < 0 || index as usize >= *live {
-            return std::ptr::null_mut();
-        }
-        // Borrowed pointer: VST3 plugins do not release queues returned here.
-        match queues[index as usize].as_com_ref::<IParamValueQueue>() {
-            Some(r) => r.as_ptr(),
-            None => std::ptr::null_mut(),
-        }
+        guard(std::ptr::null_mut(), || {
+            let (Some(queues), Some(live)) = (self.queues.try_borrow(), self.live.try_borrow())
+            else {
+                return std::ptr::null_mut();
+            };
+            if index < 0 || index as usize >= *live {
+                return std::ptr::null_mut();
+            }
+            // Borrowed pointer: VST3 plugins do not release queues returned here.
+            match queues[index as usize].as_com_ref::<IParamValueQueue>() {
+                Some(r) => r.as_ptr(),
+                None => std::ptr::null_mut(),
+            }
+        })
     }
 
     /// The queue for `id` this block, as the SDK's own host answers: the
@@ -241,41 +247,44 @@ impl IParameterChangesTrait for ParameterChangesImpl {
     /// too, counted when the count is free, while another thread reads or
     /// adds to the list.
     unsafe fn addParameterData(&self, id: *const u32, index: *mut i32) -> *mut IParamValueQueue {
-        if id.is_null() {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        let param_id = unsafe { *id };
-        let (Some(queues), Some(mut live)) = (self.queues.try_borrow(), self.live.try_borrow_mut())
-        else {
-            self.count_dropped();
-            return std::ptr::null_mut();
-        };
-        let at = match queues[..*live]
-            .iter()
-            .position(|q| q.try_param_id() == Some(param_id))
-        {
-            Some(at) => at,
-            None if *live < queues.len() => {
-                if !queues[*live].try_reset(param_id) {
+        guard(std::ptr::null_mut(), || {
+            if id.is_null() {
+                return std::ptr::null_mut();
+            }
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            let param_id = unsafe { *id };
+            let (Some(queues), Some(mut live)) =
+                (self.queues.try_borrow(), self.live.try_borrow_mut())
+            else {
+                self.count_dropped();
+                return std::ptr::null_mut();
+            };
+            let at = match queues[..*live]
+                .iter()
+                .position(|q| q.try_param_id() == Some(param_id))
+            {
+                Some(at) => at,
+                None if *live < queues.len() => {
+                    if !queues[*live].try_reset(param_id) {
+                        self.count_dropped();
+                        return std::ptr::null_mut();
+                    }
+                    *live += 1;
+                    *live - 1
+                }
+                None => {
                     self.count_dropped();
                     return std::ptr::null_mut();
                 }
-                *live += 1;
-                *live - 1
+            };
+            if !index.is_null() {
+                unsafe { *index = i32::try_from(at).unwrap_or(i32::MAX) };
             }
-            None => {
-                self.count_dropped();
-                return std::ptr::null_mut();
-            }
-        };
-        if !index.is_null() {
-            unsafe { *index = i32::try_from(at).unwrap_or(i32::MAX) };
-        }
-        queues[at]
-            .as_com_ref::<IParamValueQueue>()
-            .map(|r| r.as_ptr())
-            .unwrap_or(std::ptr::null_mut())
+            queues[at]
+                .as_com_ref::<IParamValueQueue>()
+                .map(|r| r.as_ptr())
+                .unwrap_or(std::ptr::null_mut())
+        })
     }
 }
 

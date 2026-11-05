@@ -23,6 +23,7 @@
 //! therefore driven from the library-scoped loop, via
 //! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
 
+use crate::guard::guard;
 use parking_lot::Mutex;
 use vst3::Steinberg::{IPlugFrame, IPlugView, ViewRect, kResultOk, tresult};
 use vst3::{Class, ComWrapper};
@@ -76,15 +77,17 @@ impl HostPlugFrame {
 
 impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
     unsafe fn resizeView(&self, _view: *mut IPlugView, new_size: *mut ViewRect) -> tresult {
-        if new_size.is_null() {
-            return kResultOk;
-        }
-        let rect = unsafe { *new_size };
-        *self.resize_request.lock() = Some(EditorSize {
-            width: (rect.right - rect.left) as u32,
-            height: (rect.bottom - rect.top) as u32,
-        });
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            if new_size.is_null() {
+                return kResultOk;
+            }
+            let rect = unsafe { *new_size };
+            *self.resize_request.lock() = Some(EditorSize {
+                width: (rect.right - rect.left) as u32,
+                height: (rect.bottom - rect.top) as u32,
+            });
+            kResultOk
+        })
     }
 }
 
@@ -95,11 +98,15 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         handler: *mut IEventHandler,
         fd: FileDescriptor,
     ) -> tresult {
-        self.run_loop.register_event_handler(handler, fd)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.register_event_handler(handler, fd)
+        })
     }
 
     unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        self.run_loop.unregister_event_handler(handler)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.unregister_event_handler(handler)
+        })
     }
 
     unsafe fn registerTimer(
@@ -107,11 +114,15 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         handler: *mut ITimerHandler,
         milliseconds: TimerInterval,
     ) -> tresult {
-        self.run_loop.register_timer(handler, milliseconds)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.register_timer(handler, milliseconds)
+        })
     }
 
     unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        self.run_loop.unregister_timer(handler)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.unregister_timer(handler)
+        })
     }
 }
 

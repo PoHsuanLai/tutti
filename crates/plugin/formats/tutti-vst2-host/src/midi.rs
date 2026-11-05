@@ -396,7 +396,9 @@ impl MidiSendBuffer {
 
         // The header was sized for `room` events at construction.
         let words = header_words(num_events);
-        debug_assert!(words <= self.header.len());
+        // Cannot fail: `num_events <= room` (the refusal above), and `header`
+        // was sized by `header_words(room)` in `with_capacity` and never shrinks.
+        assert!(words <= self.header.len());
         // Zero only the bytes that will be touched — keeps Drop semantics clean.
         // (Header carries 2 i32s + a pointer table; the rest doesn't
         // matter because the plugin reads `num_events` first.)
@@ -407,15 +409,19 @@ impl MidiSendBuffer {
         let events_offset = std::mem::offset_of!(api::Events, events);
 
         unsafe {
-            let p = self.header.as_mut_ptr() as *mut u8;
-            let events = &mut *(p as *mut api::Events);
+            // SAFETY: `header` is `Vec<u64>`, so its base is 8-aligned, which
+            // is `api::Events`' alignment (its largest field is a pointer);
+            // the cast starts from `*mut u64`, not `*mut u8`, so the compiler
+            // sees that.
+            let words_ptr = self.header.as_mut_ptr();
+            let events = &mut *(words_ptr as *mut api::Events);
             events.num_events = num_events as i32;
             events._reserved = 0;
-            let base = p.add(events_offset) as *mut *mut api::Event;
+            let base = words_ptr.byte_add(events_offset) as *mut *mut api::Event;
             for (i, ptr) in self.event_ptrs.iter().enumerate() {
                 *base.add(i) = *ptr;
             }
-            Some(p as *mut api::Events)
+            Some(words_ptr as *mut api::Events)
         }
     }
 }
@@ -885,7 +891,7 @@ mod tests {
                         out.push((m.delta_frames, m.midi_data.to_vec()));
                     }
                     api::EventType::SysEx => {
-                        let x = &*(ev as *const api::SysExEvent);
+                        let x = std::ptr::read_unaligned(ev.cast::<api::SysExEvent>());
                         assert_eq!(x.byte_size as usize, std::mem::size_of::<api::SysExEvent>());
                         let bytes = std::slice::from_raw_parts(x.system_data, x.data_size as usize);
                         out.push((x.delta_frames, bytes.to_vec()));
@@ -1043,6 +1049,31 @@ mod tests {
         assert_eq!(staged, MIDI_STACK_CAPACITY);
         assert_eq!(buf.events_dropped(), 2);
         assert_eq!(buf.sysex_dropped(), 0);
+    }
+
+    /// **The staged `api::Events` pointer is 8-aligned for every list size**,
+    /// and its pointer table starts at the flexible array's offset.
+    ///
+    /// Mutation (run): return `words_ptr.byte_add(1)` from `stage_piece` → fails.
+    #[test]
+    fn the_staged_events_pointer_is_8_aligned() {
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(0),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let mut buf = MidiSendBuffer::new();
+        for n in 1..=MIDI_STACK_CAPACITY {
+            let midi = vec![note; n];
+            let events = buf.stage_piece(&midi, 0, 64, 64).expect("events staged");
+            assert_eq!(
+                events as usize % align_of::<vst::api::Events>(),
+                0,
+                "n = {n}"
+            );
+            assert_eq!(unsafe { (*events).num_events } as usize, n);
+        }
     }
 
     /// **A SysEx left open by a later `START` is dropped whole and counted**,

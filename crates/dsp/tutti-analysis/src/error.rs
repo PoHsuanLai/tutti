@@ -91,7 +91,7 @@ pub enum Error {
     /// names it.
     #[error("invalid note parameter: {0}")]
     InvalidNoteParameter(&'static str),
-    /// A chroma or key setting or input that is out of range; the text
+    /// A chroma, key or chord setting or input that is out of range; the text
     /// names it.
     #[error("invalid tonal parameter: {0}")]
     InvalidTonalParameter(&'static str),

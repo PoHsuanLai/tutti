@@ -43,12 +43,14 @@
 //! - Harmony: [`chroma()`] with a [`ChromaConfig`] folds spectral peaks into
 //!   twelve pitch classes and estimates the [`Tuning`], or incrementally with
 //!   [`step_chroma`] and a [`ChromaState`]; [`estimate_key`] finds a [`Key`] by
-//!   Krumhansl-Schmuckler over a [`KeyProfile`].
+//!   Krumhansl-Schmuckler over a [`KeyProfile`]; [`detect_chords`] with a
+//!   [`ChordConfig`] smooths triads into [`ChordSpan`]s by Viterbi.
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod align;
 mod beat;
+mod chord;
 mod chroma;
 mod error;
 mod features;
@@ -75,6 +77,7 @@ mod yin;
 pub use tutti_types::ChannelLayout;
 
 pub use align::{AlignConfig, Alignment, align};
+pub use chord::{ChordConfig, ChordQuality, ChordSpan, detect_chords};
 pub use chroma::{Chroma, ChromaConfig, ChromaState, Tuning, chroma, step_chroma};
 pub use error::{Error, Result};
 pub use features::{

@@ -79,8 +79,8 @@ impl Node for Bands {
 impl ParamNode for Bands {
     fn param_set(&self) -> ParamSet {
         ParamSet::builder()
-            .param_at(BAND0, Arc::clone(&self.knobs[0]))
-            .param_at(BAND1, Arc::clone(&self.knobs[1]))
+            .param(BAND0, Arc::clone(&self.knobs[0]))
+            .param(BAND1, Arc::clone(&self.knobs[1]))
             .build()
     }
     fn fork_fresh(&self) -> Self {
@@ -125,9 +125,9 @@ fn cell(set: &ParamSet, a: UnitAddr) -> f32 {
 fn a_packed_p_names_its_kind_and_index() {
     assert_eq!(Band0::new(Db(0.0)).addr(), Some(BAND0));
     assert_eq!(Band1::new(Db(0.0)).addr(), Some(BAND1));
-    assert_eq!(Band1::new(Db(0.0)).param(), Some(UnitParam::Threshold));
+    assert_eq!(Band1::new(Db(0.0)).kind(), Some(UnitParam::Threshold));
     assert_eq!(AudioParam::<Db, 0x00FF>::new(Db(0.0)).addr(), None);
-    assert_eq!(AudioParam::<Db, 0x01FF>::new(Db(0.0)).param(), None);
+    assert_eq!(AudioParam::<Db, 0x01FF>::new(Db(0.0)).kind(), None);
 }
 
 /// **`AudioParam` with an indexed `P` writes the cell of its own index**, and
@@ -225,4 +225,17 @@ fn a_route_to_index_1_has_index_1s_lane_and_knob() {
     set.set(BAND1, -33.0);
     assert_eq!(knob(band1), Some(-33.0), "the knob is the node's cell");
     assert_eq!(cell(&set, BAND0), -10.0);
+}
+
+/// Registering an `AudioParam` whose `P` names no kind fails fast in a debug
+/// build, instead of never reaching the graph.
+///
+/// Mutation (run): drop the `debug_assert!` from `add_audio_param` → no
+/// panic → fails.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "not a UnitParam kind")]
+fn registering_a_p_that_names_no_kind_panics() {
+    let mut app = App::new();
+    app.add_audio_param::<Db, 0x01FF>();
 }

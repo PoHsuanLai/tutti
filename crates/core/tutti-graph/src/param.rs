@@ -35,8 +35,16 @@ use tutti_types::{NodeKey, PackedAtomic, ParamAddr, RtScope, Samples, UnitAddr, 
 use crate::event::{Event, EventKind, SegmentShape, segment_progress};
 use crate::spec::EventOut;
 
-/// Most params one node can declare modulatable.
-pub const MAX_PARAM_PORTS: usize = 8;
+/// Most params one node can declare modulatable: 32 addresses.
+///
+/// Sized for a multiband dynamics node: four bands of six params (threshold,
+/// knee, ratio, attack, release, make-up) and three crossover frequencies is
+/// 27. Everything sized from it is stack or plan data of a fixed few words per
+/// port: the [`ParamPorts`] list (two bytes an entry, so [`Shape`](crate::Shape)
+/// stays `Copy`), the per-block input array, and the executor's view-holding
+/// bound (`par.rs`). 32 is also the most `[bool; N]: Default` allows, which
+/// `ParamState` derives.
+pub const MAX_PARAM_PORTS: usize = 32;
 
 /// How long a param port crossfades when its source changes: from where it
 /// was to where the new source puts it (see
@@ -50,9 +58,7 @@ pub const PARAM_DECLICK: Samples = Samples(256);
 /// take. A fixed-capacity list, so [`Shape`](crate::Shape) stays `Copy`.
 ///
 /// Each is a [`UnitAddr`], so a node with several params of one kind (a
-/// threshold per band) declares each at its own index. Two bytes an entry:
-/// the list is no larger than the `UnitParam` list it replaced was, per
-/// param, in the packed `u16` form an address travels as.
+/// threshold per band) declares each at its own index. Two bytes per entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ParamPorts {
     len: u8,
@@ -98,7 +104,9 @@ impl ParamPorts {
         }
     }
 
-    /// [`new`](Self::new), without the panic.
+    /// [`new`](Self::new), without the panic. Widens each kind to its index-0
+    /// address and calls [`try_of`](Self::try_of) (a `const fn` cannot map a
+    /// slice).
     ///
     /// # Errors
     ///
@@ -900,17 +908,19 @@ mod tests {
     #[test]
     fn an_undeclarable_list_is_a_named_error() {
         use UnitParam::*;
-        let full = [Cutoff, Q, Drive, Wet, Threshold, Ratio, Attack, Release];
-        assert_eq!(
-            ParamPorts::try_new(&full).map(|p| p.len()),
-            Ok(MAX_PARAM_PORTS)
-        );
-        let over = [
+        let kinds = [
             Cutoff, Q, Drive, Wet, Threshold, Ratio, Attack, Release, Volume,
         ];
         assert_eq!(
+            ParamPorts::try_new(&kinds).map(|p| p.len()),
+            Ok(kinds.len())
+        );
+        let over = [Cutoff; MAX_PARAM_PORTS + 1];
+        assert_eq!(
             ParamPorts::try_new(&over),
-            Err(ParamPortsError::TooMany { count: 9 })
+            Err(ParamPortsError::TooMany {
+                count: MAX_PARAM_PORTS + 1
+            })
         );
         assert_eq!(
             ParamPorts::try_new(&[Q, Cutoff, Q]),

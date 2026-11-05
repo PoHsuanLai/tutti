@@ -109,9 +109,10 @@ impl<U: Unit<Raw = f32>, const P: u16> AudioParam<U, P> {
         UnitAddr::try_from(P).ok()
     }
 
-    /// This param's kind, whatever its index (see [`addr`](Self::addr) for
-    /// the whole address), or `None` as `addr` is.
-    pub fn param(self) -> Option<UnitParam> {
+    /// This param's kind, dropping its index: a node's second threshold is
+    /// `Threshold` too. [`addr`](Self::addr) has the whole address; `None` as
+    /// it is.
+    pub fn kind(self) -> Option<UnitParam> {
         self.addr().map(|a| a.param)
     }
 }
@@ -189,6 +190,11 @@ pub trait AudioParamAppExt {
     ///
     /// Idempotent — registering the same `(U, P)` twice schedules one system —
     /// so a host and a library plugin can both declare a param they share.
+    ///
+    /// # Panics
+    ///
+    /// In a debug build, if `P`'s low byte is not a [`UnitParam`] kind (a
+    /// wrongly hand-packed constant would otherwise never reach the graph).
     fn add_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
         &mut self,
     ) -> &mut Self;
@@ -198,6 +204,10 @@ impl AudioParamAppExt for App {
     fn add_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
         &mut self,
     ) -> &mut Self {
+        debug_assert!(
+            UnitAddr::try_from(P).is_ok(),
+            "AudioParam<_, {P:#06x}>: the low byte is not a UnitParam kind"
+        );
         let key = (core::any::TypeId::of::<U>(), P);
         if !self
             .world_mut()

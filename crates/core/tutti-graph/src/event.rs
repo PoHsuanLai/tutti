@@ -1338,7 +1338,7 @@ mod tests {
     fn foreign_and_builtin_ramps_are_distinct_addresses() {
         use tutti_types::{Hz, ParamKey};
         let foreign = ParamRamp::foreign(
-            u16::from(ParamKey::<Hz>::CUTOFF.id()) as u32,
+            ParamKey::<Hz>::CUTOFF.addr().to_u16() as u32,
             0.5,
             Samples(0),
         );
@@ -1449,7 +1449,7 @@ mod tests {
     fn a_segment_reads_back_as_built() {
         use tutti_types::{Hz, ParamKey};
         let key = ParamKey::<Hz>::CUTOFF;
-        let id = u32::from(u16::from(key.id()));
+        let id = u32::from(key.addr().to_u16());
         let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), SegmentShape::Exp(2.0));
         assert_eq!(foreign.target(key), None);
         assert_eq!(foreign.foreign_target(id), Some(0.75));

@@ -6,8 +6,9 @@ modulation effects, mixing and automation.
 Every node here is a graph node (`tutti_graph::Node`). Build one, insert it
 into a graph (`tutti_graph::{GraphBuilder, Editor}`), wire it, and the graph
 prepares it at the device rate and renders it. Inserting a node hands back its
-controls, usually a `tutti_graph::ParamSet` addressed by `UnitParam` (a `UnitAddr` for a node with several params of a kind), which
-change the running node without a lock.
+controls, usually a `tutti_graph::ParamSet` addressed by `UnitParam` (a
+`UnitAddr` for a node with several params of a kind), which change the running
+node without a lock.
 
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.

@@ -367,7 +367,7 @@ Scalars use `Param<U>`.
   `{ UnitParam::Cutoff as u16 }` still names a node's only cutoff). They reach
   a node through its `ParamSet` (`SessionNode::params`): a node without the
   param takes nothing. A node with several params of a kind adds each with
-  `ParamSetBuilder::param_at` and declares each modulatable with
+  `ParamSetBuilder::param` and declares each modulatable with
   `Shape::with_param_addrs`; a route names one with `ParamRef::unit_at`.
   Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
   `ParamRef`): each modulated param gets a control lane on its port, whose

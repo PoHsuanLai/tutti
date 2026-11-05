@@ -16,9 +16,9 @@
 //!
 //! A param's address is a [`UnitAddr`]: a [`UnitParam`](tutti_types::UnitParam) kind and an index among
 //! the node's params of that kind. A node with one param of a kind adds it at
-//! index 0 ([`ParamSetBuilder::param`], where a bare [`UnitParam`](tutti_types::UnitParam) is that
-//! address); a node with several (a threshold per band) adds each at its own
-//! index ([`ParamSetBuilder::param_at`]). Every method that takes an address
+//! index 0 (a bare [`UnitParam`](tutti_types::UnitParam) is that address); a
+//! node with several (a threshold per band) adds each at its own index, with
+//! the same [`ParamSetBuilder::param`]. Every method that takes an address
 //! takes `impl Into<UnitAddr>`, so `set.set(UnitParam::Cutoff, v)` stands for
 //! index 0 and `set.set(UnitAddr::new(UnitParam::Threshold, 1), v)` names
 //! another cell. The duplicate check and every lookup are on the whole
@@ -130,29 +130,17 @@ impl std::fmt::Debug for ParamSetBuilder {
 }
 
 impl ParamSetBuilder {
-    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param` at
-    /// index 0: [`param_at`](Self::param_at) for a node with one param of
-    /// the kind.
+    /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`: a
+    /// [`UnitAddr`], or a bare `UnitParam` for index 0. A node with several
+    /// params of a kind adds each at its own index.
     ///
     /// # Panics
     ///
-    /// If that address was already added: one address, one cell.
+    /// If that address (kind **and** index) was already added: one address,
+    /// one cell. The same kind at another index is a different address.
     #[must_use]
-    pub fn param(self, param: tutti_types::UnitParam, cell: Arc<AtomicF32>) -> Self {
-        self.param_at(param, cell)
-    }
-
-    /// Address `cell` as `addr`: a [`UnitAddr`], or a bare `UnitParam` for
-    /// index 0. A node with several params of a kind adds each at its own
-    /// index.
-    ///
-    /// # Panics
-    ///
-    /// If `addr` (kind **and** index) was already added: one address, one
-    /// cell. The same kind at another index is a different address.
-    #[must_use]
-    pub fn param_at(mut self, addr: impl Into<UnitAddr>, cell: Arc<AtomicF32>) -> Self {
-        let param = addr.into();
+    pub fn param(mut self, param: impl Into<UnitAddr>, cell: Arc<AtomicF32>) -> Self {
+        let param = param.into();
         assert!(
             self.slots.iter().all(|s| s.param != param),
             "{param:?} added to a ParamSet twice"

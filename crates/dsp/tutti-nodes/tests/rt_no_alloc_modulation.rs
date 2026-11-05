@@ -1120,9 +1120,9 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     }
     impl ModHost for Host {
         fn target(&self, t: TargetKey) -> Option<Target> {
-            let knob = match t.param {
-                ParamAddr::Unit(UnitParam::Cutoff) => self.knobs[0].clone(),
-                ParamAddr::Unit(UnitParam::Q) => self.knobs[1].clone(),
+            let knob = match t.param.as_unit() {
+                Some(a) if a == UnitParam::Cutoff => self.knobs[0].clone(),
+                Some(a) if a == UnitParam::Q => self.knobs[1].clone(),
                 _ => return None,
             };
             Some(Target::Native {

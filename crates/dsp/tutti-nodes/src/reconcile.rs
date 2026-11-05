@@ -54,7 +54,7 @@ pub trait ModHost {
 #[derive(Clone, Debug)]
 pub enum Target {
     /// A native param port (`TargetKey::param` a `ParamAddr::Unit` or
-    /// `ParamAddr::Indexed`): the
+    /// `ParamAddr::Indexed`; a host resolves both, `ParamAddr::as_unit`): the
     /// node, and its own `Param` cell for the param (`ParamSet::cell`), the
     /// lane's knob (doc 014 §4.2). `None`: no knob, the base is automation
     /// alone.

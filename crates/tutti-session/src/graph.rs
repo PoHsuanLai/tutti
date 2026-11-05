@@ -1723,23 +1723,23 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
     fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
         let audio_node = self.keys.node(target.node)?;
         let node = key(audio_node);
-        Some(match target.param {
+        Some(match target.param.as_unit() {
             // A native param, at any index: the node's own cell for that
             // address is the lane's knob.
-            tutti_types::ParamAddr::Unit(_) | tutti_types::ParamAddr::Indexed(..) => {
-                let addr = target.param.as_unit().expect("a native address");
-                tutti_nodes::Target::Native {
-                    node,
-                    knob: self
-                        .nodes
-                        .get(&node)
-                        .and_then(|e| e.params.as_ref())
-                        .and_then(|p| p.cell(addr)),
-                }
-            }
+            Some(addr) => tutti_nodes::Target::Native {
+                node,
+                knob: self
+                    .nodes
+                    .get(&node)
+                    .and_then(|e| e.params.as_ref())
+                    .and_then(|p| p.cell(addr)),
+            },
             // A plugin target waits for its mirror: a lane built without
             // a knob could not take one later.
-            tutti_types::ParamAddr::Id(id) => {
+            None => {
+                let tutti_types::ParamAddr::Id(id) = target.param else {
+                    return None;
+                };
                 // A node the session hosts no plugin at has no mirror: its
                 // lane has no knob to start from.
                 #[cfg(feature = "plugin")]

@@ -20,9 +20,9 @@ mod common;
 
 use common::prepare;
 use tutti_graph::{
-    Cx, Editor, Event, EventOut, ForkMode, ForkTarget, IntoNode, Io, Node, NodeParts, ParamIn,
-    ParamInput, ParamNode, ParamPorts, ParamPortsError, ParamSegment, ParamSet, Prepare,
-    SegmentShape, Shape, Status, Transport, param_parts,
+    Cx, Editor, Event, EventOut, ForkMode, ForkTarget, IntoNode, Io, MAX_PARAM_PORTS, Node,
+    NodeParts, ParamIn, ParamInput, ParamNode, ParamPorts, ParamPortsError, ParamSegment, ParamSet,
+    Prepare, SegmentShape, Shape, Status, Transport, param_parts,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Db, NodeKey, Param, Samples, UnitAddr, UnitParam};
@@ -74,8 +74,8 @@ impl Node for Bands {
 impl ParamNode for Bands {
     fn param_set(&self) -> ParamSet {
         ParamSet::builder()
-            .param_at(BAND0, self.thr[0].as_atomic())
-            .param_at(BAND1, self.thr[1].as_atomic())
+            .param(BAND0, self.thr[0].as_atomic())
+            .param(BAND1, self.thr[1].as_atomic())
             .build()
     }
     fn fork_fresh(&self) -> Self {
@@ -228,8 +228,8 @@ fn the_same_kind_at_another_index_is_accepted() {
     let c = Param::new(Db(2.0));
     let set = ParamSet::builder()
         .param(UnitParam::Threshold, a.as_atomic())
-        .param_at(UnitAddr::new(UnitParam::Threshold, 1), b.as_atomic())
-        .param_at(UnitAddr::new(UnitParam::Threshold, 2), c.as_atomic())
+        .param(UnitAddr::new(UnitParam::Threshold, 1), b.as_atomic())
+        .param(UnitAddr::new(UnitParam::Threshold, 2), c.as_atomic())
         .build();
     assert_eq!(set.params().count(), 3);
 }
@@ -237,29 +237,29 @@ fn the_same_kind_at_another_index_is_accepted() {
 /// A duplicate full address is refused at build, whether the index was spelled
 /// out or came from a bare `UnitParam`.
 ///
-/// Mutation (run): drop the duplicate check from `param_at` → no panic →
+/// Mutation (run): drop the duplicate check from `param` → no panic →
 /// fails.
 #[test]
 #[should_panic(expected = "twice")]
 fn a_duplicate_full_address_is_refused() {
     let a = Param::new(Db(0.0));
     let _ = ParamSet::builder()
-        .param_at(UnitAddr::new(UnitParam::Threshold, 1), a.as_atomic())
-        .param_at(UnitAddr::new(UnitParam::Threshold, 1), a.as_atomic());
+        .param(UnitAddr::new(UnitParam::Threshold, 1), a.as_atomic())
+        .param(UnitAddr::new(UnitParam::Threshold, 1), a.as_atomic());
 }
 
 /// Index 0 spelled as a bare `UnitParam` and as `UnitAddr::new(.., 0)` is
 /// one address.
 ///
-/// Mutation (run): `ParamSetBuilder::param` pushing at index 1 → no panic →
-/// fails.
+/// Mutation (run): `UnitAddr::first` (the `From<UnitParam>` widening) at
+/// index 1 → the two addresses differ, no panic → fails.
 #[test]
 #[should_panic(expected = "twice")]
 fn a_bare_param_is_index_zero_for_the_duplicate_check() {
     let a = Param::new(Db(0.0));
     let _ = ParamSet::builder()
         .param(UnitParam::Threshold, a.as_atomic())
-        .param_at(BAND0, a.as_atomic());
+        .param(BAND0, a.as_atomic());
 }
 
 /// A node's port list takes the same kind at several indices, refuses a
@@ -289,11 +289,6 @@ fn param_ports_key_on_the_full_address() {
         ParamPorts::try_new(&[UnitParam::Threshold, UnitParam::Threshold]),
         Err(ParamPortsError::Duplicate(BAND0))
     );
-    // The list's capacity counts addresses, not kinds.
-    let full: Vec<UnitAddr> = (0..8)
-        .map(|i| UnitAddr::new(UnitParam::Threshold, i))
-        .collect();
-    assert_eq!(ParamPorts::try_of(&full).map(|p| p.len()), Ok(8));
 }
 
 /// A source addressed to index 1 drives port 1 and leaves port 0 reading its
@@ -395,10 +390,87 @@ fn a_fork_starts_from_each_indexs_value() {
 /// The contract's fork check covers every index of a set: each is a cell a
 /// fork starts from and does not share.
 ///
-/// Mutation (run): `fork_fresh` sharing the second cell → the check names
-/// `Threshold` index 1 → fails (seen as `a_fork_starts_from_each_indexs_value`
-/// does).
+/// Mutation (run): `Bands::fork_fresh` not detaching its cells (so a fork
+/// shares them) → the check fails.
 #[test]
 fn the_contract_fork_check_covers_each_index() {
     tutti_graph::contract::assert_param_fork(Bands::new(-10.0, -20.0));
+}
+
+/// A node declares up to `MAX_PARAM_PORTS` (32) params: the list takes 32
+/// addresses of one kind, refuses a 33rd, and a node declaring 32 renders with
+/// its last port driven (the per-block input array, the range cells and the
+/// executor's held views are all sized for the cap).
+///
+/// Mutations (run), each fails: `MAX_PARAM_PORTS` = 31 → the 32-address list
+/// is refused; `try_of`'s cap check as `>=` → likewise; `try_of` checking
+/// `> MAX_PARAM_PORTS + 1` → the 33rd is accepted; `ParamState::inputs` returning its array for 31 ports (`take(31)`) →
+/// port 31 reads its base.
+#[test]
+fn a_node_declares_up_to_the_cap_and_no_more() {
+    assert_eq!(MAX_PARAM_PORTS, 32);
+    let addrs: Vec<UnitAddr> = (0..33)
+        .map(|i| UnitAddr::new(UnitParam::Threshold, i))
+        .collect();
+    assert_eq!(
+        ParamPorts::try_of(&addrs[..32]).map(|p| p.len()),
+        Ok(32),
+        "32 addresses"
+    );
+    assert_eq!(
+        ParamPorts::try_of(&addrs),
+        Err(ParamPortsError::TooMany { count: 33 }),
+        "the 33rd"
+    );
+
+    // The last of 32 ports, driven through the whole graph.
+    let last = addrs[31];
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(
+        BANDS,
+        "wide",
+        tutti_graph::ForkByClone(Wide(addrs[..32].to_vec())),
+    );
+    ed.insert(
+        SRC,
+        "steps",
+        tutti_graph::ForkByClone(Steps {
+            to: vec![(last, -7.0)],
+        }),
+    );
+    ed.spec_mut().topology.outputs = vec![out(BANDS, 0), out(BANDS, 1)];
+    ed.spec_mut().connect_param(param(last), src_out());
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    let [first, driven] = render(&mut ed, &mut exec, 64);
+    assert!(first.iter().all(|&x| x == 0.0), "port 0 reads its base");
+    assert!(
+        driven.iter().all(|&x| x == -7.0),
+        "port 31 follows its source"
+    );
+}
+
+/// 32 declared params; writes port 0's value to output 0 and port 31's to
+/// output 1. Bases are 0.
+#[derive(Clone)]
+struct Wide(Vec<UnitAddr>);
+
+impl Node for Wide {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::from_count(2)).with_param_addrs(&self.0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for (out, k) in [(0, 0), (1, 31)] {
+            match io.param(k) {
+                ParamInput::Base => io.output(out).fill(0.0),
+                ParamInput::Frames(v) => io.output(out).copy_from_slice(v),
+            }
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, _: usize) -> Option<f32> {
+        Some(0.0)
+    }
 }

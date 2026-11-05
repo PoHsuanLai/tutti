@@ -104,7 +104,12 @@ pub struct UnitParamOutOfRange(pub u16);
 
 impl core::fmt::Display for UnitParamOutOfRange {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown UnitParam id: {}", self.0)
+        write!(
+            f,
+            "unknown UnitParam id: {} (low byte {})",
+            self.0,
+            self.0 & 0xFF
+        )
     }
 }
 
@@ -166,10 +171,7 @@ impl From<UnitParam> for u16 {
 /// [`to_u16`](Self::to_u16) packs the address into the `u16` an
 /// `AudioParam<U, P>` and a persisted id carry: the **index in the high
 /// byte, the [`UnitParam`] discriminant in the low byte**. Index 0 is
-/// therefore bit-identical to the plain discriminant, so an id persisted
-/// before indices existed decodes to the same param at index 0. The
-/// discriminant is a `u8` (`UnitParam` is `repr(u8)`), so the low byte always
-/// holds it.
+/// bit-identical to the plain discriminant, so a plain id decodes to index 0.
 ///
 /// ```
 /// use tutti_types::{UnitAddr, UnitParam};
@@ -375,15 +377,6 @@ impl<U> ParamKey<U> {
         }
     }
 
-    /// Returns the untyped kind, for a channel that carries it type-erased.
-    /// The key's [`index`](Self::at) is not in it: [`addr`](Self::addr) has
-    /// both.
-    #[inline]
-    #[must_use]
-    pub const fn id(self) -> UnitParam {
-        self.addr.param
-    }
-
     /// The same kind of param at `index` among a node's params of that kind
     /// (a multiband compressor's threshold of band `index`): the unit is
     /// unchanged. Keys are built at index 0.
@@ -396,7 +389,8 @@ impl<U> ParamKey<U> {
         }
     }
 
-    /// Returns the untyped address, kind and index.
+    /// Returns the untyped address (kind and index), for a channel that
+    /// carries it type-erased.
     #[inline]
     #[must_use]
     pub const fn addr(self) -> UnitAddr {
@@ -431,12 +425,6 @@ impl<U> core::fmt::Debug for ParamKey<U> {
             core::any::type_name::<U>(),
             self.addr
         )
-    }
-}
-
-impl<U> From<ParamKey<U>> for UnitParam {
-    fn from(k: ParamKey<U>) -> Self {
-        k.addr.param
     }
 }
 
@@ -543,15 +531,35 @@ mod tests {
     #[test]
     fn typed_keys_name_their_params() {
         use super::super::units::{Db, Hz, Seconds};
-        assert_eq!(ParamKey::<Hz>::CUTOFF.id(), UnitParam::Cutoff);
-        assert_eq!(ParamKey::<Hz>::RATE.id(), UnitParam::Rate);
-        assert_eq!(ParamKey::<Db>::THRESHOLD.id(), UnitParam::Threshold);
-        assert_eq!(ParamKey::<Db>::CEILING.id(), UnitParam::Ceiling);
-        assert_eq!(ParamKey::<Db>::GAIN_DB.id(), UnitParam::GainDb);
-        assert_eq!(ParamKey::<Db>::MAKEUP.id(), UnitParam::Makeup);
-        assert_eq!(ParamKey::<Seconds>::ATTACK.id(), UnitParam::Attack);
-        assert_eq!(ParamKey::<Seconds>::RELEASE.id(), UnitParam::Release);
-        assert_eq!(UnitParam::from(ParamKey::<Hz>::CUTOFF), UnitParam::Cutoff);
+        assert_eq!(
+            ParamKey::<Hz>::CUTOFF.addr(),
+            UnitAddr::from(UnitParam::Cutoff)
+        );
+        assert_eq!(ParamKey::<Hz>::RATE.addr(), UnitAddr::from(UnitParam::Rate));
+        assert_eq!(
+            ParamKey::<Db>::THRESHOLD.addr(),
+            UnitAddr::from(UnitParam::Threshold)
+        );
+        assert_eq!(
+            ParamKey::<Db>::CEILING.addr(),
+            UnitAddr::from(UnitParam::Ceiling)
+        );
+        assert_eq!(
+            ParamKey::<Db>::GAIN_DB.addr(),
+            UnitAddr::from(UnitParam::GainDb)
+        );
+        assert_eq!(
+            ParamKey::<Db>::MAKEUP.addr(),
+            UnitAddr::from(UnitParam::Makeup)
+        );
+        assert_eq!(
+            ParamKey::<Seconds>::ATTACK.addr(),
+            UnitAddr::from(UnitParam::Attack)
+        );
+        assert_eq!(
+            ParamKey::<Seconds>::RELEASE.addr(),
+            UnitAddr::from(UnitParam::Release)
+        );
         assert_ne!(ParamKey::<Hz>::CUTOFF, ParamKey::<Hz>::RATE);
     }
 
@@ -682,6 +690,16 @@ mod tests {
         );
     }
 
+    /// The error names the id whole and its low byte (the kind a `u16`
+    /// decode looks at).
+    ///
+    /// Mutation (run): drop the low byte from the `Display` text → fails.
+    #[test]
+    fn the_out_of_range_error_names_the_low_byte() {
+        let e = UnitAddr::try_from(0x0116).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 278 (low byte 22)");
+    }
+
     /// An address is equal to a bare param only at index 0, in both
     /// directions.
     ///
@@ -736,7 +754,7 @@ mod tests {
         use super::super::units::Db;
         let t0 = ParamKey::<Db>::THRESHOLD;
         let t2 = t0.at(2);
-        assert_eq!(t2.id(), UnitParam::Threshold);
+        assert_eq!(t2.addr().param, UnitParam::Threshold);
         assert_eq!(t2.addr(), UnitAddr::new(UnitParam::Threshold, 2));
         assert_eq!(t0.addr(), UnitAddr::from(UnitParam::Threshold));
         assert_ne!(t0, t2);

@@ -205,7 +205,7 @@ Non-scalar state handed from a control thread to the audio thread — a routing
 table, a `MeterMap`, a coefficient set — goes through
 `tutti_types::{ArcLend, Loan}`, re-exported from the `arc-lend` crate. Scalars
 keep using `Param<U>`. (It was `RtPublish`/`RtRef` in `tutti-types` until it
-moved into its own crate; see the CHANGELOG.)
+moved into its own crate.)
 
 **The invariant: the audio thread never holds an owning handle to published
 state.** A reading thread lends through a `Reader`, registered on the cell

@@ -5,6 +5,9 @@
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+#[macro_use]
+mod macros;
+
 mod audio;
 mod bus_buffers;
 mod com;

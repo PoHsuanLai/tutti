@@ -95,29 +95,11 @@ impl std::fmt::Debug for Module {
     }
 }
 
-// SAFETY: unlike a plugin instance, a module is genuinely shared: `open`
-// returns `Arc<Self>` because one bundle commonly backs several `Plugin`s, so
-// `Sync` is exercised rather than merely required by a bound. Two properties
-// make that sound.
-//
-// The factory is the format's own concurrency guarantee. `IPluginFactory` is
-// stateless with respect to the host — `countClasses`, `getClassInfo` and
-// `createInstance` read the module's static class table, and the SDK's own
-// hosts scan from worker threads. `setHostContext` is the one mutating call
-// and it happens once, in `open`, before the `Arc` exists and therefore before
-// any other thread can observe the factory at all.
-//
-// The remaining fields never move under a shared reference. `_host_context`
-// and `_entry` are held purely for lifetime and drop order (see the field-order
-// note on the struct); `_library` is only unloaded by `Drop`, which `Arc`
-// already serialises to the last handle. `run_loop` is the exception that
-// carries its own reasoning: it is `Arc<RunLoop>`, whose interior state is
-// `Mutex`-guarded and whose raw handler pointers are documented as UI-thread
-// only — see the `unsafe impl Send for State` in `com/run_loop.rs`.
-//
-// The impls are still needed despite all that, because `ComPtr` is a raw
-// pointer and infers neither trait no matter how thread-safe the object behind
-// it is.
+// SAFETY: `ComPtr` is a raw pointer, so neither trait is inferred. The factory
+// is stateless towards the host (`setHostContext`, its one mutating call, runs
+// once in `open`, before the `Arc` exists), and the other fields never move
+// under a shared reference: `_library` unloads only in `Drop`, which `Arc`
+// serialises, and `run_loop` is `Mutex`-guarded (see `com/run_loop.rs`).
 unsafe impl Send for Module {}
 // SAFETY: see `Send` above.
 unsafe impl Sync for Module {}

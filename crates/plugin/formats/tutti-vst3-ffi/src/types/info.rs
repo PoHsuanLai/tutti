@@ -17,11 +17,7 @@ pub struct BusInfo {
     pub(crate) inner: vst3::Steinberg::Vst::BusInfo,
 }
 
-impl std::fmt::Debug for BusInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BusInfo").finish_non_exhaustive()
-    }
-}
+opaque_debug!(BusInfo);
 
 impl Default for BusInfo {
     fn default() -> Self {

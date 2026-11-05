@@ -1,4 +1,4 @@
-//! RT-safety: `ClapActive::process` must not allocate on the audio thread — in
+//! RT-safety: `ClapProcessor::process` must not allocate on the audio thread — in
 //! steady state, and in the awkward corners a real plugin reaches.
 //!
 //! The `#[global_allocator]` below is what detects; `assert_no_alloc` only sets
@@ -823,7 +823,7 @@ fn param_output_past_the_room_is_counted_not_grown() {
 /// points = 4800 parameter events a block, for ids that are not its own (so
 /// none has a latest-value slot), is told `false` for the last 416 of them
 /// each block, and the host counts each refusal
-/// (`ClapActive::output_events_refused`) instead of growing its list in the
+/// (`ClapProcessor::output_events_refused`) instead of growing its list in the
 /// plugin's `try_push` on the audio thread.
 ///
 /// Changed in doc 014 §12.2: the parameter room is 4384 (it was 336), so
@@ -972,7 +972,7 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
 /// `ensure_processing` raising `StartProcessingFailed` must not allocate.
 ///
 /// Asserted on the *variant* rather than end-to-end: reaching this path needs a
-/// `ClapActive` whose plugin is deactivated, which the rollback in `reconfigure`
+/// `ClapProcessor` whose plugin is deactivated, which the rollback in `reconfigure`
 /// makes unreachable by design. It matters because `ensure_processing` runs
 /// inside `do_process`, and nothing marks a refusing instance unusable — every
 /// block re-attempts the call.

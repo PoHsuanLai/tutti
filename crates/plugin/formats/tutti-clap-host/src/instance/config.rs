@@ -2,7 +2,7 @@
 //!
 //! [`AudioConfig`] / [`PortLayout`] / [`LifecycleFlags`] live on `ClapLoaded`;
 //! [`AudioScratch`] holds all per-block RT scratch and lives only on the
-//! `ClapProcessor<T>` (it exists solely for `process`).
+//! `ClapProcessor` (it exists solely for `process`).
 
 use crate::events::{InputEventList, OutputEventList};
 use crate::types::{ClapNoteExpression, ParameterChanges, RtNoteExpressions};
@@ -12,6 +12,7 @@ use tutti_clap_ffi::PortScratch;
 use tutti_plugin_types::BusChannels;
 use tutti_plugin_types::ChannelLayout;
 use tutti_plugin_types::RtMidiEvents;
+use tutti_plugin_types::SampleFormat;
 
 /// How many converted note expressions one block can carry; reserved at
 /// activation so converting never grows the buffer.
@@ -27,15 +28,15 @@ pub(crate) struct AudioConfig {
     pub f64_active: bool,
 }
 
-/// All per-block RT scratch for the committed sample type `T`, grouped so it
+/// All per-block RT scratch for the committed sample format, grouped so it
 /// can live on the Processor and drop before the plugin handle.
 ///
-/// Sized once in `ClapLoaded::activate_typed`; every `process` call reuses these
-/// in place and never allocates. Because `ClapProcessor<T>` is monomorphised by `T`,
-/// there is exactly one `PortScratch<T>` here.
-pub(crate) struct AudioScratch<T: super::ClapSample> {
+/// Sized once in `ClapLoaded::activate_now`; every `process` call reuses these
+/// in place and never allocates. The channel tables are one `PortScratch`, made for the activation's
+/// format; the rest of the scratch has no width.
+pub(crate) struct AudioScratch {
     /// Channel pool + per-port `clap_audio_buffer` descriptors.
-    pub process: PortScratch<T>,
+    pub process: PortScratch,
     /// Refilled per call (UMP → CLAP). Cleared in place; capacity persists.
     pub input_events: InputEventList,
     /// Filled by the plugin's `try_push` callback during `process`.
@@ -79,10 +80,10 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub last_process_status: AtomicI32,
 }
 
-impl<T: super::ClapSample> AudioScratch<T> {
-    pub fn new() -> Self {
+impl AudioScratch {
+    pub fn new(format: SampleFormat) -> Self {
         Self {
-            process: PortScratch::new(),
+            process: PortScratch::new(format),
             input_events: InputEventList::new(),
             output_events: OutputEventList::new(),
             out_midi: RtMidiEvents::new(),

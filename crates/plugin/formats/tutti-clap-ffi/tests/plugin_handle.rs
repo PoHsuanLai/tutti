@@ -19,10 +19,11 @@ use clap_sys::events::{
 };
 use tutti_clap_ffi::{
     ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Extension, Host,
-    HostCallbacks, InputStream, OutputStream, Plugin, PluginEvent, PortScratch, ProcessCall,
-    ProcessError, TaskPool, ThreadRoles, header_size,
+    HostCallbacks, InputStream, OutputStream, Planar, Plugin, PluginEvent, PortScratch,
+    ProcessCall, ProcessError, TaskPool, ThreadRoles, header_size,
 };
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
+use tutti_plugin_types::SampleFormat;
 
 /// `;`-separated candidate paths, from `build.rs`.
 const CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
@@ -169,15 +170,17 @@ const FRAMES: usize = 64;
 /// A stereo-out block through `side`, no input, and the channels it wrote.
 fn render(
     side: &mut tutti_clap_ffi::AudioSide,
-    scratch: &mut PortScratch<f32>,
+    scratch: &mut PortScratch,
     outputs: &mut [&mut [f32]],
     frames: u32,
 ) -> Result<i32, ProcessError> {
     let mut sink = Count::default();
     side.process(ProcessCall {
         scratch,
-        inputs: &[],
-        outputs,
+        audio: Planar::F32 {
+            inputs: &[],
+            outputs,
+        },
         input_ports: &[2],
         output_ports: &[2],
         frames,
@@ -266,7 +269,7 @@ fn a_block_runs_the_plugin_through_the_bound_channels() {
     let mut plugin = load(Arc::default());
     plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
-    let mut scratch = PortScratch::<f32>::new();
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
     scratch.resize_for(&[2], &[2], 512);
 
     let mut left = vec![0.0f32; FRAMES];
@@ -290,7 +293,7 @@ fn a_short_channel_is_refused_without_calling_the_plugin() {
     let mut plugin = load(Arc::default());
     plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
-    let mut scratch = PortScratch::<f32>::new();
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
     scratch.resize_for(&[2], &[2], 512);
 
     let mut left = vec![0.0f32; FRAMES / 2];
@@ -388,7 +391,7 @@ fn a_retired_audio_half_calls_nothing() {
     let mut plugin = load(Arc::default());
     plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
-    let mut scratch = PortScratch::<f32>::new();
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
     scratch.resize_for(&[2], &[2], 512);
     let mut left = vec![0.0f32; FRAMES];
     let mut right = vec![0.0f32; FRAMES];
@@ -406,6 +409,46 @@ fn a_retired_audio_half_calls_nothing() {
     side.stop();
 }
 
+/// A block of the wrong width is refused as a format mismatch even on a
+/// retired instance: the width is checked before the claim and the retired
+/// check, so the answer does not depend on the instance's state.
+///
+/// Mutation (run): move the width comparison in `AudioSide::process` after the
+/// `is_retired` check: the block answers `Retired` and the assertion fails.
+#[test]
+fn a_mismatched_block_is_refused_before_the_retired_check() {
+    let _g = lock();
+    let mut plugin = load(Arc::default());
+    plugin.activate(48_000.0, 1, 512).expect("activates");
+    let mut side = plugin.audio_side().unwrap();
+    drop(plugin);
+    assert!(side.is_retired());
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
+    scratch.resize_for(&[2], &[2], 512);
+    let mut left = vec![0.0f64; FRAMES];
+    let mut right = vec![0.0f64; FRAMES];
+    let mut outputs: Vec<&mut [f64]> = vec![&mut left, &mut right];
+    let mut sink = Count::default();
+    assert_eq!(
+        side.process(ProcessCall {
+            scratch: &mut scratch,
+            audio: Planar::F64 {
+                inputs: &[],
+                outputs: &mut outputs,
+            },
+            input_ports: &[2],
+            output_ports: &[2],
+            frames: FRAMES as u32,
+            steady_time: 0,
+            transport: None,
+            in_events: &NoEvents,
+            out_events: &mut sink,
+            pool: None,
+        }),
+        Err(ProcessError::FormatMismatch)
+    );
+}
+
 /// A deactivated plugin's audio half is retired too: a block after a rejoin
 /// must not start processing on an inactive plugin.
 ///
@@ -418,7 +461,7 @@ fn a_deactivated_plugins_audio_half_is_retired() {
     plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
     plugin.deactivate();
-    let mut scratch = PortScratch::<f32>::new();
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
     scratch.resize_for(&[2], &[2], 512);
     let mut left = vec![0.0f32; FRAMES];
     let mut right = vec![0.0f32; FRAMES];
@@ -443,7 +486,7 @@ fn deactivating_a_processing_plugin_stops_it_and_a_drop_tears_it_down() {
         let mut plugin = load(Arc::default());
         plugin.activate(48_000.0, 1, 512).expect("activates");
         let mut side = plugin.audio_side().unwrap();
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = PortScratch::new(SampleFormat::Float32);
         scratch.resize_for(&[2], &[2], 512);
         let mut left = vec![0.0f32; FRAMES];
         let mut right = vec![0.0f32; FRAMES];
@@ -495,9 +538,9 @@ impl TaskPool for CountingPool {
 }
 
 /// Activates `plugin` and returns its audio half and a scratch for it.
-fn start(plugin: &mut Plugin, max_frames: u32) -> (tutti_clap_ffi::AudioSide, PortScratch<f32>) {
+fn start(plugin: &mut Plugin, max_frames: u32) -> (tutti_clap_ffi::AudioSide, PortScratch) {
     plugin.activate(48_000.0, 1, max_frames).expect("activates");
-    let mut scratch = PortScratch::<f32>::new();
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
     scratch.resize_for(&[2], &[2], max_frames as usize);
     (plugin.audio_side().unwrap(), scratch)
 }
@@ -505,7 +548,7 @@ fn start(plugin: &mut Plugin, max_frames: u32) -> (tutti_clap_ffi::AudioSide, Po
 /// A block through `side` with `pool`, four tasks requested by the plugin.
 fn render_with_pool(
     side: &mut tutti_clap_ffi::AudioSide,
-    scratch: &mut PortScratch<f32>,
+    scratch: &mut PortScratch,
     pool: &tutti_clap_ffi::PoolHandle,
 ) {
     let mut left = vec![0.0f32; FRAMES];
@@ -514,8 +557,10 @@ fn render_with_pool(
     let mut sink = Count::default();
     side.process(ProcessCall {
         scratch,
-        inputs: &[],
-        outputs: &mut outputs,
+        audio: Planar::F32 {
+            inputs: &[],
+            outputs: &mut outputs,
+        },
         input_ports: &[2],
         output_ports: &[2],
         frames: FRAMES as u32,
@@ -715,4 +760,100 @@ fn the_editor_is_created_once_and_destroyed_once() {
     plugin.close_gui(false);
     assert_eq!(gui_capture().create_balance, 0, "destroyed exactly once");
     switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
+}
+
+/// A 64-bit block through the same call and type as a 32-bit one: the scratch
+/// carries its format as a value, one `process` runs either kernel, and a
+/// block of the other width is refused before the plugin is called.
+///
+/// Mutations (run): bind the 64-bit table as `data32` in `Sample for f64`: the
+/// 64-bit block never reaches `data64` and the tag assertion fails; make the
+/// catch-all arm of `process` answer `Ok`: the mismatch assertions fail; match
+/// only `(Pool::F64, Planar::F32)` and let `(Pool::F32, Planar::F64)` fall to
+/// a kernel: the reverse-direction assertion fails.
+#[test]
+fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
+    let _g = lock();
+    set_render_mode(RENDER_TAG_ONLY);
+    // Both widths need every port flagged 64-bit before the plugin loads.
+    switch_u32(b"tutti_test_plugin_set_ports_64bit\0", 3);
+    let mut plugin = load(Arc::default());
+    plugin.activate(48_000.0, 1, 512).expect("activates");
+    let mut side = plugin.audio_side().unwrap();
+
+    let mut wide = PortScratch::new(SampleFormat::Float64);
+    wide.resize_for(&[2], &[2], 512);
+    assert_eq!(wide.format(), SampleFormat::Float64);
+    let mut left = vec![0.0f64; FRAMES];
+    let mut right = vec![0.0f64; FRAMES];
+    let mut outputs: Vec<&mut [f64]> = vec![&mut left, &mut right];
+    let mut sink = Count::default();
+    let mut call = |scratch: &mut PortScratch, audio: Planar<'_, '_>| {
+        side.process(ProcessCall {
+            scratch,
+            audio,
+            input_ports: &[2],
+            output_ports: &[2],
+            frames: FRAMES as u32,
+            steady_time: 0,
+            transport: None,
+            in_events: &NoEvents,
+            out_events: &mut sink,
+            pool: None,
+        })
+    };
+    call(
+        &mut wide,
+        Planar::F64 {
+            inputs: &[],
+            outputs: &mut outputs,
+        },
+    )
+    .expect("a 64-bit block runs");
+    assert_eq!(outputs[0][0], f64::from(probe_tag(0, 0)));
+    assert_eq!(outputs[1][0], f64::from(probe_tag(0, 1)));
+
+    // A 32-bit block into the 64-bit scratch: refused, plugin untouched.
+    let mut l32 = vec![0.0f32; FRAMES];
+    let mut r32 = vec![0.0f32; FRAMES];
+    let mut out32: Vec<&mut [f32]> = vec![&mut l32, &mut r32];
+    assert_eq!(
+        call(
+            &mut wide,
+            Planar::F32 {
+                inputs: &[],
+                outputs: &mut out32
+            }
+        ),
+        Err(ProcessError::FormatMismatch)
+    );
+    assert_eq!(out32[0][0], 0.0, "the plugin wrote nothing");
+
+    // The same call at the other width through a 32-bit scratch.
+    let mut narrow = PortScratch::new(SampleFormat::Float32);
+    narrow.resize_for(&[2], &[2], 512);
+    call(
+        &mut narrow,
+        Planar::F32 {
+            inputs: &[],
+            outputs: &mut out32,
+        },
+    )
+    .expect("a 32-bit block runs");
+    assert_eq!(l32[0], probe_tag(0, 0));
+
+    // And the other direction: a 64-bit block into the 32-bit scratch.
+    outputs[0].fill(-1.0);
+    assert_eq!(
+        call(
+            &mut narrow,
+            Planar::F64 {
+                inputs: &[],
+                outputs: &mut outputs,
+            }
+        ),
+        Err(ProcessError::FormatMismatch)
+    );
+    assert_eq!(outputs[0][0], -1.0, "the plugin wrote nothing");
+    switch_u32(b"tutti_test_plugin_set_ports_64bit\0", 0);
 }

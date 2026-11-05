@@ -94,8 +94,6 @@ pub struct MidiInputNode {
 impl std::fmt::Debug for MidiInputNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MidiInputNode")
-            .field("scratch", &self.scratch)
-            .field("out", &self.out)
             .field("translator", &self.translator)
             .field("mpe", &self.mpe)
             .field("mpe_request", &self.mpe_request)

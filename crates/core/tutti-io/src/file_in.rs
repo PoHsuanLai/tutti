@@ -101,7 +101,10 @@ impl std::fmt::Debug for FileIn {
             .field("channels", &self.channels)
             .field("sample_rate", &self.sample_rate)
             .field("total_frames", &self.total_frames)
-            .field("leftover", &self.leftover)
+            .field(
+                "leftover_frames",
+                &(self.leftover.len() / self.channels.max(1)),
+            )
             .field("leftover_pos", &self.leftover_pos)
             .field("cursor", &self.cursor)
             .field("seekable", &self.seekable)

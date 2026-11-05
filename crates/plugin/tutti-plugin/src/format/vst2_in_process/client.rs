@@ -43,7 +43,6 @@ use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 /// takes) **by state transfer**: a second instance of the plugin, from the same
 /// library, restored from this one's saved state. See
 /// [`fork_instance`](Self::fork_instance).
-#[derive(Debug)]
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Vst2Instance>>,
     pub(super) metadata: PluginInfo,
@@ -103,6 +102,18 @@ pub struct InProcessVst2Client {
     /// The curve segments in flight on the event input, sent as points until
     /// each lands. Slots sized at construction, one per parameter slot.
     pub(super) segments: SegmentPoints,
+}
+
+/// Omits `inner`: its mutex is the audio path's, so formatting must not take it.
+impl std::fmt::Debug for InProcessVst2Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InProcessVst2Client")
+            .field("metadata", &self.metadata)
+            .field("frames", &self.frames)
+            .field("sample_rate", &self.sample_rate)
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Who tells the plugin the rate the node is prepared at.

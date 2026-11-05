@@ -154,10 +154,18 @@ impl<T: Copy + Default> CircularBuffer<T> {
 /// and never grows past the allocation [`new`](Self::new) makes: each
 /// [`push`](Self::push) evicts the entry leaving the window *before* adding
 /// the new one. A clone keeps that allocation.
-#[derive(Debug)]
 pub struct MonotonicMinDeque {
     entries: VecDeque<(u64, f32)>,
     window: usize,
+}
+
+impl std::fmt::Debug for MonotonicMinDeque {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MonotonicMinDeque")
+            .field("len", &self.entries.len())
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MonotonicMinDeque {

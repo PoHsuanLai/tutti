@@ -615,7 +615,14 @@ pub struct ExportRendered {
 impl std::fmt::Debug for ExportRendered {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExportRendered")
-            .field("result", &self.result)
+            .field(
+                "result",
+                &match &self.result {
+                    Ok(ExportOutput::File(w)) => format!("Ok(File({}))", w.path.display()),
+                    Ok(ExportOutput::Buffers(_)) => "Ok(Buffers)".to_string(),
+                    Err(_) => "Err".to_string(),
+                },
+            )
             .field("_token", &self._token)
             .finish_non_exhaustive()
     }

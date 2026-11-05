@@ -321,7 +321,7 @@ impl std::fmt::Debug for ControlLaneNode {
         f.debug_struct("ControlLaneNode")
             .field("program", &self.program)
             .field("native", &self.native)
-            .field("scratch", &self.scratch)
+            .field("scratch_len", &self.scratch.len())
             .finish_non_exhaustive()
     }
 }

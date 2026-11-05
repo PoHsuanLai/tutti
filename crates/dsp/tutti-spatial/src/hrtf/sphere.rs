@@ -393,7 +393,7 @@ impl std::fmt::Debug for HrtfSet {
             .field("ir_len", &self.ir_len)
             .field("fft_len", &self.fft_len)
             .field("fft", &self.fft)
-            .field("faces", &self.faces)
+            .field("faces", &self.faces.len())
             .finish_non_exhaustive()
     }
 }

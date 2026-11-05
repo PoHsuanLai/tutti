@@ -183,12 +183,8 @@ pub(crate) struct HrtfBinaural {
 impl std::fmt::Debug for HrtfBinaural {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HrtfBinaural")
-            .field("sphere", &self.sphere)
-            .field("set", &self.set)
             .field("fill", &self.fill)
-            .field("current", &self.current)
             .field("face_hint", &self.face_hint)
-            .field("aim", &self.aim)
             .finish_non_exhaustive()
     }
 }

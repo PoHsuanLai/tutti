@@ -233,14 +233,6 @@ impl std::fmt::Debug for VoiceBank {
             .field("stride", &self.stride)
             .field("voices", &self.voices)
             .field("next_seed", &self.next_seed)
-            .field("phase", &self.phase)
-            .field("inc", &self.inc)
-            .field("inc_target", &self.inc_target)
-            .field("env", &self.env)
-            .field("env_slope", &self.env_slope)
-            .field("env_target", &self.env_target)
-            .field("stage", &self.stage)
-            .field("live", &self.live)
             .finish_non_exhaustive()
     }
 }

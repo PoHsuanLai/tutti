@@ -190,7 +190,7 @@ pub struct Vst2Instance {
 impl std::fmt::Debug for Vst2Instance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Vst2Instance")
-            .field("initial_values", &self.initial_values)
+            .field("initial_values", &self.initial_values.len())
             .field("metadata", &self.metadata)
             .field("block_size", &self.block_size)
             .field("double_precision", &self.double_precision)

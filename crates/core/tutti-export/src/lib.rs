@@ -51,7 +51,7 @@ pub struct Written {
 /// Returned by [`render_to_buffers`]; written with [`write_buffers`]. Planes
 /// rather than a `(left, right)` pair, so a surround render keeps every
 /// channel.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Rendered {
     /// One `Vec` per channel, all the same length. Planar, not interleaved —
     /// [`interleaved`](Self::interleaved) is the conversion.
@@ -61,6 +61,16 @@ pub struct Rendered {
     /// is always the render rate. An encoder must read it from here rather than
     /// from a config, or it converts from a rate the samples were never at.
     pub sample_rate: tutti_core::SampleRate,
+}
+
+impl std::fmt::Debug for Rendered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rendered")
+            .field("channels", &self.channels())
+            .field("frames", &self.frames())
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Rendered {

@@ -38,6 +38,8 @@ use vst3::Steinberg::Linux::{
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
 
+/// The host's `IHostApplication`, `IPlugInterfaceSupport` and (on Linux)
+/// `IRunLoop`: what a plugin is handed at `setHostContext` and `initialize`.
 pub(crate) struct HostApplication {
     name: [u16; 128],
     /// Shared with every `HostPlugFrame` this library creates, so handlers
@@ -57,6 +59,8 @@ impl Class for HostApplication {
 }
 
 impl HostApplication {
+    /// A host application that names itself `name` (cut to 127 UTF-16 units)
+    /// and, on Linux, answers `IRunLoop` with `run_loop`.
     pub(crate) fn new(
         name: &str,
         #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
@@ -94,7 +98,9 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         fd: FileDescriptor,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.register_event_handler(handler, fd)
+            // SAFETY: the plugin passes a handler it keeps alive until it
+            // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
+            unsafe { self.run_loop.register_event_handler(handler, fd) }
         })
     }
 
@@ -110,7 +116,9 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         milliseconds: TimerInterval,
     ) -> tresult {
         guard(vst3::Steinberg::kInternalError, || {
-            self.run_loop.register_timer(handler, milliseconds)
+            // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
+            // thread.
+            unsafe { self.run_loop.register_timer(handler, milliseconds) }
         })
     }
 
@@ -127,7 +135,8 @@ impl IHostApplicationTrait for HostApplication {
             if name.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            // SAFETY: `name` is non-null (checked above) and the ABI passes a
+            // pointer to a `String128` valid for writes for the call.
             unsafe { *name = self.name };
             kResultOk
         })
@@ -148,21 +157,21 @@ impl IHostApplicationTrait for HostApplication {
             if cid.is_null() || iid.is_null() || obj.is_null() {
                 return kInvalidArgument;
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-            let cid_bytes: [u8; 16] = unsafe { std::mem::transmute(*cid) };
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-            let iid_bytes: [u8; 16] = unsafe { std::mem::transmute(*iid) };
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-            let imessage_iid: [u8; 16] =
-                unsafe { std::mem::transmute(vst3::Steinberg::Vst::IMessage_iid) };
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-            let iattrlist_iid: [u8; 16] =
-                unsafe { std::mem::transmute(vst3::Steinberg::Vst::IAttributeList_iid) };
+            // SAFETY: `cid` and `iid` are non-null (checked above) and the ABI
+            // passes each as a pointer to a 16-byte `TUID`, valid for reads for
+            // the duration of the call.
+            let (cid, iid) = unsafe { (*cid, *iid) };
+            let cid_bytes: [u8; 16] = cid.map(|b| b as u8);
+            let iid_bytes: [u8; 16] = iid.map(|b| b as u8);
+            let imessage_iid: [u8; 16] = vst3::Steinberg::Vst::IMessage_iid.map(|b| b as u8);
+            let iattrlist_iid: [u8; 16] = vst3::Steinberg::Vst::IAttributeList_iid.map(|b| b as u8);
 
             if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
                 let msg = Message::new();
                 if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+                    // SAFETY: `obj` is non-null (checked above) and a valid
+                    // out-pointer; it receives the +1 reference `into_raw`
+                    // releases ownership of, which the plugin now owns.
                     unsafe { *obj = ptr.into_raw() as *mut c_void };
                     return kResultOk;
                 }
@@ -170,12 +179,12 @@ impl IHostApplicationTrait for HostApplication {
             if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
                 let attrs = AttributeList::new();
                 if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+                    // SAFETY: as above: a valid out-pointer receiving a +1 reference.
                     unsafe { *obj = ptr.into_raw() as *mut c_void };
                     return kResultOk;
                 }
             }
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            // SAFETY: `obj` is non-null (checked above) and a valid out-pointer.
             unsafe { *obj = std::ptr::null_mut() };
             kNotImplemented
         })
@@ -246,6 +255,12 @@ impl IPlugInterfaceSupportTrait for HostApplication {
     }
 }
 
+impl std::fmt::Debug for HostApplication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostApplication").finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +286,7 @@ mod tests {
     fn does_not_claim_uninstalled_interfaces() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(&IDataExchangeHandler_iid),
@@ -285,7 +300,7 @@ mod tests {
     fn reports_installed_host_interfaces_supported() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(&IHostApplication_iid),
@@ -303,7 +318,7 @@ mod tests {
     fn reports_uninstalled_interfaces_unsupported() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         // The host does not install IMidiMapping (that's a plugin-side interface).
         unsafe {
             assert_eq!(
@@ -317,7 +332,7 @@ mod tests {
     fn null_iid_is_invalid_argument() {
         let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         unsafe {
             assert_eq!(
                 ptr.isPlugInterfaceSupported(std::ptr::null()),
@@ -343,7 +358,7 @@ mod tests {
         // `release` and subtract to read the count without moving it.
         let refcount = || {
             let iface = host.as_com_ref::<IHostApplication>().unwrap();
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             unsafe {
                 let after_add = IHostApplication::add_ref(iface.as_ptr());
                 IHostApplication::release(iface.as_ptr());
@@ -385,7 +400,7 @@ mod tests {
         let ptr = host.to_com_ptr::<IHostApplication>().unwrap();
 
         let mut name: String128 = [0; 128];
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         unsafe {
             assert_eq!(ptr.getName(&mut name), kResultOk);
         }

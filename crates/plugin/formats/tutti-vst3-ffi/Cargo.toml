@@ -15,9 +15,9 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# Exposes the observation seams the host-conformance tests use: the
-# `ProcessData` observer and the run loop's activity counters. Off in a
-# production build; `tutti-vst3-host`'s `conformance` feature turns it on.
+# Exposes the run loop's activity counters (`RunLoopActivity`), which the
+# host-conformance tests read. Off in a production build; the host crate's
+# `conformance` feature turns it on.
 conformance = []
 
 [dependencies]
@@ -42,6 +42,8 @@ core-foundation-sys = "0.8"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# `module_entry`'s macOS bundle-directory test builds a bundle on disk.
+tempfile = "3"
 # The CLAP host, to feed one MIDI stream to both formats' event lists and
 # check they read a per-note bend at the same range. Acyclic: it does not
 # depend on this crate.

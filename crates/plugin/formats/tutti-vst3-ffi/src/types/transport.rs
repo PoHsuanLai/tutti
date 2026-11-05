@@ -10,7 +10,7 @@ use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 /// A plugin returns an OR of these from `getProcessContextRequirements` to
 /// declare which [`ProcessContext`](vst3::Steinberg::Vst::ProcessContext)
 /// fields it consumes; [`to_process_context`] only fills (and marks valid) the
-/// fields whose bit is set. See `tutti_vst3_host::host`'s query for the
+/// fields whose bit is set. See the host's query for the
 /// "everything when absent" ([`u32::MAX`]) fallback.
 ///
 /// The casts below are `u32 as u32` no-ops on unix and `c_int as u32`

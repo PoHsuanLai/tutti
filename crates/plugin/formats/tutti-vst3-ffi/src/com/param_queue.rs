@@ -203,12 +203,13 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
             }
             let point = &points[index as usize];
             if !sample_offset.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
-                // ABI.
+                // SAFETY: `sample_offset` is non-null (just checked) and the ABI
+                // passes it as a valid out-pointer for the call.
                 unsafe { *sample_offset = point.sample_offset };
             }
             if !value.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+                // SAFETY: `value` is non-null (just checked) and the ABI passes it
+                // as a valid out-pointer for the call.
                 unsafe { *value = point.value.get() };
             }
             kResultOk
@@ -282,9 +283,9 @@ mod tests {
             taken.wait();
             let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
             let (mut offset, mut value) = (0, 0.0);
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             let count = unsafe { ptr.getPointCount() };
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             let got = unsafe { ptr.getPoint(1, &mut offset, &mut value) };
             done.wait();
             assert_eq!(count, 2, "a second reader must see the queue");
@@ -307,20 +308,19 @@ mod tests {
         {
             let _writing = queue.points.borrow_mut();
             let _renaming = queue.param_id.borrow_mut();
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             assert_eq!(unsafe { ptr.getPointCount() }, 0);
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
             // SAFETY: both out-parameters are valid locals.
             let rc = unsafe { ptr.getPoint(0, &mut offset, &mut value) };
             assert_eq!(rc, kResultFalse);
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             assert_eq!(unsafe { ptr.getParameterId() }, kNoParamId);
-            // SAFETY: a COM method called on a live test object with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
             assert_eq!(unsafe { ptr.addPoint(5, 0.5, &mut 0) }, kResultFalse);
         }
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         assert_eq!(unsafe { ptr.getPointCount() }, 2);
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         assert_eq!(unsafe { ptr.getParameterId() }, 42);
         assert_eq!(queue.points_dropped(), 1, "the refused point is counted");
     }
@@ -493,7 +493,7 @@ mod tests {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;
         let queue = ParamValueQueueImpl::with_room(3, MIN_POINT_ROOM);
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
-        // SAFETY: a COM method called on a live test object with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
         let (fitted, replaced, dropped) = assert_no_alloc::assert_no_alloc(|| unsafe {
             let mut at = -1;
             let fitted = (0..MIN_POINT_ROOM as i32)

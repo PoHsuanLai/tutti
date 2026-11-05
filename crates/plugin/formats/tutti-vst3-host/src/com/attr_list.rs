@@ -1,5 +1,6 @@
 //! IAttributeList COM implementation — key/value store for plugin messages.
 
+use crate::guard::guard;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
 
@@ -43,134 +44,148 @@ fn key_from_ptr(key: AttrID) -> Option<String> {
 
 impl IAttributeListTrait for AttributeList {
     unsafe fn setInt(&self, id: AttrID, value: i64) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        self.attributes.lock().insert(k, AttributeValue::Int(value));
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            self.attributes.lock().insert(k, AttributeValue::Int(value));
+            kResultOk
+        })
     }
 
     unsafe fn getInt(&self, id: AttrID, value: *mut i64) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        if value.is_null() {
-            return kInvalidArgument;
-        }
-        match self.attributes.lock().get(&k) {
-            Some(AttributeValue::Int(v)) => {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3 ABI.
-                unsafe { *value = *v };
-                kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            if value.is_null() {
+                return kInvalidArgument;
             }
-            _ => kInvalidArgument,
-        }
+            match self.attributes.lock().get(&k) {
+                Some(AttributeValue::Int(v)) => {
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *value = *v };
+                    kResultOk
+                }
+                _ => kInvalidArgument,
+            }
+        })
     }
 
     unsafe fn setFloat(&self, id: AttrID, value: f64) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        self.attributes
-            .lock()
-            .insert(k, AttributeValue::Float(value));
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            self.attributes
+                .lock()
+                .insert(k, AttributeValue::Float(value));
+            kResultOk
+        })
     }
 
     unsafe fn getFloat(&self, id: AttrID, value: *mut f64) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        if value.is_null() {
-            return kInvalidArgument;
-        }
-        match self.attributes.lock().get(&k) {
-            Some(AttributeValue::Float(v)) => {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3 ABI.
-                unsafe { *value = *v };
-                kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            if value.is_null() {
+                return kInvalidArgument;
             }
-            _ => kInvalidArgument,
-        }
+            match self.attributes.lock().get(&k) {
+                Some(AttributeValue::Float(v)) => {
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *value = *v };
+                    kResultOk
+                }
+                _ => kInvalidArgument,
+            }
+        })
     }
 
     unsafe fn setString(&self, id: AttrID, string: *const TChar) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        if string.is_null() {
-            return kInvalidArgument;
-        }
-        let mut buf = Vec::new();
-        let mut ptr = string;
-        const MAX_STRING_LEN: usize = 65536;
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        while unsafe { *ptr } != 0 && buf.len() < MAX_STRING_LEN {
-            buf.push(unsafe { *ptr });
-            ptr = unsafe { ptr.add(1) };
-        }
-        buf.push(0);
-        self.attributes
-            .lock()
-            .insert(k, AttributeValue::String(buf));
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            if string.is_null() {
+                return kInvalidArgument;
+            }
+            let mut buf = Vec::new();
+            let mut ptr = string;
+            const MAX_STRING_LEN: usize = 65536;
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            while unsafe { *ptr } != 0 && buf.len() < MAX_STRING_LEN {
+                buf.push(unsafe { *ptr });
+                ptr = unsafe { ptr.add(1) };
+            }
+            buf.push(0);
+            self.attributes
+                .lock()
+                .insert(k, AttributeValue::String(buf));
+            kResultOk
+        })
     }
 
     unsafe fn getString(&self, id: AttrID, string: *mut TChar, size_in_bytes: u32) -> tresult {
-        if string.is_null() || size_in_bytes == 0 {
-            return kInvalidArgument;
-        }
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        match self.attributes.lock().get(&k) {
-            Some(AttributeValue::String(v)) => {
-                let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
-                // A buffer too small to hold even one `TChar` cannot be given a
-                // terminator, so there is nothing valid to return. `size_in_bytes`
-                // is a BYTE count on this boundary — the caller is free to pass an
-                // odd one — and `1` survives the `== 0` guard above only to divide
-                // to zero here. Rejecting it is what stops `max_chars - 1` below
-                // from wrapping to `usize::MAX` and writing through a wild pointer.
-                if max_chars == 0 {
-                    return kInvalidArgument;
-                }
-                let copy_len = v.len().min(max_chars);
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3 ABI.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len)
-                };
-                // The stored value already carries its own NUL terminator, so a
-                // full copy is terminated. On truncation the terminator is lost,
-                // leaving the caller with an unterminated buffer — write one back
-                // into the final slot so the returned string is always valid.
-                if v.len() > max_chars {
-                    unsafe { *string.add(max_chars - 1) = 0 };
-                }
-                kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            if string.is_null() || size_in_bytes == 0 {
+                return kInvalidArgument;
             }
-            _ => kInvalidArgument,
-        }
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            match self.attributes.lock().get(&k) {
+                Some(AttributeValue::String(v)) => {
+                    let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
+                    // A buffer too small to hold even one `TChar` cannot be given a
+                    // terminator, so there is nothing valid to return. `size_in_bytes`
+                    // is a BYTE count on this boundary — the caller is free to pass an
+                    // odd one — and `1` survives the `== 0` guard above only to divide
+                    // to zero here. Rejecting it is what stops `max_chars - 1` below
+                    // from wrapping to `usize::MAX` and writing through a wild pointer.
+                    if max_chars == 0 {
+                        return kInvalidArgument;
+                    }
+                    let copy_len = v.len().min(max_chars);
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len)
+                    };
+                    // The stored value already carries its own NUL terminator, so a
+                    // full copy is terminated. On truncation the terminator is lost,
+                    // leaving the caller with an unterminated buffer — write one back
+                    // into the final slot so the returned string is always valid.
+                    if v.len() > max_chars {
+                        unsafe { *string.add(max_chars - 1) = 0 };
+                    }
+                    kResultOk
+                }
+                _ => kInvalidArgument,
+            }
+        })
     }
 
     unsafe fn setBinary(&self, id: AttrID, data: *const c_void, size_in_bytes: u32) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        if data.is_null() {
-            return kInvalidArgument;
-        }
-        // SAFETY: a COM method: `data` is non-null (checked above) and, per the VST3 ABI, valid
-        // for `size_in_bytes` bytes for this call.
-        let slice =
-            unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
-        self.attributes
-            .lock()
-            .insert(k, AttributeValue::Binary(slice.to_vec()));
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            if data.is_null() {
+                return kInvalidArgument;
+            }
+            // SAFETY: a COM method: `data` is non-null (checked above) and, per the VST3 ABI, valid
+            // for `size_in_bytes` bytes for this call.
+            let slice =
+                unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
+            self.attributes
+                .lock()
+                .insert(k, AttributeValue::Binary(slice.to_vec()));
+            kResultOk
+        })
     }
 
     /// Returns a borrowed pointer to the stored binary value.
@@ -189,23 +204,25 @@ impl IAttributeListTrait for AttributeList {
         data: *mut *const c_void,
         size_in_bytes: *mut u32,
     ) -> tresult {
-        let Some(k) = key_from_ptr(id) else {
-            return kInvalidArgument;
-        };
-        match self.attributes.lock().get(&k) {
-            Some(AttributeValue::Binary(v)) => {
-                if !data.is_null() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *data = v.as_ptr() as *const c_void };
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(k) = key_from_ptr(id) else {
+                return kInvalidArgument;
+            };
+            match self.attributes.lock().get(&k) {
+                Some(AttributeValue::Binary(v)) => {
+                    if !data.is_null() {
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                        // VST3 ABI.
+                        unsafe { *data = v.as_ptr() as *const c_void };
+                    }
+                    if !size_in_bytes.is_null() {
+                        unsafe { *size_in_bytes = v.len() as u32 };
+                    }
+                    kResultOk
                 }
-                if !size_in_bytes.is_null() {
-                    unsafe { *size_in_bytes = v.len() as u32 };
-                }
-                kResultOk
+                _ => kInvalidArgument,
             }
-            _ => kInvalidArgument,
-        }
+        })
     }
 }
 

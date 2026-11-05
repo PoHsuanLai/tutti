@@ -104,6 +104,11 @@ impl MmapCell {
         //   valid instance, including a fresh mapping's zeros. `validate` decides
         //   whether the contents are *meaningful*; this cast only needs them
         //   well-formed.
-        unsafe { &*(bytes.as_ptr() as *const SlabHeader) }
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "page-aligned mmap base; the alignment argument is above"
+        )]
+        let header = unsafe { &*(bytes.as_ptr() as *const SlabHeader) };
+        header
     }
 }

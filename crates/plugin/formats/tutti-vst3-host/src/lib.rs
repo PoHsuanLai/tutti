@@ -3,6 +3,7 @@
 
 pub(crate) mod com;
 mod error;
+mod guard;
 pub(crate) mod helpers;
 pub mod host;
 pub mod types;

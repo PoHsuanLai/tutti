@@ -19,6 +19,16 @@ longer has it: `MidiSession` takes a poisoned lock as it is, the analysis
 and the guard types (`Loan`, `Claimed`, `RwView`, `RenderNotify` and similar)
 are `#[must_use]`; a caller that drops one now gets a warning.
 
+### Fixed — host callbacks no longer abort on a panic
+
+The CLAP host callbacks (62 in a `catch_unwind` guard; `request_exec` aborts
+instead, because tasks may already have run) and the VST3 host COM methods (52)
+answer "not handled" instead of aborting the process on a panic. Only
+callbacks that return a constant are unguarded; `scripts/check-guards.sh`
+enforces this. CLAP's `try_push` reads a plugin's event with
+`read_unaligned`, and the VST2 event header is cast from its `Vec<u64>`
+backing, so no event cast widens alignment unproven.
+
 ### Fixed — `Send` impls that rested on a promise
 
 `tutti-cpal` no longer has `unsafe impl Send` for `CpalStream` or the mic's

@@ -16,6 +16,7 @@
 //! function-wide allow silently re-permits the very wrap it should prevent.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
+use crate::guard::guard;
 use crate::types::{
     ClapNoteExpression, MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint,
     ParameterQueue,
@@ -1193,10 +1194,12 @@ impl EventList for InputEventList {
     reason = "one block's event count; the CLAP vtable returns u32"
 )]
 unsafe extern "C" fn input_events_size(list: *const clap_input_events) -> u32 {
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let event_list = unsafe { &*(list as *const InputEventList) };
-    event_list.events.len() as u32
+    guard(0, || {
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let event_list = unsafe { &*(list as *const InputEventList) };
+        event_list.events.len() as u32
+    })
 }
 
 #[allow(
@@ -1207,13 +1210,15 @@ unsafe extern "C" fn input_events_get(
     list: *const clap_input_events,
     index: u32,
 ) -> *const clap_event_header {
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let event_list = unsafe { &*(list as *const InputEventList) };
-    if index >= event_list.events.len() as u32 {
-        return ptr::null();
-    }
-    event_list.events[index as usize].header() as *const _
+    guard(ptr::null(), || {
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let event_list = unsafe { &*(list as *const InputEventList) };
+        if index >= event_list.events.len() as u32 {
+            return ptr::null();
+        }
+        event_list.events[index as usize].header() as *const _
+    })
 }
 
 /// How many SysEx payload buffers [`OutputEventList::reserve`] pre-warms.
@@ -1682,6 +1687,20 @@ fn core_event_size(type_: u16) -> Option<u32> {
     })
 }
 
+/// Copy the event a plugin handed `try_push` out as its concrete type.
+///
+/// # Safety
+/// `header` points to at least `size_of::<T>()` readable bytes holding a `T`
+/// (the caller checked `header.size` against [`core_event_size`]).
+///
+/// Read unaligned: CLAP does not oblige the plugin to align an event it builds
+/// on its own stack or in a byte buffer, and the header (align 4) does not
+/// prove the event's (align 8).
+unsafe fn read_event<T: Copy>(header: *const clap_event_header) -> T {
+    // SAFETY: the caller's contract; `read_unaligned` needs no alignment.
+    unsafe { ptr::read_unaligned(header.cast::<T>()) }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "SysEx payloads are bounded well below u32::MAX"
@@ -1690,127 +1709,130 @@ unsafe extern "C" fn output_events_try_push(
     list: *const clap_output_events,
     event: *const clap_event_header,
 ) -> bool {
-    if event.is_null() || list.is_null() {
-        return false;
-    }
+    guard(false, || {
+        if event.is_null() || list.is_null() {
+            return false;
+        }
 
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let output_list = unsafe { &mut *(list as *mut OutputEventList) };
-    let header = unsafe { &*event };
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let output_list = unsafe { &mut *(list as *mut OutputEventList) };
+        // Read unaligned like the event below: the plugin's own storage.
+        let header = unsafe { read_event::<clap_event_header>(event) };
 
-    // Only core events are read below. An event of another space can reuse a
-    // core type number for a different, smaller struct, and a `size` under
-    // the struct's would be read past its end.
-    if header.space_id != CLAP_CORE_EVENT_SPACE_ID
-        || core_event_size(header.type_).is_none_or(|min| header.size < min)
-    {
-        output_list.refused += 1;
-        return false;
-    }
+        // Only core events are read below. An event of another space can reuse a
+        // core type number for a different, smaller struct, and a `size` under
+        // the struct's would be read past its end.
+        if header.space_id != CLAP_CORE_EVENT_SPACE_ID
+            || core_event_size(header.type_).is_none_or(|min| header.size < min)
+        {
+            output_list.refused += 1;
+            return false;
+        }
 
-    // Past the reserved room the push is refused, never grown into: this is
-    // the plugin's callback, inside its `process`, on the audio thread. CLAP
-    // lets `try_push` fail, and a plugin must handle it. Parameter events and
-    // the rest have separate rooms, so a parameter flood cannot refuse a
-    // note-off (a refused note-off is a stuck note: plugins rarely check).
-    if header.type_ == CLAP_EVENT_PARAM_VALUE {
-        if output_list.param_pushed >= output_list.param_room {
-            let e = unsafe { &*(event as *const clap_event_param_value) };
-            return output_list.coalesce_param(e);
-        }
-    } else if output_list
-        .events
-        .len()
-        .saturating_sub(output_list.param_pushed)
-        >= output_list.room
-    {
-        output_list.refused += 1;
-        return false;
-    }
-
-    match header.type_ {
-        CLAP_EVENT_NOTE_ON => {
-            let e = unsafe { &*(event as *const clap_event_note) };
-            output_list.events.push(ClapEvent::NoteOn(*e));
-            true
-        }
-        CLAP_EVENT_NOTE_OFF => {
-            let e = unsafe { &*(event as *const clap_event_note) };
-            output_list.events.push(ClapEvent::NoteOff(*e));
-            true
-        }
-        CLAP_EVENT_MIDI => {
-            let e = unsafe { &*(event as *const clap_event_midi) };
-            output_list.events.push(ClapEvent::Midi(*e));
-            true
-        }
-        CLAP_EVENT_NOTE_EXPRESSION => {
-            let e = unsafe { &*(event as *const clap_event_note_expression) };
-            output_list.events.push(ClapEvent::NoteExpression(*e));
-            true
-        }
-        CLAP_EVENT_NOTE_CHOKE => {
-            let e = unsafe { &*(event as *const clap_event_note) };
-            output_list.events.push(ClapEvent::NoteChoke(*e));
-            true
-        }
-        CLAP_EVENT_NOTE_END => {
-            let e = unsafe { &*(event as *const clap_event_note) };
-            output_list.events.push(ClapEvent::NoteEnd(*e));
-            true
-        }
-        CLAP_EVENT_PARAM_VALUE => {
-            let e = unsafe { &*(event as *const clap_event_param_value) };
-            output_list.events.push(ClapEvent::ParamValue(*e));
-            output_list.param_pushed += 1;
-            true
-        }
-        CLAP_EVENT_PARAM_MOD => {
-            let e = unsafe { &*(event as *const clap_event_param_mod) };
-            output_list.events.push(ClapEvent::ParamMod(*e));
-            true
-        }
-        CLAP_EVENT_PARAM_GESTURE_BEGIN => {
-            let e = unsafe { &*(event as *const clap_event_param_gesture) };
-            output_list.events.push(ClapEvent::ParamGestureBegin(*e));
-            true
-        }
-        CLAP_EVENT_PARAM_GESTURE_END => {
-            let e = unsafe { &*(event as *const clap_event_param_gesture) };
-            output_list.events.push(ClapEvent::ParamGestureEnd(*e));
-            true
-        }
-        CLAP_EVENT_MIDI_SYSEX => {
-            let e = unsafe { &*(event as *const clap_event_midi_sysex) };
-            if !e.buffer.is_null() && e.size > 0 {
-                // Recycle a pooled buffer instead of `to_vec()`-ing a fresh
-                // one: the plugin calls this from inside its own `process`, so
-                // that was a per-event, per-block allocation on the audio
-                // thread.
-                let mut data = output_list.sysex_pool.pop().unwrap_or_default();
-                data.clear();
-                data.extend_from_slice(unsafe {
-                    std::slice::from_raw_parts(e.buffer, e.size as usize)
-                });
-                // The buffer pointer aliases `data`; the ClapEvent::MidiSysex
-                // variant keeps both together and is never moved independently.
-                // Taken *after* the extend, since that is the last thing that
-                // can reallocate `data` and move its bytes.
-                let inner = clap_event_midi_sysex {
-                    header: *header,
-                    port_index: e.port_index,
-                    buffer: data.as_ptr(),
-                    size: data.len() as u32,
-                };
-                output_list
-                    .events
-                    .push(ClapEvent::MidiSysex { inner, _data: data });
+        // Past the reserved room the push is refused, never grown into: this is
+        // the plugin's callback, inside its `process`, on the audio thread. CLAP
+        // lets `try_push` fail, and a plugin must handle it. Parameter events and
+        // the rest have separate rooms, so a parameter flood cannot refuse a
+        // note-off (a refused note-off is a stuck note: plugins rarely check).
+        if header.type_ == CLAP_EVENT_PARAM_VALUE {
+            if output_list.param_pushed >= output_list.param_room {
+                let e = unsafe { read_event::<clap_event_param_value>(event) };
+                return output_list.coalesce_param(&e);
             }
-            true
+        } else if output_list
+            .events
+            .len()
+            .saturating_sub(output_list.param_pushed)
+            >= output_list.room
+        {
+            output_list.refused += 1;
+            return false;
         }
-        _ => false,
-    }
+
+        match header.type_ {
+            CLAP_EVENT_NOTE_ON => {
+                let e = unsafe { read_event::<clap_event_note>(event) };
+                output_list.events.push(ClapEvent::NoteOn(e));
+                true
+            }
+            CLAP_EVENT_NOTE_OFF => {
+                let e = unsafe { read_event::<clap_event_note>(event) };
+                output_list.events.push(ClapEvent::NoteOff(e));
+                true
+            }
+            CLAP_EVENT_MIDI => {
+                let e = unsafe { read_event::<clap_event_midi>(event) };
+                output_list.events.push(ClapEvent::Midi(e));
+                true
+            }
+            CLAP_EVENT_NOTE_EXPRESSION => {
+                let e = unsafe { read_event::<clap_event_note_expression>(event) };
+                output_list.events.push(ClapEvent::NoteExpression(e));
+                true
+            }
+            CLAP_EVENT_NOTE_CHOKE => {
+                let e = unsafe { read_event::<clap_event_note>(event) };
+                output_list.events.push(ClapEvent::NoteChoke(e));
+                true
+            }
+            CLAP_EVENT_NOTE_END => {
+                let e = unsafe { read_event::<clap_event_note>(event) };
+                output_list.events.push(ClapEvent::NoteEnd(e));
+                true
+            }
+            CLAP_EVENT_PARAM_VALUE => {
+                let e = unsafe { read_event::<clap_event_param_value>(event) };
+                output_list.events.push(ClapEvent::ParamValue(e));
+                output_list.param_pushed += 1;
+                true
+            }
+            CLAP_EVENT_PARAM_MOD => {
+                let e = unsafe { read_event::<clap_event_param_mod>(event) };
+                output_list.events.push(ClapEvent::ParamMod(e));
+                true
+            }
+            CLAP_EVENT_PARAM_GESTURE_BEGIN => {
+                let e = unsafe { read_event::<clap_event_param_gesture>(event) };
+                output_list.events.push(ClapEvent::ParamGestureBegin(e));
+                true
+            }
+            CLAP_EVENT_PARAM_GESTURE_END => {
+                let e = unsafe { read_event::<clap_event_param_gesture>(event) };
+                output_list.events.push(ClapEvent::ParamGestureEnd(e));
+                true
+            }
+            CLAP_EVENT_MIDI_SYSEX => {
+                let e = unsafe { read_event::<clap_event_midi_sysex>(event) };
+                if !e.buffer.is_null() && e.size > 0 {
+                    // Recycle a pooled buffer instead of `to_vec()`-ing a fresh
+                    // one: the plugin calls this from inside its own `process`, so
+                    // that was a per-event, per-block allocation on the audio
+                    // thread.
+                    let mut data = output_list.sysex_pool.pop().unwrap_or_default();
+                    data.clear();
+                    data.extend_from_slice(unsafe {
+                        std::slice::from_raw_parts(e.buffer, e.size as usize)
+                    });
+                    // The buffer pointer aliases `data`; the ClapEvent::MidiSysex
+                    // variant keeps both together and is never moved independently.
+                    // Taken *after* the extend, since that is the last thing that
+                    // can reallocate `data` and move its bytes.
+                    let inner = clap_event_midi_sysex {
+                        header,
+                        port_index: e.port_index,
+                        buffer: data.as_ptr(),
+                        size: data.len() as u32,
+                    };
+                    output_list
+                        .events
+                        .push(ClapEvent::MidiSysex { inner, _data: data });
+                }
+                true
+            }
+            _ => false,
+        }
+    })
 }
 
 /// Tests construct CLAP structs by hand and so repeat the bounded narrowings
@@ -3723,5 +3745,81 @@ mod tests {
         list.add_midi_events(&midi);
         assert_eq!(sysex_read_by_plugin(&list), vec![(2, framed(&b))]);
         assert_eq!(list.sysex_dropped(), 2);
+    }
+
+    /// An event a plugin builds at a 4-aligned address (the header's own
+    /// alignment) is read intact by `try_push`.
+    ///
+    /// Mutation: dereference instead (`*header.cast::<T>()`) in `read_event`:
+    /// the debug build's misaligned-deref check aborts the test process.
+    #[test]
+    fn try_push_reads_an_event_the_plugin_left_4_aligned() {
+        let ClapEvent::NoteOn(note) = ClapEvent::note_on(9, 2, 60, 0.75) else {
+            unreachable!()
+        };
+        let mut backing = [0u64; 32];
+        // Offset 4 into an 8-aligned buffer: aligned for the header, not the note.
+        let at = unsafe { backing.as_mut_ptr().cast::<u32>().add(1) };
+        assert_ne!(at as usize % align_of::<clap_event_note>(), 0);
+        assert_eq!(at as usize % align_of::<clap_event_header>(), 0);
+        unsafe { ptr::write_unaligned(at.cast::<clap_event_note>(), note) };
+
+        let mut output = OutputEventList::new();
+        let list_ptr = output.as_raw_mut();
+        let pushed = unsafe {
+            ((*list_ptr).try_push.unwrap())(list_ptr, at.cast::<clap_event_header>().cast_const())
+        };
+        assert!(pushed);
+        match &output.events()[0] {
+            ClapEvent::NoteOn(got) => {
+                assert_eq!((got.header.time, got.channel, got.key), (9, 2, 60));
+                assert_eq!(got.velocity, 0.75);
+            }
+            _ => panic!("expected NoteOn"),
+        }
+    }
+
+    /// Every event pointer an input list hands the plugin has the alignment
+    /// its payload struct needs (8 for note and param, 4 for `clap_event_midi`),
+    /// across pushes of mixed sizes. The needs are read off the C structs, so
+    /// the test does not depend on how rustc lays out `ClapEvent`.
+    ///
+    /// Mutation: offset every odd index's pointer by 4 bytes in
+    /// `input_events_get`: the note-off at index 3 fails.
+    #[test]
+    fn input_event_pointers_have_the_alignment_their_payload_needs() {
+        let mut events = Vec::new();
+        let mut needs = Vec::new();
+        for i in 0..64u32 {
+            let (event, need) = match i % 4 {
+                0 => (
+                    ClapEvent::note_on(i, 0, 60, 1.0),
+                    align_of::<clap_event_note>(),
+                ),
+                1 => (
+                    ClapEvent::midi(i, 0, [0x90, 60, 100]),
+                    align_of::<clap_event_midi>(),
+                ),
+                2 => (
+                    ClapEvent::param_value(i, 3, 0.5),
+                    align_of::<clap_event_param_value>(),
+                ),
+                _ => (
+                    ClapEvent::note_off(i, 0, 60, 0.0),
+                    align_of::<clap_event_note>(),
+                ),
+            };
+            events.push(event);
+            needs.push(need);
+        }
+        assert!(needs.contains(&8) && needs.contains(&4));
+        let list = InputEventList::from_events(events);
+        let raw = list.as_raw();
+        let n = unsafe { input_events_size(raw) };
+        assert_eq!(n, 64);
+        for i in 0..n {
+            let h = unsafe { input_events_get(raw, i) };
+            assert_eq!(h as usize % needs[i as usize], 0, "event {i} at {h:p}");
+        }
     }
 }

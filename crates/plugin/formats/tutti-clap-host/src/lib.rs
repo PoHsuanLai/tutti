@@ -3,6 +3,7 @@
 
 mod error;
 mod events;
+mod guard;
 pub mod host;
 pub mod instance;
 pub mod topology;

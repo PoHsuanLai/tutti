@@ -25,6 +25,7 @@
 //! blocks; one past [`SYSEX_MESSAGE_CAPACITY`] is dropped whole and counted
 //! ([`EventList::sysex_dropped`]).
 
+use crate::guard::guard;
 use vst3::Steinberg::{
     Vst::{Event, IEventList, IEventListTrait},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -464,92 +465,104 @@ impl EventList {
 impl IEventListTrait for EventList {
     /// Zero while another thread is adding to the list.
     unsafe fn getEventCount(&self) -> i32 {
-        self.inner.try_borrow().map_or(0, |i| i.events.len() as i32)
+        guard(0, || {
+            self.inner.try_borrow().map_or(0, |i| i.events.len() as i32)
+        })
     }
 
     unsafe fn getEvent(&self, index: i32, e: *mut Event) -> tresult {
-        if e.is_null() {
-            return kInvalidArgument;
+        // Defined output even if the body panics.
+        if !e.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call; an
+            // all-zero `Event` is a valid value.
+            unsafe { std::ptr::write_bytes(e, 0, 1) };
         }
-        // A shared borrow: `getEvent` must not mutate the storage, because the
-        // `DataEvent.bytes` / `text` pointers it hands out point *into* it and
-        // stay live for the rest of the plugin's `process` call. Copying the
-        // event out and pointing at the copy would leave them dangling.
-        // `kResultFalse` while another thread is adding to the list.
-        let Some(inner) = self.inner.try_borrow() else {
-            return kResultFalse;
-        };
-        let Ok(index) = usize::try_from(index) else {
-            return kInvalidArgument;
-        };
-        let Some(event) = inner.events.get(index) else {
-            return kInvalidArgument;
-        };
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        unsafe { *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes()) };
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            if e.is_null() {
+                return kInvalidArgument;
+            }
+            // A shared borrow: `getEvent` must not mutate the storage, because the
+            // `DataEvent.bytes` / `text` pointers it hands out point *into* it and
+            // stay live for the rest of the plugin's `process` call. Copying the
+            // event out and pointing at the copy would leave them dangling.
+            // `kResultFalse` while another thread is adding to the list.
+            let Some(inner) = self.inner.try_borrow() else {
+                return kResultFalse;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return kInvalidArgument;
+            };
+            let Some(event) = inner.events.get(index) else {
+                return kInvalidArgument;
+            };
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            unsafe { *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes()) };
+            kResultOk
+        })
     }
 
     unsafe fn addEvent(&self, e: *mut Event) -> tresult {
-        if e.is_null() {
-            return kInvalidArgument;
-        }
-        let c_event = unsafe { &*e };
-        // `kResultFalse`, uncounted, while another thread reads or adds to
-        // the list: the count lives in the storage that is borrowed.
-        let Some(mut inner) = self.inner.try_borrow_mut() else {
-            return kResultFalse;
-        };
-        // Checked before the conversion interns the event's text: a full
-        // list refuses a non-note-off without spending the arena on it.
-        if !inner.has_room() && c_event.r#type != K_NOTE_OFF_EVENT {
-            inner.dropped += 1;
-            return kResultFalse;
-        }
-        // A framed SysEx, or any data longer than the event's inline bytes,
-        // keeps all of its bytes (a channel-voice message is never longer).
-        if c_event.r#type == K_DATA_EVENT {
-            let data = unsafe { c_event.__field0.data };
-            // The `kMidiSysEx` type says it is SysEx, framed or not, of any
-            // length. That type is 0, which is also what the host's own raw
-            // channel-voice fallback carries, so data led by a status byte
-            // other than `0xF0` stays on the MIDI-1 path unless it is longer
-            // than a channel-voice message could be.
-            // SAFETY: a `kDataEvent` carries `size` readable bytes at `bytes`
-            // for the duration of this call.
-            let sysex = data.r#type == K_DATA_TYPE_MIDI_SYSEX
-                && !data.bytes.is_null()
-                && data.size > 0
-                && (data.size as usize > INLINE_DATA_BYTES
-                    || unsafe { *data.bytes } == 0xF0
-                    || unsafe { *data.bytes } < 0x80);
-            if sysex {
-                let header = EventHeader {
-                    bus_index: c_event.busIndex,
-                    sample_offset: c_event.sampleOffset,
-                    ppq_position: c_event.ppqPosition,
-                    flags: c_event.flags,
-                    event_type: K_DATA_EVENT,
-                };
-                return if unsafe {
-                    inner.stage_plugin_sysex(header, data.bytes, data.size as usize)
-                } {
-                    kResultOk
-                } else {
-                    kResultFalse
-                };
+        guard(vst3::Steinberg::kInternalError, || {
+            if e.is_null() {
+                return kInvalidArgument;
             }
-        }
-        match unsafe { from_c_event(c_event, &mut inner.text_arena) } {
-            Some(ev) => {
-                if inner.push(ev) {
-                    kResultOk
-                } else {
-                    kResultFalse
+            let c_event = unsafe { &*e };
+            // `kResultFalse`, uncounted, while another thread reads or adds to
+            // the list: the count lives in the storage that is borrowed.
+            let Some(mut inner) = self.inner.try_borrow_mut() else {
+                return kResultFalse;
+            };
+            // Checked before the conversion interns the event's text: a full
+            // list refuses a non-note-off without spending the arena on it.
+            if !inner.has_room() && c_event.r#type != K_NOTE_OFF_EVENT {
+                inner.dropped += 1;
+                return kResultFalse;
+            }
+            // A framed SysEx, or any data longer than the event's inline bytes,
+            // keeps all of its bytes (a channel-voice message is never longer).
+            if c_event.r#type == K_DATA_EVENT {
+                let data = unsafe { c_event.__field0.data };
+                // The `kMidiSysEx` type says it is SysEx, framed or not, of any
+                // length. That type is 0, which is also what the host's own raw
+                // channel-voice fallback carries, so data led by a status byte
+                // other than `0xF0` stays on the MIDI-1 path unless it is longer
+                // than a channel-voice message could be.
+                // SAFETY: a `kDataEvent` carries `size` readable bytes at `bytes`
+                // for the duration of this call.
+                let sysex = data.r#type == K_DATA_TYPE_MIDI_SYSEX
+                    && !data.bytes.is_null()
+                    && data.size > 0
+                    && (data.size as usize > INLINE_DATA_BYTES
+                        || unsafe { *data.bytes } == 0xF0
+                        || unsafe { *data.bytes } < 0x80);
+                if sysex {
+                    let header = EventHeader {
+                        bus_index: c_event.busIndex,
+                        sample_offset: c_event.sampleOffset,
+                        ppq_position: c_event.ppqPosition,
+                        flags: c_event.flags,
+                        event_type: K_DATA_EVENT,
+                    };
+                    return if unsafe {
+                        inner.stage_plugin_sysex(header, data.bytes, data.size as usize)
+                    } {
+                        kResultOk
+                    } else {
+                        kResultFalse
+                    };
                 }
             }
-            None => kInvalidArgument,
-        }
+            match unsafe { from_c_event(c_event, &mut inner.text_arena) } {
+                Some(ev) => {
+                    if inner.push(ev) {
+                        kResultOk
+                    } else {
+                        kResultFalse
+                    }
+                }
+                None => kInvalidArgument,
+            }
+        })
     }
 }
 

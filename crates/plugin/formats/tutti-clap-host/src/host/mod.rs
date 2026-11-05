@@ -12,6 +12,7 @@ pub(crate) use thread_pool::{ExecFn, PoolRequest};
 pub use state::*;
 pub use streams::{InputStream, OutputStream};
 
+use crate::guard::guard;
 use callbacks::*;
 use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
 use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
@@ -116,45 +117,47 @@ unsafe extern "C" fn host_get_extension(
     _host: *const ClapHostVtable,
     extension_id: *const i8,
 ) -> *const c_void {
-    if extension_id.is_null() {
-        return ptr::null();
-    }
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let id = unsafe { CStr::from_ptr(extension_id) };
+    guard(ptr::null(), || {
+        if extension_id.is_null() {
+            return ptr::null();
+        }
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let id = unsafe { CStr::from_ptr(extension_id) };
 
-    dispatch_extension!(id,
-        CLAP_EXT_THREAD_CHECK       => HOST_THREAD_CHECK,
-        CLAP_EXT_LOG                => HOST_LOG,
-        CLAP_EXT_PARAMS             => HOST_PARAMS,
-        CLAP_EXT_STATE              => HOST_STATE,
-        CLAP_EXT_LATENCY            => HOST_LATENCY,
-        CLAP_EXT_TAIL               => HOST_TAIL,
-        CLAP_EXT_GUI                => HOST_GUI,
-        CLAP_EXT_AUDIO_PORTS        => HOST_AUDIO_PORTS,
-        CLAP_EXT_NOTE_PORTS         => HOST_NOTE_PORTS,
-        CLAP_EXT_TIMER_SUPPORT      => HOST_TIMER_SUPPORT,
-        CLAP_EXT_NOTE_NAME          => HOST_NOTE_NAME,
-        CLAP_EXT_VOICE_INFO         => HOST_VOICE_INFO,
-        CLAP_EXT_PRESET_LOAD        => HOST_PRESET_LOAD,
-        CLAP_EXT_AUDIO_PORTS_CONFIG => HOST_AUDIO_PORTS_CONFIG,
-        CLAP_EXT_REMOTE_CONTROLS    => HOST_REMOTE_CONTROLS,
-        CLAP_EXT_TRACK_INFO         => HOST_TRACK_INFO,
-        CLAP_EXT_EVENT_REGISTRY     => HOST_EVENT_REGISTRY,
-        CLAP_EXT_TRANSPORT_CONTROL  => HOST_TRANSPORT_CONTROL,
-        CLAP_EXT_CONTEXT_MENU       => HOST_CONTEXT_MENU,
-        CLAP_EXT_THREAD_POOL        => HOST_THREAD_POOL,
-        CLAP_EXT_AMBISONIC          => HOST_AMBISONIC,
-        CLAP_EXT_SURROUND           => HOST_SURROUND,
-        CLAP_EXT_TRIGGERS           => HOST_TRIGGERS,
-        CLAP_EXT_TUNING             => HOST_TUNING,
-        CLAP_EXT_RESOURCE_DIRECTORY => HOST_RESOURCE_DIRECTORY,
-        CLAP_EXT_UNDO               => HOST_UNDO,
-    );
-    #[cfg(unix)]
-    if id == CLAP_EXT_POSIX_FD_SUPPORT {
-        return &HOST_POSIX_FD_SUPPORT as *const _ as *const c_void;
-    }
+        dispatch_extension!(id,
+            CLAP_EXT_THREAD_CHECK       => HOST_THREAD_CHECK,
+            CLAP_EXT_LOG                => HOST_LOG,
+            CLAP_EXT_PARAMS             => HOST_PARAMS,
+            CLAP_EXT_STATE              => HOST_STATE,
+            CLAP_EXT_LATENCY            => HOST_LATENCY,
+            CLAP_EXT_TAIL               => HOST_TAIL,
+            CLAP_EXT_GUI                => HOST_GUI,
+            CLAP_EXT_AUDIO_PORTS        => HOST_AUDIO_PORTS,
+            CLAP_EXT_NOTE_PORTS         => HOST_NOTE_PORTS,
+            CLAP_EXT_TIMER_SUPPORT      => HOST_TIMER_SUPPORT,
+            CLAP_EXT_NOTE_NAME          => HOST_NOTE_NAME,
+            CLAP_EXT_VOICE_INFO         => HOST_VOICE_INFO,
+            CLAP_EXT_PRESET_LOAD        => HOST_PRESET_LOAD,
+            CLAP_EXT_AUDIO_PORTS_CONFIG => HOST_AUDIO_PORTS_CONFIG,
+            CLAP_EXT_REMOTE_CONTROLS    => HOST_REMOTE_CONTROLS,
+            CLAP_EXT_TRACK_INFO         => HOST_TRACK_INFO,
+            CLAP_EXT_EVENT_REGISTRY     => HOST_EVENT_REGISTRY,
+            CLAP_EXT_TRANSPORT_CONTROL  => HOST_TRANSPORT_CONTROL,
+            CLAP_EXT_CONTEXT_MENU       => HOST_CONTEXT_MENU,
+            CLAP_EXT_THREAD_POOL        => HOST_THREAD_POOL,
+            CLAP_EXT_AMBISONIC          => HOST_AMBISONIC,
+            CLAP_EXT_SURROUND           => HOST_SURROUND,
+            CLAP_EXT_TRIGGERS           => HOST_TRIGGERS,
+            CLAP_EXT_TUNING             => HOST_TUNING,
+            CLAP_EXT_RESOURCE_DIRECTORY => HOST_RESOURCE_DIRECTORY,
+            CLAP_EXT_UNDO               => HOST_UNDO,
+        );
+        #[cfg(unix)]
+        if id == CLAP_EXT_POSIX_FD_SUPPORT {
+            return &HOST_POSIX_FD_SUPPORT as *const _ as *const c_void;
+        }
 
-    ptr::null()
+        ptr::null()
+    })
 }

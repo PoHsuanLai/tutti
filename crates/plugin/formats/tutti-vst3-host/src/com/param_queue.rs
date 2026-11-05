@@ -15,6 +15,7 @@
 //! list lends a queue a larger buffer for a block
 //! ([`lend_from`](ParamValueQueueImpl::lend_from)).
 
+use crate::guard::guard;
 use vst3::Steinberg::{
     Vst::{IParamValueQueue, IParamValueQueueTrait, kNoParamId},
     kInvalidArgument, kResultFalse, kResultOk, tresult,
@@ -179,32 +180,34 @@ impl ParamValueQueueImpl {
 impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// `kNoParamId` while another thread is resetting the queue.
     unsafe fn getParameterId(&self) -> u32 {
-        self.try_param_id().unwrap_or(kNoParamId)
+        guard(kNoParamId, || self.try_param_id().unwrap_or(kNoParamId))
     }
 
     /// Zero while another thread is writing the queue.
     unsafe fn getPointCount(&self) -> i32 {
-        self.points.try_borrow().map_or(0, |p| p.len() as i32)
+        guard(0, || self.points.try_borrow().map_or(0, |p| p.len() as i32))
     }
 
     /// `kResultFalse` while another thread is writing the queue.
     unsafe fn getPoint(&self, index: i32, sample_offset: *mut i32, value: *mut f64) -> tresult {
-        let Some(points) = self.points.try_borrow() else {
-            return kResultFalse;
-        };
-        if index < 0 || index >= points.len() as i32 {
-            return kInvalidArgument;
-        }
-        let point = &points[index as usize];
-        if !sample_offset.is_null() {
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
-            // ABI.
-            unsafe { *sample_offset = point.sample_offset };
-        }
-        if !value.is_null() {
-            unsafe { *value = point.value.get() };
-        }
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(points) = self.points.try_borrow() else {
+                return kResultFalse;
+            };
+            if index < 0 || index >= points.len() as i32 {
+                return kInvalidArgument;
+            }
+            let point = &points[index as usize];
+            if !sample_offset.is_null() {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // ABI.
+                unsafe { *sample_offset = point.sample_offset };
+            }
+            if !value.is_null() {
+                unsafe { *value = point.value.get() };
+            }
+            kResultOk
+        })
     }
 
     /// Adds the plugin's point within the queue's room, `kResultOk` with
@@ -219,32 +222,34 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// While another thread reads or writes the queue the point is dropped,
     /// `kResultFalse`, and counted when the count is free too.
     unsafe fn addPoint(&self, sample_offset: i32, value: f64, index: *mut i32) -> tresult {
-        let Some(mut points) = self.points.try_borrow_mut() else {
-            self.count_dropped();
-            return kResultFalse;
-        };
-        let point = ParameterPoint {
-            sample_offset,
-            // Inbound across the ABI: the *plugin* calls this, so the value is
-            // as untrusted as anything else crossing that edge. `Normalized`
-            // clamps it, which is a guard this direction never had.
-            value: Normalized::new(value),
-        };
-        let at = match points.try_push(point) {
-            Ok(()) => Some(points.len() - 1),
-            Err(point) => {
+        guard(vst3::Steinberg::kInternalError, || {
+            let Some(mut points) = self.points.try_borrow_mut() else {
                 self.count_dropped();
-                points.replace_latest(point)
+                return kResultFalse;
+            };
+            let point = ParameterPoint {
+                sample_offset,
+                // Inbound across the ABI: the *plugin* calls this, so the value is
+                // as untrusted as anything else crossing that edge. `Normalized`
+                // clamps it, which is a guard this direction never had.
+                value: Normalized::new(value),
+            };
+            let at = match points.try_push(point) {
+                Ok(()) => Some(points.len() - 1),
+                Err(point) => {
+                    self.count_dropped();
+                    points.replace_latest(point)
+                }
+            };
+            match at {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // ABI.
+                Some(i) if !index.is_null() => unsafe { *index = i as i32 },
+                Some(_) => {}
+                None => return kResultFalse,
             }
-        };
-        match at {
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
-            // ABI.
-            Some(i) if !index.is_null() => unsafe { *index = i as i32 },
-            Some(_) => {}
-            None => return kResultFalse,
-        }
-        kResultOk
+            kResultOk
+        })
     }
 }
 

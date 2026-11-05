@@ -5,7 +5,7 @@
 //!
 //! A keyboard reaches it the same way: through a `MidiQueueNode` wired to
 //! its input. Driven by hand (a test, a bench), its events are handed to it
-//! the same way, through `tutti_graph::contract::{drive_in, Direct}`.
+//! the same way, through `tutti_graph::contract::{drive_input, Direct}`.
 //!
 //! Its controls are its [`ParamSet`]: the master volume and, with a unison
 //! engine, the unison detune and stereo spread, by `UnitParam`. It is a

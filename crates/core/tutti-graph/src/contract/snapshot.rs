@@ -28,7 +28,7 @@
 //! whose control is inaudible fails loudly instead of claiming coverage.
 //!
 //! Every render is prepared at [`SAMPLE_RATE`](super::SAMPLE_RATE), reset,
-//! and driven through [`drive_in`](super::drive_in) in blocks of [`BLOCK`]
+//! and driven through [`drive_input`](super::drive_input) in blocks of [`BLOCK`]
 //! frames. Comparisons are within one run on one machine, so bit equality
 //! is sound on every platform.
 
@@ -182,7 +182,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
                 .map(|ch| (0..size).map(|i| stimulus(ch, done + i)).collect())
                 .collect();
             let refs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
-            // `drive_in`, not `drive`: the block's length is the `Env`'s, so
+            // `drive_input`, not `drive`: the block's length is the `Env`'s, so
             // a generator with no inputs (an LFO) renders too.
             let env = crate::node::Env {
                 frame: tutti_types::Frame(done as u64),
@@ -198,7 +198,7 @@ impl<N: ParamNode + Clone> IsolateRow<N> {
                     next_epoch: 0,
                 },
             };
-            let block = super::drive_in(&mut node, &env, &refs, &[], &[]).audio;
+            let block = super::drive_input(&mut node, &env, &refs, &[], &[]).audio;
             for (out, b) in rendered.iter_mut().zip(block) {
                 out.extend(b);
             }

@@ -322,8 +322,12 @@ fn run_scheduled(
         }
     }
     if executor {
-        assert_eq!(exec.dropped_events(), 0, "nothing was dropped");
-        assert_eq!(exec.unrouted_commands(), 0, "the recorder never went away");
+        assert_eq!(exec.dropped_event_count(), 0, "nothing was dropped");
+        assert_eq!(
+            exec.unrouted_command_count(),
+            0,
+            "the recorder never went away"
+        );
         assert_eq!(ed.commands_outstanding(), 0, "every command landed");
     }
     let got = inbox.lock().unwrap().clone();
@@ -600,7 +604,7 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
             got, want,
             "{width} sources, all at offset 0, in source order"
         );
-        assert_eq!(exec.dropped_events(), 0);
+        assert_eq!(exec.dropped_event_count(), 0);
     }
 }
 

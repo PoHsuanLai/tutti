@@ -206,7 +206,7 @@ fn the_env_walk_is_the_env_beat() {
         .expect("room");
     // Into it, just before its end: wraps ~300 frames on.
     m.schedule(at(6_000), locate(1.99)).expect("room");
-    m.schedule(at(8_000), MotionEvent::stop_now())
+    m.schedule(at(8_000), MotionEvent::stop_unfaded())
         .expect("room");
     m.schedule(at(9_500), MotionEvent::Play).expect("room");
     // A beat-timed tempo step, mid-block.
@@ -440,7 +440,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     live_t.settings.loop_span.set_enabled(true);
     live_t
         .motion
-        .try_send(MotionEvent::locate_and_play(Beat(BAR_2)))
+        .try_send(MotionEvent::play_from(Beat(BAR_2)))
         .expect("room");
     for &n in &blocks {
         render(&live, ChannelLayout::MONO, n);

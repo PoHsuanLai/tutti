@@ -1112,7 +1112,7 @@ fn report_host_capability_score() {
         .with_tempo(128.0)
         .with_playing(true)
         .with_recording(true)
-        .with_time_signature(TimeSignature::from_parts(7, 8))
+        .with_time_signature(TimeSignature::from_raw(7, 8))
         .with_sample_rate(48_000.0)
         .with_position_beats(8.0, 3.75)
         .with_position_samples(180_000)

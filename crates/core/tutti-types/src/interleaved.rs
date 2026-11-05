@@ -136,7 +136,7 @@ impl<'a> Interleaved<'a> {
     /// exactly what [`fold_frame`](crate::fold_frame) takes, so a fold over a
     /// whole buffer needs no index arithmetic at all.
     #[inline]
-    pub fn frames(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
+    pub fn iter_frames(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
         self.data.chunks_exact(self.stride())
     }
 
@@ -281,7 +281,7 @@ impl<'a> InterleavedMut<'a> {
     /// Iterates frame by frame, mutably. Each item is `stride()` long — the
     /// shape [`fold_frame`](crate::fold_frame) writes into.
     #[inline]
-    pub fn frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_> {
+    pub fn iter_frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_> {
         let ch = self.stride();
         self.data.chunks_exact_mut(ch)
     }
@@ -420,15 +420,15 @@ mod tests {
     /// Every frame is exactly one stride wide, in order — the shape
     /// `fold_frame` consumes.
     #[test]
-    fn frames_yields_whole_frames_in_order() {
+    fn iter_frames_yields_whole_frames_in_order() {
         let buf: Vec<f32> = (0..12).map(|i| i as f32).collect();
         let it = Interleaved::new(&buf, ChannelLayout::QUAD);
 
-        let collected: Vec<&[f32]> = it.frames().collect();
+        let collected: Vec<&[f32]> = it.iter_frames().collect();
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0], &[0.0, 1.0, 2.0, 3.0]);
         assert_eq!(collected[2], &[8.0, 9.0, 10.0, 11.0]);
-        for (i, f) in it.frames().enumerate() {
+        for (i, f) in it.iter_frames().enumerate() {
             assert_eq!(f, it.frame(i), "frame({i}) must agree with the iterator");
         }
     }
@@ -443,7 +443,7 @@ mod tests {
         let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0];
         let it = Interleaved::new(&buf, ChannelLayout::STEREO);
         assert_eq!(it.len(), 2, "two whole frames; the fifth sample is a tail");
-        assert_eq!(it.frames().count(), 2, "chunks_exact drops the tail");
+        assert_eq!(it.iter_frames().count(), 2, "chunks_exact drops the tail");
         assert_eq!(it.samples().len(), 5, "but the data is still all there");
     }
 
@@ -545,16 +545,16 @@ mod tests {
         }
     }
 
-    /// A whole-buffer fold needs no index arithmetic: `frames()` hands
+    /// A whole-buffer fold needs no index arithmetic: `iter_frames()` hands
     /// `fold_frame` exactly what it takes.
     #[test]
-    fn frames_feeds_fold_frame_directly() {
+    fn iter_frames_feeds_fold_frame_directly() {
         // 5.1 with energy only in the centre channel.
         let buf = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
         let it = Interleaved::new(&buf, ChannelLayout::from(6u16));
 
         let mut out = [0.0f32; 2];
-        for f in it.frames() {
+        for f in it.iter_frames() {
             crate::fold_frame(f, &mut out);
         }
         assert!(
@@ -603,7 +603,7 @@ mod tests {
         {
             let mut it = InterleavedMut::new(&mut buf, ChannelLayout::STEREO);
             assert_eq!(it.len(), 4);
-            for (i, f) in it.frames_mut().enumerate() {
+            for (i, f) in it.iter_frames_mut().enumerate() {
                 f[0] = i as f32;
                 f[1] = -(i as f32);
             }

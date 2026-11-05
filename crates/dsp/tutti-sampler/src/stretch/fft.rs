@@ -31,7 +31,7 @@ impl Fft {
     }
 
     fn from_plan(plan: RealFft) -> Self {
-        let scratch = plan.make_scratch();
+        let scratch = plan.new_scratch();
         Self { plan, scratch }
     }
 

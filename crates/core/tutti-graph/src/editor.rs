@@ -138,7 +138,7 @@ pub enum CommitError {
         node: NodeKey,
     },
     /// A delta handed to [`Editor::package`] carries a crossfade the
-    /// verifier refuses ([`verify_fades`](crate::verify_fades)). Nothing was
+    /// verifier refuses ([`Plan::verify_fades`]). Nothing was
     /// sent.
     Fade(VerifyError),
     /// No node at this key ([`Editor::set_latency`]).
@@ -585,7 +585,7 @@ impl Editor {
     }
 
     /// Why the editor is poisoned, if it is ([`CommitError::Poisoned`]).
-    pub fn poisoned(&self) -> Option<&str> {
+    pub fn poison(&self) -> Option<&str> {
         self.poisoned.as_deref()
     }
 
@@ -1446,7 +1446,7 @@ impl Editor {
             })
             .collect();
         debug_assert_eq!(
-            crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta),
+            plan.verify_fades(self.base().map(|p| &**p), &delta),
             Ok(()),
             "`replace` checked every fade it attached"
         );
@@ -1484,7 +1484,7 @@ impl Editor {
     /// Nothing is sent on [`CommitError::Poisoned`],
     /// [`CommitError::Repreparing`], [`CommitError::Backpressure`],
     /// [`CommitError::TooManyOutputs`], or [`CommitError::Fade`] when the
-    /// delta's crossfades fail [`verify_fades`](crate::verify_fades).
+    /// delta's crossfades fail [`Plan::verify_fades`].
     pub fn package(
         &mut self,
         plan: Plan,
@@ -1501,7 +1501,7 @@ impl Editor {
         }
         self.limits.outputs(plan.global_outputs())?;
         self.fade_room(&delta)?;
-        crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta)
+        plan.verify_fades(self.base().map(|p| &**p), &delta)
             .map_err(CommitError::Fade)?;
         self.committed = None;
         self.send(plan, delta, units);
@@ -1520,7 +1520,7 @@ impl Editor {
     ///   delivered to whichever unit holds that key when it falls due.
     /// - A frame already past when the executor sees it lands at offset 0 of
     ///   that block and is counted
-    ///   ([`Executor::late_commands`](crate::Executor::late_commands)) —
+    ///   ([`Executor::late_command_count`](crate::Executor::late_command_count)) —
     ///   never dropped. Beats follow a different rule; see below.
     /// - At most [`COMMAND_CAPACITY`](crate::COMMAND_CAPACITY) commands are
     ///   outstanding; past that this returns

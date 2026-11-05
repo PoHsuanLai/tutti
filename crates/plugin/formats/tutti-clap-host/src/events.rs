@@ -2930,7 +2930,7 @@ mod tests {
             "the pool fills to its cap and no further"
         );
         assert!(
-            pool.overflowed(),
+            pool.is_overflowed(),
             "dropping events must be reported, not silent"
         );
         assert_eq!(
@@ -3410,7 +3410,7 @@ mod tests {
         assert_eq!(reassemble(&output.to_midi_events()), vec![message.clone()]);
         let mut pool = RtMidiEvents::new();
         output.fill_midi_events(&mut pool);
-        assert!(!pool.overflowed());
+        assert!(!pool.is_overflowed());
         assert_eq!(reassemble(pool.as_slice()), vec![message]);
         assert_eq!(unframed(&[0xF0, 1, 0xF7]), &[1]);
     }

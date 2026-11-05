@@ -738,7 +738,7 @@ mod tests {
                 let mut out = RtMidiEvents::new();
                 assert!(push_sysex(&mut out, 9, &message), "{len} bytes");
                 assert!(out.iter().all(|e| e.frame_offset == 9));
-                assert!(!out.overflowed());
+                assert!(!out.is_overflowed());
                 assert_eq!(feed(&mut asm, out.as_slice()), vec![framed(&body)]);
             }
         }
@@ -759,7 +759,7 @@ mod tests {
         let too_long = payload(room * 6 + 1);
         assert!(!push_sysex(&mut out, 0, &too_long));
         assert!(out.is_empty(), "no partial message");
-        assert!(out.overflowed());
+        assert!(out.is_overflowed());
 
         // What fits after another event is judged on the room that is left.
         let mut out = RtMidiEvents::new();

@@ -260,9 +260,9 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
             exec.process(n, &transport, &[&input[..]], &mut [&mut l[..], &mut r[..]]);
         }
     });
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
     assert!(l.iter().any(|&x| x != 0.0), "the gate rendered signal");
-    assert_eq!(exec.late_commands(), 1);
+    assert_eq!(exec.late_command_count(), 1);
     assert_eq!(
         ed.commands_outstanding(),
         1,
@@ -543,7 +543,7 @@ fn declared_event_capacities_are_allocation_free_on(workers: usize) {
     let refused = refused.load(Ordering::Relaxed);
     assert!(refused > before, "writers refused inside the gate");
     assert_eq!(
-        exec.dropped_events(),
+        exec.dropped_event_count(),
         refused,
         "only the writers refused anything"
     );

@@ -75,7 +75,7 @@ mod tests {
     use std::sync::Arc;
 
     use tutti_core::{SampleRate, Samples};
-    use tutti_graph::contract::drive_in;
+    use tutti_graph::contract::drive_input;
     use tutti_graph::{
         Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
     };
@@ -132,7 +132,7 @@ mod tests {
             };
             let events: &[Event] = if frame == 0 { &first } else { &[] };
             out.extend(
-                drive_in(&mut *node, &env, &[], &[], &[events])
+                drive_input(&mut *node, &env, &[], &[], &[events])
                     .audio
                     .swap_remove(0),
             );
@@ -221,7 +221,7 @@ mod tests {
                 play: tutti_graph::PlayClock::ZERO,
             };
             out.extend(
-                drive_in(&mut *node, &env, &[], &[], &[])
+                drive_input(&mut *node, &env, &[], &[], &[])
                     .audio
                     .swap_remove(0),
             );

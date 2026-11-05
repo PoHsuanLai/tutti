@@ -221,12 +221,12 @@ impl Pitch {
     /// octave convention — so neither spelling is a `[&str; 12]` table copied
     /// here and indexed by an open-coded `% 12`.
     pub fn note_name(&self) -> String {
-        self.note.sharp_name()
+        self.note.sharp_label()
     }
 
     /// Flat notation, e.g. `A4`, `Db5`.
     pub fn note_name_flat(&self) -> String {
-        self.note.flat_name()
+        self.note.flat_label()
     }
 }
 

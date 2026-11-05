@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — std-idiomatic names in tutti-types, tutti-core, tutti-cpal and tutti-graph
+
+Booleans are `is_*`, counters are `*_count`, and one operation has one name.
+No aliases are kept.
+
+| Old | New |
+|---|---|
+| `TaskGraph::aborted` | `is_aborted` |
+| `RtVec::overflowed` | `is_overflowed` |
+| `Editor::poisoned` | `poison` (the reason, as `Option<&str>`) |
+| `Interleaved::frames` (iterator), `frames_mut` | `iter_frames`, `iter_frames_mut` (`frames()` on planes stays the count) |
+| `MidiChannel::as_display_number` | `display_number` |
+| `RealFft::make_scratch`, `StagedRealFft::make_scratch` | `new_scratch` |
+| `Engine::settle_graph`, `Stopped::settle_graph` | `apply_pending` |
+| `MotionEvent::stop_now` | `stop_unfaded` |
+| `MotionEvent::stop_and_return` | `stop_then_locate` |
+| `MotionEvent::locate_and_play` | `play_from` |
+| `Note::sharp_name`, `Note::flat_name` (`String`) | `sharp_label`, `flat_label` |
+| `TapCons::pop_interleaved` | `pop_into` |
+| `GraphBuilder::event_connect` | `connect_events` |
+| `GraphBuilder::inputs_in`, `outputs_in` | `input_count`, `output_count` |
+| `GraphSpec::unrequire_resolution` | `clear_resolution` |
+| `late_commands`, `unrouted_commands`, `cancelled_commands` (`Executor`, `Reference`, `Transport`) | `late_command_count`, `unrouted_command_count`, `cancelled_command_count` |
+| `Executor::dropped_events`, `Reference::dropped_events` | `dropped_event_count` |
+| `WorkerPoolBuilder::spin` | `spin_budget` |
+| `TimeSignature::from_parts` (raw numbers, not an inverse of `into_parts`) | `from_raw` |
+| `TuttiDriver::from_parts` | `new` |
+| `tutti_graph::verify`, `verify_fades` | `Plan::verify`, `Plan::verify_fades` |
+| `contract::drive_in`, `Row::expect_latency` | `drive_input`, `with_expected_latency` |
+
 ### Changed — error and kind enums are `#[non_exhaustive]`
 
 Every public error enum, and the stage, kind and format enums a new variant is

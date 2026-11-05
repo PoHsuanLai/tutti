@@ -338,7 +338,7 @@ impl Pool for GatedPool {
 fn gated(participants: usize) -> Arc<GatedPool> {
     Arc::new(GatedPool(
         WorkerPool::builder(participants)
-            .spin(Duration::from_micros(1))
+            .spin_budget(Duration::from_micros(1))
             .idle(Duration::from_micros(1))
             .build(),
     ))

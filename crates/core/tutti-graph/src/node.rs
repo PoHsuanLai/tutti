@@ -76,7 +76,7 @@ pub struct Shape {
     /// The port's [`EventWriter`](crate::EventWriter) refuses the event
     /// that would exceed the capacity ([`EventRejected::Full`](crate::EventRejected::Full),
     /// returned to the node at once), and the executor counts it
-    /// ([`Executor::dropped_events`](crate::Executor::dropped_events)). The
+    /// ([`Executor::dropped_event_count`](crate::Executor::dropped_event_count)). The
     /// events already written stand. Refusing at compile time is not an
     /// option: how many events a node emits is data (a chord, a burst of
     /// controller moves), not a property of the graph. What the compiler

@@ -46,5 +46,5 @@ pub const RT_MIDI_CAPACITY: usize = 64;
 /// into: the host does not control how many events a plugin emits, so an
 /// unbounded pool puts a `malloc` in the audio callback at the plugin's
 /// discretion. [`RtVec`] refuses instead, and reports it through
-/// `overflowed()`.
+/// `is_overflowed()`.
 pub type RtMidiEvents = RtVec<MidiEvent, RT_MIDI_CAPACITY>;

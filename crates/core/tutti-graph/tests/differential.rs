@@ -599,11 +599,11 @@ proptest! {
                 let (a, b) = pair.block_at(n, &input, &t);
                 prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {}", frame);
                 // Only writers past a declared capacity refuse, alike in both.
-                prop_assert_eq!(pair.exec.dropped_events(), pair.reference.dropped_events());
-                prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands(), "late, frame {}", frame);
+                prop_assert_eq!(pair.exec.dropped_event_count(), pair.reference.dropped_event_count());
+                prop_assert_eq!(pair.exec.late_command_count(), pair.reference.late_command_count(), "late, frame {}", frame);
                 frame += n as u64;
             }
-            prop_assert_eq!(pair.exec.unrouted_commands(), pair.reference.unrouted_commands());
+            prop_assert_eq!(pair.exec.unrouted_command_count(), pair.reference.unrouted_command_count());
         }
     }
 
@@ -714,16 +714,16 @@ fn transport_case(seed: u64, which: usize) -> Result<(), TestCaseError> {
             let (a, b) = pair.block_with_changes(n, &input, &start, &changes);
             prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {}", frame);
             prop_assert_eq!(
-                pair.exec.late_commands(),
-                pair.reference.late_commands(),
+                pair.exec.late_command_count(),
+                pair.reference.late_command_count(),
                 "late, frame {}",
                 frame
             );
             frame += n as u64;
         }
         prop_assert_eq!(
-            pair.exec.unrouted_commands(),
-            pair.reference.unrouted_commands()
+            pair.exec.unrouted_command_count(),
+            pair.reference.unrouted_command_count()
         );
     }
     Ok(())
@@ -1163,7 +1163,7 @@ proptest! {
         let valid = desc.spec.validate().expect("valid");
         let (plan, _) = tutti_graph::compile(&valid, &common::shapes_of(&desc.kinds), &common::prepare(MAX_BLOCK), None)
             .expect("compiles");
-        tutti_graph::verify(&plan).expect("the verifier accepts it");
+        plan.verify().expect("the verifier accepts it");
         brute_force_interference(&plan);
     }
 }
@@ -1739,8 +1739,8 @@ impl EditorPair {
             // Only writers past a declared capacity (`Kind::Burst`) refuse,
             // alike in both; see `Pair::block_with_changes`.
             assert_eq!(
-                self.exec.dropped_events(),
-                self.reference.dropped_events(),
+                self.exec.dropped_event_count(),
+                self.reference.dropped_event_count(),
                 "the executor dropped events the reference did not"
             );
             assert_eq!(
@@ -1815,7 +1815,7 @@ proptest! {
             let (suspended, rest) = rest.split_at(k);
             pair.reprepare(p, suspended, &mut frame);
             pair.run(rest, &mut frame);
-            prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
+            prop_assert_eq!(pair.exec.late_command_count(), pair.reference.late_command_count());
         }
     }
 }

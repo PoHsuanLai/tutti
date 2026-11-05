@@ -104,8 +104,8 @@ impl Unit {
         }
         let forward = RealFft::new(2 * fft_size_in);
         let inverse = RealFft::new(2 * fft_size_out);
-        let mut scratch_fw = forward.make_scratch();
-        let scratch_inv = inverse.make_scratch();
+        let mut scratch_fw = forward.new_scratch();
+        let scratch_inv = inverse.new_scratch();
         let mut filter_f = vec![Complex32::new(0.0, 0.0); fft_size_in + 1];
         forward.forward(&filter_t, &mut filter_f, &mut scratch_fw);
         Self {

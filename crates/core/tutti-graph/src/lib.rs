@@ -142,11 +142,11 @@
 //! - Each event output port declares how many events it writes per block
 //!   ([`Shape::event_capacity`]), and every buffer downstream is sized from
 //!   that at compile time. A writer past it is refused the newest event and
-//!   the executor counts it ([`Executor::dropped_events`]); nothing
+//!   the executor counts it ([`Executor::dropped_event_count`]); nothing
 //!   downstream of a writer ever drops one.
 //! - [`Editor::schedule`] delivers an event on an exact frame or beat
 //!   ([`At`](tutti_types::At)). A late command lands at the start of the next
-//!   block and is counted ([`Executor::late_commands`]), never dropped.
+//!   block and is counted ([`Executor::late_command_count`]), never dropped.
 //! - Each node declares how finely it honours event offsets
 //!   ([`Shape::event_resolution`], a [`Resolution`]); an event edge marked
 //!   with [`GraphSpec::require_resolution`] into a node that cannot honour it
@@ -186,8 +186,8 @@
 //!
 //! - [`Reference`] is a naive interpreter the executor is checked against,
 //!   bit for bit.
-//! - [`verify`] and [`verify_fades`] check a [`Plan`] against its op DAG;
-//!   [`compile()`] runs `verify` in every debug build.
+//! - [`Plan::verify`] and [`Plan::verify_fades`] check a [`Plan`] against its
+//!   op DAG; [`compile()`] runs `verify` in every debug build.
 //! - [`GraphBuilder::renderer`] returns a [`Renderer`] that drives an
 //!   executor and hands back planar or interleaved output.
 //!
@@ -274,28 +274,3 @@ pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Continuity, Due, Offset, Playhead};
 pub use tutti_types::{BlockWaits, PlayReading};
-
-/// Checks `plan` against its op DAG: no slot shared by ops that may run
-/// concurrently, every read of the value it was meant to read, feedback read
-/// before it is captured. [`compile()`] runs this in every debug build.
-///
-/// # Errors
-///
-/// Returns the first [`VerifyError`] found.
-pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
-    compile::verify::verify(plan)
-}
-
-/// Checks the crossfades `delta` carries into `plan`, from `prev` (the plan
-/// running before it): each names a key the delta replaces, once, and the
-/// unit it fades from has the shape of the one it fades to in everything but
-/// its tail — ports, latency, in-place acceptance, event resolution, event
-/// capacity, declared params. [`Editor::package`] runs this on every delta
-/// it is handed.
-///
-/// # Errors
-///
-/// Returns the first [`VerifyError`] found.
-pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
-    compile::verify::verify_fades(prev, plan, delta)
-}

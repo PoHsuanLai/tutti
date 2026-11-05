@@ -225,7 +225,7 @@ impl HrtfBinaural {
             product: vec![zero; bins],
             frame: vec![0.0; n],
             frame_prev: vec![0.0; n],
-            scratch: set.fft.make_scratch(),
+            scratch: set.fft.new_scratch(),
             current,
             face_hint,
             aim,

@@ -56,7 +56,7 @@ fn limiter_row() -> Row {
         impulse(0),
         Detect::Threshold(0.0),
     )
-    .expect_latency(Samples(240))
+    .with_expected_latency(Samples(240))
 }
 
 /// Linked gain across a stereo pair: the impulse on the right channel must
@@ -69,7 +69,7 @@ fn stereo_limiter_row() -> Row {
         Detect::Threshold(0.0),
     )
     .output(1)
-    .expect_latency(Samples(240))
+    .with_expected_latency(Samples(240))
 }
 
 /// A 500 ms echo at mix 0.5: the dry half is the response, on the
@@ -85,7 +85,7 @@ fn delay_line_row() -> Row {
         impulse(0),
         Detect::Threshold(0.0),
     )
-    .expect_latency(Samples(0))
+    .with_expected_latency(Samples(0))
 }
 
 contract_tests!(audio limiter => limiter_row());
@@ -112,7 +112,7 @@ mod convolution {
             impulse(0),
             Detect::Threshold(1e-3),
         )
-        .expect_latency(Samples(256))
+        .with_expected_latency(Samples(256))
     }
 
     // Mix 0: all dry — the case where an undelayed dry half would leave first.

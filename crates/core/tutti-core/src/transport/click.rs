@@ -649,7 +649,7 @@ impl IntoNode for ClickNode {
 mod tests {
     use super::*;
     use crate::{Bpm, FrameClock};
-    use tutti_graph::contract::{drive_in, prepared};
+    use tutti_graph::contract::{drive_input, prepared};
     use tutti_graph::{Offset, TransportChanges};
     use tutti_types::Frame;
     use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
@@ -694,7 +694,7 @@ mod tests {
 
     /// One block, as `[left, right]`.
     fn block(node: &mut ClickNode, env: &Env) -> [Vec<f32>; 2] {
-        let out = drive_in(node, env, &[], &[], &[]).audio;
+        let out = drive_input(node, env, &[], &[], &[]).audio;
         let [l, r]: [Vec<f32>; 2] = out.try_into().expect("stereo");
         [l, r]
     }

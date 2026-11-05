@@ -469,7 +469,7 @@ place that loses precision to be written out explicitly:
    event: a sink with arrival latency `a` gets `At::Frame(F)` at its own
    frame `F + a` (a beat is resolved to its frame first; `NextBlock` is not
    shifted). **Frames and beats fall due differently.** A frame already past
-   lands at offset 0 of the next block and is counted (`late_commands`),
+   lands at offset 0 of the next block and is counted (`late_command_count`),
    never dropped. A beat fires when the playhead reaches or crosses it by
    *continuous playback* (a loop wrap landing at or after it counts); a seek
    or loop that jumps over it leaves it pending until reached or cancelled,
@@ -522,7 +522,7 @@ place that loses precision to be written out explicitly:
    the graph's rule on both paths (the Net path with the tempo its clock
    actually ran at, `tempo_in_force`, after the clock's hysteresis). A command past the 8-cut bound, or already past
    due, lands at the next block's first frame and is counted
-   (`late_commands`); an `At::NextBlock` needs no cut and is never late.
+   (`late_command_count`); an `At::NextBlock` needs no cut and is never late.
    Commands due on one frame apply in send order. On the Graph path the
    untimed state (tempo, loop, play state) is read **once** per block; a
    control-thread store during the block lands at the next one, and only an
@@ -1581,7 +1581,7 @@ Found on the way:
 `push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,
 `connect_output`, `set_source`, `set_output`, `pass_through`, `disconnect`,
 `pipe` for `pipe_all`, `pipe_input`, `pipe_output`, `chain`/`chain_unit`)
-plus `feedback` and `event_connect`, which `Net` has no counterpart for. It
+plus `feedback` and `connect_events`, which `Net` has no counterpart for. It
 holds a `GraphSpec` and the units, nothing else, and `build(Prepare)` goes
 through `Editor::insert` + `commit`, so it is not a second graph model.
 `Renderer` drives the executor in blocks with a supplied transport and
@@ -1631,7 +1631,7 @@ suite's `crossfades_are_bit_identical`:
   a re-prepare's cut fades included.
 - The reference interpreter implements all of this on its own, sharing only
   the gain law (`CrossfadeCurve::gains`); the verifier's rule 8,
-  `verify_fades`, checks every fade a delta carries against both plans and
+  `Plan::verify_fades`, checks every fade a delta carries against both plans and
   runs on every `Editor::package`.
 
 **`AudioGraphRes` is opaque.** Its field is private (a `compile_fail`
@@ -1786,7 +1786,7 @@ graph) runs on both backends through `both_backends!`.
 
 **Review of #32.** `Editor::replace` refuses while a re-prepare is between
 its commits (and on a poisoned editor) and consumes its node. The native
-`replace` asks first (`Editor::is_repreparing`, `Editor::poisoned`) and hands
+`replace` asks first (`Editor::is_repreparing`, `Editor::poison`) and hands
 the unit back as `ReplaceRefused::Busy`; `crossfade_audio_node` binds the
 incoming unit's captured controls only when the replace lands, parks a busy
 one in `PendingCrossfades` (applied on the first frame after the re-prepare
@@ -2821,7 +2821,7 @@ stayed at the old rate until the re-prepare resumed, so a disk source that
 seeked in that window pre-rolled by old-rate sample counts (`Net` had
 committed and published before the first block). Now tutti-cpal hands a
 restart hook a `Stopped` — the engine, constructible only while the stream
-is stopped — whose `settle_graph` calls `unsafe fn Engine::settle_graph` (tutti-core,
+is stopped — whose `apply_pending` calls `unsafe fn Engine::apply_pending` (tutti-core,
 new; since made safe, #116): install the editor's commits and follow the rate with the engine's
 clock and the transport's scheduled commands, exactly as the next block's
 settle would. The hook sets the transport's rate (the rescale mark), then
@@ -2952,7 +2952,7 @@ store between pieces. Decisions:
   `graph_block_capacity() -> Option<Samples>` (`None` for a `Net` engine) is
   `block_capacity() -> Samples`, and `DEFAULT_GRAPH_BLOCK_CAPACITY`
   `DEFAULT_BLOCK_CAPACITY` (review). `GraphEngineError` keeps its name (it is
-  the graph the engine refuses), and so does `settle_graph` (it settles the
+  the graph the engine refuses), and so does `apply_pending` (it settles the
   graph specifically, and was just made `unsafe` in #45).
 - **A second `TransportClock` in the graph is the caller's rule, not
   enforced.** The docs had said `Engine::new` "forbids" one; nothing did.
@@ -5150,8 +5150,8 @@ the one place that says what a ported node can rely on:
   units, like equal latencies.
 - **Overflow: drop the newest, and count it.** A writer past its declared
   capacity refuses the event (`EventRejected::Full`, returned to the node
-  at the push) and the executor counts it (`Executor::dropped_events`;
-  `Reference::dropped_events` for the oracle). An `Engine` forwards the
+  at the push) and the executor counts it (`Executor::dropped_event_count`;
+  `Reference::dropped_event_count` for the oracle). An `Engine` forwards the
   count to its load meter after each call (`LoadReading::dropped_events`),
   so a host running the graph on a device sees it. Refusing at compile
   time is not possible: how many events a node emits is data. What the
@@ -5174,7 +5174,7 @@ the one place that says what a ported node can rely on:
   scheduled-command overlay) — on the commit that already allocates that
   state. A FIFO above its bound never grows: while the backlog is at or
   past the new limit, a new non-note-off is refused (dropped, counted in
-  `dropped_events`) and a note-off takes the reserve or evicts, as at any
+  `dropped_event_count`) and a note-off takes the reserve or evicts, as at any
   full FIFO; so rendering stays allocation-free. Before, the excess went
   out a block late, or further behind when more of it fell due in later
   blocks. Pinned by `event_ports.rs`'s
@@ -5430,7 +5430,7 @@ under both.
   be crossfaded; JR stamping still works per drained batch rather than per
   block of the graph's clock.
 - **A clip denser than `CLIP_EVENT_CAPACITY` in one block** has the rest
-  refused and counted (`Executor::dropped_events`); with no cursor they are
+  refused and counted (`Executor::dropped_event_count`); with no cursor they are
   not retried. The capacity is sized for any real clip at the largest block;
   a cursor that resumes after a refusal is the fix if one is not. (Note-offs
   it owes are retried: `HeldNotes::owed`.)
@@ -5460,7 +5460,7 @@ under both.
   a very short loop can fill `CLIP_EVENT_CAPACITY` (256 a block): a loop of
   a few frames with a note in it is a note-on and a note-off a pass. Past
   it the port refuses and the executor counts the refusal
-  (`dropped_events`); the note-offs a refusal leaves owed are retried. A
+  (`dropped_event_count`); the note-offs a refusal leaves owed are retried. A
   harmony node's wraps inside a block re-state only the chord or scale
   that differs from what it last sent (a receiver holds the context), so a
   loop with no change in it costs nothing a pass, and one with a change
@@ -5631,7 +5631,7 @@ under both.
   `kVstSysExType` event). It is
   delivered whole or not at all: a message whose packets do not all fit the
   block's `RT_MIDI_CAPACITY` pool is dropped and latches the pool's
-  `overflowed` (VST3 also counts it in `EventList::dropped`, whether the
+  `is_overflowed` (VST3 also counts it in `EventList::dropped`, whether the
   arena at `addEvent` or the pool at `fill_midi_events` refused it; VST2 in
   `dropped_midi_out`), since a `START` without its `END` would corrupt the
   stream after it. VST2's check assumes one producer, as
@@ -5806,7 +5806,7 @@ under both.
   - The step runs whether or not the node is then skipped, so its ramps
     and declick follow the timeline as the reference's do.
   - A crossfade keeps the key's param state, so its two units must declare
-    the same params (`Editor::replace`, `verify_fades`); a fork copies the
+    the same params (`Editor::replace`, `Plan::verify_fades`); a fork copies the
     modulation, and `upstream` walks param sources, so an export forks the
     modulators too.
 - **`Legacy` bridge.** An `AudioUnit` cannot read `Io`, so `tutti-node`
@@ -6756,7 +6756,7 @@ unit that never saw `Prepare::max_block`; every voice is a
   `process` and a block is never longer than `max_block`. The piece loops
   stay only on a `#[cold]`, `#[inline(never)]` path for a block longer than
   the scratch, which the crate's own hand-driven tests reach throughout
-  (`testing::block`/`play` and `contract::drive_in` call `process` without
+  (`testing::block`/`play` and `contract::drive_input` call `process` without
   a `prepare`): a pool or `VoiceNode` is built with `UNPREPARED_FRAMES`
   (64) of scratch and renders past it in pieces that long; a
   `MemorySource` or `DiskVoice` without positions renders through a

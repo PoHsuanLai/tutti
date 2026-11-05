@@ -50,6 +50,7 @@ use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples, Tail, UnitParam};
 
 use crate::arena::Role;
+use crate::compile::VerifyError;
 use crate::cost::{Schedule, Work};
 use crate::fade::Fade;
 use crate::io::PortKind;
@@ -791,7 +792,7 @@ pub struct Value {
 ///
 /// Plain data (`Send + Sync`, `Vec`s of indices and a closed [`Op`] enum),
 /// so it is shared with the audio thread as one `Arc` and a test or the
-/// [`verify`](crate::verify) pass can read every decision the compiler made.
+/// [`Plan::verify`] pass can read every decision the compiler made.
 /// Most hosts never look inside one: [`Editor::commit`](crate::Editor::commit)
 /// compiles and ships it.
 ///
@@ -850,6 +851,33 @@ const _: fn() = || {
 };
 
 impl Plan {
+    /// Checks the plan against its op DAG: no slot shared by ops that may run
+    /// concurrently, every read of the value it was meant to read, feedback
+    /// read before it is captured. [`compile()`](fn@crate::compile) runs this in
+    /// every debug build.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`VerifyError`] found.
+    pub fn verify(&self) -> Result<(), VerifyError> {
+        crate::compile::verify::verify(self)
+    }
+
+    /// Checks the crossfades `delta` carries into this plan, from `prev` (the
+    /// plan running before it): each names a key the delta replaces, once, and
+    /// the unit it fades from has the shape of the one it fades to in
+    /// everything but its tail: ports, latency, in-place acceptance, event
+    /// resolution, event capacity, declared params.
+    /// [`Editor::package`](crate::Editor::package) runs this on every delta it
+    /// is handed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`VerifyError`] found.
+    pub fn verify_fades(&self, prev: Option<&Plan>, delta: &Delta) -> Result<(), VerifyError> {
+        crate::compile::verify::verify_fades(prev, self, delta)
+    }
+
     /// What this plan was compiled for. An executor refuses a plan prepared
     /// for anything else.
     pub fn prepare(&self) -> &Prepare {
@@ -1098,14 +1126,14 @@ pub struct Delta {
     /// `replace`, at most once. `compile` never fills this — a fade is an
     /// edit, not part of the graph value — the editor attaches it (see
     /// [`Editor::replace`](crate::Editor::replace)), and
-    /// [`verify_fades`](crate::verify_fades) checks it.
+    /// [`Plan::verify_fades`] checks it.
     pub fades: Vec<(NodeKey, Fade)>,
     /// Kept units whose crossfade, running or waiting, is **cut**: every
     /// unit at the key but the newest retires. A hard edit that is not a new
     /// generation — [`Editor::set_latency`](crate::Editor::set_latency) —
     /// attaches it, since a fade's two units must share the latency the
     /// plan compensates. Harmless on a key with no fade. `compile` never
-    /// fills it; [`verify_fades`](crate::verify_fades) checks it.
+    /// fills it; [`Plan::verify_fades`] checks it.
     pub cuts: Vec<Placement>,
     /// The store length the new plan needs.
     pub store_len: u32,

@@ -108,7 +108,7 @@ tutti-sampler = { path = ".", features = ["test-support"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# `contract` for the node harnesses (`drive_in`, `Direct`, `BlockRig`).
+# `contract` for the node harnesses (`drive_input`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 # `ControlProgram`, for a control lane on a voice's gain port
 # (`voice_gain_survives_commit.rs`). No cycle: `tutti-mod` names no tutti

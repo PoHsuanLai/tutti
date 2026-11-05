@@ -76,7 +76,7 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
                 std::sync::Arc::new(
                     tutti_core::WorkerPool::builder(participants)
                         .name("tutti-clap-pool")
-                        .spin(std::time::Duration::from_micros(10))
+                        .spin_budget(std::time::Duration::from_micros(10))
                         .idle(std::time::Duration::from_micros(50))
                         .on_start(std::sync::Arc::new(|_| {
                             crate::server::raise_to_realtime("a clap.thread-pool helper")

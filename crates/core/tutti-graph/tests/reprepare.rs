@@ -466,7 +466,7 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     );
     assert_eq!(rig.ed.commit(), Ok(()), "collects, resumes, then commits");
     assert!(!rig.ed.is_repreparing(), "resumed");
-    assert_eq!(rig.ed.poisoned(), None);
+    assert_eq!(rig.ed.poison(), None);
     rig.exec.process(
         128,
         &Transport::default(),
@@ -553,7 +553,7 @@ fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
         .expect("the first half succeeds");
     exec.apply_pending();
     ed.collect(); // the second half fails here — and must not unwind
-    assert!(ed.poisoned().is_some_and(|c| c.contains(cause)));
+    assert!(ed.poison().is_some_and(|c| c.contains(cause)));
     assert!(!ed.is_repreparing(), "poisoned is not waiting");
     match ed.commit() {
         Err(CommitError::Poisoned { cause: c }) => assert!(c.contains(cause), "{c}"),
@@ -697,7 +697,7 @@ fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
         // 30 after their timeline frames.
         assert_eq!(got, vec![(70_001, 1_530), (70_000, 2_030)]);
     }
-    assert_eq!(rig.exec.late_commands(), 0);
+    assert_eq!(rig.exec.late_command_count(), 0);
 }
 
 /// Two frames a rate change rounds to one frame keep their order: 999 and

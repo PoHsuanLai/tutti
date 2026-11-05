@@ -36,7 +36,7 @@ fn engine(
     let direct = g.add(Unforkable(Pulse::new(Latency::ZERO)));
     let pdc = g.add(Unforkable(Pulse::new(Latency::ZERO)));
     let sibling = g.add(Unforkable(Latent::new(Latency::new(Samples(D)))));
-    g.event_connect(sibling, 0, pdc, 0);
+    g.connect_events(sibling, 0, pdc, 0);
     g.connect_output(pdc, 0, 0).connect_output(direct, 0, 1);
     let (mut ed, exec) = g
         .build(Prepare::new(SampleRate(SR), Samples(max_block)))

@@ -882,7 +882,7 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     ed.collect();
     render(&mut exec, 8, 0);
     assert_eq!(seen.load(Ordering::Relaxed), 60);
-    assert_eq!(exec.dropped_events(), 0);
+    assert_eq!(exec.dropped_event_count(), 0);
 }
 
 /// A node fed **out of band**: it adds `level` (a shared cell a control

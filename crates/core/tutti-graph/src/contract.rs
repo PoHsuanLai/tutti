@@ -443,7 +443,7 @@ impl Row {
     /// lookahead), so a declaration and a DSP that drift *together* still
     /// fail.
     #[must_use]
-    pub fn expect_latency(mut self, latency: Samples) -> Self {
+    pub fn with_expected_latency(mut self, latency: Samples) -> Self {
         self.latency = Some(latency);
         self
     }
@@ -681,7 +681,11 @@ impl Row {
             "{ctx}: the edit never happened"
         );
         if matches!(feed, Feed::AtFrame | Feed::AtBeat) {
-            assert_eq!(rig.exec.late_commands(), 0, "{ctx}: the command was late");
+            assert_eq!(
+                rig.exec.late_command_count(),
+                0,
+                "{ctx}: the command was late"
+            );
             assert_eq!(
                 rig.ed.commands_outstanding(),
                 0,
@@ -841,18 +845,18 @@ impl Row {
                 let lat = g.add(Unforkable(Latent::new(Latency::new(Samples(
                     SIBLING_LATENCY,
                 )))));
-                g.event_connect(lat, 0, n, p);
+                g.connect_events(lat, 0, n, p);
             }
             match feed {
                 Feed::Source => {
                     let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
-                    g.event_connect(e, 0, n, p);
+                    g.connect_events(e, 0, n, p);
                     feeder = Some((e, FeederKind::Emitter(Frame(f), kind)));
                 }
                 Feed::FanIn => {
                     let late = g.add(Unforkable(Emitter::new(Frame(f + gap), kind)));
                     let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
-                    g.event_connect(late, 0, n, p).event_connect(e, 0, n, p);
+                    g.connect_events(late, 0, n, p).connect_events(e, 0, n, p);
                 }
                 Feed::AtFrame | Feed::AtBeat => {}
             }
@@ -1517,7 +1521,7 @@ macro_rules! contract_tests {
 /// For a node's own unit tests, which inspect its state between blocks —
 /// what a [`Solo`](crate::Solo), whose node the executor owns, cannot show.
 /// `node` must already be [`prepare`](Node::prepare)d for a maximum block
-/// at least this long ([`prepared`]). [`drive_in`] is the same call under a
+/// at least this long ([`prepared`]). [`drive_input`] is the same call under a
 /// transport, with events.
 ///
 /// # Panics
@@ -1543,10 +1547,10 @@ pub fn drive(
         changes: TransportChanges::NONE,
         play: crate::PlayClock::ZERO,
     };
-    drive_in(node, &env, inputs, params, &[]).audio
+    drive_input(node, &env, inputs, params, &[]).audio
 }
 
-/// What [`drive_in`] rendered: each audio output, and what the node wrote
+/// What [`drive_input`] rendered: each audio output, and what the node wrote
 /// to each event output.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Driven {
@@ -1556,7 +1560,7 @@ pub struct Driven {
     pub events: Vec<Vec<Event>>,
 }
 
-/// The most events [`drive_in`] and [`Direct`] accept on each event output
+/// The most events [`drive_input`] and [`Direct`] accept on each event output
 /// port per block: more than any node in the tree writes in one.
 pub const HAND_EVENT_CAPACITY: usize = 1024;
 
@@ -1574,7 +1578,7 @@ pub const HAND_EVENT_CAPACITY: usize = 1024;
 /// If the block is empty, an input is not the block long or the input
 /// count is not the node's, or an event list is unsorted or reaches past
 /// the block ([`SortedEvents::new`](crate::SortedEvents::new)).
-pub fn drive_in(
+pub fn drive_input(
     node: &mut dyn Node,
     env: &Env,
     inputs: &[&[f32]],
@@ -1816,7 +1820,7 @@ impl BlockRig {
 }
 
 /// One node called by hand, block after block, **without allocating** —
-/// [`drive_in`] with its buffers built once. For a node's bench, or an
+/// [`drive_input`] with its buffers built once. For a node's bench, or an
 /// allocation gate that needs its param ports fed or its events played
 /// (which [`BlockRig`], with no param or event source, cannot). Inputs,
 /// params and outputs are buffers of the prepared frames; fill them between

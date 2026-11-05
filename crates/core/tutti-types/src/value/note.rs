@@ -149,7 +149,7 @@ impl PitchClass {
 ///
 /// let c_sharp_5 = a4.transpose(Semitones(4.0));
 /// assert_eq!(c_sharp_5.class(), PitchClass::CSharp);
-/// assert_eq!(c_sharp_5.flat_name(), "Db5");
+/// assert_eq!(c_sharp_5.flat_label(), "Db5");
 ///
 /// // A9 is a note, but not a MIDI note number.
 /// assert!(u8::try_from(Note::new(PitchClass::A, 9)).is_err());
@@ -293,13 +293,13 @@ impl Note {
 
     /// Returns the sharp spelling with octave: `A4`, `C#5`. Same as `Display`.
     #[must_use]
-    pub fn sharp_name(self) -> String {
+    pub fn sharp_label(self) -> String {
         format!("{}{}", self.class.sharp_name(), self.octave)
     }
 
     /// Returns the flat spelling with octave: `A4`, `Db5`.
     #[must_use]
-    pub fn flat_name(self) -> String {
+    pub fn flat_label(self) -> String {
         format!("{}{}", self.class.flat_name(), self.octave)
     }
 
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn a4_is_440_hz_by_definition() {
         assert!((Note::A4.frequency().get() - 440.0).abs() < 1e-3);
-        assert_eq!(Note::A4.sharp_name(), "A4");
+        assert_eq!(Note::A4.sharp_label(), "A4");
     }
 
     #[test]
@@ -373,8 +373,8 @@ mod tests {
     #[test]
     fn the_two_spellings_name_the_same_pitch() {
         let cs4 = Note::new(PitchClass::CSharp, 4);
-        assert_eq!(cs4.sharp_name(), "C#4");
-        assert_eq!(cs4.flat_name(), "Db4");
+        assert_eq!(cs4.sharp_label(), "C#4");
+        assert_eq!(cs4.flat_label(), "Db4");
         assert!(cs4.class().is_accidental());
         assert!(!Note::C4.class().is_accidental());
     }

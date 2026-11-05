@@ -288,7 +288,7 @@ mod tests {
         let t = transport(&app);
         t.motion.try_send(MotionEvent::Play).expect("room");
         t.motion
-            .schedule(At::Frame(Frame(66_150)), MotionEvent::stop_now())
+            .schedule(At::Frame(Frame(66_150)), MotionEvent::stop_unfaded())
             .expect("room");
         let before = play(&mut app, &old, 441, 100);
         assert!(

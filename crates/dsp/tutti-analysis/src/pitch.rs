@@ -78,7 +78,7 @@ impl PitchDetector {
         let fft_size = (max_period * 2).next_power_of_two();
         let fft = RealFft::new(fft_size);
         let bins = fft.bins();
-        let fft_scratch = fft.make_scratch();
+        let fft_scratch = fft.new_scratch();
 
         Self {
             cfg,

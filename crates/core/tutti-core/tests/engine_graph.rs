@@ -365,7 +365,7 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
         },
     )
     .expect("room");
-    m.schedule(At::Beat(Beat(10.5)), MotionEvent::stop_now())
+    m.schedule(At::Beat(Beat(10.5)), MotionEvent::stop_unfaded())
         .expect("room");
     // 500-frame blocks put the seek on a block's first frame; 700-frame ones
     // put the stop inside a block.
@@ -382,7 +382,7 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
     assert!((at(36_000).1 - 10.5).abs() < 1e-9);
     assert!(m.is_stopped());
     assert_eq!(m.scheduled_outstanding(), 0);
-    assert_eq!(m.late_commands(), 0);
+    assert_eq!(m.late_command_count(), 0);
 }
 
 /// A constant 1.0 that logs the transport at every frame: the declick gain
@@ -631,7 +631,7 @@ fn a_past_frame_lands_at_once_and_is_counted() {
         .expect("room");
     let out = render(&engine, ChannelLayout::MONO, &[256]);
     assert_eq!(out[0], 1.0, "at the block's first frame");
-    assert_eq!(transport.motion.late_commands(), 1);
+    assert_eq!(transport.motion.late_command_count(), 1);
 }
 
 /// Tempo and loop changes at a frame: the beat advances at the old tempo up
@@ -837,8 +837,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
         1,
     );
     let m = &transport.motion;
-    m.try_send(MotionEvent::locate_and_play(Beat(3.0)))
-        .expect("room");
+    m.try_send(MotionEvent::play_from(Beat(3.0))).expect("room");
     // Armed at beat ~3.04, behind the playhead.
     m.schedule(
         At::Frame(Frame(1_000)),
@@ -1086,7 +1085,7 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
-        .schedule(At::Beat(Beat(10.0)), MotionEvent::stop_now())
+        .schedule(At::Beat(Beat(10.0)), MotionEvent::stop_unfaded())
         .expect("room");
     for _ in 0..480 {
         render(&engine, ChannelLayout::MONO, &[512]);
@@ -1320,7 +1319,7 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
         .motion
-        .schedule(At::Frame(Frame(44_100)), MotionEvent::stop_now())
+        .schedule(At::Frame(Frame(44_100)), MotionEvent::stop_unfaded())
         .expect("room");
 
     render(&engine, ChannelLayout::MONO, &[441; 50]);
@@ -1357,7 +1356,7 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
         .map(|e| e.0)
         .expect("the stop landed");
     assert_eq!(stop, 48_000, "one second, at the new rate");
-    assert_eq!(transport.motion.late_commands(), 0);
+    assert_eq!(transport.motion.late_command_count(), 0);
 }
 
 // ---- one playhead writer, and its segment generation ----------------------

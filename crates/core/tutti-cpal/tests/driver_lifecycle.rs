@@ -128,7 +128,7 @@ fn the_engine_reports_the_spec_it_was_opened_at() {
 fn a_restarted_stream_renders_from_a_different_thread() {
     let (_t, state) = rolling_state(2);
     let engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
-    let mut driver = TuttiDriver::from_parts(engine, state);
+    let mut driver = TuttiDriver::new(engine, state);
 
     let (d1, s1) = ManualStreamDriver::new();
     driver.start_with(d1).unwrap();
@@ -277,7 +277,7 @@ fn the_fault_handle_survives_a_restart() {
 fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
     let (_t, state) = rolling_state(2);
     let engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
-    let mut driver = TuttiDriver::from_parts(engine, state);
+    let mut driver = TuttiDriver::new(engine, state);
     let (d1, s1) = ManualStreamDriver::new();
     driver.start_with(d1).unwrap();
 
@@ -312,7 +312,7 @@ fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
 fn a_restart_whose_hook_fails_stays_stopped() {
     let (_t, state) = rolling_state(2);
     let engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
-    let mut driver = TuttiDriver::from_parts(engine, state);
+    let mut driver = TuttiDriver::new(engine, state);
     let (d1, _s1) = ManualStreamDriver::new();
     driver.start_with(d1).unwrap();
 

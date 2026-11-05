@@ -237,7 +237,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, stereo);
     let (lane, _) = g.add_with_controls(held);
     let (plugin, controls) = g.add_with_controls(client);
-    g.event_connect(lane, 0, plugin, 0);
+    g.connect_events(lane, 0, plugin, 0);
     g.pipe_output(plugin);
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let mut live = g.renderer(prepare).expect("the graph compiles");

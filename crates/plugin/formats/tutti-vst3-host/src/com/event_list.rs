@@ -433,7 +433,7 @@ impl EventList {
     /// Drains the plugin's emitted MIDI events into a caller-supplied pool.
     /// Clears `out` first and never grows it: the plugin decides how many
     /// events it emits, so events past the pool's cap are dropped rather than
-    /// heap-allocated on the audio thread. `out.overflowed()` reports it.
+    /// heap-allocated on the audio thread. `out.is_overflowed()` reports it.
     pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         let mut inner = self.inner.borrow_mut();
@@ -873,7 +873,7 @@ mod tests {
             assert_eq!(unsafe { ptr.addEvent(&mut e) }, kResultOk, "{len} bytes");
             let mut pool = RtMidiEvents::new();
             list.fill_midi_events(&mut pool);
-            assert!(!pool.overflowed());
+            assert!(!pool.is_overflowed());
             assert!(pool.iter().all(|m| m.frame_offset == 11));
             assert_eq!(reassembled(pool.as_slice()), vec![message], "{len} bytes");
             assert_eq!(list.dropped(), 0);
@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(list.dropped(), 0);
         let mut pool = RtMidiEvents::new();
         list.fill_midi_events(&mut pool);
-        assert!(pool.overflowed());
+        assert!(pool.is_overflowed());
         assert_eq!(list.dropped(), 1);
         assert_eq!(reassembled(pool.as_slice()), vec![framed(&first)]);
     }

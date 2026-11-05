@@ -21,7 +21,7 @@
 //!
 //! **Driven by hand, unprepared.** A node driven straight through
 //! `Node::process` without a `prepare` (the crate's own
-//! `testing::block`/`play`, `contract::drive_in`, which the sampler's unit
+//! `testing::block`/`play`, `contract::drive_input`, which the sampler's unit
 //! tests use throughout) is still served: it is built with
 //! [`UNPREPARED_FRAMES`] of scratch, and a block longer than its scratch
 //! renders in pieces that long, on a `#[cold]` path the prepared render

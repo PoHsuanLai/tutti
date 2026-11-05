@@ -1047,20 +1047,28 @@ pub struct FileFacts {
 
 pub fn classify(record: Option<&PluginRecord>, facts: &FileFacts) -> ScanDecision;
 pub fn needs_rescan(record: &PluginRecord, facts: &FileFacts) -> bool;
-pub fn blacklist_record(existing: Option<&PluginRecord>, reason: String, facts: &FileFacts) -> PluginRecord;
+pub fn is_blacklisted_and_unchanged(record: &PluginRecord, facts: &FileFacts) -> bool;
+pub fn blacklist_record(existing: Option<&PluginRecord>, path: &Path, reason: String, facts: &FileFacts) -> PluginRecord;
 pub fn missing<'a>(records: impl Iterator<Item = &'a PluginRecord>, present: &HashSet<PathBuf>) -> Vec<PathBuf>;
-pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error>;
-pub fn parse_pedal(text: &str) -> Option<PathBuf>;
+pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error>; // `json` feature
+fn parse_pedal(text: &str) -> Option<PathBuf>;                                                    // private to the pedal
 ```
 
-`scan` is the IO: it walks the directories (`discover`, `fs.rs:67`), stats each
-file once into `FileFacts`, and calls `classify`. The catalog's default methods
-that read the filesystem go; they take facts instead. `JsonCatalog::load` and
-`Pedal::recover` keep the read, the rename and the remove, and call
-`parse_records` and `parse_pedal` for the decision. **`tutti_plugin_types::bundle`
-stays the one bundle walk**; the scan's `discover` and `FileFacts` use
-`native_module_in_bundle` and `any_module_in_bundle`, and nothing writes another
-copy (fp-edge F5, F6).
+`ScanDecision` is `Blacklisted | UpToDate | Probe`. `scan` is the IO: it walks the
+directories (`discover`, `fs.rs`), reads each file's `FileFacts` once
+(`FileFacts::read`, one `stat`), and calls `classify`, then probes with the same
+facts, so the record is stamped with the time the decision saw. The catalog's
+default methods that read the filesystem take the facts instead
+(`needs_rescan(path, &facts)`, `blacklist(path, reason, &facts)`), and
+`prune_missing` takes the set of paths the caller found present. `JsonCatalog::load`
+and `Pedal::recover` keep the read, the rename and the remove, and call
+`parse_records` and `parse_pedal` for the decision. `blacklist_record` always
+stamps the facts' time, existing record or stub: keeping the old time left a
+blacklisted record whose file had changed looking changed, so it was re-probed on
+every scan. `discover` and `FileFacts` key on the path's extension and the path's
+own `stat` (a bundle's directory time); the bundle walk
+(`tutti_plugin_types::bundle`) is for loading, and nothing in discovery writes
+another copy of it (fp-edge F5, F6).
 
 ### 2.9 Safety
 

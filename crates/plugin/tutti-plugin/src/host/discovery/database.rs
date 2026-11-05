@@ -11,6 +11,16 @@ use tracing::{debug, warn};
 /// Disambiguates concurrent temp files within one process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Parses the JSON a [`JsonCatalog`] writes into its records, keyed by path.
+///
+/// # Errors
+///
+/// Returns the parse error for text that is not a JSON list of records.
+pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error> {
+    let list: Vec<PluginRecord> = serde_json::from_str(text)?;
+    Ok(list.into_iter().map(|r| (r.path.clone(), r)).collect())
+}
+
 /// A [`PluginCatalog`] that keeps records in memory and persists them as a JSON
 /// file.
 ///
@@ -33,10 +43,10 @@ impl JsonCatalog {
     pub fn load(db_path: impl Into<PathBuf>) -> Self {
         let db_path = db_path.into();
         let records = match std::fs::read_to_string(&db_path) {
-            Ok(json) => match serde_json::from_str::<Vec<PluginRecord>>(&json) {
-                Ok(list) => {
-                    debug!("loaded {} plugin records from {:?}", list.len(), db_path);
-                    list.into_iter().map(|r| (r.path.clone(), r)).collect()
+            Ok(json) => match parse_records(&json) {
+                Ok(records) => {
+                    debug!("loaded {} plugin records from {:?}", records.len(), db_path);
+                    records
                 }
                 Err(e) => {
                     // Do not silently discard: move the unreadable file aside
@@ -150,6 +160,7 @@ impl PluginCatalog for JsonCatalog {
 #[cfg(test)]
 mod tests {
     use super::super::catalog::CatalogExt;
+    use super::super::facts::FileFacts;
     use super::super::record::{Blacklist, PluginFormat};
     use super::super::record::{PluginClass, PluginDescriptor};
     use super::*;
@@ -184,57 +195,13 @@ mod tests {
     }
 
     #[test]
-    fn needs_rescan_missing_entry() {
-        let dir = TempDir::new().unwrap();
-        let db = JsonCatalog::empty(dir.path().join("db.json"));
-        assert!(db.needs_rescan(Path::new("/plugins/unknown.vst3")));
-    }
-
-    #[test]
-    fn needs_rescan_changed_mtime() {
-        let dir = TempDir::new().unwrap();
-        let plugin_file = dir.path().join("test.vst3");
-        std::fs::write(&plugin_file, b"fake plugin").unwrap();
-
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
-        db.upsert(PluginRecord {
-            path: plugin_file.clone(),
-            format: PluginFormat::Vst3,
-            descriptor: PluginDescriptor::default(),
-            modification_time: 0,
-            blacklist: Blacklist::Ok,
-        });
-
-        assert!(db.needs_rescan(&plugin_file));
-    }
-
-    #[test]
-    fn needs_rescan_up_to_date() {
-        let dir = TempDir::new().unwrap();
-        let plugin_file = dir.path().join("test.vst3");
-        std::fs::write(&plugin_file, b"fake plugin").unwrap();
-        let mtime = super::super::fs::file_modification_time(&plugin_file).unwrap();
-
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
-        db.upsert(PluginRecord {
-            path: plugin_file.clone(),
-            format: PluginFormat::Vst3,
-            descriptor: PluginDescriptor::default(),
-            modification_time: mtime,
-            blacklist: Blacklist::Ok,
-        });
-
-        assert!(!db.needs_rescan(&plugin_file));
-    }
-
-    #[test]
     fn blacklisting() {
         let dir = TempDir::new().unwrap();
         let mut db = JsonCatalog::empty(dir.path().join("db.json"));
         let path = Path::new("/plugins/crashy.vst3");
 
         assert!(!db.is_blacklisted(path));
-        db.blacklist(path, "crashed during scan".into());
+        db.blacklist(path, "crashed during scan".into(), &FileFacts::read(path));
         assert!(db.is_blacklisted(path));
 
         assert_eq!(db.plugins().count(), 0);
@@ -249,40 +216,12 @@ mod tests {
 
         {
             let mut db = JsonCatalog::empty(&db_path);
-            db.blacklist(&path, "segfault".into());
+            db.blacklist(&path, "segfault".into(), &FileFacts::read(&path));
             db.flush().unwrap();
         }
 
         let db = JsonCatalog::load(&db_path);
         assert!(db.is_blacklisted(&path));
-    }
-
-    #[test]
-    fn prune_missing() {
-        let dir = TempDir::new().unwrap();
-        let existing = dir.path().join("exists.vst3");
-        std::fs::write(&existing, b"real").unwrap();
-
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
-        db.upsert(PluginRecord {
-            path: existing.clone(),
-            format: PluginFormat::Vst3,
-            descriptor: PluginDescriptor::default(),
-            modification_time: 0,
-            blacklist: Blacklist::Ok,
-        });
-        db.upsert(PluginRecord {
-            path: PathBuf::from("/nonexistent/gone.vst3"),
-            format: PluginFormat::Vst3,
-            descriptor: PluginDescriptor::default(),
-            modification_time: 0,
-            blacklist: Blacklist::Ok,
-        });
-
-        assert_eq!(db.len(), 2);
-        db.prune_missing();
-        assert_eq!(db.len(), 1);
-        assert!(db.plugins().any(|r| r.path == existing));
     }
 
     #[test]
@@ -372,5 +311,52 @@ mod tests {
         let json = std::fs::read_to_string(&db_path).unwrap();
         let parsed: Vec<PluginRecord> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.len(), 1);
+    }
+
+    // Mutation records: the property each in-memory parse test pins and the edit
+    // that breaks it.
+
+    /// Mutation: key the map by anything but `record.path` (the lookup fails).
+    #[test]
+    fn parse_records_keys_by_path() {
+        let json = serde_json::to_string(&[test_record("a"), test_record("b")]).unwrap();
+        let records = parse_records(&json).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[&PathBuf::from("/plugins/a.vst3")].descriptor.name,
+            "a"
+        );
+    }
+
+    /// Mutation: swallow the parse error (`unwrap_or_default`), which would hide
+    /// a corrupt file from the quarantine in `load`.
+    #[test]
+    fn parse_records_refuses_text_that_is_not_a_record_list() {
+        assert!(parse_records("not valid json{{{").is_err());
+        assert!(parse_records("{}").is_err());
+        assert!(parse_records("").is_err());
+    }
+
+    /// Mutation: collect into a map without the path key, or drop duplicates the
+    /// wrong way round (the later record must win, as `upsert` does).
+    #[test]
+    fn parse_records_keeps_the_later_of_two_records_with_one_path() {
+        let first = test_record("a");
+        let mut second = test_record("a");
+        second.modification_time = 5;
+        let json = serde_json::to_string(&[first, second]).unwrap();
+        let records = parse_records(&json).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.values().next().unwrap().modification_time, 5);
+    }
+
+    /// A record written before the blacklist field existed still parses, as
+    /// healthy. Mutation: drop `#[serde(default)]` on `PluginRecord::blacklist`.
+    #[test]
+    fn parse_records_reads_a_record_with_no_blacklist_field_as_healthy() {
+        let mut value = serde_json::to_value([test_record("a")]).unwrap();
+        value[0].as_object_mut().unwrap().remove("blacklist");
+        let records = parse_records(&value.to_string()).unwrap();
+        assert!(!records.values().next().unwrap().blacklist.is_blacklisted());
     }
 }

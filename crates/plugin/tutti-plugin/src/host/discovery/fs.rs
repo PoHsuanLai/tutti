@@ -1,5 +1,6 @@
 //! Filesystem primitives for plugin discovery.
 
+use super::facts::FileFacts;
 use super::record::PluginFormat;
 use std::path::{Path, PathBuf};
 use tracing::debug;
@@ -28,8 +29,8 @@ pub(super) const FORMAT_BY_EXTENSION: &[(&str, PluginFormat)] = &[
 /// a real and common case. Matching case-sensitively would make those bundles
 /// invisible — and since a `.VST3` bundle *is* a directory, the scanner would
 /// recurse *into* it and silently find nothing.
-pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
+pub fn format_from_path(path: impl AsRef<Path>) -> Option<PluginFormat> {
+    let ext = path.as_ref().extension().and_then(|s| s.to_str())?;
     let ext = ext.to_ascii_lowercase();
     FORMAT_BY_EXTENSION
         .iter()
@@ -37,13 +38,24 @@ pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
         .map(|(_, format)| *format)
 }
 
-/// Returns a file's modification time as seconds since the Unix epoch.
-pub fn file_modification_time(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+impl FileFacts {
+    /// Reads the facts for `path` with one `stat`.
+    ///
+    /// The scan's filesystem edge: every decision after it is a pure function of
+    /// the value.
+    pub fn read(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path);
+        Self {
+            exists: metadata.is_ok(),
+            mtime: metadata
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs()),
+            format: format_from_path(path),
+        }
+    }
 }
 
 /// Recursively discovers plugin files across `dirs`, with the format each
@@ -64,8 +76,10 @@ pub fn file_modification_time(path: &Path) -> Option<u64> {
 ///
 /// Unreadable directories are skipped, not reported — discovery over a list of
 /// standard install locations must not fail because one of them is absent.
-pub fn discover(dirs: &[PathBuf]) -> Vec<(PathBuf, PluginFormat)> {
-    dirs.iter().flat_map(|dir| discover_plugins(dir)).collect()
+pub fn discover(dirs: impl IntoIterator<Item = impl AsRef<Path>>) -> Vec<(PathBuf, PluginFormat)> {
+    dirs.into_iter()
+        .flat_map(|dir| discover_plugins(dir.as_ref()))
+        .collect()
 }
 
 /// Recursively discover plugin files in `dir`.
@@ -219,5 +233,21 @@ mod tests {
 
         let found = discover_plugins(dir.path());
         assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn file_facts_read_reports_a_file_a_missing_path_and_the_extension() {
+        let dir = TempDir::new().unwrap();
+        let file = create_fake_plugin(dir.path(), "a.clap");
+
+        let present = FileFacts::read(&file);
+        assert!(present.exists);
+        assert!(present.mtime.is_some_and(|t| t > 0));
+        assert_eq!(present.format, Some(PluginFormat::Clap));
+
+        let absent = FileFacts::read(dir.path().join("gone.vst3"));
+        assert!(!absent.exists);
+        assert_eq!(absent.mtime, None);
+        assert_eq!(absent.format, Some(PluginFormat::Vst3));
     }
 }

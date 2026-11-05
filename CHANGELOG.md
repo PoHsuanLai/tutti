@@ -17,6 +17,27 @@ plugin (design 016 §2.1). New in `tutti-plugin-types`: `Event`, `HostOp`,
 `MAX_STEP_EFFECTS`, `TIMERS_PER_TICK`, `FDS_PER_TICK`, `step`; `SampleRate` is re-exported beside `Samples`. Nothing calls it yet.
 `proptest` joins the crate's dev-dependencies.
 
+### Changed — plugin discovery decides over values
+
+The scan reads the filesystem once per candidate into `FileFacts { exists, mtime,
+format }` (`FileFacts::read`), and the decisions are pure functions of it (design
+016 §2.8): `classify(Option<&PluginRecord>, &FileFacts) -> ScanDecision`,
+`needs_rescan`, `is_blacklisted_and_unchanged`, `blacklist_record`, `missing`,
+all exported from `tutti_plugin::catalog`, plus `JsonCatalog`'s `parse_records`.
+`CatalogExt` no longer touches the disk:
+
+| Old | New |
+| --- | --- |
+| `needs_rescan(&Path)`, `is_blacklisted_and_unchanged(&Path)` | take `(impl AsRef<Path>, &FileFacts)` |
+| `blacklist(&Path, String)` | `blacklist(impl AsRef<Path>, String, &FileFacts)` |
+| `prune_missing(&mut self)` (stat-ed each path) | `prune_missing(&mut self, present: &HashSet<PathBuf>) -> Vec<PathBuf>` |
+| `file_modification_time(&Path)` | removed; `FileFacts::read(path).mtime` |
+| `discover(&[PathBuf])`, `format_from_path(&Path)`, `PluginRecord::probe(&Path)`, `Plugins::{is_blacklisted, open, blacklist, unblacklist, remove, register_path}(&Path, ..)` | `impl AsRef<Path>` |
+
+Fixed: blacklisting an existing record kept its old modification time, so a
+plugin that failed after its file changed was re-probed on every scan; the
+blacklist now stamps the file's current time, as it did for a new stub.
+
 ### Changed — SampleFormat and Layout move to tutti-plugin-types
 
 `SampleFormat` is defined in `tutti-plugin-types` (`tutti_plugin::protocol` still

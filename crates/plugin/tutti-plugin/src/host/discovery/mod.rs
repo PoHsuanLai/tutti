@@ -2,7 +2,9 @@
 //!
 //! **Pure** — [`discover`] walks directories and returns paths;
 //! [`PluginRecord::probe`](record::PluginRecord::probe) turns one path into one
-//! record. Neither touches a store. An app that wants to own persistence
+//! record. Neither touches a store. Every decision about a candidate
+//! ([`classify`], [`needs_rescan`], [`blacklist_record`], [`missing`]) is a pure
+//! function of a [`FileFacts`] read once at the edge and a catalog record. An app that wants to own persistence
 //! entirely (records in a CRDT, a database, or just a `Vec`) needs nothing else
 //! from this module.
 //!
@@ -21,6 +23,7 @@
 pub mod catalog;
 #[cfg(feature = "json")]
 pub mod database;
+mod facts;
 mod fs;
 mod pedal;
 pub mod record;
@@ -29,11 +32,11 @@ pub mod scanner;
 pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
 pub use database::JsonCatalog;
-// `file_modification_time` is reached as `crate::host::discovery::…` from
-// `plugins.rs`, but only under `cfg(test)` — so a lib-only build sees this
-// re-export as unused while removing it breaks `cargo test`.
-#[allow(unused_imports)]
-pub use fs::{discover, file_modification_time, format_from_path};
+pub use facts::{
+    FileFacts, ScanDecision, blacklist_record, classify, is_blacklisted_and_unchanged, missing,
+    needs_rescan,
+};
+pub use fs::{discover, format_from_path};
 pub use record::{
     AuComponentType, Blacklist, ClapFeature, PluginClass, PluginDescriptor, PluginFormat,
     PluginRecord, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,

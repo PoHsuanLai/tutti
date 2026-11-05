@@ -82,10 +82,11 @@ pub mod catalog {
     #[cfg(feature = "json")]
     pub use crate::host::discovery::JsonCatalog;
     pub use crate::host::discovery::{
-        AuComponentType, Blacklist, CatalogExt, ClapFeature, PluginCatalog, PluginClass,
-        PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanHandle,
-        ScanPhase, ScanProgress, ScanResult, Vst2Category, Vst3PlugType, Vst3SubCategories,
-        discover,
+        AuComponentType, Blacklist, CatalogExt, ClapFeature, FileFacts, PluginCatalog, PluginClass,
+        PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanDecision,
+        ScanHandle, ScanPhase, ScanProgress, ScanResult, Vst2Category, Vst3PlugType,
+        Vst3SubCategories, blacklist_record, classify, discover, is_blacklisted_and_unchanged,
+        missing, needs_rescan,
     };
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};

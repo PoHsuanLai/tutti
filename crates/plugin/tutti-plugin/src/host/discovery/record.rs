@@ -150,21 +150,22 @@ impl PluginRecord {
     /// [`BridgeError::ServerNotFound`] when the `plugin-server` binary cannot
     /// be located, and a timeout, I/O or protocol variant when the subprocess
     /// cannot be reached.
-    pub fn probe(path: &Path) -> Result<Self, BridgeError> {
-        let format = super::fs::format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
+    pub fn probe(path: impl AsRef<Path>) -> Result<Self, BridgeError> {
+        let path = path.as_ref();
+        let facts = super::facts::FileFacts::read(path);
+        let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: crate::error::LoadStage::Opening,
             reason: "unrecognized plugin extension".to_string(),
         })?;
 
         let descriptor = crate::host::subprocess::probe_metadata(path)?;
-        let modification_time = super::fs::file_modification_time(path).unwrap_or(0);
 
         Ok(PluginRecord {
             path: path.to_path_buf(),
             format,
             descriptor,
-            modification_time,
+            modification_time: facts.mtime.unwrap_or(0),
             blacklist: Blacklist::Ok,
         })
     }

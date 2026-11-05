@@ -1015,7 +1015,7 @@ copy (fp-edge F5, F6).
   (`instance.rs:197`). The same review covers `PluginInterfaces`, `EditorState`
   and the VST3 library handle (`plugin_state.rs:91-92,158-159`,
   `library.rs:80-81`) and `ClapEvent` (`events.rs:95-96`). `BufferPtrs<T>` bounds
-  its impls on `T: Sample` and makes its fields private (`channels.rs:80-81`).
+  its impls on `T: Sample` and makes its fields private (`BufferPtrs`).
 - **The AU safe surface.** `AuComponentInfo.component` becomes an opaque
   `AuComponentRef` that only `component::enumerate*` and `find_component` build,
   so `AuLoaded::new(&AuComponentRef, Prepare)` is safe. `AuParameterListener`,

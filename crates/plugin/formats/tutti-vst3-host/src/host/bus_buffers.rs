@@ -268,9 +268,16 @@ impl<T: Vst3Sample> BusBuffers<T> {
     }
 }
 
+/// How many of `requested` caller channels `BufferPtrs::prepare` actually
+/// put in a table of `slots` entries. `fill_bus` must be given this, never
+/// the caller's count: it reads one table entry per live channel.
+pub(super) fn live_len(requested: usize, slots: usize) -> usize {
+    requested.min(slots)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BusBuffers, MIN_PTR_COUNT};
+    use super::{BusBuffers, MIN_PTR_COUNT, live_len};
     use std::ffi::c_void;
     use tutti_types::ChannelLayout;
 
@@ -403,6 +410,34 @@ mod tests {
             let scp = *p1.add(0);
             assert_eq!(scp, sc.as_mut_ptr());
             assert_eq!(*scp, 7.0);
+        }
+    }
+
+    /// More caller channels than table slots: only the filled slots reach
+    /// the bus, and the bus channel beyond them reads as silent `aux`.
+    ///
+    /// Mutation: pass `inputs.len()` (3) to `prepare` instead of `live_len`
+    /// → `fill_bus` reads slot 2 of the 2-slot table (out of bounds) and
+    /// channel 2 is not the aux pointer, so the assertions fail (or miri
+    /// reports the read).
+    #[test]
+    fn surplus_caller_channels_are_not_read_past_the_table() {
+        let mut bb = BusBuffers::<f32>::new(&[3], ChannelLayout::from(3u16), BLOCK);
+        let mut ptrs = tutti_plugin_types::BufferPtrs::<f32>::new(2, 0);
+        assert_eq!(ptrs.input_len(), 2);
+        let (a, b, c) = ([1.0f32; BLOCK], [2.0f32; BLOCK], [3.0f32; BLOCK]);
+        let (table, _) = ptrs.prepare(&[&a, &b, &c], &mut []);
+        let n = live_len(3, ptrs.input_len());
+        assert_eq!(n, 2);
+        // SAFETY: `table` has `n` filled slots and outlives the call.
+        let bus = unsafe { bb.prepare(table as *const *mut c_void, n, true) };
+        // SAFETY: `bus` is bus 0 of the one-bus scratch; its table has 3+ slots.
+        unsafe {
+            let chans = (*bus).__field0.channelBuffers32 as *const *mut f32;
+            assert_eq!(*chans.add(0) as *const f32, a.as_ptr());
+            assert_eq!(*chans.add(1) as *const f32, b.as_ptr());
+            assert_ne!(*chans.add(2) as *const f32, c.as_ptr());
+            assert_eq!((*bus).silenceFlags, 1 << 2);
         }
     }
 

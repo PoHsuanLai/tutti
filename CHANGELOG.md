@@ -14,12 +14,16 @@ stream handle (`cpal::Stream` is `!Send`: CoreAudio and WASAPI tie it to its
 creating thread, and `CpalStream` is `pub`). Each stream is now built, played
 and dropped on a thread of its own, and the handle is a channel plus a join
 handle: dropping it, from any thread, drops the stream on its owner and waits.
-`CpalStream` is still `Send` but opening a stream or a `MicIn` now spawns a
-thread. `tutti-plugin-types`'s `BufferPtrs<T>` is `Send`/`Sync` only for
+`CpalStream` is still `Send`. Opening a stream or a `MicIn` now spawns a
+thread, and a panic while opening is reported as `Error::Io`.
+`tutti-plugin-types`'s `BufferPtrs<T>` is `Send`/`Sync` only for
 `T: Sample`; its `input`/`output` fields are private (use `input_len`/
 `output_len`), the input table is `*const T`, and `prepare` returns
 `(*const *const c_void, *mut *mut c_void)`, so the cast to the C APIs'
-`**mut` for inputs is made, with its safety argument, at the FFI call.
+`**mut` for inputs is made, with its safety argument, at the FFI call. The
+VST3 host also clamps the channel counts it hands `fill_bus` to the table's
+slot counts, which closes an out-of-bounds read when a caller passed more
+channels than the tables held.
 
 ### Fixed — VST2 loads no longer race on a global
 

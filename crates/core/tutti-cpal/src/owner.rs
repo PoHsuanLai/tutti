@@ -4,15 +4,16 @@
 //! thread that created it. [`Owned`] builds the stream on a dedicated thread,
 //! keeps it there, and drops it there when the handle is dropped. The handle
 //! holds only a channel and a join handle, so it is `Send` without an
-//! `unsafe impl`.
+//! `unsafe impl`. Do not create a COM object on the owner thread that another
+//! thread calls into: it is a WASAPI STA with no message pump.
 
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
 use crate::error::{Error, Result};
 
-/// The handle to a value `S` owned by its own thread. Dropping it asks that
-/// thread to drop `S` and waits for it, so the stream is stopped when the drop
+/// The handle to a value owned by its own thread. Dropping it asks that
+/// thread to drop the value and waits for it, so the stream is stopped when the drop
 /// returns.
 pub(crate) struct Owned {
     stop: Option<mpsc::Sender<()>>,
@@ -21,7 +22,7 @@ pub(crate) struct Owned {
 
 impl Owned {
     /// Runs `build` on a new thread and keeps the value it returns there until
-    /// `self` is dropped. `S` need not be `Send`: it is created, held and
+    /// `self` is dropped. The value need not be `Send`: it is created, held and
     /// dropped on that one thread.
     ///
     /// # Errors
@@ -134,14 +135,33 @@ mod tests {
         assert_ne!(created, thread::current().id());
     }
 
-    /// A failed build reports its error and leaves no thread behind.
+    /// A failed build reports its error, and by the time `spawn` returns the
+    /// build closure (and what it captured) has been dropped on the owner thread.
     ///
     /// Mutation: swallow the `Err` and send `Ok(())` → `spawn` returns `Ok`
-    /// → fails.
+    /// → fails; return before the closure runs (skip `build()`) → the guard
+    /// is never dropped there → `expect` fails.
     #[test]
     fn a_failed_build_is_reported() {
-        let r = Owned::spawn::<()>("probe", || Err(Error::InvalidConfig("no".into())));
+        struct Guard(Arc<Mutex<Option<ThreadId>>>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                thread::sleep(std::time::Duration::from_millis(100));
+                *self.0.lock().unwrap() = Some(thread::current().id());
+            }
+        }
+        let dropped = Arc::new(Mutex::new(None));
+        let guard = Guard(Arc::clone(&dropped));
+        let r = Owned::spawn::<()>("probe", move || {
+            let _guard = guard;
+            Err(Error::InvalidConfig("no".into()))
+        });
         assert!(matches!(r, Err(Error::InvalidConfig(_))));
+        let id = dropped
+            .lock()
+            .unwrap()
+            .expect("closure dropped before return");
+        assert_ne!(id, thread::current().id());
     }
 
     /// A panicking build is an error, not a hang.

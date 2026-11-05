@@ -319,10 +319,15 @@ mod tests {
         let (o0p, o1p) = (o0.as_mut_ptr(), o1.as_mut_ptr());
         let (ins, outs) = p.prepare(&[&a, &b], &mut [&mut o0, &mut o1]);
         // SAFETY: one slot per table, filled just above; the buffers live on.
+        // The slots' neighbours are not read: the tables have exactly one entry.
         unsafe {
             assert_eq!(*(ins as *const *const f32), a.as_ptr());
             assert_eq!(*(outs as *const *mut f32), o0p);
         }
+        // Surplus channels did not grow or land in the tables.
+        assert_eq!((p.input_len(), p.output_len()), (1, 1));
+        assert_ne!(*unsafe { &*(ins as *const *const f32) }, b.as_ptr());
+        assert_ne!(*unsafe { &*(outs as *const *mut f32) }, o1p);
         assert_ne!(o0p, o1p);
     }
 }

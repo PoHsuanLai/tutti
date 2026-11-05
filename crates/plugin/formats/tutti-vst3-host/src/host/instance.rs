@@ -55,7 +55,7 @@ use crate::types::{
     ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample, to_process_context,
 };
 
-use super::bus_buffers::{BusBuffers, DirectionScratch};
+use super::bus_buffers::{BusBuffers, DirectionScratch, live_len};
 use super::loaded::Vst3Loaded;
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, MidiCcMapping, midi_to_mapped_controller, stage_input_events};
@@ -613,10 +613,15 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // the per-bus `AudioBusBuffers` arrays: bus 0 maps onto the live
         // channels, extra input buses get silence, extra output buses a sink.
         let (input_ptrs, output_ptrs) = self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
+        // `prepare` drops channels beyond its slot count, so only that many
+        // slots are filled; nothing upstream checks the caller's width here.
+        let live_inputs = live_len(buffer.inputs.len(), self.audio.ptrs.input_len());
+        let live_outputs = live_len(buffer.outputs.len(), self.audio.ptrs.output_len());
         let num_input_buses = self.audio.input.buses.num_buses();
         let num_output_buses = self.audio.output.buses.num_buses();
         // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
-        // pointer arrays (length = buffer.inputs/outputs.len()), valid until the
+        // pointer arrays; `live_inputs`/`live_outputs` are clamped to the tables'
+        // slot counts, so `fill_bus` never reads an unfilled slot. Valid until the
         // `processor.process` call below; the scratch tables are pre-sized.
         // The input table is cast `*const` to `*mut` because `AudioBusBuffers`
         // types its channels `**mut`; VST3 defines input buffers as read-only
@@ -624,14 +629,14 @@ impl<T: Vst3Sample> Vst3Active<T> {
         let inputs_ptr = unsafe {
             self.audio.input.buses.prepare(
                 input_ptrs as *const *mut std::ffi::c_void,
-                buffer.inputs.len(),
+                live_inputs,
                 true,
             )
         };
         let outputs_ptr = unsafe {
             self.audio.output.buses.prepare(
                 output_ptrs as *const *mut std::ffi::c_void,
-                buffer.outputs.len(),
+                live_outputs,
                 false,
             )
         };

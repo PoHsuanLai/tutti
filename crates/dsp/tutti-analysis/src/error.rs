@@ -95,7 +95,7 @@ pub enum Error {
     /// names it.
     #[error("invalid tonal parameter: {0}")]
     InvalidTonalParameter(&'static str),
-    /// A live-loudness setting or input that is out of range; the text names it.
+    /// A windowed-loudness setting or input that is out of range; the text names it.
     #[error("invalid loudness parameter: {0}")]
     InvalidLoudnessParameter(&'static str),
     /// A spectrum setting or input that is out of range; the text names it.

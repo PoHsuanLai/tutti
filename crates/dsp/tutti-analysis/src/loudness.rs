@@ -13,12 +13,12 @@
 //!
 //! # A running meter
 //!
-//! [`step_live_loudness`] answers a different question from [`finish`]: not
+//! [`step_windowed_loudness`] answers a different question from [`finish`]: not
 //! "how loud was the whole signal" but "how loud is it now", as a
-//! [`LiveReading`] after every chunk. Momentary loudness is the last 400 ms
+//! [`WindowedReading`] after every chunk. Momentary loudness is the last 400 ms
 //! and short-term the last 3 s, both K-weighted and ungated (EBU Tech 3341).
 //! The true peak is the largest seen since the meter was built or
-//! [reset](LiveLoudnessState::reset).
+//! [reset](WindowedLoudnessState::reset).
 //!
 //! # Interleaved in, unit-typed out
 //!
@@ -246,24 +246,24 @@ fn true_peak_db(peak_linear: f64) -> Db {
     }
 }
 
-/// The slowest and fastest rate a live meter is built for. The window the
+/// The slowest and fastest rate a windowed meter is built for. The window the
 /// meter keeps is three seconds of every channel, so the upper bound caps its
 /// allocation.
-const LIVE_RATES: core::ops::RangeInclusive<f64> = 8_000.0..=192_000.0;
+const WINDOWED_RATES: core::ops::RangeInclusive<f64> = 8_000.0..=192_000.0;
 
-/// The most channels a live meter is built for (the same cap, for the same
+/// The most channels a windowed meter is built for (the same cap, for the same
 /// reason).
-const LIVE_MAX_CHANNELS: u16 = 16;
+const WINDOWED_MAX_CHANNELS: u16 = 16;
 
-/// What a [`LiveLoudnessState`] meters: the rate and layout of the frames fed
-/// to [`step_live_loudness`]. Validated on construction.
+/// What a [`WindowedLoudnessState`] meters: the rate and layout of the frames fed
+/// to [`step_windowed_loudness`]. Validated on construction.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LiveLoudnessConfig {
+pub struct WindowedLoudnessConfig {
     rate: SampleRate,
     layout: ChannelLayout,
 }
 
-impl LiveLoudnessConfig {
+impl WindowedLoudnessConfig {
     /// A config for frames at `rate` in `layout`.
     ///
     /// # Errors
@@ -272,12 +272,12 @@ impl LiveLoudnessConfig {
     /// 8 kHz..=192 kHz, and `layout` has 1..=16 channels.
     pub fn new(rate: impl Into<SampleRate>, layout: ChannelLayout) -> Result<Self> {
         let rate = rate.into();
-        if !LIVE_RATES.contains(&rate.get()) {
+        if !WINDOWED_RATES.contains(&rate.get()) {
             return Err(Error::InvalidLoudnessParameter(
                 "rate: outside 8000..=192000 Hz",
             ));
         }
-        if !(1..=LIVE_MAX_CHANNELS).contains(&layout.count()) {
+        if !(1..=WINDOWED_MAX_CHANNELS).contains(&layout.count()) {
             return Err(Error::InvalidLoudnessParameter(
                 "layout: outside 1..=16 channels",
             ));
@@ -310,7 +310,7 @@ impl LiveLoudnessConfig {
 /// All three are decibel readings, so all three are [`Db`] (see
 /// [`Loudness`] for why LUFS has no type of its own).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LiveReading {
+pub struct WindowedReading {
     /// Loudness of the last 400 ms, in LUFS. [`LOUDNESS_FLOOR`](Self::LOUDNESS_FLOOR)
     /// until 400 ms have been fed.
     pub momentary: Db,
@@ -322,17 +322,20 @@ pub struct LiveReading {
     pub true_peak: Db,
 }
 
-impl LiveReading {
-    /// What a loudness reads when the window is not yet full, or holds
-    /// silence, or is quieter than this: R128's `-70` LUFS absolute gate, the
-    /// same clamp [`finish`] applies. A finite floor keeps every gain derived
-    /// from a reading finite.
+impl WindowedReading {
+    /// The lowest loudness a reading reports: a clamp at BS.1770's `-70` LUFS
+    /// absolute gate level, the same one [`finish`] applies.
+    ///
+    /// Silence, a signal quieter than this and a window that is not yet full
+    /// all read it, and only
+    /// [`frames_seen`](WindowedLoudnessState::frames_seen) tells them apart.
+    /// A finite floor keeps every gain derived from a reading finite.
     pub const LOUDNESS_FLOOR: Db = Db(-70.0);
 }
 
 /// The running meter's carry between chunks.
-pub struct LiveLoudnessState {
-    cfg: LiveLoudnessConfig,
+pub struct WindowedLoudnessState {
+    cfg: WindowedLoudnessConfig,
     meter: EbuR128,
     /// The leading samples of a frame the last chunk did not finish. Its
     /// capacity is one frame, so it never grows.
@@ -342,22 +345,24 @@ pub struct LiveLoudnessState {
 }
 
 // `EbuR128` is not `Debug`.
-impl std::fmt::Debug for LiveLoudnessState {
+impl std::fmt::Debug for WindowedLoudnessState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LiveLoudnessState")
+        f.debug_struct("WindowedLoudnessState")
             .field("cfg", &self.cfg)
             .field("frames", &self.frames)
             .finish_non_exhaustive()
     }
 }
 
-impl LiveLoudnessState {
-    /// Builds a meter for `cfg`. Allocates its three-second window here.
+impl WindowedLoudnessState {
+    /// Builds a meter for `cfg`. Allocates its three-second window here: at
+    /// most 3 s of `f64` samples of every channel, 192 kHz x 16 channels x 3 s x
+    /// 8 bytes, about 74 MB, and far less at ordinary rates and widths.
     ///
     /// # Errors
     ///
     /// [`Error::InvalidLoudnessParameter`] if the meter cannot be built.
-    pub fn new(cfg: &LiveLoudnessConfig) -> Result<Self> {
+    pub fn new(cfg: &WindowedLoudnessConfig) -> Result<Self> {
         let channels = cfg.layout.count();
         let meter = EbuR128::new(
             u32::from(channels),
@@ -398,15 +403,17 @@ impl LiveLoudnessState {
         self.frames += (samples.len() / usize::from(self.cfg.layout.count())) as u64;
         Ok(())
     }
+}
 
-    /// A window's loudness, or the floor while it is not full.
-    fn window(&self, window: u64, read: core::result::Result<f64, ebur128::Error>) -> Db {
-        match read {
-            Ok(lufs) if self.frames >= window && lufs.is_finite() => {
-                Db((lufs as f32).max(LiveReading::LOUDNESS_FLOOR.get()))
-            }
-            _ => LiveReading::LOUDNESS_FLOOR,
+/// A window's loudness: the floor until `needed` frames have been fed, and for
+/// a reading the meter could not give or that is not finite (silence is `-inf`);
+/// otherwise the reading, not under the floor.
+fn windowed_db(frames: u64, needed: u64, lufs: Option<f64>) -> Db {
+    match lufs {
+        Some(lufs) if frames >= needed && lufs.is_finite() => {
+            Db((lufs as f32).max(WindowedReading::LOUDNESS_FLOOR.get()))
         }
+        _ => WindowedReading::LOUDNESS_FLOOR,
     }
 }
 
@@ -416,9 +423,9 @@ impl LiveLoudnessState {
 /// next chunk, so the reading does not depend on how the stream is cut. A
 /// chunk may be empty.
 ///
-/// A step allocates nothing once the state is built (`ebur128` 0.1.10's
-/// `add_frames_f32` and its momentary, short-term and true-peak getters, counted
-/// in `tests/live_loudness_alloc.rs`), but it is not a realtime-safe call: each
+/// A step allocates nothing once the state is built (the meter's `add_frames_f32`
+/// and its momentary, short-term and true-peak getters, counted in
+/// `tests/windowed_loudness_alloc.rs` for the locked `ebur128`), but it is not a realtime-safe call: each
 /// reads both windows over their whole length, three seconds of every channel
 /// for the short-term one, so its cost does not shrink with the chunk. Run it on
 /// a consumer thread that drains an `AudioTap`, once per display tick, not in
@@ -429,11 +436,11 @@ impl LiveLoudnessState {
 /// [`Error::InvalidLoudnessParameter`] when `state` was built for another
 /// config or `chunk` is not `cfg`'s width; [`Error::NonFiniteInput`] for a NaN
 /// or infinite sample. The state is untouched on error.
-pub fn step_live_loudness(
-    cfg: &LiveLoudnessConfig,
-    state: &mut LiveLoudnessState,
+pub fn step_windowed_loudness(
+    cfg: &WindowedLoudnessConfig,
+    state: &mut WindowedLoudnessState,
     chunk: Interleaved<'_>,
-) -> Result<LiveReading> {
+) -> Result<WindowedReading> {
     if state.cfg != *cfg {
         return Err(Error::InvalidLoudnessParameter(
             "state: built for another config",
@@ -470,9 +477,17 @@ pub fn step_live_loudness(
     let peak = (0..u32::from(cfg.layout.count()))
         .filter_map(|c| state.meter.true_peak(c).ok())
         .fold(0.0f64, f64::max);
-    Ok(LiveReading {
-        momentary: state.window(cfg.window_frames(4), state.meter.loudness_momentary()),
-        short_term: state.window(cfg.window_frames(30), state.meter.loudness_shortterm()),
+    Ok(WindowedReading {
+        momentary: windowed_db(
+            state.frames,
+            cfg.window_frames(4),
+            state.meter.loudness_momentary().ok(),
+        ),
+        short_term: windowed_db(
+            state.frames,
+            cfg.window_frames(30),
+            state.meter.loudness_shortterm().ok(),
+        ),
         true_peak: true_peak_db(peak),
     })
 }
@@ -755,11 +770,11 @@ mod tests {
     /// is not a whole number of cycles adds at most
     /// `10 log10(1 + 1/(4 pi f T))` = 0.001 dB for the 400 ms window, so the
     /// published figure is the whole budget.
-    const LIVE_TOL: f32 = 0.1;
+    const WINDOW_TOL: f32 = 0.1;
 
     /// Stereo (identical channels) 997 Hz sine, amplitude `amp(t)` at `t`
     /// seconds, with a continuous phase.
-    fn live_sine(rate: f64, secs: f64, amp: impl Fn(f64) -> f64) -> Vec<f32> {
+    fn windowed_sine(rate: f64, secs: f64, amp: impl Fn(f64) -> f64) -> Vec<f32> {
         let n = (rate * secs).round() as usize;
         (0..n)
             .flat_map(|i| {
@@ -778,16 +793,20 @@ mod tests {
         (20.0 * a.log10()) as f32
     }
 
-    fn live_cfg(rate: f64) -> LiveLoudnessConfig {
-        LiveLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO).unwrap()
+    fn windowed_cfg(rate: f64) -> WindowedLoudnessConfig {
+        WindowedLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO).unwrap()
     }
 
     /// Feeds `buf` in `frames`-frame chunks, returning the reading after each.
-    fn live_run(cfg: &LiveLoudnessConfig, buf: &[f32], frames: usize) -> Vec<LiveReading> {
-        let mut state = LiveLoudnessState::new(cfg).unwrap();
+    fn windowed_run(
+        cfg: &WindowedLoudnessConfig,
+        buf: &[f32],
+        frames: usize,
+    ) -> Vec<WindowedReading> {
+        let mut state = WindowedLoudnessState::new(cfg).unwrap();
         buf.chunks(frames * 2)
             .map(|chunk| {
-                step_live_loudness(
+                step_windowed_loudness(
                     cfg,
                     &mut state,
                     Interleaved::new(chunk, ChannelLayout::STEREO),
@@ -803,33 +822,40 @@ mod tests {
     /// Mutations (run):
     /// - read momentary from `loudness_shortterm` -> fails at 0.4 s (the 3 s
     ///   window holds 0.4 s of tone, 8.75 dB down).
-    /// - drop the `self.frames >= window` gate -> fails the floor assertions.
+    /// - drop the `frames >= needed` gate -> fails the floor assertions.
     /// - `window_frames(4)` -> `window_frames(3)` -> fails the 0.39 s floor.
     #[test]
     fn a_sine_reads_its_loudness_once_each_window_fills() {
         let want = stereo_lufs(0.1);
         assert!((want - -20.0).abs() < 1e-5);
         for rate in [44_100.0, 48_000.0] {
-            let cfg = live_cfg(rate);
+            let cfg = windowed_cfg(rate);
             let block = (rate / 100.0) as usize; // 10 ms
-            let tone = live_sine(rate, 3.5, |_| 0.1);
-            let r = live_run(&cfg, &tone, block);
+            let tone = windowed_sine(rate, 3.5, |_| 0.1);
+            let r = windowed_run(&cfg, &tone, block);
             let at = |ms: usize| r[ms / 10 - 1];
 
-            assert_eq!(at(390).momentary, LiveReading::LOUDNESS_FLOOR, "{rate}");
+            assert_eq!(at(390).momentary, WindowedReading::LOUDNESS_FLOOR, "{rate}");
             assert!(
-                (at(400).momentary.get() - want).abs() < LIVE_TOL,
+                (at(400).momentary.get() - want).abs() < WINDOW_TOL,
                 "{rate}: momentary {:?}",
                 at(400).momentary
             );
-            assert_eq!(at(2990).short_term, LiveReading::LOUDNESS_FLOOR, "{rate}");
+            assert_eq!(
+                at(2990).short_term,
+                WindowedReading::LOUDNESS_FLOOR,
+                "{rate}"
+            );
             assert!(
-                (at(3000).short_term.get() - want).abs() < LIVE_TOL,
+                (at(3000).short_term.get() - want).abs() < WINDOW_TOL,
                 "{rate}: short-term {:?}",
                 at(3000).short_term
             );
-            // The tone's peak, as in `true_peak_is_the_signals_amplitude`.
-            assert!((at(3500).true_peak.get() - want).abs() < 0.3);
+            // The peak of an amplitude-0.1 tone is 20 log10(0.1) dBTP, a figure of
+            // its own; the 4x oversampled meter adds under 0.3 dB, as in
+            // `true_peak_is_the_signals_amplitude`.
+            let peak_want = (20.0 * 0.1f64.log10()) as f32;
+            assert!((at(3500).true_peak.get() - peak_want).abs() < 0.3);
         }
     }
 
@@ -847,19 +873,19 @@ mod tests {
     #[test]
     fn a_ten_db_step_settles_after_each_window() {
         let rate = 48_000.0;
-        let cfg = live_cfg(rate);
+        let cfg = windowed_cfg(rate);
         let (before, step_at) = (0.05, 4.0);
         let after = before * 10f64.sqrt();
-        let signal = live_sine(rate, step_at + 4.0, |t| {
+        let signal = windowed_sine(rate, step_at + 4.0, |t| {
             if t < step_at { before } else { after }
         });
-        let r = live_run(&cfg, &signal, 480);
+        let r = windowed_run(&cfg, &signal, 480);
         let at = |t: f64| r[((step_at + t) * 100.0).round() as usize - 1];
 
         let (low, high) = (stereo_lufs(before), stereo_lufs(after));
         assert!((high - low - 10.0).abs() < 1e-4);
-        assert!((at(0.0).momentary.get() - low).abs() < LIVE_TOL);
-        assert!((at(0.0).short_term.get() - low).abs() < LIVE_TOL);
+        assert!((at(0.0).momentary.get() - low).abs() < WINDOW_TOL);
+        assert!((at(0.0).short_term.get() - low).abs() < WINDOW_TOL);
 
         let ramp = |t: f64, window: f64| {
             f64::from(low) + 10.0 * (1.0 + 9.0 * (t / window).min(1.0)).log10()
@@ -867,21 +893,21 @@ mod tests {
         for t in [0.1, 0.2, 0.3, 0.4, 0.5, 1.0] {
             let got = at(t).momentary.get();
             assert!(
-                (got - ramp(t, 0.4) as f32).abs() < LIVE_TOL,
+                (got - ramp(t, 0.4) as f32).abs() < WINDOW_TOL,
                 "momentary +{t}s: {got}"
             );
         }
         for t in [0.5, 1.0, 2.0, 3.0, 3.5, 4.0] {
             let got = at(t).short_term.get();
             assert!(
-                (got - ramp(t, 3.0) as f32).abs() < LIVE_TOL,
+                (got - ramp(t, 3.0) as f32).abs() < WINDOW_TOL,
                 "short-term +{t}s: {got}"
             );
         }
         // Settled at the window, and visibly not before it.
-        assert!((at(0.4).momentary.get() - high).abs() < LIVE_TOL);
+        assert!((at(0.4).momentary.get() - high).abs() < WINDOW_TOL);
         assert!(at(0.3).momentary.get() < high - 1.0);
-        assert!((at(3.0).short_term.get() - high).abs() < LIVE_TOL);
+        assert!((at(3.0).short_term.get() - high).abs() < WINDOW_TOL);
         assert!(at(2.0).short_term.get() < high - 1.0);
     }
 
@@ -890,24 +916,24 @@ mod tests {
     /// the floor.
     ///
     /// Mutations (run):
-    /// - `.max(LiveReading::LOUDNESS_FLOOR.get())` -> `.max(-200.0)` -> fails
+    /// - `.max(WindowedReading::LOUDNESS_FLOOR.get())` -> `.max(-200.0)` -> fails
     ///   the left-behind case.
     /// - the fallback arm `Db(f32::NEG_INFINITY)` instead of the floor -> fails
     ///   the silence case.
     #[test]
     fn silence_reads_the_floor() {
-        let cfg = live_cfg(48_000.0);
+        let cfg = windowed_cfg(48_000.0);
         let silence = vec![0.0f32; 48_000 * 2 * 4];
-        let last = *live_run(&cfg, &silence, 4800).last().unwrap();
-        assert_eq!(last.momentary, LiveReading::LOUDNESS_FLOOR);
-        assert_eq!(last.short_term, LiveReading::LOUDNESS_FLOOR);
+        let last = *windowed_run(&cfg, &silence, 4800).last().unwrap();
+        assert_eq!(last.momentary, WindowedReading::LOUDNESS_FLOOR);
+        assert_eq!(last.short_term, WindowedReading::LOUDNESS_FLOOR);
         assert_eq!(last.true_peak, Db::FLOOR);
 
-        let mut left_behind = live_sine(48_000.0, 4.0, |_| 0.1);
+        let mut left_behind = windowed_sine(48_000.0, 4.0, |_| 0.1);
         left_behind.extend(vec![0.0f32; 48_000 * 2]);
-        let r = live_run(&cfg, &left_behind, 480);
+        let r = windowed_run(&cfg, &left_behind, 480);
         let last = r.last().unwrap();
-        assert_eq!(last.momentary, LiveReading::LOUDNESS_FLOOR);
+        assert_eq!(last.momentary, WindowedReading::LOUDNESS_FLOOR);
         assert!(last.short_term.get() > -30.0, "{:?}", last.short_term);
         assert!(last.true_peak.get() > -21.0, "the peak is held");
     }
@@ -923,9 +949,9 @@ mod tests {
     ///   comparison.
     #[test]
     fn readings_do_not_depend_on_the_chunking() {
-        let cfg = live_cfg(48_000.0);
+        let cfg = windowed_cfg(48_000.0);
         // A level change and a quiet stretch, so the windows are not trivial.
-        let signal = live_sine(48_000.0, 5.0, |t| {
+        let signal = windowed_sine(48_000.0, 5.0, |t| {
             if t < 2.0 {
                 0.2
             } else if t < 3.0 {
@@ -934,8 +960,8 @@ mod tests {
                 0.4
             }
         });
-        let fine = live_run(&cfg, &signal, 64);
-        let coarse = live_run(&cfg, &signal, 4096);
+        let fine = windowed_run(&cfg, &signal, 64);
+        let coarse = windowed_run(&cfg, &signal, 4096);
         let total = signal.len() / 2;
         for (i, c) in coarse.iter().enumerate() {
             let frames = ((i + 1) * 4096).min(total);
@@ -945,11 +971,11 @@ mod tests {
         }
         assert_eq!(coarse.last(), fine.last());
 
-        let mut state = LiveLoudnessState::new(&cfg).unwrap();
+        let mut state = WindowedLoudnessState::new(&cfg).unwrap();
         let mut ragged = None;
         for chunk in signal.chunks(777) {
             ragged = Some(
-                step_live_loudness(
+                step_windowed_loudness(
                     &cfg,
                     &mut state,
                     Interleaved::new(chunk, ChannelLayout::STEREO),
@@ -968,7 +994,7 @@ mod tests {
     #[test]
     fn a_ragged_chunk_keeps_channels_in_place() {
         let layout = ChannelLayout::from(6u16);
-        let cfg = LiveLoudnessConfig::new(SampleRate(48_000.0), layout).unwrap();
+        let cfg = WindowedLoudnessConfig::new(SampleRate(48_000.0), layout).unwrap();
         let buf: Vec<f32> = (0..48_000 * 4)
             .flat_map(|i| {
                 let s = 0.5 * (TAU * 1_000.0 * i as f32 / 48_000.0).sin();
@@ -976,30 +1002,32 @@ mod tests {
             })
             .collect();
         for size in [775, 777] {
-            let mut state = LiveLoudnessState::new(&cfg).unwrap();
+            let mut state = WindowedLoudnessState::new(&cfg).unwrap();
             let mut last = None;
             for chunk in buf.chunks(size) {
                 last = Some(
-                    step_live_loudness(&cfg, &mut state, Interleaved::new(chunk, layout)).unwrap(),
+                    step_windowed_loudness(&cfg, &mut state, Interleaved::new(chunk, layout))
+                        .unwrap(),
                 );
             }
             let last = last.unwrap();
-            assert_eq!(last.momentary, LiveReading::LOUDNESS_FLOOR, "{size}");
-            assert_eq!(last.short_term, LiveReading::LOUDNESS_FLOOR, "{size}");
+            assert_eq!(last.momentary, WindowedReading::LOUDNESS_FLOOR, "{size}");
+            assert_eq!(last.short_term, WindowedReading::LOUDNESS_FLOOR, "{size}");
         }
     }
 
     /// `reset` returns the meter to its first state.
     ///
-    /// Mutation (run): `reset` without `self.meter.reset()` -> fails the peak
-    /// and loudness assertions; without `self.frames = 0` -> fails the floor
-    /// assertions.
+    /// Mutations (run):
+    /// - `reset` without `self.meter.reset()` -> fails only the true-peak
+    ///   assertion (the silence fed after the reset clears the windows).
+    /// - without `self.frames = 0` -> fails only the `frames_seen` assertion.
     #[test]
     fn reset_reads_like_a_fresh_meter() {
-        let cfg = live_cfg(48_000.0);
-        let tone = live_sine(48_000.0, 4.0, |_| 0.1);
-        let mut state = LiveLoudnessState::new(&cfg).unwrap();
-        step_live_loudness(
+        let cfg = windowed_cfg(48_000.0);
+        let tone = windowed_sine(48_000.0, 4.0, |_| 0.1);
+        let mut state = WindowedLoudnessState::new(&cfg).unwrap();
+        step_windowed_loudness(
             &cfg,
             &mut state,
             Interleaved::new(&tone, ChannelLayout::STEREO),
@@ -1009,15 +1037,75 @@ mod tests {
         state.reset();
         assert_eq!(state.frames_seen(), 0);
         let quiet = vec![0.0f32; 48_000 * 2];
-        let r = step_live_loudness(
+        let r = step_windowed_loudness(
             &cfg,
             &mut state,
             Interleaved::new(&quiet, ChannelLayout::STEREO),
         )
         .unwrap();
-        assert_eq!(r.momentary, LiveReading::LOUDNESS_FLOOR);
-        assert_eq!(r.short_term, LiveReading::LOUDNESS_FLOOR);
+        assert_eq!(r.momentary, WindowedReading::LOUDNESS_FLOOR);
+        assert_eq!(r.short_term, WindowedReading::LOUDNESS_FLOOR);
         assert_eq!(r.true_peak, Db::FLOOR);
+    }
+
+    /// `reset` also drops a part frame carried from an odd-length chunk, so the
+    /// next chunk starts on channel 0: a 5.1 signal on the LFE alone, which R128
+    /// does not weight, would otherwise land on a weighted channel.
+    ///
+    /// Mutation (run): drop `self.partial_frame.clear()` from `reset` -> reads
+    /// about -12 LUFS instead of the floor.
+    #[test]
+    fn reset_drops_a_carried_part_frame() {
+        let layout = ChannelLayout::from(6u16);
+        let cfg = WindowedLoudnessConfig::new(SampleRate(48_000.0), layout).unwrap();
+        let lfe = |frames: usize| -> Vec<f32> {
+            (0..frames)
+                .flat_map(|i| {
+                    let s = 0.5 * (TAU * 1_000.0 * i as f32 / 48_000.0).sin();
+                    [0.0, 0.0, 0.0, s, 0.0, 0.0]
+                })
+                .collect()
+        };
+        let mut state = WindowedLoudnessState::new(&cfg).unwrap();
+        // Three samples past a whole number of frames.
+        let odd = lfe(101);
+        step_windowed_loudness(&cfg, &mut state, Interleaved::new(&odd[..603], layout)).unwrap();
+        state.reset();
+        let whole = lfe(24_000);
+        let r = step_windowed_loudness(&cfg, &mut state, Interleaved::new(&whole, layout)).unwrap();
+        assert_eq!(r.momentary, WindowedReading::LOUDNESS_FLOOR);
+    }
+
+    /// The true peak is the loudest channel's, wherever it is: a tone of
+    /// amplitude 0.5 on the right alone peaks at `20 log10(0.5)` dBTP (4x
+    /// oversampling adds under 0.3 dB), and on the left alone just the same.
+    ///
+    /// Mutation (run): read `true_peak(0)` only in `step_windowed_loudness` ->
+    /// the right-only case reads the floor.
+    #[test]
+    fn the_true_peak_is_the_loudest_channels() {
+        let cfg = windowed_cfg(48_000.0);
+        let want = (20.0 * 0.5f64.log10()) as f32;
+        for (left, right) in [(0.0f64, 0.5f64), (0.5, 0.0), (0.1, 0.5)] {
+            let signal: Vec<f32> = (0..24_000)
+                .flat_map(|i| {
+                    let s = (TAU as f64 * 997.0 * i as f64 / 48_000.0).sin();
+                    [(left * s) as f32, (right * s) as f32]
+                })
+                .collect();
+            let mut state = WindowedLoudnessState::new(&cfg).unwrap();
+            let r = step_windowed_loudness(
+                &cfg,
+                &mut state,
+                Interleaved::new(&signal, ChannelLayout::STEREO),
+            )
+            .unwrap();
+            assert!(
+                (r.true_peak.get() - want).abs() < 0.3,
+                "L {left} R {right}: {:?}",
+                r.true_peak
+            );
+        }
     }
 
     /// Every setting is checked, NaN and infinity included, and a bad chunk is
@@ -1026,7 +1114,7 @@ mod tests {
     /// Mutations (run):
     /// - rate range `8_000.0..=192_000.0` -> `0.0..=f64::INFINITY` -> fails
     ///   the rate cases.
-    /// - drop the `is_finite` scan in `step_live_loudness` -> fails the
+    /// - drop the `is_finite` scan in `step_windowed_loudness` -> fails the
     ///   NaN/infinity cases.
     /// - the width check as `if false` -> fails the width case.
     /// - the config check as `if false` -> fails the other-config case.
@@ -1044,7 +1132,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    LiveLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO),
+                    WindowedLoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO),
                     Err(Error::InvalidLoudnessParameter(_))
                 ),
                 "rate {rate}"
@@ -1052,18 +1140,20 @@ mod tests {
         }
         for channels in [0u16, 17] {
             assert!(matches!(
-                LiveLoudnessConfig::new(SampleRate(48_000.0), ChannelLayout::from(channels)),
+                WindowedLoudnessConfig::new(SampleRate(48_000.0), ChannelLayout::from(channels)),
                 Err(Error::InvalidLoudnessParameter(_))
             ));
         }
-        assert!(LiveLoudnessConfig::new(SampleRate(8_000.0), ChannelLayout::MONO).is_ok());
-        assert!(LiveLoudnessConfig::new(SampleRate(192_000.0), ChannelLayout::from(16u16)).is_ok());
+        assert!(WindowedLoudnessConfig::new(SampleRate(8_000.0), ChannelLayout::MONO).is_ok());
+        assert!(
+            WindowedLoudnessConfig::new(SampleRate(192_000.0), ChannelLayout::from(16u16)).is_ok()
+        );
 
-        let cfg = live_cfg(48_000.0);
-        let mut state = LiveLoudnessState::new(&cfg).unwrap();
-        let tone = live_sine(48_000.0, 0.5, |_| 0.1);
-        let fed = |state: &mut LiveLoudnessState, buf: &[f32]| {
-            step_live_loudness(&cfg, state, Interleaved::new(buf, ChannelLayout::STEREO))
+        let cfg = windowed_cfg(48_000.0);
+        let mut state = WindowedLoudnessState::new(&cfg).unwrap();
+        let tone = windowed_sine(48_000.0, 0.5, |_| 0.1);
+        let fed = |state: &mut WindowedLoudnessState, buf: &[f32]| {
+            step_windowed_loudness(&cfg, state, Interleaved::new(buf, ChannelLayout::STEREO))
         };
         fed(&mut state, &tone).unwrap();
         let frames = state.frames_seen();
@@ -1075,7 +1165,7 @@ mod tests {
             assert_eq!(state.frames_seen(), frames, "a refused chunk feeds nothing");
         }
         assert!(matches!(
-            step_live_loudness(
+            step_windowed_loudness(
                 &cfg,
                 &mut state,
                 Interleaved::new(&tone, ChannelLayout::QUAD)
@@ -1084,9 +1174,9 @@ mod tests {
         ));
         assert_eq!(state.frames_seen(), frames);
 
-        let other = live_cfg(44_100.0);
+        let other = windowed_cfg(44_100.0);
         assert!(matches!(
-            step_live_loudness(
+            step_windowed_loudness(
                 &other,
                 &mut state,
                 Interleaved::new(&tone, ChannelLayout::STEREO)

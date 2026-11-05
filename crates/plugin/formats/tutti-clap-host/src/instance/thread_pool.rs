@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tutti_graph::Pool;
 
 use super::ClapLoaded;
-use crate::host::PoolRequest;
+use crate::host::{ExecFn, PoolRequest};
 
 impl ClapLoaded {
     /// Whether the plugin implements `clap.thread-pool` (it has tasks it can
@@ -37,24 +37,20 @@ impl ClapLoaded {
         std::mem::replace(&mut self.thread_pool, pool)
     }
 
-    /// The request a `process` call serves around the plugin's `process`,
-    /// or `None` when there is nothing to serve requests with.
-    pub(crate) fn pool_request(&self) -> Option<PoolRequest> {
-        let pool = self.thread_pool.as_deref()?;
+    /// What the Processor serves requests with, fixed at activation: the pool
+    /// and the plugin's `exec`, or `None` when there is nothing to serve them
+    /// with (no pool, a pool of one participant, or no `exec`).
+    pub(crate) fn pool_snapshot(&self) -> Option<PoolSnapshot> {
+        let pool = self.thread_pool.clone()?;
         if pool.participants() < 2 {
             return None;
         }
         let exec = self.thread_pool_exec()?;
-        Some(PoolRequest::new(
-            &self.host_state,
-            pool,
-            self.plugin.as_ptr(),
-            exec,
-        ))
+        Some(PoolSnapshot { pool, exec })
     }
 
     /// The plugin's `clap_plugin_thread_pool::exec`, if it has one.
-    fn thread_pool_exec(&self) -> Option<crate::host::ExecFn> {
+    fn thread_pool_exec(&self) -> Option<ExecFn> {
         let ext = self.extensions.system.thread_pool;
         if ext.is_null() {
             return None;
@@ -62,5 +58,35 @@ impl ClapLoaded {
         // SAFETY: a non-null extension pointer from the plugin's
         // `get_extension` stays valid for the instance's life.
         unsafe { (*ext).exec }
+    }
+}
+
+/// The pool a Processor serves `clap.thread-pool` requests on, and the plugin's
+/// `exec`.
+pub(crate) struct PoolSnapshot {
+    pool: Arc<dyn Pool>,
+    exec: ExecFn,
+}
+
+/// What the Controller publishes for the Processor to lend once per block: the
+/// pool to serve requests on, or nothing to refuse them.
+#[derive(Default)]
+pub(crate) struct PoolCell(pub(crate) Option<PoolSnapshot>);
+
+impl PoolCell {
+    /// The request one `process` call serves around the plugin's `process`, or
+    /// `None` when there is nothing to serve requests with.
+    pub(crate) fn request(
+        &self,
+        host_state: &crate::host::HostState,
+        plugin: *const clap_sys::plugin::clap_plugin,
+    ) -> Option<PoolRequest> {
+        let snapshot = self.0.as_ref()?;
+        Some(PoolRequest::new(
+            host_state,
+            &*snapshot.pool,
+            plugin,
+            snapshot.exec,
+        ))
     }
 }

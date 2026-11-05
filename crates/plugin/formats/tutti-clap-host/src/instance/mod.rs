@@ -1,29 +1,27 @@
-//! The CLAP plugin lifecycle types, [`ClapLoaded`] and [`ClapActive`], and the
-//! per-block process types ([`ClapProcessContext`], [`ClapSample`],
-//! [`ProcessOutput`], [`ProcessOutputRef`]).
+//! The CLAP plugin types: [`ClapLoaded`], and the two halves an activation
+//! splits it into, [`ClapProcessor`] (the realtime half) and [`ClapController`]
+//! (the main-thread half).
 //!
 //! [`ClapLoaded`] is a mapped, instantiated plugin: parameters, ports, state,
-//! editor and host-callback polling all live on it.
-//! [`ClapLoaded::activate`] consumes it and returns a [`ClapActive`], which adds
-//! [`process`](ClapActive::process), [`reset`](ClapActive::reset) and the
-//! reconfiguration methods. `ClapActive` derefs to `ClapLoaded`, so every
-//! parameter, editor, state and polling call stays reachable while audio runs.
-//! Operations whose threading contract changes with activation check the
-//! live state at the call. The reasoning behind this shape is in the crate
-//! root documentation.
+//! editor and host-callback requests all live on it, and it works without
+//! activation. [`Loaded::activate`](tutti_plugin_types::Loaded::activate)
+//! consumes it and returns a processor and a controller that share one plugin
+//! instance. The processor only renders; the controller derefs to
+//! `ClapLoaded`, so every parameter, editor and state call stays reachable
+//! while audio runs. The soundness argument for sharing the instance is on
+//! the private `Shell`.
 
 // Internal layout: `entry` (once-per-library `clap_entry` init registry),
-// `load` (construction), `lifecycle` (metadata, activate/deactivate, `Deref`,
-// `Drop`), `audio` (the active-only process path), and per-extension
-// `impl ClapLoaded` blocks (`params`, `ports`, `state`, `polling`, `undo`,
-// `resources`). Only `audio` is `impl ClapActive`: a method belongs there only
-// when it needs the per-block `AudioScratch` or CLAP's `active` precondition.
-// Everything else stays on `ClapLoaded` and reads `LifecycleFlags::active` at
-// the call, which is sound because the flag lives on the inner `ClapLoaded`
-// that `Deref` hands out.
+// `load` (construction), `lifecycle` (metadata, activation), `shell` (the
+// shared instance), `audio` (the processor's process path), `processor` and
+// `controller` (the two halves and their trait impls), `control` (the control
+// surface both implement), and per-extension `impl ClapLoaded` blocks
+// (`params`, `ports`, `state`, `polling`, `undo`, `resources`).
 
 mod audio;
 mod config;
+mod control;
+mod controller;
 mod descriptor;
 mod entry;
 mod ext;
@@ -34,9 +32,11 @@ mod params;
 mod plugin_ptr;
 mod polling;
 mod ports;
+mod processor;
 // Plugin resource-directory extension — speculative, gated behind `clap-extras`.
 #[cfg(feature = "clap-extras")]
 mod resources;
+mod shell;
 mod state;
 mod thread_pool;
 // Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
@@ -44,32 +44,35 @@ mod thread_pool;
 mod undo;
 
 pub use audio::{ClapProcessContext, ClapSample, ProcessOutput, ProcessOutputRef};
+pub use control::descriptor_of;
+pub use controller::ClapController;
+pub use load::LoadOptions;
 #[cfg(feature = "clap-extras")]
 pub use params::ParamMapping;
+pub use processor::{ClapProcessor, ClapProcessorAny};
 
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
-use config::{AudioConfig, AudioScratch, LifecycleFlags, PortLayout};
+use config::{AudioConfig, LifecycleFlags, PortLayout};
 use entry::EntryGuard;
 use extensions::ExtensionCache;
 use plugin_ptr::PluginPtr;
-use std::marker::PhantomData;
 use std::sync::Arc;
+use tutti_plugin_types::PluginDescriptor;
 
 /// A loaded, initialized CLAP plugin that is **not** processing audio.
 ///
 /// This is the state for GUI / parameter / state work — CLAP's `gui`,
-/// `params`, and `state` extensions all work without activation. Call
-/// [`activate`](ClapLoaded::activate) to transition to a [`ClapActive<T>`]
-/// that can [`process`](ClapActive::process). `process` does not exist here;
+/// `params`, and `state` extensions all work without activation. Activate it
+/// with [`Loaded::activate`](tutti_plugin_types::Loaded::activate) (or
+/// [`activate_typed`](ClapLoaded::activate_typed) for a fixed sample type) to
+/// get a [`ClapProcessor`] that can render; `process` does not exist here, and
 /// the type system enforces that you activate first.
 pub struct ClapLoaded {
     // IMPORTANT: Drop order matters! Fields drop top-to-bottom.
     // `plugin` drops first so the plugin can still access the host while
     // destroy() runs; `_entry_guard` drops before `_library` so deinit()
-    // runs while the library is still mapped. When nested inside
-    // `ClapActive`, that type's `scratch` drops before this `loaded`, so the
-    // RT buffers are gone before the plugin is destroyed.
+    // runs while the library is still mapped.
     pub(crate) plugin: PluginPtr,
     pub(crate) _entry_guard: EntryGuard,
     pub(crate) _library: libloading::Library,
@@ -77,10 +80,14 @@ pub struct ClapLoaded {
     pub(crate) host_state: Arc<HostState>,
     pub(crate) extensions: ExtensionCache,
     pub(crate) info: PluginInfo,
+    /// The plugin's identity in the shared vocabulary, with whether it has an
+    /// editor measured, which is done on first use and not at load: the
+    /// measurement asks the plugin about its GUI.
+    pub(crate) descriptor: std::cell::OnceCell<PluginDescriptor>,
     pub(crate) audio: AudioConfig,
     pub(crate) ports: PortLayout,
     pub(crate) flags: LifecycleFlags,
-    /// What the per-block main-thread pass keeps between calls.
+    /// What the main-thread pass keeps between calls.
     pub(crate) work: polling::MainThreadWork,
     /// The pool `clap.thread-pool` requests run on, or `None` to refuse them
     /// ([`set_thread_pool`](ClapLoaded::set_thread_pool)).
@@ -102,32 +109,8 @@ impl std::fmt::Debug for ClapLoaded {
     }
 }
 
-/// A fully-active CLAP plugin ready to [`process`](ClapActive::process) audio.
-///
-/// The sample format `T` is fixed at activation: `ClapActive<f32>` (the
-/// default) processes f32, `ClapActive<f64>` processes f64 (requires the
-/// plugin to advertise 64-bit support). Embeds a [`ClapLoaded`]; every
-/// parameter / editor / state / polling method is inherited via
-/// [`Deref`](std::ops::Deref).
-/// Obtain via [`ClapLoaded::activate`]; drop back to a [`ClapLoaded`] with
-/// [`deactivate`](ClapActive::deactivate).
-pub struct ClapActive<T: ClapSample = f32> {
-    // `scratch` is listed first so it drops before `loaded` — the RT buffers
-    // must release before the plugin handle (held by `loaded`) is destroyed.
-    pub(crate) scratch: AudioScratch<T>,
-    pub(crate) loaded: ClapLoaded,
-    pub(crate) _sample: PhantomData<T>,
-}
-
-impl<T: ClapSample> std::fmt::Debug for ClapActive<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClapActive")
-            .field("loaded", &self.loaded)
-            .finish_non_exhaustive()
-    }
-}
-
-// Safety: CLAP plugins are designed to be called from a single thread
+// SAFETY: a CLAP plugin is called from one thread at a time through `&mut`, and
+// the only state shared with the audio side is the host's atomics.
 unsafe impl Send for ClapLoaded {}
 
 #[cfg(all(test, feature = "clap-extras"))]

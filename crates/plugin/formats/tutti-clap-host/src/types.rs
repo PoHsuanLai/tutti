@@ -314,13 +314,11 @@ impl ClapParamInfo {
 }
 
 /// The scope of a plugin's `params.rescan` request, decoded from
-/// `clap_param_rescan_flags`. Returned by
-/// [`ClapLoaded::poll_params_rescan`](crate::ClapLoaded::poll_params_rescan)
-/// so the host can honour CLAP's rule that a full rescan (`all`) may only be
+/// `clap_param_rescan_flags`, so the host can honour CLAP's rule that a full rescan (`all`) may only be
 /// applied while the plugin is deactivated, whereas a value-only rescan can be
 /// picked up live.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ParamRescan {
+pub(crate) struct ParamRescan {
     /// Any rescan at all was requested since the last poll.
     pub requested: bool,
     /// `CLAP_PARAM_RESCAN_ALL` — everything changed. The plugin MUST be
@@ -369,7 +367,7 @@ impl ParamRescan {
 /// cosmetic port rename from a channel-count change, so `PortLayout` could go
 /// stale against the buffer widths the plugin actually expects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AudioPortsRescan {
+pub(crate) struct AudioPortsRescan {
     /// Any rescan at all was requested since the last poll.
     pub requested: bool,
     /// `CLAP_AUDIO_PORTS_RESCAN_NAMES` — port names changed. The only flag

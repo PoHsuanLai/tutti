@@ -28,9 +28,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapActive, ClapLoaded, ClapProcessContext};
+use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
     PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES, probe_tag,
 };
@@ -138,12 +139,12 @@ impl ProbeSession<'_> {
     }
 
     /// Load + activate an instance against the currently-selected layout.
-    fn activate(&self) -> ClapActive<f32> {
+    fn activate(&self) -> Active<f32> {
         let path = Path::new(probe_path());
-        let loaded = ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, MAX_FRAMES)
+        let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load");
         loaded
-            .activate::<f32>()
+            .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
             .map_err(|(_, e)| e)
             .expect("reference plugin should activate")
     }
@@ -151,7 +152,7 @@ impl ProbeSession<'_> {
     /// Load without activating — for the pure metadata queries.
     fn load(&self) -> ClapLoaded {
         let path = Path::new(probe_path());
-        ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, MAX_FRAMES)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 }
@@ -176,7 +177,7 @@ const INPUT_DC: [f32; 3] = [11.0, 23.0, 37.0];
 ///
 /// The host distributes the flat channel list across the plugin's ports in
 /// order — with layout `[2, 1]`, channels 0,1 feed port 0 and channel 2 port 1.
-fn drive_dc_block(inst: &mut ClapActive<f32>, channels: usize, frames: usize) -> Vec<Vec<f32>> {
+fn drive_dc_block(inst: &mut Active<f32>, channels: usize, frames: usize) -> Vec<Vec<f32>> {
     let ins: Vec<Vec<f32>> = (0..channels)
         .map(|c| vec![INPUT_DC[c % INPUT_DC.len()]; frames])
         .collect();
@@ -185,7 +186,7 @@ fn drive_dc_block(inst: &mut ClapActive<f32>, channels: usize, frames: usize) ->
 
 /// Run one block with explicit per-channel input contents.
 fn drive_block(
-    inst: &mut ClapActive<f32>,
+    inst: &mut Active<f32>,
     inputs: &[Vec<f32>],
     out_channels: usize,
     frames: usize,
@@ -538,7 +539,7 @@ fn host_reports_plugin_latency() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let loaded = session.load();
     assert_eq!(
-        loaded.get_latency(),
+        loaded.latency_samples(),
         REPORTED_LATENCY_SAMPLES,
         "host must pass the plugin's exact latency through; {} is a prime, so \
          a block-aligned or doubled value cannot coincide",
@@ -553,10 +554,10 @@ fn host_reports_plugin_latency() {
 fn host_reports_tail_distinctly_from_latency() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let loaded = session.load();
-    assert_eq!(loaded.get_tail(), Some(REPORTED_TAIL_SAMPLES));
+    assert_eq!(loaded.tail_samples(), Some(REPORTED_TAIL_SAMPLES));
     assert_ne!(
-        loaded.get_tail(),
-        Some(loaded.get_latency()),
+        loaded.tail_samples(),
+        Some(loaded.latency_samples()),
         "tail and latency are different extensions — the host must not read \
          one through the other's vtable"
     );
@@ -980,7 +981,7 @@ fn take_sysex_input(controls: &ProbeControls) -> (u32, u32, Vec<u8>) {
 }
 
 /// Run one block carrying `midi`.
-fn drive_midi_block(inst: &mut ClapActive<f32>, midi: &[tutti_clap_host::MidiEvent]) {
+fn drive_midi_block(inst: &mut Active<f32>, midi: &[tutti_clap_host::MidiEvent]) {
     let frames = 64;
     let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
     let mut outs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0; frames]).collect();
@@ -1055,15 +1056,16 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     assert_eq!(inst.sysex_dropped(), 1);
 }
 
-/// **A SysEx open across a reset, or an in-place re-activation, never
-/// completes on the far side of it**: its remaining packets reach a plugin
-/// that has forgotten its start, so the message is dropped whole, counted,
-/// and the next one arrives whole.
+/// **A SysEx open across a reset, or a re-activation, never completes on the
+/// far side of it**: its remaining packets reach a plugin that has forgotten its
+/// start, so the message is dropped whole, counted, and the next one arrives
+/// whole. A re-activation builds a new Processor whose assembler starts empty,
+/// so the open message goes with the old one, and the count restarts.
 ///
 /// Mutation (run): `InputEventList::reset_sysex` a no-op → the packets after
-/// the reset complete the message → fails at the reset; the
-/// `reset_sysex` call removed from `reconfigure` only → fails at the
-/// re-activation.
+/// the reset complete the message → fails at the reset; the new Processor
+/// built with the old one's input list (not a fresh `AudioScratch`) → the
+/// open message survives the re-activation and completes → fails there.
 #[test]
 fn a_sysex_open_across_a_reset_is_dropped() {
     use tutti_midi_types::MidiGroup;
@@ -1086,7 +1088,7 @@ fn a_sysex_open_across_a_reset_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1);
 
     drive_midi_block(&mut inst, first);
-    inst.set_sample_rate(SAMPLE_RATE * 2.0)
+    inst.reconfigure(SAMPLE_RATE * 2.0, MAX_FRAMES)
         .expect("the probe accepts the new rate");
     drive_midi_block(&mut inst, rest);
     assert_eq!(
@@ -1094,10 +1096,14 @@ fn a_sysex_open_across_a_reset_is_dropped() {
         0,
         "after a re-activation"
     );
-    assert_eq!(inst.sysex_dropped(), 2);
+    assert_eq!(
+        inst.sysex_dropped(),
+        0,
+        "the new Processor never saw the START, so it has nothing to count"
+    );
 
     // The next message is whole.
     drive_midi_block(&mut inst, &packets);
     assert_eq!(take_sysex_input(&session.controls), (1, 0, framed));
-    assert_eq!(inst.sysex_dropped(), 2);
+    assert_eq!(inst.sysex_dropped(), 0);
 }

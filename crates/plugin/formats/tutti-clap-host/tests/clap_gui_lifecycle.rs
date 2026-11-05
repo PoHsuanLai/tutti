@@ -23,7 +23,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, WindowHandle};
+use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions, WindowHandle};
 use tutti_clap_test_plugin::{
     GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE, GUI_CALL_CREATE,
     GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
@@ -74,7 +74,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
@@ -560,7 +560,7 @@ fn close_editor_destroys_after_plugin_window_was_destroyed() {
     probe.run_command();
 
     assert!(
-        loaded.poll_gui_closed(),
+        loaded.take_gui_closed(),
         "the host must record the plugin's `gui.closed` callback"
     );
     let after_open = probe.capture();
@@ -614,7 +614,7 @@ fn close_editor_destroys_after_window_was_destroyed_during_show() {
         .expect("opens");
 
     assert!(
-        loaded.poll_gui_closed(),
+        loaded.take_gui_closed(),
         "the host must still hold the `gui.closed` the plugin raised during the \
          embed — clearing the latch afterwards would have erased it"
     );
@@ -661,7 +661,7 @@ fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
         .open_editor(fake_parent(), ContentScale::IDENTITY)
         .expect("opens");
 
-    assert!(loaded.poll_gui_closed(), "the host records the callback");
+    assert!(loaded.take_gui_closed(), "the host records the callback");
     let after_open = probe.capture();
     assert!(
         !after_open.window_destroyed,
@@ -870,19 +870,19 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
 }
 
 // ===========================================================================
-// poll_editor_resize_request
+// take_editor_resize_request
 // ===========================================================================
 
 /// A plugin-initiated `request_resize` reaches the host and is delivered once.
 /// A poll that kept returning the last request would make the host resize the
 /// editor on every UI frame.
 #[test]
-fn poll_editor_resize_request_delivers_once() {
+fn take_editor_resize_request_delivers_once() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
     assert!(
-        loaded.poll_editor_resize_request().is_none(),
+        loaded.take_editor_resize_request().is_none(),
         "nothing pending before the plugin asks"
     );
 
@@ -894,7 +894,7 @@ fn poll_editor_resize_request_delivers_once() {
         .expect("opens");
 
     assert_eq!(
-        loaded.poll_editor_resize_request(),
+        loaded.take_editor_resize_request(),
         Some(EditorSize {
             width: GUI_REQUESTED_RESIZE_W,
             height: GUI_REQUESTED_RESIZE_H,
@@ -904,7 +904,7 @@ fn poll_editor_resize_request_delivers_once() {
     );
 
     assert!(
-        loaded.poll_editor_resize_request().is_none(),
+        loaded.take_editor_resize_request().is_none(),
         "and consume it: a re-delivered request would resize on every frame"
     );
 }

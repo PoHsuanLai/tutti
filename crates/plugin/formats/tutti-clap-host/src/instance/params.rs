@@ -1,7 +1,7 @@
 //! Parameter-query and parameter-update methods for [`ClapLoaded`].
 //!
 //! Values here are **plain**, in each parameter's own declared range — CLAP has
-//! no normalized parameter interface. Denormalization against `param_ranges`
+//! no normalized parameter interface. Denormalization against the range table
 //! happens on the `process` path, not here.
 
 use super::ClapLoaded;
@@ -98,9 +98,10 @@ impl ClapLoaded {
         unsafe { count_fn(self.plugin.as_ptr()) as usize }
     }
 
-    /// Current value of a parameter, or `None` if the plugin does not
-    /// support the extension or rejects the ID.
-    pub fn get_parameter(&self, id: u32) -> Option<f64> {
+    /// Current value of a parameter in its own declared range, or `None` if the
+    /// plugin does not support the extension or rejects the ID. The normalized
+    /// reading is [`Control::parameter`](tutti_plugin_types::Control::parameter).
+    pub fn plain_value(&self, id: u32) -> Option<f64> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_value_fn = ext.get_value?;
         let mut value: f64 = 0.0;
@@ -112,7 +113,7 @@ impl ClapLoaded {
     /// [`ClapParamInfo`] (with `module` and the full [`ClapParamFlags`]) stays
     /// inside; the crate boundary hands out the shared
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
-    /// [`get_parameter_list`](Self::get_parameter_list).
+    /// [`parameter_list`](Self::parameter_list).
     pub(crate) fn parameter_info(&self, index: u32) -> Option<ClapParamInfo> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_info_fn = ext.get_info?;
@@ -139,8 +140,8 @@ impl ClapLoaded {
     /// A failing `get_info(i)` at `i < count` **truncates**, matching
     /// [`port_channels`](super::load). Parameters are keyed by id downstream so
     /// a skipped entry renumbers nothing — it is worse than that: `activate`
-    /// builds `AudioScratch::param_ranges` from this list, and a param missing
-    /// from that map takes the pass-through arm in
+    /// builds the `RangeTable` from this list, and a param missing
+    /// from that table takes the pass-through arm in
     /// [`add_param_changes`](crate::events::InputEventList::add_param_changes),
     /// reaching the plugin **un-denormalized** — raw `0..1` into a `100..1100`
     /// Hz range, silently. Scanning past the hole to keep the later ranges is
@@ -148,7 +149,7 @@ impl ClapLoaded {
     /// for every id but one, so automation looks right everywhere the user
     /// checks. A short list is a visible symptom; a selectively-wrong map is
     /// not.
-    pub(crate) fn parameters(&self) -> Vec<ClapParamInfo> {
+    pub(crate) fn native_parameters(&self) -> Vec<ClapParamInfo> {
         let count = self.parameter_count() as u32;
         let mut params = Vec::with_capacity(count as usize);
         for i in 0..count {
@@ -191,8 +192,8 @@ impl ClapLoaded {
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
     /// `step_count` comes from the `STEPPED` flag plus the declared span, since
     /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
-    pub fn get_parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
-        self.parameters()
+    pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
+        self.native_parameters()
             .into_iter()
             .map(project_param_info)
             .collect()
@@ -203,8 +204,7 @@ impl ClapLoaded {
     /// plugin does not implement params / value_to_text or declines the id.
     ///
     /// `value` is **plain**, in the parameter's declared range — CLAP has no
-    /// normalization concept. The loader's
-    /// `PluginParams::parameter_text` denormalizes against
+    /// normalization concept. `Control::parameter_text` denormalizes against
     /// [`parameter_range`](Self::parameter_range) before calling this, the same
     /// conversion its `set_parameter` applies.
     pub fn value_to_text(&self, param_id: u32, value: f64) -> Option<String> {
@@ -218,34 +218,10 @@ impl ClapLoaded {
     /// or the plugin cannot parse it.
     ///
     /// The answer is **plain**, in the parameter's declared range — see
-    /// [`value_to_text`](Self::value_to_text). The loader re-normalizes it.
+    /// [`value_to_text`](Self::value_to_text). `Control` re-normalizes it.
     pub fn text_to_value(&self, param_id: u32, text: &str) -> Option<f64> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         unsafe { text_to_value_ffi(ext, self.plugin.as_ptr(), param_id, text) }
-    }
-
-    /// Whether the parameter with `param_id` carries the
-    /// `CLAP_PARAM_REQUIRES_PROCESS` flag, meaning its changes must be
-    /// delivered through `process()` (in event order) rather than a `flush()`.
-    /// Returns `false` if the id is unknown or the plugin has no params.
-    ///
-    /// The main-thread [`flush_params`](Self::flush_params) path has no access
-    /// to the active instance's scratch, so it cannot enqueue a
-    /// REQUIRES_PROCESS change into the next `process` block.
-    /// [`set_parameter`](Self::set_parameter) uses this to *skip* flushing
-    /// REQUIRES_PROCESS params on a processing instance — dropping the change
-    /// rather than delivering it out-of-band and risking a glitch. On an
-    /// inactive instance a flush is spec-legal, so it is allowed.
-    ///
-    /// Goes through [`parameters`](Self::parameters) rather than re-walking the
-    /// enumeration, so the two cannot drift about which parameters exist:
-    /// answering for one past a `get_info` hole would gate `set_parameter` on a
-    /// flag belonging to a param with no cached range.
-    pub(crate) fn param_requires_process(&self, param_id: u32) -> bool {
-        self.parameters()
-            .into_iter()
-            .find(|info| info.id == param_id)
-            .is_some_and(|info| info.flags.contains(ClapParamFlags::REQUIRES_PROCESS))
     }
 
     /// Delivers parameter changes outside of `process()` via
@@ -275,10 +251,10 @@ impl ClapLoaded {
     /// exactly when a host sets up initial parameter values, and when a plugin
     /// that considers itself active expects the audio-thread role.
     ///
-    /// Callers driving an active instance should still prefer routing param
-    /// changes through the next `process` block (via `ClapProcessContext::params`)
-    /// — that is in-order delivery rather than an out-of-band poke — but doing
-    /// it here is safe.
+    /// Callers driving an active instance should prefer routing param changes
+    /// through the next `process` block (a controller's `set_parameter`, or
+    /// `ClapProcessContext::params`) — that is in-order delivery rather than an
+    /// out-of-band poke — but doing it here is safe.
     ///
     /// # Panics
     ///
@@ -318,33 +294,17 @@ impl ClapLoaded {
 
     /// Sets one parameter by flushing a single `PARAM_VALUE` event.
     ///
-    /// Returns whether the value was flushed. `false` means the write was
-    /// **skipped**, not that the plugin refused it — see the gate below.
-    ///
-    /// `value` is plain, in the parameter's declared range.
-    ///
-    /// # REQUIRES_PROCESS gating
-    /// If the instance is *processing* and `id` is flagged
-    /// `CLAP_PARAM_REQUIRES_PROCESS`, the change is **not** flushed: the CLAP
-    /// spec requires such params be delivered in order through `process()`, and
-    /// this method cannot enqueue into the next block. Send such changes through
-    /// `ClapProcessContext::params` instead.
-    ///
-    /// `processing` is the right condition here, unlike in
-    /// [`flush_params`](Self::flush_params): in-order delivery is only
-    /// meaningful once blocks are actually flowing. Before the first
-    /// `process()` there is no order to preserve, so the flush is legal even for a
-    /// REQUIRES_PROCESS param.
+    /// `value` is plain, in the parameter's declared range. On an active plugin
+    /// the flush runs under the `[audio-thread]` claim (see
+    /// [`flush_params`](Self::flush_params)); a [`ClapController`](crate::ClapController)
+    /// routes its normalized writes through the Processor instead, which delivers
+    /// them in order with the block.
     ///
     /// # Panics
     ///
     /// As for [`flush_params`](Self::flush_params).
-    pub fn set_parameter(&mut self, id: u32, value: f64) -> bool {
-        if self.flags.processing && self.param_requires_process(id) {
-            return false;
-        }
+    pub fn set_plain_value(&mut self, id: u32, value: f64) {
         self.flush_params(vec![ClapEvent::param_value(0, id, value)]);
-        true
     }
 
     /// Informs the plugin about a host-surface → parameter mapping. No-op if

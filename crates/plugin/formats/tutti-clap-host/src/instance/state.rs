@@ -20,7 +20,7 @@ impl ClapLoaded {
     ///
     /// In debug builds, panics if called from a thread other than the one that
     /// loaded the plugin.
-    pub fn get_state(&self) -> Result<Vec<u8>> {
+    pub(crate) fn read_state(&self) -> Result<Vec<u8>> {
         self.assert_main_thread();
         let state_ext = unsafe { ext::opt(self.extensions.state.state) }
             .ok_or_else(|| ClapError::StateError("No state extension".to_string()))?;
@@ -36,7 +36,7 @@ impl ClapLoaded {
         Ok(stream.into_data())
     }
 
-    /// Restores plugin state from bytes previously returned by [`Self::get_state`].
+    /// Restores plugin state from bytes previously returned by [`Control::save_state`](tutti_plugin_types::Control::save_state).
     /// Empty slices are treated as a no-op.
     ///
     /// # Errors
@@ -47,7 +47,7 @@ impl ClapLoaded {
     ///
     /// In debug builds, panics if called from a thread other than the one that
     /// loaded the plugin.
-    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&mut self, data: &[u8]) -> Result<()> {
         self.assert_main_thread();
         if data.is_empty() {
             return Ok(());
@@ -70,7 +70,7 @@ impl ClapLoaded {
     /// Saves state, telling the plugin whether it is being saved for a
     /// preset, project, or duplicate.
     ///
-    /// Falls back to [`Self::get_state`] **only** when the plugin does not
+    /// Falls back to [`Control::save_state`](tutti_plugin_types::Control::save_state) **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`
     /// entry point). A plugin that implements it and returns `false` has
     /// *refused* the save, and that refusal is reported.
@@ -104,12 +104,12 @@ impl ClapLoaded {
             }
             return Ok(stream.into_data());
         }
-        self.get_state()
+        self.read_state()
     }
 
     /// Loads state with a specific [`StateContext`].
     ///
-    /// Falls back to [`Self::set_state`] **only** when the plugin does not
+    /// Falls back to [`Control::load_state`](tutti_plugin_types::Control::load_state) **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `load`
     /// entry point). Empty slices are treated as a no-op.
     ///
@@ -143,7 +143,7 @@ impl ClapLoaded {
             }
             return Ok(());
         }
-        self.set_state(data)
+        self.write_state(data)
     }
 
     /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
@@ -153,7 +153,7 @@ impl ClapLoaded {
     }
 
     /// Whether the plugin implements `CLAP_EXT_PRESET_LOAD`, i.e. whether
-    /// [`load_preset`](Self::load_preset) can succeed.
+    /// [`load_preset_file`](Self::load_preset_file) can succeed.
     ///
     /// Says nothing about *enumerating* presets: CLAP puts discovery in a
     /// separate factory-level extension this host does not bind, so a plugin
@@ -175,14 +175,14 @@ impl ClapLoaded {
     ///
     /// In debug builds, panics if called from a thread other than the one that
     /// loaded the plugin.
-    pub fn load_preset(&mut self, path: &Path) -> Result<()> {
+    pub fn load_preset_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.assert_main_thread();
         let ext = unsafe { ext::opt(self.extensions.state.preset_load) }
             .ok_or_else(|| ClapError::StateError("No preset-load extension".to_string()))?;
         let from_location_fn = ext
             .from_location
             .ok_or_else(|| ClapError::StateError("No from_location function".to_string()))?;
-        let location = std::ffi::CString::new(path.to_string_lossy().as_ref())
+        let location = std::ffi::CString::new(path.as_ref().to_string_lossy().as_ref())
             .map_err(|e| ClapError::StateError(format!("Invalid path: {e}")))?;
         if unsafe {
             from_location_fn(

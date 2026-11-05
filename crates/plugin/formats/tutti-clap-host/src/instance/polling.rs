@@ -10,9 +10,7 @@ use crate::error::{ClapError, Result};
 use crate::guard::guard;
 use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
-use crate::types::{
-    AudioPortsRescan, ContentScale, EditorCapabilities, EditorSize, ParamRescan, WindowHandle,
-};
+use crate::types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 #[cfg(feature = "clap-extras")]
 use crate::types::{
     ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
@@ -624,7 +622,7 @@ impl ClapLoaded {
     /// Draining: a second call with no new request answers `None`. The host
     /// is free to ignore or clamp the size — CLAP treats it as a request, not
     /// an instruction.
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+    pub fn take_editor_resize_request(&self) -> Option<EditorSize> {
         if !self
             .host_state
             .gui
@@ -696,115 +694,37 @@ impl ClapLoaded {
         &self.host_state
     }
 
-    /// Consumes and returns the `restart_requested` flag.
-    pub fn poll_restart_requested(&self) -> bool {
-        self.host_state
-            .poll(&self.host_state.lifecycle.restart_requested)
-    }
-
     /// Consumes and returns the `process_requested` flag (the plugin wants
     /// `process()` to be called even if the host would otherwise skip it).
-    pub fn poll_process_requested(&self) -> bool {
+    pub fn take_process_requested(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.lifecycle.process_requested)
-    }
-
-    /// Consumes and returns the `callback_requested` flag — call
-    /// [`Self::on_main_thread`] when this fires.
-    pub fn poll_callback_requested(&self) -> bool {
-        self.host_state
-            .poll(&self.host_state.lifecycle.callback_requested)
-    }
-
-    /// Consumes and returns the `latency_changed` flag; fetch the new value
-    /// with [`Self::get_latency`].
-    pub fn poll_latency_changed(&self) -> bool {
-        self.host_state
-            .poll(&self.host_state.processing.latency_changed)
-    }
-
-    /// Consumes and returns the `tail_changed` flag; fetch the new value with
-    /// [`Self::get_tail`].
-    pub fn poll_tail_changed(&self) -> bool {
-        self.host_state
-            .poll(&self.host_state.processing.tail_changed)
-    }
-
-    /// Consumes and returns the pending parameter-rescan request as a decoded
-    /// [`ParamRescan`], clearing both the request flag and the accumulated
-    /// flags. `ParamRescan::requested` is `false` when nothing is pending.
-    ///
-    /// The decoded scope lets the caller honour CLAP's rule that a full rescan
-    /// (`ParamRescan::all` / [`ParamRescan::needs_deactivate`]) is applied only
-    /// while the plugin is deactivated, while a value-only rescan is safe live.
-    pub fn poll_params_rescan(&self) -> ParamRescan {
-        let requested = self
-            .host_state
-            .poll(&self.host_state.params.rescan_requested);
-        let flags = self
-            .host_state
-            .params
-            .rescan_flags
-            .swap(0, std::sync::atomic::Ordering::AcqRel);
-        ParamRescan::from_flags(requested, flags)
+            .take(&self.host_state.lifecycle.process_requested)
     }
 
     /// Consumes and returns the `params_flush_requested` flag — call
     /// [`Self::flush_params`] or run a process block when this fires.
-    pub fn poll_params_flush_requested(&self) -> bool {
+    pub fn take_params_flush_requested(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.params.flush_requested)
+            .take(&self.host_state.params.flush_requested)
     }
 
     /// Consumes and returns the `state_dirty` flag — the plugin's state has
     /// diverged from the last save.
-    pub fn poll_state_dirty(&self) -> bool {
+    pub fn take_state_dirty(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.processing.state_dirty)
-    }
-
-    /// Consumes and returns the scope of any pending `audio-ports.rescan`.
-    ///
-    /// Replaces a bare `poll_audio_ports_changed() -> bool`. A bool cannot be
-    /// acted on correctly: five of the six rescan flags require the plugin to
-    /// be deactivated before re-enumerating, and the sixth does not, so a
-    /// consumer either deactivates on every port rename or re-reads a channel
-    /// count while active. [`AudioPortsRescan::needs_deactivate`] is the
-    /// distinction.
-    ///
-    /// One reader, because this drains: the flags are swapped out, so a second
-    /// polling accessor over the same signal would clear it for whoever asked
-    /// second.
-    pub fn poll_audio_ports_rescan(&self) -> AudioPortsRescan {
-        let requested = self.host_state.poll(&self.host_state.audio_ports.changed);
-        let flags = self
-            .host_state
-            .audio_ports
-            .rescan_flags
-            .swap(0, std::sync::atomic::Ordering::AcqRel);
-        AudioPortsRescan::from_flags(requested, flags)
+            .take(&self.host_state.processing.state_dirty)
     }
 
     /// Consumes and returns the `notes.ports_changed` flag. The note dialect
-    /// ([`ClapActive::sends_midi_notes`](crate::ClapActive::sends_midi_notes)) is
-    /// read only at activation and re-activation, so on `true` re-activate.
-    pub fn poll_note_ports_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.notes.ports_changed)
+    /// ([`ClapProcessor::sends_midi_notes`](crate::ClapProcessor::sends_midi_notes)) is
+    /// read only at activation, so on `true` activate again.
+    pub fn take_note_ports_changed(&self) -> bool {
+        self.host_state.take(&self.host_state.notes.ports_changed)
     }
 
     /// Consumes and returns the `gui.closed` flag.
-    pub fn poll_gui_closed(&self) -> bool {
-        self.host_state.poll(&self.host_state.gui.closed)
-    }
-
-    /// Non-consuming peek at the restart flag. Unlike
-    /// [`Self::poll_restart_requested`] (which clears the flag on read),
-    /// this returns the current value without resetting it.
-    pub fn needs_restart(&self) -> bool {
-        self.host_state
-            .lifecycle
-            .restart_requested
-            .load(std::sync::atomic::Ordering::Acquire)
+    pub fn take_gui_closed(&self) -> bool {
+        self.host_state.take(&self.host_state.gui.closed)
     }
 
     /// Drains every `clap.log` line the plugin has emitted since the last drain,
@@ -890,22 +810,22 @@ impl ClapLoaded {
     }
 
     /// Consumes and returns the `audio_ports.config_changed` flag.
-    pub fn poll_audio_ports_config_changed(&self) -> bool {
+    pub fn take_audio_ports_config_changed(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.audio_ports.config_changed)
+            .take(&self.host_state.audio_ports.config_changed)
     }
 
     /// Consumes and returns the `remote_controls.changed` flag. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn poll_remote_controls_changed(&self) -> bool {
+    pub fn take_remote_controls_changed(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.remote_controls.changed)
+            .take(&self.host_state.remote_controls.changed)
     }
 
     /// Consumes and returns the page ID the plugin most recently suggested
     /// the host switch to, or `None` if no suggestion is pending. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn poll_suggested_remote_page(&self) -> Option<u32> {
+    pub fn take_suggested_remote_page(&self) -> Option<u32> {
         let val = self
             .host_state
             .remote_controls
@@ -937,25 +857,25 @@ impl ClapLoaded {
     }
 
     /// Consumes and returns the `notes.names_changed` flag.
-    pub fn poll_note_names_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.notes.names_changed)
+    pub fn take_note_names_changed(&self) -> bool {
+        self.host_state.take(&self.host_state.notes.names_changed)
     }
 
     /// Consumes and returns the `notes.voice_info_changed` flag.
-    pub fn poll_voice_info_changed(&self) -> bool {
+    pub fn take_voice_info_changed(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.notes.voice_info_changed)
+            .take(&self.host_state.notes.voice_info_changed)
     }
 
     /// Consumes and returns the `preset_loaded` flag. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn poll_preset_loaded(&self) -> bool {
+    pub fn take_preset_loaded(&self) -> bool {
         self.host_state
-            .poll(&self.host_state.processing.preset_loaded)
+            .take(&self.host_state.processing.preset_loaded)
     }
 
     /// Invokes the plugin's `on_main_thread` callback — call when
-    /// [`Self::poll_callback_requested`] fires.
+    /// the plugin raised a [`Request::Callback`](tutti_plugin_types::Request::Callback).
     ///
     /// The name states the contract (`plugin.h`'s `on_main_thread` is
     /// `[main-thread]`), and it is the other method an embedder is likely to
@@ -1014,7 +934,7 @@ impl ClapLoaded {
 
     /// Describes the remote-controls page at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
+    pub fn remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
         if self.extensions.params.remote_controls.is_null() {
             return None;
         }
@@ -1112,7 +1032,7 @@ impl ClapLoaded {
 
     /// Describes the trigger at `index`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
-    pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
+    pub fn trigger_info(&self, index: usize) -> Option<TriggerInfo> {
         if self.extensions.system.triggers.is_null() {
             return None;
         }
@@ -1156,77 +1076,95 @@ impl ClapLoaded {
     #[cfg(unix)]
     pub fn poll_posix_fds(&mut self) -> usize {
         self.assert_main_thread();
-        if self.extensions.system.posix_fd_support.is_null() {
+        if self.scan_fds().is_none() {
             return 0;
         }
-        let ext = unsafe { &*self.extensions.system.posix_fd_support };
-        let Some(on_fd) = ext.on_fd else { return 0 };
+        let ready: Vec<i32> = self.work.ready_fds().iter().map(|&(fd, _)| fd).collect();
+        ready.into_iter().filter(|&fd| self.fire_fd(fd)).count()
+    }
 
+    /// Polls the registered descriptors without calling the plugin: fills
+    /// [`MainThreadWork::ready_fds`]. `None` when the plugin has no
+    /// `posix-fd-support`, or its descriptor list is unreadable.
+    #[cfg(unix)]
+    fn scan_fds(&mut self) -> Option<()> {
+        if self.extensions.system.posix_fd_support.is_null() {
+            return None;
+        }
         // The scratch lives on the instance, so a scan allocates only when the
-        // set of descriptors grows. Taken out so `on_fd` can borrow `self`.
-        let mut scratch = std::mem::take(&mut self.work.fds);
+        // set of descriptors grows.
+        let scratch = &mut self.work.fds;
         scratch.watched.clear();
         match self.host_state.resources.posix_fds.lock() {
             Ok(fds) => scratch.watched.extend(fds.iter().map(|e| (e.fd, e.flags))),
             Err(_) => {
-                self.work.fds = scratch;
-                return 0;
+                scratch.ready.clear();
+                return None;
             }
         }
-        ready_fds_into(&mut scratch);
-        let mut fired = 0;
-        for &(fd, ready) in &scratch.ready {
-            // An earlier `on_fd` may have unregistered this one.
-            let registered = self
-                .host_state
-                .resources
-                .posix_fds
-                .lock()
-                .is_ok_and(|fds| fds.iter().any(|e| e.fd == fd));
-            if registered {
-                unsafe { on_fd(self.plugin.as_ptr(), fd, ready) };
-                fired += 1;
-            }
+        ready_fds_into(scratch);
+        Some(())
+    }
+
+    /// Calls `on_fd` for descriptor `fd` if the last scan found it ready and it
+    /// is still registered (an earlier callback may have unregistered it).
+    /// Returns whether the plugin was called.
+    #[cfg(unix)]
+    pub(crate) fn fire_fd(&mut self, fd: i32) -> bool {
+        self.assert_main_thread();
+        if self.extensions.system.posix_fd_support.is_null() {
+            return false;
         }
-        self.work.fds = scratch;
-        fired
+        let ext = unsafe { &*self.extensions.system.posix_fd_support };
+        let Some(on_fd) = ext.on_fd else { return false };
+        let Some(at) = self.work.fds.ready.iter().position(|&(f, _)| f == fd) else {
+            return false;
+        };
+        let (_, ready) = self.work.fds.ready.remove(at);
+        let registered = self
+            .host_state
+            .resources
+            .posix_fds
+            .lock()
+            .is_ok_and(|fds| fds.iter().any(|e| e.fd == fd));
+        if registered {
+            unsafe { on_fd(self.plugin.as_ptr(), fd, ready) };
+        }
+        registered
     }
 
-    /// Runs the main-thread work the plugin has asked for since the last call:
-    /// `on_main_thread` after a `request_callback`, the timers that are due and
-    /// the descriptors that are ready. Call it between blocks, on the thread
-    /// that loaded the plugin, as often as the host ticks (a timer's period is
-    /// at best that fine).
-    ///
-    /// It is cheap when there is nothing to do, so it can run on every block
-    /// of a real-time-priority thread: a `request_callback` is one atomic, and
-    /// the clock is read only while a timer or a descriptor is registered. The
-    /// timers lock is taken only once the earliest deadline has passed, and the
-    /// descriptors are polled at most once per 5 ms (a
-    /// descriptor's readiness is noticed that late at worst).
-    ///
-    /// Timers and callbacks are serviced only while the caller keeps calling
-    /// this: a host loop that blocks waiting for a request services none until
-    /// the next one arrives.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn run_main_thread_work(&mut self) {
-        self.run_main_thread_work_with(std::time::Instant::now);
+    /// Calls the plugin's `on_timer` for timer `id` if it is still registered
+    /// (an earlier callback may have unregistered it), and caches the next
+    /// deadline. Returns whether the plugin was called.
+    pub(crate) fn fire_timer(&mut self, id: u32) -> bool {
+        self.assert_main_thread();
+        let ext = self.extensions.system.timer_support;
+        let on_timer = if ext.is_null() {
+            None
+        } else {
+            unsafe { &*ext }.on_timer
+        };
+        let state = &self.host_state.timer;
+        let registered = state
+            .timers
+            .lock()
+            .is_ok_and(|timers| timers.iter().any(|t| t.id == id));
+        if registered && let Some(on_timer) = on_timer {
+            // SAFETY: the plugin's `[main-thread]` callback, and
+            // `assert_main_thread` above holds.
+            unsafe { on_timer(self.plugin.as_ptr(), id) };
+        }
+        cache_next_deadline(state);
+        registered && on_timer.is_some()
     }
 
-    /// [`run_main_thread_work`](Self::run_main_thread_work) with the clock
-    /// supplied, which it reads at most once and only when a timer or a
-    /// descriptor is registered. Returns which scans it ran.
-    pub(crate) fn run_main_thread_work_with(
+    /// Which scans are due, and the timers that are, without calling the
+    /// plugin. The clock is read at most once, and only when a timer or a
+    /// descriptor is registered.
+    pub(crate) fn due_work(
         &mut self,
         clock: impl FnOnce() -> std::time::Instant,
-    ) -> WorkRan {
-        if self.poll_callback_requested() {
-            self.on_main_thread();
-        }
+    ) -> (WorkRan, Vec<u32>) {
         let timer = &self.host_state.timer;
         #[cfg(unix)]
         let fds_registered = self
@@ -1239,7 +1177,7 @@ impl ClapLoaded {
         let fds_registered = false;
         let next_timer = timer.next_due_nanos();
         if !work_needs_clock(next_timer, fds_registered) {
-            return WorkRan::default();
+            return (WorkRan::default(), Vec::new());
         }
         let now = clock();
         let ran = work_due(
@@ -1249,15 +1187,17 @@ impl ClapLoaded {
             self.work.last_fd_scan,
             now,
         );
-        if ran.timers {
-            self.poll_timers_at(now);
-        }
+        let due = if ran.timers {
+            collect_due_timers(&self.host_state.timer, now)
+        } else {
+            Vec::new()
+        };
         #[cfg(unix)]
         if ran.fds {
             self.work.last_fd_scan = Some(now);
-            self.poll_posix_fds();
+            self.scan_fds();
         }
-        ran
+        (ran, due)
     }
 }
 
@@ -1269,6 +1209,14 @@ pub(crate) struct MainThreadWork {
     /// Room the descriptor scan reuses.
     #[cfg(unix)]
     fds: FdScratch,
+}
+
+impl MainThreadWork {
+    /// The descriptors the last scan found ready, with the events ready.
+    #[cfg(unix)]
+    pub(crate) fn ready_fds(&self) -> &[(i32, u32)] {
+        &self.fds.ready
+    }
 }
 
 /// Which scans a pass ran.
@@ -1306,6 +1254,29 @@ fn work_due(
     }
 }
 
+/// Takes the timers due at `now`, each restarting its period, and caches the
+/// next deadline. They are fired one at a time by `fire_timer`.
+fn collect_due_timers(state: &crate::host::state::TimerState, now: std::time::Instant) -> Vec<u32> {
+    let due = match state.timers.lock() {
+        Ok(mut timers) => take_due_timers(&mut timers, now),
+        Err(_) => Vec::new(),
+    };
+    cache_next_deadline(state);
+    due
+}
+
+/// Stores the earliest deadline among the registered timers, exactly.
+/// Stored under the lock, so a registration's `note_due` is not overwritten.
+fn cache_next_deadline(state: &crate::host::state::TimerState) {
+    if let Ok(timers) = state.timers.lock() {
+        let next = timers
+            .iter()
+            .map(|t| t.last_fire + std::time::Duration::from_millis(u64::from(t.period_ms)))
+            .min();
+        state.set_next_due(next);
+    }
+}
+
 /// Fires each due timer through `fire`, skipping one an earlier callback in
 /// the same pass unregistered, and caches the next deadline. Returns how many
 /// fired.
@@ -1330,15 +1301,8 @@ fn fire_due_timers(
             fired += 1;
         }
     }
-    // After the callbacks, which may have registered or unregistered timers;
-    // stored under the lock, so a registration's `note_due` is not overwritten.
-    if let Ok(timers) = state.timers.lock() {
-        let next = timers
-            .iter()
-            .map(|t| t.last_fire + std::time::Duration::from_millis(u64::from(t.period_ms)))
-            .min();
-        state.set_next_due(next);
-    }
+    // After the callbacks, which may have registered or unregistered timers.
+    cache_next_deadline(state);
     fired
 }
 

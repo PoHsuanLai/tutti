@@ -26,11 +26,11 @@ pub(crate) struct Meta {
 /// bare integer literal must be named (`ChannelLayout::STEREO`) or suffixed.
 // The module is reachable in a loaderless *test* build, because
 // `audio_pipeline`'s tests build a `Meta`. They do not build a `BusChannels`
-// through this, so it alone needs the narrower "a loader exists" gate.
+// through this, so it alone needs the narrower gate: a loader that builds a
+// bus list itself (CLAP asks the plugin per port and does not).
 #[cfg_attr(
     not(any(
         all(feature = "au", target_os = "macos"),
-        feature = "clap",
         feature = "vst2",
         feature = "vst3"
     )),

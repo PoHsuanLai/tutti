@@ -804,7 +804,7 @@ impl InputEventList {
 
     /// Whether notes are sent as `clap_event_midi`: see
     /// [`set_midi_notes`](Self::set_midi_notes).
-    pub fn midi_notes(&self) -> bool {
+    pub fn supports_midi_notes(&self) -> bool {
         self.midi_notes
     }
 
@@ -1087,6 +1087,46 @@ impl InputEventList {
                 }
             }
         }
+        self
+    }
+
+    /// Appends one `PARAM_VALUE` event at the head of the block (time 0) for a
+    /// parameter edit the Controller queued: `value` is normalized `0..=1` and
+    /// is denormalized against `ranges` exactly as
+    /// [`add_param_changes`](Self::add_param_changes) does a point, including
+    /// its rule for an id the table lacks.
+    ///
+    /// An edit does not count against the parameter room: the ring that carried
+    /// it is bounded, and the list reserves room for as many on top of it.
+    pub fn add_param_edit(
+        &mut self,
+        param_id: u32,
+        value: f64,
+        ranges: &[(u32, f32, f32)],
+        plugin_claims_params: bool,
+    ) -> &mut Self {
+        let range = ranges
+            .binary_search_by_key(&param_id, |&(id, _, _)| id)
+            .ok()
+            .map(|i| &ranges[i]);
+        let plain = match range {
+            Some(&(_, min, max)) => {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "normalized 0..=1; the plain range is f32"
+                )]
+                let normalized = value as f32;
+                let plain = min + normalized * (max - min);
+                // Ordered bounds: the plugin's own `min`/`max` may be inverted,
+                // and `f32::clamp` panics when `lo > hi`.
+                plain.clamp(min.min(max), min.max(max)) as f64
+            }
+            // No table entry and the plugin claims parameters: the table is
+            // short, and raw `0..1` into an unknown range is silent and audible.
+            None if plugin_claims_params => return self,
+            None => value,
+        };
+        self.events.push(ClapEvent::param_value(0, param_id, plain));
         self
     }
 

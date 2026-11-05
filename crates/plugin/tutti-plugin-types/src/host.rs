@@ -107,7 +107,10 @@ pub trait Control {
     fn rebuild_midi_mapping(&mut self) {}
 
     /// Retries the parameter edits an active plugin's full ring refused,
-    /// latest value per parameter. Called on each idle pass.
+    /// latest value per parameter. [`Lifecycle::drive`](crate::Lifecycle::drive)
+    /// calls it on every [`Event::Tick`](crate::Event::Tick), so the host must
+    /// keep ticking: with no ticks a refused edit is never retried and the
+    /// plugin keeps the older value.
     fn flush_edits(&mut self) {}
 
     /// The plugin's own main-thread work (CLAP `on_main_thread`).

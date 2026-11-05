@@ -290,6 +290,13 @@ pub enum Notice {
         /// Why.
         reason: PluginError,
     },
+    /// A call into the plugin panicked outside an activation, a deactivation or
+    /// a rebuild (those tell the host through [`Refused`](Self::Refused)). The
+    /// plugin is lost and nothing leaves [`Stage::Poisoned`].
+    Lost {
+        /// Why.
+        reason: PluginError,
+    },
 }
 
 /// Where a plugin is in its life.

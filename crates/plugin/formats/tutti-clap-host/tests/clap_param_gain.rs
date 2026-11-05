@@ -35,9 +35,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::params_state::{GAIN_DB_MAX, GAIN_DB_MIN, GAIN_PARAM_ID};
 use tutti_plugin_types::{ParamAddress, ParamId, ParameterChanges};
 
@@ -126,12 +127,12 @@ impl GainSession<'_> {
         }
     }
 
-    fn activate(&self) -> ClapActive<f32> {
+    fn activate(&self) -> Active<f32> {
         let path = Path::new(probe_path());
-        let loaded = ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, MAX_FRAMES)
+        let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load");
         loaded
-            .activate::<f32>()
+            .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
             .map_err(|(_, e)| e)
             .expect("reference plugin should activate")
     }
@@ -166,7 +167,7 @@ fn amplitude_for_db(db: f64) -> f32 {
 }
 
 /// Drive one block with the given parameter changes, returning output channel 0.
-fn drive(inst: &mut ClapActive<f32>, params: &ParameterChanges) -> Vec<f32> {
+fn drive(inst: &mut Active<f32>, params: &ParameterChanges) -> Vec<f32> {
     let ins: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; FRAMES]).collect();
     let mut outs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; FRAMES]).collect();
     {
@@ -400,7 +401,7 @@ fn the_host_reports_the_probes_declared_gain_range() {
     let session = GainSession::begin();
     let loaded = {
         let path = Path::new(probe_path());
-        ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, MAX_FRAMES)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     };
 

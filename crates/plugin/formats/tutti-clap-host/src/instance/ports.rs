@@ -170,7 +170,7 @@ impl ClapLoaded {
     }
 
     /// Describes the audio port configuration at `index`.
-    pub fn get_audio_port_config(&self, index: u32) -> Option<AudioPortConfig> {
+    pub fn audio_port_config(&self, index: u32) -> Option<AudioPortConfig> {
         if self.extensions.audio.ports_config.is_null() {
             return None;
         }
@@ -212,7 +212,7 @@ impl ClapLoaded {
     /// does not implement the extension.
     ///
     /// This is the companion to [`audio_port_config_count`](Self::audio_port_config_count) /
-    /// [`get_audio_port_config`](Self::get_audio_port_config): those enumerate
+    /// [`audio_port_config`](Self::audio_port_config): those enumerate
     /// the *available* configs; this reports which one is live and lets you
     /// read its full per-port info via
     /// [`audio_port_config_port_info`](Self::audio_port_config_port_info).
@@ -227,7 +227,7 @@ impl ClapLoaded {
 
     /// Full [`AudioPortInfo`] for a single port *within a specific config*
     /// (`CLAP_EXT_AUDIO_PORTS_CONFIG_INFO`). Unlike
-    /// [`get_audio_port_config`](Self::get_audio_port_config) (which returns
+    /// [`audio_port_config`](Self::audio_port_config) (which returns
     /// only the config summary), this exposes each port's id / name / channel
     /// count / flags / type for the named `config_id`, without first having to
     /// switch to it. Returns `None` when unsupported or the plugin rejects the
@@ -260,7 +260,7 @@ impl ClapLoaded {
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
-    pub fn get_latency(&self) -> u32 {
+    pub fn latency_samples(&self) -> u32 {
         if self.extensions.system.latency.is_null() {
             return 0;
         }
@@ -277,7 +277,7 @@ impl ClapLoaded {
     /// same answer as `Some(0)`, which means no tail. Raw: any value at or
     /// above `INT32_MAX` means an infinite tail (`clap/ext/tail.h`), which
     /// `Tail::from_clap_samples` decodes.
-    pub fn get_tail(&self) -> Option<u32> {
+    pub fn tail_samples(&self) -> Option<u32> {
         if self.extensions.system.tail.is_null() {
             return None;
         }
@@ -320,7 +320,7 @@ impl ClapLoaded {
     }
 
     /// Voice-allocation information from `CLAP_EXT_VOICE_INFO`.
-    pub fn get_voice_info(&self) -> Option<VoiceInfo> {
+    pub fn voice_info(&self) -> Option<VoiceInfo> {
         if self.extensions.system.voice_info.is_null() {
             return None;
         }
@@ -354,7 +354,7 @@ impl ClapLoaded {
     }
 
     /// Retrieves a single custom note name.
-    pub fn get_note_name(&self, index: u32) -> Option<NoteName> {
+    pub fn note_name(&self, index: u32) -> Option<NoteName> {
         if self.extensions.notes.name.is_null() {
             return None;
         }
@@ -535,7 +535,7 @@ impl ClapLoaded {
     }
 
     /// Retrieves the ambisonic config currently used on a given port.
-    pub fn get_ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
+    pub fn ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
         if self.extensions.audio.ambisonic.is_null() {
             return None;
         }
@@ -589,7 +589,7 @@ impl ClapLoaded {
     /// data, not failure. Only the capacity overrun is genuinely broken — the
     /// plugin claims to have written past the 64 elements it was given, so
     /// nothing in the buffer can be trusted.
-    pub fn get_surround_channel_map(
+    pub fn surround_channel_map(
         &self,
         is_input: bool,
         port_index: u32,
@@ -615,7 +615,7 @@ impl ClapLoaded {
     /// The channel-to-speaker mapping for a port as a [`ChannelTopology`].
     ///
     /// The same query as
-    /// [`get_surround_channel_map`](Self::get_surround_channel_map), in the
+    /// [`surround_channel_map`](Self::surround_channel_map), in the
     /// shared vocabulary the other format hosts also speak — so a caller can
     /// ask "which speaker is channel 3" without knowing it is holding a CLAP
     /// plugin.
@@ -626,14 +626,14 @@ impl ClapLoaded {
     /// cannot name arrives as [`Speaker::Unknown`](tutti_types::Speaker::Unknown)
     /// and keeps its channel's slot.
     pub fn surround_topology(&self, is_input: bool, port_index: u32) -> Option<ChannelTopology> {
-        self.get_surround_channel_map(is_input, port_index)
+        self.surround_channel_map(is_input, port_index)
             .map(|map| crate::topology::topology_of(&map))
     }
 }
 
 /// Decodes the first `count` entries of a plugin-filled surround channel map.
 ///
-/// Split out of [`ClapLoaded::get_surround_channel_map`] so the count
+/// Split out of [`ClapLoaded::surround_channel_map`] so the count
 /// validation is testable without a live `ClapLoaded`, which no stub vtable can
 /// produce.
 fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundChannel>> {

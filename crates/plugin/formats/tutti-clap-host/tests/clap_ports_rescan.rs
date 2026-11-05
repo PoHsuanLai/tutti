@@ -14,11 +14,13 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_clap_host::{AudioBuffer32, AudioBuffer64, ClapError, ClapLoaded, ClapProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapError, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, REPORTED_TAIL_SAMPLES};
+use tutti_plugin_types::PluginError;
 
 // Makes `assert_no_alloc` abort on an allocation; without it the no-alloc
 // assertions below would pass unconditionally.
@@ -96,7 +98,7 @@ impl Probe {
 
     fn load(&self) -> ClapLoaded {
         let path = Path::new(probe_path());
-        ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 }
@@ -139,7 +141,7 @@ fn a_rescan_rereads_the_f64_flag() {
 /// one nobody has to remember to rescan for.
 ///
 /// Mutation (run): delete the `rescan_audio_ports` call in
-/// `ClapLoaded::activate` → the `f64` activation is refused on the stale
+/// `ClapLoaded::activate_typed` → the `f64` activation is refused on the stale
 /// flag, and the second one is not → both `expect`s fail.
 #[test]
 fn activation_rereads_the_f64_flag() {
@@ -149,22 +151,24 @@ fn activation_rereads_the_f64_flag() {
 
     probe.ports_64bit(BOTH_SIDES);
     let active = loaded
-        .activate::<f64>()
+        .activate_at::<f64>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("the plugin flags its ports now, so 64-bit activation is allowed");
 
     let loaded = active.deactivate();
     probe.ports_64bit(0);
-    match loaded.activate::<f64>() {
-        Err((_, ClapError::NotSupported(_))) => {}
-        Err((_, e)) => panic!("expected NotSupported, got {e}"),
+    match loaded.activate_at::<f64>(48_000.0, 512) {
+        Err((_, PluginError::Other(reason))) => {
+            assert!(reason.contains("64-bit"), "{reason}");
+        }
+        Err((_, e)) => panic!("expected a refusal naming 64-bit audio, got {e}"),
         Ok(_) => panic!("the plugin dropped its 64-bit flags, so 64-bit activation is refused"),
     }
 }
 
 /// **No `clap.tail` is an absent answer, not a tail of 0.**
 ///
-/// Mutation (run): in `ClapLoaded::get_tail`, replace the `return None;` under
+/// Mutation (run): in `ClapLoaded::tail_samples`, replace the `return None;` under
 /// `if self.extensions.system.tail.is_null()` with `return Some(0);` → the
 /// first assertion fails.
 #[test]
@@ -172,15 +176,15 @@ fn a_plugin_without_clap_tail_has_no_answer() {
     let probe = Probe::acquire();
 
     probe.tail_extension(false);
-    assert_eq!(probe.load().get_tail(), None);
+    assert_eq!(probe.load().tail_samples(), None);
 
     probe.tail_extension(true);
-    assert_eq!(probe.load().get_tail(), Some(REPORTED_TAIL_SAMPLES));
+    assert_eq!(probe.load().tail_samples(), Some(REPORTED_TAIL_SAMPLES));
 }
 
 /// **A rescan of an active plugin is refused.** CLAP lets a plugin change its
 /// ports only while deactivated, so a layout read under an active plugin would
-/// pair with buffers sized for the old one. `ClapActive` derefs mutably to
+/// pair with buffers sized for the old one. The Controller derefs mutably to
 /// `ClapLoaded`, so the call is reachable.
 ///
 /// Mutation (run): change the guard in `ClapLoaded::rescan_audio_ports` to
@@ -190,7 +194,7 @@ fn a_rescan_of_an_active_plugin_is_refused() {
     let probe = Probe::acquire();
     let mut active = probe
         .load()
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
 
@@ -205,27 +209,27 @@ fn a_rescan_of_an_active_plugin_is_refused() {
     );
 }
 
-/// **An in-place re-activation reads the ports again and sizes its buffers
-/// from them.** `set_sample_rate` deactivates and activates the plugin, which
-/// may have changed its layout in between; the old layout would pair a
-/// `[2, 1]` plugin with scratch for one stereo bus.
+/// **A re-activation reads the ports again and sizes its buffers from them.**
+/// A rate change deactivates and activates the plugin, which may have changed
+/// its layout in between; the old layout would pair a `[2, 1]` plugin with
+/// scratch for one stereo bus.
 ///
-/// Mutation (run): delete the `self.loaded.rescan_audio_ports()?;` line in
-/// `ClapActive::reconfigure` → the port count stays 1 → the first assertion
+/// Mutation (run): delete the `self.rescan_audio_ports()` call in
+/// `ClapLoaded::activate_typed` → the port count stays 1 → the first assertion
 /// fails.
 #[test]
 fn a_rate_change_rereads_the_port_layout() {
     let probe = Probe::acquire();
     let mut active = probe
         .load()
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
     assert_eq!(active.audio_port_count(true), 1, "fixture: one input port");
     assert_eq!(active.info().audio_inputs, 2);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.set_sample_rate(44_100.0).expect("re-activates");
+    active.reconfigure(44_100.0, 512).expect("re-activates");
 
     assert_eq!(active.audio_port_count(true), 2, "the plugin's new layout");
     assert_eq!(active.info().audio_inputs, 3, "stereo main + mono aux");
@@ -247,18 +251,15 @@ fn a_rate_change_rereads_the_port_layout() {
         .expect("a block in the new layout processes");
 }
 
-/// Runs one block of `channels` channels through a 64-bit instance inside
+/// Runs one block of `channels` channels through a 32-bit instance inside
 /// `assert_no_alloc`, returning the instance's answer.
-fn process_f64_block(
-    active: &mut tutti_clap_host::ClapActive<f64>,
-    channels: usize,
-) -> Result<(), ClapError> {
+fn process_f32_block(active: &mut Active<f32>, channels: usize) -> Result<(), ClapError> {
     const FRAMES: usize = 64;
-    let ins = vec![vec![0.5f64; FRAMES]; channels];
-    let in_refs: Vec<&[f64]> = ins.iter().map(Vec::as_slice).collect();
-    let mut outs = vec![vec![0.0f64; FRAMES]; channels];
-    let mut out_refs: Vec<&mut [f64]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
-    let mut buffer = AudioBuffer64 {
+    let ins = vec![vec![0.5f32; FRAMES]; channels];
+    let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
+    let mut outs = vec![vec![0.0f32; FRAMES]; channels];
+    let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
+    let mut buffer = AudioBuffer32 {
         inputs: &in_refs,
         outputs: &mut out_refs,
         num_samples: FRAMES,
@@ -268,112 +269,94 @@ fn process_f64_block(
     assert_no_alloc(|| active.process(&mut buffer, &ctx).map(|_| ()))
 }
 
-/// **A 64-bit instance whose plugin drops its flags is not re-activated for
-/// 64-bit audio, and what it is left as refuses to process.** The refusal is
-/// [`ClapError::Deactivated`], the instance stays deactivated, as after a
-/// refused rollback, and `process` returns [`ClapError::NotActive`] without
-/// calling the plugin (CLAP allows `process` only while active), allocating, or
-/// starting processing.
+/// **A 64-bit activation whose plugin dropped its flags is refused, and the
+/// refusal hands back the plugin deactivated and untouched.** The plugin is not
+/// active (CLAP allows `process` only while active), nothing is deactivated a
+/// second time, and the same instance then activates at 32-bit.
 ///
 /// Mutations (run): delete the `T::requires_f64() && ...` check in
-/// `ClapActive::reconfigure` → the plugin is re-activated for 64-bit audio on
-/// ports that do not take them → `expect_err` fails. Replace the
-/// `!self.loaded.flags.active` conditions in both `ClapActive::process_impl`
-/// and `ensure_processing` with `false` → the block reaches the deactivated
-/// plugin → the `NotActive` assertion fails. Either check alone keeps the
-/// test green: the second is the one that guards the FFI call. Drop the
-/// `self.loaded.flags.active &&` from `set_sample_rate`'s same-rate early
-/// return → the retry at the old rate returns `Ok` on a deactivated instance →
-/// the retry's `expect_err` fails. Remove the `flags.active` guard in
-/// `ClapLoaded::deactivate_plugin` → the two retries deactivate an inactive
-/// plugin → the final count assertion fails.
+/// `ClapLoaded::activate_typed` → the plugin is activated for 64-bit audio on
+/// ports that do not take them → the `Err` match fails. Return `None` for the
+/// plugin in the `refuse` closure → the `expect` on the returned plugin fails.
+/// Remove the `flags.active` guard in `ClapLoaded::deactivate_plugin` → the
+/// retire of the later activation deactivates an inactive plugin → the final
+/// count assertion fails.
 #[test]
-fn a_rate_change_does_not_reactivate_a_64_bit_instance_on_dropped_flags() {
+fn an_f64_activation_on_dropped_flags_is_refused_with_the_plugin_intact() {
     let probe = Probe::acquire();
     probe.ports_64bit(BOTH_SIDES);
-    let mut active = probe
+    let active = probe
         .load()
-        .activate::<f64>()
+        .activate_at::<f64>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("flagged, so 64-bit activation is allowed");
+    let loaded = active.deactivate();
 
     probe.ports_64bit(0);
-    let err = active
-        .set_sample_rate(44_100.0)
-        .expect_err("the flags are gone");
-    assert!(matches!(err, ClapError::Deactivated(_)), "got {err}");
+    let (loaded, reason) = loaded
+        .activate_at::<f64>(44_100.0, 512)
+        .err()
+        .expect("the flags are gone");
+    assert!(matches!(reason, PluginError::Other(_)), "got {reason}");
     assert!(
-        !err.to_string().contains("at :"),
-        "no empty path in the message: {err}"
+        !reason.to_string().contains("at :"),
+        "no empty path in the message: {reason}"
     );
+    assert!(!loaded.is_active(), "left deactivated");
 
-    assert!(!active.is_active(), "left deactivated");
-    let refused = process_f64_block(&mut active, 2).expect_err("a deactivated plugin is not run");
-    assert!(matches!(refused, ClapError::NotActive), "got {refused}");
-    assert!(!active.is_processing(), "processing was never started");
-
-    let retry = active
-        .set_sample_rate(48_000.0)
-        .expect_err("a retry at the old rate still meets dropped flags");
-    assert!(matches!(retry, ClapError::Deactivated(_)), "got {retry}");
-    probe.ports_64bit(BOTH_SIDES);
-    active
-        .set_sample_rate(48_000.0)
-        .expect("the flags are back, so the same rate re-activates");
-    assert!(active.is_active(), "re-activated at the old rate");
+    let mut active = loaded
+        .activate_at::<f32>(44_100.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("the same instance runs at 32-bit");
+    assert!(active.is_active());
+    process_f32_block(&mut active, 2).expect("and renders");
+    drop(active);
     assert_eq!(
         probe.inactive_deactivations(),
         0,
-        "a retry on a deactivated plugin must not call `deactivate` again"
+        "no `deactivate` reached a plugin that was inactive"
     );
 }
 
-/// **A failed reconfiguration that also changed the port layout leaves the
-/// ports and the scratch agreeing, and a block of any width is refused.** The
-/// plugin drops its 64-bit flags and switches to the `[2, 1]` layout in the
-/// same rescan; the rescan was committed but the scratch kept its stereo size,
-/// so a 3-channel block indexed past it (a panic) or grew the pointer vectors
-/// (an allocation on the audio path).
+/// **A refused activation that also changed the port layout leaves the ports
+/// committed, and the next activation sizes its buffers from them.** The plugin
+/// drops its 64-bit flags and switches to the `[2, 1]` layout in the same
+/// rescan; a 3-channel block must index the new scratch, not a stereo one (a
+/// panic) or grow the pointer vectors (an allocation on the audio path).
 ///
-/// Mutations (run): replace the `!self.loaded.flags.active` conditions in
-/// `process_impl` and `ensure_processing` with `false`, and delete the
-/// `self.resize_scratch(prev_frames)` before the `Deactivated` return in
-/// `ClapActive::reconfigure` → the block indexes the stale scratch
-/// (`refill_port_buffers`) or allocates → this test aborts (SIGABRT, "memory
-/// allocation failed" under `assert_no_alloc`). Removing only the two checks
-/// stays green, because the resized scratch fits the new layout, and removing
-/// only the resize stays green, because the checks refuse first: each is
-/// defence for the other.
+/// Mutation (run): size the scratch in `activate_typed` from a layout read
+/// before the rescan → the 3-channel block indexes past the scratch or
+/// allocates → this test aborts (SIGABRT, "memory allocation failed" under
+/// `assert_no_alloc`).
 #[test]
-fn a_failed_reconfiguration_with_a_new_layout_refuses_blocks_of_any_width() {
+fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
     let probe = Probe::acquire();
     probe.ports_64bit(BOTH_SIDES);
-    let mut active = probe
+    let active = probe
         .load()
-        .activate::<f64>()
+        .activate_at::<f64>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("flagged, so 64-bit activation is allowed");
     assert_eq!(active.audio_port_count(true), 1, "fixture: one input port");
+    let loaded = active.deactivate();
 
     probe.ports_64bit(0);
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active
-        .set_sample_rate(44_100.0)
-        .expect_err("the flags are gone");
-
+    let (loaded, _) = loaded
+        .activate_at::<f64>(44_100.0, 512)
+        .err()
+        .expect("the flags are gone");
     assert_eq!(
-        active.audio_port_count(true),
+        loaded.audio_port_count(true),
         2,
         "the rescan is committed, so the layout is the plugin's"
     );
-    for channels in [2, 3] {
-        let refused =
-            process_f64_block(&mut active, channels).expect_err("a deactivated plugin is not run");
-        assert!(
-            matches!(refused, ClapError::NotActive),
-            "{channels} channels: got {refused}"
-        );
-    }
+
+    let mut active = loaded
+        .activate_at::<f32>(44_100.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("activates at 32-bit");
+    process_f32_block(&mut active, 3).expect("a block in the new layout processes");
 }
 
 /// **A layout change across a successful rate change shows in the channel
@@ -381,45 +364,42 @@ fn a_failed_reconfiguration_with_a_new_layout_refuses_blocks_of_any_width() {
 /// processes the new width.
 ///
 /// Mutation (run): delete the `self.loaded.rescan_audio_ports()?;` line in
-/// `ClapActive::reconfigure` → the totals are unchanged → the assertion fails.
+/// `ClapLoaded::activate_typed` → the totals are unchanged → the assertion fails.
 #[test]
 fn a_successful_rate_change_exposes_the_new_layout() {
     let probe = Probe::acquire();
     let mut active = probe
         .load()
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
     let before = (active.info().audio_inputs, active.info().audio_outputs);
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active.set_sample_rate(44_100.0).expect("re-activates");
+    active.reconfigure(44_100.0, 512).expect("re-activates");
 
     let after = (active.info().audio_inputs, active.info().audio_outputs);
     assert_ne!(before, after, "the totals follow the plugin's new layout");
     assert!(active.is_active());
 }
 
-/// **`reactivate` re-reads the ports at the rate and block size the plugin
-/// runs at**, which is what serving a plugin's `audio-ports.rescan` or
-/// `request_restart` needs (`set_sample_rate` to the same rate does nothing).
+/// **A deactivate and activate at the rate and block size the plugin runs at
+/// re-reads the ports**, which is what serving a plugin's `audio-ports.rescan`
+/// or `request_restart` needs. Nothing is re-read before it.
 ///
-/// Mutation (run): make `ClapActive::reactivate` return `Ok(())` without
-/// calling `reconfigure` → the cached input total stays 2 → fails.
+/// Mutation (run): make the helper's `reactivate` return `Ok(())` without
+/// deactivating → the cached input total stays 2 → fails.
 #[test]
 fn reactivate_rereads_the_port_layout_in_place() {
     let probe = Probe::acquire();
     let mut active = probe
         .load()
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("activates");
     assert_eq!(active.info().audio_inputs, 2, "fixture: one stereo input");
 
     probe.port_layout(LAYOUT_ASYMMETRIC_AUX);
-    active
-        .set_sample_rate(48_000.0)
-        .expect("the same rate: no-op");
     assert_eq!(active.info().audio_inputs, 2, "nothing was re-read");
 
     active.reactivate().expect("re-activates");

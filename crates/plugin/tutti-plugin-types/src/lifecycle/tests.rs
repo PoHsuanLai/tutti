@@ -42,6 +42,7 @@ enum Fx {
     Reloaded,
     RefusedNotice,
     StuckNotice,
+    LostNotice,
 }
 
 fn tag(effect: &Effect) -> Fx {
@@ -68,6 +69,7 @@ fn tag(effect: &Effect) -> Fx {
         Effect::Notify(Notice::Reloaded) => Fx::Reloaded,
         Effect::Notify(Notice::Refused { .. }) => Fx::RefusedNotice,
         Effect::Notify(Notice::Stuck { .. }) => Fx::StuckNotice,
+        Effect::Notify(Notice::Lost { .. }) => Fx::LostNotice,
     }
 }
 

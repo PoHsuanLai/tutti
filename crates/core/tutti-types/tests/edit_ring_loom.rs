@@ -35,10 +35,12 @@
 //! - `push`'s load of `tail` weakened to `Relaxed` → the same;
 //! - `push` ignoring a full ring (no `head - tail` check) → a causality
 //!   violation (the producer writes a slot the consumer has not finished);
-//! - `pop` not advancing `tail` → the model aborts, as the ring fills and never
-//!   drains (loom's execution-path check);
-//! - `pop` skipping a queued entry (advancing `tail` by two) → the model
-//!   aborts the same way.
+//! - `pop` not advancing `tail` → the same value pops repeatedly and the
+//!   equality of popped and accepted values fails (the final drain is bounded
+//!   by what was accepted, so a repeat fails the assertion rather than loom's
+//!   branch limit);
+//! - `pop` skipping a queued entry (advancing `tail` by two) → the model fails
+//!   (a causality violation, or the same equality).
 //!
 //! The two orderings on `tail` are caught only because the slots are loom
 //! `UnsafeCell`s: with atomic words the same mutations survived.
@@ -91,7 +93,14 @@ fn run(capacity: usize) {
         }
 
         let (accepted, refused, counted) = producer.join().unwrap();
-        while take(&mut reader, &mut popped) {}
+        // Bounded by what was accepted (plus one pop that must find nothing), so
+        // a repeated value fails the equality below rather than loom's branch
+        // limit.
+        for _ in 0..=accepted.len() {
+            if !take(&mut reader, &mut popped) {
+                break;
+            }
+        }
         assert_eq!(popped, accepted, "popped values differ from accepted");
         assert_eq!(refused, counted, "refusals miscounted");
     });

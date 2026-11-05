@@ -12,6 +12,7 @@ use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamAddress, ParamRange};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::{Control, Request, RescanScope};
 
 /// Look up declared bounds for `id` in a table sorted by id.
 fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
@@ -79,14 +80,13 @@ impl ClapGuiInstance {
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         // Editor-only load: gui/params/state work without activation, and this
         // instance must never be activated or process audio (audio runs in the
-        // subprocess instance). `load_editor_only` encodes that contract.
+        // subprocess instance). Nothing here activates it.
         let inner =
-            tutti_clap_host::ClapLoaded::load_editor_only(&resolved, None).map_err(|e| {
-                BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: format!("CLAP GUI-only load failed: {e}"),
-                }
+            tutti_clap_host::ClapLoaded::load(&resolved, tutti_clap_host::LoadOptions::default())
+                .map_err(|e| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Opening,
+                reason: format!("CLAP GUI-only load failed: {e}"),
             })?;
         // One pass over the catalog instead of a scan per write. Params are
         // readable on an unactivated instance, which is what this GUI-only
@@ -103,7 +103,7 @@ impl ClapGuiInstance {
 /// The plugin's declared plain-unit bounds per parameter id, sorted by id.
 fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64))> {
     let mut ranges: Vec<(u32, (f64, f64))> = inner
-        .get_parameter_list()
+        .parameter_list()
         .into_iter()
         .filter_map(|p| {
             let id = p.id.opaque()?.get();
@@ -146,14 +146,26 @@ impl PluginEditor for ClapGuiInstance {
         // The editor's timers (a UI toolkit's repaint tick), its callbacks to
         // the main thread and its file descriptors are all served from here:
         // this is the only main-thread tick the instance has.
-        self.inner.run_main_thread_work();
-        // A rescan that re-described the parameters re-reads their bounds.
-        let rescan = self.inner.poll_params_rescan();
-        if rescan.info || rescan.all {
+        let mut requests = Vec::new();
+        self.inner.take_requests(&mut requests);
+        let mut reread = false;
+        for request in requests {
+            match request {
+                Request::Callback => self.inner.run_main_thread(),
+                Request::Timer(id) => self.inner.run_timer(id),
+                Request::Fd(id) => self.inner.service_fd(id),
+                // A rescan that re-described the parameters re-reads their bounds.
+                Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
+                // Nothing else is this instance's to serve: it never activates,
+                // so a restart or a latency change has nothing to restart.
+                _ => {}
+            }
+        }
+        if reread {
             self.param_ranges = read_param_ranges(&self.inner);
         }
         // If the plugin requested a param flush, perform it.
-        if self.inner.poll_params_flush_requested() {
+        if self.inner.take_params_flush_requested() {
             let _ = self.inner.flush_params(vec![]);
         }
     }
@@ -181,12 +193,12 @@ impl PluginEditor for ClapGuiInstance {
             .to_plain(value.get()),
             None => value.get(),
         };
-        self.inner.set_parameter(id.get(), plain);
+        self.inner.set_plain_value(id.get(), plain);
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
         self.inner
-            .set_state(data)
+            .load_state(data)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP set_state failed: {e}")))
     }
 
@@ -199,11 +211,9 @@ impl PluginEditor for ClapGuiInstance {
         //
         // Calling `flush_params` here is main-thread-legal: CLAP declares
         // `params.flush` as `[active ? audio-thread : main-thread]`, and this
-        // instance is a `load_editor_only` load that is never activated —
-        // `ClapLoaded::activate` consumes `self` into a `ClapActive`, and the
-        // only other setter of `flags.active` (`reconfigure`) hangs off
-        // `ClapActive`, so a `ClapLoaded` held by value cannot reach the active
-        // state. `flush_params` takes the main-thread branch, which is also
+        // instance is loaded for its editor alone and never activated —
+        // `ClapLoaded::activate` consumes `self` into a processor and a controller,
+        // so a `ClapLoaded` held by value cannot reach the active state. `flush_params` takes the main-thread branch, which is also
         // what the existing `editor_idle` flush above already relies on.
         let events = self.inner.flush_params(vec![]);
 
@@ -236,7 +246,7 @@ impl PluginEditor for ClapGuiInstance {
 
     fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
         self.inner
-            .poll_editor_resize_request()
+            .take_editor_resize_request()
             .map(|sz| EditorSize {
                 width: sz.width,
                 height: sz.height,
@@ -268,8 +278,8 @@ mod tests {
     /// `register_timer` with `true` and never called `on_timer`, so a plugin
     /// that animates its editor from a timer froze.
     ///
-    /// Mutation (run): delete `self.inner.run_main_thread_work()` from
-    /// `editor_idle` → the timer never ticks → fails.
+    /// Mutation (run): delete the `Request::Timer(id)` arm from `editor_idle` →
+    /// the timer never ticks → fails.
     #[test]
     fn a_timer_the_editor_registers_ticks_on_idle() {
         use tutti_clap_test_plugin::{CMD_REGISTER_TIMER, Site, ThreadCapture};

@@ -19,11 +19,8 @@ use std::path::Path;
 mod probe_path;
 use probe_path::probe_path;
 
-use tutti_clap_host::ClapLoaded;
+use tutti_clap_host::{ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::{PLUGIN_ID, SECOND_PLUGIN_ID};
-
-const RATE: f64 = 48_000.0;
-const BLOCK: u32 = 512;
 
 fn bundle() -> &'static Path {
     // Bare dylib: passed as both bundle and library so the host dlopens it
@@ -73,8 +70,11 @@ fn probe_still_answers_for_the_first_plugin() {
 /// the companion effect.
 #[test]
 fn a_plugin_past_index_zero_can_be_loaded() {
-    let loaded = ClapLoaded::load_plugin(bundle(), SECOND_PLUGIN_ID.to_str().unwrap(), RATE, BLOCK)
-        .expect("the second plugin in the bundle must be loadable");
+    let loaded = ClapLoaded::load(
+        bundle(),
+        LoadOptions::new().plugin_id(SECOND_PLUGIN_ID.to_str().unwrap()),
+    )
+    .expect("the second plugin in the bundle must be loadable");
 
     assert_eq!(
         loaded.info().id,
@@ -89,7 +89,7 @@ fn a_plugin_past_index_zero_can_be_loaded() {
 /// getting exactly what it got before ids were selectable.
 #[test]
 fn loading_without_an_id_gets_the_first_plugin() {
-    let loaded = ClapLoaded::load(bundle(), RATE, BLOCK).expect("default load");
+    let loaded = ClapLoaded::load(bundle(), LoadOptions::default()).expect("default load");
     assert_eq!(loaded.info().id, PLUGIN_ID.to_str().unwrap());
 }
 
@@ -103,7 +103,10 @@ fn loading_without_an_id_gets_the_first_plugin() {
 fn an_unknown_id_fails_rather_than_falling_back() {
     // Matched rather than `expect_err`, because `ClapLoaded` is not `Debug` —
     // and a loaded plugin is exactly what must not come back here.
-    let msg = match ClapLoaded::load_plugin(bundle(), "tutti.no-such-plugin", RATE, BLOCK) {
+    let msg = match ClapLoaded::load(
+        bundle(),
+        LoadOptions::new().plugin_id("tutti.no-such-plugin"),
+    ) {
         Ok(loaded) => panic!(
             "an unknown id must not silently load a plugin; got '{}'",
             loaded.info().id

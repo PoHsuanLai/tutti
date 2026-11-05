@@ -1,9 +1,10 @@
-//! Audio processing methods for the active CLAP instance.
+//! The audio path of a [`ClapProcessor`]: one block through the plugin.
 
-use super::ClapActive;
+use super::ClapProcessor;
 use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
+use crate::host::AudioThreadClaim;
 use crate::types::{
     AudioBuffer, ChannelLayout, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo,
 };
@@ -26,7 +27,7 @@ use tutti_plugin_types::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
-/// [`ProcessOutputRef::to_owned`]; the hot path returns
+/// [`ProcessOutputRef::into_owned`]; the hot path returns
 /// [`ProcessOutputRef`] borrowing the instance's pooled buffers instead.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOutput {
@@ -39,7 +40,7 @@ pub struct ProcessOutput {
 }
 
 /// Borrowing view of the plugin's per-block output. Points into the
-/// [`ClapActive`]'s pooled return-value buffers — valid until the next
+/// [`ClapProcessor`]'s pooled return-value buffers — valid until the next
 /// `process` call, which clears them in place. RT-safe.
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessOutputRef<'a> {
@@ -54,7 +55,7 @@ pub struct ProcessOutputRef<'a> {
 impl<'a> ProcessOutputRef<'a> {
     /// Snapshots into an owned [`ProcessOutput`]. Allocates; off-RT only.
     #[must_use]
-    pub fn to_owned(self) -> ProcessOutput {
+    pub fn into_owned(self) -> ProcessOutput {
         ProcessOutput {
             midi_events: self.midi_events.to_vec(),
             param_changes: self.param_changes.clone(),
@@ -68,8 +69,8 @@ impl<'a> ProcessOutputRef<'a> {
 ///
 /// ```no_run
 /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-/// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ClapProcessContext, TransportInfo};
-/// # fn ex(plugin: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+/// # use tutti_clap_host::{AudioBuffer32, ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+/// # fn ex(plugin: &mut ClapProcessor<f32>, buffer: &mut AudioBuffer32<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
 /// let transport = TransportInfo::default().with_tempo(120.0);
 /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
@@ -253,25 +254,28 @@ fn refill_port_buffers<T: ClapSample>(
     }
 }
 
-impl<T: ClapSample> ClapActive<T> {
+impl<T: ClapSample> ClapProcessor<T> {
     /// Processes one block of audio through the plugin.
     ///
-    /// The sample format is fixed at activation: `ClapActive<f32>` takes an
-    /// `AudioBuffer32`, `ClapActive<f64>` an `AudioBuffer64`. (The 64-bit
-    /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
+    /// The sample format is fixed at activation: `ClapProcessor<f32>` takes an
+    /// `AudioBuffer32`, `ClapProcessor<f64>` an `AudioBuffer64`. (The 64-bit
+    /// support check happened once in [`ClapLoaded::activate_typed`](super::ClapLoaded::activate_typed).)
     ///
     /// Call from the audio thread. The first call after activation (or after
-    /// a reconfiguration) also runs the plugin's `start_processing`. The call
-    /// does not allocate: event lists and channel pointers live in scratch
-    /// sized at activation. The returned [`ProcessOutputRef`] borrows the MIDI,
+    /// a [`stop`](Self::stop)) also runs the plugin's `start_processing`. The
+    /// call does not allocate: event lists and channel pointers live in scratch
+    /// sized at activation. The parameter edits the Controller queued are
+    /// drained first and sent to the plugin at the head of the block, before
+    /// `ctx`'s automation. The returned [`ProcessOutputRef`] borrows the MIDI,
     /// parameter changes and note expressions the plugin emitted; it is valid
     /// until the next call.
     ///
     /// # Errors
     ///
     /// - [`ClapError::BlockTooLarge`] if the buffer holds more frames than the
-    ///   instance was activated for; grow it with
-    ///   [`set_max_block_size`](Self::set_max_block_size) off the audio thread.
+    ///   instance was activated for; activate again with a larger
+    ///   `Prepare::max_block` off the audio thread.
+    /// - [`ClapError::NotActive`] if the Controller has been dropped.
     /// - [`ClapError::StartProcessingFailed`] if the plugin refuses
     ///   `start_processing`.
     /// - [`ClapError::PluginReturnedError`] if the plugin returns
@@ -281,8 +285,8 @@ impl<T: ClapSample> ClapActive<T> {
     ///
     /// ```no_run
     /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-    /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ClapProcessContext, TransportInfo};
-    /// # fn ex(active: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+    /// # use tutti_clap_host::{AudioBuffer32, ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+    /// # fn ex(active: &mut ClapProcessor<f32>, buffer: &mut AudioBuffer32<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {
     /// let transport = TransportInfo::default().with_tempo(120.0);
     /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
@@ -305,7 +309,7 @@ impl<T: ClapSample> ClapActive<T> {
 
     /// Parameter points the host sent past the room this instance was
     /// activated for (every parameter's points for a block of
-    /// [`block_size`](super::ClapLoaded::block_size)): each replaced its
+    /// the block size it was activated for): each replaced its
     /// parameter's previous point in the block, or was lost when there was
     /// none. Zero while the host stays within it.
     pub fn param_points_dropped(&self) -> u64 {
@@ -313,12 +317,10 @@ impl<T: ClapSample> ClapActive<T> {
     }
 
     /// SysEx messages not handed to the plugin since this instance was
-    /// activated (neither [`reset`](Self::reset) nor an in-place
-    /// re-activation zeroes it), each dropped whole rather than truncated:
+    /// activated (a [`reset`](Self::reset) does not zero it), each dropped whole rather than truncated:
     /// longer than
     /// [`SYSEX_MESSAGE_CAPACITY`](tutti_plugin_types::SYSEX_MESSAGE_CAPACITY),
-    /// left without their `END` by a later `START`, or open at a reset or
-    /// re-activation. The input list
+    /// left without their `END` by a later `START`, or open at a reset. The input list
     /// reassembles a multi-packet SysEx (across blocks if it spans them) and
     /// hands the plugin one `CLAP_EVENT_MIDI_SYSEX`, `0xF0 … 0xF7`, at its
     /// `END`. Read on this instance only, like
@@ -337,7 +339,7 @@ impl<T: ClapSample> ClapActive<T> {
 
     /// Parameter points the plugin emitted past the room this instance was
     /// activated for (one queue per parameter, each with room for a block of
-    /// [`block_size`](super::ClapLoaded::block_size)'s points): each replaced
+    /// the block size it was activated for's points): each replaced
     /// its parameter's previous point in the block, or was lost when no queue
     /// was left for its parameter. Counted over this instance's life; zero
     /// while the plugin stays within it.
@@ -350,7 +352,7 @@ impl<T: ClapSample> ClapActive<T> {
     /// list on the audio thread. The rooms are separate: 256 events other
     /// than parameter values (notes, MIDI, expressions), so a parameter flood
     /// never refuses a note-off, and every parameter's points for a block of
-    /// [`block_size`](super::ClapLoaded::block_size). Past the parameter room
+    /// the block size it was activated for. Past the parameter room
     /// a value for one of the plugin's own parameters is not refused but kept
     /// as that parameter's latest (the points it displaces are counted in
     /// [`output_param_points_dropped`](Self::output_param_points_dropped));
@@ -379,7 +381,7 @@ impl<T: ClapSample> ClapActive<T> {
     /// Whether notes go to the plugin as `clap_event_midi`, as read from its
     /// note port at the last (re)activation: see [`crate::ClapLoaded::sends_midi_notes`].
     pub fn sends_midi_notes(&self) -> bool {
-        self.scratch.input_events.midi_notes()
+        self.scratch.input_events.supports_midi_notes()
     }
 
     /// Whether the plugin's most recent block reported `CLAP_PROCESS_TAIL` —
@@ -404,11 +406,10 @@ impl<T: ClapSample> ClapActive<T> {
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // A reconfiguration that could not activate the plugin again leaves it
-        // deactivated, and CLAP allows `process` only while active. Refuse the
-        // block before anything else touches the plugin or the scratch: one
-        // flag read, no FFI, no allocation.
-        if !self.loaded.flags.active {
+        // CLAP allows `process` only while active, and the Controller's drop
+        // ends that. Refuse the block before anything else touches the plugin or
+        // the scratch: one flag read, no FFI, no allocation.
+        if self.shell.retired.load(Ordering::Acquire) {
             return Err(ClapError::NotActive);
         }
 
@@ -419,15 +420,15 @@ impl<T: ClapSample> ClapActive<T> {
         // A block larger than `max_frames` would make the plugin read/write
         // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
         // just a compare). Callers that legitimately need a bigger block must
-        // grow the scratch off the audio thread via `set_max_block_size`.
+        // activate again for a larger block off the audio thread.
         // The error carries its two numbers as fields rather than `format!`ing
         // a `String`: a host driving a too-large block drives it again next
         // block, so the allocation would repeat. `Display` renders the sentence
         // off-thread.
-        if num_samples > self.loaded.audio.max_frames {
+        if num_samples > self.max_frames {
             return Err(ClapError::BlockTooLarge {
                 requested: num_samples,
-                max_frames: self.loaded.audio.max_frames,
+                max_frames: self.max_frames,
             });
         }
 
@@ -439,16 +440,23 @@ impl<T: ClapSample> ClapActive<T> {
         if !midi_events.is_empty() {
             self.scratch.input_events.add_midi_events(midi_events);
         }
-        if !param_changes.is_empty() {
-            // Split-borrow: `add_param_changes` mutates `input_events` and reads
-            // `param_ranges` (denormalize 0..1 → the plugin's plain range).
-            let AudioScratch {
-                input_events,
-                param_ranges,
-                plugin_claims_params,
-                ..
-            } = &mut self.scratch;
-            input_events.add_param_changes(param_changes, param_ranges, *plugin_claims_params);
+        {
+            // Lent once per block and let go before the plugin is called, so it
+            // pins nothing across blocks. The edits come first, at the head of
+            // the block, and the automation after them, so where both set one
+            // parameter at one time the automation has the last word.
+            let table = self.ranges.lend();
+            let input_events = &mut self.scratch.input_events;
+            self.drain.drain(|edit| {
+                // An edit this host does not know is dropped; the drain counts
+                // what cannot decode, and a new variant is a new host's to add.
+                if let tutti_plugin_types::Edit::Param { id, value } = edit {
+                    input_events.add_param_edit(id.get(), value.get(), &table.ranges, table.claims);
+                }
+            });
+            if !param_changes.is_empty() {
+                input_events.add_param_changes(param_changes, &table.ranges, table.claims);
+            }
         }
         if !note_expressions.is_empty() {
             self.scratch
@@ -468,13 +476,13 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.output_events.clear();
 
         // Populate the pre-allocated scratch in place. We need to read
-        // `self.loaded.ports` while mutating `self.scratch.process`; the two
+        // `self.ports` while mutating `self.scratch.process`; the two
         // fields are disjoint, so we split the borrow through a raw pointer.
         //
         // SAFETY: `ports_ptr` and the `process` scratch borrow come from
         // disjoint fields of `*self`. We don't mutate `ports` and we don't
         // reborrow `self` for the duration of the scratch mutation.
-        let ports_ptr: *const PortLayout = &self.loaded.ports;
+        let ports_ptr: *const PortLayout = &self.ports;
         let scratch = &mut self.scratch.process;
 
         // Pooled vectors rather than per-block small-vector locals (16 pointers
@@ -549,8 +557,14 @@ impl<T: ClapSample> ClapActive<T> {
         // Clone the Arc into a local so the claim borrows the local, not
         // `self` (the rest of this function needs `&mut self`). An Arc clone is
         // a relaxed atomic increment — no allocation, RT-safe.
-        let host_state = Arc::clone(&self.loaded.host_state);
+        let host_state = Arc::clone(&self.host_state);
         let claim = host_state.claim_audio_thread();
+        // The Controller sets `retired` before it takes the claim to destroy the
+        // plugin, so a Processor that holds the claim and still finds it clear
+        // has the plugin to itself until it lets go.
+        if self.shell.retired.load(Ordering::Acquire) {
+            return Err(ClapError::NotActive);
+        }
         self.ensure_processing(&claim)?;
 
         let clap_transport = transport.map(build_clap_transport);
@@ -586,10 +600,16 @@ impl<T: ClapSample> ClapActive<T> {
         // What the plugin's `clap.thread-pool` requests run on, for exactly
         // the span of its `process` call (`host/thread_pool.rs`). On this
         // stack, so serving it allocates nothing.
-        let pool_request = self.loaded.pool_request();
-        let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
+        // Lent for this block only, so a pool the Controller replaces is seen at
+        // the next one and the old pool is let go on the control side.
+        let pool = self.pool.lend();
+        let pool_request = pool.request(&self.host_state, self.plugin.as_ptr());
+        // SAFETY: the plugin is alive (`retired` was clear when the claim was
+        // taken, and the Controller retires it only after recalling this
+        // Processor) and the claim holds the `[audio-thread]` role.
+        let plugin_ref = unsafe { &*self.plugin.as_ptr() };
         let status = if let Some(process_fn) = plugin_ref.process {
-            let plugin = self.loaded.plugin.as_ptr();
+            let plugin = self.plugin.as_ptr();
             // SAFETY: the plugin's own `process`, with a `clap_process` that
             // outlives the call.
             let call = || unsafe { process_fn(plugin, &process_data) };
@@ -600,13 +620,14 @@ impl<T: ClapSample> ClapActive<T> {
         } else {
             CLAP_PROCESS_CONTINUE
         };
+        drop(pool);
 
         // Advance the monotonic counter now that this block was processed.
         // `saturating_add` keeps it monotone even across a very long session.
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
 
         // Record the full status (not just ERROR) for
-        // `ClapActive::last_process_status` instead of printing it: printing
+        // `ClapProcessor::last_process_status` instead of printing it: printing
         // takes a stderr lock (and formats on the heap) on the audio thread,
         // and a transition-only guard would not make that rare — a plugin
         // alternating between two statuses transitions every block, which is
@@ -652,6 +673,42 @@ impl<T: ClapSample> ClapActive<T> {
             param_changes: &self.scratch.out_param_changes,
             note_expressions: &self.scratch.out_note_expressions,
         })
+    }
+}
+
+impl<T: ClapSample> ClapProcessor<T> {
+    /// Ensures the plugin's `start_processing` has run. Called at the top of
+    /// `process` (and is a no-op once started), so a processor self-starts on
+    /// first use and again after a [`stop`](Self::stop).
+    ///
+    /// # Threading
+    /// CLAP marks `start_processing` `[audio-thread & active & !processing]`.
+    /// The audio-thread is symbolic: any OS thread may take the role provided
+    /// only one holds it at a time, so this runs under an
+    /// [`AudioThreadClaim`]. Under the claim `is_audio_thread()` is `true` and
+    /// `is_main_thread()` is `false` on this thread — no dual identity — and no
+    /// other thread can be inside a `[audio-thread]` plugin call.
+    ///
+    /// `claim` is threaded in by the caller so the RT `do_process` path takes
+    /// the lock **once** per block and covers both `start_processing` and
+    /// `process` with a single claim.
+    pub(crate) fn ensure_processing(&mut self, _claim: &AudioThreadClaim<'_>) -> Result<()> {
+        if self.shell.processing.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        // SAFETY: the plugin is alive and the caller holds the claim.
+        let plugin_ref = unsafe { &*self.plugin.as_ptr() };
+        if let Some(start_fn) = plugin_ref.start_processing
+            && !unsafe { start_fn(self.plugin.as_ptr()) }
+        {
+            // Allocation-free: this runs on the audio thread, and a plugin
+            // that refuses to start typically refuses on every block.
+            return Err(ClapError::StartProcessingFailed);
+        }
+
+        self.shell.processing.store(true, Ordering::Relaxed);
+        Ok(())
     }
 }
 

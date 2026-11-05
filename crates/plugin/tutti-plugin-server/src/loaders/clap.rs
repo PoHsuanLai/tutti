@@ -1,46 +1,27 @@
-//! CLAP plugin loader - thin wrapper around clap-host crate.
+//! CLAP plugin loader: [`ClapInstance`] drives a `Lifecycle<ClapLoaded>` and
+//! presents it through the capability traits the server still dispatches on.
+//!
+//! The host crate is the interpreter of the plugin's lifecycle (activation,
+//! restarts, requests); this file is a probe, the thread pool this process
+//! serves `clap.thread-pool` on, and the translation between the core's
+//! notices and the server's [`AsyncEvent`]s.
 
 use std::path::Path;
+use tutti_clap_host::{ClapLoaded, ClapProcessorAny, LoadOptions};
 use tutti_plugin::server::{
-    BusChannels, ClapFeature, ContentScale, EditorPresence, EditorSize, Features, LoadedPlugin,
-    Normalized, NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio,
-    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
+    ContentScale, EditorPresence, EditorSize, LoadedPlugin, Normalized, ParamAddress,
+    ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, PresetId, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
-
-use crate::loaders::common::{Meta, single_bus};
 use tutti_plugin::{BridgeError, LoadStage, Result};
-#[cfg(feature = "clap")]
-use tutti_plugin_types::Layout;
+use tutti_plugin_types::{
+    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
+    Samples, Stage, State,
+};
 
-/// Build the catalog descriptor from CLAP factory info, carrying its feature
-/// tags verbatim as the native class.
-#[cfg(feature = "clap")]
-/// Per-bus channel counts for one direction, main bus first, read off the
-/// CLAP `audio-ports` extension (e.g. `[2, 1]` = stereo main + mono sidechain).
-/// Falls back to a single aggregate main bus when the plugin doesn't implement
-/// the extension (empty port list), matching the single-bus legacy convention
-/// the downstream slab expects.
-fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> BusChannels {
-    let count = loaded.audio_port_count(is_input);
-    let buses: BusChannels = (0..count)
-        .filter_map(|i| loaded.audio_port_info(i, is_input))
-        .map(|p| p.layout)
-        .collect();
-    if buses.is_empty() {
-        // No `audio-ports` extension: fall back to the aggregate total the
-        // host reports, as a single main bus.
-        let total = if is_input {
-            loaded.info().audio_inputs
-        } else {
-            loaded.info().audio_outputs
-        };
-        single_bus(total)
-    } else {
-        buses
-    }
-}
+use crate::loaders::common::Meta;
+use crate::plugin::AsyncEvent;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
 /// first time a plugin that implements the extension loads; `None` on a
@@ -67,7 +48,6 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
 /// never waits for a helper that has not started a task (the audio thread
 /// runs tasks from the start, and helpers join as they arrive), though a
 /// helper preempted mid-task delays the request.
-#[cfg(feature = "clap")]
 fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
     THREAD_POOL
         .get_or_init(|| {
@@ -92,223 +72,69 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
 
 /// Participants of the server's pool on a machine with `cores` cores (see
 /// [`thread_pool`]): half of them, at most 4.
-#[cfg(feature = "clap")]
 fn pool_participants(cores: usize) -> usize {
     (cores / 2).min(4)
 }
 
 /// [`thread_pool`]'s pool, once decided.
-#[cfg(feature = "clap")]
 static THREAD_POOL: std::sync::OnceLock<Option<std::sync::Arc<tutti_core::WorkerPool>>> =
     std::sync::OnceLock::new();
 
-/// What the two editor answers mean for the three capability bits.
-struct EditorBits {
-    /// `Features::EDITOR` — is there a UI at all?
-    has_editor: bool,
-    /// Whether `Features::EDITOR_RESIZE` may be set, subject to the plugin's
-    /// own resize hints.
-    resize_allowed: bool,
-    /// `Features::EDITOR_FLOATING` — does the plugin own the window?
-    floating: bool,
-}
-
-/// Resolve the two editor answers into the three bits that depend on them.
-///
-/// CLAP asks about editors twice — once for embedded, once for floating — and
-/// each bit wants a different combination:
-///
-/// - **`Features::EDITOR` is the union.** It means "this plugin has a UI", and
-///   a floating-only plugin has one. Reporting only the embedded answer is what
-///   made such a plugin look editor-less, so the DAW drew no button for a UI it
-///   could have shown.
-/// - **`Features::EDITOR_RESIZE` is embedded-only.** `can_resize`,
-///   `adjust_size` and `set_size` are all marked `[main-thread & !floating]` in
-///   `ext/gui.h`; a floating window is the plugin's to size. Advertising a
-///   resize path for one would announce a capability nothing can drive.
-/// - **`Features::EDITOR_FLOATING` is "embedding is not available".** Set only
-///   when the plugin floats *and cannot embed* — a plugin supporting both is
-///   hosted embedded, because that gives the host control over placement and
-///   keeps the editor inside the session's window management. Floating is the
-///   fallback for plugins with no choice, not a preference to honour.
-///
-/// That last rule is why `prefers_floating()` is not consulted here.
-/// `ext/gui.h:113` calls the preference a hint the host has no obligation to
-/// honour, and a host that floated every plugin asking to would scatter windows
-/// it can no longer place, size or stack.
-///
-/// A free function because these rules are the finding, and reaching them
-/// through the loader needs a live plugin behind a real dlopen — see the tests
-/// below, which pin the combinations without one.
-fn editor_bits(embeddable: bool, floating: bool) -> EditorBits {
-    EditorBits {
-        has_editor: embeddable || floating,
-        resize_allowed: embeddable,
-        floating: floating && !embeddable,
-    }
-}
-
-fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
-    PluginDescriptor {
-        id: info.id.clone(),
-        name: info.name.clone(),
-        vendor: info.vendor.clone(),
-        version: info.version.clone(),
-        class: PluginClass::Clap {
-            features: info
-                .features
-                .iter()
-                .map(|f| ClapFeature::parse(f))
-                .collect(),
-        },
-        editor,
-    }
-}
-
-#[cfg(feature = "clap")]
-use tutti_clap_host::{ClapActive, ClapLoaded};
-
-/// Active host instance, monomorphised by sample format at activation time:
-/// `F64` only when the session asked for 64-bit and every port of the plugin
-/// advertises it (see [`ClapInstance::load`]).
-#[cfg(feature = "clap")]
-enum ClapInner {
-    F32(ClapActive<f32>),
-    F64(ClapActive<f64>),
-}
-
-/// Dispatch a shared expression over both inner variants (immutable). The bound
-/// methods come from `ClapLoaded` via `Deref`, so they resolve on either arm.
-#[cfg(feature = "clap")]
-macro_rules! clap_dispatch {
-    ($self:expr, $inner:ident => $body:expr) => {
-        match &$self.inner {
-            ClapInner::F32($inner) => $body,
-            ClapInner::F64($inner) => $body,
-        }
-    };
-}
-
-/// Dispatch a shared expression over both inner variants (mutable).
-#[cfg(feature = "clap")]
-macro_rules! clap_dispatch_mut {
-    ($self:expr, $inner:ident => $body:expr) => {
-        match &mut $self.inner {
-            ClapInner::F32($inner) => $body,
-            ClapInner::F64($inner) => $body,
-        }
-    };
-}
-
-/// A plugin that is open and not yet active: what [`ClapInstance::open`]
-/// reads before activation.
-#[cfg(feature = "clap")]
+/// A plugin that is open and not yet active.
 struct Opened {
     loaded: ClapLoaded,
-    descriptor: PluginDescriptor,
-    features: Features,
+    sample_rate: f64,
+    block_size: usize,
 }
 
+/// A CLAP plugin as the server sees it.
 pub struct ClapInstance {
-    #[cfg(feature = "clap")]
-    inner: ClapInner,
+    lifecycle: Lifecycle<ClapLoaded>,
+    state: State,
+    hand: Hand<ClapProcessorAny>,
     meta: Meta,
-    /// The layout (or the instance's ability to run) changed since the host
-    /// last heard; see [`take_io_changed`](Self::take_io_changed).
-    #[cfg(feature = "clap")]
-    io_changed: bool,
-    /// What a re-activation or a rescan moved that the host has not heard of
-    /// yet; see [`take_changes`](Self::take_changes).
-    #[cfg(feature = "clap")]
-    pending: Pending,
+    /// What the plugin asked of the host since the last pass, reused.
+    requests: Vec<Request>,
+    /// What the host has not yet been told.
+    events: Vec<AsyncEvent>,
 }
 
-/// What the plugin moved since the host last heard, each reported once.
-#[cfg(feature = "clap")]
-#[derive(Default)]
-struct Pending {
-    latency: Option<Samples>,
-    tail: Option<PluginTail>,
-    param_values: bool,
-    param_titles: bool,
-}
-
-/// What [`ClapInstance::take_changes`] hands the poll.
-#[cfg(feature = "clap")]
-#[derive(Debug, Default, PartialEq)]
-pub struct ClapChanges {
-    /// The latency, when it moved. Read from the plugin while it was
-    /// activated, which is the only time CLAP lets it change.
-    pub latency: Option<Samples>,
-    /// The tail, when it moved.
-    pub tail: Option<PluginTail>,
-    /// Parameter values (or their display text) changed.
-    pub param_values: bool,
-    /// Parameters were added, removed or described differently.
-    pub param_titles: bool,
-}
-
-/// Reads what the plugin declares on its audio ports: the buses and, per
-/// port, what `clap.surround` says (`None` for a port the plugin will not
-/// answer for: no extension, or no `get_channel_map`).
-#[cfg(feature = "clap")]
-fn read_layout(loaded: &ClapLoaded) -> Layout {
-    let inputs = per_bus_channels(loaded, true);
-    let outputs = per_bus_channels(loaded, false);
-    let topology = |is_input: bool, count: usize| {
-        (0..count)
-            .map(|i| loaded.surround_topology(is_input, i as u32))
-            .collect()
-    };
-    Layout {
-        input_topology: topology(true, inputs.len()),
-        output_topology: topology(false, outputs.len()),
-        inputs,
-        outputs,
-    }
-}
-
-// Safety: the inner host instances are Send.
+// SAFETY: the host instances are `Send`, and the instance is driven from one
+// thread at a time.
 unsafe impl Send for ClapInstance {}
+
+fn resolve(path: &Path) -> Result<(std::path::PathBuf, bool)> {
+    let resolved = tutti_plugin::server::resolve_bundle(path)?;
+    let differs = resolved != path;
+    Ok((resolved, differs))
+}
 
 impl ClapInstance {
     /// Lightweight probe: read CLAP descriptor without calling init() or activate().
     pub fn probe(path: &Path) -> Result<PluginDescriptor> {
-        #[cfg(feature = "clap")]
-        {
-            let resolved = tutti_plugin::server::resolve_bundle(path)?;
-            let library_path = if resolved != path {
-                Some(resolved.as_path())
-            } else {
-                None
-            };
-            let info =
-                ClapLoaded::probe(path, library_path).map_err(|e| BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Scanning,
-                    reason: e.to_string(),
-                })?;
-
-            // A probe does not instantiate; the load path below asks.
-            Ok(clap_descriptor(&info, EditorPresence::Unknown))
-        }
-        #[cfg(not(feature = "clap"))]
-        Err(BridgeError::LoadFailed {
+        let (resolved, differs) = resolve(path)?;
+        let library_path = differs.then_some(resolved.as_path());
+        let info = ClapLoaded::probe(path, library_path).map_err(|e| BridgeError::LoadFailed {
             path: path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: "CLAP support not compiled".to_string(),
-        })
+            stage: LoadStage::Scanning,
+            reason: e.to_string(),
+        })?;
+
+        // A probe does not instantiate; the load path below asks.
+        Ok(tutti_clap_host::descriptor_of(
+            &info,
+            EditorPresence::Unknown,
+        ))
     }
 
     /// Load and activate a CLAP plugin.
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support on
-    /// every port at activation, the instance is activated as
-    /// `ClapActive<f64>`; otherwise `f32`. The chosen format is what
-    /// `metadata().features` reports as [`Features::F64_AUDIO`], so the
-    /// session's negotiated format and the activation agree: the session sends
-    /// the buffer width it negotiated, and an instance activated in the other
-    /// width would refuse every block.
+    /// every port at activation, the instance is activated at 64-bit;
+    /// otherwise 32-bit. The chosen format is what `loaded().features` reports
+    /// as `Features::F64_AUDIO`, so the session's negotiated format and the
+    /// activation agree: the session sends the buffer width it negotiated, and
+    /// an instance activated in the other width would refuse every block.
     ///
     /// Activation re-reads the plugin's audio ports, so the buses and the
     /// 64-bit answer in the metadata are the ones the plugin has when it is
@@ -319,383 +145,224 @@ impl ClapInstance {
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        #[cfg(feature = "clap")]
-        {
-            Self::activate(Self::open(path, sample_rate, block_size)?, path, prefer_f64)
-        }
-
-        #[cfg(not(feature = "clap"))]
-        {
-            let _ = (path, sample_rate, block_size, prefer_f64);
-            Err(BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: "CLAP support not compiled (enable 'clap' feature)".to_string(),
-            })
-        }
+        Self::activate(Self::open(path, sample_rate, block_size)?, path, prefer_f64)
     }
 
-    /// Opens the plugin, without activating it: the instance, its descriptor
-    /// and the features that do not depend on its audio ports.
-    #[cfg(feature = "clap")]
+    /// Opens the plugin, without activating it.
     fn open(path: &Path, sample_rate: f64, block_size: usize) -> Result<Opened> {
-        let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let library_path = if resolved != path {
-            Some(resolved.as_path())
-        } else {
-            None
-        };
-        let mut loaded =
-            ClapLoaded::load_with_library(path, library_path, sample_rate, block_size as u32)
-                .map_err(|e| BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    // Host and bridge LoadStage are now the same shared type
-                    // (tutti-plugin-types); pass the stage through unchanged.
-                    stage: match e {
-                        tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
-                        _ => LoadStage::Opening,
-                    },
-                    reason: e.to_string(),
-                })?;
-
+        let (resolved, differs) = resolve(path)?;
+        let mut options = LoadOptions::new();
+        if differs {
+            options = options.library(resolved);
+        }
+        let mut loaded = ClapLoaded::load(path, options).map_err(|e| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: match e {
+                tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
+                _ => LoadStage::Opening,
+            },
+            reason: e.to_string(),
+        })?;
         if loaded.supports_thread_pool() {
             loaded.set_thread_pool(thread_pool());
         }
-
-        // Two questions, not one — see [`editor_bits`].
-        let embeddable = loaded.has_editor();
-        let EditorBits {
-            has_editor,
-            resize_allowed,
-            floating,
-        } = editor_bits(embeddable, loaded.has_floating_editor());
-        let editor_resizable = resize_allowed && loaded.editor_capabilities().resize.resizable;
-        let has_note_in = loaded.note_port_count(true) > 0;
-        let has_note_out = loaded.note_port_count(false) > 0;
-        let descriptor = clap_descriptor(loaded.info(), EditorPresence::measured(has_editor));
-
-        let mut features = Features::empty();
-        features.set(Features::MIDI_IN, has_note_in);
-        features.set(Features::MIDI_OUT, has_note_out);
-        features.set(Features::EDITOR, has_editor);
-        features.set(Features::EDITOR_RESIZE, editor_resizable);
-        features.set(Features::EDITOR_FLOATING, floating);
-        // CLAP always carries transport, sample-accurate param automation, and
-        // the full note-expression dimension set (see build_clap_transport /
-        // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
-        // (the CLAP spec defines no chord/scale events).
-        features.insert(Features::TRANSPORT);
-        features.insert(Features::PARAM_AUTOMATION);
-        features.set(Features::NOTE_EXPRESSION, has_note_in);
-        // `PRESET_LIST` stays out of `probed::CLAP` — enumeration lives in
-        // the preset-discovery extension, which is factory-level and
-        // unbound here — so only the load half is answered.
-        features.set(Features::PRESET_LOAD, loaded.supports_preset_load());
-
         Ok(Opened {
             loaded,
-            descriptor,
-            features,
+            sample_rate,
+            block_size,
         })
     }
 
-    /// Activates an opened plugin in the format the session will process, and
-    /// builds the metadata from the plugin as activated.
-    #[cfg(feature = "clap")]
+    /// Activates an opened plugin in the format the session will process.
     fn activate(opened: Opened, path: &Path, prefer_f64: bool) -> Result<Self> {
         let Opened {
-            loaded,
-            descriptor,
-            features,
+            mut loaded,
+            sample_rate,
+            block_size,
         } = opened;
-        let activation_failed = |e: tutti_clap_host::ClapError| BridgeError::LoadFailed {
+        let activation_failed = |reason: String| BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Activation,
-            reason: format!("activate failed: {e}"),
+            reason: format!("activate failed: {reason}"),
         };
-
-        // 64-bit only when it was asked for: the session's wire format
-        // follows its preference (f32 by default), not the plugin's
-        // capability. Activation re-reads the 64-bit flag, so a plugin that
-        // dropped it since it was opened is refused here, and 32-bit is the
-        // clean fallback (the refused instance comes back untouched).
-        let inner = if prefer_f64 {
-            match loaded.activate::<f64>() {
-                Ok(active) => ClapInner::F64(active),
-                Err((loaded, tutti_clap_host::ClapError::NotSupported(_))) => ClapInner::F32(
-                    loaded
-                        .activate::<f32>()
-                        .map_err(|(_, e)| activation_failed(e))?,
-                ),
-                Err((_, e)) => return Err(activation_failed(e)),
-            }
+        // 64-bit only when it was asked for: the session's wire format follows
+        // its preference (f32 by default), not the plugin's capability. The
+        // ports are read again first, so a plugin that dropped its 64-bit flags
+        // since it was opened loads as 32-bit, the clean fallback.
+        loaded
+            .rescan_audio_ports()
+            .map_err(|e| activation_failed(e.to_string()))?;
+        let format = if prefer_f64 && loaded.supports_f64() {
+            SampleFormat::Float64
         } else {
-            ClapInner::F32(
-                loaded
-                    .activate::<f32>()
-                    .map_err(|(_, e)| activation_failed(e))?,
-            )
+            SampleFormat::Float32
+        };
+        let prepare = Prepare {
+            rate: SampleRate(sample_rate),
+            max_block: Samples(block_size),
+            format,
+            mode: RenderMode::Realtime,
         };
 
-        // Everything below is read off the activated instance, so it is what
-        // the plugin declares now.
-        let active_loaded: &ClapLoaded = match &inner {
-            ClapInner::F32(i) => i,
-            ClapInner::F64(i) => i,
+        let mut instance = Self {
+            lifecycle: Lifecycle::new(loaded),
+            state: Lifecycle::<ClapLoaded>::initial_state(),
+            hand: Hand::local(),
+            meta: Meta::default(),
+            requests: Vec::new(),
+            events: Vec::new(),
         };
-
-        let layout = read_layout(active_loaded);
-
-        let mut features = features;
-        // The format actually activated, as VST3 reports it.
-        features.set(Features::F64_AUDIO, matches!(inner, ClapInner::F64(_)));
-
-        let loaded_meta = LoadedPlugin {
-            inputs: layout.inputs,
-            outputs: layout.outputs,
-            input_topology: layout.input_topology,
-            output_topology: layout.output_topology,
-            // Latency and tail are queryable after activation. A plugin
-            // without `clap.tail` has not answered: its tail is unknown,
-            // which is not the `None` a plugin answering 0 gives.
-            latency_samples: Samples(active_loaded.get_latency() as usize),
-            tail: active_loaded
-                .get_tail()
-                .map_or(PluginTail::Unknown, PluginTail::from_clap_samples),
-            features,
-            probed: tutti_plugin::server::probed::CLAP,
-        };
-
-        Ok(Self {
-            inner,
-            meta: Meta {
-                descriptor,
-                loaded: loaded_meta,
-            },
-            io_changed: false,
-            pending: Pending::default(),
-        })
+        let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
+        if instance.state.stage() != Stage::Active {
+            let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
+            return Err(activation_failed(reason));
+        }
+        instance.refresh_meta();
+        // Whatever the activation told the host is what the load reply carries.
+        instance.events.clear();
+        Ok(instance)
     }
 
-    /// Re-reads the bus layout after the plugin was reconfigured, refreshing
-    /// the metadata and raising [`take_io_changed`](Self::take_io_changed)
-    /// when it differs from what the host was last given. A plugin may change
-    /// it while deactivated, which a rate change does.
-    #[cfg(feature = "clap")]
-    fn note_layout_change(&mut self) {
-        let now = read_layout(clap_dispatch!(self, i => i));
-        let meta = &mut self.meta.loaded;
-        if now.inputs != meta.inputs
-            || now.outputs != meta.outputs
-            || now.input_topology != meta.input_topology
-            || now.output_topology != meta.output_topology
-        {
-            meta.inputs = now.inputs;
-            meta.outputs = now.outputs;
-            meta.input_topology = now.input_topology;
-            meta.output_topology = now.output_topology;
-            self.io_changed = true;
+    /// Steps one event through the core, applying its effects. Returns the
+    /// reason of a refusal it told, if any.
+    fn drive(&mut self, event: Event) -> Option<PluginError> {
+        let mut told = Vec::new();
+        let state = self.state.clone();
+        self.state = self
+            .lifecycle
+            .drive(state, event, &mut self.hand, |n| told.push(n));
+        let mut refusal = None;
+        for notice in told {
+            if let Some(reason) = self.absorb(notice) {
+                refusal = Some(reason);
+            }
+        }
+        refusal
+    }
+
+    /// Turns a notice into what the host hears, keeping the cached metadata in
+    /// step. Returns the reason when the notice is a refusal.
+    fn absorb(&mut self, notice: Notice) -> Option<PluginError> {
+        match notice {
+            Notice::LatencyChanged(samples) => {
+                self.meta.loaded.latency_samples = samples;
+                self.events.push(AsyncEvent::LatencyChanged { samples });
+            }
+            Notice::TailChanged(tail) => {
+                self.meta.loaded.tail = tail;
+                self.events.push(AsyncEvent::TailChanged { tail });
+            }
+            Notice::IoChanged => {
+                self.refresh_meta();
+                self.events.push(AsyncEvent::IoChanged);
+            }
+            Notice::ParamValuesChanged => self.events.push(AsyncEvent::ParamValuesChanged),
+            Notice::ParamTitlesChanged => self.events.push(AsyncEvent::ParamTitlesChanged),
+            Notice::Reloaded => self.events.push(AsyncEvent::Reloaded),
+            // CLAP has no note-expression restart flag.
+            Notice::NoteExpressionChanged => {}
+            Notice::Refused { rate, reason } => {
+                tracing::warn!("CLAP plugin refused {} Hz: {reason}", rate.0);
+                // The instance now renders silence, so the host re-reads it.
+                self.refresh_meta();
+                self.events.push(AsyncEvent::IoChanged);
+                return Some(reason);
+            }
+            Notice::Stuck { reason } => {
+                tracing::warn!("CLAP plugin would not stop: {reason}");
+            }
+            Notice::Lost { reason } => {
+                tracing::error!("CLAP plugin lost: {reason}");
+                self.events.push(AsyncEvent::IoChanged);
+                return Some(reason);
+            }
+        }
+        None
+    }
+
+    /// Reads the plugin's wiring again into the metadata the host is given.
+    fn refresh_meta(&mut self) {
+        if let Some(control) = self.lifecycle.control() {
+            self.meta.descriptor = control.info().clone();
+            self.meta.loaded = control.wiring();
         }
     }
 
-    /// Acts on what the plugin asked of the host since the last call.
+    /// Acts on what the plugin asked of the host since the last call, and
+    /// returns what the host should be told.
     ///
     /// Its main-thread work runs first, since it may ask for the rest: the
     /// `on_main_thread` a `request_callback` wanted, the timers that are due and
-    /// the file descriptors that are ready. Then, when the plugin asked for a
-    /// restart (`request_restart`, an `audio-ports.rescan` or a
-    /// `params.rescan(ALL)` that needs the plugin deactivated, or a
-    /// `latency.changed` while it is active, which CLAP allows only across an
-    /// activation), the one way CLAP has: deactivate, re-read the ports,
-    /// activate again. Latency, tail and the layout are read after it, while
-    /// the plugin is activated, and the host is told what moved. A
-    /// `params.rescan` that changed what the parameters are re-reads their
-    /// ranges.
+    /// the file descriptors that are ready. Then the core decides what the
+    /// requests need (a restart for `request_restart`, an `audio-ports.rescan`
+    /// that changes buffers, or a `latency.changed`; a re-read for the rest) and
+    /// the lifecycle performs it. Call it between blocks, on the thread that
+    /// loaded the plugin; it allocates, as a rate change does.
     ///
-    /// Timers and callbacks are serviced only while the host keeps calling
-    /// this: a loop that blocks in `recv` for the next request services none
-    /// until one arrives.
-    ///
-    /// Call it between blocks, on the thread that loaded the plugin
-    /// (`deactivate` and `activate` are `[main-thread]` and never overlap a
-    /// `process`). It allocates, as a rate change does. A request is consumed
-    /// whether or not the plugin can be brought back: a plugin left
-    /// deactivated renders silence and raises [`take_io_changed`], and a later
-    /// request tries it again.
-    ///
-    /// [`take_io_changed`]: Self::take_io_changed
-    #[cfg(feature = "clap")]
-    pub fn service_requests(&mut self) {
-        clap_dispatch_mut!(self, i => i.run_main_thread_work());
-        let (ports, restart, params, latency, tail) = clap_dispatch!(self, i => (
-            i.poll_audio_ports_rescan(),
-            i.poll_restart_requested(),
-            i.poll_params_rescan(),
-            i.poll_latency_changed(),
-            i.poll_tail_changed(),
-        ));
-        let was_active = clap_dispatch!(self, i => i.is_active());
-        let params_before = clap_dispatch!(self, i => i.parameter_count());
+    /// Timers and callbacks are served only while the host keeps calling this:
+    /// a loop that blocks in `recv` for the next request serves none until one
+    /// arrives.
+    pub fn poll(&mut self) -> Vec<AsyncEvent> {
+        self.serve();
+        std::mem::take(&mut self.events)
+    }
 
-        // A successful re-activation re-reads the parameters' ranges itself.
-        let reactivate = ports.needs_deactivate()
-            || restart
-            || params.needs_deactivate()
-            || (latency && was_active);
-        if reactivate {
-            let outcome = clap_dispatch_mut!(self, i => i.reactivate());
-            let active = clap_dispatch!(self, i => i.is_active());
-            self.note_layout_change();
-            if let Err(e) = outcome {
-                tracing::warn!("CLAP plugin could not be re-activated on its request: {e}");
+    /// [`poll`](Self::poll)'s pass, leaving what the host should be told in
+    /// `events`.
+    fn serve(&mut self) {
+        // The main-thread work a pass runs (`on_main_thread`, a timer) may
+        // itself ask for more, and the plugin's asking is the word being
+        // raised again: take it again until a pass finds it empty. Bounded, so
+        // a plugin that asks from every callback cannot hold the thread.
+        const MAX_PASSES: usize = 8;
+        let mut requests = std::mem::take(&mut self.requests);
+        for pass in 0..MAX_PASSES {
+            requests.clear();
+            if let Some(loaded) = self.loaded_mut() {
+                // Timers and descriptors are polled once per pass of the host's
+                // loop; only what the plugin raised is taken again.
+                if pass == 0 {
+                    loaded.take_requests(&mut requests);
+                } else {
+                    loaded.take_raised(&mut requests);
+                }
             }
-            // A plugin left deactivated, or brought back after a failed rate
-            // change, is a different instance to the host than the one it last
-            // read, whatever its layout.
-            if active != was_active {
-                self.io_changed = true;
+            if requests.is_empty() && pass > 0 {
+                break;
             }
-            // The re-activation re-read the parameters' ranges: tell the host
-            // when the list is not the one it holds.
-            if clap_dispatch!(self, i => i.parameter_count()) != params_before {
-                self.pending.param_titles = true;
+            for request in requests.drain(..) {
+                self.drive(Event::Request(request));
             }
+            self.drive(Event::Tick);
         }
-        // Latency is read with the plugin activated (`clap.latency` allows it
-        // to change only across an activation), so a `changed()` on a
-        // deactivated plugin waits for the next one.
-        if reactivate {
-            // A `latency.changed` is reported as it comes, the figure being
-            // the one read after the activation.
-            self.note_latency_change(latency);
-        }
-        if reactivate || tail {
-            // A `tail.changed` is reported as it comes; a re-read after an
-            // activation, only when the figure moved.
-            self.note_tail_change(tail);
-        }
+        self.requests = requests;
+    }
 
-        if params.requested {
-            if params.info || params.all {
-                // Read after the activation: a plugin may settle its
-                // parameters in `activate`.
-                clap_dispatch_mut!(self, i => i.rescan_params());
-                self.pending.param_titles = true;
-            }
-            if params.values || params.text {
-                self.pending.param_values = true;
-            }
+    /// The plugin, whichever half of an activation holds it.
+    fn loaded_ref(&self) -> Option<&ClapLoaded> {
+        match &self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(controller),
+            Lifecycle::Poisoned => None,
         }
     }
 
-    /// Reads the latency from the activated plugin and keeps it when it moved
-    /// (or when `announced`: the plugin said it changed). Nothing happens while
-    /// the plugin is deactivated: `get` is allowed only when it is (being)
-    /// activated.
-    #[cfg(feature = "clap")]
-    fn note_latency_change(&mut self, announced: bool) {
-        if !clap_dispatch!(self, i => i.is_active()) {
-            return;
-        }
-        let latency = Samples(clap_dispatch!(self, i => i.get_latency()) as usize);
-        if announced || latency != self.meta.loaded.latency_samples {
-            self.meta.loaded.latency_samples = latency;
-            self.pending.latency = Some(latency);
+    /// [`loaded_ref`](Self::loaded_ref), exclusively.
+    fn loaded_mut(&mut self) -> Option<&mut ClapLoaded> {
+        match &mut self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(&mut **controller),
+            Lifecycle::Poisoned => None,
         }
     }
 
-    /// The tail twin of [`note_latency_change`](Self::note_latency_change).
-    /// `announced` is a `tail.changed` the plugin made: it is reported even
-    /// when the figure is the one the host holds.
-    #[cfg(feature = "clap")]
-    fn note_tail_change(&mut self, announced: bool) {
-        let tail = clap_dispatch!(self, i => i.get_tail())
-            .map_or(PluginTail::Unknown, PluginTail::from_clap_samples);
-        if announced || tail != self.meta.loaded.tail {
-            self.meta.loaded.tail = tail;
-            self.pending.tail = Some(tail);
-        }
-    }
-
-    /// What the last [`service_requests`](Self::service_requests) or sample-rate
-    /// change moved, besides the layout ([`take_io_changed`](Self::take_io_changed)).
-    /// Clears it.
-    #[cfg(feature = "clap")]
-    pub fn take_changes(&mut self) -> ClapChanges {
-        let pending = std::mem::take(&mut self.pending);
-        ClapChanges {
-            latency: pending.latency,
-            tail: pending.tail,
-            param_values: pending.param_values,
-            param_titles: pending.param_titles,
-        }
-    }
-
-    /// Whether the bus layout, the 64-bit answer or the instance's ability to
-    /// run changed since the last call, which clears it. The host re-reads the
-    /// instance on the [`IoChanged`](crate::plugin::AsyncEvent::IoChanged) it
-    /// becomes.
-    #[cfg(feature = "clap")]
-    pub fn take_io_changed(&mut self) -> bool {
-        std::mem::take(&mut self.io_changed)
-    }
-
-    /// Test-only access to the underlying loaded instance (via `Deref` through
-    /// whichever active arm). Lets the integration tests exercise the read-only
-    /// `ClapLoaded` surface (poll_*, port/note queries, state context, …)
-    /// without threading the f32/f64 enum through every assertion.
-    #[cfg(all(feature = "clap", test))]
-    pub(crate) fn clap_loaded(&self) -> &tutti_clap_host::ClapLoaded {
-        clap_dispatch!(self, i => &**i)
-    }
-
-    /// Test-only mutable access (for `poll_timers`, `on_main_thread`, …).
-    #[cfg(all(feature = "clap", test))]
-    fn loaded_mut(&mut self) -> &mut tutti_clap_host::ClapLoaded {
-        clap_dispatch_mut!(self, i => &mut **i)
-    }
-
-    /// Test-only: has the active instance started processing? (`is_processing`
-    /// lives on `ClapActive`, so it is reached through the enum, not `Deref`.)
-    #[cfg(all(feature = "clap", test))]
-    fn is_processing(&self) -> bool {
-        clap_dispatch!(self, i => i.is_processing())
-    }
-
-    /// Drive one block through a typed active instance. Free of `self.inner`
-    /// so it works for whichever arm of [`ClapInner`] matches the buffer format.
-    #[cfg(feature = "clap")]
-    fn process_active<'a, T: tutti_clap_host::ClapSample>(
-        active: &'a mut ClapActive<T>,
-        clap_buffer: &mut tutti_clap_host::AudioBuffer<T>,
-        ctx: &ProcessContext,
-        sample_rate: f64,
-    ) -> Result<tutti_clap_host::instance::ProcessOutputRef<'a>> {
-        // Both sides of this hop are `Option<&ParameterChanges>`, so the borrow
-        // passes straight through — cloning here would deep-copy the change list
-        // on every block only to re-borrow it two lines later.
-        let note_expressions: Vec<tutti_clap_host::ClapNoteExpression> = ctx
-            .note_expression
-            .map(convert_note_expressions)
-            .unwrap_or_default();
-        let transport = ctx.transport.map(|t| convert_transport(t, sample_rate));
-
-        let clap_ctx = tutti_clap_host::ClapProcessContext {
-            midi: ctx.midi_events,
-            // An empty list means "no automation this block"; the plugin reads
-            // `None` and `Some(empty)` differently, so the mapping is kept.
-            params: ctx.param_changes.filter(|p| !p.is_empty()),
-            expressions: &note_expressions,
-            transport: transport.as_ref(),
-        };
-
-        active
-            .process(clap_buffer, &clap_ctx)
-            .map_err(|e| BridgeError::ProcessError(e.to_string()))
+    /// Whether the plugin is active: a refused rate leaves it loaded and
+    /// silent.
+    fn is_active(&self) -> bool {
+        matches!(self.lifecycle, Lifecycle::Active { .. })
     }
 }
 
-#[cfg(feature = "clap")]
 impl PluginMeta for ClapInstance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
@@ -709,63 +376,24 @@ impl PluginMeta for ClapInstance {
 impl PluginAudio for ClapInstance {
     fn process(
         &mut self,
-        buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
+        mut buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
         out: &mut ProcessOutput,
     ) -> PluginResult<()> {
         use tutti_plugin::server::AudioBufferMut;
-        // A rate change that could not bring the plugin back left it
-        // deactivated (the host raised `IoChanged` when it happened). CLAP
-        // allows `process` only while active, so the block is silence and the
-        // plugin is not touched.
-        if !clap_dispatch!(self, i => i.is_active()) {
-            out.clear();
-            match buffer {
-                AudioBufferMut::F32(mut buf) => buf.clear_outputs(),
-                AudioBufferMut::F64(mut buf) => buf.clear_outputs(),
-            }
-            return Ok(());
-        }
-        // The buffer format must match the format the instance was activated
-        // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
-        // surface it rather than silently mis-cast.
-        match (buffer, &mut self.inner) {
-            (AudioBufferMut::F32(buf), ClapInner::F32(active)) => {
-                let sr = buf.sample_rate;
-                let mut clap_buffer = tutti_clap_host::AudioBuffer32 {
-                    inputs: buf.inputs,
-                    outputs: buf.outputs,
-                    num_samples: buf.num_samples,
-                    sample_rate: sr,
-                };
-                copy_process_output(
-                    Self::process_active(active, &mut clap_buffer, ctx, sr)?,
-                    out,
-                );
+        // A rate change the plugin refused left it deactivated (the host raised
+        // `IoChanged` when it happened). CLAP allows `process` only while
+        // active, so the block is silence and the plugin is not touched.
+        match self.lifecycle.processor() {
+            Some(processor) => processor.render(&mut buffer, ctx, out),
+            None => {
+                out.clear();
+                match buffer {
+                    AudioBufferMut::F32(mut buf) => buf.clear_outputs(),
+                    AudioBufferMut::F64(mut buf) => buf.clear_outputs(),
+                }
                 Ok(())
             }
-            (AudioBufferMut::F64(buf), ClapInner::F64(active)) => {
-                let sr = buf.sample_rate;
-                let mut clap_buffer = tutti_clap_host::AudioBuffer64 {
-                    inputs: buf.inputs,
-                    outputs: buf.outputs,
-                    num_samples: buf.num_samples,
-                    sample_rate: sr,
-                };
-                copy_process_output(
-                    Self::process_active(active, &mut clap_buffer, ctx, sr)?,
-                    out,
-                );
-                Ok(())
-            }
-            // The `.to_string()` here is not steady state and stays — see the
-            // matching arm in the vst3 loader for the argument.
-            (AudioBufferMut::F32(_), ClapInner::F64(_))
-            | (AudioBufferMut::F64(_), ClapInner::F32(_)) => Err(PluginError::Process(
-                "audio buffer sample format does not match the format the CLAP \
-                 plugin was activated with"
-                    .to_string(),
-            )),
         }
     }
 
@@ -781,134 +409,99 @@ impl PluginAudio for ClapInstance {
     /// that does not export it has genuinely declined.
     fn set_render_mode(&mut self, mode: RenderMode) -> bool {
         let offline = mode.is_offline();
-        clap_dispatch_mut!(self, i => i.set_render_mode(offline))
+        let accepted = self
+            .loaded_mut()
+            .is_some_and(|loaded| loaded.set_render_mode(offline));
+        // The mode is a field of the `Prepare` every later activation (a
+        // restart, a rate change) applies, so the core must hold the new one or
+        // the next restart would put the old mode back.
+        if let Some(mut prepare) = self.state.prepare()
+            && prepare.mode != mode
+        {
+            prepare.mode = mode;
+            self.drive(Event::Op(HostOp::Reconfigure(prepare)));
+        }
+        accepted
     }
 
-    /// A refusal rolls the instance back to the rate the plugin already
-    /// accepted and it stays active there. A plugin that cannot be brought
-    /// back, or that drops the 64-bit audio its instance runs, is left
-    /// deactivated: `process` renders silence and the host is told through
-    /// [`take_io_changed`](Self::take_io_changed). That instance is not
-    /// rebuilt as 32-bit, because the session's wire format was negotiated at
-    /// load and a 32-bit instance would refuse every 64-bit block instead.
+    /// The rate the plugin already runs at is a no-op, so a per-frame caller
+    /// does not tear it down sixty times a second.
     ///
-    /// The plugin may also change its bus layout across the re-activation;
-    /// the metadata follows it and the host is told the same way.
+    /// A refusal leaves the plugin loaded and silent: `process` renders
+    /// nothing and the host is told through
+    /// [`AsyncEvent::IoChanged`]. It is not rolled back to the old rate,
+    /// because the session's clock follows the rate the host asked for and a
+    /// rolled-back plugin would render at a rate that clock does not run at. The
+    /// next rate revives it.
+    ///
+    /// The plugin may also change its bus layout across the re-activation; the
+    /// metadata follows it and the host is told the same way.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        let outcome = clap_dispatch_mut!(self, i => {
-            i.set_sample_rate(rate)
-                .map_err(|e| (e, i.sample_rate(), i.is_active()))
-        });
-        self.note_layout_change();
-        // The latency and tail may depend on the rate; they are read from the
-        // plugin as it is now activated.
-        self.note_latency_change(false);
-        self.note_tail_change(false);
-        outcome.map_err(|(e, running_at, active)| {
-            if !active {
-                // Nothing else will reach the host: the instance now renders
-                // silence, so it re-reads this one.
-                self.io_changed = true;
-            }
-            PluginError::Other(format!(
-                "CLAP plugin refused sample rate {rate} (running at {running_at}, {}): {e}",
-                if active { "active" } else { "deactivated" }
-            ))
-        })
+        let Some(mut prepare) = self.state.prepare() else {
+            return Err(PluginError::Other(
+                "CLAP plugin has no configuration to change".to_string(),
+            ));
+        };
+        if self.is_active() && (prepare.rate.0 - rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        prepare.rate = SampleRate(rate);
+        let refusal = self.drive(Event::Op(HostOp::Reconfigure(prepare)));
+        match refusal {
+            Some(reason) => Err(PluginError::Other(format!(
+                "CLAP plugin refused sample rate {rate} (deactivated): {reason}"
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
 impl PluginParams for ClapInstance {
-    /// Normalized `0..=1`, per the [`PluginParams`] contract — CLAP has no
-    /// normalization concept, so the plugin answers in its plain range and the
-    /// declared bounds map it back.
-    ///
-    /// A parameter the plugin declares no range for is passed through rather
-    /// than scaled against invented bounds — the same choice
-    /// `add_param_changes` makes for an id missing from its range map.
+    /// Normalized `0..=1`, per the [`PluginParams`] contract.
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `clap_id` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        let Some(plain) = clap_dispatch!(self, i => i.get_parameter(id.get())) else {
-            return 0.0;
-        };
-        match clap_dispatch!(self, i => i.parameter_range(id.get())) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_normalized(plain),
-            None => plain,
+        self.loaded_ref()
+            .and_then(|loaded| Control::parameter(loaded, id))
+            .map_or(0.0, Normalized::get)
+    }
+
+    /// Normalized `0..=1` in. On an active plugin the write is queued to the
+    /// Processor and reaches the plugin at the head of the next block.
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+        let Some(id) = id.opaque() else { return };
+        let active = self.is_active();
+        if let Some(control) = self.lifecycle.control() {
+            control.set_parameter(id, value);
+        }
+        // The server serves requests on the thread that renders, so a state
+        // save or a fork right after this write would see the old value until
+        // the next block drains the queued edit. The write is also applied
+        // now, through `params.flush`, as it was before the split; the queued
+        // copy lands on the same value.
+        if active && let Some(loaded) = self.loaded_mut() {
+            Control::set_parameter(loaded, id, value);
         }
     }
 
-    /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter).
-    /// CLAP events carry the plain value, so the declared range denormalizes it
-    /// — the same conversion `add_param_changes` applies on the automation path.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        let Some(id) = id.opaque() else { return };
-        let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_plain(value.get()),
-            None => value.get(),
-        };
-        clap_dispatch_mut!(self, i => {
-            i.set_parameter(id.get(), plain);
-        });
-    }
-
-    /// The plugin's own display string, denormalized on the way in.
-    ///
-    /// `clap_plugin_params.value_to_text` takes a **plain** value in the
-    /// parameter's declared range — CLAP has no normalization concept — so this
-    /// applies the same range conversion
-    /// [`set_parameter`](Self::set_parameter) does. A parameter the plugin
-    /// declared no range for is passed through rather than scaled against
-    /// invented bounds, matching the read/write pair above.
     fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
         let id = id.opaque()?;
-        let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_plain(value.get()),
-            None => value.get(),
-        };
-        clap_dispatch!(self, i => i.value_to_text(id.get(), plain))
+        Control::parameter_text(self.loaded_ref()?, id, value)
     }
 
-    /// The inverse, re-normalized on the way out so the result round-trips into
-    /// [`set_parameter`](Self::set_parameter).
     fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
         let id = id.opaque()?;
-        let plain = clap_dispatch!(self, i => i.text_to_value(id.get(), text))?;
-        let normalized = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_normalized(plain),
-            None => plain,
-        };
-        Some(Normalized::new(normalized))
+        Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        // The host crate projects CLAP-native param info onto the shared
-        // `ParameterInfo` at its own boundary, so the loader maps no flags here.
-        clap_dispatch!(self, i => i.get_parameter_list())
+        self.loaded_ref()
+            .map(Control::parameters)
+            .unwrap_or_default()
     }
 
     fn parameter_count(&self) -> usize {
-        clap_dispatch!(self, i => i.parameter_count())
+        self.loaded_ref().map_or(0, ClapLoaded::parameter_count)
     }
 }
 
@@ -920,7 +513,11 @@ impl PluginEditorHost for ClapInstance {
     ) -> PluginResult<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
-        clap_dispatch_mut!(self, i => i.open_editor(handle, scale))
+        let loaded = self
+            .loaded_mut()
+            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
+        loaded
+            .open_editor(handle, scale)
             .map(|s| EditorSize {
                 width: s.width,
                 height: s.height,
@@ -929,157 +526,36 @@ impl PluginEditorHost for ClapInstance {
     }
 
     fn close_editor(&mut self) {
-        clap_dispatch_mut!(self, i => {
-            i.close_editor();
-        });
-    }
-}
-
-/// The filesystem path an id names, or `None` when it names none.
-///
-/// A free function so the decision is testable on its own. Through
-/// `load_preset` it is not: a coerced non-path id produces a path that does not
-/// exist, the plugin refuses *that*, and the caller sees the same `false` the
-/// guard would have produced. The two refusals are indistinguishable from
-/// outside, so only the guard's own inputs can pin it — verified by mutation.
-///
-/// Only [`PresetId::Location`] addresses a CLAP preset:
-/// `clap_plugin_preset_load::from_location` takes a filesystem path and nothing
-/// else. A `Number` or `Program` has no path to coerce *to*, which is why the
-/// id is opaque rather than an integer.
-fn clap_preset_path(id: &PresetId) -> Option<&std::path::Path> {
-    match id {
-        PresetId::Location(p) => Some(p.as_path()),
-        PresetId::Number(_) | PresetId::Program { .. } => None,
+        if let Some(loaded) = self.loaded_mut() {
+            loaded.close_editor();
+        }
     }
 }
 
 impl PluginPresets for ClapInstance {
-    /// Load a preset from the path an id names, via `CLAP_EXT_PRESET_LOAD`.
-    ///
-    /// [`PresetId::Location`] is the only shape CLAP can address: the
-    /// extension's `from_location` takes a filesystem path and nothing else.
-    /// A `Number` or `Program` names no CLAP preset and is refused rather than
-    /// coerced — there is no number to coerce it *to*, which is exactly why the
-    /// id is opaque.
-    #[cfg(feature = "clap")]
+    /// Load a preset from the path an id names, via `CLAP_EXT_PRESET_LOAD`. See
+    /// [`Control::load_preset`] for
+    /// which ids that is.
     fn load_preset(&mut self, id: &PresetId) -> bool {
-        let Some(path) = clap_preset_path(id) else {
-            return false;
-        };
-        clap_dispatch_mut!(self, i => i.load_preset(path).is_ok())
+        self.lifecycle
+            .control()
+            .is_some_and(|control| control.load_preset(id))
     }
-
-    // `get_presets` and `get_current_preset` stay at their defaults — an empty
-    // list and `None`.
-    //
-    // CLAP **cannot enumerate**. Discovery lives in the factory-level
-    // preset-discovery extension, which is queried on the *factory* rather than
-    // on a loaded instance and which this host does not bind, so there is no
-    // instance-level call that could answer. `CLAP_EXT_PRESET_LOAD` answers
-    // only "can this be pointed at a path".
-    //
-    // That is why an empty list here is not the same claim as an empty list
-    // from AU: `Features::PRESET_LIST` is *unprobed* for CLAP (see
-    // `probed::CLAP`), so a caller reads `None` — nobody asked — rather than
-    // `Some(false)`, which would say the plugin declined.
 }
 
 impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
-        clap_dispatch_mut!(self, i => i.get_state()).map_err(|e| PluginError::State(e.to_string()))
+        self.lifecycle
+            .control()
+            .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
+            .save_state()
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        clap_dispatch_mut!(self, i => i.set_state(data))
-            .map_err(|e| PluginError::State(e.to_string()))
-    }
-}
-
-#[cfg(feature = "clap")]
-fn convert_note_expressions(
-    changes: &NoteExpressionChanges,
-) -> Vec<tutti_clap_host::ClapNoteExpression> {
-    // The expression dimension is the shared `NoteExpressionType` on both
-    // sides; only CLAP's voice-addressed value wrapper differs (it adds
-    // port/channel/key). `from_shared` fills those defaults in the host crate.
-    changes
-        .changes
-        .iter()
-        .map(tutti_clap_host::ClapNoteExpression::from_shared)
-        .collect()
-}
-
-#[cfg(feature = "clap")]
-fn convert_transport(
-    transport: &tutti_plugin::server::TransportInfo,
-    sample_rate: f64,
-) -> tutti_clap_host::TransportInfo {
-    let sr = if sample_rate.is_finite() && sample_rate > 0.0 {
-        sample_rate
-    } else {
-        44100.0
-    };
-    // CLAP's `song_pos_seconds`. Prefer the wire's own seconds field (the
-    // plugin node's project time, `transport_source::ProjectTime`); fall back
-    // to the project-time sample position for a producer that reports only
-    // that.
-    let seconds = if transport.position.seconds != 0.0 {
-        transport.position.seconds
-    } else {
-        transport.position.samples.unwrap_or(0) as f64 / sr
-    };
-    tutti_clap_host::TransportInfo::default()
-        .with_playing(transport.state.playing)
-        .with_recording(transport.state.recording)
-        .with_tempo(transport.timing.tempo)
-        .with_time_signature(transport.timing.signature)
-        .with_position_beats(transport.position.quarters, seconds)
-        .with_loop(
-            transport.state.cycle_active,
-            transport.loop_region.start_quarters,
-            transport.loop_region.end_quarters,
-        )
-        // The bar number arrives over the wire; pass it through rather than
-        // hardcoding 0, which would put every plugin at bar one.
-        .with_bar(transport.bar.position_quarters, transport.bar.number)
-}
-
-/// Copy one block's emitted events out of the CLAP host's pooled buffers into
-/// the caller's reusable [`ProcessOutput`].
-///
-/// `out` arrives cleared, with its heap capacity intact, so every copy and
-/// `add_change` below writes into storage that already exists. This is the
-/// point of taking `out` by reference: `ClapInstance::process` returns a
-/// **borrowing** `ProcessOutputRef` into its own pools, and building a fresh
-/// owned `ProcessOutput` here — as this did — threw that away and allocated
-/// three collections per block on the audio thread.
-#[cfg(feature = "clap")]
-fn copy_process_output(
-    output: tutti_clap_host::instance::ProcessOutputRef<'_>,
-    out: &mut ProcessOutput,
-) {
-    out.emit_midi(output.midi_events.iter().copied());
-
-    for queue in &output.param_changes.queues {
-        for point in &queue.points {
-            // Pooled queues — see the vst3 loader's `process_block` for why
-            // this is not `ParameterChanges::add_change`.
-            out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
-        }
-    }
-
-    // CLAP's note expression uses the shared `NoteExpressionType` (Pressure /
-    // Expression included), so this narrows CLAP's voice-addressed value down
-    // to the protocol shape without losing the dimension.
-    for expr in output.note_expressions {
-        out.note_expression
-            .add_change(tutti_plugin::server::NoteExpressionValue {
-                sample_offset: expr.sample_offset,
-                note_id: expr.note_id,
-                expression_type: expr.expression_type,
-                value: expr.value,
-            });
+        self.lifecycle
+            .control()
+            .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
+            .load_state(data)
     }
 }
 
@@ -1095,90 +571,89 @@ mod tests {
         ParameterQueue, TransportInfo,
     };
 
+    use tutti_clap_host::ClapLoaded as HostLoaded;
+    use tutti_plugin_types::{Features, PluginTail, Request};
+
+    /// What a pass told the host that is not the layout, as these tests read it.
+    #[derive(Debug, Default, PartialEq)]
+    struct ClapChanges {
+        latency: Option<Samples>,
+        tail: Option<PluginTail>,
+        param_values: bool,
+        param_titles: bool,
+    }
+
+    /// The test-side views of the instance: the plugin whichever half holds it,
+    /// and the pass and its results kept apart so a test can read them one at a
+    /// time.
+    impl ClapInstance {
+        pub(crate) fn clap_loaded(&self) -> &HostLoaded {
+            self.loaded_ref().expect("the plugin is not lost")
+        }
+
+        fn loaded_mut_unwrapped(&mut self) -> &mut HostLoaded {
+            self.loaded_mut().expect("the plugin is not lost")
+        }
+
+        fn is_processing(&mut self) -> bool {
+            self.lifecycle
+                .processor()
+                .is_some_and(|p| p.is_processing())
+        }
+
+        fn service_requests(&mut self) {
+            self.serve();
+        }
+
+        /// Everything the plugin has asked of the host and the pass has not
+        /// yet taken.
+        fn pending_requests(&mut self) -> Vec<Request> {
+            let mut requests = Vec::new();
+            self.loaded_mut_unwrapped().take_requests(&mut requests);
+            requests
+        }
+
+        /// Raises `request` as a plugin callback would.
+        fn raise(&self, request: Request) {
+            request.raise(&self.clap_loaded().host_state().requests);
+        }
+
+        fn take_io_changed(&mut self) -> bool {
+            let before = self.events.len();
+            self.events.retain(|e| !matches!(e, AsyncEvent::IoChanged));
+            self.events.len() != before
+        }
+
+        fn take_changes(&mut self) -> ClapChanges {
+            let mut changes = ClapChanges::default();
+            self.events.retain(|event| match event {
+                AsyncEvent::LatencyChanged { samples } => {
+                    changes.latency = Some(*samples);
+                    false
+                }
+                AsyncEvent::TailChanged { tail } => {
+                    changes.tail = Some(*tail);
+                    false
+                }
+                AsyncEvent::ParamValuesChanged => {
+                    changes.param_values = true;
+                    false
+                }
+                AsyncEvent::ParamTitlesChanged => {
+                    changes.param_titles = true;
+                    false
+                }
+                _ => true,
+            });
+            changes
+        }
+    }
+
     /// The reference CLAP plugin, built as a dev-dependency by this same
     /// `cargo test` run. Resolved rather than hard-coded so the suite runs on
     /// any machine.
     fn clap_plugin() -> &'static str {
         crate::test_utils::clap_probe_path()
-    }
-
-    /// A floating-only plugin reports an editor.
-    ///
-    /// The user-visible half of the floating-window gap: `Features::EDITOR`
-    /// drives whether the DAW offers to open a UI at all, and keying it on the
-    /// embedded answer alone hid every floating-only plugin's editor behind a
-    /// button that was never drawn.
-    #[test]
-    fn a_floating_only_plugin_reports_an_editor() {
-        assert!(
-            editor_bits(false, true).has_editor,
-            "floating-only means the plugin has a UI, just not an embeddable one"
-        );
-    }
-
-    /// ...but does not advertise resize.
-    ///
-    /// The pair that keeps the union from being applied to both bits. Every
-    /// resize entry point is `[!floating]`, so a host acting on this bit for a
-    /// floating window would be calling what the spec forbids.
-    #[test]
-    fn a_floating_only_plugin_does_not_advertise_resize() {
-        assert!(
-            !editor_bits(false, true).resize_allowed,
-            "can_resize/adjust_size/set_size are all !floating — a floating \
-             window is the plugin's to size"
-        );
-    }
-
-    /// Floating is reported only when embedding is *unavailable*.
-    ///
-    /// The rule that keeps the host in control of its own window management: a
-    /// plugin supporting both is embedded, so the session can place, size and
-    /// stack it. Reading `EDITOR_FLOATING` as "the plugin would like to float"
-    /// instead would scatter windows the host can no longer manage — and
-    /// `ext/gui.h:113` explicitly calls the preference a hint the host need not
-    /// honour.
-    #[test]
-    fn floating_is_reported_only_when_embedding_is_unavailable() {
-        assert!(
-            editor_bits(false, true).floating,
-            "floating-only: nothing else is possible, so the host must float it"
-        );
-        assert!(
-            !editor_bits(true, true).floating,
-            "supports both: embed it, because that is the mode the host can manage"
-        );
-        assert!(
-            !editor_bits(true, false).floating,
-            "embed-only is not floating"
-        );
-        assert!(
-            !editor_bits(false, false).floating,
-            "no editor at all is not a floating editor"
-        );
-    }
-
-    /// An embeddable plugin gets both bits, and a plugin with neither gets none.
-    ///
-    /// The two ends. Without the second, `editor_bits` returning `(true, true)`
-    /// unconditionally would satisfy every other case here.
-    #[test]
-    fn editor_bits_track_the_plugin() {
-        let embed_only = editor_bits(true, false);
-        assert!(embed_only.has_editor && embed_only.resize_allowed);
-
-        let both = editor_bits(true, true);
-        assert!(
-            both.has_editor && both.resize_allowed,
-            "supporting both is still embeddable, so resize stays available"
-        );
-
-        let neither = editor_bits(false, false);
-        assert!(
-            !neither.has_editor && !neither.resize_allowed,
-            "no editor either way means no editor — this is the case \
-             `Features::EDITOR` must still be able to report"
-        );
     }
 
     #[test]
@@ -1277,7 +752,7 @@ mod tests {
         let instance =
             ClapInstance::activate(opened, path, true).expect("falls back to 32-bit audio");
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
-        assert!(matches!(instance.inner, ClapInner::F32(_)));
+        assert!(!instance.loaded().features.contains(Features::F64_AUDIO));
     }
 
     /// **A rate change that changes the plugin's bus layout tells the host
@@ -1285,11 +760,10 @@ mod tests {
     /// plugin that re-declared its ports across a re-activation left the host
     /// with the layout it was loaded with.
     ///
-    /// Mutations (run): delete `self.note_layout_change();` in
-    /// `ClapInstance::set_sample_rate` → the first assertion fails. Delete the
-    /// `if clap.take_io_changed()` block in `Plugin::poll_async_events` → the
-    /// polled-event assertion fails. Make
-    /// `note_layout_change` compare nothing → the first assertion fails.
+    /// Mutations (run): delete `self.refresh_meta();` in the
+    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → the metadata stays at
+    /// one bus → the first assertion fails. Delete the `AsyncEvent::IoChanged`
+    /// push in that arm → the polled-event assertion fails.
     #[test]
     fn a_rate_change_that_changes_the_layout_raises_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1322,10 +796,43 @@ mod tests {
         );
     }
 
+    /// **Setting the rate the plugin already runs at changes nothing.**
+    ///
+    /// The early return is what keeps a per-frame caller from tearing the plugin
+    /// down sixty times a second: the core plans a restart for every
+    /// `Reconfigure`, so the equality check is the bridge's.
+    ///
+    /// Mutation (run): delete the same-rate early return in
+    /// `ClapInstance::set_sample_rate` → the plugin is activated again and the
+    /// count assertion fails.
+    #[test]
+    fn setting_the_current_sample_rate_does_not_cycle_the_plugin() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+
+        instance
+            .set_sample_rate(44100.0)
+            .expect("re-setting the current rate must succeed");
+
+        assert_eq!(
+            crate::test_utils::clap_probe_activation_count(),
+            0,
+            "setting the rate the plugin already runs at must not deactivate and \
+             re-activate it"
+        );
+    }
+
     /// **A rate change that changes nothing about the layout is silent.**
     ///
-    /// Mutation (run): set `self.io_changed = true` unconditionally in
-    /// `note_layout_change` → the assertion fails.
+    /// Whether the layout differs is the core's decision (`step`, mutation-tested
+    /// in `tutti-plugin-types`); this pins that the bridge adds no notice of its
+    /// own.
+    ///
+    /// Mutation (run): push `AsyncEvent::IoChanged` after every
+    /// `HostOp::Reconfigure` in `ClapInstance::set_sample_rate` → the assertion
+    /// fails.
     #[test]
     fn a_rate_change_that_keeps_the_layout_does_not_raise_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1340,10 +847,9 @@ mod tests {
     /// plugin drops its 64-bit flags; the rate change fails and leaves it
     /// deactivated, and the session kept calling `process` on it.
     ///
-    /// Mutations (run): delete the `!is_active()` early return in
-    /// `ClapInstance::process` → the block reaches `ClapActive::process`, which
-    /// refuses it with an error → `expect("silence")` fails.
-    /// Delete the `self.io_changed = true` in `set_sample_rate`'s error arm →
+    /// Mutations (run): make the `None` arm of `ClapInstance::process` (no
+    /// Processor held) return an error → `expect("silence")` fails. Delete the
+    /// `AsyncEvent::IoChanged` push in the `Notice::Refused` arm of `absorb` →
     /// the `take_io_changed` assertion fails (the layout alone is unchanged in
     /// this fixture).
     #[test]
@@ -1354,7 +860,10 @@ mod tests {
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
         let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
         let mut instance = ClapInstance::load(path, 44100.0, 512, true).expect("load");
-        assert!(matches!(instance.inner, ClapInner::F64(_)), "fixture");
+        assert!(
+            instance.loaded().features.contains(Features::F64_AUDIO),
+            "fixture"
+        );
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
         let err = instance
@@ -1399,12 +908,11 @@ mod tests {
     /// that changed its ports left the host with the layout it was loaded
     /// with.
     ///
-    /// Mutations (run): delete the `ports.needs_deactivate()` arm of the
-    /// early return in `service_requests` → a request is consumed and
-    /// nothing happens → the activation count stays 0 → the second assertion
-    /// fails. Replace `i.reactivate()` with `Ok(())` → the layout stays at one
-    /// bus → the layout assertion fails. Delete `self.note_layout_change()`
-    /// → the host copy stays stale and `take_io_changed` is false → fails.
+    /// Mutations (run): make `host_audio_ports_rescan` raise nothing → a request
+    /// is never made and nothing happens → the activation count stays 0 → the
+    /// second assertion fails. Delete `self.refresh_meta();` in the
+    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → the host copy stays
+    /// stale and the layout assertion fails.
     #[test]
     fn a_ports_rescan_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1417,7 +925,7 @@ mod tests {
             tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
         );
         let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
         assert_eq!(
             instance.loaded().inputs.len(),
             1,
@@ -1447,8 +955,8 @@ mod tests {
     /// **The request reaches the host as `IoChanged` through the server's
     /// between-blocks poll.**
     ///
-    /// Mutation (run): delete the `clap.service_requests()` call in
-    /// `Plugin::poll_async_events` → no event → fails.
+    /// Mutation (run): delete the `AsyncEvent::IoChanged` push in the
+    /// `Notice::IoChanged` arm of `ClapInstance::absorb` → no event → fails.
     #[test]
     fn a_served_ports_rescan_is_polled_as_io_changed() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1458,7 +966,7 @@ mod tests {
             tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
         );
         let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
 
         let mut plugin = crate::plugin::Plugin::Clap(instance);
         let io_changed = |plugin: &mut crate::plugin::Plugin| {
@@ -1476,10 +984,8 @@ mod tests {
     /// silent**, and a `NAMES`-only rescan, which the host's description does
     /// not carry, does not re-activate at all.
     ///
-    /// Mutations (run): set `self.io_changed = true` unconditionally in
-    /// `service_requests` → the first `take_io_changed` assertion fails.
-    /// Make `needs_deactivate` true for `NAMES` (in `AudioPortsRescan`) → the
-    /// names-only count assertion fails.
+    /// Mutation (run): make `host_audio_ports_rescan` raise `IoChanged` for
+    /// every rescan, `NAMES` included → the names-only count assertion fails.
     #[test]
     fn a_rescan_that_changes_nothing_is_silent() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1488,13 +994,13 @@ mod tests {
         crate::test_utils::clap_probe_reset_activation_count();
 
         let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_LIST_AND_CHANNELS);
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
         instance.service_requests();
         assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
         assert!(!instance.take_io_changed(), "same layout, same instance");
 
         let _names = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_NAMES);
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
         instance.service_requests();
         assert_eq!(
             crate::test_utils::clap_probe_activation_count(),
@@ -1502,17 +1008,14 @@ mod tests {
             "names are safe live: no re-activation"
         );
         assert!(!instance.take_io_changed());
-        assert!(
-            !instance.clap_loaded().poll_audio_ports_rescan().requested,
-            "consumed"
-        );
+        assert!(instance.pending_requests().is_empty(), "consumed");
     }
 
     /// **A `request_restart` is served the same way**: the plugin is
     /// deactivated and activated again, between blocks, and keeps running.
     ///
-    /// Mutation (run): drop `|| restart` from the early return in
-    /// `service_requests` → the count stays 0 → fails.
+    /// Mutation (run): make `host_request_restart` raise nothing → the count
+    /// stays 0 → fails.
     #[test]
     fn a_restart_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1542,8 +1045,9 @@ mod tests {
     /// is left deactivated, and the host is told** even though the layout it
     /// holds did not change.
     ///
-    /// Mutation (run): delete the `if active != was_active` block in
-    /// `service_requests` → `take_io_changed` is false → fails.
+    /// Mutation (run): delete the `AsyncEvent::IoChanged` push in the
+    /// `Notice::Refused` arm of `ClapInstance::absorb` → `take_io_changed` is
+    /// false → fails.
     #[test]
     fn a_rescan_that_leaves_the_instance_unable_to_run_tells_the_host() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1552,11 +1056,14 @@ mod tests {
             | tutti_clap_test_plugin::PORTS_64BIT_OUTPUTS;
         let _flagged = crate::test_utils::clap_probe_ports_64bit(both);
         let mut instance = ClapInstance::load(path, 44100.0, 512, true).expect("load");
-        assert!(matches!(instance.inner, ClapInner::F64(_)), "fixture");
+        assert!(
+            instance.loaded().features.contains(Features::F64_AUDIO),
+            "fixture"
+        );
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
         let _asked = crate::test_utils::clap_probe_request_ports_rescan(RESCAN_FLAGS);
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
         instance.service_requests();
 
         assert!(!instance.clap_loaded().is_active(), "left deactivated");
@@ -1577,8 +1084,8 @@ mod tests {
     /// nothing called back, so work a plugin deferred to the main thread (a
     /// sample load finishing, a timer being registered) never ran.
     ///
-    /// Mutation (run): delete `i.run_main_thread_work()` from
-    /// `service_requests` → the latched timer is never registered → fails.
+    /// Mutation (run): delete the `take_requests` call from
+    /// `ClapInstance::serve` → the latched timer is never registered → fails.
     #[test]
     fn a_callback_the_plugin_asks_for_is_served() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1604,8 +1111,8 @@ mod tests {
     /// **A timer the plugin registers ticks on the service pass.** The host
     /// answered `register_timer` with `true` and never called `on_timer`.
     ///
-    /// Mutation (run): delete the `poll_timers_at(now)` call from
-    /// `ClapLoaded::run_main_thread_work` → no tick → fails.
+    /// Mutation (run): delete the `Request::Timer` push from
+    /// `ClapLoaded::take_requests_with` → no tick → fails.
     #[test]
     fn a_timer_the_plugin_registers_is_ticked() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1616,7 +1123,7 @@ mod tests {
         );
         // Run the callback that registers the timer (the block's request has
         // gone unserved), then let the timer tick.
-        instance.loaded_mut().on_main_thread();
+        instance.loaded_mut_unwrapped().on_main_thread();
         let site = tutti_clap_test_plugin::Site::OnTimer as usize;
         assert!(crate::test_utils::clap_probe_thread_capture().timer_registered);
         assert_eq!(
@@ -1635,8 +1142,9 @@ mod tests {
     /// sample-rate change**, with no `changed()` from the plugin: the figure
     /// the host holds is from the old rate.
     ///
-    /// Mutation (run): delete `self.note_latency_change(false)` from
-    /// `ClapInstance::set_sample_rate` → no change is reported → fails.
+    /// Mutation (run): delete the `AsyncEvent::LatencyChanged` push in the
+    /// `Notice::LatencyChanged` arm of `ClapInstance::absorb` → no change is
+    /// reported → fails.
     #[test]
     fn a_latency_that_depends_on_the_rate_is_reread_after_a_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1656,8 +1164,8 @@ mod tests {
 
     /// **A `request_restart` reports the latency the plugin has after it.**
     ///
-    /// Mutation (run): delete `self.note_latency_change(latency)` under
-    /// `if reactivate` in `service_requests` → fails.
+    /// Mutation (run): make `host_request_restart` raise nothing → no
+    /// re-activation, so the figure is never re-read → fails.
     #[test]
     fn a_restart_reports_the_latency_after_it() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1677,9 +1185,9 @@ mod tests {
     /// and the latency is read after it**, not from the active plugin
     /// (`clap.latency`: it may change only across an activation).
     ///
-    /// Mutation (run): drop `|| (latency && was_active)` from the condition in
-    /// `service_requests` → no re-activation, so the figure is never re-read →
-    /// both assertions fail.
+    /// Mutation (run): make `ClapController::latency` answer `Samples(0)` → the
+    /// figure read after the re-activation is not the plugin's → the latency
+    /// assertion fails.
     #[test]
     fn latency_changed_on_an_active_plugin_restarts_it() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1688,12 +1196,7 @@ mod tests {
         let before = instance.loaded().latency_samples;
         crate::test_utils::clap_probe_reset_activation_count();
         let _longer = crate::test_utils::clap_probe_latency_at_activation(5);
-        instance
-            .clap_loaded()
-            .host_state()
-            .processing
-            .latency_changed
-            .store(true, std::sync::atomic::Ordering::Release);
+        instance.raise(Request::LatencyChanged);
 
         instance.service_requests();
 
@@ -1705,11 +1208,11 @@ mod tests {
     /// answered by that activation**: one request is one activation, not a
     /// second restart, and not a loop when the plugin does it every time.
     ///
-    /// Mutation (run): delete the two `store(false, ..)` calls at the end of
-    /// `ClapLoaded::activate_plugin` → the load-time announcement is still
-    /// latched, so the first `service_requests` re-activates for it (the first
-    /// count assertion reads 1), and each activation re-latches it (no loop
-    /// guard).
+    /// Mutation (run): keep every request raised inside `activate` (the filter
+    /// in `ClapLoaded::activate_plugin` always true) → the load-time
+    /// announcement is still raised, so the first `service_requests`
+    /// re-activates for it (the first count assertion reads 1), and each
+    /// activation raises it again (no loop guard).
     #[test]
     fn a_latency_changed_inside_activate_is_not_restarted_for() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1726,12 +1229,7 @@ mod tests {
         );
 
         // One request, one activation, whose own announcement is answered too.
-        instance
-            .clap_loaded()
-            .host_state()
-            .processing
-            .latency_changed
-            .store(true, std::sync::atomic::Ordering::Release);
+        instance.raise(Request::LatencyChanged);
         instance.service_requests();
         assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
         instance.service_requests();
@@ -1741,14 +1239,14 @@ mod tests {
             1,
             "no loop"
         );
-        assert!(!instance.clap_loaded().poll_latency_changed());
+        assert!(instance.pending_requests().is_empty());
     }
 
     /// **A `params.rescan` of values is reported as changed values and does not
     /// restart the plugin.** The flags were latched and nothing read them.
     ///
-    /// Mutation (run): delete the `params.values || params.text` arm in
-    /// `service_requests` → nothing is reported → fails.
+    /// Mutation (run): delete the `Notice::ParamValuesChanged` push in
+    /// `ClapInstance::absorb` → nothing is reported → fails.
     #[test]
     fn a_values_rescan_is_reported_without_a_restart() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1769,12 +1267,12 @@ mod tests {
     /// **A `params.rescan(ALL)` restarts the plugin and is reported as changed
     /// parameters**, so the host re-pulls the list.
     ///
-    /// Mutations (run): drop `|| params.needs_deactivate()` from the condition
-    /// in `service_requests` → no re-activation → the count assertion fails.
-    /// Delete `self.pending.param_titles = true` under `params.info ||
-    /// params.all` → the report assertion fails. What the re-read changes (the
-    /// ranges automation is denormalized against) is not observable with a
-    /// plugin whose parameters are fixed.
+    /// Mutations (run): make `host_params_rescan` raise nothing for `ALL` → no
+    /// re-activation → the count assertion fails. Delete the
+    /// `Notice::ParamTitlesChanged` push in `ClapInstance::absorb` → the report
+    /// assertion fails. What the re-read changes (the ranges automation is
+    /// denormalized against) is not observable with a plugin whose parameters
+    /// are fixed.
     #[test]
     fn an_all_rescan_restarts_the_plugin_and_reports_the_list() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1867,28 +1365,6 @@ mod tests {
         let mut instance =
             ClapInstance::load(path, 44100.0, 512, false).expect("Failed to load CLAP plugin");
 
-        // Asserted on the guard, not through `load_preset`: a coerced id
-        // yields a nonexistent path the plugin refuses anyway, so the two
-        // refusals look identical from outside.
-        assert_eq!(
-            clap_preset_path(&PresetId::Number(0)),
-            None,
-            "an AU selector / VST2 index addresses no CLAP preset"
-        );
-        assert_eq!(
-            clap_preset_path(&PresetId::Program {
-                list_id: 0,
-                index: 0
-            }),
-            None,
-            "a VST3 program id addresses no CLAP preset"
-        );
-        assert_eq!(
-            clap_preset_path(&PresetId::Location("/x.clap-preset".into())),
-            Some(Path::new("/x.clap-preset")),
-            "a path-shaped id reaches the loader verbatim"
-        );
-
         // And the whole path still refuses, which is what a caller sees.
         assert!(!instance.load_preset(&PresetId::Number(0)));
     }
@@ -1949,6 +1425,27 @@ mod tests {
             "Parameter value should be finite, got {}",
             value
         );
+    }
+
+    /// `CLAP_EVENT_PARAM_VALUE`, as `clap_sys` spells it; the server names no
+    /// `clap-sys` itself.
+    const CLAP_EVENT_PARAM_VALUE: u16 = 5;
+
+    /// What the reference plugin recorded of its last `process` call.
+    fn read_process_capture() -> tutti_clap_test_plugin::ProcessCapture {
+        type F = unsafe extern "C" fn(*mut tutti_clap_test_plugin::ProcessCapture) -> bool;
+        let mut cap = tutti_clap_test_plugin::ProcessCapture::default();
+        // SAFETY: `#[no_mangle] extern "C"` in `tutti-clap-test-plugin`; the
+        // handle is leaked as in `set_clap_probe_switch`.
+        unsafe {
+            let lib = libloading::Library::new(clap_plugin()).expect("reference plugin opens");
+            let capture: libloading::Symbol<F> = lib
+                .get(b"tutti_test_plugin_capture\0")
+                .expect("capture exported by the reference plugin");
+            assert!(capture(&mut cap), "the plugin recorded a process() call");
+            std::mem::forget(lib);
+        }
+        cap
     }
 
     /// Arm (or, with 0, disarm) the reference plugin's thread-pool probe on
@@ -2337,11 +1834,11 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load");
-        // `load()` activates the plugin: `inner` is a `ClapActive` arm, so the
-        // "active after load" guarantee is now encoded in the type itself.
+        // `load()` activates the plugin: the lifecycle is `Active`, which holds
+        // a Controller, so the "active after load" guarantee is in the type.
         assert!(
-            matches!(instance.inner, ClapInner::F32(_) | ClapInner::F64(_)),
-            "load() should yield an active (ClapActive) instance"
+            matches!(instance.lifecycle, Lifecycle::Active { .. }),
+            "load() should yield an active instance"
         );
     }
 
@@ -2389,63 +1886,49 @@ mod tests {
     // ── Group B: Polling Methods ──
 
     #[test]
-    fn test_clap_poll_initially_clear() {
+    fn test_clap_take_initially_clear() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load");
 
-        // All poll methods should return false on a fresh instance
-        assert!(!instance.clap_loaded().poll_restart_requested());
-        assert!(!instance.clap_loaded().poll_process_requested());
-        assert!(!instance.clap_loaded().poll_callback_requested());
-        assert!(!instance.clap_loaded().poll_latency_changed());
-        assert!(!instance.clap_loaded().poll_tail_changed());
-        assert!(!instance.clap_loaded().poll_params_rescan().requested);
-        assert!(!instance.clap_loaded().poll_params_flush_requested());
-        assert!(!instance.clap_loaded().poll_state_dirty());
-        assert!(!instance.clap_loaded().poll_audio_ports_rescan().requested);
-        assert!(!instance.clap_loaded().poll_note_ports_changed());
+        // Nothing is pending on a fresh instance.
+        assert!(instance.pending_requests().is_empty());
+        let loaded = instance.clap_loaded();
+        assert!(!loaded.take_process_requested());
+        assert!(!loaded.take_params_flush_requested());
+        assert!(!loaded.take_state_dirty());
+        assert!(!loaded.take_note_ports_changed());
+    }
+
+    /// A request raised from a callback is handed over once.
+    ///
+    /// Mutation (run): `take_requests_with` reading the word without clearing
+    /// it → the second take repeats the request.
+    #[test]
+    fn test_clap_requests_are_taken_once() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
+            .expect("Failed to load");
+
+        for request in [
+            Request::Restart,
+            Request::Callback,
+            Request::LatencyChanged,
+            Request::TailChanged,
+            Request::IoChanged,
+            Request::RescanParams(tutti_plugin_types::RescanScope::All),
+        ] {
+            instance.raise(request);
+            assert_eq!(instance.pending_requests(), [request]);
+            assert!(
+                instance.pending_requests().is_empty(),
+                "{request:?} was taken"
+            );
+        }
     }
 
     #[test]
-    fn test_clap_poll_restart() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("Failed to load");
-
-        let state = instance.clap_loaded().host_state();
-        state
-            .lifecycle
-            .restart_requested
-            .store(true, Ordering::Release);
-
-        // needs_restart() is non-clearing — should return true repeatedly
-        assert!(
-            instance.clap_loaded().needs_restart(),
-            "needs_restart should be true"
-        );
-        assert!(
-            instance.clap_loaded().needs_restart(),
-            "needs_restart should still be true (non-clearing)"
-        );
-
-        // poll_restart_requested() clears the flag
-        assert!(
-            instance.clap_loaded().poll_restart_requested(),
-            "poll should return true"
-        );
-        assert!(
-            !instance.clap_loaded().poll_restart_requested(),
-            "poll should return false after clearing"
-        );
-        assert!(
-            !instance.clap_loaded().needs_restart(),
-            "needs_restart should be false after poll cleared it"
-        );
-    }
-
-    #[test]
-    fn test_clap_poll_process_callback() {
+    fn test_clap_take_flags() {
         let _lock = crate::test_utils::plugin_load_lock();
         let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load");
@@ -2455,63 +1938,29 @@ mod tests {
             .lifecycle
             .process_requested
             .store(true, Ordering::Release);
-        state
-            .lifecycle
-            .callback_requested
-            .store(true, Ordering::Release);
-
-        assert!(instance.clap_loaded().poll_process_requested());
-        assert!(instance.clap_loaded().poll_callback_requested());
-
-        // Second poll should be false (cleared)
-        assert!(!instance.clap_loaded().poll_process_requested());
-        assert!(!instance.clap_loaded().poll_callback_requested());
-    }
-
-    #[test]
-    fn test_clap_poll_latency_tail() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("Failed to load");
-
-        let state = instance.clap_loaded().host_state();
-        state
-            .processing
-            .latency_changed
-            .store(true, Ordering::Release);
-        state.processing.tail_changed.store(true, Ordering::Release);
-
-        assert!(instance.clap_loaded().poll_latency_changed());
-        assert!(instance.clap_loaded().poll_tail_changed());
-
-        assert!(!instance.clap_loaded().poll_latency_changed());
-        assert!(!instance.clap_loaded().poll_tail_changed());
-    }
-
-    #[test]
-    fn test_clap_poll_ports_state() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
-            .expect("Failed to load");
-
-        let state = instance.clap_loaded().host_state();
-        state.audio_ports.changed.store(true, Ordering::Release);
         state.notes.ports_changed.store(true, Ordering::Release);
         state.processing.state_dirty.store(true, Ordering::Release);
 
-        assert!(instance.clap_loaded().poll_audio_ports_rescan().requested);
-        assert!(instance.clap_loaded().poll_note_ports_changed());
-        assert!(instance.clap_loaded().poll_state_dirty());
+        let loaded = instance.clap_loaded();
+        assert!(loaded.take_process_requested());
+        assert!(loaded.take_note_ports_changed());
+        assert!(loaded.take_state_dirty());
 
-        assert!(!instance.clap_loaded().poll_audio_ports_rescan().requested);
-        assert!(!instance.clap_loaded().poll_note_ports_changed());
-        assert!(!instance.clap_loaded().poll_state_dirty());
+        // Second take should be false (cleared)
+        assert!(!loaded.take_process_requested());
+        assert!(!loaded.take_note_ports_changed());
+        assert!(!loaded.take_state_dirty());
     }
 
     // ── Group C: Parameter Get/Set Roundtrip ──
 
+    /// **A parameter written to an active plugin also reaches the next block**
+    /// as a `PARAM_VALUE` at its head, in the plugin's plain range.
+    ///
+    /// Mutation (run): `process` not draining the edit ring → the block carries
+    /// no event for the id and the `expect` fails.
     #[test]
-    fn test_clap_param_set_get_roundtrip() {
+    fn test_clap_param_set_reaches_the_next_block() {
         let _lock = crate::test_utils::plugin_load_lock();
         let mut instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load");
@@ -2520,18 +1969,34 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
+        let clap_id = param_id.opaque().expect("CLAP ids are opaque").get();
         let original = instance.get_parameter(param_id);
 
         // Set to a different value
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
         instance.set_parameter(param_id, Normalized::new(new_value));
+        // The bridge also applies the write now (see `set_parameter`), and the
+        // queued copy reaches the next block.
+        process_blocks(&mut instance, 1);
 
-        let readback = instance.get_parameter(param_id);
+        // The reference plugin records the events it is handed, so the write is
+        // seen where it lands: as a `PARAM_VALUE` for this id, in the plugin's
+        // plain range, at the head of the block.
+        let (min, max) = instance
+            .clap_loaded()
+            .parameter_range(clap_id)
+            .expect("the parameter declares a range");
+        let capture = read_process_capture();
+        let event = capture.events[..capture.event_count as usize]
+            .iter()
+            .find(|e| e.event_type == CLAP_EVENT_PARAM_VALUE && e.param_id == clap_id)
+            .expect("the block carried the queued write");
+        assert_eq!(event.time, 0, "applied at the head of the block");
+        let expected = min + new_value * (max - min);
         assert!(
-            (readback - new_value).abs() < 0.01,
-            "Parameter should be close to set value: expected {}, got {}",
-            new_value,
-            readback
+            (event.value - expected).abs() < 1e-9,
+            "expected {expected}, the plugin was handed {}",
+            event.value
         );
     }
 
@@ -2631,8 +2096,8 @@ mod tests {
             .expect("Failed to load");
 
         // Just verify no crash — values depend on plugin
-        let _latency = instance.clap_loaded().get_latency();
-        let _tail = instance.clap_loaded().get_tail();
+        let _latency = instance.clap_loaded().latency_samples();
+        let _tail = instance.clap_loaded().tail_samples();
     }
 
     // ── Group G: Processing with Param Automation, Expressions, Transport ──
@@ -2810,8 +2275,8 @@ mod tests {
         let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false)
             .expect("Failed to load Surge XT");
 
-        let _latency = instance.clap_loaded().get_latency();
-        let _tail = instance.clap_loaded().get_tail();
+        let _latency = instance.clap_loaded().latency_samples();
+        let _tail = instance.clap_loaded().tail_samples();
     }
 
     // ── Group J: GUI / Editor ──
@@ -2915,9 +2380,9 @@ mod tests {
             .expect("Failed to load");
 
         // Set offline mode — returns true if plugin supports render extension
-        let _ = instance.loaded_mut().set_render_mode(true);
+        let _ = instance.loaded_mut_unwrapped().set_render_mode(true);
         // Set back to realtime
-        let _ = instance.loaded_mut().set_render_mode(false);
+        let _ = instance.loaded_mut_unwrapped().set_render_mode(false);
         // No crash is the assertion
     }
 
@@ -2940,7 +2405,7 @@ mod tests {
             .expect("Failed to load");
 
         // TAL-NoiseMaker may or may not support voice info
-        if let Some(info) = instance.clap_loaded().get_voice_info() {
+        if let Some(info) = instance.clap_loaded().voice_info() {
             assert!(info.voice_count > 0, "voice_count should be > 0");
             assert!(info.voice_capacity > 0, "voice_capacity should be > 0");
         }
@@ -2953,7 +2418,7 @@ mod tests {
             .expect("Failed to load Surge XT");
 
         // Surge XT likely supports voice info
-        if let Some(info) = instance.clap_loaded().get_voice_info() {
+        if let Some(info) = instance.clap_loaded().voice_info() {
             assert!(info.voice_count > 0, "Surge XT voice_count should be > 0");
             assert!(
                 info.voice_capacity > 0,
@@ -2973,7 +2438,7 @@ mod tests {
         let count = instance.clap_loaded().note_name_count();
         // Iterate whatever's there — may be 0 for synths without custom note names
         for i in 0..count {
-            let name = instance.clap_loaded().get_note_name(i);
+            let name = instance.clap_loaded().note_name(i);
             assert!(name.is_some(), "note_name at index {} should exist", i);
             assert!(
                 !name.unwrap().name.is_empty(),
@@ -3079,7 +2544,7 @@ mod tests {
 
         // Load it back
         instance
-            .loaded_mut()
+            .loaded_mut_unwrapped()
             .set_state_with_context(&saved, tutti_clap_host::StateContext::ForProject)
             .expect("set_state_with_context should succeed");
     }
@@ -3098,7 +2563,7 @@ mod tests {
         assert!(!saved.is_empty());
 
         instance
-            .loaded_mut()
+            .loaded_mut_unwrapped()
             .set_state_with_context(&saved, tutti_clap_host::StateContext::ForDuplicate)
             .expect("load should succeed");
     }

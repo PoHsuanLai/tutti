@@ -1,5 +1,7 @@
 //! Resource-directory methods from the draft `CLAP_EXT_RESOURCE_DIRECTORY`.
 
+use std::path::{Path, PathBuf};
+
 use super::ClapLoaded;
 use super::ext;
 use crate::cstr_to_string;
@@ -8,12 +10,12 @@ impl ClapLoaded {
     /// Tells the plugin where to read/write its resources. `is_shared`
     /// selects between the shared (project-level) and private (preset-level)
     /// directory.
-    pub fn resource_set_directory(&self, path: &str, is_shared: bool) {
+    pub fn resource_set_directory(&self, path: impl AsRef<Path>, is_shared: bool) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.system.resource_directory) }) else {
             return;
         };
         if let Some(f) = ext.set_directory
-            && let Ok(cstr) = std::ffi::CString::new(path)
+            && let Ok(cstr) = std::ffi::CString::new(path.as_ref().to_string_lossy().as_ref())
         {
             unsafe { f(self.plugin.as_ptr(), cstr.as_ptr(), is_shared) };
         }
@@ -32,7 +34,7 @@ impl ClapLoaded {
 
     /// Number of resource files the plugin reported during the last
     /// [`Self::resource_collect`] call.
-    pub fn resource_files_count(&self) -> u32 {
+    pub fn resource_file_count(&self) -> u32 {
         let Some(ext) = (unsafe { ext::opt(self.extensions.system.resource_directory) }) else {
             return 0;
         };
@@ -42,7 +44,7 @@ impl ClapLoaded {
     }
 
     /// Path to the resource file at `index`, or `None` if unavailable.
-    pub fn resource_get_file_path(&self, index: u32) -> Option<String> {
+    pub fn resource_file_path(&self, index: u32) -> Option<PathBuf> {
         let ext = unsafe { ext::opt(self.extensions.system.resource_directory) }?;
         let get_fn = ext.get_file_path?;
         let mut buf = [0i8; 4096];
@@ -57,6 +59,6 @@ impl ClapLoaded {
         if result < 0 {
             return None;
         }
-        Some(unsafe { cstr_to_string(buf.as_ptr()) })
+        Some(PathBuf::from(unsafe { cstr_to_string(buf.as_ptr()) }))
     }
 }

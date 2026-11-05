@@ -338,28 +338,7 @@ impl Plugin {
                 }
             }
             #[cfg(feature = "clap")]
-            Plugin::Clap(clap) => {
-                // Serve what the plugin asked for (this is between blocks, on
-                // the loading thread), then tell the host what that, or a rate
-                // change, altered: the ports, the plugin's ability to run, and
-                // what it reports.
-                clap.service_requests();
-                if clap.take_io_changed() {
-                    out.push(AsyncEvent::IoChanged);
-                }
-                let changes = clap.take_changes();
-                if let Some(samples) = changes.latency {
-                    out.push(AsyncEvent::LatencyChanged { samples });
-                }
-                if let Some(tail) = changes.tail {
-                    out.push(AsyncEvent::TailChanged { tail });
-                }
-                if changes.param_titles {
-                    out.push(AsyncEvent::ParamTitlesChanged);
-                } else if changes.param_values {
-                    out.push(AsyncEvent::ParamValuesChanged);
-                }
-            }
+            Plugin::Clap(clap) => out.extend(clap.poll()),
             #[cfg(all(feature = "au", target_os = "macos"))]
             Plugin::Au(au) => {
                 let changes = au.poll_changes();
@@ -491,11 +470,7 @@ mod tests {
         let Plugin::Clap(clap) = &mut plugin else {
             unreachable!("constructed as Clap immediately above")
         };
-        clap.clap_loaded()
-            .host_state()
-            .processing
-            .tail_changed
-            .store(true, std::sync::atomic::Ordering::Release);
+        tutti_plugin_types::Request::TailChanged.raise(&clap.clap_loaded().host_state().requests);
 
         let events = plugin.poll_async_events();
         assert!(
@@ -558,15 +533,9 @@ mod tests {
         let Plugin::Clap(clap) = &mut plugin else {
             unreachable!("constructed as Clap immediately above")
         };
-        let state = clap.clap_loaded().host_state();
-        state
-            .processing
-            .tail_changed
-            .store(true, std::sync::atomic::Ordering::Release);
-        state
-            .processing
-            .latency_changed
-            .store(true, std::sync::atomic::Ordering::Release);
+        let requests = &clap.clap_loaded().host_state().requests;
+        tutti_plugin_types::Request::TailChanged.raise(requests);
+        tutti_plugin_types::Request::LatencyChanged.raise(requests);
 
         let events = plugin.poll_async_events();
         assert!(

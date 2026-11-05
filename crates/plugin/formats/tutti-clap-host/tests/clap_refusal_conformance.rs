@@ -13,15 +13,18 @@
 //! and resets the probe at the top.
 
 mod support;
+use support::active::{Activate, Active};
 
 use std::sync::{Mutex, MutexGuard};
 
 use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
-use tutti_clap_host::{ClapActive, ClapError, ClapLoaded};
+use tutti_clap_host::{ClapError, ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::ParamStateCapture;
 use tutti_clap_test_plugin::refusal::ACTIVATE_REFUSE_NONE;
+use tutti_plugin_types::Control;
+use tutti_plugin_types::{LoadStage, PluginError};
 
 /// The sample rate every fixture loads and activates at. The probe accepts it,
 /// so it is the configuration a rollback must land back on.
@@ -58,14 +61,14 @@ impl Probe {
         let path = std::path::Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load_with_library(path, Some(path), BASE_RATE, BASE_FRAMES)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
     /// Load + activate at the base configuration, which the probe accepts.
-    fn activate(&self) -> ClapActive<f32> {
+    fn activate(&self) -> Active<f32> {
         self.load()
-            .activate::<f32>()
+            .activate_at::<f32>(BASE_RATE, BASE_FRAMES)
             .map_err(|(_, e)| e)
             .expect("reference plugin should activate")
     }
@@ -206,11 +209,10 @@ fn read_param_capture() -> ParamStateCapture {
 // `activate` refusal
 // ---------------------------------------------------------------------------
 
-/// A refused `set_sample_rate` must be *reported*, not swallowed.
+/// A refused activation must be *reported*, not swallowed.
 ///
-/// A setter returning `&mut Self` unconditionally would make this call
-/// indistinguishable from a successful one at every call site, with no value
-/// a caller could inspect to learn the request had been denied.
+/// Mutation (run): `activate_typed` returning `Ok` after a failed
+/// `activate_plugin` → the `expect_err` fails.
 #[test]
 fn refused_sample_rate_change_is_reported() {
     let probe = Probe::acquire();
@@ -220,12 +222,18 @@ fn refused_sample_rate_change_is_reported() {
     set_activate_refusal(target.to_bits(), 0);
 
     let err = active
-        .set_sample_rate(target)
+        .reconfigure(target, BASE_FRAMES)
         .expect_err("plugin refused activate at 96k; the host must say so");
 
     assert!(
-        matches!(err, ClapError::NotSupported(_)),
-        "a plugin declining a configuration is `NotSupported`, not a load failure: {err:?}"
+        matches!(
+            err,
+            PluginError::Load {
+                stage: LoadStage::Activation,
+                ..
+            }
+        ),
+        "a plugin declining a configuration is an activation failure: {err:?}"
     );
     assert_eq!(
         activate_refusals(),
@@ -234,8 +242,10 @@ fn refused_sample_rate_change_is_reported() {
     );
 }
 
-/// After a refused `set_sample_rate` the instance must still be *running*, at
-/// the configuration the plugin already accepted.
+/// After a refused rate change the instance must still be *running*, at the
+/// configuration the plugin already accepted. (The test helper's `reconfigure`
+/// is the rate change a `Lifecycle` plans: deactivate, activate, and on a
+/// refusal activate at the previous `Prepare`.)
 ///
 /// The oracle is plugin-side rather than the host's private flag: two accepted
 /// activations, the second back on the base rate, is what a rollback looks like
@@ -254,7 +264,7 @@ fn refused_sample_rate_change_rolls_back_and_stays_active() {
 
     let target = 96_000.0f64;
     set_activate_refusal(target.to_bits(), 0);
-    let _ = active.set_sample_rate(target);
+    let _ = active.reconfigure(target, BASE_FRAMES);
     // Disarm before asserting: everything below must be able to re-activate.
     set_activate_refusal(ACTIVATE_REFUSE_NONE, 0);
 
@@ -278,7 +288,7 @@ fn refused_sample_rate_change_rolls_back_and_stays_active() {
     );
 }
 
-/// A refused `set_max_block_size` behaves the same way, and the host must not
+/// A refused block-size growth behaves the same way, and the host must not
 /// leave the RT scratch sized for a ceiling the plugin never agreed to.
 ///
 /// The scratch size is what `process` bounds-checks incoming blocks against
@@ -287,6 +297,11 @@ fn refused_sample_rate_change_rolls_back_and_stays_active() {
 /// previous one, `process` would accept a block larger than the plugin's declared
 /// ceiling — the plugin reads `frames_count` samples out of buffers it sized
 /// for less.
+///
+/// Mutation (run): drop the `self.audio = previous;` restore on the refusal path
+/// of `ClapLoaded::activate_typed` → the rollback activates at the refused
+/// block size → `block_size()` reports 2048 and the accepted-activation
+/// assertion fails.
 #[test]
 fn refused_block_size_growth_rolls_back() {
     let probe = Probe::acquire();
@@ -296,11 +311,11 @@ fn refused_block_size_growth_rolls_back() {
     set_activate_refusal(ACTIVATE_REFUSE_NONE, target);
 
     let err = active
-        .set_max_block_size(target)
+        .reconfigure(BASE_RATE, target)
         .expect_err("plugin refused activate at 2048 frames; the host must say so");
     set_activate_refusal(ACTIVATE_REFUSE_NONE, 0);
 
-    assert!(matches!(err, ClapError::NotSupported(_)), "{err:?}");
+    assert!(matches!(err, PluginError::Load { .. }), "{err:?}");
     assert_eq!(
         active.block_size(),
         BASE_FRAMES,
@@ -328,7 +343,7 @@ fn instance_still_processes_after_a_refused_reconfiguration() {
 
     let target = 96_000.0f64;
     set_activate_refusal(target.to_bits(), 0);
-    let _ = active.set_sample_rate(target);
+    let _ = active.reconfigure(target, BASE_FRAMES);
     set_activate_refusal(ACTIVATE_REFUSE_NONE, 0);
 
     let frames = 128usize;
@@ -350,39 +365,6 @@ fn instance_still_processes_after_a_refused_reconfiguration() {
         .expect("a rolled-back instance is still active and must process");
 }
 
-/// A no-op reconfiguration must not touch the plugin at all.
-///
-/// Guards against over-reach: `reconfigure` deactivates before it
-/// re-activates, so routing the early-return cases through it would make
-/// setting the rate to its current value a real deactivate/activate cycle — a
-/// gratuitous state reset (and, for a plugin with a tail, an audible one).
-#[test]
-fn unchanged_configuration_does_not_re_activate() {
-    let probe = Probe::acquire();
-    let mut active = probe.activate();
-
-    let accepts_before = activate_accepts();
-
-    active
-        .set_sample_rate(BASE_RATE)
-        .expect("setting the rate to its current value is a no-op");
-    // `set_max_block_size` only grows, so a request at or below the current
-    // ceiling is also a no-op.
-    active
-        .set_max_block_size(BASE_FRAMES)
-        .expect("a non-growing block-size request is a no-op");
-    active
-        .set_max_block_size(BASE_FRAMES / 2)
-        .expect("a shrink request is a no-op");
-
-    assert_eq!(
-        activate_accepts(),
-        accepts_before,
-        "no-op reconfigurations must not cycle the plugin through deactivate/activate"
-    );
-    assert_eq!(activate_refusals(), 0);
-}
-
 /// An *accepted* reconfiguration still works, and reaches the plugin.
 ///
 /// The counterpart to the refusal tests: a host that reported an error on every
@@ -393,7 +375,7 @@ fn accepted_sample_rate_change_reaches_the_plugin() {
     let mut active = probe.activate();
 
     active
-        .set_sample_rate(96_000.0)
+        .reconfigure(96_000.0, BASE_FRAMES)
         .expect("the probe accepts 96k when nothing is armed");
 
     assert_eq!(activate_refusals(), 0);
@@ -460,7 +442,7 @@ fn refused_context_load_is_not_retried_context_free() {
     // taken — succeeds and returns `Ok`. A payload that failed both ways would
     // let a buggy host pass this test for the wrong reason.
     let blob = loaded
-        .get_state()
+        .save_state()
         .expect("the probe's plain save works while nothing is armed");
     param_reset();
 
@@ -510,33 +492,39 @@ fn unrefused_context_save_takes_the_context_aware_path() {
     );
 }
 
-/// **A plugin left deactivated is not deactivated again.** A rate change the
-/// plugin refuses, whose rollback it also refuses, leaves it inactive; a later
-/// `reactivate` (a restart request) or rate change then called the plugin's
-/// `deactivate`, which CLAP allows only while active.
+/// **A plugin whose activation was refused is not deactivated.** An
+/// activation the plugin refuses leaves it inactive; dropping it, or
+/// activating it again, must not call the plugin's `deactivate`, which CLAP
+/// allows only while active.
 ///
 /// Mutation (run): delete the `if !self.flags.active { return; }` guard in
-/// `ClapLoaded::deactivate_plugin` → the plugin counts a deactivate while
-/// inactive → the first count assertion fails. The last assertions also pin
-/// that a refused instance can be brought back once the plugin accepts.
+/// `ClapLoaded::deactivate_plugin` and set `flags.active` before the FFI call
+/// in `activate_plugin` → the plugin counts a deactivate while inactive → the
+/// first count assertion fails. The last assertions also pin that a refused
+/// plugin can be brought back once the plugin accepts.
 #[test]
-fn an_inactive_plugin_is_not_deactivated_again() {
+fn a_refused_plugin_is_not_deactivated() {
     let probe = Probe::acquire();
-    let mut active = probe.activate();
-
-    // Refuse the new rate and, by its block size, the rollback too.
-    set_activate_refusal(96_000f64.to_bits(), BASE_FRAMES);
-    let err = active.set_sample_rate(96_000.0).expect_err("refused");
-    assert!(matches!(err, ClapError::Deactivated(_)), "got {err}");
-    assert!(!active.is_active());
+    let active = probe.activate();
+    let loaded = active.deactivate();
     assert_eq!(
         inactive_deactivations(),
         0,
         "it was active when deactivated"
     );
 
-    let err = active.reactivate().expect_err("still refused");
-    assert!(matches!(err, ClapError::Deactivated(_)), "got {err}");
+    set_activate_refusal(96_000f64.to_bits(), BASE_FRAMES);
+    let (loaded, reason) = loaded
+        .activate_at::<f32>(96_000.0, BASE_FRAMES)
+        .err()
+        .expect("refused");
+    assert!(matches!(reason, PluginError::Load { .. }), "got {reason}");
+    assert!(!loaded.is_active());
+    let (loaded, reason) = loaded
+        .activate_at::<f32>(96_000.0, BASE_FRAMES)
+        .err()
+        .expect("still refused");
+    assert!(matches!(reason, PluginError::Load { .. }), "got {reason}");
     assert_eq!(
         inactive_deactivations(),
         0,
@@ -544,7 +532,11 @@ fn an_inactive_plugin_is_not_deactivated_again() {
     );
 
     set_activate_refusal(ACTIVATE_REFUSE_NONE, 0);
-    active.reactivate().expect("the plugin accepts again");
+    let active = loaded
+        .activate_at::<f32>(BASE_RATE, BASE_FRAMES)
+        .map_err(|(_, e)| e)
+        .expect("the plugin accepts again");
     assert!(active.is_active());
+    drop(active);
     assert_eq!(inactive_deactivations(), 0);
 }

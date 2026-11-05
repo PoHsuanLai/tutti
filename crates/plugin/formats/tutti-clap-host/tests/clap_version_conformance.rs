@@ -27,7 +27,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::ClapLoaded;
+use tutti_clap_host::{ClapLoaded, LoadOptions};
 use tutti_clap_test_plugin::{CLAP_VERSION_TARGET_DESCRIPTOR, CLAP_VERSION_TARGET_ENTRY};
 
 /// Serializes whole scenarios: override → load → restore. An override left
@@ -60,7 +60,7 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
     }
 
     /// The lighter of the two entry points. Covered separately because it does

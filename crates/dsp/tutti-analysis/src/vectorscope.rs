@@ -36,19 +36,53 @@ impl ScopePoint {
     }
 }
 
-/// Every `decimate`-th frame of the pair as a [`ScopePoint`], starting at the
-/// first. `1` keeps every frame.
+/// Where the stride stands between blocks.
 ///
-/// Stateless: a caller feeding blocks passes each pair with the same stride and
-/// accepts a stride phase that restarts per block. Allocates the result.
+/// Carries how many frames to skip before the next point, so a stream fed in
+/// blocks keeps one stride phase instead of restarting it per block. Keep the
+/// same `decimate` for a run; a different one only changes the stride from the
+/// next point on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VectorscopeState {
+    skip: usize,
+}
+
+impl VectorscopeState {
+    /// The start of a stream: the first frame is kept.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Appends every `decimate`-th frame of the next block to `out` as a
+/// [`ScopePoint`]. `1` keeps every frame.
+///
+/// Writes into the caller's buffer, so a UI feeding blocks reuses one `Vec`
+/// (clear it between draws). It grows `out` and so allocates when it is full:
+/// not for the audio thread.
+pub fn step_vectorscope(
+    state: &mut VectorscopeState,
+    planes: StereoPlanes<'_>,
+    decimate: NonZeroUsize,
+    out: &mut Vec<ScopePoint>,
+) {
+    let frames = planes.frames();
+    let (left, right) = (planes.left(), planes.right());
+    let mut at = state.skip;
+    while at < frames {
+        out.push(ScopePoint::from_lr(left[at], right[at]));
+        at += decimate.get();
+    }
+    state.skip = at - frames;
+}
+
+/// Every `decimate`-th frame of one whole pair as a [`ScopePoint`], starting
+/// at the first: [`step_vectorscope`] over a fresh state. Allocates the result.
 pub fn vectorscope_points(planes: StereoPlanes<'_>, decimate: NonZeroUsize) -> Vec<ScopePoint> {
-    planes
-        .left()
-        .iter()
-        .zip(planes.right())
-        .step_by(decimate.get())
-        .map(|(&l, &r)| ScopePoint::from_lr(l, r))
-        .collect()
+    let mut out = Vec::with_capacity(planes.frames().div_ceil(decimate.get()));
+    step_vectorscope(&mut VectorscopeState::new(), planes, decimate, &mut out);
+    out
 }
 
 #[cfg(test)]
@@ -144,5 +178,30 @@ mod tests {
             .collect();
         assert_eq!(mids, want);
         assert!(scope(&[], &[], ONE).is_empty());
+    }
+
+    /// Feeding blocks of any size, through one reused buffer, gives the batch
+    /// points: the stride phase carries over block edges.
+    ///
+    /// Mutation checked: resetting `state.skip` to 0 at the start of each step
+    /// (restarting the phase per block) fails every block size that is not a
+    /// multiple of the stride; `state.skip = at` (without `- frames`) fails
+    /// too.
+    #[test]
+    fn blocks_of_any_size_keep_one_stride_phase() {
+        let l: Vec<f32> = (0..103).map(|i| i as f32).collect();
+        let r: Vec<f32> = (0..103).map(|i| -(i as f32) * 0.5).collect();
+        for decimate in [1usize, 3, 4, 7, 200] {
+            let d = NonZeroUsize::new(decimate).unwrap();
+            let batch = scope(&l, &r, d);
+            for block in [1usize, 2, 5, 10, 64, 103] {
+                let mut state = VectorscopeState::new();
+                let mut out = Vec::new();
+                for (lb, rb) in l.chunks(block).zip(r.chunks(block)) {
+                    step_vectorscope(&mut state, StereoPlanes::new(lb, rb).unwrap(), d, &mut out);
+                }
+                assert_eq!(out, batch, "decimate {decimate}, block {block}");
+            }
+        }
     }
 }

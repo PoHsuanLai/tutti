@@ -5,20 +5,23 @@
 //! magnitudes a caller already holds. A silent spectrum has no shape: every
 //! feature reads zero rather than a division by nothing.
 
-use tutti_types::{Confidence, Hz, Mix};
+use tutti_types::Hz;
 
 use crate::grid::{BinIndex, FrameIndex};
 use crate::transform::StftMagnitude;
 
-/// Power below this is treated as this much when taking a logarithm, so one
-/// empty bin does not pin a flatness at zero (-200 dB, under any real signal).
-const POWER_FLOOR: f64 = 1e-20;
+/// Power below this share of the frame's mean power is treated as this much
+/// when taking a logarithm (-120 dB), so empty bins do not send the geometric
+/// mean to zero by an amount that depends on the bin count. Relative, so a quiet
+/// frame reads the same as a loud one.
+const RELATIVE_POWER_FLOOR: f64 = 1e-12;
 
 /// The magnitude-weighted mean frequency: where the spectrum's centre of mass
 /// sits, and the usual proxy for brightness.
 ///
 /// `bin_width` is the spacing of the bins in [`Hz`]
-/// (`sample_rate / window`). `Hz(0.0)` for a silent spectrum.
+/// (`sample_rate / window`). `Hz(0.0)` for a silent spectrum, and for one with
+/// a NaN or infinite magnitude.
 pub fn spectral_centroid(magnitudes: &[f32], bin_width: Hz) -> Hz {
     let (weighted, total) = magnitudes
         .iter()
@@ -26,7 +29,7 @@ pub fn spectral_centroid(magnitudes: &[f32], bin_width: Hz) -> Hz {
         .fold((0.0f64, 0.0f64), |(w, t), (k, &m)| {
             (w + k as f64 * f64::from(m), t + f64::from(m))
         });
-    if total > 0.0 {
+    if total.is_finite() && total > 0.0 {
         Hz((weighted / total * f64::from(bin_width.get())) as f32)
     } else {
         Hz(0.0)
@@ -35,43 +38,52 @@ pub fn spectral_centroid(magnitudes: &[f32], bin_width: Hz) -> Hz {
 
 /// Wiener entropy: the geometric over the arithmetic mean of the power
 /// spectrum, `1` for a flat (noise-like) spectrum and toward `0` for a
-/// tonal one.
+/// tonal one. Bins under `1e-12` of the mean power count as that much, so the
+/// result depends on the spectrum's shape and not on its level.
 ///
-/// A reading in `0..=1`, so a [`Confidence`] carries it: a new unit needs a
-/// distinct range or algebra, and this has neither. `Confidence::NONE` for a
-/// silent spectrum.
-pub fn spectral_flatness(magnitudes: &[f32]) -> Confidence {
+/// A plain `f32` in `0..=1`, not a unit type: no unit covers a 0..1 spectral
+/// ratio. `Confidence` is an estimator's certainty and `Mix` is a blend
+/// control, and a new unit needs a distinct range or algebra.
+///
+/// `0.0` for a silent spectrum, and for one with a NaN or infinite magnitude.
+pub fn spectral_flatness(magnitudes: &[f32]) -> f32 {
     if magnitudes.is_empty() {
-        return Confidence::NONE;
+        return 0.0;
     }
     let power = |m: f32| f64::from(m) * f64::from(m);
     let mean: f64 = magnitudes.iter().map(|&m| power(m)).sum::<f64>() / magnitudes.len() as f64;
-    if mean <= 0.0 {
-        return Confidence::NONE;
+    if !mean.is_finite() || mean <= 0.0 {
+        return 0.0;
     }
+    let floor = mean * RELATIVE_POWER_FLOOR;
     let mean_log: f64 = magnitudes
         .iter()
-        .map(|&m| power(m).max(POWER_FLOOR).ln())
+        .map(|&m| power(m).max(floor).ln())
         .sum::<f64>()
         / magnitudes.len() as f64;
     // Both means in the log domain: exp(mean_log) / mean.
-    Confidence::new_clamped((mean_log - mean.ln()).exp() as f32)
+    ((mean_log - mean.ln()).exp() as f32).clamp(0.0, 1.0)
 }
 
 /// The frequency below which `fraction` of the spectrum's energy lies: the
 /// centre of the first bin at which the running sum of squared magnitudes
 /// reaches `fraction` of the total.
 ///
-/// `fraction` is a share of a whole, so a [`Mix`] position carries it (85 % is
-/// the usual choice, `Mix(0.85)`). `Hz(0.0)` for a silent spectrum. At
-/// `Mix::WET` this is the highest bin that holds any energy.
-pub fn spectral_rolloff(magnitudes: &[f32], bin_width: Hz, fraction: Mix) -> Hz {
+/// `fraction` is a share of a whole in `0..=1` (85 % is the usual choice,
+/// `0.85`); a value outside it acts as the nearer end and a NaN as `0.0`. A plain
+/// `f32`, not a unit type, for the reason given at [`spectral_flatness`]: no
+/// unit covers a 0..1 spectral ratio, and `Mix` is a blend control.
+///
+/// `Hz(0.0)` for a silent spectrum, and for one with a NaN or infinite
+/// magnitude. At `1.0` this is the highest bin that holds any energy.
+pub fn spectral_rolloff(magnitudes: &[f32], bin_width: Hz, fraction: f32) -> Hz {
     let energy = |m: f32| f64::from(m) * f64::from(m);
     let total: f64 = magnitudes.iter().map(|&m| energy(m)).sum();
-    if total <= 0.0 {
+    if !total.is_finite() || total <= 0.0 {
         return Hz(0.0);
     }
-    let target = total * f64::from(fraction.get());
+    let fraction = if fraction.is_nan() { 0.0 } else { fraction };
+    let target = total * f64::from(fraction);
     let mut running = 0.0f64;
     let mut last_active = 0usize;
     for (k, &m) in magnitudes.iter().enumerate() {
@@ -94,16 +106,16 @@ pub struct SpectralFeatures {
     /// See [`spectral_centroid`].
     pub centroid: Hz,
     /// See [`spectral_flatness`].
-    pub flatness: Confidence,
+    pub flatness: f32,
     /// See [`spectral_rolloff`].
     pub rolloff: Hz,
 }
 
 /// The features of every frame of a magnitude STFT, in frame order.
 ///
-/// `rolloff` is the energy share passed to [`spectral_rolloff`]. The bin width
+/// `rolloff` is the energy share passed to [`spectral_rolloff`], as described there. The bin width
 /// comes from the transform's own geometry, so it cannot disagree with the grid.
-pub fn spectral_features(transform: &StftMagnitude, rolloff: Mix) -> Vec<SpectralFeatures> {
+pub fn spectral_features(transform: &StftMagnitude, rolloff: f32) -> Vec<SpectralFeatures> {
     let geometry = transform.geometry();
     let bin_width = geometry.bin_frequency(BinIndex(1));
     let grid = transform.magnitudes().grid();
@@ -147,14 +159,13 @@ mod tests {
 
     /// A pure sine's centroid is its frequency, to within a bin.
     ///
-    /// Mutation checked: weighting by `k + 1` (centroid one bin high) or by
-    /// the squared magnitude's `k` over the magnitude total fails the
-    /// half-bin tolerance on the off-bin tone.
+    /// Mutation checked: weighting by `k + 1` puts the centroid one bin high
+    /// and fails the one-bin tolerance.
     #[test]
     fn a_sine_centroid_is_its_frequency_within_a_bin() {
         for hz in [1000.0f32, 3517.0, 9000.0] {
             let stft = magnitudes_of(&sine(hz, 16_384));
-            let features = spectral_features(&stft, Mix(0.85));
+            let features = spectral_features(&stft, 0.85);
             assert!(!features.is_empty());
             for f in &features {
                 assert!(
@@ -186,18 +197,18 @@ mod tests {
     /// bracket.
     #[test]
     fn noise_is_flat_a_sine_is_not() {
-        assert_eq!(spectral_flatness(&[3.0; 100]), Confidence::CERTAIN);
+        assert_eq!(spectral_flatness(&[3.0; 100]), 1.0);
 
         let mut rng = StdRng::seed_from_u64(42);
         let noise: Vec<f32> = (0..65_536).map(|_| rng.gen_range(-1.0..1.0)).collect();
-        let flat = spectral_features(&magnitudes_of(&noise), Mix(0.85));
-        let mean: f32 = flat.iter().map(|f| f.flatness.get()).sum::<f32>() / flat.len() as f32;
+        let flat = spectral_features(&magnitudes_of(&noise), 0.85);
+        let mean: f32 = flat.iter().map(|f| f.flatness).sum::<f32>() / flat.len() as f32;
         // The geometric mean of an exponential power distribution sits at
         // exp(-gamma) = 0.56 of its mean.
         assert!((0.5..0.62).contains(&mean), "noise flatness {mean}");
 
-        let tone = spectral_features(&magnitudes_of(&sine(1000.0, 16_384)), Mix(0.85));
-        assert!(tone.iter().all(|f| f.flatness.get() < 1e-3), "{tone:?}");
+        let tone = spectral_features(&magnitudes_of(&sine(1000.0, 16_384)), 0.85);
+        assert!(tone.iter().all(|f| f.flatness < 1e-3), "{tone:?}");
     }
 
     /// A row flat over bins 0..100 rolls off at the energy share's bin, and at
@@ -214,10 +225,10 @@ mod tests {
         let mut row = vec![0.0f32; 513];
         row[..100].fill(1.0);
         let width = Hz(10.0);
-        assert_eq!(spectral_rolloff(&row, width, Mix(0.5)), Hz(490.0));
-        assert_eq!(spectral_rolloff(&row, width, Mix(0.85)), Hz(850.0));
-        assert_eq!(spectral_rolloff(&row, width, Mix::WET), Hz(990.0));
-        assert_eq!(spectral_rolloff(&row, width, Mix::DRY), Hz(0.0));
+        assert_eq!(spectral_rolloff(&row, width, 0.5), Hz(490.0));
+        assert_eq!(spectral_rolloff(&row, width, 0.85), Hz(850.0));
+        assert_eq!(spectral_rolloff(&row, width, 1.0), Hz(990.0));
+        assert_eq!(spectral_rolloff(&row, width, 0.0), Hz(0.0));
     }
 
     /// Band-limited noise (unit magnitude below an edge, random phase) rolls
@@ -243,9 +254,54 @@ mod tests {
             fft.forward(&x, &vec![1.0; size], &mut out);
             out.iter().map(|b| b.norm()).collect::<Vec<_>>()
         };
-        let r = spectral_rolloff(&row, Hz(width), Mix(0.99));
+        let r = spectral_rolloff(&row, Hz(width), 0.99);
         let edge = edge_bin as f32 * width;
         assert!(r.get() <= edge && r.get() > 0.98 * edge, "{r} vs {edge}");
+    }
+
+    /// Flatness depends on the spectrum's shape, not its level, and zero bins in
+    /// a tonal frame do not make it depend on the bin count.
+    ///
+    /// Mutation checked: an absolute floor (`let floor = 1e-20`) fails the
+    /// scaled case (the 1e-12 row falls under it and reads 1); a floor of
+    /// `mean * 1e-2` fails the tonal bound.
+    #[test]
+    fn flatness_is_level_independent_and_a_zero_bin_tonal_frame_is_near_zero() {
+        let mut rng = StdRng::seed_from_u64(1);
+        let row: Vec<f32> = (0..1025).map(|_| rng.gen_range(0.2..1.0)).collect();
+        let quiet: Vec<f32> = row.iter().map(|m| m * 1e-12).collect();
+        let (loud, soft) = (spectral_flatness(&row), spectral_flatness(&quiet));
+        assert!(loud > 0.5 && (loud - soft).abs() < 1e-4, "{loud} vs {soft}");
+
+        for bins in [65usize, 1025, 16_385] {
+            let mut tonal = vec![0.0f32; bins];
+            tonal[bins / 3] = 1.0;
+            let f = spectral_flatness(&tonal);
+            assert!(f < 1e-9, "{bins} bins: {f}");
+        }
+    }
+
+    /// A NaN or infinite magnitude gives no result rather than a NaN, and a
+    /// rolloff share outside `0..=1` acts as its nearer end.
+    ///
+    /// Mutation checked: removing the `is_finite` guards fails the NaN and
+    /// infinity rows (NaN centroid, a rolloff scan to the last bin); removing
+    /// the NaN case fails the last line. (A clamp is not needed: a share above 1
+    /// is never reached and one below 0 is met at once.)
+    #[test]
+    fn non_finite_magnitudes_give_no_result_and_an_out_of_range_share_acts_as_its_nearer_end() {
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut row = vec![1.0f32; 32];
+            row[5] = bad;
+            assert_eq!(spectral_centroid(&row, Hz(10.0)), Hz(0.0));
+            assert_eq!(spectral_flatness(&row), 0.0);
+            assert_eq!(spectral_rolloff(&row, Hz(10.0), 0.85), Hz(0.0));
+        }
+        let mut row = vec![0.0f32; 40];
+        row[..20].fill(1.0);
+        assert_eq!(spectral_rolloff(&row, Hz(10.0), 7.0), Hz(190.0));
+        assert_eq!(spectral_rolloff(&row, Hz(10.0), -3.0), Hz(0.0));
+        assert_eq!(spectral_rolloff(&row, Hz(10.0), f32::NAN), Hz(0.0));
     }
 
     /// A silent spectrum reads zero on all three, and an empty one does not
@@ -257,9 +313,9 @@ mod tests {
     fn silence_has_no_shape() {
         let zeros = [0.0f32; 33];
         assert_eq!(spectral_centroid(&zeros, Hz(5.0)), Hz(0.0));
-        assert_eq!(spectral_flatness(&zeros), Confidence::NONE);
-        assert_eq!(spectral_rolloff(&zeros, Hz(5.0), Mix(0.85)), Hz(0.0));
-        assert_eq!(spectral_flatness(&[]), Confidence::NONE);
+        assert_eq!(spectral_flatness(&zeros), 0.0);
+        assert_eq!(spectral_rolloff(&zeros, Hz(5.0), 0.85), Hz(0.0));
+        assert_eq!(spectral_flatness(&[]), 0.0);
         assert_eq!(spectral_centroid(&[], Hz(5.0)), Hz(0.0));
     }
 
@@ -273,13 +329,13 @@ mod tests {
         let stft = magnitudes_of(&sine(2000.0, 8192));
         let width = stft.geometry().bin_frequency(BinIndex(1));
         let grid = stft.magnitudes().grid();
-        let features = spectral_features(&stft, Mix(0.5));
+        let features = spectral_features(&stft, 0.5);
         assert_eq!(features.len(), grid.frames().get());
         for (frame, f) in grid.frames().indices().zip(&features) {
             let row = grid.row(frame);
             assert_eq!(f.centroid, spectral_centroid(row, width));
             assert_eq!(f.flatness, spectral_flatness(row));
-            assert_eq!(f.rolloff, spectral_rolloff(row, width, Mix(0.5)));
+            assert_eq!(f.rolloff, spectral_rolloff(row, width, 0.5));
         }
         assert!((width.get() - 23.4375).abs() < 1e-4);
     }

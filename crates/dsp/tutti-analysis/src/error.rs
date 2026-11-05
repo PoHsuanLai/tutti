@@ -5,7 +5,7 @@
 //! invariant broke, and a caller feeding a short buffer deserves better than a
 //! panic on the audio path.
 
-use tutti_types::{Hz, Samples};
+use tutti_types::{Db, Hz, Samples};
 
 use crate::window::{CosineWindow, Window};
 
@@ -52,6 +52,12 @@ pub enum Error {
     /// A sample rate of zero or below.
     #[error("sample rate must be positive")]
     NonPositiveSampleRate,
+    /// A threshold in decibels that is NaN or infinite.
+    #[error("threshold {threshold} is not finite")]
+    InvalidThreshold {
+        /// The offending threshold, in [`Db`].
+        threshold: Db,
+    },
     /// `min >= max`, or either bound at or below zero. Refused at construction
     /// because a detector that accepts it reports "unvoiced" forever instead.
     #[error("empty frequency range: min {min} is not below max {max}")]

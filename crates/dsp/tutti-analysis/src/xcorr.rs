@@ -102,7 +102,9 @@ pub fn cross_correlate(a: &[f32], b: &[f32], fft: &mut FftScratch) -> CrossCorre
 /// before the inverse transform, for a weighting such as the phase transform.
 ///
 /// `shape` sees `n / 2 + 1` bins, `n` the power of two that holds the whole
-/// linear result.
+/// linear result. A phase transform that divides by the bin magnitude should
+/// add an epsilon relative to the spectrum's own level, not an absolute one,
+/// so quiet and loud inputs weight alike.
 pub(crate) fn cross_correlate_shaped(
     a: &[f32],
     b: &[f32],

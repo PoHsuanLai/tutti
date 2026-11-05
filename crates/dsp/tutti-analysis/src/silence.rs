@@ -7,7 +7,7 @@
 //! regions that touch after widening are joined.
 //!
 //! Shaped like onset detection: [`step_silence`] folds chunks into a
-//! [`SilenceState`] and [`finish_silence`] reads the regions, and
+//! [`SilenceState`] and [`finish`] reads the regions, and
 //! [`strip_silence`] is that fold over one buffer, so batch and streaming
 //! cannot drift.
 
@@ -18,15 +18,27 @@ use tutti_types::{Db, SampleRate, Samples, Seconds};
 use crate::error::{Error, Result};
 
 /// A half-open span of samples, `start..end`.
+///
+/// Built only by [`finish`], so `start <= end` always holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
-    /// The first sample in the region, in [`Samples`].
-    pub start: Samples,
-    /// One past the last sample in the region, in [`Samples`].
-    pub end: Samples,
+    start: Samples,
+    end: Samples,
 }
 
 impl Region {
+    /// The first sample in the region, in [`Samples`].
+    #[inline]
+    pub fn start(&self) -> Samples {
+        self.start
+    }
+
+    /// One past the last sample in the region, in [`Samples`].
+    #[inline]
+    pub fn end(&self) -> Samples {
+        self.end
+    }
+
     /// How many samples the region spans.
     #[inline]
     pub fn len(&self) -> Samples {
@@ -69,7 +81,9 @@ impl SilenceConfig {
     /// # Errors
     ///
     /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
-    /// NaN.
+    /// NaN, and [`Error::InvalidThreshold`] for a threshold that is not finite
+    /// (a NaN would make every config unequal to itself and restart the scan
+    /// on each chunk).
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         threshold: Db,
@@ -82,6 +96,9 @@ impl SilenceConfig {
         )]
         if !(rate.get() > 0.0) {
             return Err(Error::NonPositiveSampleRate);
+        }
+        if !threshold.get().is_finite() {
+            return Err(Error::InvalidThreshold { threshold });
         }
         Ok(Self {
             sample_rate: rate,
@@ -144,13 +161,16 @@ impl SilenceState {
 }
 
 /// Feeds the next chunk of the buffer, in order.
+///
+/// Not for the audio thread: the state keeps one entry per region found, so it
+/// grows with the audio and allocates. Feed it from the offline or UI side.
 pub fn step_silence(cfg: &SilenceConfig, state: &mut SilenceState, samples: &[f32]) {
     if state.config != Some(*cfg) {
         state.reset();
         state.config = Some(*cfg);
     }
     for (offset, &sample) in samples.iter().enumerate() {
-        // `>=` is also false for NaN, which is therefore silence.
+        // Below the floor, or NaN, is silence.
         if sample.abs() < cfg.floor || sample.is_nan() {
             continue;
         }
@@ -170,7 +190,13 @@ pub fn step_silence(cfg: &SilenceConfig, state: &mut SilenceState, samples: &[f3
 
 /// The regions of the audio fed so far, padded, clamped to the buffer and
 /// joined where they touch. Ascending and disjoint.
-pub fn finish_silence(cfg: &SilenceConfig, state: &SilenceState) -> Vec<Region> {
+///
+/// Uses the config the state was stepped with, so the padding cannot disagree
+/// with the scan. A state that has not been stepped has no regions.
+pub fn finish(state: &SilenceState) -> Vec<Region> {
+    let Some(cfg) = state.config else {
+        return Vec::new();
+    };
     let open = state.open.map(|(first, last)| (first, last + 1));
     let mut regions: Vec<Region> = Vec::new();
     for &(first, end) in state.closed.iter().chain(open.iter()) {
@@ -185,14 +211,14 @@ pub fn finish_silence(cfg: &SilenceConfig, state: &SilenceState) -> Vec<Region> 
 }
 
 /// The signal regions of a whole buffer: [`step_silence`] over it, then
-/// [`finish_silence`].
+/// [`finish`].
 ///
 /// Mono. Fold a multichannel buffer first (`fold_buffer_to_mono`), or take the
 /// union of per-channel results.
 pub fn strip_silence(cfg: &SilenceConfig, samples: &[f32]) -> Vec<Region> {
     let mut state = SilenceState::new();
     step_silence(cfg, &mut state, samples);
-    finish_silence(cfg, &state)
+    finish(&state)
 }
 
 #[cfg(test)]
@@ -332,7 +358,7 @@ mod tests {
                 step_silence(&c, &mut state, part);
             }
             assert_eq!(state.samples_seen(), Samples(700));
-            assert_eq!(finish_silence(&c, &state), batch, "chunk {chunk}");
+            assert_eq!(finish(&state), batch, "chunk {chunk}");
         }
     }
 
@@ -346,7 +372,40 @@ mod tests {
         step_silence(&cfg(Db(-20.0), 10.0), &mut state, &[0.5; 100]);
         let other = cfg(Db(-10.0), 10.0);
         step_silence(&other, &mut state, &[0.5; 10]);
-        assert_eq!(finish_silence(&other, &state), vec![r(0, 10)]);
+        assert_eq!(finish(&state), vec![r(0, 10)]);
+    }
+
+    /// A state that was never stepped has no regions, and the padding comes
+    /// from the config the scan used: `finish` takes nothing else.
+    ///
+    /// Mutation checked: `finish` returning the unpadded regions (ignoring
+    /// `cfg.pre_pad`/`post_pad`) fails the second assertion. (The unstepped
+    /// case is also empty under a default config, so the first assertion pins
+    /// the defined behaviour rather than catching a mutation.)
+    #[test]
+    fn finish_reads_the_scanned_config_and_an_unstepped_state_is_empty() {
+        assert!(finish(&SilenceState::new()).is_empty());
+        let c = cfg(Db(-20.0), 10.0).with_padding(Seconds(0.004), Seconds(0.006));
+        let mut state = SilenceState::new();
+        let mut x = vec![0.0f32; 100];
+        x[50..60].fill(1.0);
+        step_silence(&c, &mut state, &x);
+        assert_eq!(finish(&state), vec![r(46, 66)]);
+        state.reset();
+        assert!(finish(&state).is_empty());
+    }
+
+    /// A threshold that is not finite is refused: NaN would never equal itself.
+    ///
+    /// Mutation checked: removing the `is_finite` check fails all three.
+    #[test]
+    fn a_non_finite_threshold_is_refused() {
+        for t in [f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
+            assert!(matches!(
+                SilenceConfig::new(RATE, Db(t), Seconds(0.1)),
+                Err(Error::InvalidThreshold { .. })
+            ));
+        }
     }
 
     #[test]

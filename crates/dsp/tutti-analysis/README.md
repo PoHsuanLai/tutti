@@ -20,7 +20,8 @@ where the results go:
 - `spectral_features` — centroid, flatness and rolloff of every STFT frame.
 - `strip_silence` — the sample ranges that hold signal, with a minimum silence
   length and padding.
-- `vectorscope_points` — a stereo pair as (side, mid) points for a goniometer.
+- `vectorscope_points` (`step_vectorscope` for blocks) — a stereo pair as
+  (side, mid) points for a goniometer.
 - `cross_correlate` — FFT cross-correlation of two buffers at every lag.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
@@ -57,7 +58,8 @@ same step*, so the two paths cannot drift. Tests pin the equality across chunk
 sizes and channel layouts.
 
 The rest are stateless: `yin`, `correlate`, `cross_correlate`,
-`spectral_features` and `vectorscope_points` are pure functions of their input,
+`spectral_features` are pure functions of their input (the vectorscope's
+`step_vectorscope` carries only its stride phase between blocks),
 and `stft` is batch-only — there is no incremental transform. Meter ballistics
 (`step_ballistics`) carries a smoothed reading, but that is a filter over results
 rather than a step of the correlation itself.

@@ -30,6 +30,9 @@ where the results go:
 - `transcribe` — monophonic audio to notes: a pitch (`Note` plus a cents bend),
   a span in samples and a level, split on onsets and pitch changes;
   `notes_from_track` takes your own pitch track.
+- `chroma` / `step_chroma` — harmonic pitch class profile (Gomez 2006) of spectral
+  peaks, with an estimated tuning in cents; `estimate_key` — Krumhansl-Schmuckler
+  key with a confidence and a runner-up.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 
@@ -56,9 +59,9 @@ plans lazily, per scratch, on the cold path.
 Every algorithm takes a **config**: immutable, validated once, so an invalid
 combination fails at construction rather than silently producing nothing.
 
-Three of them additionally need a **carry** between frames — onset detection
+Four of them additionally need a **carry** between frames — onset detection
 diffs against the previous spectrum, waveform blocking holds a partial block,
-and strip silence holds the region it is growing.
+strip silence holds the region it is growing, and chroma a running mean.
 Those expose the carry as an explicit value and a `step` function, and their
 batch entry points (`detect_onsets`, `summarize`, `strip_silence`) *fold that
 same step*, so the two paths cannot drift. Tests pin the equality across chunk

@@ -40,16 +40,22 @@
 //!   [`NoteEvent`]s (note, cents bend, span, level); [`notes_from_track`]
 //!   takes your own pitch track, [`frame_levels`] and onsets;
 //!   [`VelocityRange`] maps a level to a MIDI velocity.
+//! - Harmony: [`chroma()`] with a [`ChromaConfig`] folds spectral peaks into
+//!   twelve pitch classes and estimates the [`Tuning`], or incrementally with
+//!   [`step_chroma`] and a [`ChromaState`]; [`estimate_key`] finds a [`Key`] by
+//!   Krumhansl-Schmuckler over a [`KeyProfile`].
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod align;
 mod beat;
+mod chroma;
 mod error;
 mod features;
 mod fft;
 mod geometry;
 mod grid;
+mod key;
 mod loudness;
 mod notes;
 mod onset;
@@ -69,6 +75,7 @@ mod yin;
 pub use tutti_types::ChannelLayout;
 
 pub use align::{AlignConfig, Alignment, align};
+pub use chroma::{Chroma, ChromaConfig, ChromaState, Tuning, chroma, step_chroma};
 pub use error::{Error, Result};
 pub use features::{
     SpectralFeatures, spectral_centroid, spectral_features, spectral_flatness, spectral_rolloff,
@@ -76,6 +83,7 @@ pub use features::{
 pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
+pub use key::{Key, KeyEstimate, KeyProfile, Mode, estimate_key, estimate_key_from_mean};
 pub use loudness::{
     Loudness, LoudnessConfig, LoudnessState, finish as finish_loudness, measure_loudness,
     step_loudness,

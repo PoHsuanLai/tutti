@@ -91,6 +91,14 @@ pub enum Error {
     /// names it.
     #[error("invalid note parameter: {0}")]
     InvalidNoteParameter(&'static str),
+    /// A chroma or key setting or input that is out of range; the text
+    /// names it.
+    #[error("invalid tonal parameter: {0}")]
+    InvalidTonalParameter(&'static str),
+    /// No pitch to read a key from: no frames, silent, or a chroma so flat
+    /// that every key correlates alike.
+    #[error("no tonal content: silent or flat chroma")]
+    NoTonalContent,
     /// A grid's data length disagrees with `frames * bins`.
     #[error("grid has {len} values but its shape is {rows}x{cols} = {}", rows * cols)]
     GridShapeMismatch {

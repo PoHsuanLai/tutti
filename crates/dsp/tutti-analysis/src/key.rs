@@ -13,7 +13,7 @@
 
 use tutti_types::{Confidence, PitchClass};
 
-use crate::chroma::CLASSES;
+use crate::chroma::{CLASSES, mean_of_rows};
 use crate::error::{Error, Result};
 use crate::grid::Grid;
 
@@ -108,17 +108,7 @@ pub fn estimate_key(chroma: &Grid<f32>, profile: KeyProfile) -> Result<KeyEstima
     if chroma.bins().get() != CLASSES {
         return Err(Error::InvalidTonalParameter("chroma: not 12 columns wide"));
     }
-    let mut sum = [0.0f64; CLASSES];
-    for row in chroma.rows() {
-        for (s, &v) in sum.iter_mut().zip(row) {
-            *s += f64::from(v);
-        }
-    }
-    let n = chroma.frames().get().max(1) as f64;
-    let mut mean = [0.0f32; CLASSES];
-    for (m, s) in mean.iter_mut().zip(sum) {
-        *m = (s / n) as f32;
-    }
+    let mean = mean_of_rows(chroma);
     estimate_key_from_mean(&mean, profile)
 }
 

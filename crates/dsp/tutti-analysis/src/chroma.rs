@@ -431,14 +431,19 @@ impl Chroma {
     /// The mean of the frames, per class; all zero for no frames.
     #[must_use]
     pub fn mean(&self) -> [f32; CLASSES] {
-        let mut sum = [0.0f64; CLASSES];
-        for row in self.grid.rows() {
-            for (s, &v) in sum.iter_mut().zip(row) {
-                *s += f64::from(v);
-            }
-        }
-        mean_of(&sum, self.grid.frames().get())
+        mean_of_rows(&self.grid)
     }
+}
+
+/// The per-column mean of a `frames x 12` grid; all zero for no frames.
+pub(crate) fn mean_of_rows(grid: &Grid<f32>) -> [f32; CLASSES] {
+    let mut sum = [0.0f64; CLASSES];
+    for row in grid.rows() {
+        for (s, &v) in sum.iter_mut().zip(row) {
+            *s += f64::from(v);
+        }
+    }
+    mean_of(&sum, grid.frames().get())
 }
 
 fn mean_of(sum: &[f64; CLASSES], frames: usize) -> [f32; CLASSES] {
@@ -452,6 +457,8 @@ fn mean_of(sum: &[f64; CLASSES], frames: usize) -> [f32; CLASSES] {
 pub struct ChromaState {
     /// The config this carry belongs to; a different one resets it.
     config: Option<ChromaConfig>,
+    /// The geometry the buffers below were built for.
+    built: Option<StftGeometry>,
     window: Vec<f32>,
     spectrum: Vec<Complex>,
     magnitudes: Vec<f32>,
@@ -467,9 +474,14 @@ impl ChromaState {
         Self::default()
     }
 
-    /// Forgets everything. Equivalent to a fresh state.
+    /// Forgets the carried frames and tuning, keeping the buffers: the next
+    /// step allocates nothing if its geometry is the last one's. Reads like a
+    /// fresh state: no frames, a zero mean and a zero tuning.
     pub fn reset(&mut self) {
-        *self = Self::default();
+        self.config = None;
+        self.sum = [0.0; CLASSES];
+        self.frames = 0;
+        self.sums = TuningSums::default();
     }
 
     /// How many frames have been folded.
@@ -496,11 +508,16 @@ impl ChromaState {
         }
     }
 
-    /// Takes on `cfg`, discarding a carry that belongs to another.
+    /// Takes on `cfg`, discarding a carry that belongs to another. The
+    /// buffers are rebuilt only for a different geometry, so a change of
+    /// tuning, band or weights allocates nothing.
     fn adopt(&mut self, cfg: &ChromaConfig) {
         if self.config != Some(*cfg) {
             self.reset();
             self.config = Some(*cfg);
+        }
+        if self.built != Some(cfg.geometry) {
+            self.built = Some(cfg.geometry);
             self.window = cfg.geometry.window_coefficients();
             let window = cfg.geometry.window().get();
             self.spectrum = vec![Complex::default(); window / 2 + 1];
@@ -508,27 +525,13 @@ impl ChromaState {
         }
     }
 
-    /// Checks `samples` is one finite frame and leaves its magnitudes in
+    /// Leaves the magnitudes of `samples`, one adopted frame, in
     /// `self.magnitudes`.
-    fn transform(
-        &mut self,
-        cfg: &ChromaConfig,
-        samples: &[f32],
-        fft: &mut FftScratch,
-    ) -> Result<()> {
-        if samples.len() != cfg.geometry.window().get() {
-            return Err(Error::InvalidTonalParameter(
-                "frame: length differs from the window",
-            ));
-        }
-        if samples.iter().any(|s| !s.is_finite()) {
-            return Err(Error::NonFiniteInput);
-        }
+    fn transform(&mut self, samples: &[f32], fft: &mut FftScratch) {
         fft.forward(samples, &self.window, &mut self.spectrum);
         for (m, bin) in self.magnitudes.iter_mut().zip(&self.spectrum) {
             *m = bin.norm();
         }
-        Ok(())
     }
 }
 
@@ -546,8 +549,18 @@ pub fn step_chroma(
     samples: &[f32],
     fft: &mut FftScratch,
 ) -> Result<[f32; CLASSES]> {
+    // Checked before the state adopts the config, so a bad frame leaves the
+    // carry as it was.
+    if samples.len() != cfg.geometry.window().get() {
+        return Err(Error::InvalidTonalParameter(
+            "frame: length differs from the window",
+        ));
+    }
+    if samples.iter().any(|s| !s.is_finite()) {
+        return Err(Error::NonFiniteInput);
+    }
     state.adopt(cfg);
-    state.transform(cfg, samples, fft)?;
+    state.transform(samples, fft);
 
     let mut frame = [0.0f32; CLASSES];
     let tuning = match cfg.tuning {
@@ -613,7 +626,7 @@ pub fn chroma(samples: &[f32], cfg: &ChromaConfig, fft: &mut FftScratch) -> Resu
             let mut state = ChromaState::new();
             state.adopt(cfg);
             for i in 0..frames.get() {
-                state.transform(cfg, frame_at(i), fft)?;
+                state.transform(frame_at(i), fft);
                 let sums = &mut state.sums;
                 cfg.peaks(&state.magnitudes, |f, e| ChromaConfig::tune(f, e, sums));
             }
@@ -838,6 +851,32 @@ mod tests {
         let other = cfg().with_harmonics(1).unwrap();
         step_chroma(&other, &mut state, &x, &mut fft).unwrap();
         assert_eq!(state.frames_seen(), 1);
+    }
+
+    /// A frame that is refused leaves the carry alone, even under a config
+    /// that differs, and `reset` reads like a fresh state.
+    ///
+    /// Mutation checked: adopting the config before the checks resets the carry
+    /// on the bad frame and fails the first block; resetting only the frame
+    /// count leaves the tuning and fails the second.
+    #[test]
+    fn a_refused_frame_keeps_the_carry_and_reset_reads_fresh() {
+        let (mut state, mut fft) = (ChromaState::new(), FftScratch::new());
+        let x = sine(440.0 * (25.0f64 / 1200.0).exp2(), 4096, 0.5);
+        step_chroma(&cfg(), &mut state, &x, &mut fft).unwrap();
+        let (mean, tuning) = (state.mean(), state.tuning());
+        let other = cfg().with_harmonics(1).unwrap();
+        let mut nan = x.clone();
+        nan[7] = f32::NAN;
+        assert!(step_chroma(&other, &mut state, &nan, &mut fft).is_err());
+        assert!(step_chroma(&other, &mut state, &x[..100], &mut fft).is_err());
+        assert_eq!(state.frames_seen(), 1);
+        assert_eq!((state.mean(), state.tuning()), (mean, tuning));
+
+        state.reset();
+        assert_eq!(state.frames_seen(), 0);
+        assert_eq!(state.mean(), [0.0; CLASSES]);
+        assert_eq!(state.tuning(), Cents(0.0));
     }
 
     /// Every setting is validated, NaN and infinity included.

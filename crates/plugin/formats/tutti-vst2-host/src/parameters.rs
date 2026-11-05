@@ -139,8 +139,9 @@ impl Vst2Loaded {
     /// [`ParameterInfo`](crate::ParameterInfo).
     ///
     /// Each entry's [`id`](crate::ParameterInfo::id) is the parameter's index as
-    /// a [`ParamId`], to pass to [`Control::parameter`] and
-    /// [`Control::set_parameter`]. The list dispatches several
+    /// a [`ParamId`], to pass to
+    /// [`Control::parameter`](tutti_plugin_types::Control::parameter) and
+    /// [`Control::set_parameter`](tutti_plugin_types::Control::set_parameter). The list dispatches several
     /// opcodes per parameter, so call it from the main thread, not per block.
     ///
     /// Range and steps come from `effGetParameterProperties` (opcode 56) per

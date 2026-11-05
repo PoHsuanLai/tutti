@@ -128,7 +128,8 @@ pub(crate) struct HostState {
     ///
     /// Atomic rather than a plain `bool` because the plugin asks from its own
     /// thread while the control thread sets it, and this struct is shared
-    /// behind an `Arc` with no lock by design (see [`HostLink`]).
+    /// behind an `Arc` with no lock by design: every field it exposes is
+    /// already lock-free.
     offline: std::sync::atomic::AtomicBool,
     /// What the plugin asked of the host through `audioMasterIOChanged` and
     /// `audioMasterUpdateDisplay`: bits for the main thread to take, because

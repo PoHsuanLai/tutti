@@ -129,7 +129,7 @@ impl RenderScratch {
 
     /// Copies the f64 scratch outputs back to the caller's f64 channels.
     ///
-    /// Bounded on both sides like [`copy_out_f32`](Self::copy_out_f32).
+    /// Bounded on both sides like `copy_out_f32`.
     #[cfg(test)]
     pub fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         self.copy_out_f64_range(caller_outputs, 0, num_samples);
@@ -138,14 +138,14 @@ impl RenderScratch {
     /// Widens the *f32* scratch outputs into the caller's f64 channels.
     ///
     /// The read half of the fallback pair described on
-    /// [`prepare_f64_as_f32`](Self::prepare_f64_as_f32). Bounded like
-    /// [`copy_out_f64`](Self::copy_out_f64).
+    /// `prepare_f64_as_f32`. Bounded like
+    /// `copy_out_f64`.
     #[cfg(test)]
     pub fn copy_out_f64_from_f32(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         self.copy_out_f64_from_f32_range(caller_outputs, 0, num_samples);
     }
 
-    /// [`prepare_f32`](Self::prepare_f32) for the piece of the caller's block
+    /// `prepare_f32` for the piece of the caller's block
     /// `start..start + len`, staged at the front of the scratch.
     pub fn prepare_f32_range(&mut self, caller_inputs: &[&[f32]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
@@ -162,7 +162,7 @@ impl RenderScratch {
         self.refresh_ptrs();
     }
 
-    /// [`prepare_f64`](Self::prepare_f64) for the piece `start..start + len`.
+    /// `prepare_f64` for the piece `start..start + len`.
     pub fn prepare_f64_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
             if i < self.inputs_f64.len() {
@@ -181,7 +181,7 @@ impl RenderScratch {
         self.refresh_ptrs_f64();
     }
 
-    /// [`prepare_f64_as_f32`](Self::prepare_f64_as_f32) for the piece
+    /// `prepare_f64_as_f32` for the piece
     /// `start..start + len`.
     pub fn prepare_f64_as_f32_range(&mut self, caller_inputs: &[&[f64]], start: usize, len: usize) {
         for (i, src) in caller_inputs.iter().enumerate() {
@@ -203,7 +203,7 @@ impl RenderScratch {
         self.refresh_ptrs();
     }
 
-    /// [`copy_out_f32`](Self::copy_out_f32) into the piece of the caller's
+    /// `copy_out_f32` into the piece of the caller's
     /// block `start..start + len`.
     pub fn copy_out_f32_range(&self, caller_outputs: &mut [&mut [f32]], start: usize, len: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
@@ -216,7 +216,7 @@ impl RenderScratch {
         }
     }
 
-    /// [`copy_out_f64`](Self::copy_out_f64) into the piece `start..start + len`.
+    /// `copy_out_f64` into the piece `start..start + len`.
     pub fn copy_out_f64_range(&self, caller_outputs: &mut [&mut [f64]], start: usize, len: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs_f64.len() {
@@ -228,7 +228,7 @@ impl RenderScratch {
         }
     }
 
-    /// [`copy_out_f64_from_f32`](Self::copy_out_f64_from_f32) into the piece
+    /// `copy_out_f64_from_f32` into the piece
     /// `start..start + len`.
     pub fn copy_out_f64_from_f32_range(
         &self,

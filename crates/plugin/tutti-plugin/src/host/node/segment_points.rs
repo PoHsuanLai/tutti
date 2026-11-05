@@ -236,7 +236,7 @@ mod tests {
     /// A delivery with a slot for each of `ids`, and the spares.
     fn delivery(ids: impl IntoIterator<Item = u32>) -> ParamDelivery {
         ParamDelivery::new(
-            ids.into_iter().map(|id| ParamId::new(id)),
+            ids.into_iter().map(ParamId::new),
             Arc::new(DeliveryCounters::default()),
         )
     }

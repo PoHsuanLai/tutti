@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn a_buffer_of_the_room_before_a_re_prepare_is_dropped_not_reused() {
         let counters = Arc::new(DeliveryCounters::default());
-        let mut d = ParamDelivery::new((0..2000).map(|i| ParamId::new(i)), counters);
+        let mut d = ParamDelivery::new((0..2000).map(ParamId::new), counters);
         let pool = PayloadPool::new();
         let lanes = 20u32;
         let load = |d: &mut ParamDelivery, phase: usize| {

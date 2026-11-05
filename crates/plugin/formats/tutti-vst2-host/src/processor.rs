@@ -337,7 +337,7 @@ impl Vst2Processor {
     /// so the next real update still sees the correct predecessor.
     ///
     /// Runs on the audio thread, so it must not allocate — hence
-    /// [`TransportWriter`](crate::transport_cell::TransportWriter), which overwrites
+    /// [`TransportWriter`], which overwrites
     /// in place, rather than an `ArcSwap` store that would allocate and free a
     /// snapshot per block inside the callback.
     ///
@@ -451,7 +451,7 @@ impl Vst2Processor {
     ///
     /// A host write: the echo the plugin may make through `audioMasterAutomate`
     /// from inside the call is not reported as the plugin's own edit
-    /// ([`host_write`](crate::host::host_write)). Returns how many queues were
+    /// (`host_write`). Returns how many queues were
     /// refused, because they name a parameter the plugin does not have or one it
     /// exposes no `setParameter` for. Realtime-safe.
     pub fn write_automation(&self, changes: &ParameterChanges) -> u32 {

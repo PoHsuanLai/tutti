@@ -1692,12 +1692,14 @@ impl Plugin for PluginInstance {
         self.opcode(plugin::OpCode::GetTailSize)
     }
 
-    /// Render one block; see [`RenderEntry::process`].
+    /// Render one block: `processReplacing`, or the deprecated accumulating
+    /// `process` for a plugin that lacks it, or silence when it has neither.
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
         self.entry().process(&self.info.name, buffer);
     }
 
-    /// Render one block in `f64`; see [`RenderEntry::process_f64`].
+    /// Render one block in `f64`: `processReplacingF64`, or silence when the
+    /// plugin lacks it.
     fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
         self.entry().process_f64(&self.info.name, buffer);
     }

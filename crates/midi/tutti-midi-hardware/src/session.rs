@@ -138,7 +138,7 @@ struct OpenOutput {
 
 impl core::fmt::Debug for MidiSession {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let open = self.inner.open.lock().unwrap();
+        let open = self.inner.open();
         f.debug_struct("MidiSession")
             .field("inputs", &open.inputs.len())
             .field("output", &open.output.as_ref().map(|o| &o.name))

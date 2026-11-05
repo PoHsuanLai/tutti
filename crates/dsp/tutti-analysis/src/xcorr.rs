@@ -242,7 +242,7 @@ mod tests {
         let r = cross_correlate(&late, &base, &mut fft);
         assert_eq!(r.peak_within(Samples(100)).unwrap().lag, 100);
         assert_ne!(r.peak_within(Samples(99)).unwrap().lag, 100);
-        assert_eq!(r.peak_within(Samples(1 << 40)), r.peak());
+        assert_eq!(r.peak_within(Samples(usize::MAX)), r.peak());
         assert_eq!(cross_correlate(&[], &base, &mut fft).peak(), None);
         assert_eq!(cross_correlate(&base, &[], &mut fft).values().len(), 0);
     }

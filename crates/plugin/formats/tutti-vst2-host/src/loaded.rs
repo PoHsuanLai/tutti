@@ -112,6 +112,9 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// Not `Sync`: two threads reaching the dispatcher at once is what the host
 /// convention does not cover (see the invariant on `Shell`).
 ///
+/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails):
+///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
 /// needs_sync::<tutti_vst2_host::Vst2Loaded>();

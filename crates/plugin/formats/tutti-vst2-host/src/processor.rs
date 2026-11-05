@@ -38,6 +38,9 @@ use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
 /// destroyed when the Controller's goes too, or on the control side if this was
 /// the last.
 ///
+/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails):
+///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
 /// needs_sync::<tutti_vst2_host::Vst2Processor>();

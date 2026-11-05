@@ -278,9 +278,10 @@ fn requests(instance: &Active) -> Vec<Request> {
 /// live.
 ///
 /// Mutation (run): `HostState::io_changed` returning `false` -> the plugin
-/// reads 0 -> fails the first assert. Mutation (run): not raising the requests
-/// -> `take_requests` is empty -> fails. Mutation (run): `pins()` reading the
-/// load-time counts -> the pin count stays 2 -> fails.
+/// reads 0 -> fails the first assert. Mutation (run): `pins()` reading the
+/// `get_info()` snapshot instead of the `AEffect` -> the pin count stays 2 ->
+/// fails. (That the requests are raised, and consumed, is pinned in
+/// `host::tests` and `vst2_host_opcodes`.)
 #[test]
 fn an_io_change_is_answered_and_re_read() {
     let _guard = lock_probe();
@@ -316,8 +317,8 @@ fn an_io_change_is_answered_and_re_read() {
 /// The probe recomputes its latency on `effSetSampleRate` (a linear-phase EQ
 /// does); the figure is read live after the activation that follows.
 ///
-/// Mutation (run): `Controller::latency` returning the figure it read at
-/// activation (a field) -> the rate change is not seen -> fails.
+/// Mutation (run): `Controller::latency` returning a constant instead of
+/// reading the plugin -> the recomputed figure is not seen -> fails.
 #[test]
 fn a_rate_change_that_moves_latency_is_read() {
     let _guard = lock_probe();

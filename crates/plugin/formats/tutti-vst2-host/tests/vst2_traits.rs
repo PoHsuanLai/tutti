@@ -200,9 +200,8 @@ fn rejoin(processor: Vst2Processor, controller: Vst2Controller) -> Vst2Loaded {
 /// adds a tag per channel (1.0, 101.0, pinned in the probe's own tests) to its
 /// input, so a swapped, duplicated or unwritten channel is arithmetically wrong.
 ///
-/// Mutation (run): the Processor rendering through the wrong scratch table
-/// (`process_block` handing `output_ptrs` the input table) -> the tags are not
-/// there -> fails.
+/// Mutation (run): `RenderScratch::copy_out_f32_range` copying nothing -> the
+/// outputs keep the 9.0 the test filled them with -> fails.
 #[test]
 fn activation_splits_the_plugin_and_renders_through_the_trait() {
     let probe = Probe::acquire();
@@ -361,9 +360,11 @@ fn automation_is_a_host_write_and_its_echo_is_not_reported() {
 /// not a panic, builds its error without allocating, and does not enter the
 /// plugin.
 ///
-/// Mutation (run): the short-channel check removed from `render` -> the scratch
-/// copy indexes past the channel and panics -> fails. Mutation (run): a
-/// `Vec::with_capacity(1)` in `apply_automation` -> the gate trips -> fails.
+/// Mutation (run): the input half of the short-channel check removed from
+/// `render` -> the scratch copy indexes past the channel and panics -> fails;
+/// likewise the output half (`short_slice_mut`) -> the copy-out panics -> fails.
+/// Mutation (run): a `Vec::with_capacity(1)` in `write_automation` -> the gate
+/// trips -> fails.
 #[test]
 fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
     let probe = Probe::acquire();
@@ -403,6 +404,19 @@ fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
     {
         let inputs = [input.as_slice(), short.as_slice()];
         let mut outputs = [left.as_mut_slice(), right.as_mut_slice()];
+        let mut io = PluginIo {
+            buffer: AudioBufferMut::F32(AudioBuffer::new(&inputs, &mut outputs, SAMPLE_RATE)),
+            ctx: &ctx,
+            out: &mut out,
+        };
+        let refused = assert_no_alloc(|| processor.process(&mut io));
+        assert!(matches!(refused, Err(PluginError::Block(_))), "{refused:?}");
+    }
+    {
+        // The same for an output channel shorter than the block.
+        let mut short_out = [0.0f32; BLOCK / 2];
+        let inputs = [input.as_slice(), input.as_slice()];
+        let mut outputs = [left.as_mut_slice(), short_out.as_mut_slice()];
         let mut io = PluginIo {
             buffer: AudioBufferMut::F32(AudioBuffer::new(&inputs, &mut outputs, SAMPLE_RATE)),
             ctx: &ctx,
@@ -712,8 +726,8 @@ fn a_display_update_raised_during_activation_reaches_the_host() {
 /// recomputes is read live afterwards**: the Controller's latency follows the
 /// plugin's, and the host is told.
 ///
-/// Mutation (run): `Controller::latency` returning a figure cached at
-/// activation -> the rate change is not seen -> fails.
+/// Mutation (run): `Controller::latency` returning a constant instead of
+/// reading the plugin -> the recomputed figure is not seen -> fails.
 #[test]
 fn a_rate_change_that_moves_the_latency_is_told() {
     let probe = Probe::acquire();

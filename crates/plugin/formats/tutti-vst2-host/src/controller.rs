@@ -34,6 +34,9 @@ use crate::shell::Shell;
 /// share of the activation; the plugin is destroyed when the Processor's goes
 /// too (see the invariant on the shell).
 ///
+/// The doc test below is the guard (mutation, run: an `unsafe impl Sync` for the
+/// type makes it compile, and the test fails):
+///
 /// ```compile_fail
 /// fn needs_sync<T: Sync>() {}
 /// needs_sync::<tutti_vst2_host::Vst2Controller>();

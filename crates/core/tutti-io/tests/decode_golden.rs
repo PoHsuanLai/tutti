@@ -67,6 +67,11 @@ fn stream_digest(name: &str) -> (u64, usize) {
         }
         frames += n;
     }
+    assert_eq!(
+        dec.error().map(ToString::to_string),
+        None,
+        "{name} ends cleanly"
+    );
     (h.0, frames)
 }
 

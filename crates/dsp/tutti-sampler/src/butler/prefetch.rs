@@ -264,6 +264,10 @@ pub(crate) struct RegionOut {
     /// reads the file resident whole (`resident`).
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     decoder: Option<FileIn>,
+    /// Whether the decoder's current fault has been logged, so a stream that
+    /// keeps reading past it logs once.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    fault_logged: bool,
     /// The file decoded whole, for a format that cannot seek. Held here, not
     /// only in the LRU cache, so a file too large to cache still streams.
     resident: Option<Arc<Wave>>,
@@ -361,7 +365,8 @@ impl RegionOut {
 
     /// Read file frames `at..` into `out` (flat, the ring's width), from the
     /// decoder or the resident file; zero past the end. `false` when the
-    /// file could not be read there.
+    /// file could not be read there: a decode fault is logged once and the
+    /// frames read before it are kept.
     pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
         let channels = self.ring.channels;
         #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
@@ -371,16 +376,21 @@ impl RegionOut {
                 out.fill(0.0);
                 return false;
             }
-            return match decoder.fill_sequential_interleaved(out) {
-                Ok(got) => {
-                    out[got * ch..].fill(0.0);
-                    true
-                }
-                Err(_) => {
-                    out.fill(0.0);
-                    false
-                }
+            // Frames read before a fault are kept; the rest is silence.
+            let got = decoder.fill_sequential_interleaved(out).unwrap_or(0);
+            out[got * ch..].fill(0.0);
+            let Some(fault) = decoder.error() else {
+                self.fault_logged = false;
+                return true;
             };
+            if !self.fault_logged {
+                self.fault_logged = true;
+                tracing::warn!(
+                    "decode fault at frame {at} of {}: {fault}; the stream plays silence from there",
+                    self.ring.file_path.display()
+                );
+            }
+            return false;
         }
         match self.resident.as_deref() {
             Some(wave) => {
@@ -485,6 +495,8 @@ impl RegionBuffer {
             content: Content::new(mapping),
             #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
+            #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+            fault_logged: false,
             resident: None,
         };
         (writer, ring)
@@ -573,5 +585,47 @@ mod tests {
             Err(TakeVoiceError::ReaderTaken)
         );
         assert!(ring.placed(), "a refused take changes nothing");
+    }
+
+    /// **`read_file` reports a damaged file.** The repo's FLAC fixture cut to
+    /// its first 90% ends short of its frame count; `read_file` keeps the
+    /// frames decoded before the cut, zero-fills the rest, returns `false` and
+    /// sets the `fault_logged` flag (the log line itself is not captured). A
+    /// read at frame 0 afterwards clears the flag. Called directly, not
+    /// through a butler step or a voice.
+    ///
+    /// Mutation (run): discarding `got` on a fault (zero-filling all of
+    /// `out`, as the old `Err` arm did) fails the kept-frames assertion.
+    #[test]
+    fn a_damaged_file_keeps_its_frames_and_reports_the_fault() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/audio/stereo.flac");
+        let bytes = std::fs::read(source).expect("fixture");
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("cut.flac");
+        std::fs::write(&path, &bytes[..bytes.len() * 9 / 10]).expect("write");
+
+        let decoder = FileIn::open(&path).expect("a cut file still opens");
+        let total = decoder.total_frames().expect("flac reports a length") as usize;
+        let (mut writer, _ring) = ring(4096, 2);
+        writer.set_decoder(decoder);
+
+        let mut out = vec![1.0f32; total * 2];
+        assert!(!writer.read_file(0, &mut out), "the cut is a fault");
+        assert!(writer.fault_logged);
+        let kept = out
+            .chunks(2)
+            .rposition(|f| f != [0.0, 0.0])
+            .map_or(0, |i| i + 1);
+        assert!(kept > 1000 && kept < total, "kept {kept} of {total} frames");
+        assert!(
+            out[kept * 2..].iter().all(|&s| s == 0.0),
+            "silence after the fault"
+        );
+
+        // A seek back to good frames clears the fault, and reading resumes.
+        let mut head = vec![0.0f32; 512 * 2];
+        assert!(writer.read_file(0, &mut head));
+        assert!(!writer.fault_logged);
     }
 }

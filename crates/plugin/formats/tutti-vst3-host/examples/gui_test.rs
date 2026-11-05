@@ -47,7 +47,11 @@ impl ApplicationHandler for App {
         println!("Loading plugin: {}", PLUGIN_PATH);
         let plugin = match Vst3Loaded::load(Path::new(PLUGIN_PATH), LoadOptions::new()) {
             Ok(p) => {
-                println!("Loaded: {} by {}", p.plugin_info().name, p.plugin_info().vendor);
+                println!(
+                    "Loaded: {} by {}",
+                    p.plugin_info().name,
+                    p.plugin_info().vendor
+                );
                 p
             }
             Err(e) => {

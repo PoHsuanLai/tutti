@@ -17,7 +17,6 @@ mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
-
 /// VST3 module lifecycle is not thread-safe here: loading and unloading the
 /// same DSO concurrently races module init/exit and crashes. Every test that
 /// constructs a `Active` must hold this.
@@ -198,8 +197,7 @@ fn test_load_any_available_plugin() {
     };
 
     println!("Testing with: {}", path);
-    let plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+    let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let info = plugin.plugin_info();
     assert!(!info.name.is_empty(), "Plugin name should not be empty");
@@ -613,8 +611,7 @@ fn test_get_parameters() {
         }
     };
 
-    let plugin =
-        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+    let plugin = Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let param_count = plugin.parameter_count();
     println!("Plugin has {} parameters", param_count);
@@ -759,7 +756,9 @@ fn plain_range_probe_recovers_real_ranges() {
 
     for path in &corpus {
         let resolved = resolve_bundle(path);
-        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new()) else {
+        let Ok(loaded) =
+            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
+        else {
             eprintln!("  {}: failed to load, skipping", path.display());
             continue;
         };

@@ -178,11 +178,7 @@ impl ParameterChangesImpl {
         };
         let queues = self.queues.borrow();
         let live = *self.live.borrow();
-        let landed = match queues
-            .iter()
-            .take(live)
-            .find(|q| q.param_id() == param_id)
-        {
+        let landed = match queues.iter().take(live).find(|q| q.param_id() == param_id) {
             Some(queue) => queue.prepend_point(point),
             None => match queues.get(live) {
                 Some(free) if free.try_reset(param_id) && free.prepend_point(point) => {

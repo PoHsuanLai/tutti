@@ -100,8 +100,8 @@ impl Vst3Instance {
         prefer_f64: bool,
     ) -> Result<Self> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let loaded = Vst3Loaded::load(&resolved, LoadOptions::new())
-            .map_err(|e| map_vst3_error(e, path))?;
+        let loaded =
+            Vst3Loaded::load(&resolved, LoadOptions::new()).map_err(|e| map_vst3_error(e, path))?;
         let format = if prefer_f64 && loaded.plugin_info().supports_f64 {
             SampleFormat::Float64
         } else {
@@ -723,7 +723,9 @@ mod tests {
         );
         assert_eq!(
             requests,
-            [Request::RescanParams(tutti_plugin_types::RescanScope::Values)],
+            [Request::RescanParams(
+                tutti_plugin_types::RescanScope::Values
+            )],
             "two flags are one request"
         );
         requests.clear();
@@ -826,6 +828,92 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged))
         );
+    }
+
+    /// **A rate the plugin refuses is rolled back to the one it already
+    /// accepted**, and the session keeps running: the error says it is running
+    /// there, the plugin is active and has the layout it had, and the next rate
+    /// it takes is taken.
+    ///
+    /// Mutation (run): `reconfigure` not activating again at the previous
+    /// `Prepare` (the `Activate(previous)` drive removed) → the plugin is left
+    /// loaded and silent → the `is_active` assertion fails.
+    #[test]
+    fn a_refused_rate_is_rolled_back_to_the_previous_one() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `kMisbehaveRefusesHighRates`: `setActive(true)` fails above 50 kHz.
+        let _misbehaviour = ProbeMisbehaviour::set("14");
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert!(instance.poll().is_empty());
+        let layout = instance.meta.loaded.clone();
+
+        let error = instance
+            .set_sample_rate(96_000.0)
+            .expect_err("the probe refuses 96 kHz");
+        assert!(
+            error.to_string().contains("running at 48000"),
+            "the error says where it runs: {error}"
+        );
+        assert!(instance.is_active(), "the rollback revived the plugin");
+        // The core tells the host to re-read a plugin it revived (`IoChanged`);
+        // what the host reads is the layout the plugin had.
+        let told = instance.poll();
+        assert!(
+            told.iter().all(|e| matches!(e, AsyncEvent::IoChanged)),
+            "{told:?}"
+        );
+        assert_eq!(instance.meta.loaded.inputs, layout.inputs);
+        assert_eq!(instance.meta.loaded.outputs, layout.outputs);
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
+
+        instance
+            .set_sample_rate(44_100.0)
+            .expect("a rate it takes is taken");
+        assert!(instance.is_active());
+    }
+
+    /// **A render mode is the activation's: changing it activates the plugin
+    /// again in the new mode**, keeping the instance, and a mode the plugin
+    /// refuses is rolled back and answered `false`. VST3 delivers the mode in
+    /// `setupProcessing` and nowhere else, so (unlike a format that applies it
+    /// live) the change is a restart, and the core's `Prepare` carries the mode
+    /// the restart uses.
+    ///
+    /// Mutation (run): `set_render_mode` recording the mode without reconfiguring
+    /// (answering `true` at once) → the plugin is never activated again → the
+    /// activation count stays 1 → fails; not rolling a refusal back → the
+    /// `is_active` assertion fails.
+    #[test]
+    fn a_render_mode_change_activates_the_plugin_again_in_the_new_mode() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `kMisbehaveRefusesOffline`: `setActive(true)` fails under `kOffline`.
+        let _misbehaviour = ProbeMisbehaviour::set("15");
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
+
+        assert!(
+            !instance.set_render_mode(RenderMode::Offline),
+            "the probe refuses offline"
+        );
+        assert!(instance.is_active(), "the refusal was rolled back");
+        assert_eq!(
+            instance.state.prepare().map(|p| p.mode),
+            Some(RenderMode::Realtime),
+            "and the mode the core holds is the one that runs"
+        );
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            2,
+            "the rollback activated the plugin once"
+        );
+
+        assert!(
+            instance.set_render_mode(RenderMode::Realtime),
+            "the mode it already has is taken without a restart"
+        );
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.
@@ -947,9 +1035,12 @@ mod tests {
             .program_change_parameter(*list_id)
             .expect("the list has a program-change parameter");
         assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = Control::parameter(instance.vst3_loaded(), tutti_plugin_types::ParamId::new(param_id))
-            .expect("the plugin has a controller")
-            .get();
+        let raw = Control::parameter(
+            instance.vst3_loaded(),
+            tutti_plugin_types::ParamId::new(param_id),
+        )
+        .expect("the plugin has a controller")
+        .get();
         let expected = f64::from(*index) / f64::from(step_count);
         assert!(
             (raw - expected).abs() < 1e-9,

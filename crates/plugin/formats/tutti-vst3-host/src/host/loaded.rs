@@ -53,7 +53,8 @@ use crate::com::{
     BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
 };
 use tutti_plugin_types::{
-    Control, Normalized, ParamId, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginDescriptor, Request,
+    Control, Normalized, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
+    PluginDescriptor, Request,
 };
 use tutti_types::{ArcLend, ChannelTopology};
 
@@ -63,8 +64,7 @@ use crate::helpers::utf16_to_string;
 use crate::types::unit_ids;
 use crate::types::{
     ContentScale, EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
-    WindowHandle,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
 };
 
 use super::instance::usable_topology;
@@ -79,9 +79,9 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 /// Plugin instance that has been `initialize()`'d and has usable parameter,
 /// editor, and state surfaces, but is **not** processing audio.
 ///
-/// Transition to [`Vst3Active`] via [`Vst3Loaded::activate`] to enable
-/// `process()`. For GUI-only hosting (no audio ever), stay here — skip the
-/// `setActive(1) + setProcessing(1)` cost entirely.
+/// [`Loaded::activate`](tutti_plugin_types::Loaded::activate) splits it into a
+/// Processor and a Controller to render. For GUI-only hosting (no audio ever),
+/// stay here: skip the `setActive(1) + setProcessing(1)` cost entirely.
 pub struct Vst3Loaded {
     // Declaration order IS teardown order — Rust drops fields top-to-bottom.
     // Every COM object below is implemented *inside* the plugin DSO, so its
@@ -175,12 +175,16 @@ impl std::fmt::Debug for Vst3Loaded {
 ///
 /// Lets the caller (the bridge/PDC owner) react to coalesced restart signals
 /// without re-deriving the bit math: e.g. call
-/// [`Vst3Loaded::read_latency_samples`] when `latency_changed` is set, or
+/// [`Vst3Loaded::latency_samples`] when `latency_changed` is set, or
 /// re-pull the parameter list when `param_titles_changed`.
+///
+/// A host that drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) reads the
+/// same flags as the core's requests
+/// ([`Vst3Loaded::take_requests`]); this is for a plugin held without one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RestartOutcome {
     /// `kLatencyChanged` fired — the caller should call
-    /// [`Vst3Loaded::read_latency_samples`] and push the result to PDC.
+    /// [`Vst3Loaded::latency_samples`] and push the result to PDC.
     pub latency_changed: bool,
     /// `kParamValuesChanged` fired — the caller should re-read parameter
     /// values (host-cached automation state is stale).
@@ -189,8 +193,8 @@ pub struct RestartOutcome {
     /// caller should re-pull the parameter list / info.
     pub param_titles_changed: bool,
     /// `kIoChanged` fired — the plugin wants a different bus configuration.
-    /// The caller must run `Vst3Active::restart_bus_configuration` (a
-    /// deactivate/reactivate cycle) and then rewire.
+    /// The caller must deactivate and activate the plugin again and then
+    /// rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
     /// stale and should be re-queried.
@@ -1099,9 +1103,10 @@ impl Vst3Loaded {
     ///   `restartComponent` since the last poll (or
     ///   [`take_restart`](Self::take_restart)). Nothing in it has been acted on:
     ///   `kIoChanged` and `kLatencyChanged` both need a deactivate/reactivate
-    ///   cycle this `&mut Vst3Loaded` cannot run, so the caller does it (e.g.
-    ///   `Vst3Active::restart_bus_configuration`, then
-    ///   [`read_latency_samples`](Self::read_latency_samples)).
+    ///   cycle this `&mut Vst3Loaded` cannot run, so the caller does it (the
+    ///   core plans it from the same flags, as
+    ///   [`take_requests`](Self::take_requests) gives them), then reads
+    ///   [`latency_samples`](Self::latency_samples).
     /// - **`on_event`** — each [`PluginNotification`] in arrival order across
     ///   all three kinds: `BeginEdit`/`PerformEdit`/`EndEdit`/… edits, `IProgress`
     ///   reports for a host-drawn progress bar, and `IUnitHandler` unit /
@@ -1123,7 +1128,7 @@ impl Vst3Loaded {
     /// plugin's `IMidiLearn`, which the SDK requires on this thread.
     ///
     /// Must be called on the main thread; not while inside
-    /// [`process`](Vst3Active::process).
+    /// [`Vst3Processor::process`](crate::Vst3Processor::process).
     ///
     /// # Panics
     ///
@@ -1140,10 +1145,9 @@ impl Vst3Loaded {
         // anything — the same constraint `reload_requested` is surfaced for.
         //
         // Do not call `reconcile_bus_counts()` from here. It reads fine until
-        // you notice `Vst3Active` `DerefMut`s to this type: the production
+        // you notice the Controller `DerefMut`s to this type: the production
         // caller polls on a live active instance, so the re-enumeration would
-        // run mid-activation. The owner calls
-        // `Vst3Active::restart_bus_configuration`.
+        // run mid-activation. The activation sequence reconciles.
         let mut restart = self.take_restart();
         while let Some(event) = self.host.handler.pop_notification() {
             on_event(event);
@@ -2062,8 +2066,8 @@ impl Vst3Loaded {
     /// declare bus counts until after init), and it is the first point the SDK
     /// allows asking.
     ///
-    /// `pub(crate)` only so `Vst3Active::restart_bus_configuration` can call
-    /// it from inside the deactivate/reactivate cycle. Deliberately not public:
+    /// `pub(crate)` only so the activation sequence can call it from inside the
+    /// deactivate/reactivate cycle. Deliberately not public:
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.
     pub(crate) fn reconcile_bus_counts(&mut self) {

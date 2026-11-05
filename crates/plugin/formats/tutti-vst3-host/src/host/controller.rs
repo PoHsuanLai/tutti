@@ -9,10 +9,9 @@ use std::sync::Arc;
 use vst3::Steinberg::Vst::{IAudioProcessorTrait, IComponentTrait};
 
 use tutti_plugin_types::{
-    AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized,
-    ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
-    PresetId, Prepare, Processor, Refused, Request, RescanScope, RestartRules, SampleFormat,
-    Samples, Stuck,
+    AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
+    ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset,
+    PresetId, Processor, Refused, Request, RescanScope, RestartRules, SampleFormat, Samples, Stuck,
 };
 
 use crate::types::{ProcessMode, Vst3Sample};
@@ -20,9 +19,7 @@ use crate::types::{ProcessMode, Vst3Sample};
 use super::control::plugin_error;
 use super::instance::Staged;
 use super::loaded::{Activation, Vst3Loaded};
-use super::processor::{
-    EDIT_CAPACITY, ProcessorParts, Vst3Processor, Vst3ProcessorAny,
-};
+use super::processor::{EDIT_CAPACITY, ProcessorParts, Vst3Processor, Vst3ProcessorAny};
 use super::shell::Shell;
 
 /// The main-thread half of an activation: the whole control surface of a
@@ -40,9 +37,6 @@ pub struct Vst3Controller {
     /// Writes a full ring refused, latest value per parameter, retried on the
     /// next tick ([`flush_edits`](Control::flush_edits)).
     unsent: Vec<(ParamId, Normalized)>,
-    /// The parameters the plugin owns the value of, which the Processor is not
-    /// sent writes for. Read at activation and again after a rescan.
-    read_only: Vec<u32>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -61,15 +55,12 @@ unsafe impl Send for Vst3Controller {}
 
 impl Vst3Controller {
     fn new(shell: Arc<Shell>, edits: EditSink) -> Self {
-        let mut controller = Self {
+        Self {
             shell: Some(shell),
             edits,
             unsent: Vec::new(),
-            read_only: Vec::new(),
             _not_sync: PhantomData,
-        };
-        controller.read_only = controller.loaded().read_only_parameters();
-        controller
+        }
     }
 
     fn shell(&self) -> &Arc<Shell> {
@@ -98,9 +89,6 @@ impl Vst3Controller {
     /// A value already waiting to be retried is replaced by the newer one; a
     /// full ring keeps the value for the next tick.
     fn queue_edit(&mut self, id: ParamId, value: Normalized) {
-        if self.read_only.binary_search(&id.get()).is_ok() {
-            return;
-        }
         if let Some(slot) = self.unsent.iter_mut().find(|(waiting, _)| *waiting == id) {
             slot.1 = value;
             return;
@@ -193,12 +181,8 @@ impl Control for Vst3Controller {
         Control::set_automation_state(&mut **self, mode);
     }
 
-    /// Re-reads which parameters the plugin owns the value of.
     fn rescan_parameters(&mut self, scope: RescanScope) {
         Control::rescan_parameters(&mut **self, scope);
-        if matches!(scope, RescanScope::Info | RescanScope::All) {
-            self.read_only = self.loaded().read_only_parameters();
-        }
     }
 
     fn rebuild_midi_mapping(&mut self) {

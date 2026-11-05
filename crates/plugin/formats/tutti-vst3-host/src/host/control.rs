@@ -90,7 +90,10 @@ impl Vst3Loaded {
         features.insert(Features::PARAM_AUTOMATION);
         features.set(Features::TRANSPORT, self.wants_transport());
         // Note expression: any dimension on the main event bus, channel 0.
-        features.set(Features::NOTE_EXPRESSION, self.note_expression_count(0, 0) > 0);
+        features.set(
+            Features::NOTE_EXPRESSION,
+            self.note_expression_count(0, 0) > 0,
+        );
         features.set(Features::SEQUENCER_CONTEXT, self.wants_sequencer_context());
         // Both preset bits come from the same question, whether the plugin
         // publishes program lists, because for VST3 they are one capability: a
@@ -186,18 +189,6 @@ impl Vst3Loaded {
         };
         unsafe { controller.setParamNormalized(id.get(), value.get()) };
         true
-    }
-
-    /// The ids of the parameters the plugin owns the value of
-    /// (`kIsReadOnly`: "cannot be changed from outside the plug-in"), sorted.
-    pub(super) fn read_only_parameters(&self) -> Vec<u32> {
-        let mut ids: Vec<u32> = (0..self.parameter_count())
-            .filter_map(|i| self.parameter_info(i))
-            .filter(|info| info.is_read_only())
-            .map(|info| info.id)
-            .collect();
-        ids.sort_unstable();
-        ids
     }
 }
 
@@ -378,4 +369,3 @@ impl Control for Vst3Loaded {
         self.rebuild_midi_cc_mapping();
     }
 }
-

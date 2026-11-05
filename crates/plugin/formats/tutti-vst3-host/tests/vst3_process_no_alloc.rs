@@ -33,14 +33,11 @@ use std::sync::Mutex;
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
-use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents,
-};
+use tutti_vst3_host::{AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
-
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

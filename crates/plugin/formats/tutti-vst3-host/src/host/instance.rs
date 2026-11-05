@@ -27,9 +27,7 @@ use tutti_types::{ChannelLayout, ChannelTopology};
 use crate::com::{EventList, MIN_POINT_ROOM, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::sdk_enum_i32;
-use crate::types::{
-    BufferPtrs, BusInfo as BusInfoWrap, ParameterChanges, ProcessMode, Vst3Sample,
-};
+use crate::types::{BufferPtrs, BusInfo as BusInfoWrap, ParameterChanges, ProcessMode, Vst3Sample};
 
 use super::bus_buffers::DirectionScratch;
 use super::loaded::{Activation, Vst3Loaded};

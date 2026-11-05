@@ -44,14 +44,13 @@ use std::sync::Mutex;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    TransportInfo, Vst3InputEvents, Vst3Loaded, LoadOptions,
+    AudioBuffer, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    TransportInfo, Vst3InputEvents, Vst3Loaded,
 };
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
-
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///

@@ -42,7 +42,7 @@ pub use tutti_plugin_types::{
 };
 
 /// Events and parameter changes emitted by the plugin during one call to
-/// [`Vst3Active::process`](crate::Vst3Active::process).
+/// [`Vst3Processor::process`](crate::Vst3Processor::process).
 ///
 /// Owned variant. Off-RT callers (tests, offline render) can keep this
 /// around. RT callers should use [`ProcessOutputRef`] instead — it
@@ -57,7 +57,7 @@ pub struct ProcessOutput {
 }
 
 /// Borrowing view of the plugin's per-block output. Points into the
-/// `Vst3Active`'s pooled return-value buffers — valid until the next
+/// `Vst3Processor`'s pooled return-value buffers — valid until the next
 /// `process` call, which clears them in place. RT-safe.
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessOutputRef<'a> {

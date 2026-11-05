@@ -248,10 +248,7 @@ impl RestartFlags {
                 self.midi_cc_assignment_changed,
                 Request::MidiCcAssignmentChanged,
             ),
-            (
-                self.note_expression_changed,
-                Request::NoteExpressionChanged,
-            ),
+            (self.note_expression_changed, Request::NoteExpressionChanged),
             (self.prefetchable_support_changed, Request::Restart),
         ];
         for (raised, request) in requests {

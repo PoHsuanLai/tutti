@@ -249,4 +249,3 @@ mod seq_scratch_tests {
         assert!(out.is_empty());
     }
 }
-

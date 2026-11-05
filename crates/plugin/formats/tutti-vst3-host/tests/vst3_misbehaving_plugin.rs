@@ -47,7 +47,6 @@ mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
-
 /// The in-repo probe bundle, built by `build.rs`.
 const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
@@ -239,8 +238,8 @@ fn refused_activation_is_an_error_not_a_silent_success() {
     let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
     let path = probe_path();
 
-    let loaded =
-        Vst3Loaded::load(&path, LoadOptions::new()).expect("loading must still succeed — only activation is refused");
+    let loaded = Vst3Loaded::load(&path, LoadOptions::new())
+        .expect("loading must still succeed — only activation is refused");
     let result = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
 
     assert!(
@@ -268,7 +267,8 @@ fn a_refused_activation_leaves_the_plugin_loadable_again() {
     // A well-behaved load must work immediately afterwards.
     let _m = Misbehaviour::behaving();
     let path = probe_path();
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("re-load after a refused activation");
+    let loaded =
+        Vst3Loaded::load(&path, LoadOptions::new()).expect("re-load after a refused activation");
     let inst = loaded.activate_at::<f32>(SAMPLE_RATE, BLOCK);
     assert!(
         inst.is_ok(),
@@ -412,7 +412,8 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     );
 
     let _m = Misbehaviour::set(misbehave::ARRANGEMENT_REFUSED);
-    let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("a refusal must not fail the load");
+    let loaded =
+        Vst3Loaded::load(&path, LoadOptions::new()).expect("a refusal must not fail the load");
     let mut inst = loaded
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a refusal is not an error; the plugin must still activate");
@@ -590,7 +591,8 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
     );
 
     let _m = Misbehaviour::set(misbehave::STATE_FAILS);
-    let mut loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("a failing getState must not prevent loading");
+    let mut loaded = Vst3Loaded::load(&path, LoadOptions::new())
+        .expect("a failing getState must not prevent loading");
 
     // The discriminating assertion: `getState` returned `kResultFalse`, so the
     // host must not hand back a blob as though the save had worked. Empty (or a
@@ -756,7 +758,10 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
 fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
     let path = probe_path();
     let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
-    assert!(loaded.plugin_info().num_outputs > 0, "the load reads the buses");
+    assert!(
+        loaded.plugin_info().num_outputs > 0,
+        "the load reads the buses"
+    );
 
     let probed = Vst3Loaded::probe(&path).expect("probe");
     assert_eq!(probed.num_inputs, 0);
@@ -800,8 +805,8 @@ fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
     let _m = Misbehaviour::set(misbehave::STATE_NOT_IMPLEMENTED);
     let path = probe_path();
 
-    let mut loaded =
-        Vst3Loaded::load(&path, LoadOptions::new()).expect("a plugin that does not implement state must still load");
+    let mut loaded = Vst3Loaded::load(&path, LoadOptions::new())
+        .expect("a plugin that does not implement state must still load");
 
     let saved = loaded.get_state();
     assert!(

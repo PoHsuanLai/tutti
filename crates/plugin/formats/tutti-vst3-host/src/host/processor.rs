@@ -146,7 +146,6 @@ pub(super) struct AudioIO<T: Vst3Sample> {
     pub(super) midi_learn: MidiLearnProducer,
 }
 
-
 impl ProcessConfig {
     /// The `ProcessSetup` describing this activation.
     ///
@@ -418,10 +417,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         self.pending.clear();
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context = to_process_context(
-            transport,
-            self.context_requirements,
-        );
+        let mut process_context = to_process_context(transport, self.context_requirements);
         process_context.sampleRate = buffer.sample_rate;
 
         let mut process_data = vst3::Steinberg::Vst::ProcessData {
@@ -465,7 +461,6 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         Ok(self.audio.output.emitted_ref())
     }
 
-
     /// Feed incoming MIDI CC controllers to the MIDI-learn capture (for
     /// `IMidiLearn`). When learn is disarmed — the common case — this is a single
     /// relaxed atomic load and an immediate return, so the hot path pays almost
@@ -484,7 +479,6 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             }
         }
     }
-
 
     /// Texts (chord, scale or note-expression text) dropped since activation
     /// because the block's event-list text arena was full, input and output
@@ -557,7 +551,6 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             + self.audio.output.param_changes.points_dropped()
     }
 
-
     /// Toggles between [`Realtime`](ProcessMode::Realtime) and
     /// [`Prefetch`](ProcessMode::Prefetch) on a live instance, without
     /// re-running `setupProcessing`.
@@ -569,9 +562,9 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// alone. Returns `false` — changing nothing — when the instance was
     /// activated [`Offline`](ProcessMode::Offline), because reaching it from
     /// either of these needs a fresh setup and the resulting disagreement would
-    /// be a spec violation. Re-activate with
-    /// [`Vst3Loaded::activate_with_mode`](super::loaded::Vst3Loaded::activate_with_mode)
-    /// to change an offline instance's mode.
+    /// be a spec violation. Activate again with another
+    /// [`Prepare::mode`](tutti_plugin_types::Prepare::mode) to change an
+    /// offline instance's mode.
     ///
     /// Must not be called from inside [`process`](Self::process).
     pub fn set_prefetch(&mut self, prefetch: bool) -> bool {
@@ -590,12 +583,10 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         true
     }
 
-
     /// The mode this instance's blocks are currently processed in.
     pub fn process_mode(&self) -> ProcessMode {
         self.audio.config.block_mode
     }
-
 }
 
 /// The trait's Processor: the sample type is chosen at activation, so the two

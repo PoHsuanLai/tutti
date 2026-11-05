@@ -294,7 +294,7 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 
 /// The `IMidiMapping` CC→param routing concern as a per-block unit: the
 /// controller-queried mapping table plus the pooled scratch the routing pass
-/// needs. Held by `Vst3Active`'s `AudioIO`.
+/// needs. Held by the Processor's `AudioIO`.
 ///
 /// When `mapping` is non-empty, mapped CC/aftertouch/pitch-bend events are
 /// pulled out of the input MIDI into `filtered_midi` (the events that still
@@ -302,7 +302,8 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// `param_changes` alongside the host's automation. The scratch buffers are
 /// reused across blocks to keep the routing pass allocation-free; `mapping` is
 /// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
-/// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
+/// [`Vst3Loaded::rebuild_midi_cc_mapping`](crate::Vst3Loaded::rebuild_midi_cc_mapping))
+/// and published to a route built [`following`](CcRoute::following) it.
 ///
 /// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
 /// reservation is the layout the host's chunk arrives in
@@ -849,6 +850,46 @@ mod tests {
 
         route.set_mapping(MidiCcMapping::empty());
         assert_eq!(route.param_changes.capacity(), 0, "released when unmapped");
+    }
+
+    /// **A route that follows the control thread's mapping routes against what
+    /// is published**, from the next block, and an empty publication hands the
+    /// controllers back to the plugin as MIDI. The Processor cannot own a
+    /// mapping the control thread changes, so it lends the current one per
+    /// block; the scratch was reserved at activation.
+    ///
+    /// Mutation (run): `route` reading its own `mapping` instead of the lent
+    /// one (`shared` ignored) → the published table is never used → the first
+    /// assertion fails.
+    #[test]
+    fn a_following_route_uses_the_published_mapping() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        use tutti_types::ArcLend;
+
+        let cell = std::sync::Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty())));
+        let mut route = CcRoute::following(cell.reader(), true, 4, 4);
+        let events = [MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        )
+        .with_frame_offset(3)];
+
+        assert!(
+            route.route(&events, None).is_none(),
+            "nothing is mapped yet, so the MIDI passes through untouched"
+        );
+
+        cell.publish(MidiCcCell(mod_wheel_mapping(500)));
+        assert_no_alloc::assert_no_alloc(|| {
+            let (midi, params) = route.route(&events, None).expect("mapped");
+            assert!(midi.is_empty(), "the CC became a parameter point");
+            assert_eq!(params.queues.len(), 1);
+        });
+
+        cell.publish(MidiCcCell(MidiCcMapping::empty()));
+        assert!(route.route(&events, None).is_none(), "unmapped again");
     }
 
     /// The very first block is allocation-free with no warm-up: every queue

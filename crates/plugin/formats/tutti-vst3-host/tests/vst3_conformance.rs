@@ -68,13 +68,13 @@ use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo, LoadOptions, Vst3InputEvents, Vst3Library, Vst3Loaded, Vst3Sample, host::conformance,
+    AudioBuffer, LoadOptions, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
+    Vst3InputEvents, Vst3Library, Vst3Loaded, Vst3Sample, host::conformance,
 };
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
-
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
 
@@ -2175,8 +2175,7 @@ fn offline_instance_refuses_the_live_toggle() {
     }
     let _plugins = plugin_guard();
     let path = require_host_checker();
-    let Ok(mut inst) =
-        Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+    let Ok(mut inst) = Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
         panic!("host-checker failed to load offline");
     };
@@ -2214,8 +2213,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
     }
     let _plugins = plugin_guard();
     let path = require_host_checker();
-    let Ok(mut inst) =
-        Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+    let Ok(mut inst) = Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
         panic!("host-checker failed to load offline");
     };

@@ -412,7 +412,20 @@ enum ProbeMisbehaviour : int32
     /// component (`ivstaudioprocessor.h`), so a plugin may settle the answer
     /// there. A host that reads it before `initialize` reports 32-bit only.
     kMisbehaveSample64AfterInit = 13,
+
+    /// `setActive(true)` returns `kResultFalse` when `setupProcessing` was
+    /// given a rate above `kRefusedAboveHz`, as a plugin whose licence covers
+    /// only some rates would. The refusal that makes a rate change fail
+    /// *after* the host has deactivated the plugin around it.
+    kMisbehaveRefusesHighRates = 14,
+
+    /// `setActive(true)` returns `kResultFalse` when `setupProcessing` was
+    /// given `kOffline`, as a plugin that cannot render faster than realtime
+    /// would.
+    kMisbehaveRefusesOffline = 15,
 };
+
+static const double kRefusedAboveHz = 50000.0;
 
 /// Read the selected misbehaviour from the environment. Returns
 /// [`kMisbehaveNone`] when unset, empty, or not a recognised number.
@@ -455,7 +468,7 @@ inline int32 probeMisbehaviour ()
     // whose value falls outside this range is silently read as `kMisbehaveNone`,
     // so the plugin behaves and the test passes against a probe that never
     // misbehaved.
-    return (v >= kMisbehaveNone && v <= kMisbehaveSample64AfterInit) ? v : kMisbehaveNone;
+    return (v >= kMisbehaveNone && v <= kMisbehaveRefusesOffline) ? v : kMisbehaveNone;
 }
 
 /// Bus count reported under [`kMisbehaveExtraBuses`]. Larger than any real

@@ -31,10 +31,10 @@ pub(crate) const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSamp
 ///
 /// That asymmetry is why this crate splits the two knobs rather than offering
 /// one setter: [`Offline`](Self::Offline) is selected at activation
-/// ([`Vst3Loaded::activate_with_mode`](crate::Vst3Loaded::activate_with_mode)),
-/// because reaching it from any other mode needs a fresh `setupProcessing`,
-/// while the realtime/prefetch pair is switchable on a live instance
-/// ([`Vst3Active::set_prefetch`](crate::Vst3Active::set_prefetch)).
+/// ([`Prepare::mode`](tutti_plugin_types::Prepare::mode)), because reaching it
+/// from any other mode needs a fresh `setupProcessing`, while the
+/// realtime/prefetch pair is switchable on a live instance
+/// ([`Vst3Processor::set_prefetch`](crate::Vst3Processor::set_prefetch)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessMode {
     /// `kRealtime` — live playback under a deadline. The default.

@@ -587,10 +587,12 @@ mod tests {
         assert!(ring.placed(), "a refused take changes nothing");
     }
 
-    /// **A damaged file is observable through the stream's read.** The repo's
-    /// FLAC fixture cut to its first 90% ends short of its frame count; the
-    /// read keeps the frames decoded before the cut, zero-fills the rest,
-    /// reports `false` and records the fault once (it is logged, once).
+    /// **`read_file` reports a damaged file.** The repo's FLAC fixture cut to
+    /// its first 90% ends short of its frame count; `read_file` keeps the
+    /// frames decoded before the cut, zero-fills the rest, returns `false` and
+    /// sets the `fault_logged` flag (the log line itself is not captured). A
+    /// read at frame 0 afterwards clears the flag. Called directly, not
+    /// through a butler step or a voice.
     ///
     /// Mutation (run): discarding `got` on a fault (zero-filling all of
     /// `out`, as the old `Err` arm did) fails the kept-frames assertion.

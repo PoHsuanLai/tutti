@@ -38,8 +38,6 @@ use tutti_core::{ChannelLayout, Samples};
 use crate::WaveError;
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 
-/// What [`FileIn::error`] reports when the stream ends before the container's
-/// frame count.
 /// A copy of `error` for a call that reports a fault the stream already
 /// holds: symphonia's error is not `Clone`.
 fn repeat(error: &WaveError) -> WaveError {
@@ -52,6 +50,8 @@ fn repeat(error: &WaveError) -> WaveError {
     }
 }
 
+/// What [`FileIn::error`] reports when the stream ends before the container's
+/// frame count.
 const TRUNCATED: &str = "stream ended before the container's frame count";
 
 /// A streaming decoder over an audio file's first audio track, as an

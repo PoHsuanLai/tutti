@@ -612,10 +612,10 @@ mod tests {
         assert!(!read.is_open(), "a read past the end opened it again");
     }
 
-    /// **A damaged file latches a fault** instead of rendering silence as if
-    /// the file ended there: the FLAC fixture cut to 90% ends short of its
-    /// frame count, the page keeps the frames before the cut, and the latch
-    /// holds the decode failure.
+    /// **`OfflineRead::read_into` latches a damaged file's fault.** The FLAC
+    /// fixture cut to 90% ends short of its frame count; a read before the
+    /// cut returns frames, and the `FaultLatch` holds the decode failure.
+    /// Called on the reader directly, not through a voice render.
     ///
     /// Mutation (run): not checking `decoder.error()` after the fill leaves
     /// the latch empty and fails.

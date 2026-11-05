@@ -25,7 +25,7 @@ use tutti_midi_types::Protocol;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EndpointId {
     /// Backend-defined. CoreMIDI stores a `MIDIUniqueID`; ALSA packs
-    /// `(client << 8) | port`.
+    /// `(client << 32) | port`.
     raw: u64,
 }
 

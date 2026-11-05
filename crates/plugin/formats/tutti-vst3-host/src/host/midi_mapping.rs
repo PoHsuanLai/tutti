@@ -29,7 +29,7 @@ use vst3::Steinberg::kResultTrue;
 use crate::com::EventList;
 use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, ParamAddress};
-use tutti_types::RtVec;
+use tutti_types::{Reader, RtVec};
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
 /// never drops an event the plugin node delivered. Dropping one would cut a
@@ -52,6 +52,9 @@ pub(crate) const NO_PARAM_ID: ParamID = u32::MAX;
 pub(crate) const CTRL_AFTERTOUCH: usize = kAfterTouch as usize;
 /// Synthetic controller index VST3 uses for pitch bend.
 pub(crate) const CTRL_PITCH_BEND: usize = kPitchBend as usize;
+
+/// A [`MidiCcMapping`] as the control thread publishes it to the Processor.
+pub(crate) struct MidiCcCell(pub(crate) MidiCcMapping);
 
 /// Per-channel CC→`ParamID` table queried from `IMidiMapping`.
 ///
@@ -291,7 +294,7 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 
 /// The `IMidiMapping` CC→param routing concern as a per-block unit: the
 /// controller-queried mapping table plus the pooled scratch the routing pass
-/// needs. Held by `Vst3Active`'s `AudioIO`.
+/// needs. Held by the Processor's `AudioIO`.
 ///
 /// When `mapping` is non-empty, mapped CC/aftertouch/pitch-bend events are
 /// pulled out of the input MIDI into `filtered_midi` (the events that still
@@ -299,7 +302,8 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// `param_changes` alongside the host's automation. The scratch buffers are
 /// reused across blocks to keep the routing pass allocation-free; `mapping` is
 /// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
-/// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
+/// [`Vst3Loaded::rebuild_midi_cc_mapping`](crate::Vst3Loaded::rebuild_midi_cc_mapping))
+/// and published to a route built [`following`](CcRoute::following) it.
 ///
 /// **`param_changes` is reserved exactly while `mapping` is non-empty.** The
 /// reservation is the layout the host's chunk arrives in
@@ -314,6 +318,9 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// non-empty mapping over unreserved scratch.
 pub(crate) struct CcRoute {
     mapping: MidiCcMapping,
+    /// The mapping the control thread publishes, lent once per block. When
+    /// set it is the mapping routed against and `mapping` is unused.
+    shared: Option<Reader<MidiCcCell>>,
     filtered_midi: FilteredMidi,
     param_changes: ParameterChanges,
     /// The parameter queues to reserve (the host's chunk's: the plugin's
@@ -344,6 +351,7 @@ impl CcRoute {
     pub(crate) fn new(mapping: MidiCcMapping, queues: usize, room: usize) -> Self {
         let mut route = Self {
             mapping: MidiCcMapping::empty(),
+            shared: None,
             filtered_midi: FilteredMidi::new(),
             param_changes: ParameterChanges::new(),
             queues,
@@ -351,6 +359,26 @@ impl CcRoute {
             overflowed: 0,
         };
         route.set_mapping(mapping);
+        route
+    }
+
+    /// Builds a route that follows a published mapping: the mapping lent at
+    /// each block is the one routed against. The param scratch is reserved
+    /// now, whatever the mapping holds, because a later publication can make
+    /// it non-empty and the audio thread cannot reserve it then; pass
+    /// `reserve: false` for a plugin that has no `IMidiMapping` to publish.
+    /// Allocates; call it off the audio thread.
+    pub(crate) fn following(
+        reader: Reader<MidiCcCell>,
+        reserve: bool,
+        queues: usize,
+        room: usize,
+    ) -> Self {
+        let mut route = Self::new(MidiCcMapping::empty(), queues, room);
+        if reserve {
+            route.param_changes = ParameterChanges::reserved(queues, room);
+        }
+        route.shared = Some(reader);
         route
     }
 
@@ -410,14 +438,28 @@ impl CcRoute {
         midi_events: &[MidiEvent],
         param_changes: Option<&ParameterChanges>,
     ) -> Option<(&FilteredMidi, &ParameterChanges)> {
-        if self.mapping.is_empty() {
+        let Self {
+            mapping,
+            shared,
+            filtered_midi,
+            param_changes: merged,
+            overflowed,
+            ..
+        } = self;
+        // Lent once per block, and let go when this call returns.
+        let loan = shared.as_mut().map(|reader| reader.lend());
+        let mapping: &MidiCcMapping = match &loan {
+            Some(loan) => &loan.0,
+            None => mapping,
+        };
+        if mapping.is_empty() {
             return None;
         }
 
         // Clear scratch in place: the param queues go back to the set's
         // spares with their point storage, so the next block reuses them.
-        self.filtered_midi.clear();
-        self.param_changes.clear();
+        filtered_midi.clear();
+        merged.clear();
 
         // Seed the merged param changes with the host's automation, a
         // queue opened for each of the host's (its addresses are distinct),
@@ -426,32 +468,27 @@ impl CcRoute {
         // blocks go to the queues at full room wherever they are in the
         // chunk. A queue past the reservation is dropped, counted.
         if let Some(pc) = param_changes {
-            let changes = &mut self.param_changes;
+            let changes = &mut *merged;
             for queue in &pc.queues {
                 if !changes.open_queue(queue.param_id) {
-                    self.overflowed += queue.points.len() as u64;
+                    *overflowed += queue.points.len() as u64;
                     continue;
                 }
                 let i = changes.queues.len() - 1;
                 for point in &queue.points {
                     let stored = changes.push_point(i, point.sample_offset, point.value.get());
-                    self.overflowed += u64::from(!stored);
+                    *overflowed += u64::from(!stored);
                 }
             }
         }
 
-        route_cc_events(
-            &self.mapping,
-            midi_events,
-            &mut self.filtered_midi,
-            &mut self.param_changes,
-        );
+        route_cc_events(mapping, midi_events, filtered_midi, merged);
 
         // VST3 requires each IParamValueQueue's points in ascending
         // sampleOffset order; seeding + appending can leave them unsorted.
-        sort_param_points(&mut self.param_changes);
+        sort_param_points(merged);
 
-        Some((&self.filtered_midi, &self.param_changes))
+        Some((&*filtered_midi, &*merged))
     }
 }
 
@@ -813,6 +850,46 @@ mod tests {
 
         route.set_mapping(MidiCcMapping::empty());
         assert_eq!(route.param_changes.capacity(), 0, "released when unmapped");
+    }
+
+    /// **A route that follows the control thread's mapping routes against what
+    /// is published**, from the next block, and an empty publication hands the
+    /// controllers back to the plugin as MIDI. The Processor cannot own a
+    /// mapping the control thread changes, so it lends the current one per
+    /// block; the scratch was reserved at activation.
+    ///
+    /// Mutation (run): `route` reading its own `mapping` instead of the lent
+    /// one (`shared` ignored) → the published table is never used → the first
+    /// assertion fails.
+    #[test]
+    fn a_following_route_uses_the_published_mapping() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        use tutti_types::ArcLend;
+
+        let cell = std::sync::Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty())));
+        let mut route = CcRoute::following(cell.reader(), true, 4, 4);
+        let events = [MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::MOD_WHEEL,
+            midi1_cc_to_midi2(64),
+        )
+        .with_frame_offset(3)];
+
+        assert!(
+            route.route(&events, None).is_none(),
+            "nothing is mapped yet, so the MIDI passes through untouched"
+        );
+
+        cell.publish(MidiCcCell(mod_wheel_mapping(500)));
+        assert_no_alloc::assert_no_alloc(|| {
+            let (midi, params) = route.route(&events, None).expect("mapped");
+            assert!(midi.is_empty(), "the CC became a parameter point");
+            assert_eq!(params.queues.len(), 1);
+        });
+
+        cell.publish(MidiCcCell(MidiCcMapping::empty()));
+        assert!(route.route(&events, None).is_none(), "unmapped again");
     }
 
     /// The very first block is allocation-free with no warm-up: every queue

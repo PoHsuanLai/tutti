@@ -605,6 +605,27 @@ proptest! {
         prop_assert_eq!(count(&tick, |f| matches!(f, Fx::Deactivate | Fx::Activate(_))), 0);
     }
 
+    /// A quiet state's tick plans nothing, after any sequence of events: what
+    /// lets a shell skip the tick of an idle pass.
+    ///
+    /// Mutation: `State::is_quiet` ignoring `pending` (or answering `true`) →
+    /// a tick after a request plans a restart or a notice → fails.
+    #[test]
+    fn a_quiet_state_ticks_to_nothing(
+        rules in rules(),
+        choices in prop::collection::vec(any::<u8>(), 1..16),
+        events in prop::collection::vec(ev(), 0..48),
+    ) {
+        let mut shell = Shell::new(rules, Refuse::Choice, Rt::Local, choices);
+        for event in &events {
+            shell_run(&mut shell, std::slice::from_ref(event));
+            if shell.state.is_quiet() {
+                let (_, fx) = go(shell.state.clone(), Event::Tick);
+                prop_assert!(fx.is_empty(), "{fx:?}");
+            }
+        }
+    }
+
     /// Activations over a sequence are at most one per activating op plus one
     /// per tick that planned a restart.
     ///

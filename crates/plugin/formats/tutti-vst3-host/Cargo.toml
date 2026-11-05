@@ -114,6 +114,10 @@ name = "vst3_process_no_alloc"
 path = "tests/vst3_process_no_alloc.rs"
 
 [[test]]
+name = "vst3_traits"
+path = "tests/vst3_traits.rs"
+
+[[test]]
 name = "vst3_view_input"
 path = "tests/vst3_view_input.rs"
 

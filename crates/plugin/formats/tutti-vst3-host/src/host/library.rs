@@ -181,7 +181,7 @@ impl Vst3Library {
 
     /// Vendor/URL/email and the factory flags. `None` if the plugin rejects the
     /// `getFactoryInfo` call.
-    pub fn get_factory_info(&self) -> Option<FactoryInfo> {
+    pub fn factory_info(&self) -> Option<FactoryInfo> {
         let mut info: PFactoryInfo = unsafe { std::mem::zeroed() };
         let result = unsafe { self.factory.getFactoryInfo(&mut info) };
         if result == kResultOk {
@@ -215,7 +215,7 @@ impl Vst3Library {
     /// Returns [`Vst3Error::PluginError`] if the factory rejects the index.
     /// A factory that implements `IPluginFactory3` but rejects the index in
     /// `getClassInfoUnicode` still gets the ASCII attempt before erroring.
-    pub fn get_class_info(&self, index: i32) -> Result<ClassInfo> {
+    pub fn class_info(&self, index: i32) -> Result<ClassInfo> {
         if let Some(info) = self.class_info_unicode(index) {
             return Ok(info);
         }

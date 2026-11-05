@@ -151,10 +151,10 @@ impl<T: ClapSample> ClapProcessor<T> {
     /// (nothing is rendering): for a caller that must not lose them, as a
     /// rejoin must not.
     pub fn take_edits(&mut self, out: &mut Vec<(ParamId, Normalized)>) {
-        self.drain.drain(|edit| {
-            if let Edit::Param { id, value } = edit {
-                out.push((id, value));
-            }
+        self.drain.drain(|edit| match edit {
+            Edit::Param { id, value } => out.push((id, value)),
+            Edit::Reset => out.clear(),
+            _ => {}
         });
     }
 

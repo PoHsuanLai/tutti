@@ -416,12 +416,20 @@ impl Control for ClapController {
         Control::save_state(&mut **self)
     }
 
+    /// Restores the state, and makes the writes queued before it stale.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut **self, bytes)
+        let result = Control::load_state(&mut **self, bytes);
+        self.reset_edits();
+        result
     }
 
+    /// Loads the preset, and makes the writes queued before it stale.
     fn load_preset(&mut self, id: &PresetId) -> bool {
-        Control::load_preset(&mut **self, id)
+        let loaded = Control::load_preset(&mut **self, id);
+        if loaded {
+            self.reset_edits();
+        }
+        loaded
     }
 
     /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges

@@ -372,6 +372,23 @@ struct Pending {
 }
 
 impl Pending {
+    fn is_empty(&self) -> bool {
+        !(self.restart
+            || self.io
+            || self.latency
+            || self.tail
+            || self.reload
+            || self.callback
+            || self.values
+            || self.midi_cc
+            || self.note_expr
+            || self.text
+            || self.info
+            || self.all)
+            && self.timers.is_empty()
+            && self.fds.is_empty()
+    }
+
     fn clear_requests(&mut self) {
         let (timers, fds, callback) = (
             std::mem::take(&mut self.timers),
@@ -433,6 +450,23 @@ impl State {
             pending: Pending::default(),
             plan: Plan::default(),
         }
+    }
+
+    /// Whether an [`Event::Tick`] would plan nothing: no request is pending, no
+    /// plan is in flight and no op is waiting to be replayed.
+    ///
+    /// A shell that has taken no request since its last pass can skip
+    /// [`Lifecycle::drive`](crate::Lifecycle::drive) for the tick while this
+    /// holds (and call [`Control::flush_edits`](crate::Control::flush_edits)
+    /// itself, which is all else a tick does), so an idle pass of a realtime
+    /// thread allocates nothing. Conservative: `false` may still tick to nothing.
+    #[must_use]
+    pub fn is_quiet(&self) -> bool {
+        matches!(self.plan.wait, Wait::Idle | Wait::Parked)
+            && self.plan.tasks.is_empty()
+            && self.later.is_none()
+            && !self.after_main
+            && self.pending.is_empty()
     }
 
     /// Where the plugin is.

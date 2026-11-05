@@ -158,6 +158,12 @@ tresult PLUGIN_API AudioProbeProcessor::setActive (TBool state)
 	// wedge teardown for reasons unrelated to what this tests.
 	if (mMisbehaviour == kMisbehaveSetActiveFails && state)
 		return kResultFalse;
+	if (state && mMisbehaviour == kMisbehaveRefusesHighRates &&
+	    processSetup.sampleRate > kRefusedAboveHz)
+		return kResultFalse;
+	if (state && mMisbehaviour == kMisbehaveRefusesOffline &&
+	    processSetup.processMode == kOffline)
+		return kResultFalse;
 
 	if (state)
 	{

@@ -30,7 +30,11 @@
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
-use tutti_vst3_host::{ContentScale, EditorSize, Vst3Active, WindowHandle};
+use tutti_vst3_host::{ContentScale, EditorSize, WindowHandle};
+
+#[path = "active.rs"]
+mod active;
+use active::Active;
 
 /// Compile-time default, baked in by `build.rs`.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
@@ -233,13 +237,13 @@ impl TestWindow {
 }
 
 /// Load `host-checker`, or skip. Returns `None` with a printed reason.
-fn load_host_checker() -> Option<Vst3Active> {
+fn load_host_checker() -> Option<Active> {
     if !has_display() {
         eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");
         return None;
     }
     let path = host_checker_path()?;
-    match Vst3Active::<f32>::load(&path, 48_000.0, 512) {
+    match Active::<f32>::load(&path, 48_000.0, 512) {
         Ok(i) => Some(i),
         Err(e) => {
             eprintln!("host-checker load failed ({e:?}); skipping");
@@ -413,7 +417,7 @@ fn editorless_plugin_is_refused_cleanly() {
         eprintln!("audio-probe.vst3 not found; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("audio-probe load failed; skipping");
         return;
     };
@@ -623,7 +627,7 @@ fn has_editor_agrees_with_opening_one() {
         let Some(path) = sample_plugin_path(name) else {
             continue;
         };
-        let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
+        let Ok(mut inst) = Active::<f32>::load(&path, 48_000.0, 512) else {
             continue;
         };
 

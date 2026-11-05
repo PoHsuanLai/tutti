@@ -1,119 +1,47 @@
-//! VST3 plugin loader using the `vst3-host` crate.
+//! VST3 plugin loader: [`Vst3Instance`] drives a `Lifecycle<Vst3Loaded>` and
+//! presents it through the capability traits the server still dispatches on.
+//!
+//! The host crate is the interpreter of the plugin's lifecycle (activation,
+//! restarts, requests); this file is a probe and the translation between the
+//! core's notices and the server's [`AsyncEvent`]s.
 
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, ContentScale,
-    EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
-    PluginResult, PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
-    RenderMode, Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
+    AudioBufferMut, AutomationMode, ContentScale, EditorPresence, EditorSize, LoadedPlugin,
+    Normalized, ParamAddress, ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost,
+    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, Preset,
+    PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
+use tutti_plugin_types::{
+    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
+    Samples, Stage, State,
+};
+use tutti_vst3_host::{LoadOptions, Vst3Loaded, Vst3ProcessorAny};
 
-use crate::loaders::common::{Meta, single_bus};
-use tutti_vst3_host::ProcessMode;
+use crate::loaders::common::Meta;
+use crate::plugin::AsyncEvent;
 
 pub use tutti_vst3_host;
 
-/// Typed inner holds either a f32 or f64 instance, selected at activation time
-/// based on plugin capabilities and the caller's preferred format.
-enum VstInner {
-    F32(tutti_vst3_host::Vst3Active<f32>),
-    F64(tutti_vst3_host::Vst3Active<f64>),
-}
-
-/// Dispatch a shared expression over both inner variants (immutable).
-macro_rules! vst_dispatch {
-    ($self:expr, $inner:ident => $body:expr) => {
-        match &$self.inner {
-            VstInner::F32($inner) => $body,
-            VstInner::F64($inner) => $body,
-        }
-    };
-}
-
-/// Dispatch a shared expression over both inner variants (mutable).
-macro_rules! vst_dispatch_mut {
-    ($self:expr, $inner:ident => $body:expr) => {
-        match &mut $self.inner {
-            VstInner::F32($inner) => $body,
-            VstInner::F64($inner) => $body,
-        }
-    };
-}
-
+/// A VST3 plugin as the server sees it.
 pub struct Vst3Instance {
-    inner: VstInner,
+    lifecycle: Lifecycle<Vst3Loaded>,
+    state: State,
+    hand: Hand<Vst3ProcessorAny>,
     meta: Meta,
-    /// Load parameters retained so the plugin can be torn down and rebuilt in
-    /// place when it requests `kReloadComponent`. See [`Self::reload`].
-    reload: ReloadParams,
-    /// Sequencer-context conversion buffers, reused across blocks.
-    seq: SeqScratch,
-    /// A latency the host has not heard of: read after a rate change or a
-    /// rebuild moved it, and reported by the next
-    /// [`poll_restart`](Self::poll_restart).
-    pending_latency: Option<Samples>,
+    /// What the plugin asked of the host since the last pass, reused.
+    requests: Vec<Request>,
+    /// What the host has not yet been told.
+    events: Vec<AsyncEvent>,
+    /// A refusal was told since the last [`finish_refusals`](Self::finish_refusals).
+    refused: bool,
 }
 
-/// Reusable buffers for the sequencer-context conversion in [`process_block`].
-///
-/// Every field is a `Vec` the converters `clear()` and refill rather than
-/// rebuild, so a plugin advertising [`Features::SEQUENCER_CONTEXT`] costs no
-/// allocation per block once the buffers have grown. The nested `text` buffers
-/// matter as much as the outer ones: each chord / scale / note-expression text
-/// is UTF-16 re-encoded, so building these fresh was one heap allocation *per
-/// event*, not per block.
-///
-/// Sized by use, never by `set_block_size` — the event count is a property of
-/// the score, not of the buffer length, so there is no maximum to preallocate
-/// against. Steady state is reached after the first block that carries each
-/// kind of event.
-#[derive(Default)]
-struct SeqScratch {
-    chords: Vec<tutti_vst3_host::ChordValue>,
-    scales: Vec<tutti_vst3_host::ScaleValue>,
-    expr_texts: Vec<tutti_vst3_host::NoteExpressionText>,
-    expr_ints: Vec<tutti_vst3_host::NoteExpressionIntValue>,
-}
-
-/// Everything `Vst3Instance::load` needs, kept so a `kReloadComponent` request
-/// can reconstruct the instance with identical settings.
-#[derive(Clone)]
-struct ReloadParams {
-    path: std::path::PathBuf,
-    sample_rate: f64,
-    block_size: usize,
-    prefer_f64: bool,
-    /// The mode the instance is activated in. Retained here rather than read
-    /// back off the instance because it is an *input* to activation:
-    /// `setupProcessing` delivers it exactly once, so changing it means
-    /// rebuilding — which is what [`Vst3Instance::set_render_mode`] does.
-    mode: ProcessMode,
-}
-
-/// Outcome of [`Vst3Instance::poll_restart`] — the host-side restart effects
-/// that could not be applied in place and need the server / client to react.
-/// The CC-mapping rebuild and bus re-enumeration are already done by the time
-/// this returns; these flags are what remains.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RestartChanges {
-    /// New latency in samples (re-read because `kLatencyChanged` fired). Push
-    /// to PDC.
-    pub latency: Option<Samples>,
-    /// `kParamValuesChanged` — the client should re-read parameter values.
-    pub param_values_changed: bool,
-    /// `kParamTitlesChanged` — the client should re-pull the parameter list.
-    pub param_titles_changed: bool,
-    /// `kReloadComponent` — the instance was torn down and rebuilt in place;
-    /// the client should resync everything (it is effectively a fresh plugin).
-    pub reloaded: bool,
-    /// `kIoChanged` — the bus layout changed and was re-enumerated; the new
-    /// layout is in `loaded()`. The client should rewire its audio graph.
-    pub io_changed: bool,
-}
+// SAFETY: the host instances are `Send`, and the instance is driven from one
+// thread at a time.
+unsafe impl Send for Vst3Instance {}
 
 /// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
 fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
@@ -138,511 +66,278 @@ fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
     }
 }
 
-/// Resolve, load, and activate the inner host instance from load parameters,
-/// returning it alongside freshly-built protocol metadata. Shared by
-/// [`Vst3Instance::load`] and [`Vst3Instance::reload`].
-fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
-    let resolved = tutti_plugin::server::resolve_bundle(&p.path)?;
-    let loaded =
-        tutti_vst3_host::Vst3Loaded::load(&resolved).map_err(|e| map_vst3_error(e, &p.path))?;
-
-    let info = loaded.info().clone();
-    let has_editor = loaded.has_editor();
-
-    // Probe capability + best-effort ("consumes") flags off the loaded plugin
-    // BEFORE `activate` consumes it. The gate is the flag, not the format:
-    // whatever the plugin reports here is what the engine will send it.
-    let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
-    // Note-expression: any dimension on the main event bus / channel 0.
-    let has_note_expression = loaded.note_expression_count(0, 0) > 0;
-    let wants_transport = loaded.wants_transport();
-    let wants_sequencer_context = loaded.wants_sequencer_context();
-    // Both preset bits come from the same question — does the plugin publish
-    // program lists — because for VST3 they are the same capability. A program
-    // is *selected* by writing the `kIsProgramChange` parameter that owns the
-    // list, so a plugin with lists can do both halves and one without can do
-    // neither. They stay separate bits because CLAP splits them.
-    let has_programs = !loaded.program_lists().is_empty();
-
-    let inner = if p.prefer_f64 && info.supports_f64 {
-        let inst = loaded
-            .activate_with_mode::<f64>(p.sample_rate, p.block_size, p.mode)
-            .map_err(|e| map_vst3_error(e, &p.path))?;
-        VstInner::F64(inst)
-    } else {
-        let inst = loaded
-            .activate_with_mode::<f32>(p.sample_rate, p.block_size, p.mode)
-            .map_err(|e| map_vst3_error(e, &p.path))?;
-        VstInner::F32(inst)
-    };
-
-    let actually_f64 = matches!(inner, VstInner::F64(_));
-    let latency = Samples(match &inner {
-        VstInner::F32(i) => i.read_latency_samples(),
-        VstInner::F64(i) => i.read_latency_samples(),
-    } as usize);
-    // VST3 always answers `getTailSamples`, so there is no "unasked" case here —
-    // `from_vst3_samples` maps 0 to `None` and `kInfiniteTail` to `Unbounded`.
-    let tail = PluginTail::from_vst3_samples(match &inner {
-        VstInner::F32(i) => i.read_tail_samples(),
-        VstInner::F64(i) => i.read_tail_samples(),
-    });
-    let descriptor = vst3_descriptor(&info, EditorPresence::measured(has_editor));
-
-    let mut features = Features::empty();
-    features.set(Features::F64_AUDIO, actually_f64);
-    features.set(Features::MIDI_IN, info.has_midi_input);
-    features.set(Features::MIDI_OUT, info.has_midi_output);
-    features.set(Features::EDITOR, has_editor);
-    features.set(Features::EDITOR_RESIZE, editor_resizable);
-    // VST3 always carries sample-accurate parameter automation (IParameterChanges).
-    features.insert(Features::PARAM_AUTOMATION);
-    features.set(Features::TRANSPORT, wants_transport);
-    features.set(Features::NOTE_EXPRESSION, has_note_expression);
-    features.set(Features::SEQUENCER_CONTEXT, wants_sequencer_context);
-    features.set(Features::PRESET_LIST, has_programs);
-    features.set(Features::PRESET_LOAD, has_programs);
-    let probed = tutti_plugin::server::probed::VST3;
-
-    // Queried after activation, because that is when the plugin has settled its
-    // arrangements — `negotiate_bus_arrangements` runs inside `activate`.
-    let (input_topology, output_topology) = match &inner {
-        VstInner::F32(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
-        VstInner::F64(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
-    };
-
-    let loaded_meta = LoadedPlugin {
-        inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
-        outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
-        latency_samples: latency,
-        tail,
-        features,
-        probed,
-        input_topology: input_topology.into_iter().collect(),
-        output_topology: output_topology.into_iter().collect(),
-    };
-
-    Ok((
-        inner,
-        Meta {
-            descriptor,
-            loaded: loaded_meta,
-        },
-    ))
-}
-
-/// Build the catalog descriptor from VST3 factory info.
-///
-fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
-    PluginDescriptor {
-        id: info.id.clone(),
-        name: info.name.clone(),
-        vendor: info.vendor.clone(),
-        version: info.version.clone(),
-        class: PluginClass::Vst3 {
-            // A v1-only factory cannot report subcategories at all, which
-            // flattens here to the same empty facet set as a plugin that
-            // declared none. Both spell `PluginRole::Unknown`, which is the
-            // honest answer for either.
-            category: Vst3SubCategories::parse(info.sub_categories.as_deref().unwrap_or_default()),
-        },
-        editor,
-    }
-}
-
-/// Per-bus channel counts for one direction. The host already enumerates every
-/// audio bus; the full list is carried verbatim so sidechain/aux buses survive.
-/// Falls back to a single main bus of `main_channels` when the host reported no
-/// per-bus list (e.g. a plugin with exactly one bus that mirrors `num_*`).
-fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
-    if host_buses.is_empty() {
-        single_bus(main_channels)
-    } else {
-        host_buses.iter().map(|&c| ChannelLayout::from(c)).collect()
-    }
-}
-
 impl Vst3Instance {
     /// Lightweight probe: load library and read factory metadata without activation.
     pub fn probe(path: &Path) -> Result<PluginDescriptor> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let info = tutti_vst3_host::Vst3Active::<f32>::probe(&resolved).map_err(|e| {
-            BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Scanning,
-                reason: e.to_string(),
-            }
+        let info = Vst3Loaded::probe(&resolved).map_err(|e| BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Scanning,
+            reason: e.to_string(),
         })?;
         // A probe does not instantiate, and an editor is a property of an
-        // instance — so this genuinely does not know. The load path above asks.
-        Ok(vst3_descriptor(&info, EditorPresence::Unknown))
+        // instance, so this genuinely does not know. The load path asks.
+        Ok(tutti_vst3_host::descriptor_of(
+            &info,
+            EditorPresence::Unknown,
+        ))
     }
 
     /// Load and activate a VST3 plugin.
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support, the
-    /// inner instance is activated as `Vst3Instance<f64>`; otherwise `f32` is
-    /// used. The chosen format is reflected in `metadata().features`
-    /// ([`Features::F64_AUDIO`]).
+    /// instance is activated at 64-bit; otherwise 32-bit. The chosen format is
+    /// what `loaded().features` reports as [`Features::F64_AUDIO`], so the
+    /// session's negotiated format and the activation agree: the session sends
+    /// the buffer width it negotiated, and an instance activated in the other
+    /// width would refuse every block.
+    ///
+    /// [`Features::F64_AUDIO`]: tutti_plugin::server::Features::F64_AUDIO
     pub fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        let reload = ReloadParams {
-            path: path.to_path_buf(),
-            sample_rate,
-            block_size,
-            prefer_f64,
-            mode: ProcessMode::Realtime,
+        let resolved = tutti_plugin::server::resolve_bundle(path)?;
+        let loaded =
+            Vst3Loaded::load(&resolved, LoadOptions::new()).map_err(|e| map_vst3_error(e, path))?;
+        let format = if prefer_f64 && loaded.plugin_info().supports_f64 {
+            SampleFormat::Float64
+        } else {
+            SampleFormat::Float32
         };
-        let (inner, meta) = build_inner(&reload)?;
-        Ok(Self {
-            inner,
-            meta,
-            reload,
-            seq: SeqScratch::default(),
-            pending_latency: None,
-        })
+        let prepare = Prepare {
+            rate: SampleRate(sample_rate),
+            max_block: Samples(block_size),
+            format,
+            mode: RenderMode::Realtime,
+        };
+
+        let mut instance = Self {
+            lifecycle: Lifecycle::new(loaded),
+            state: Lifecycle::<Vst3Loaded>::initial_state(),
+            hand: Hand::local(),
+            meta: Meta::default(),
+            requests: Vec::new(),
+            events: Vec::new(),
+            refused: false,
+        };
+        let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
+        if instance.state.stage() != Stage::Active {
+            let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
+            return Err(BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Activation,
+                reason: format!("activate failed: {reason}"),
+            });
+        }
+        instance.refresh_meta();
+        // Whatever the activation told the host is what the load reply carries.
+        instance.events.clear();
+        Ok(instance)
     }
 
-    /// Tear the instance down and rebuild it from the original load parameters,
-    /// preserving plugin state across the swap. Invoked when the plugin
-    /// requests `kReloadComponent` (e.g. after an in-plugin preset load that
-    /// changes the component structure). The rebuilt instance replaces `inner`
-    /// and `metadata` in place.
-    fn reload(&mut self) -> Result<()> {
-        // Capture state from the old instance so the rebuilt one resumes where
-        // it left off; tolerate plugins that refuse getState.
-        let saved_state = vst_dispatch_mut!(self, inner => inner.get_state()).ok();
-
-        let (inner, meta) = build_inner(&self.reload)?;
-        let before = self.meta.loaded.latency_samples;
-        self.inner = inner;
-        self.meta = meta;
-        if self.meta.loaded.latency_samples != before {
-            self.pending_latency = Some(self.meta.loaded.latency_samples);
+    /// Steps one event through the core, applying its effects. Returns the
+    /// reason of a refusal it told, if any.
+    fn drive(&mut self, event: Event) -> Option<PluginError> {
+        let mut told = Vec::new();
+        // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
+        // in its place is built without allocating and is replaced below.
+        let state = std::mem::replace(&mut self.state, Lifecycle::<Vst3Loaded>::initial_state());
+        self.state = self
+            .lifecycle
+            .drive(state, event, &mut self.hand, |n| told.push(n));
+        let mut refusal = None;
+        for notice in told {
+            if let Some(reason) = self.absorb(notice) {
+                refusal = Some(reason);
+            }
         }
-
-        if let Some(state) = saved_state {
-            let _ = vst_dispatch_mut!(self, inner => inner.set_state(&state));
-        }
-        Ok(())
+        refusal
     }
 
-    /// Drain the plugin's `restartComponent` requests and apply every host-side
-    /// effect, returning the residual [`RestartChanges`] the server / client
-    /// still needs to react to.
-    ///
-    /// Applied in place here:
-    /// - `kLatencyChanged` → re-read latency, update cached metadata (returned
-    ///   in `latency` for PDC).
-    /// - `kMidiCCAssignmentChanged` → re-query the `IMidiMapping` CC→param table
-    ///   (`rebuild_midi_cc_mapping`), so runtime CC remaps take effect.
-    /// - `kReloadComponent` → tear the instance down and rebuild it from the
-    ///   original load params, preserving state (`reloaded`).
-    /// - `kIoChanged` → the host re-enumerated buses; refresh cached bus
-    ///   metadata and flag `io_changed` so the client can rewire.
-    ///
-    /// Surfaced for the client (no host-side action possible): the parameter
-    /// re-read flags.
-    ///
-    /// Polled between audio blocks by [`Plugin::poll_async_events`](crate::plugin::Plugin::poll_async_events); it must
-    /// not be called concurrently with [`process`](Self::process).
-    ///
-    /// It runs in the server's audio phase, so with nothing requested it
-    /// allocates nothing. It reads the restart flag word
-    /// (`Vst3Loaded::take_restart`) and discards every other queued
-    /// notification (`Vst3Loaded::discard_notifications`: lock-free pops, and
-    /// no notification owns heap memory). The server has never forwarded a
-    /// VST3 plugin's edits, progress or unit news; discarding them each poll
-    /// keeps the host's bounded queue from holding a stale backlog and its
-    /// overflow count from climbing for events nobody reads.
-    pub fn poll_restart(&mut self) -> RestartChanges {
-        vst_dispatch!(self, inner => inner.discard_notifications());
-        let restart = vst_dispatch!(self, inner => inner.take_restart());
-        let mut changes = RestartChanges {
-            latency: self.pending_latency.take(),
-            ..RestartChanges::default()
-        };
-        if restart.is_empty() {
-            return changes;
-        }
-
-        // `kIoChanged` and `kLatencyChanged` both require the same
-        // deactivate → re-ask → reactivate cycle (`ivsteditcontroller.h:125-127`
-        // and `:137-138`), so one cycle serves both when they arrive together —
-        // which they routinely do, since a layout change usually moves latency.
-        //
-        // Reading latency without the cycle is what the code did before: the
-        // figure comes from a plugin that has not been reactivated, and a
-        // plugin that recomputes group delay in `setActive(true)` reports the
-        // stale one. The re-read below happens inside the cycle, after
-        // reactivation, which is the order the header specifies.
-        // `kPrefetchableSupportChanged` asks for the same cycle, with the
-        // answer read while the plugin is down (`ivsteditcontroller.h`).
-        if restart.io_changed || restart.latency_changed || restart.prefetchable_support_changed {
-            // `if let Ok(..)`, and the `else` is deliberately absent: a refused
-            // reactivation leaves the plugin inactive, and saying nothing would
-            // let the client keep processing it. Surfacing no change is the
-            // honest answer — the cached layout and latency still describe the
-            // last configuration that worked.
-            if vst_dispatch_mut!(self, inner => inner.restart_bus_configuration()).is_ok() {
-                let samples = Samples(
-                    vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize,
-                );
+    /// Turns a notice into what the host hears, keeping the cached metadata in
+    /// step. Returns the reason when the notice is a refusal.
+    fn absorb(&mut self, notice: Notice) -> Option<PluginError> {
+        match notice {
+            Notice::LatencyChanged(samples) => {
                 self.meta.loaded.latency_samples = samples;
-                changes.latency = Some(samples);
+                self.events.push(AsyncEvent::LatencyChanged { samples });
+            }
+            Notice::TailChanged(tail) => {
+                self.meta.loaded.tail = tail;
+                self.events.push(AsyncEvent::TailChanged { tail });
+            }
+            Notice::IoChanged => {
+                self.refresh_meta();
+                self.events.push(AsyncEvent::IoChanged);
+            }
+            Notice::ParamValuesChanged => self.events.push(AsyncEvent::ParamValuesChanged),
+            Notice::ParamTitlesChanged => self.events.push(AsyncEvent::ParamTitlesChanged),
+            Notice::Reloaded => self.events.push(AsyncEvent::Reloaded),
+            // The wire carries no note-expression change, and nothing here acts
+            // on one: the host reads the list when it opens a session.
+            Notice::NoteExpressionChanged => {}
+            Notice::Refused { rate, reason } => {
+                tracing::warn!("VST3 plugin refused {} Hz: {reason}", rate.0);
+                // Whether the host must re-read the instance depends on whether
+                // a rollback revives it: `finish_refusals` decides.
+                self.refresh_meta();
+                self.refused = true;
+                return Some(reason);
+            }
+            Notice::Stuck { reason } => {
+                tracing::warn!("VST3 plugin would not stop: {reason}");
+            }
+            Notice::Lost { reason } => {
+                tracing::error!("VST3 plugin lost: {reason}");
+                // The wire has no "lost" message, and a new one would be a
+                // protocol change. `IoChanged` is the closest signal: it makes
+                // the host re-read an instance that now renders silence.
+                self.events.push(AsyncEvent::IoChanged);
+                return Some(reason);
+            }
+        }
+        None
+    }
 
-                if restart.io_changed {
-                    // Refresh the cached per-bus layout so `loaded()` reflects
-                    // the post-cycle geometry for the client rewire.
-                    let info = vst_dispatch!(self, inner => inner.info().clone());
-                    self.meta.loaded.inputs =
-                        bus_channels(&info.input_bus_channels, info.num_inputs);
-                    self.meta.loaded.outputs =
-                        bus_channels(&info.output_bus_channels, info.num_outputs);
-                    changes.io_changed = true;
+    /// Tells the host a plugin that stayed inactive after a refusal now renders
+    /// silence, so it re-reads it. A refusal a rollback undid tells nothing.
+    fn finish_refusals(&mut self) {
+        if std::mem::take(&mut self.refused) && !self.is_active() {
+            self.events.push(AsyncEvent::IoChanged);
+        }
+    }
+
+    /// Delivers what a state save or a fork must see: the writes a full edit
+    /// ring refused are retried now rather than at the next tick.
+    ///
+    /// A write to the plugin is already applied to its edit controller when it
+    /// is made (`setParamNormalized`), which is what the plugin's state reads
+    /// for the common plugin whose controller is its component. VST3 has no
+    /// out-of-band flush into the processor (CLAP's `params.flush`), so a
+    /// plugin with a separate component hears of the write in the next block's
+    /// `inputParameterChanges`; and no write needs `process` to be heard, so
+    /// no parameter is held back from the controller.
+    fn settle_edits(&mut self) {
+        if let Some(control) = self.lifecycle.control() {
+            control.flush_edits();
+        }
+    }
+
+    /// Reads the plugin's wiring again into the metadata the host is given.
+    fn refresh_meta(&mut self) {
+        if let Some(control) = self.lifecycle.control() {
+            self.meta.descriptor = control.info().clone();
+            self.meta.loaded = control.wiring();
+        }
+    }
+
+    /// Acts on what the plugin asked of the host since the last call, and
+    /// returns what the host should be told.
+    ///
+    /// The core decides what the requests need (a restart for `kIoChanged`,
+    /// `kLatencyChanged`, `kPrefetchableSupportChanged` or `kReloadComponent`, a
+    /// re-read for the rest) and the lifecycle performs it. The plugin's edits,
+    /// progress and unit news are discarded unread (the server has never
+    /// forwarded them), so the host's bounded queue holds no backlog.
+    ///
+    /// Call it between blocks, on the thread that loaded the plugin. A pass in
+    /// which the plugin asked for nothing and the core has nothing pending (the
+    /// idle pass every dispatch takes) does not enter the lifecycle and
+    /// allocates nothing. A pass that has work allocates, as a rate change does:
+    /// the core queues its effects.
+    pub fn poll(&mut self) -> Vec<AsyncEvent> {
+        self.serve();
+        std::mem::take(&mut self.events)
+    }
+
+    /// [`poll`](Self::poll)'s pass, leaving what the host should be told in
+    /// `events`.
+    fn serve(&mut self) {
+        // A restart the pass performs may itself make the plugin ask for more
+        // (an activation that raises `kIoChanged`), so the word is taken again
+        // until a pass finds it empty. Bounded, so a plugin that asks from every
+        // activation cannot hold the thread.
+        const MAX_PASSES: usize = 8;
+        let mut requests = std::mem::take(&mut self.requests);
+        for _ in 0..MAX_PASSES {
+            requests.clear();
+            if let Some(loaded) = self.loaded_ref() {
+                loaded.discard_notifications();
+                loaded.take_requests(&mut requests);
+            }
+            let asked = !requests.is_empty();
+            if !asked && self.state.is_quiet() {
+                // All a tick would do: retry what a full edit ring refused.
+                if let Some(control) = self.lifecycle.control() {
+                    control.flush_edits();
                 }
+                break;
+            }
+            for request in requests.drain(..) {
+                self.drive(Event::Request(request));
+            }
+            self.drive(Event::Tick);
+            if !asked {
+                break;
             }
         }
+        self.requests = requests;
+        self.finish_refusals();
+    }
 
-        if restart.midi_cc_assignment_changed {
-            vst_dispatch_mut!(self, inner => inner.rebuild_midi_cc_mapping());
+    /// The plugin, whichever half of an activation holds it.
+    fn loaded_ref(&self) -> Option<&Vst3Loaded> {
+        match &self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(controller),
+            Lifecycle::Poisoned => None,
         }
+    }
 
-        changes.param_values_changed = restart.param_values_changed;
-        // A remapped parameter id detaches every lane that named the old one:
-        // the host re-pulls the list. Remapping the ids through `IRemapParamID`
-        // is deferred.
-        changes.param_titles_changed =
-            restart.param_titles_changed || restart.param_id_mapping_changed;
+    /// [`loaded_ref`](Self::loaded_ref), exclusively.
+    fn loaded_mut(&mut self) -> Option<&mut Vst3Loaded> {
+        match &mut self.lifecycle {
+            Lifecycle::Loaded(plugin) | Lifecycle::Refused { plugin, .. } => Some(plugin),
+            Lifecycle::Active { controller, .. } => Some(&mut **controller),
+            Lifecycle::Poisoned => None,
+        }
+    }
 
-        if restart.reload_requested {
-            // A failed reload leaves the old instance in place; surface nothing
-            // rather than tearing the plugin down on a transient error.
-            if self.reload().is_ok() {
-                changes.reloaded = true;
-                // Reload re-read latency into the fresh metadata; propagate it.
-                changes.latency = Some(self.meta.loaded.latency_samples);
+    /// Whether the plugin is active: a refused rate leaves it loaded and
+    /// silent.
+    fn is_active(&self) -> bool {
+        matches!(self.lifecycle, Lifecycle::Active { .. })
+    }
+
+    /// Deactivates and activates at `wanted`, as a rate or mode change does.
+    /// A refusal is rolled back: the plugin is activated again at the
+    /// configuration it already accepted. Returns the refusal and whether the
+    /// rollback took, or `Ok` when `wanted` did.
+    fn reconfigure(
+        &mut self,
+        previous: Prepare,
+        wanted: Prepare,
+    ) -> std::result::Result<(), (PluginError, bool)> {
+        let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
+            None => Ok(()),
+            Some(reason) => {
+                // Put back what the plugin accepted once.
+                let rolled_back =
+                    self.drive(Event::Op(HostOp::Activate(previous))).is_none() && self.is_active();
+                if rolled_back {
+                    self.refresh_meta();
+                }
+                Err((reason, rolled_back))
             }
-        }
-
-        changes
-    }
-
-    pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        // The narrow→shared mapping lives on the host crate's
-        // `Vst3Loaded::get_parameter_list`, beside VST2's and CLAP's, so there
-        // is one VST3 param map rather than one per consumer.
-        vst_dispatch!(self, inner => inner.get_parameter_list())
-    }
-
-    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
-        // Safety: WindowHandle was validated at the IPC boundary in server.rs
-        let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
-        vst_dispatch_mut!(self, inner => inner.open_editor(handle, scale))
-            .map(|size| EditorSize {
-                width: size.width,
-                height: size.height,
-            })
-            .map_err(|e| BridgeError::EditorError(e.to_string()))
+        };
+        self.finish_refusals();
+        result
     }
 }
 
-/// Process one audio block through a typed `Vst3Instance<T>`.
-///
-/// The plugin's emitted events land in `out`, which the caller owns and
-/// reuses. `Vst3Instance::process` returns a **borrowing** `ProcessOutputRef`
-/// into its own pooled buffers precisely so this path need not allocate; the
-/// copy below is into storage that already has capacity, not into a fresh
-/// value. Calling `ProcessOutputRef::to_owned` here instead — as this did —
-/// is what its doc means by "Allocates; off-RT only".
-fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
-    inner: &mut tutti_vst3_host::Vst3Active<T>,
-    inputs: &'t [&'d [T]],
-    outputs: &'t mut [&'d mut [T]],
-    sample_rate: f64,
-    ctx: &tutti_plugin::server::ProcessContext,
-    seq: &mut SeqScratch,
-    out: &mut tutti_plugin::server::ProcessOutput,
-) -> Result<()> {
-    let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
-    let vst3_transport = ctx.transport.cloned().unwrap_or_default();
-    // The protocol and vst3-host share the note-expression value type
-    // (`tutti_plugin_types::NoteExpressionValue`), so this is a borrow, not a
-    // conversion.
-    let vst3_note_expr = ctx
-        .note_expression
-        .map(|n| n.changes.as_slice())
-        .unwrap_or_default();
-    // Refilled into `seq` rather than rebuilt: these run every block for a
-    // plugin advertising `Features::SEQUENCER_CONTEXT`, and each entry carries a
-    // UTF-16 `text` buffer, so building them fresh allocated once per event.
-    // An absent extension truncates its buffer to empty, which is what the
-    // plugin should see.
-    let expr = ctx.expressive.as_ref();
-    match expr.and_then(|e| e.chords) {
-        Some(c) => convert_chords_into(c, &mut seq.chords),
-        None => seq.chords.clear(),
-    }
-    match expr.and_then(|e| e.scales) {
-        Some(s) => convert_scales_into(s, &mut seq.scales),
-        None => seq.scales.clear(),
-    }
-    match expr.and_then(|e| e.expr_texts) {
-        Some(t) => convert_expr_texts_into(t, &mut seq.expr_texts),
-        None => seq.expr_texts.clear(),
-    }
-    match expr.and_then(|e| e.expr_ints) {
-        Some(i) => convert_expr_ints_into(i, &mut seq.expr_ints),
-        None => seq.expr_ints.clear(),
-    }
-    let vst3_events = tutti_vst3_host::Vst3InputEvents {
-        midi: ctx.midi_events,
-        note_expressions: vst3_note_expr,
-        chords: &seq.chords,
-        scales: &seq.scales,
-        expr_texts: &seq.expr_texts,
-        expr_ints: &seq.expr_ints,
-    };
-    let output = inner.process(
-        &mut vst3_buffer,
-        &vst3_events,
-        ctx.param_changes,
-        &vst3_transport,
-    );
-    // `out` was cleared by the caller, so both of these write into storage
-    // that already has capacity — no `to_owned`, no `clone`, and in particular
-    // no fresh list per block for the MIDI (past its cap the rest are dropped
-    // and counted).
-    out.emit_midi(output.midi_events.iter().copied());
-    for queue in &output.parameter_changes.queues {
-        for point in &queue.points {
-            // `emit_param_point`, not `ParameterChanges::add_change`: the
-            // former draws its queues from `out`'s own pool, so a warm block
-            // reuses the `points` buffers rather than allocating one per
-            // automated parameter.
-            out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
-        }
-    }
-    // VST3 note-expression *output* is not read back — `Vst3InputEvents`
-    // carries it inbound only, and `ProcessOutputRef` has no counterpart
-    // field. Left empty rather than absent because `out` is shared across
-    // formats; the CLAP loader fills it.
-    Ok(())
-}
-
-/// Refill `out` from `chords`, reusing both the outer buffer and each entry's
-/// UTF-16 `text` allocation.
-///
-/// The overwrite-in-place / truncate / push shape is what keeps the nested
-/// `text` buffers alive: overwriting entry `i` re-encodes into the `Vec<u16>`
-/// already sitting there, so a steady stream of chord events allocates nothing
-/// after the first block. `clear()` + `push` would drop every `text` buffer and
-/// re-grow it, which is the per-event allocation this exists to remove.
-///
-/// The same three-part shape appears in the two siblings below; the types have
-/// no common trait to hoist it onto, and a macro would hide four short bodies
-/// behind an indirection worth less than it costs.
-fn convert_chords_into(chords: &ChordChanges, out: &mut Vec<tutti_vst3_host::ChordValue>) {
-    let src = &chords.changes;
-    for (dst, c) in out.iter_mut().zip(src.iter()) {
-        dst.sample_offset = c.sample_offset;
-        dst.root = c.root;
-        dst.bass_note = c.bass_note;
-        dst.mask = c.mask;
-        encode_utf16_into(&c.text, &mut dst.text);
-    }
-    out.truncate(src.len());
-    for c in src.iter().skip(out.len()) {
-        out.push(tutti_vst3_host::ChordValue {
-            sample_offset: c.sample_offset,
-            root: c.root,
-            bass_note: c.bass_note,
-            mask: c.mask,
-            text: c.text.encode_utf16().collect(),
-        });
-    }
-}
-
-/// Re-encode `src` into `dst` in place, keeping `dst`'s capacity.
-fn encode_utf16_into(src: &str, dst: &mut Vec<u16>) {
-    dst.clear();
-    dst.extend(src.encode_utf16());
-}
-
-/// Refill `out` from `scales`. Same buffer-reuse shape as
-/// [`convert_chords_into`].
-fn convert_scales_into(scales: &ScaleChanges, out: &mut Vec<tutti_vst3_host::ScaleValue>) {
-    let src = &scales.changes;
-    for (dst, s) in out.iter_mut().zip(src.iter()) {
-        dst.sample_offset = s.sample_offset;
-        dst.root = s.root;
-        dst.mask = s.mask;
-        encode_utf16_into(&s.text, &mut dst.text);
-    }
-    out.truncate(src.len());
-    for s in src.iter().skip(out.len()) {
-        out.push(tutti_vst3_host::ScaleValue {
-            sample_offset: s.sample_offset,
-            root: s.root,
-            mask: s.mask,
-            text: s.text.encode_utf16().collect(),
-        });
-    }
-}
-
-/// Refill `out` from `texts`. Same buffer-reuse shape as
-/// [`convert_chords_into`].
-fn convert_expr_texts_into(
-    texts: &NoteExpressionTextChanges,
-    out: &mut Vec<tutti_vst3_host::NoteExpressionText>,
-) {
-    let src = &texts.changes;
-    for (dst, t) in out.iter_mut().zip(src.iter()) {
-        dst.sample_offset = t.sample_offset;
-        dst.note_id = t.note_id;
-        dst.type_id = t.type_id;
-        encode_utf16_into(&t.text, &mut dst.text);
-    }
-    out.truncate(src.len());
-    for t in src.iter().skip(out.len()) {
-        out.push(tutti_vst3_host::NoteExpressionText {
-            sample_offset: t.sample_offset,
-            note_id: t.note_id,
-            type_id: t.type_id,
-            text: t.text.encode_utf16().collect(),
-        });
-    }
-}
-
-/// Refill `out` from `ints`.
-///
-/// `NoteExpressionIntValue` is `Copy` with no nested buffer, so this is the
-/// plain `clear()` + `extend` the other three cannot use — there is nothing per
-/// entry to preserve, only the outer capacity.
-fn convert_expr_ints_into(
-    ints: &NoteExpressionIntChanges,
-    out: &mut Vec<tutti_vst3_host::NoteExpressionIntValue>,
-) {
-    out.clear();
-    out.extend(
-        ints.changes
-            .iter()
-            .map(|i| tutti_vst3_host::NoteExpressionIntValue {
-                sample_offset: i.sample_offset,
-                note_id: i.note_id,
-                type_id: i.type_id,
-                value: i.value,
-            }),
-    );
-}
-
-// `PluginInstance` is a re-export alias of `tutti_plugin_types::PluginFormatHost`
-// (tutti-plugin-server reaches the shared trait through tutti-plugin, its only
-// path to the vocabulary crate).
 impl PluginMeta for Vst3Instance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
@@ -656,155 +351,143 @@ impl PluginMeta for Vst3Instance {
 impl PluginAudio for Vst3Instance {
     fn process(
         &mut self,
-        buffer: AudioBufferMut<'_, '_>,
+        mut buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
         out: &mut ProcessOutput,
     ) -> PluginResult<()> {
-        match (&mut self.inner, buffer) {
-            (VstInner::F32(inner), AudioBufferMut::F32(buf)) => process_block(
-                inner,
-                buf.inputs,
-                buf.outputs,
-                buf.sample_rate,
-                ctx,
-                &mut self.seq,
-                out,
-            )
-            .map_err(Into::into),
-            (VstInner::F64(inner), AudioBufferMut::F64(buf)) => process_block(
-                inner,
-                buf.inputs,
-                buf.outputs,
-                buf.sample_rate,
-                ctx,
-                &mut self.seq,
-                out,
-            )
-            .map_err(Into::into),
-            // The `.to_string()` allocates, and deliberately stays. This arm is
-            // not steady state: the buffer format and the activation format are
-            // both fixed at load, so either they match for every block of the
-            // session or they match for none. Reaching here means the session is
-            // already over, and the allocation costs one `String` at the point
-            // of failure rather than one per block. Removing it would mean
-            // making `PluginError::Process` carry a `&'static str` or a code —
-            // a change to the shared error vocabulary, paid for a path that
-            // cannot recur.
-            _ => Err(PluginError::Process(
-                "Buffer format mismatch: plugin was activated with a different sample format"
-                    .to_string(),
-            )),
+        // A rate change the plugin refused left it deactivated (the host raised
+        // `IoChanged` when it happened). VST3 allows `process` only while
+        // active, so the block is silence and the plugin is not touched.
+        match self.lifecycle.processor() {
+            Some(processor) => processor.render(&mut buffer, ctx, out),
+            None => {
+                out.clear();
+                match buffer {
+                    AudioBufferMut::F32(mut buf) => buf.clear_outputs(),
+                    AudioBufferMut::F64(mut buf) => buf.clear_outputs(),
+                }
+                Ok(())
+            }
         }
     }
 
+    /// The rate the plugin already runs at is a no-op, so a per-frame caller
+    /// does not tear it down sixty times a second.
+    ///
+    /// A refusal is rolled back: the plugin is activated again at the
+    /// configuration it already accepted, and the error says it is running there.
+    /// (The session still renders nothing after an error, because its clock
+    /// follows the rate the host asked for.) When the rollback is refused too the
+    /// plugin is left loaded and silent, and the host is told through
+    /// [`AsyncEvent::IoChanged`]; the next rate revives it.
+    ///
+    /// The plugin may also change its bus layout and its latency across the
+    /// re-activation; the metadata follows them and the host is told.
     fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
-        // The host rolls the instance back to the rate the plugin already
-        // accepted and stays active there, so the session keeps running; the
-        // error tells the caller it is at a rate it did not ask for.
-        vst_dispatch_mut!(self, inner => {
-            inner.set_sample_rate(rate).map_err(|e| {
+        let Some(previous) = self.state.prepare() else {
+            return Err(PluginError::Other(
+                "VST3 plugin has no configuration to change".to_string(),
+            ));
+        };
+        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        let mut wanted = previous;
+        wanted.rate = SampleRate(rate);
+        self.reconfigure(previous, wanted)
+            .map_err(|(reason, rolled_back)| {
                 PluginError::Other(format!(
-                    "VST3 plugin refused sample rate {rate}, running at {}: {e}",
-                    inner.sample_rate()
+                    "VST3 plugin refused sample rate {rate} ({}): {reason}",
+                    if rolled_back {
+                        format!("running at {}", previous.rate.0)
+                    } else {
+                        "deactivated".to_string()
+                    }
                 ))
             })
-        })?;
-        // The latency is valid once the plugin is active again, and a group
-        // delay that is a duration moves with the rate.
-        let latency =
-            Samples(vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize);
-        if latency != self.meta.loaded.latency_samples {
-            self.meta.loaded.latency_samples = latency;
-            self.pending_latency = Some(latency);
-        }
-        Ok(())
     }
 
-    /// Re-activate the instance in the requested mode, preserving its state.
+    /// Activates the plugin again in the requested mode, keeping its state.
     ///
     /// VST3 delivers `processMode` through `setupProcessing`, which runs once
     /// per activation and may only run while deactivated
     /// (`ivstaudioprocessor.h:328`). Reaching `kOffline` from `kRealtime`
-    /// therefore *requires* a fresh setup — the spec says so explicitly at
-    /// `:142-143` — so this rebuilds through the same state-preserving path
-    /// `kReloadComponent` uses rather than mutating the live instance.
+    /// therefore *requires* a fresh setup, the spec says so explicitly at
+    /// `:142-143`, so unlike a format that applies the mode live this is a
+    /// restart: the core plans a deactivate and an activate at the new
+    /// [`Prepare`], and the instance, its parameters and its state stay.
     ///
-    /// The realtime↔prefetch pair is the one exception the spec carves out and
-    /// is `Vst3Instance::set_prefetch`, not this; prefetch is not reachable
+    /// A refusal is rolled back to the mode the plugin was running in, and
+    /// answers `false`.
+    ///
+    /// The realtime and prefetch pair is the one exception the spec carves out
+    /// and is `Vst3Processor::set_prefetch`, not this; prefetch is not reachable
     /// through [`RenderMode`] by design (see its docs).
     fn set_render_mode(&mut self, mode: RenderMode) -> bool {
-        let requested = if mode.is_offline() {
-            ProcessMode::Offline
-        } else {
-            ProcessMode::Realtime
+        let Some(previous) = self.state.prepare() else {
+            return false;
         };
-        if self.reload.mode == requested {
+        if previous.mode == mode && self.is_active() {
             return true;
         }
-        let previous = self.reload.mode;
-        self.reload.mode = requested;
-        if self.reload().is_err() {
-            // The rebuild failed and `reload` leaves the old instance in place,
-            // so the retained mode must go back to what is actually running —
-            // otherwise a later `kReloadComponent` would silently adopt a mode
-            // this plugin already refused.
-            self.reload.mode = previous;
-            return false;
-        }
-        true
+        let mut wanted = previous;
+        wanted.mode = mode;
+        self.reconfigure(previous, wanted).is_ok()
     }
 }
 
 impl PluginParams for Vst3Instance {
+    /// Normalized `0..=1`, which is VST3's own domain.
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `ParamID` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        vst_dispatch!(self, inner => inner.get_parameter(id.get()))
+        self.loaded_ref()
+            .and_then(|loaded| Control::parameter(loaded, id))
+            .map_or(0.0, Normalized::get)
     }
 
+    /// Normalized `0..=1` in. On an active plugin the write reaches the edit
+    /// controller now and is queued to the Processor, which hands it to the
+    /// plugin at the head of the next block.
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        // VST3 is normalized natively (`setParamNormalized`), so this is the
-        // one format where the seam's domain and the ABI's coincide.
         let Some(id) = id.opaque() else { return };
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value.get()));
+        if let Some(control) = self.lifecycle.control() {
+            control.set_parameter(id, value);
+        }
     }
 
     /// VST3's `getParamStringByValue` takes the value already normalized, so
     /// this is the one format where no conversion stands between the seam's
-    /// domain and the ABI's — the same coincidence
-    /// [`set_parameter`](Self::set_parameter) notes.
+    /// domain and the ABI's.
     fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
         let id = id.opaque()?;
-        vst_dispatch!(self, inner => inner.parameter_string_by_value(id.get(), value.get()))
+        Control::parameter_text(self.loaded_ref()?, id, value)
     }
 
     /// The inverse. `getParamValueByString` answers normalized too, so the
-    /// result passes through `Normalized::new`'s clamp only — a plugin
-    /// returning a slightly out-of-range value is corrected rather than
-    /// forwarded to its own parameter.
+    /// result passes through `Normalized::new`'s clamp only.
     fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
         let id = id.opaque()?;
-        let value = vst_dispatch!(self, inner => inner.parameter_value_by_string(id.get(), text))?;
-        Some(Normalized::new(value))
+        Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {
-        // Encode the format-neutral mode onto the VST3 `IAutomationState` bitmask
-        // HERE, at the VST3 FFI edge, via the VST3 crate's own SDK-backed
-        // conversion. Forwards to `Vst3Loaded::set_automation_state` via Deref; a
-        // no-op if the plugin doesn't implement IAutomationState. Runs on the
-        // server's main thread (same as set_parameter), satisfying the host's
-        // main-thread assertion.
-        let state = tutti_vst3_host::automation_state::from_mode(mode);
-        vst_dispatch_mut!(self, inner => { inner.set_automation_state(state); });
+        // Runs on the server's main thread (same as set_parameter), satisfying
+        // the host's main-thread assertion.
+        if let Some(control) = self.lifecycle.control() {
+            control.set_automation_state(mode);
+        }
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        Vst3Instance::get_parameter_list(self)
+        self.loaded_ref()
+            .map(Control::parameters)
+            .unwrap_or_default()
     }
 
     fn parameter_count(&self) -> usize {
-        vst_dispatch!(self, inner => inner.parameter_count() as usize)
+        self.loaded_ref()
+            .map_or(0, |loaded| loaded.parameter_count() as usize)
     }
 }
 
@@ -814,309 +497,81 @@ impl PluginEditorHost for Vst3Instance {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        Vst3Instance::open_editor(self, parent, scale).map_err(Into::into)
+        // Safety: WindowHandle was validated at the IPC boundary in server.rs
+        let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
+        let loaded = self
+            .loaded_mut()
+            .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
+        loaded
+            .open_editor(handle, scale)
+            .map(|size| EditorSize {
+                width: size.width,
+                height: size.height,
+            })
+            .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
     }
 
     fn close_editor(&mut self) {
-        vst_dispatch_mut!(self, inner => inner.close_editor());
+        if let Some(loaded) = self.loaded_mut() {
+            loaded.close_editor();
+        }
     }
 }
 
 impl PluginPresets for Vst3Instance {
-    /// The plugin's programs, flattened out of its named program lists.
-    ///
-    /// VST3 is the one format whose presets are **grouped**: programs live in
-    /// lists attached to units, so each `Preset` carries its list's name as
-    /// `bank`. The id keeps both coordinates — `getProgramName` takes
-    /// `(list_id, index)`, and the list id is plugin-chosen rather than a
-    /// position in `program_lists()`, so neither can be dropped.
-    ///
-    /// A program the plugin declines to name is kept with an empty name rather
-    /// than skipped: the index is half the identifier, so dropping one would
-    /// renumber every program after it within that list.
+    /// The plugin's programs, flattened out of its named program lists; see
+    /// [`Control::presets`].
     fn get_presets(&mut self) -> Vec<Preset> {
-        vst_dispatch!(self, inner => {
-            inner
-                .program_lists()
-                .into_iter()
-                .flat_map(|list| {
-                    (0..list.program_count).map(move |index| {
-                        let name = inner
-                            .program_name(list.id, index)
-                            .unwrap_or_default();
-                        Preset::in_bank(
-                            PresetId::Program { list_id: list.id, index },
-                            name,
-                            list.name.clone(),
-                        )
-                    })
-                })
-                .collect()
-        })
+        self.lifecycle
+            .control()
+            .map(Control::presets)
+            .unwrap_or_default()
     }
 
-    /// Select a program by writing the parameter that owns its list.
-    ///
-    /// VST3 has no load-preset call, so this *is* the load: the format routes a
-    /// program change through the parameter flagged `kIsProgramChange`, whose
-    /// unit names the program list. Doing it here rather than leaving it to the
-    /// caller is what makes the four formats one API — and it stays a single
-    /// write path, because the parameter is still the only thing written.
-    ///
-    /// `false` when the id names no VST3 program, when no parameter claims that
-    /// list, or when the list has fewer than two entries (nothing to select
-    /// between, and the normalization would divide by zero).
-    ///
-    /// `IUnitInfo::setUnitProgramData` is *not* this call: it takes an
-    /// `IBStream` of preset bytes and writes them into a slot, the inverse
-    /// operation. Named because it is the obvious thing to find later and
-    /// mistake for a load path.
+    /// Select a program by writing the parameter that owns its list; see
+    /// [`Control::load_preset`].
     fn load_preset(&mut self, id: &PresetId) -> bool {
-        let PresetId::Program { list_id, index } = id else {
-            return false;
-        };
-        let Some((param_id, step_count)) = self.program_change_param(*list_id) else {
-            return false;
-        };
-        // `StringListParameter::toNormalized` is `value / stepCount`
-        // (`futils.h:87-90`), and `appendString` increments `stepCount` per
-        // entry from zero — so a list of N programs has `stepCount == N - 1`
-        // and index `i` normalizes to `i / (N - 1)`, not `i / N`. The
-        // off-by-one is silent and lands on a neighbouring program.
-        if step_count <= 0 || *index > step_count as u32 {
-            return false;
-        }
-        let normalized = f64::from(*index) / f64::from(step_count);
-        vst_dispatch_mut!(self, inner => inner.set_parameter(param_id, normalized));
-        true
+        self.lifecycle
+            .control()
+            .is_some_and(|control| control.load_preset(id))
     }
 
     /// The program the plugin currently has selected, read back off the same
     /// parameter [`load_preset`](Self::load_preset) writes.
-    ///
-    /// `None` when no unit publishes a program list, which is every plugin
-    /// that does not implement `IUnitInfo`.
     fn get_current_preset(&mut self) -> Option<PresetId> {
-        // One unit walk, not two. `units()` is a COM round trip per unit *and*
-        // internally enumerates the program lists to resolve each unit's
-        // `program_list`, so asking twice here cost four full enumerations into
-        // plugin code to answer one question. Both things this needs — the
-        // first published list, and the unit that owns it — come out of the
-        // same pass.
-        let (list_id, owning_unit) = vst_dispatch!(self, inner => {
-            inner
-                .units()
-                .into_iter()
-                .find_map(|u| u.program_list.map(|list| (list, u.id)))
-        })?;
-        let (param_id, step_count) = self.program_change_param_of(owning_unit)?;
-        if step_count <= 0 {
-            return None;
-        }
-        let normalized = vst_dispatch!(self, inner => inner.get_parameter(param_id));
-        // Inverse of the write: `FromNormalized` is `value * stepCount`, then
-        // rounded — the parameter is a discrete list, so a value between two
-        // steps belongs to the nearer one.
-        let index = (normalized * f64::from(step_count)).round();
-        if !index.is_finite() || index < 0.0 {
-            return None;
-        }
-        Some(PresetId::Program {
-            list_id,
-            index: index as u32,
-        })
-    }
-}
-
-impl Vst3Instance {
-    /// The `(parameter id, step count)` of the program-change parameter that
-    /// selects from `list_id`, if one exists.
-    ///
-    /// The link runs parameter -> unit -> program list: a program-change
-    /// parameter belongs to a unit, and that unit names the list it selects
-    /// from. Matching on the *flag* rather than on a name or position is what
-    /// makes this work for a plugin with several lists.
-    ///
-    /// **The flag check is uncovered, measured rather than assumed.** Dropping
-    /// `is_program_change()` and taking the unit's first parameter leaves every
-    /// test green: the SDK's `multiple_programchanges` sample gives each unit
-    /// exactly one parameter, so the two rules coincide. The fixture that would
-    /// separate them is `mda-vst3`, whose controllers add a Bypass parameter to
-    /// the same root unit *before* the preset one — but its shell exposes the
-    /// base controller (dangling `programListId`, zero published lists) and
-    /// `load_class` cannot re-open the bundle while the first load holds it. So
-    /// no available input distinguishes the two, and a plugin that puts any
-    /// parameter ahead of its program-change one would have the wrong parameter
-    /// written. The flag is correct per `vsteditcontroller.cpp:604`; it is the
-    /// test that is missing, not the rule.
-    #[cfg(feature = "vst3")]
-    fn program_change_param(&self, list_id: i32) -> Option<(u32, i32)> {
-        let owning_unit = vst_dispatch!(self, inner => {
-            inner
-                .units()
-                .into_iter()
-                .find_map(|u| (u.program_list == Some(list_id)).then_some(u.id))
-        })?;
-        self.program_change_param_of(owning_unit)
-    }
-
-    /// The program-change parameter belonging to `owning_unit`.
-    ///
-    /// The half of [`program_change_param`](Self::program_change_param) that
-    /// does not need to walk the unit tree. Split out so `get_current_preset`,
-    /// which finds its list *by* walking the units, does not pay for a second
-    /// walk to rediscover the unit it just had in hand.
-    #[cfg(feature = "vst3")]
-    fn program_change_param_of(&self, owning_unit: i32) -> Option<(u32, i32)> {
-        vst_dispatch!(self, inner => {
-            let count = inner.parameter_count();
-            (0..count).find_map(|i| {
-                let info = inner.parameter_info(i)?;
-                (info.is_program_change() && info.unit_id == owning_unit)
-                    .then_some((info.id, info.step_count))
-            })
-        })
+        self.lifecycle.control()?.current_preset()
     }
 }
 
 impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
-        vst_dispatch_mut!(self, inner => inner.get_state())
-            .map_err(|e| PluginError::State(e.to_string()))
+        self.settle_edits();
+        self.lifecycle
+            .control()
+            .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
+            .save_state()
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        vst_dispatch_mut!(self, inner => inner.set_state(data))
-            .map_err(|e| PluginError::State(e.to_string()))
+        self.lifecycle
+            .control()
+            .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
+            .load_state(data)
     }
 }
 
 #[cfg(test)]
 impl Vst3Instance {
+    /// The plugin, whichever half holds it.
+    pub(crate) fn vst3_loaded(&self) -> &Vst3Loaded {
+        self.loaded_ref().expect("the plugin is not lost")
+    }
+
     /// Calls the host's `restartComponent(flags)` as the plugin would, so a
     /// session test can raise a restart the probe never raises on its own.
     pub(crate) fn plugin_restart_component(&self, flags: i32) {
         use tutti_vst3_host::host::conformance::plugin_restart_component;
-        vst_dispatch!(self, inner => plugin_restart_component(inner, flags));
-    }
-}
-
-/// Sequencer-context conversion, exercised without a plugin binary.
-///
-/// These are the only tests in this file that run anywhere: everything below
-/// needs a real VST3 on disk (and a macOS path at that), while the converters
-/// are pure functions over the protocol types.
-#[cfg(test)]
-#[cfg(feature = "vst3")]
-mod seq_scratch_tests {
-    use super::*;
-    use tutti_plugin::server::ChordValue;
-
-    fn chord(offset: i32, text: &str) -> ChordValue {
-        ChordValue {
-            sample_offset: offset,
-            root: 60,
-            bass_note: 60,
-            mask: 0b1001_0001,
-            text: text.to_string(),
-        }
-    }
-
-    fn changes(items: &[ChordValue]) -> ChordChanges {
-        let mut c = ChordChanges::new();
-        for i in items {
-            assert!(c.add_change(i.clone()), "the fixture fits the cap");
-        }
-        c
-    }
-
-    /// The point of the whole change: once the buffers have grown, refilling
-    /// them must not allocate.
-    ///
-    /// Measured with `assert_no_alloc` rather than by comparing buffer
-    /// addresses. Addresses do **not** discriminate here — `clear()` frees each
-    /// `text` buffer and the very next `push` re-requests the same size, which
-    /// the allocator typically satisfies from the block it just freed, so the
-    /// pointers come back equal and a naive rebuild passes. Counting the
-    /// allocations is the only observable that separates the two, and this
-    /// crate already installs `AllocDisabler` as its global allocator
-    /// (`lib.rs`) for exactly this kind of gate.
-    ///
-    /// The source `ChordChanges` is built outside the gate: constructing one
-    /// allocates its `String`s, which is the caller's cost, not the
-    /// converter's.
-    #[test]
-    fn refilling_grown_buffers_does_not_allocate() {
-        let mut out = Vec::new();
-        // Warm up: first pass grows the outer Vec and each nested text buffer.
-        convert_chords_into(&changes(&[chord(0, "Cmaj7"), chord(64, "Fmin")]), &mut out);
-
-        // Same event count, same text lengths, different values — the steady
-        // state a sequencer-driven plugin sits in block after block.
-        let next = changes(&[chord(8, "Dmin9"), chord(96, "G7")]);
-        assert_no_alloc::assert_no_alloc(|| {
-            convert_chords_into(&next, &mut out);
-        });
-
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].sample_offset, 8);
-        assert_eq!(out[0].text, "Dmin9".encode_utf16().collect::<Vec<_>>());
-        assert_eq!(out[1].text, "G7".encode_utf16().collect::<Vec<_>>());
-    }
-
-    /// A shorter block truncates; a longer one grows. Both must leave the
-    /// surviving prefix correct rather than stale.
-    #[test]
-    fn refilling_tracks_a_changing_event_count() {
-        let mut out = Vec::new();
-        convert_chords_into(
-            &changes(&[chord(0, "a"), chord(1, "b"), chord(2, "c")]),
-            &mut out,
-        );
-        assert_eq!(out.len(), 3);
-
-        convert_chords_into(&changes(&[chord(9, "z")]), &mut out);
-        assert_eq!(out.len(), 1, "shrinks to the new count");
-        assert_eq!(out[0].sample_offset, 9);
-        assert_eq!(out[0].text, "z".encode_utf16().collect::<Vec<_>>());
-
-        convert_chords_into(&changes(&[chord(3, "p"), chord(4, "q")]), &mut out);
-        assert_eq!(out.len(), 2, "grows past the retained entry");
-        assert_eq!(out[1].text, "q".encode_utf16().collect::<Vec<_>>());
-    }
-
-    /// An empty block must clear rather than leave the previous block's chords
-    /// visible — the stale-data failure the truncate guards against.
-    #[test]
-    fn an_empty_block_clears_the_buffer() {
-        let mut out = Vec::new();
-        convert_chords_into(&changes(&[chord(0, "Cmaj7")]), &mut out);
-        assert_eq!(out.len(), 1);
-
-        convert_chords_into(&changes(&[]), &mut out);
-        assert!(out.is_empty(), "no chords this block means none are staged");
-    }
-
-    /// `NoteExpressionIntValue` has no nested buffer, so its converter is the
-    /// plain clear+extend. Covered so the divergence stays deliberate.
-    #[test]
-    fn int_expressions_refill_without_nesting() {
-        use tutti_plugin::server::{NoteExpressionIntChanges, NoteExpressionIntValue};
-        let mut src = NoteExpressionIntChanges::new();
-        assert!(src.add_change(NoteExpressionIntValue {
-            sample_offset: 4,
-            note_id: 7,
-            type_id: 2,
-            value: 41,
-        }));
-
-        let mut out = Vec::new();
-        convert_expr_ints_into(&src, &mut out);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].value, 41);
-
-        convert_expr_ints_into(&NoteExpressionIntChanges::new(), &mut out);
-        assert!(out.is_empty());
+        plugin_restart_component(self.vst3_loaded(), flags);
     }
 }
 
@@ -1126,7 +581,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use tutti_midi_types::{MidiChannel, MidiGroup};
-    use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
+    use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features, MidiEvent};
 
     /// Sets `TUTTI_PROBE_MISBEHAVIOUR` for the life of the guard and restores
     /// the previous value on drop, a panic included. Take it while holding
@@ -1176,73 +631,136 @@ mod tests {
         crate::test_utils::vst3_program_sample_path()
     }
 
-    /// The server's restart poll runs in its audio phase, so it must not
-    /// allocate — even with a plugin's edits waiting in the host's queue,
+    /// The probe's `kParamMode` (`probeids.h`), and its `kModeActivationCount`
+    /// as a normalized mode: `index / kModeStepCount`.
+    const PARAM_MODE: u32 = 100;
+    const MODE_ACTIVATION_COUNT: f64 = 8.0 / 10.0;
+    /// `kActivationCountBase`: mode 8 writes this plus the number of
+    /// `setActive(true)` calls.
+    const ACTIVATION_COUNT_BASE: f32 = 9000.0;
+
+    /// How many times the probe has been activated, as the probe reports it:
+    /// the mode is selected through the host's own write path (queued to the
+    /// Processor, which puts it in the block's parameter changes) and one block
+    /// is rendered, so the answer is what the plugin saw, not what the host
+    /// believes.
+    fn activations_seen_by_the_plugin(instance: &mut Vst3Instance) -> u32 {
+        instance.set_parameter(
+            ParamAddress::Opaque(tutti_plugin_types::ParamId::new(PARAM_MODE)),
+            Normalized::new(MODE_ACTIVATION_COUNT),
+        );
+        let frames = 128;
+        let input = vec![vec![0.0f32; frames]; 3];
+        let mut output = vec![vec![0.0f32; frames]; 3];
+        let input_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut output_slices: Vec<&mut [f32]> =
+            output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let buffer = AudioBuffer {
+            inputs: &input_slices,
+            outputs: &mut output_slices,
+            num_samples: frames,
+            sample_rate: 48_000.0,
+        };
+        let ctx = ProcessContext::new();
+        let mut out = ProcessOutput::default();
+        // The first block carries the write into the plugin; the mode applies
+        // from the next.
+        instance
+            .process(AudioBufferMut::F32(buffer), &ctx, &mut out)
+            .expect("renders");
+        let buffer = AudioBuffer {
+            inputs: &input_slices,
+            outputs: &mut output_slices,
+            num_samples: frames,
+            sample_rate: 48_000.0,
+        };
+        instance
+            .process(AudioBufferMut::F32(buffer), &ctx, &mut out)
+            .expect("renders");
+        (output[0][0] - ACTIVATION_COUNT_BASE) as u32
+    }
+
+    /// The restart poll with a plugin's edits waiting in the host's queue,
     /// which is the common case while a user drags a knob in the server-side
-    /// editor — and it discards those edits (the server never forwards them),
-    /// so no backlog builds up.
+    /// editor: the host crate's two reads of the plugin's callbacks do not
+    /// allocate, the poll discards the edits (the server never forwards them),
+    /// so no backlog builds up, and the coalesced restart reaches the host once.
     ///
-    /// Mutations: `poll_restart` reading through the main-thread drain
-    /// (`poll_plugin_notifications`) and collecting the queued edits into a
-    /// `Vec`, as it did before, aborts inside the gate — and does so even
-    /// with `conformance::plugin_perform_edit` made a no-op, because the
-    /// "64 queued" assertion then fails first. Dropping the
-    /// `discard_notifications` call fails the "queue is empty" assertion.
+    /// The bridge's own pass allocates when it has something to do (the core
+    /// copies its state and queues the effects), as a CLAP pass does; what is
+    /// gated is the part that runs when the plugin asked for nothing.
+    ///
+    /// Mutations (run): `take_requests` collecting the requests into a fresh
+    /// `Vec` aborts inside the first gate; dropping the `discard_notifications`
+    /// call from the gated closure fails the "queue is empty" assertion; making
+    /// `RestartFlags::raise_into` raise nothing for `kParamValuesChanged` fails
+    /// the `RescanParams(Values)` assertion.
     #[test]
-    fn the_restart_poll_does_not_allocate_with_edits_pending() {
+    fn the_request_reads_do_not_allocate_with_edits_pending() {
         use tutti_vst3_host::host::conformance::{plugin_perform_edit, plugin_restart_component};
         // `RestartFlags_::kParamValuesChanged` (`ivsteditcontroller.h`). The
-        // assertion on `param_values_changed` below pins that this is the bit.
+        // assertion on the request below pins that this is the bit.
         const K_PARAM_VALUES_CHANGED: i32 = 1 << 2;
 
         let _lock = crate::test_utils::plugin_load_lock();
         let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
             .expect("the vendored VST3 probe loads");
+        let mut requests: Vec<Request> = Vec::with_capacity(16);
 
-        // Nothing pending: the idle poll every block takes.
+        // Nothing pending: the idle read every pass takes.
         assert_no_alloc::assert_no_alloc(|| {
-            let changes = instance.poll_restart();
-            assert!(!changes.param_values_changed && changes.latency.is_none());
+            let loaded = instance.vst3_loaded();
+            loaded.discard_notifications();
+            loaded.take_requests(&mut requests);
         });
+        assert!(requests.is_empty());
 
-        vst_dispatch!(instance, inner => {
-            for i in 0..64 {
-                plugin_perform_edit(inner, 100, f64::from(i) / 64.0);
-            }
-            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
-            plugin_restart_component(inner, K_PARAM_VALUES_CHANGED);
-        });
+        let loaded = instance.vst3_loaded();
+        for i in 0..64 {
+            plugin_perform_edit(loaded, 100, f64::from(i) / 64.0);
+        }
+        plugin_restart_component(loaded, K_PARAM_VALUES_CHANGED);
+        plugin_restart_component(loaded, K_PARAM_VALUES_CHANGED);
         // The gate below is only meaningful if the edits are really there.
-        vst_dispatch!(instance, inner => {
-            assert_eq!(inner.dropped_notifications(), 0);
-            assert_eq!(inner.pending_notifications(), 64, "the edits are queued");
-        });
+        assert_eq!(loaded.dropped_notifications(), 0);
+        assert_eq!(loaded.pending_notifications(), 64, "the edits are queued");
 
-        let changes = assert_no_alloc::assert_no_alloc(|| instance.poll_restart());
-        vst_dispatch!(instance, inner => assert_eq!(
-            inner.pending_notifications(),
+        assert_no_alloc::assert_no_alloc(|| {
+            loaded.discard_notifications();
+            loaded.take_requests(&mut requests);
+        });
+        assert_eq!(
+            loaded.pending_notifications(),
             0,
             "the poll discards what the server never forwards"
+        );
+        assert_eq!(
+            requests,
+            [Request::RescanParams(
+                tutti_plugin_types::RescanScope::Values
+            )],
+            "two flags are one request"
+        );
+        requests.clear();
+        loaded.take_requests(&mut requests);
+        assert!(requests.is_empty(), "a take consumes the requests");
+
+        // And the bridge turns one into the host's event, once.
+        plugin_restart_component(loaded, K_PARAM_VALUES_CHANGED);
+        assert!(matches!(
+            instance.poll().as_slice(),
+            [AsyncEvent::ParamValuesChanged]
         ));
-        assert!(
-            changes.param_values_changed,
-            "the coalesced restart reaches the server"
-        );
-        assert!(!changes.io_changed && !changes.reloaded && changes.latency.is_none());
-        assert!(
-            !instance.poll_restart().param_values_changed,
-            "a poll consumes the restart"
-        );
+        assert!(instance.poll().is_empty(), "a poll consumes the restart");
     }
 
     /// **A latency that moves with the rate is read again after a rate
-    /// change** and reaches the next restart poll, with no `restartComponent`
-    /// from the plugin. The figure was read inside the host crate and dropped,
-    /// so PDC kept the old rate's.
+    /// change** and reaches the next poll, with no `restartComponent` from the
+    /// plugin. The figure was read inside the host crate and dropped, so PDC
+    /// kept the old rate's.
     ///
-    /// Mutation (run): delete the `read_latency_samples` block from
-    /// `Vst3Instance::set_sample_rate` → `poll_restart().latency` is `None` →
-    /// fails.
+    /// Mutation (run): delete the `self.events.push(AsyncEvent::LatencyChanged
+    /// { samples })` from `absorb` → the poll carries no latency → fails.
     #[test]
     fn a_latency_that_follows_the_rate_is_reread_after_a_rate_change() {
         let _lock = crate::test_utils::plugin_load_lock();
@@ -1251,21 +769,28 @@ mod tests {
         let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 44_100.0, 128, false)
             .expect("the vendored VST3 probe loads");
         assert_eq!(instance.meta.loaded.latency_samples, Samples(44));
-        assert_eq!(instance.poll_restart().latency, None);
+        assert!(instance.poll().is_empty());
 
         instance.set_sample_rate(96_000.0).expect("rate change");
 
         assert_eq!(instance.meta.loaded.latency_samples, Samples(96));
-        assert_eq!(instance.poll_restart().latency, Some(Samples(96)));
-        assert_eq!(instance.poll_restart().latency, None, "once");
+        assert!(
+            matches!(
+                instance.poll().as_slice(),
+                [AsyncEvent::LatencyChanged { samples }] if *samples == Samples(96)
+            ),
+            "the new figure reaches the host"
+        );
+        assert!(instance.poll().is_empty(), "once");
     }
 
     /// **`kPrefetchableSupportChanged` runs the deactivate and activate the
-    /// header asks for**, and the latency is read after it. The flag was
-    /// decoded and dropped.
+    /// header asks for.** The flag was decoded and dropped. The probe counts its
+    /// own activations, which is what the host cannot see.
     ///
-    /// Mutation (run): drop `|| restart.prefetchable_support_changed` from the
-    /// cycle's condition in `poll_restart` → no latency comes back → fails.
+    /// Mutation (run): `RestartFlags::raise_into` raising nothing for
+    /// `prefetchable_support_changed` → the plugin is not activated again →
+    /// fails.
     #[test]
     fn a_prefetchable_support_change_restarts_the_plugin() {
         // `RestartFlags_::kPrefetchableSupportChanged`.
@@ -1273,21 +798,33 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
             .expect("the vendored VST3 probe loads");
-        assert_eq!(instance.poll_restart().latency, None);
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            1,
+            "a fresh load activates once"
+        );
+        assert!(instance.poll().is_empty());
 
         instance.plugin_restart_component(K_PREFETCHABLE_SUPPORT_CHANGED);
 
-        let changes = instance.poll_restart();
-        assert_eq!(changes.latency, Some(instance.meta.loaded.latency_samples));
-        assert!(!changes.io_changed, "the layout was not asked about");
+        let events = instance.poll();
+        assert!(
+            !events.iter().any(|e| matches!(e, AsyncEvent::IoChanged)),
+            "the layout was not asked about: {events:?}"
+        );
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            2,
+            "the plugin was deactivated and activated again"
+        );
     }
 
     /// **`kParamIDMappingChanged` reaches the client as a parameter-list
     /// change**, so it re-pulls the ids; it was decoded and dropped, and every
     /// lane that named a remapped id detached.
     ///
-    /// Mutation (run): drop `|| restart.param_id_mapping_changed` in
-    /// `poll_restart` → fails.
+    /// Mutation (run): `RestartFlags::raise_into` not raising the rescan for
+    /// `param_id_mapping_changed` → fails.
     #[test]
     fn a_param_id_remap_is_reported_as_a_changed_list() {
         // `RestartFlags_::kParamIDMappingChanged`.
@@ -1298,7 +835,98 @@ mod tests {
 
         instance.plugin_restart_component(K_PARAM_ID_MAPPING_CHANGED);
 
-        assert!(instance.poll_restart().param_titles_changed);
+        assert!(
+            instance
+                .poll()
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged))
+        );
+    }
+
+    /// **A rate the plugin refuses is rolled back to the one it already
+    /// accepted**, and the session keeps running: the error says it is running
+    /// there, the plugin is active and has the layout it had, and the next rate
+    /// it takes is taken.
+    ///
+    /// Mutation (run): `reconfigure` not activating again at the previous
+    /// `Prepare` (the `Activate(previous)` drive removed) → the plugin is left
+    /// loaded and silent → the `is_active` assertion fails.
+    #[test]
+    fn a_refused_rate_is_rolled_back_to_the_previous_one() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `kMisbehaveRefusesHighRates`: `setActive(true)` fails above 50 kHz.
+        let _misbehaviour = ProbeMisbehaviour::set("14");
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert!(instance.poll().is_empty());
+        let layout = instance.meta.loaded.clone();
+
+        let error = instance
+            .set_sample_rate(96_000.0)
+            .expect_err("the probe refuses 96 kHz");
+        assert!(
+            error.to_string().contains("running at 48000"),
+            "the error says where it runs: {error}"
+        );
+        assert!(instance.is_active(), "the rollback revived the plugin");
+        // The core tells the host to re-read a plugin it revived (`IoChanged`);
+        // what the host reads is the layout the plugin had.
+        let told = instance.poll();
+        assert!(
+            told.iter().all(|e| matches!(e, AsyncEvent::IoChanged)),
+            "{told:?}"
+        );
+        assert_eq!(instance.meta.loaded.inputs, layout.inputs);
+        assert_eq!(instance.meta.loaded.outputs, layout.outputs);
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
+
+        instance
+            .set_sample_rate(44_100.0)
+            .expect("a rate it takes is taken");
+        assert!(instance.is_active());
+    }
+
+    /// **A render mode is the activation's: changing it activates the plugin
+    /// again in the new mode**, keeping the instance, and a mode the plugin
+    /// refuses is rolled back and answered `false`. VST3 delivers the mode in
+    /// `setupProcessing` and nowhere else, so (unlike a format that applies it
+    /// live) the change is a restart, and the core's `Prepare` carries the mode
+    /// the restart uses.
+    ///
+    /// Mutation (run): `set_render_mode` recording the mode without reconfiguring
+    /// (answering `true` at once) → the plugin is never activated again → the
+    /// activation count stays 1 → fails; not rolling a refusal back → the
+    /// `is_active` assertion fails.
+    #[test]
+    fn a_render_mode_change_activates_the_plugin_again_in_the_new_mode() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `kMisbehaveRefusesOffline`: `setActive(true)` fails under `kOffline`.
+        let _misbehaviour = ProbeMisbehaviour::set("15");
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
+
+        assert!(
+            !instance.set_render_mode(RenderMode::Offline),
+            "the probe refuses offline"
+        );
+        assert!(instance.is_active(), "the refusal was rolled back");
+        assert_eq!(
+            instance.state.prepare().map(|p| p.mode),
+            Some(RenderMode::Realtime),
+            "and the mode the core holds is the one that runs"
+        );
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            2,
+            "the rollback activated the plugin once"
+        );
+
+        assert!(
+            instance.set_render_mode(RenderMode::Realtime),
+            "the mode it already has is taken without a restart"
+        );
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.
@@ -1416,10 +1044,16 @@ mod tests {
             unreachable!("VST3 ids are programs")
         };
         let (param_id, step_count) = instance
-            .program_change_param(*list_id)
+            .vst3_loaded()
+            .program_change_parameter(*list_id)
             .expect("the list has a program-change parameter");
         assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = vst_dispatch!(instance, inner => inner.get_parameter(param_id));
+        let raw = Control::parameter(
+            instance.vst3_loaded(),
+            tutti_plugin_types::ParamId::new(param_id),
+        )
+        .expect("the plugin has a controller")
+        .get();
         let expected = f64::from(*index) / f64::from(step_count);
         assert!(
             (raw - expected).abs() < 1e-9,

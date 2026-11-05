@@ -35,8 +35,8 @@ use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChange
 use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
-use crate::types::ParameterChanges;
-use tutti_plugin_types::{ParamAddress, PointPool};
+use crate::types::{ParameterChanges, ParameterPoint};
+use tutti_plugin_types::{Normalized, ParamAddress, PointPool};
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
@@ -157,6 +157,40 @@ impl ParameterChangesImpl {
         }
         *self.dropped.borrow_mut() += dropped;
         *self.live.borrow_mut() = changes.queues.len() - past.len();
+    }
+
+    /// Puts a point for `param_id` ahead of the list's own, at the block's
+    /// first sample: the host's own write, which the automation already in the
+    /// list overrides where both set the parameter at one offset.
+    ///
+    /// Adds to the parameter's queue when the list has one, otherwise takes
+    /// the next unused queue of the pool. A queue with no room, or a list with
+    /// no queue left, drops the point and counts it
+    /// ([`points_dropped`](Self::points_dropped)): the automation outranks it.
+    ///
+    /// # Real-time
+    ///
+    /// Allocation-free; linear in the live queues.
+    pub fn prepend_point(&self, param_id: u32, value: Normalized) {
+        let point = ParameterPoint {
+            sample_offset: 0,
+            value,
+        };
+        let queues = self.queues.borrow();
+        let live = *self.live.borrow();
+        let landed = match queues.iter().take(live).find(|q| q.param_id() == param_id) {
+            Some(queue) => queue.prepend_point(point),
+            None => match queues.get(live) {
+                Some(free) if free.try_reset(param_id) && free.prepend_point(point) => {
+                    *self.live.borrow_mut() = live + 1;
+                    true
+                }
+                _ => false,
+            },
+        };
+        if !landed {
+            *self.dropped.borrow_mut() += 1;
+        }
     }
 
     /// Empties the list for the next block. The queues stay in the pool, so
@@ -303,6 +337,57 @@ mod tests {
     use super::*;
 
     use super::super::MIN_POINT_ROOM;
+
+    /// **A queued write that has no room is counted, not grown into**, and
+    /// reported with the other input-list drops
+    /// ([`points_dropped`](ParameterChangesImpl::points_dropped), which
+    /// `Vst3Processor::param_points_dropped` adds in): the queue of its
+    /// parameter is full, or the list has no queue left for a parameter the
+    /// block's automation does not name. One with room lands ahead of the
+    /// automation.
+    ///
+    /// Mutation (run): `prepend_point` not counting on a failed landing → the
+    /// two counts stay 0 → fails; always counting → the landed write is
+    /// counted too → fails.
+    #[test]
+    fn a_prepended_point_without_room_is_counted_not_grown_into() {
+        use tutti_plugin_types::ParamAddress;
+        // Two queues of two points: one is full of automation for 7, one is free.
+        let list = unpooled(2, 2);
+        let mut changes = ParameterChanges::reserved(1, 2);
+        changes.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.1);
+        changes.add_change(ParamAddress::Opaque(7u32.into()), 4, 0.2);
+        list.refill_from_changes(&changes);
+
+        list.prepend_point(7, Normalized::new(0.9));
+        assert_eq!(list.points_dropped(), 1, "the queue of 7 is full");
+        list.prepend_point(9, Normalized::new(0.4));
+        assert_eq!(list.points_dropped(), 1, "the free queue took 9");
+        list.prepend_point(11, Normalized::new(0.5));
+        assert_eq!(list.points_dropped(), 2, "no queue left for 11");
+
+        let mut out = ParameterChanges::reserved(4, 4);
+        list.fill_changes(&mut out);
+        let points = |id: u32| -> Vec<(i32, f64)> {
+            out.queues
+                .iter()
+                .find(|q| q.param_id == ParamAddress::Opaque(id.into()))
+                .map(|q| {
+                    q.points
+                        .iter()
+                        .map(|p| (p.sample_offset, p.value.get()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            points(7),
+            [(0, 0.1), (4, 0.2)],
+            "the automation is untouched"
+        );
+        assert_eq!(points(9), [(0, 0.4)]);
+        assert!(points(11).is_empty());
+    }
 
     /// A list of `queues` queues of `points` each, with no pool: the
     /// output list's layout.

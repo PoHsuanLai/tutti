@@ -44,9 +44,13 @@ use std::sync::Mutex;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    TransportInfo, Vst3Active, Vst3InputEvents, Vst3Loaded,
+    AudioBuffer, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    TransportInfo, Vst3InputEvents, Vst3Loaded,
 };
+#[path = "support/active.rs"]
+mod active;
+#[allow(unused_imports)]
+use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///
@@ -181,9 +185,9 @@ fn probe_path() -> PathBuf {
 ///
 /// Returns `Option` only so call sites keep their existing shape; a load
 /// failure is a hard error, because the probe is ours and built from this tree.
-fn load_probe(block_size: usize) -> Option<Vst3Active> {
+fn load_probe(block_size: usize) -> Option<Active> {
     let path = probe_path();
-    match Vst3Active::<f32>::load(&path, 48_000.0, block_size) {
+    match Active::<f32>::load(&path, 48_000.0, block_size) {
         Ok(i) => Some(i),
         Err(e) => panic!("audio-probe failed to load from {path:?}: {e:?}"),
     }
@@ -198,7 +202,7 @@ fn load_probe(block_size: usize) -> Option<Vst3Active> {
 /// write. (Getting this wrong is what made three of these tests fail on their
 /// first run: the probe stayed in mode 0 and every assertion saw the constant
 /// `probe_tag(0, 0) == 1.0`.)
-fn set_mode(inst: &mut Vst3Active, mode: f64) {
+fn set_mode(inst: &mut Active, mode: f64) {
     inst.set_parameter(PARAM_MODE, mode);
 
     let mut params = ParameterChanges::reserved(1, 1);
@@ -219,13 +223,13 @@ struct Rendered {
 /// Input for bus `b`, channel `c`, sample `i` is `input_at(b, c, i)`, which
 /// lets a test make every slot uniquely identifiable.
 fn render(
-    inst: &mut Vst3Active,
+    inst: &mut Active,
     frames: usize,
     midi: &[MidiEvent],
     params: Option<&ParameterChanges>,
     input_at: impl Fn(usize, usize, usize) -> f32,
 ) -> Rendered {
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
 
     // `AudioBuffer` is flat: bus 0's channels first, then bus 1's, etc. Build
     // the flat vectors while remembering the per-bus split so the result can be
@@ -319,7 +323,7 @@ fn every_bus_and_channel_carries_its_own_audio() {
 
     let rendered = render(&mut inst, FRAMES, &[], None, input_at);
 
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
     let out_layout = if info.output_bus_channels.is_empty() {
         vec![info.num_outputs.max(1)]
     } else {
@@ -485,7 +489,7 @@ fn consecutive_blocks_are_delivered_in_order() {
 /// reactivated at all, so `kModeActivationCount` reports its own
 /// `setActive(true)` count.
 ///
-/// Driven through `Vst3Active` rather than the server: this is the layer that
+/// Driven through `Active` rather than the server: this is the layer that
 /// owns activation, and the restart method lives here.
 #[test]
 fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
@@ -537,7 +541,7 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
 ///
 /// `ivstaudioprocessor.h:328-330`: *"Called in disable state (setActive not
 /// called with true) before setProcessing is called and processing will
-/// begin."* `Vst3Active` is active by construction — `load` ends with
+/// begin."* `Active` is active by construction — `load` ends with
 /// `setActive(true)` — so `set_sample_rate` cannot deliver the new setup in
 /// place; it has to bracket the call.
 ///
@@ -772,14 +776,14 @@ fn f64_path_carries_the_same_audio() {
     // The probe declares f64 support, so a failure here is a real one — either
     // in the probe or in the host's f64 activation path. Skipping would hide
     // exactly the regression this test exists to catch.
-    let mut inst = match Vst3Active::<f64>::load(&path, 48_000.0, 512) {
+    let mut inst = match Active::<f64>::load(&path, 48_000.0, 512) {
         Ok(i) => i,
         Err(e) => panic!("audio-probe f64 activation failed: {e:?}"),
     };
     inst.set_parameter(PARAM_MODE, mode(0));
 
     const FRAMES: usize = 64;
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
     let in_layout = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
     } else {
@@ -1058,7 +1062,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
 
     // The probe only reports latency while in latency mode, so this must be
     // read after the mode switch.
-    let reported = inst.read_latency_samples();
+    let reported = inst.latency_samples();
     assert_eq!(
         reported, PROBE_LATENCY_SAMPLES,
         "host reported {reported} samples of latency; the plugin declares \
@@ -1129,7 +1133,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
         },
     ];
 
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
     let in_layout = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
     } else {
@@ -1233,7 +1237,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
         quarter_bend(192),
     ];
 
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
     let in_channels: usize = if info.input_bus_channels.is_empty() {
         info.num_inputs.max(1)
     } else {
@@ -1297,14 +1301,14 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
         eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
         return;
     };
-    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("legacy-midicc-out load failed; skipping");
         return;
     };
 
     // Drive blocks while sweeping the plugin's parameters: it emits CC when a
     // parameter changes, so a static value produces nothing.
-    let info = inst.info().clone();
+    let info = inst.plugin_info().clone();
     let param_ids: Vec<u32> = (0..inst.parameter_count())
         .filter_map(|i| inst.parameter_id_at(i))
         .collect();
@@ -1365,7 +1369,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
-    let loaded = Vst3Loaded::load(&probe_path()).expect("audio-probe loads");
+    let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
 
     let want = tutti_vst3_host::process_context_flags::NEED_TEMPO;
     assert_eq!(
@@ -1429,17 +1433,21 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     );
 }
 
-/// **A SysEx open across a re-activation is not completed past it.** The
-/// plugin forgets its input across `setActive(false)`/`setActive(true)`, so
-/// the input list drops its open message (counted) and the message's tail
-/// after the re-activation completes nothing: the cut message is dropped
-/// whole, and the next one arrives (it does not count as dropped).
+/// **A SysEx open across a stop is not completed past it.** The plugin
+/// forgets its input across `setProcessing(false)`/`setProcessing(true)`, so the
+/// input list drops its open message (counted) and the message's tail after
+/// the stop completes nothing: the cut message is dropped whole, and the next
+/// one arrives (it does not count as dropped).
 ///
-/// Mutation (run): the `reset_sysex` call removed from `set_active` → the
-/// tail completes the message across the re-activation → nothing is
-/// counted → fails.
+/// A re-activation builds a new Processor and with it a new input list, so
+/// nothing is open across one: that half of the property is structural, and no
+/// mutation of this code makes it fail.
+///
+/// Mutation (run): the `reset_sysex` call removed from `Vst3Processor::stop` →
+/// the tail completes the message across the stop → nothing is counted →
+/// fails.
 #[test]
-fn a_sysex_open_across_a_reactivation_is_dropped() {
+fn a_sysex_open_across_a_stop_is_dropped() {
     let _guard = plugin_guard();
     let mut inst = load_probe(64).expect("probe");
     let packets = |len: usize| {
@@ -1453,13 +1461,8 @@ fn a_sysex_open_across_a_reactivation_is_dropped() {
 
     render(&mut inst, 64, &cut[..3], None, |_, _, _| 0.0);
     assert_eq!(inst.sysex_dropped(), 0);
-    inst.set_sample_rate(96_000.0)
-        .expect("the probe accepts the new rate");
-    assert_eq!(
-        inst.sysex_dropped(),
-        1,
-        "the open message, at the re-activation"
-    );
+    inst.stop();
+    assert_eq!(inst.sysex_dropped(), 1, "the open message, at the stop");
     let rest: Vec<MidiEvent> = cut[3..].iter().chain(&next).copied().collect();
     render(&mut inst, 64, &rest, None, |_, _, _| 0.0);
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");

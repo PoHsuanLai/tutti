@@ -236,7 +236,9 @@ impl ClapInstance {
     /// reason of a refusal it told, if any.
     fn drive(&mut self, event: Event) -> Option<PluginError> {
         let mut told = Vec::new();
-        let state = self.state.clone();
+        // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
+        // in its place is built without allocating and is replaced below.
+        let state = std::mem::replace(&mut self.state, Lifecycle::<ClapLoaded>::initial_state());
         self.state = self
             .lifecycle
             .drive(state, event, &mut self.hand, |n| told.push(n));
@@ -358,7 +360,10 @@ impl ClapInstance {
     /// requests need (a restart for `request_restart`, an `audio-ports.rescan`
     /// that changes buffers, or a `latency.changed`; a re-read for the rest) and
     /// the lifecycle performs it. Call it between blocks, on the thread that
-    /// loaded the plugin; it allocates, as a rate change does.
+    /// loaded the plugin. A pass in which nothing was asked, no timer is due, no
+    /// descriptor is ready and the core has nothing pending (the idle pass every
+    /// dispatch takes) does not enter the lifecycle and allocates nothing; a
+    /// pass with work allocates, as a rate change does.
     ///
     /// Timers and callbacks are served only while the host keeps calling this:
     /// a loop that blocks in `recv` for the next request serves none until one
@@ -388,7 +393,18 @@ impl ClapInstance {
                     loaded.take_raised(&mut requests);
                 }
             }
-            if requests.is_empty() && pass > 0 {
+            let asked = !requests.is_empty();
+            if !asked && self.state.is_quiet() {
+                // The idle pass: nothing was asked, no timer is due, no
+                // descriptor is ready and the core has nothing pending, so it
+                // does not enter the lifecycle and allocates nothing. All a tick
+                // would do is retry what a full edit ring refused.
+                if let Some(control) = self.lifecycle.control() {
+                    control.flush_edits();
+                }
+                break;
+            }
+            if !asked && pass > 0 {
                 break;
             }
             for request in requests.drain(..) {

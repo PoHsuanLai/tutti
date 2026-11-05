@@ -46,7 +46,7 @@ pub fn clear_observer() {
 }
 
 /// Hands the built `ProcessData` to the installed observer. Called by
-/// `Vst3Active::process` just before the plugin sees it.
+/// `Vst3Processor::process` just before the plugin sees it.
 ///
 /// Borrow-safe against re-entrancy: an observer that somehow drove `process`
 /// again would find the slot borrowed and be skipped rather than panicking.

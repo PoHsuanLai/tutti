@@ -11,6 +11,7 @@ use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamAddress};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::Control;
 
 pub(crate) struct Vst3GuiInstance {
     inner: tutti_vst3_host::Vst3Loaded,
@@ -20,11 +21,12 @@ impl Vst3GuiInstance {
     pub fn load(path: &Path) -> Result<Self> {
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         let inner =
-            tutti_vst3_host::Vst3Loaded::load(&resolved).map_err(|e| BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("VST3 GUI-only load failed: {e}"),
-            })?;
+            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
+                .map_err(|e| BridgeError::LoadFailed {
+                    path: path.to_path_buf(),
+                    stage: LoadStage::Opening,
+                    reason: format!("VST3 GUI-only load failed: {e}"),
+                })?;
         Ok(Self { inner })
     }
 }
@@ -64,21 +66,19 @@ impl PluginEditor for Vst3GuiInstance {
         // `ParamID` is opaque; a VST2 index addresses nothing here. VST3's
         // `setParamNormalized` takes the host domain unchanged.
         let Some(id) = id.opaque() else { return };
-        self.inner.set_parameter(id.get(), value.get());
+        Control::set_parameter(&mut self.inner, id, value);
     }
 
     fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {
-        // Deliver the host automation-state advisory to the GUI instance — this
-        // is the instance whose editor shows the knob-glow feedback. Encode the
-        // format-neutral mode onto the VST3 `IAutomationState` bitmask HERE, at
-        // the VST3 edge, using the VST3 crate's own SDK-backed conversion.
-        self.inner
-            .set_automation_state(tutti_vst3_host::automation_state::from_mode(mode));
+        // Deliver the host automation-state advisory to the GUI instance: this
+        // is the instance whose editor shows the knob-glow feedback. The host
+        // crate encodes the format-neutral mode onto the VST3 `IAutomationState`
+        // bitmask.
+        Control::set_automation_state(&mut self.inner, mode);
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        self.inner
-            .set_state(data)
+        Control::load_state(&mut self.inner, data)
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 set_state failed: {e}")))?;
         Ok(())
     }

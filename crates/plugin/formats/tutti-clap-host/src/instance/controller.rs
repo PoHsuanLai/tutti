@@ -34,6 +34,9 @@ pub struct ClapController {
     /// Edits a full ring refused, latest value per parameter, retried on the
     /// next tick ([`flush_edits`](tutti_plugin_types::Control::flush_edits)).
     pub(crate) unsent: Vec<(ParamId, Normalized)>,
+    /// A [`Edit::Reset`] the full ring refused: sent before anything in `unsent`,
+    /// which is everything written since.
+    reset_pending: bool,
     /// The ranges the Processor denormalizes against, republished after a
     /// rescan that changed the parameters.
     pub(crate) ranges: Arc<ArcLend<RangeTable>>,
@@ -66,6 +69,7 @@ impl ClapController {
             shell: Some(shell),
             edits,
             unsent: Vec::new(),
+            reset_pending: false,
             ranges,
             pools,
             _not_sync: PhantomData,
@@ -187,9 +191,18 @@ impl ClapController {
             slot.1 = value;
             return;
         }
-        if self.edits.send(Edit::Param { id, value }).is_err() {
+        if self.reset_pending || self.edits.send(Edit::Param { id, value }).is_err() {
             self.unsent.push((id, value));
         }
+    }
+
+    /// Makes every write made so far stale: a state or a preset load replaced
+    /// the values they were written against, and the next block must not put
+    /// them back. The ring's order makes a [`Edit::Reset`] exact; a full ring
+    /// holds it for the next tick, and every write after it waits behind it.
+    pub(crate) fn reset_edits(&mut self) {
+        self.unsent.clear();
+        self.reset_pending = self.edits.send(Edit::Reset).is_err();
     }
 
     /// Retries what the ring refused, oldest first, and lets the parameter
@@ -197,6 +210,12 @@ impl ClapController {
     pub(crate) fn retry_edits(&mut self) {
         self.ranges.reclaim();
         self.pools.reclaim();
+        if self.reset_pending {
+            if self.edits.send(Edit::Reset).is_err() {
+                return;
+            }
+            self.reset_pending = false;
+        }
         let waiting = std::mem::take(&mut self.unsent);
         for (id, value) in waiting {
             if self.edits.send(Edit::Param { id, value }).is_err() {

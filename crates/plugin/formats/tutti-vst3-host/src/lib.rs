@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Every line of VST3 FFI `unsafe` lives in `tutti-vst3-ffi`.
+#![forbid(unsafe_code)]
 
 mod error;
 pub(crate) mod helpers;

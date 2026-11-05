@@ -1070,6 +1070,27 @@ and from CLAP and VST3:
 
 #### The split reaches one instance: why that is sound
 
+**As built (the VST3 FFI crate).** The second format moved to the rule of §2.9.
+
+- `tutti-vst3-ffi` holds all of `tutti-vst3-host`'s VST3 `unsafe` (about 300
+  production sites before in the host's `src/`, none after: `#![forbid(unsafe_code)]`
+  on the host, which the gate checks). The host-implemented interfaces
+  (`IBStream`, `IEventList`, `IParameterChanges`/`IParamValueQueue`,
+  `IComponentHandler` and its extensions, `IHostApplication`, `IAttributeList`
+  and `IMessage`, `IPlugFrame`, `IRunLoop`) are concrete Rust types there; the
+  vtable, the panic guard and the argument conversion are the FFI crate's. A
+  plugin is a `Plugin` (main-thread half, `Send`, not `Sync`) and one
+  `AudioSide` (audio half, taken once), under one claim that the plugin's
+  `Drop` also takes, so a block never overlaps its teardown.
+- **The shell holds no plugin access.** The CLAP-era `Shell` (an `UnsafeCell`
+  with an `unsafe impl Sync`) is a safe hand-off: the Controller owns the
+  `Vst3Loaded`, the Processor owns only the `AudioSide`, and a Controller dropped
+  while its Processor renders parks the plugin on the shell for the Processor's
+  drop to retire (`shell.rs`).
+- Width is a runtime tag in the FFI crate (`SampleWidth`); the host's
+  `Vst3Sample` stays the host's seam, ahead of a runtime-format follow-up.
+
+
 Both halves hold an `Arc` of one private shell per activation, and the shell holds
 the raw plugin instance. That is shared mutable access to a plugin from two
 threads, which is sound only because of the format's own thread rules and the

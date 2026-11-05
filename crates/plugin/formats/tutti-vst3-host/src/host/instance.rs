@@ -13,29 +13,20 @@
 //! negotiated arrangements, the input and output staging, and the sample width
 //! `T`.
 
-use vst3::Steinberg::{
-    Vst::{
-        IAudioProcessorTrait, IComponentTrait, IMidiMapping, MediaTypes_::kEvent, SpeakerArr,
-        SpeakerArrangement,
-    },
-    kResultFalse, kResultOk,
-};
+use vst3::Steinberg::Vst::{SpeakerArr, SpeakerArrangement};
 
 use tutti_plugin_types::{PointPool, RtMidiEvents};
 use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::error::{LoadStage, Result, Vst3Error};
-use crate::helpers::sdk_enum_i32;
-use crate::types::{BufferPtrs, BusInfo as BusInfoWrap, ParameterChanges, ProcessMode, Vst3Sample};
-use tutti_vst3_ffi::{EventList, MIN_POINT_ROOM, ParameterChangesImpl};
+use crate::types::{ParameterChanges, ProcessMode, Vst3Sample};
+use tutti_vst3_ffi::{
+    BusBuffers, BusDirection, EventList, MIN_POINT_ROOM, MediaType, ParameterChangesImpl,
+};
 
-use super::bus_buffers::DirectionScratch;
 use super::loaded::{Activation, Vst3Loaded};
 use super::midi_mapping::CcRoute;
 use super::processor::{AudioIO, InputStaging, OutputStaging, ProcessConfig};
-use super::{IComponentExt, K_INPUT, K_OUTPUT};
-
-pub(super) const K_EVENT: i32 = sdk_enum_i32(kEvent);
 
 /// Floor of the pre-reserved capacity for param-change queues. One slot per
 /// distinct param_id in a single block; the reservation is the plugin's
@@ -106,8 +97,10 @@ pub(super) fn usable_topology(topology: ChannelTopology, width: usize) -> Option
 /// A plugin and the scratch its Processor renders through, between
 /// `setBusArrangements` and the split.
 pub(super) struct Staged<T: Vst3Sample> {
+    /// The sample width this activation was staged for.
+    _format: std::marker::PhantomData<fn() -> T>,
     pub(super) loaded: Vst3Loaded,
-    pub(super) audio: AudioIO<T>,
+    pub(super) audio: AudioIO,
 }
 
 impl<T: Vst3Sample> Staged<T> {
@@ -142,12 +135,14 @@ impl<T: Vst3Sample> Staged<T> {
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
         // arrangement once active.
-        let in_scratch = DirectionScratch::<T>::resolve(
+        let in_scratch = BusBuffers::new(
+            T::WIDTH,
             &loaded.info.input_bus_channels,
             num_input_channels,
             block_size,
         );
-        let out_scratch = DirectionScratch::<T>::resolve(
+        let out_scratch = BusBuffers::new(
+            T::WIDTH,
             &loaded.info.output_bus_channels,
             num_output_channels,
             block_size,
@@ -195,14 +190,13 @@ impl<T: Vst3Sample> Staged<T> {
                 setup_mode: mode,
                 block_mode: mode,
             },
-            ptrs: BufferPtrs::new(in_scratch.ptr_count, out_scratch.ptr_count),
             input: InputStaging {
-                buses: in_scratch.buses,
+                buses: in_scratch,
                 events: EventList::input(),
                 param_changes: ParameterChangesImpl::with_queues(chunk_queues, floor, input_pool),
             },
             output: OutputStaging {
-                buses: out_scratch.buses,
+                buses: out_scratch,
                 events: EventList::output(),
                 // The plugin fills this one through `addPoint`, which cannot
                 // borrow a block: every queue has `MIN_POINT_ROOM`, no pool.
@@ -218,18 +212,18 @@ impl<T: Vst3Sample> Staged<T> {
                 loaded.midi_cc.reader(),
                 // Only a plugin with an `IMidiMapping` can publish a mapping
                 // later, so only it reserves the routing scratch.
-                loaded
-                    .interfaces
-                    .controller
-                    .as_ref()
-                    .is_some_and(|c| c.cast::<IMidiMapping>().is_some()),
+                loaded.plugin.has_midi_mapping(),
                 chunk_queues,
                 chunk_room,
             ),
             midi_learn: loaded.midi_learn.producer(),
         };
 
-        let mut instance = Self { loaded, audio };
+        let mut instance = Self {
+            _format: std::marker::PhantomData,
+            loaded,
+            audio,
+        };
         // VST3 activation order: setBusArrangements → setupProcessing →
         // activateBus → setActive. Arrangements must be negotiated first so the
         // plugin has decided its channel layout before the scratch is sized and
@@ -288,8 +282,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// braces: a plugin may accept the arrangement and still restructure its
     /// buses in the same call, and one exit path is one thing to keep true.
     fn negotiate_bus_arrangements(&mut self) -> Result<()> {
-        let processor = self.loaded.interfaces.processor.clone();
-        let component = &self.loaded.interfaces.component;
+        let plugin = &self.loaded.plugin;
 
         // A bus whose width has no canonical arrangement makes the whole
         // proposal unsendable: `setBusArrangements` takes one arrangement per
@@ -297,14 +290,14 @@ impl<T: Vst3Sample> Staged<T> {
         // Skipping the call entirely is the honest move — the plugin keeps the
         // layout it already has, and the reconcile below reports it. Proposing
         // a made-up mask for that bus would name the wrong speakers.
-        let proposals = component
-            .audio_bus_channels(K_INPUT)
+        let proposals = plugin
+            .audio_bus_channels(BusDirection::Input)
             .into_iter()
             .map(|c| default_arrangement_for(ChannelLayout::from(c)))
             .collect::<Option<Vec<_>>>()
             .zip(
-                component
-                    .audio_bus_channels(K_OUTPUT)
+                plugin
+                    .audio_bus_channels(BusDirection::Output)
                     .into_iter()
                     .map(|c| default_arrangement_for(ChannelLayout::from(c)))
                     .collect::<Option<Vec<_>>>(),
@@ -315,21 +308,18 @@ impl<T: Vst3Sample> Staged<T> {
             return Ok(());
         };
 
-        let result = unsafe {
-            processor.setBusArrangements(
-                inputs.as_mut_ptr(),
-                inputs.len() as i32,
-                outputs.as_mut_ptr(),
-                outputs.len() as i32,
-            )
-        };
+        let result = plugin.set_bus_arrangements(&mut inputs, &mut outputs);
 
         // Anything but `kResultTrue`/`kResultOk` (typically `kResultFalse`):
         // the plugin kept its own layout. Read it back and re-resolve scratch
         // to match. Not an error.
-        if result != kResultOk && result != vst3::Steinberg::kResultTrue {
-            let in_layouts = self.loaded.read_back_arrangements(K_INPUT, inputs.len());
-            let out_layouts = self.loaded.read_back_arrangements(K_OUTPUT, outputs.len());
+        if result.is_err() {
+            let in_layouts = self
+                .loaded
+                .read_back_arrangements(BusDirection::Input, inputs.len());
+            let out_layouts = self
+                .loaded
+                .read_back_arrangements(BusDirection::Output, outputs.len());
             let widths = |ls: &[ChannelTopology]| -> Vec<usize> {
                 ls.iter().map(|t| t.layout().count() as usize).collect()
             };
@@ -358,15 +348,13 @@ impl<T: Vst3Sample> Staged<T> {
         // to a channel the plugin never declared.
         let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
         let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
-        let in_scratch = DirectionScratch::<T>::resolve(in_counts, num_in, block_size);
-        let out_scratch = DirectionScratch::<T>::resolve(out_counts, num_out, block_size);
+        let in_scratch = BusBuffers::new(T::WIDTH, in_counts, num_in, block_size);
+        let out_scratch = BusBuffers::new(T::WIDTH, out_counts, num_out, block_size);
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;
-        self.audio.ptrs.resize_inputs(in_scratch.ptr_count);
-        self.audio.ptrs.resize_outputs(out_scratch.ptr_count);
-        self.audio.input.buses = in_scratch.buses;
-        self.audio.output.buses = out_scratch.buses;
+        self.audio.input.buses = in_scratch;
+        self.audio.output.buses = out_scratch;
     }
 
     /// The `ProcessSetup` describing this instance's negotiated configuration.
@@ -376,15 +364,16 @@ impl<T: Vst3Sample> Staged<T> {
     /// second, hand-built copy for the observer would agree with `ProcessData`
     /// by construction and hide exactly the mismatch the check exists to find.
     fn apply_process_setup(&mut self) -> Result<()> {
-        let mut setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
-        let result = unsafe { self.loaded.interfaces.processor.setupProcessing(&mut setup) };
-        if result != kResultOk && result != kResultFalse {
-            return Err(Vst3Error::PluginError {
+        let setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
+        // `Ok(false)` is `kResultFalse`, which the SDK lets a plugin answer.
+        self.loaded
+            .plugin
+            .setup_processing(setup)
+            .map(drop)
+            .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Setup,
-                code: result,
-            });
-        }
-        Ok(())
+                code: e.code(),
+            })
     }
 
     /// Activates the buses this host wants live, per
@@ -398,25 +387,25 @@ impl<T: Vst3Sample> Staged<T> {
     /// default then receives no events while one that ignores it works, which
     /// presents as a plugin quirk rather than a host bug.
     fn activate_buses(&mut self) -> Result<()> {
-        const K_AUDIO: i32 = super::K_AUDIO;
-        let component = &self.loaded.interfaces.component;
+        let plugin = &self.loaded.plugin;
         for (media, direction) in [
-            (K_AUDIO, K_INPUT),
-            (K_AUDIO, K_OUTPUT),
-            (K_EVENT, K_INPUT),
-            (K_EVENT, K_OUTPUT),
+            (MediaType::Audio, BusDirection::Input),
+            (MediaType::Audio, BusDirection::Output),
+            (MediaType::Event, BusDirection::Input),
+            (MediaType::Event, BusDirection::Output),
         ] {
-            for i in 0..unsafe { component.getBusCount(media, direction) } {
-                let mut bus = BusInfoWrap::default();
-                let read = unsafe { component.getBusInfo(media, direction, i, bus.as_mut_inner()) };
+            for i in 0..plugin.bus_count(media, direction) {
+                let info = plugin.bus_info(media, direction, i);
                 // A bus whose info cannot be read is activated anyway. That
                 // restores the pre-policy behaviour for exactly the plugins
                 // that cannot answer the question the policy asks, rather than
                 // silently dropping a bus over a failed query.
-                let wants =
-                    read != kResultOk || super::wants_activation(bus.bus_type(), bus.flags());
+                let wants = match &info {
+                    Ok(bus) => super::wants_activation(bus.bus_type(), bus.flags()),
+                    Err(_) => true,
+                };
                 if wants {
-                    unsafe { component.activateBus(media, direction, i, 1) };
+                    plugin.activate_bus(media, direction, i);
                 }
             }
         }
@@ -431,26 +420,23 @@ impl<T: Vst3Sample> Staged<T> {
         // pre-activation value when its query fails — reinstating the stale
         // layout this re-resolve exists to replace, at exactly the moment the
         // live read said it could not be trusted.
-        let in_counts = component.audio_bus_channels(K_INPUT);
-        let out_counts = component.audio_bus_channels(K_OUTPUT);
+        let in_counts = plugin.audio_bus_channels(BusDirection::Input);
+        let out_counts = plugin.audio_bus_channels(BusDirection::Output);
         let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
         let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
-        let in_scratch = DirectionScratch::<T>::resolve(&in_counts, num_in, block_size);
-        let out_scratch = DirectionScratch::<T>::resolve(&out_counts, num_out, block_size);
+        let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size);
+        let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size);
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;
-        self.audio.ptrs.resize_inputs(in_scratch.ptr_count);
-        self.audio.ptrs.resize_outputs(out_scratch.ptr_count);
-        self.audio.input.buses = in_scratch.buses;
-        self.audio.output.buses = out_scratch.buses;
+        self.audio.input.buses = in_scratch;
+        self.audio.output.buses = out_scratch;
         Ok(())
     }
 
     fn set_active(&mut self, active: bool) -> Result<()> {
-        let flag: vst3::Steinberg::TBool = if active { 1 } else { 0 };
-        let result = unsafe { self.loaded.interfaces.component.setActive(flag) };
+        let result = self.loaded.plugin.set_active(active);
         // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
         // whose licence check, dongle, or device claim fails reports it here,
         // and it is the only way it can. Accepting it as success would leave the
@@ -462,10 +448,10 @@ impl<T: Vst3Sample> Staged<T> {
         //
         // This is the opposite of the `setProcessing` call below, where a
         // non-OK result genuinely does mean "not implemented" — see there.
-        if result != kResultOk {
+        if let Err(error) = result {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Activation,
-                code: result,
+                code: error.code(),
             });
         }
         if active {
@@ -475,9 +461,7 @@ impl<T: Vst3Sample> Staged<T> {
             // notification reports failure here. Treating that as fatal rejects
             // valid plugins — 7 of Steinberg's 11 reference plugins among them.
             // Nothing downstream depends on the result, so ignore it.
-            unsafe {
-                self.loaded.interfaces.processor.setProcessing(1);
-            }
+            self.loaded.plugin.set_processing(true);
         }
         Ok(())
     }

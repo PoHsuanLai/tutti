@@ -16,7 +16,6 @@
 //! activate/deactivate round trip intact (the Controller holds it and `Deref`s
 //! to it).
 
-mod bus_buffers;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 mod control;
@@ -26,8 +25,6 @@ mod library;
 mod loaded;
 mod midi_learn;
 mod midi_mapping;
-mod module_entry;
-mod plugin_state;
 mod processor;
 mod sequencer;
 mod shell;
@@ -45,32 +42,15 @@ pub use processor::{ProcessFailed, Vst3Processor, Vst3ProcessorAny};
 /// *order*, and which `isPlatformTypeSupported` results count as a refusal —
 /// are worth pinning without either.
 #[cfg(feature = "conformance")]
-pub use loaded::{
+pub use tutti_vst3_ffi::{
     detach_view, platform_type_refused, send_key_down, send_key_up, send_wheel, set_view_focus,
 };
 
-// ── IComponent extension trait ────────────────────────────────────────────────
+// ── Bus activation policy ─────────────────────────────────────────────────────
 
-use vst3::ComPtr;
-use vst3::Steinberg::{
-    Vst::{
-        BusDirections_::{kInput, kOutput},
-        BusInfo_::BusFlags_,
-        BusTypes_::kMain,
-        IComponent, IComponentTrait,
-        MediaTypes_::kAudio,
-    },
-    kResultOk,
-};
-
-use tutti_types::ChannelLayout;
+use vst3::Steinberg::Vst::{BusInfo_::BusFlags_, BusTypes_::kMain};
 
 use crate::helpers::sdk_enum_i32;
-use crate::types::BusInfo as BusInfoWrap;
-
-pub(super) const K_AUDIO: i32 = sdk_enum_i32(kAudio);
-pub(super) const K_INPUT: i32 = sdk_enum_i32(kInput);
-pub(super) const K_OUTPUT: i32 = sdk_enum_i32(kOutput);
 
 /// Whether this host activates a bus at load, given its `busType` and `flags`.
 ///
@@ -114,62 +94,6 @@ const K_MAIN: i32 = sdk_enum_i32(kMain);
 /// [`crate::physical_ui_type`] carries this allow.
 #[allow(clippy::unnecessary_cast)]
 const BUS_DEFAULT_ACTIVE: u32 = BusFlags_::kDefaultActive as u32;
-
-pub(super) trait IComponentExt {
-    /// Channel layout of **bus 0** in `direction`, exactly as the plugin
-    /// reports it.
-    ///
-    /// `None` when the plugin reports no buses or `getBusInfo` fails — the two
-    /// cases where there is no answer to carry. A plugin that answers with zero
-    /// channels is reported as zero: that is a bus the plugin declared and then
-    /// said is empty, which is a different fact from "no bus" and is not this
-    /// function's to reconcile.
-    ///
-    /// A negative `channelCount` is floored to 0. The ABI types it `int32` with
-    /// no negative meaning, so this is the sole out-of-contract clamp here, not
-    /// a policy about empty buses.
-    fn audio_bus_channel_count(&self, direction: i32) -> Option<ChannelLayout>;
-
-    /// Channel count of every audio bus in `direction`, in bus-index order.
-    /// A bus whose query fails contributes 0 so the vec length always equals
-    /// the bus count.
-    fn audio_bus_channels(&self, direction: i32) -> Vec<usize>;
-}
-
-impl IComponentExt for ComPtr<IComponent> {
-    fn audio_bus_channel_count(&self, direction: i32) -> Option<ChannelLayout> {
-        unsafe {
-            if self.getBusCount(K_AUDIO, direction) <= 0 {
-                return None;
-            }
-            let mut bus = BusInfoWrap::default();
-            if self.getBusInfo(K_AUDIO, direction, 0, bus.as_mut_inner()) == kResultOk {
-                Some(ChannelLayout::from(bus.channel_count().max(0) as u16))
-            } else {
-                None
-            }
-        }
-    }
-
-    fn audio_bus_channels(&self, direction: i32) -> Vec<usize> {
-        unsafe {
-            let num_buses = self.getBusCount(K_AUDIO, direction);
-            if num_buses <= 0 {
-                return Vec::new();
-            }
-            (0..num_buses)
-                .map(|i| {
-                    let mut bus = BusInfoWrap::default();
-                    if self.getBusInfo(K_AUDIO, direction, i, bus.as_mut_inner()) == kResultOk {
-                        bus.channel_count().max(0) as usize
-                    } else {
-                        0
-                    }
-                })
-                .collect()
-        }
-    }
-}
 
 #[cfg(test)]
 mod bus_activation_policy_tests {

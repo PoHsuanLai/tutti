@@ -461,7 +461,7 @@ pub fn to_c_event<'a>(
 ) -> vst3::Steinberg::Vst::Event {
     let header = event.header();
 
-    let mut out: vst3::Steinberg::Vst::Event = unsafe { std::mem::zeroed() };
+    let mut out: vst3::Steinberg::Vst::Event = crate::sdk::zeroed();
     out.busIndex = header.bus_index;
     out.sampleOffset = header.sample_offset;
     out.ppqPosition = header.ppq_position;
@@ -609,7 +609,7 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
     reason = "the SDK event ordinals are u32 on unix and c_int on Windows; each \
               cast is a no-op on one target and load-bearing on the other"
 )]
-pub unsafe fn from_c_event(
+pub(crate) unsafe fn from_c_event(
     event: &vst3::Steinberg::Vst::Event,
     text_arena: &mut TextArena,
 ) -> Option<Vst3Event> {
@@ -635,6 +635,7 @@ pub unsafe fn from_c_event(
 
     match event.r#type as u32 {
         t if t == EventTypes_::kNoteOnEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.noteOn };
             Some(Vst3Event::NoteOn(NoteOnEvent {
                 header,
@@ -647,6 +648,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteOffEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.noteOff };
             Some(Vst3Event::NoteOff(NoteOffEvent {
                 header,
@@ -658,10 +660,12 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kDataEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.data };
             let mut bytes = [0u8; 16];
             if !e.bytes.is_null() && e.size > 0 {
                 let copy_len = (e.size as usize).min(bytes.len());
+                // SAFETY: `e.bytes` is non-null and valid for `e.size` bytes, of which at most 16 (the destination) are copied.
                 unsafe { std::ptr::copy_nonoverlapping(e.bytes, bytes.as_mut_ptr(), copy_len) };
             }
             Some(Vst3Event::Data(DataEvent {
@@ -672,6 +676,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kPolyPressureEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.polyPressure };
             Some(Vst3Event::PolyPressure(PolyPressureEvent {
                 header,
@@ -682,6 +687,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionValueEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.noteExpressionValue };
             Some(Vst3Event::NoteExpression(NoteExpressionValueEvent {
                 header,
@@ -691,6 +697,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionTextEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.noteExpressionText };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::NoteExpressionText(NoteExpressionTextEvent {
@@ -701,6 +708,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kChordEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.chord };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::Chord(ChordEvent {
@@ -712,6 +720,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kScaleEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.scale };
             let text = intern(text_arena, e.text, e.textLen as usize);
             Some(Vst3Event::Scale(ScaleEvent {
@@ -722,6 +731,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kNoteExpressionIntValueEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.noteExpressionIntValue };
             Some(Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
                 header,
@@ -731,6 +741,7 @@ pub unsafe fn from_c_event(
             }))
         }
         t if t == EventTypes_::kLegacyMIDICCOutEvent as u32 => {
+            // SAFETY: the event's `type` tag, matched above, names this union member as the live one.
             let e = unsafe { event.__field0.midiCCOut };
             Some(Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
                 header,
@@ -1337,7 +1348,8 @@ pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue>
 /// past its capacity reallocates and dangles every pointer already handed out
 /// (and allocates on the audio thread). So the arena never grows: a text that
 /// does not fit the room left is refused, interned as an empty [`TextRef`],
-/// and counted in [`TextArena::dropped`]. The event itself is still staged.
+/// and counted in `TextArena::dropped`. The event itself is still staged.
+#[derive(Debug)]
 pub struct TextArena {
     buf: Vec<u16>,
     dropped: usize,
@@ -2338,6 +2350,7 @@ mod tests {
         // Encode to the C struct, pointing into the staging arena.
         let c = to_c_event(&ev, &in_arena, &[]);
         assert_eq!(c.r#type, K_CHORD_EVENT);
+        // SAFETY: the event's `type` tag names this union member as the live one.
         unsafe {
             assert_eq!(c.__field0.chord.root, 60);
             assert_eq!(c.__field0.chord.textLen as usize, name.len());
@@ -2346,6 +2359,7 @@ mod tests {
 
         // Decode back (plugin → host direction): re-interns into out_arena.
         let mut out_arena = TextArena::new();
+        // SAFETY: the event was just built by `to_c_event` from the arena it is decoded with.
         let decoded = unsafe { from_c_event(&c, &mut out_arena) }.expect("decodes");
         let back = vst3_to_chord(&decoded, &out_arena).expect("is a chord");
         assert_eq!(back.root, 60);
@@ -2379,6 +2393,7 @@ mod tests {
         let mut out = TextArena::new();
         for (ev, expect_scale) in [(scale_ev, true), (text_ev, false)] {
             let c = to_c_event(&ev, &in_arena, &[]);
+            // SAFETY: the event was just built by `to_c_event` from the arena it is decoded with.
             let decoded = unsafe { from_c_event(&c, &mut out) }.expect("decodes");
             if expect_scale {
                 let s = vst3_to_scale(&decoded, &out).expect("scale");
@@ -2406,6 +2421,7 @@ mod tests {
         assert_eq!(ev.header().event_type, K_NOTE_EXPRESSION_INT_VALUE_EVENT);
         let c = to_c_event(&ev, &[], &[]);
         let mut arena = TextArena::new();
+        // SAFETY: the event was just built by `to_c_event` from the arena it is decoded with.
         let decoded = unsafe { from_c_event(&c, &mut arena) }.expect("decodes");
         let back = vst3_to_note_expression_int(&decoded).expect("int expr");
         assert_eq!(back.value, -1234);

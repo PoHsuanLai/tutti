@@ -19,17 +19,15 @@
 //! Spec reference: `Steinberg::Vst::IMidiMapping`,
 //! `Steinberg::Vst::ControllerNumbers`.
 
-use vst3::ComPtr;
 use vst3::Steinberg::Vst::{
     ControllerNumbers_::{kAfterTouch, kCountCtrlNumber, kPitchBend},
-    IEditController, IMidiMapping, IMidiMappingTrait, ParamID,
+    ParamID,
 };
-use vst3::Steinberg::kResultTrue;
 
 use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
 use tutti_types::{Reader, RtVec};
-use tutti_vst3_ffi::EventList;
+use tutti_vst3_ffi::{EventList, Plugin};
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
 /// never drops an event the plugin node delivered. Dropping one would cut a
@@ -79,38 +77,31 @@ impl MidiCcMapping {
         }
     }
 
-    /// Queries the controller's `IMidiMapping` (if it exposes one) for every
-    /// channel × controller slot and build the table.
+    /// Queries the plugin's `IMidiMapping` (if its controller exposes one) for
+    /// every channel × controller slot and builds the table.
     ///
     /// Returns an [`empty`](Self::empty) table when the controller is absent
     /// or doesn't implement `IMidiMapping`. Must run on the UI/main thread —
     /// `IMidiMapping` is an `IEditController` extension.
-    pub(crate) fn query(controller: Option<&ComPtr<IEditController>>) -> Self {
-        let Some(mapping) = controller.and_then(|c| c.cast::<IMidiMapping>()) else {
+    pub(crate) fn query(plugin: &Plugin) -> Self {
+        if !plugin.has_midi_mapping() {
             return Self::empty();
-        };
+        }
 
         let mut table = vec![NO_PARAM_ID; NUM_CHANNELS * NUM_CONTROLLERS];
         let mut any_mapped = false;
-        for channel in 0..NUM_CHANNELS {
-            for controller_number in 0..NUM_CONTROLLERS {
-                let mut id: ParamID = NO_PARAM_ID;
-                // busIndex 0: CC mappings are reported against the first event
-                // bus (matches the JUCE host contract).
-                let rc = unsafe {
-                    mapping.getMidiControllerAssignment(
-                        0,
-                        channel as i16,
-                        controller_number as i16,
-                        &mut id,
-                    )
-                };
-                if rc == kResultTrue && id != NO_PARAM_ID {
-                    table[channel * NUM_CONTROLLERS + controller_number] = id;
+        // busIndex 0: CC mappings are reported against the first event bus
+        // (matches the JUCE host contract).
+        plugin.midi_controller_assignments(
+            0..NUM_CHANNELS as i16,
+            0..NUM_CONTROLLERS as i16,
+            |channel, controller_number, id| {
+                if id != NO_PARAM_ID {
+                    table[channel as usize * NUM_CONTROLLERS + controller_number as usize] = id;
                     any_mapped = true;
                 }
-            }
-        }
+            },
+        );
 
         if any_mapped {
             Self { table, any_mapped }
@@ -1247,24 +1238,9 @@ mod tests {
         });
     }
 
-    /// The SysEx messages `list` hands the plugin, as `getEvent` reads them.
+    /// The SysEx messages `list` hands the plugin.
     fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
-        use crate::types::K_DATA_EVENT;
-        use tutti_vst3_ffi::K_DATA_TYPE_MIDI_SYSEX;
-        use vst3::Steinberg::Vst::{Event, IEventListTrait};
-        let mut out = Vec::new();
-        unsafe {
-            for i in 0..list.getEventCount() {
-                let mut e: Event = std::mem::zeroed();
-                assert_eq!(list.getEvent(i, &mut e), vst3::Steinberg::kResultOk);
-                if e.r#type != K_DATA_EVENT || e.__field0.data.r#type != K_DATA_TYPE_MIDI_SYSEX {
-                    continue;
-                }
-                let d = e.__field0.data;
-                out.push(std::slice::from_raw_parts(d.bytes, d.size as usize).to_vec());
-            }
-        }
-        out
+        list.staged_sysex()
     }
 
     fn sysex_packets(payload: &[u8]) -> Vec<MidiEvent> {

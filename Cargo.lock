@@ -4757,14 +4757,10 @@ dependencies = [
 name = "tutti-vst3-host"
 version = "0.1.0"
 dependencies = [
- "arrayvec",
  "assert_no_alloc",
  "cc",
- "core-foundation-sys",
  "crossbeam-channel",
  "crossbeam-queue",
- "libc",
- "libloading 0.9.0",
  "parking_lot",
  "raw-window-handle",
  "tempfile",

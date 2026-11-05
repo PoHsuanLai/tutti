@@ -39,6 +39,7 @@ fn key_from_ptr(key: AttrID) -> Option<String> {
     if key.is_null() {
         return None;
     }
+    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
     unsafe { CStr::from_ptr(key).to_str().ok().map(|s| s.to_string()) }
 }
 
@@ -118,7 +119,9 @@ impl IAttributeListTrait for AttributeList {
             const MAX_STRING_LEN: usize = 65536;
             // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
             while unsafe { *ptr } != 0 && buf.len() < MAX_STRING_LEN {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                 buf.push(unsafe { *ptr });
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                 ptr = unsafe { ptr.add(1) };
             }
             buf.push(0);
@@ -160,6 +163,7 @@ impl IAttributeListTrait for AttributeList {
                     // leaving the caller with an unterminated buffer — write one back
                     // into the final slot so the returned string is always valid.
                     if v.len() > max_chars {
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                         unsafe { *string.add(max_chars - 1) = 0 };
                     }
                     kResultOk
@@ -216,6 +220,7 @@ impl IAttributeListTrait for AttributeList {
                         unsafe { *data = v.as_ptr() as *const c_void };
                     }
                     if !size_in_bytes.is_null() {
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                         unsafe { *size_in_bytes = v.len() as u32 };
                     }
                     kResultOk
@@ -241,6 +246,7 @@ mod tests {
         let attrs = AttributeList::new();
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), std::ptr::null());
             assert_ne!(result, kResultOk);
@@ -253,11 +259,13 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("name");
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);
         }
         let mut out = [0u16; 32];
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.getString(
                 key.as_ptr(),
@@ -277,12 +285,14 @@ mod tests {
         let key = make_key("name");
         // Store "hello" (5 chars + terminator).
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);
         }
         // Provide a buffer that only fits 3 TChars — forces truncation.
         let mut out = [0xFFFFu16; 3];
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.getString(
                 key.as_ptr(),
@@ -303,6 +313,7 @@ mod tests {
         let attrs = AttributeList::new();
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.getString(key.as_ptr(), std::ptr::null_mut(), 10);
             assert_ne!(result, kResultOk);
@@ -315,6 +326,7 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("test");
         let mut out = [0u16; 1];
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.getString(key.as_ptr(), out.as_mut_ptr() as *mut TChar, 0);
             assert_ne!(result, kResultOk);
@@ -337,6 +349,7 @@ mod tests {
         let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
         let key = make_key("name");
         let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             assert_eq!(
                 ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar),
@@ -348,6 +361,7 @@ mod tests {
         // would be caught by the guard page or by ASan, but on a normal build
         // the observable damage is a neighbouring slot, so check them.
         let mut buf = [0xFFFFu16; 3];
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         let result = unsafe {
             // Point at the middle element and claim ONE byte — half a TChar.
             ptr.getString(
@@ -375,6 +389,7 @@ mod tests {
         let key = make_key("long");
         let mut utf16: Vec<u16> = vec![0x41; 100];
         utf16.push(0);
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
             assert_eq!(result, kResultOk);

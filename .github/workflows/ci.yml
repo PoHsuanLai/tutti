@@ -92,8 +92,8 @@ jobs:
       # Every CLAP host callback and VST3 host COM method runs in the panic
       # guard (python3 over the source, no build).
       - run: scripts/check-guards.sh
-      # CLAP FFI `unsafe` lives only in `tutti-clap-ffi`: `tutti-clap-host`
-      # forbids it and the server and GUI code that drive it carry none
+      # CLAP and VST3 FFI `unsafe` lives only in `tutti-clap-ffi` and
+      # `tutti-vst3-ffi`: `tutti-clap-host` and `tutti-vst3-host` forbid it and the server and GUI code that drive it carry none
       # (python3 over the source, no build).
       - run: scripts/check-plugin-ffi.sh
 

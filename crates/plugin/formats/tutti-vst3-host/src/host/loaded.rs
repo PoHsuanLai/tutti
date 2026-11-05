@@ -23,44 +23,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use vst3::ComPtr;
-use vst3::Steinberg::{
-    FUnknown, IBStream, IPlugView, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait,
-    IPlugViewTrait, IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
-    Vst::{
-        IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
-        IAudioProcessorTrait, IAutomationState, IAutomationStateTrait, IComponent, IComponentTrait,
-        IConnectionPoint, IConnectionPointTrait, IEditController, IEditControllerTrait,
-        IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn, INoteExpressionController,
-        INoteExpressionControllerTrait, INoteExpressionPhysicalUIMapping,
-        INoteExpressionPhysicalUIMappingTrait, IParameterFunctionName, IParameterFunctionNameTrait,
-        IPrefetchableSupport, IPrefetchableSupportTrait, IProcessContextRequirements,
-        IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait, IUnitInfo,
-        IUnitInfoTrait, IXmlRepresentationController, IXmlRepresentationControllerTrait,
-        PhysicalUIMap, PhysicalUIMapList, RepresentationInfo, SpeakerArrangement,
-    },
-    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue,
-};
-
-#[cfg(target_os = "windows")]
-use vst3::Steinberg::kPlatformTypeHWND;
-#[cfg(target_os = "macos")]
-use vst3::Steinberg::kPlatformTypeNSView;
-#[cfg(target_os = "linux")]
-use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
-
 use tutti_plugin_types::{
     Control, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
     PluginDescriptor, Request,
 };
 use tutti_types::{ArcLend, ChannelTopology};
 use tutti_vst3_ffi::{
-    BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
+    BusDirection, CreateError, EditorError, MediaType, Plugin, PluginNotification, RestartFlags,
 };
 
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
-use crate::helpers::utf16_to_string;
 use crate::types::unit_ids;
 use crate::types::{
     ContentScale, EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo,
@@ -71,8 +44,6 @@ use super::instance::usable_topology;
 use super::library::Vst3Library;
 use super::midi_learn::MidiLearnConsumer;
 use super::midi_mapping::{MidiCcCell, MidiCcMapping};
-use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
-use super::{IComponentExt, K_INPUT, K_OUTPUT};
 
 const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 
@@ -89,9 +60,7 @@ pub struct Vst3Loaded {
     // jumps through a dangling function pointer. `_library` therefore has to be
     // the LAST field, not the first. (Same rule `Vst3Library` documents for its
     // own fields.)
-    pub(super) interfaces: PluginInterfaces,
-    pub(super) host: HostContext,
-    pub(super) editor: EditorState,
+    pub(super) plugin: Plugin,
     pub(super) info: PluginInfo,
     /// IMidiLearn forwarding: armed off the main thread, fed captured CCs from
     /// the audio thread, drained in [`Self::poll_plugin_notifications`]. Built at load
@@ -307,15 +276,14 @@ impl Vst3Loaded {
         ensure_has_classes(&library, path)?;
 
         let class = find_audio_class(&library, path)?;
-        let component: ComPtr<IComponent> = library.create_instance(&class.cid)?;
-        let processor = component.cast::<IAudioProcessor>();
-        Ok(build_plugin_info_raw(
-            &library,
-            &component,
-            processor.as_ref(),
-            &class,
-            false,
-        ))
+        library
+            .module()
+            .check_instantiable(&class.cid)
+            .map_err(|e| Vst3Error::PluginError {
+                stage: LoadStage::Instantiation,
+                code: e.code(),
+            })?;
+        Ok(build_plugin_info_raw(&library, &class))
     }
 
     /// Loads a VST3 plugin: the bundle's first audio class, or the one
@@ -343,100 +311,50 @@ impl Vst3Loaded {
             Some(wanted) => find_audio_class_named(&library, path, wanted)?,
             None => find_audio_class(&library, path)?,
         };
-        let component: ComPtr<IComponent> = library.create_instance(&class.cid)?;
-        let processor =
-            component
-                .cast::<IAudioProcessor>()
-                .ok_or_else(|| Vst3Error::LoadFailed {
+        let plugin = library
+            .module()
+            .create_plugin(&class.cid)
+            .map_err(|e| match e {
+                CreateError::NoAudioProcessor => Vst3Error::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Instantiation,
                     reason: "VST3 plugin does not support IAudioProcessor".to_string(),
-                })?;
-        let controller = query_controller(&component, &library);
+                },
+                CreateError::Create(e) => Vst3Error::PluginError {
+                    stage: LoadStage::Instantiation,
+                    code: e.code(),
+                },
+                _ => Vst3Error::PluginError {
+                    stage: LoadStage::Instantiation,
+                    code: 0,
+                },
+            })?;
         // The buses and the 64-bit answer are read once the component is
         // initialized (`reconcile_bus_counts`).
-        let info = build_plugin_info_raw(&library, &component, None, &class, false);
+        let info = build_plugin_info_raw(&library, &class);
 
         let origin = LoadOrigin {
             path: path.to_path_buf(),
             class: options.class,
         };
-        let mut loaded = Self::assemble(library, component, processor, controller, info, origin);
+        let mut loaded = Self::assemble(library, plugin, info, origin);
         loaded.initialize()?;
         Ok(loaded)
     }
 
-    /// Builds `Self` from already-queried interfaces. No side effects — the
+    /// Builds `Self` from an already-created plugin. No side effects — the
     /// caller runs [`initialize`](Self::initialize).
     fn assemble(
         library: Arc<Vst3Library>,
-        component: ComPtr<IComponent>,
-        processor: ComPtr<IAudioProcessor>,
-        controller: Controller,
+        plugin: Plugin,
         info: PluginInfo,
         origin: LoadOrigin,
     ) -> Self {
-        // Same run loop as the factory-level host context: a plugin that only
-        // sees the context handed to `IPluginBase::initialize` must reach the
-        // loop the host actually pumps.
-        let host_application = HostApplication::new(
-            super::library::HOST_NAME,
-            #[cfg(target_os = "linux")]
-            library.run_loop(),
-        );
-        let component_handler = ComponentHandler::new();
-
-        let note_expression = controller
-            .as_ref()
-            .and_then(|c| c.cast::<INoteExpressionController>());
-        let automation_state = controller
-            .as_ref()
-            .and_then(|c| c.cast::<IAutomationState>());
-        let keyswitch = controller
-            .as_ref()
-            .and_then(|c| c.cast::<IKeyswitchController>());
-        let unit_info = controller.as_ref().and_then(|c| c.cast::<IUnitInfo>());
-        let remap_param_id = controller.as_ref().and_then(|c| c.cast::<IRemapParamID>());
-        let parameter_function_name = controller
-            .as_ref()
-            .and_then(|c| c.cast::<IParameterFunctionName>());
-        let physical_ui_mapping = controller
-            .as_ref()
-            .and_then(|c| c.cast::<INoteExpressionPhysicalUIMapping>());
-        let xml_representation = controller
-            .as_ref()
-            .and_then(|c| c.cast::<IXmlRepresentationController>());
-        let prefetchable_support = processor.cast::<IPrefetchableSupport>();
-        let audio_presentation_latency = processor.cast::<IAudioPresentationLatency>();
-        let midi_learn =
-            MidiLearnConsumer::new(controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()));
-
         Self {
             _library: library,
-            interfaces: PluginInterfaces {
-                component,
-                processor,
-                controller,
-                // The real answer is read in `initialize`; see the field doc.
-                process_context_requirements: u32::MAX,
-                note_expression,
-                automation_state,
-                keyswitch,
-                unit_info,
-                remap_param_id,
-                parameter_function_name,
-                physical_ui_mapping,
-                xml_representation,
-                prefetchable_support,
-                audio_presentation_latency,
-            },
-            host: HostContext {
-                application: host_application,
-                handler: component_handler,
-            },
-            editor: EditorState::Closed,
             info,
-            midi_learn,
+            midi_learn: MidiLearnConsumer::new(plugin.midi_learn()),
+            plugin,
             origin,
             descriptor: OnceLock::new(),
             active: Activation::default(),
@@ -461,7 +379,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn latency_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
-        unsafe { self.interfaces.processor.getLatencySamples() }
+        self.plugin.latency_samples()
     }
 
     /// Reads the plugin's tail length from `IAudioProcessor::getTailSamples` —
@@ -478,7 +396,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn tail_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
-        unsafe { self.interfaces.processor.getTailSamples() }
+        self.plugin.tail_samples()
     }
 
     // ── Parameters: ParamID vs index ──────────────────────────────────────────
@@ -504,10 +422,7 @@ impl Vst3Loaded {
     /// exclusive upper bound of the **index** space.
     /// Returns `0` if the plugin has no controller.
     pub fn parameter_count(&self) -> u32 {
-        match self.interfaces.controller.as_ref() {
-            Some(c) => unsafe { c.getParameterCount() as u32 },
-            None => 0,
-        }
+        self.plugin.parameter_count()
     }
 
     /// The **ParamID** of the parameter at `index` in `0 .. parameter_count()`.
@@ -547,10 +462,7 @@ impl Vst3Loaded {
     /// Returns `None` if the index is out of range or the plugin has no
     /// controller.
     pub fn parameter_info(&self, index: u32) -> Option<Vst3ParameterInfo> {
-        let controller = self.interfaces.controller.as_ref()?;
-        let mut raw: vst3::Steinberg::Vst::ParameterInfo = unsafe { std::mem::zeroed() };
-        let result = unsafe { controller.getParameterInfo(index as i32, &mut raw) };
-        (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
+        self.plugin.parameter_info(index)
     }
 
     /// Every parameter the plugin advertises, as the SHARED
@@ -605,10 +517,9 @@ impl Vst3Loaded {
     /// Must run on the main thread with the controller connected, per the SDK's
     /// `[UI-thread & Connected]` annotation on the method.
     pub fn parameter_plain_range(&self, id: u32) -> Option<(f64, f64)> {
-        let controller = self.interfaces.controller.as_ref()?;
-        let at = |n: f64| unsafe { controller.normalizedParamToPlain(id, n) };
+        let at = |n: f64| self.plugin.normalized_to_plain(id, n);
 
-        let (lo, mid, hi) = (at(0.0), at(0.5), at(1.0));
+        let (lo, mid, hi) = (at(0.0)?, at(0.5)?, at(1.0)?);
         if !lo.is_finite() || !mid.is_finite() || !hi.is_finite() {
             return None;
         }
@@ -629,10 +540,7 @@ impl Vst3Loaded {
     /// [`NoteExpressionValue`](crate::NoteExpressionValue) events regardless of
     /// what this reports.
     pub fn note_expression_count(&self, bus_index: i32, channel: i16) -> u32 {
-        match &self.interfaces.note_expression {
-            Some(c) => unsafe { c.getNoteExpressionCount(bus_index, channel).max(0) as u32 },
-            None => 0,
-        }
+        self.plugin.note_expression_count(bus_index, channel)
     }
 
     /// Raw `IProcessContextRequirements::getProcessContextRequirements` bitmask
@@ -642,7 +550,7 @@ impl Vst3Loaded {
     ///
     /// [`process_context_flags`]: crate::types::process_context_flags
     pub fn context_requirements(&self) -> u32 {
-        self.interfaces.process_context_requirements
+        self.plugin.process_context_requirements()
     }
 
     /// `true` if the plugin asked for any transport field (tempo, playhead,
@@ -652,7 +560,7 @@ impl Vst3Loaded {
     /// (`u32::MAX`) wants everything.
     pub fn wants_transport(&self) -> bool {
         use crate::types::process_context_flags as f;
-        let req = self.interfaces.process_context_requirements;
+        let req = self.plugin.process_context_requirements();
         const TRANSPORT_BITS: u32 = f::NEED_TEMPO
             | f::NEED_PROJECT_TIME_MUSIC
             | f::NEED_BAR_POSITION_MUSIC
@@ -668,7 +576,7 @@ impl Vst3Loaded {
     /// (chord / scale). Distinct from note-expression.
     pub fn wants_sequencer_context(&self) -> bool {
         use crate::types::process_context_flags as f;
-        self.interfaces.process_context_requirements & f::NEED_CHORD != 0
+        self.plugin.process_context_requirements() & f::NEED_CHORD != 0
     }
 
     /// Descriptor for the note-expression type at `index` on the given event
@@ -681,11 +589,7 @@ impl Vst3Loaded {
         channel: i16,
         index: u32,
     ) -> Option<Vst3NoteExpressionInfo> {
-        let controller = self.interfaces.note_expression.as_ref()?;
-        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
-        let result =
-            unsafe { controller.getNoteExpressionInfo(bus_index, channel, index as i32, &mut raw) };
-        (result == kResultOk).then(|| Vst3NoteExpressionInfo::from_c(&raw))
+        self.plugin.note_expression_info(bus_index, channel, index)
     }
 
     /// Number of key-switch (articulation) entries the plugin exposes on the
@@ -695,10 +599,7 @@ impl Vst3Loaded {
     /// Pair with [`keyswitch_info`](Self::keyswitch_info) to enumerate the
     /// articulation map a sample-library instrument advertises.
     pub fn keyswitch_count(&self, bus_index: i32, channel: i16) -> u32 {
-        match &self.interfaces.keyswitch {
-            Some(c) => unsafe { c.getKeyswitchCount(bus_index, channel).max(0) as u32 },
-            None => 0,
-        }
+        self.plugin.keyswitch_count(bus_index, channel)
     }
 
     /// Descriptor for the key switch at `index` on the given event `bus_index` /
@@ -711,11 +612,7 @@ impl Vst3Loaded {
         channel: i16,
         index: u32,
     ) -> Option<Vst3KeyswitchInfo> {
-        let controller = self.interfaces.keyswitch.as_ref()?;
-        let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
-        let result =
-            unsafe { controller.getKeyswitchInfo(bus_index, channel, index as i32, &mut raw) };
-        (result == kResultOk).then(|| Vst3KeyswitchInfo::from_c(&raw))
+        self.plugin.keyswitch_info(bus_index, channel, index)
     }
 
     /// Asks the plugin (via `IRemapParamID`) for the parameter ID in *this*
@@ -742,16 +639,8 @@ impl Vst3Loaded {
         old_param_id: u32,
     ) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
-        let remap = self.interfaces.remap_param_id.as_ref()?;
-        let mut new_param_id: u32 = 0;
-        let result = unsafe {
-            remap.getCompatibleParamID(
-                plugin_to_replace_uid as *const [i8; 16],
-                old_param_id,
-                &mut new_param_id,
-            )
-        };
-        (result == kResultTrue).then_some(new_param_id)
+        self.plugin
+            .compatible_param_id(plugin_to_replace_uid, old_param_id)
     }
 
     /// Resolves a well-known parameter *function name* (the VST3 spec defines
@@ -768,12 +657,8 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.parameter_function_name.as_ref()?;
-        let c_name = std::ffi::CString::new(function_name).ok()?;
-        let mut param_id: u32 = 0;
-        let result =
-            unsafe { ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id) };
-        (result == kResultOk).then_some(param_id)
+        self.plugin
+            .param_id_for_function_name(unit_id, function_name)
     }
 
     /// The plugin's program lists — the named preset sets its units select
@@ -789,19 +674,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
         tutti_plugin_types::assert_main_thread();
-        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
-            return Vec::new();
-        };
-
-        let count = unsafe { ctrl.getProgramListCount() }.max(0);
-        let mut lists = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let mut raw: vst3::Steinberg::Vst::ProgramListInfo = unsafe { std::mem::zeroed() };
-            if unsafe { ctrl.getProgramListInfo(i, &mut raw) } == kResultOk {
-                lists.push(Vst3ProgramListInfo::from_c(&raw));
-            }
-        }
-        lists
+        self.plugin.program_lists()
     }
 
     /// The plugin's unit tree — the groups it sorts parameters, programs and
@@ -825,23 +698,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn units(&self) -> Vec<Vst3UnitInfo> {
         tutti_plugin_types::assert_main_thread();
-        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
-            return Vec::new();
-        };
-
-        let known: Vec<i32> = self.program_lists().into_iter().map(|l| l.id).collect();
-
-        let count = unsafe { ctrl.getUnitCount() }.max(0);
-        let mut units = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let mut raw: vst3::Steinberg::Vst::UnitInfo = unsafe { std::mem::zeroed() };
-            if unsafe { ctrl.getUnitInfo(i, &mut raw) } == kResultOk {
-                let mut unit = Vst3UnitInfo::from_c(&raw);
-                unit.resolve_program_list(&known);
-                units.push(unit);
-            }
-        }
-        units
+        self.plugin.units()
     }
 
     /// Name of one program in a list, or `None` if the plugin doesn't
@@ -857,10 +714,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.unit_info.as_ref()?;
-        let mut name: vst3::Steinberg::Vst::String128 = [0; 128];
-        let result = unsafe { ctrl.getProgramName(list_id, program_index as i32, &mut name) };
-        (result == kResultOk).then(|| utf16_to_string(&name))
+        self.plugin.program_name(list_id, program_index)
     }
 
     /// The unit the plugin currently considers selected — which part of a
@@ -877,8 +731,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn selected_unit(&self) -> Option<i32> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.unit_info.as_ref()?;
-        Some(unsafe { ctrl.getSelectedUnit() })
+        self.plugin.selected_unit()
     }
 
     /// Tells the plugin which unit the host's UI is now showing, so a plugin
@@ -896,10 +749,7 @@ impl Vst3Loaded {
     #[must_use]
     pub fn select_unit(&mut self, unit_id: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
-        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
-            return false;
-        };
-        unsafe { ctrl.selectUnit(unit_id) == kResultOk }
+        self.plugin.select_unit(unit_id)
     }
 
     /// Which unit a given bus channel belongs to, or `None` if the plugin
@@ -920,11 +770,8 @@ impl Vst3Loaded {
         channel: i32,
     ) -> Option<i32> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.unit_info.as_ref()?;
-        let mut unit_id: i32 = 0;
-        let result =
-            unsafe { ctrl.getUnitByBus(media_type, direction, bus_index, channel, &mut unit_id) };
-        (result == kResultOk).then_some(unit_id)
+        self.plugin
+            .unit_by_bus(media_type, direction, bus_index, channel)
     }
 
     /// Maps the plugin's physical UI controls to the note-expression dimensions
@@ -943,30 +790,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
         tutti_plugin_types::assert_main_thread();
-        let Some(ctrl) = self.interfaces.physical_ui_mapping.as_ref() else {
-            return Vec::new();
-        };
-        // Query all three physical UI types (X, Y, pressure). The plugin fills
-        // each entry's noteExpressionTypeID, leaving kInvalidTypeID where the
-        // control isn't mapped.
-        let mut entries: Vec<PhysicalUIMap> = (0..3)
-            .map(|i| PhysicalUIMap {
-                physicalUITypeID: i,
-                noteExpressionTypeID: u32::MAX,
-            })
-            .collect();
-        let mut list = PhysicalUIMapList {
-            count: entries.len() as u32,
-            map: entries.as_mut_ptr(),
-        };
-        let result = unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) };
-        if result != kResultOk {
-            return Vec::new();
-        }
-        entries
-            .iter()
-            .map(|e| (e.physicalUITypeID, e.noteExpressionTypeID))
-            .collect()
+        self.plugin.physical_ui_mapping(bus_index, channel)
     }
 
     /// Export the plugin's parameter remote-control layout as XML, for the
@@ -989,22 +813,7 @@ impl Vst3Loaded {
         host: &str,
     ) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.xml_representation.as_ref()?;
-
-        let mut info: RepresentationInfo = unsafe { std::mem::zeroed() };
-        fill_char8_64(&mut info.vendor, vendor);
-        fill_char8_64(&mut info.name, name);
-        fill_char8_64(&mut info.version, version);
-        fill_char8_64(&mut info.host, host);
-
-        let stream = BStream::new();
-        let stream_ptr = stream.as_com_ref::<IBStream>()?;
-        let result = unsafe { ctrl.getXmlRepresentationStream(&mut info, stream_ptr.as_ptr()) };
-        if result != kResultOk {
-            return None;
-        }
-        let bytes = stream.data();
-        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+        self.plugin.xml_representation(vendor, name, version, host)
     }
 
     /// Reads the bundle's machine-readable compatibility / migration info as a
@@ -1025,28 +834,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn compatibility_json(&self) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
-        // The SDK category string for the compatibility class (kPluginCompatibilityClass).
-        const COMPATIBILITY_CATEGORY: &str = "Plugin Compatibility Class";
-
-        let count = self._library.count_classes();
-        let cid = (0..count).find_map(|i| {
-            let info = self._library.class_info(i).ok()?;
-            (info.category == COMPATIBILITY_CATEGORY).then_some(info.cid)
-        })?;
-
-        let compat = self
-            ._library
-            .create_instance::<IPluginCompatibility>(&cid)
-            .ok()?;
-
-        let stream = BStream::new();
-        let stream_ptr = stream.as_com_ref::<IBStream>()?;
-        let result = unsafe { compat.getCompatibilityJSON(stream_ptr.as_ptr()) };
-        if result != kResultOk {
-            return None;
-        }
-        let bytes = stream.data();
-        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+        self._library.module().compatibility_json()
     }
 
     /// Queries the plugin's offline/prefetch processing support via
@@ -1060,10 +848,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn prefetchable_support(&self) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
-        let proc = self.interfaces.prefetchable_support.as_ref()?;
-        let mut support: u32 = 0;
-        let result = unsafe { proc.getPrefetchableSupport(&mut support) };
-        (result == kResultOk).then_some(support)
+        self.plugin.prefetchable_support()
     }
 
     /// Tells the plugin the downstream presentation latency (in samples) for a
@@ -1084,15 +869,8 @@ impl Vst3Loaded {
         latency_samples: u32,
     ) -> bool {
         tutti_plugin_types::assert_main_thread();
-        match &self.interfaces.audio_presentation_latency {
-            Some(p) => {
-                unsafe {
-                    p.setAudioPresentationLatencySamples(dir, bus_index, latency_samples);
-                }
-                true
-            }
-            None => false,
-        }
+        self.plugin
+            .set_audio_presentation_latency(dir, bus_index, latency_samples)
     }
 
     /// Hands every queued plugin notification to `on_event`, oldest first,
@@ -1150,12 +928,12 @@ impl Vst3Loaded {
         // caller polls on a live active instance, so the re-enumeration would
         // run mid-activation. The activation sequence reconciles.
         let mut restart = self.take_restart();
-        while let Some(event) = self.host.handler.pop_notification() {
+        while let Some(event) = self.plugin.handler().pop_notification() {
             on_event(event);
         }
         // After the drain, so a drop made before it is reported now rather
         // than one poll late.
-        restart.notifications_overflowed = self.host.handler.take_overflowed();
+        restart.notifications_overflowed = self.plugin.handler().take_overflowed();
         // Forward any live CCs the audio thread captured for MIDI-learn to the
         // plugin's IMidiLearn on this (main) thread, as the SDK requires. No-op
         // unless learn is armed and the plugin implements IMidiLearn.
@@ -1173,7 +951,7 @@ impl Vst3Loaded {
     /// [`poll_plugin_notifications`](Self::poll_plugin_notifications).
     pub fn take_restart(&self) -> RestartOutcome {
         RestartOutcome::from_flags(RestartFlags::from_bits(
-            self.host.handler.take_restart_bits(),
+            self.plugin.handler().take_restart_bits(),
         ))
     }
 
@@ -1186,16 +964,16 @@ impl Vst3Loaded {
     /// Leaves the restart flags and pending MIDI-learn CCs alone.
     pub fn discard_notifications(&self) -> usize {
         let mut n = 0;
-        while self.host.handler.pop_notification().is_some() {
+        while self.plugin.handler().pop_notification().is_some() {
             n += 1;
         }
-        self.host.handler.take_overflowed();
+        self.plugin.handler().take_overflowed();
         n
     }
 
     /// How many notifications are queued, unread.
     pub fn pending_notifications(&self) -> usize {
-        self.host.handler.pending_notifications()
+        self.plugin.handler().pending_notifications()
     }
 
     /// Notifications the plugin sent that were dropped because
@@ -1203,7 +981,7 @@ impl Vst3Loaded {
     /// unread. Cumulative over the instance's life; a rising count means the
     /// host polls too rarely (or not at all) for this plugin.
     pub fn dropped_notifications(&self) -> u64 {
-        self.host.handler.dropped_notifications()
+        self.plugin.handler().dropped_notifications()
     }
 
     /// Arms or disarms VST3 MIDI learn (`IMidiLearn`).
@@ -1250,13 +1028,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn apply_automation_state(&mut self, state: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
-        match &self.interfaces.automation_state {
-            Some(a) => {
-                unsafe { a.setAutomationState(state) };
-                true
-            }
-            None => false,
-        }
+        self.plugin.set_automation_state(state)
     }
 
     /// Captures the plugin's state as an opaque byte blob suitable for
@@ -1309,17 +1081,7 @@ impl Vst3Loaded {
     /// [`save_state`](Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
     fn read_controller_state(&self) -> Option<Vec<u8>> {
-        let ctrl = self.interfaces.controller.as_ref()?;
-        let stream = BStream::new();
-        let stream_ptr = stream.as_com_ref::<IBStream>()?;
-
-        let result = unsafe { ctrl.getState(stream_ptr.as_ptr()) };
-        if !state_result_ok(result) {
-            return None;
-        }
-
-        let data = stream.data();
-        (!data.is_empty()).then_some(data)
+        self.plugin.controller_state()
     }
 
     /// Writes the component's `getState` blob into a fresh `IBStream` and return
@@ -1329,21 +1091,12 @@ impl Vst3Loaded {
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
     /// only a genuine error tresult is surfaced as [`Vst3Error::PluginError`].
     fn read_component_state(&self) -> Result<Vec<u8>> {
-        let stream = BStream::new();
-        let stream_ptr = stream
-            .as_com_ref::<IBStream>()
-            .ok_or_else(|| Vst3Error::StateError("Failed to wrap BStream".into()))?;
-
-        let result = unsafe { self.interfaces.component.getState(stream_ptr.as_ptr()) };
-
-        if !state_result_ok(result) {
-            return Err(Vst3Error::PluginError {
+        self.plugin
+            .component_state()
+            .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
-                code: result,
-            });
-        }
-
-        Ok(stream.data())
+                code: e.code(),
+            })
     }
 
     /// Feed a component-state blob to the edit controller via
@@ -1354,18 +1107,7 @@ impl Vst3Loaded {
     /// this is best-effort synchronisation, shared by
     /// [`load_state`](Control::load_state) and [`initialize`](Self::initialize).
     fn push_controller_state(&self, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-        let Some(ctrl) = self.interfaces.controller.as_ref() else {
-            return;
-        };
-        let ctrl_stream = BStream::from_data(data.to_vec());
-        if let Some(ctrl_stream_ref) = ctrl_stream.as_com_ref::<IBStream>() {
-            unsafe {
-                let _ = ctrl.setComponentState(ctrl_stream_ref.as_ptr());
-            }
-        }
+        self.plugin.sync_controller_to_component_state(data);
     }
 
     /// Restores plugin state from a blob produced by [`save_state`](Control::save_state).
@@ -1402,22 +1144,13 @@ impl Vst3Loaded {
             return Ok(());
         }
 
-        let stream = BStream::from_data(component.to_vec());
-        let stream_ptr = stream
-            .as_com_ref::<IBStream>()
-            .ok_or_else(|| Vst3Error::StateError("Failed to wrap BStream".into()))?;
-
-        let result = unsafe { self.interfaces.component.setState(stream_ptr.as_ptr()) };
-
-        if !state_result_ok(result) {
-            return Err(Vst3Error::PluginError {
+        self.plugin
+            .set_component_state(component)
+            .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
-                code: result,
-            });
-        }
+                code: e.code(),
+            })?;
 
-        // Mirror into the controller (no-op for a same-object controller that
-        // already saw the state, harmless for a separate one).
         self.push_controller_state(component);
 
         if let Some(controller) = controller {
@@ -1435,15 +1168,7 @@ impl Vst3Loaded {
     /// scroll position must not fail a project load whose audio state restored
     /// perfectly.
     fn push_controller_own_state(&self, data: &[u8]) {
-        let Some(ctrl) = self.interfaces.controller.as_ref() else {
-            return;
-        };
-        let stream = BStream::from_data(data.to_vec());
-        if let Some(stream_ref) = stream.as_com_ref::<IBStream>() {
-            unsafe {
-                let _ = ctrl.setState(stream_ref.as_ptr());
-            }
-        }
+        self.plugin.set_controller_state(data);
     }
 
     /// Returns `true` if the plugin actually publishes an editor view.
@@ -1462,19 +1187,7 @@ impl Vst3Loaded {
     /// A plugin with no controller at all answers `false`.
     #[must_use]
     pub fn has_editor(&self) -> bool {
-        let Some(ctrl) = self.interfaces.controller.as_ref() else {
-            return false;
-        };
-        let view = unsafe { ctrl.createView(c"editor".as_ptr()) };
-        if view.is_null() {
-            return false;
-        }
-        // `createView` returns an owned reference; drop it rather than leak a
-        // view per query.
-        unsafe {
-            ComPtr::<IPlugView>::from_raw(view);
-        }
-        true
+        self.plugin.has_editor()
     }
 
     /// Creates the plugin editor, attach it to `parent`, and return its initial
@@ -1501,73 +1214,29 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         tutti_plugin_types::assert_main_thread();
-        let ctrl = self
-            .interfaces
-            .controller
-            .as_ref()
-            .ok_or(Vst3Error::EditorError(
-                "Plugin has no editor controller".to_string(),
-            ))?;
+        let size = self
+            .plugin
+            .open_editor(parent, scale)
+            .map_err(|error| match error {
+                EditorError::NoController => {
+                    Vst3Error::EditorError("Plugin has no editor controller".to_string())
+                }
+                EditorError::NoView => {
+                    Vst3Error::EditorError("Failed to create plugin view".to_string())
+                }
+                EditorError::PlatformRefused(name) => Vst3Error::EditorError(format!(
+                    "Plugin view does not support platform type {name}"
+                )),
+                EditorError::Attach(e) => Vst3Error::PluginError {
+                    stage: LoadStage::Initialization,
+                    code: e.code(),
+                },
+                _ => Vst3Error::EditorError("Failed to open the plugin editor".to_string()),
+            })?;
 
-        let view_raw = unsafe { ctrl.createView(c"editor".as_ptr()) };
-        let view = unsafe { ComPtr::from_raw(view_raw) }.ok_or(Vst3Error::EditorError(
-            "Failed to create plugin view".to_string(),
-        ))?;
-
-        #[cfg(target_os = "macos")]
-        let platform_type = kPlatformTypeNSView;
-        #[cfg(target_os = "windows")]
-        let platform_type = kPlatformTypeHWND;
-        #[cfg(target_os = "linux")]
-        let platform_type = kPlatformTypeX11EmbedWindowID;
-
-        // Ask before attaching: a view that only speaks Wayland or NSView must
-        // not be handed an X11 window id. `editorhost` checks this first for the
-        // same reason (WindowController::onShow), and a view that says no here
-        // would otherwise take an untested `attached` path instead of failing
-        // cleanly.
-        let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
-        if platform_type_refused(supported) {
-            return Err(Vst3Error::EditorError(format!(
-                "Plugin view does not support platform type {}",
-                platform_type_name(platform_type)
-            )));
-        }
-
-        // Create a fresh frame for this editor session, so no resize request
-        // from an earlier editor survives into this one.
-        // setFrame must precede attached() per Steinberg spec.
-        let plug_frame = HostPlugFrame::new(
-            #[cfg(target_os = "linux")]
-            self._library.run_loop(),
-        );
-        let frame_ptr = plug_frame
-            .as_com_ref::<vst3::Steinberg::IPlugFrame>()
-            .map(|r| r.as_ptr())
-            .unwrap_or(std::ptr::null_mut());
-        unsafe {
-            let _ = view.setFrame(frame_ptr);
-        }
-
-        // HiDPI: if the view implements IPlugViewContentScaleSupport, tell it the
-        // backing-store scale factor *before* `attached`, so scale-aware plugins
-        // lay their UI out at the right resolution from the first frame. Plugins
-        // that don't implement the interface (cast returns None) simply no-op.
-        if let Some(factor) = content_scale_for(platform_type, scale) {
-            set_content_scale(&view, factor);
-        }
-
-        let result = unsafe { view.attached(parent.as_ptr(), platform_type) };
-        if result != kResultOk {
-            return Err(Vst3Error::PluginError {
-                stage: LoadStage::Initialization,
-                code: result,
-            });
-        }
-
-        let (width, height) = query_view_size(&view).unwrap_or(DEFAULT_EDITOR_SIZE);
-        self.editor = EditorState::Open { view, plug_frame };
-
+        let (width, height) = size
+            .map(|size| (size.width, size.height))
+            .unwrap_or(DEFAULT_EDITOR_SIZE);
         Ok(EditorSize { width, height })
     }
 
@@ -1580,19 +1249,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn close_editor(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.close_editor_unchecked();
-    }
-
-    /// Assert-free editor teardown for [`Drop`], which has no main-thread
-    /// guarantee (an owner may drop the instance on any thread). The public
-    /// [`close_editor`](Self::close_editor) asserts the main thread before
-    /// delegating here; `Drop` calls this directly to avoid panicking off it.
-    fn close_editor_unchecked(&mut self) {
-        if let EditorState::Open { view, .. } =
-            std::mem::replace(&mut self.editor, EditorState::Closed)
-        {
-            detach_view(&view);
-        }
+        self.plugin.close_editor();
     }
 
     /// What the currently open editor supports, queried live from the view.
@@ -1600,17 +1257,7 @@ impl Vst3Loaded {
     /// Returns the all-`false` default when no editor is open — a closed editor
     /// reports no capabilities rather than the ones it had while open.
     pub fn editor_capabilities(&self) -> EditorCapabilities {
-        let EditorState::Open { view, .. } = &self.editor else {
-            return EditorCapabilities::default();
-        };
-        let resizable = unsafe { view.canResize() } == kResultOk;
-        EditorCapabilities {
-            resize: tutti_plugin_types::ResizeHints {
-                resizable,
-                ..Default::default()
-            },
-            ..EditorCapabilities::default()
-        }
+        self.plugin.editor_capabilities()
     }
 
     /// Runs one iteration of the event loop this host lends the plugin
@@ -1662,11 +1309,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn run_editor_loop_iteration(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        // The library-scoped loop, not the frame's — plugins register against
-        // the host context (via `setHostContext`) before any editor exists, and
-        // both objects share this one loop. See `com/run_loop.rs`.
-        #[cfg(target_os = "linux")]
-        self._library.run_loop().run_iteration();
+        self.plugin.run_editor_loop_iteration();
     }
 
     /// What the plugin has registered with this host's run loop, and how much
@@ -1677,24 +1320,14 @@ impl Vst3Loaded {
     /// nothing with the host, so callers need no `cfg` of their own.
     #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
-        #[cfg(target_os = "linux")]
-        {
-            self._library.run_loop().activity()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            crate::RunLoopActivity::default()
-        }
+        self.plugin.run_loop_activity()
     }
 
     /// The latest `IPlugFrame::resizeView` request since the last poll, if
     /// any. Earlier requests in between are superseded, not queued: only the
     /// size the plugin wants now matters.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        let EditorState::Open { plug_frame, .. } = &self.editor else {
-            return None;
-        };
-        plug_frame.take_resize_request()
+        self.plugin.take_editor_resize_request()
     }
 
     /// Asks the plugin what it would snap `requested` to, without applying it.
@@ -1708,22 +1341,7 @@ impl Vst3Loaded {
     /// the host granted is genuinely one the plugin accepts.
     #[cfg(feature = "conformance")]
     pub fn check_editor_size_constraint(&self, requested: EditorSize) -> Option<EditorSize> {
-        let EditorState::Open { view, .. } = &self.editor else {
-            return None;
-        };
-        let mut rect = ViewRect {
-            left: 0,
-            top: 0,
-            right: requested.width as i32,
-            bottom: requested.height as i32,
-        };
-        // `kResultFalse` means "no constraint to apply", which leaves `rect`
-        // holding the request — the same fallback `resize_editor` uses.
-        unsafe { view.checkSizeConstraint(&mut rect) };
-        Some(EditorSize {
-            width: (rect.right - rect.left) as u32,
-            height: (rect.bottom - rect.top) as u32,
-        })
+        self.plugin.editor_size_constraint(requested)
     }
 
     /// Offer a key press to the open editor. Returns `true` if the plugin
@@ -1759,10 +1377,7 @@ impl Vst3Loaded {
     #[must_use]
     pub fn send_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
         tutti_plugin_types::assert_main_thread();
-        let EditorState::Open { view, .. } = &self.editor else {
-            return false;
-        };
-        send_key_down(view, key, virtual_key, modifiers)
+        self.plugin.editor_key_down(key, virtual_key, modifiers)
     }
 
     /// Offer a key release to the open editor. See
@@ -1776,10 +1391,7 @@ impl Vst3Loaded {
     #[must_use]
     pub fn send_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
         tutti_plugin_types::assert_main_thread();
-        let EditorState::Open { view, .. } = &self.editor else {
-            return false;
-        };
-        send_key_up(view, key, virtual_key, modifiers)
+        self.plugin.editor_key_up(key, virtual_key, modifiers)
     }
 
     /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
@@ -1796,10 +1408,7 @@ impl Vst3Loaded {
     #[must_use]
     pub fn send_wheel(&self, distance: f32) -> bool {
         tutti_plugin_types::assert_main_thread();
-        let EditorState::Open { view, .. } = &self.editor else {
-            return false;
-        };
-        send_wheel(view, distance)
+        self.plugin.editor_wheel(distance)
     }
 
     /// Tells the open editor whether it now has keyboard focus.
@@ -1815,10 +1424,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_editor_focus(&self, focused: bool) {
         tutti_plugin_types::assert_main_thread();
-        let EditorState::Open { view, .. } = &self.editor else {
-            return;
-        };
-        set_view_focus(view, focused);
+        self.plugin.set_editor_focus(focused);
     }
 
     /// Resizes the open editor and returns the size the plugin applied.
@@ -1832,172 +1438,43 @@ impl Vst3Loaded {
     /// Returns [`Vst3Error::EditorError`] if no editor is open, or
     /// [`Vst3Error::PluginError`] if the view rejects `onSize`.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
-        let EditorState::Open { view, .. } = &self.editor else {
+        if !self.plugin.editor_open() {
             return Err(Vst3Error::EditorError("editor not open".to_string()));
-        };
-        let requested_rect = ViewRect {
-            left: 0,
-            top: 0,
-            right: requested.width as i32,
-            bottom: requested.height as i32,
-        };
-        // `checkSizeConstraint` snaps the rect to the nearest size the plugin
-        // will accept (aspect-ratio locks, min/max, integer-multiple grids). The host
-        // must apply that *constrained* rect via `onSize`, not the raw request —
-        // otherwise a plugin that only accepts, say, 4:3 sizes gets handed a
-        // size it rejects. The call snaps the rect in place and returns
-        // `kResultTrue` when it changed it; a `kResultFalse` (no constraint / not
-        // implemented) leaves `constrained` equal to the request, which is the
-        // correct fallback.
-        let mut constrained = requested_rect;
-        let snapped = unsafe { view.checkSizeConstraint(&mut constrained) } == kResultTrue;
-        // On decline, honour the original request verbatim rather than any
-        // partially-written rect the plugin may have left behind.
-        let mut rect = if snapped { constrained } else { requested_rect };
-        let res = unsafe { view.onSize(&mut rect) };
-        if res != kResultOk {
-            return Err(Vst3Error::PluginError {
+        }
+        self.plugin
+            .resize_editor(requested)
+            .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
-                code: res,
-            });
-        }
-        Ok(EditorSize {
-            width: (rect.right - rect.left) as u32,
-            height: (rect.bottom - rect.top) as u32,
-        })
-    }
-
-    /// Wire the component's connection point directly to the separate
-    /// controller's. No-op unless both ends expose `IConnectionPoint`.
-    ///
-    /// The host deliberately does **not** interpose its own
-    /// `IConnectionPoint` proxy between the two halves: it direct-wires the
-    /// plugin's component and controller to each other, so their private
-    /// messages pass straight through without the host inspecting or
-    /// reformatting them.
-    /// Returns whether both halves accepted the connection. A refusal is not an
-    /// error — the plugin simply runs unconnected, as it does when either half
-    /// declines to expose `IConnectionPoint` at all.
-    ///
-    /// The two `connect` calls have to succeed or fail together. `connect`
-    /// returns a `tresult` and both returns were discarded, so a plugin that
-    /// accepted the first and refused the second was left asymmetrically wired
-    /// — the component believing it has a peer, the controller not — and
-    /// `initialize()` continued regardless. The plugin's private
-    /// component↔controller messages then flow one way only, which surfaces
-    /// much later as an editor that does not track the processor.
-    #[must_use]
-    fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) -> bool {
-        let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
-            return false;
-        };
-        let Some(ctrl_conn) = ctrl.cast::<IConnectionPoint>() else {
-            return false;
-        };
-        unsafe {
-            if comp_conn.connect(ctrl_conn.as_ptr()) != kResultOk {
-                return false;
-            }
-            if ctrl_conn.connect(comp_conn.as_ptr()) != kResultOk {
-                // Unwind the half that took, so the component is not left
-                // holding a peer that never reciprocated. Its return is
-                // genuinely uninteresting: there is no third state to recover
-                // to, and the disconnect path discards its results for the
-                // same reason.
-                comp_conn.disconnect(ctrl_conn.as_ptr());
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Reverse [`connect_separate_controller`](Self::connect_separate_controller):
-    /// tell each half to drop its connection to the other before
-    /// `terminate()`. Symmetric to the connect — casts both ends to
-    /// `IConnectionPoint` and `disconnect`s each. No-op unless both ends expose
-    /// the interface. Called from `Drop` for a `Controller::Separate` plugin.
-    fn disconnect_separate_controller(&self) {
-        let Controller::Separate(ctrl) = &self.interfaces.controller else {
-            return;
-        };
-        let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
-            return;
-        };
-        let Some(ctrl_conn) = ctrl.cast::<IConnectionPoint>() else {
-            return;
-        };
-        unsafe {
-            comp_conn.disconnect(ctrl_conn.as_ptr());
-            ctrl_conn.disconnect(comp_conn.as_ptr());
-        }
+                code: e.code(),
+            })
     }
 
     fn initialize(&mut self) -> Result<()> {
-        let host_ptr = self.host_context_ptr()?;
-
-        let result = unsafe { self.interfaces.component.initialize(host_ptr) };
-        // `kResultFalse` is a *refusal*, exactly as in `set_active`: the plugin
-        // is declining to come up, and every later call would run against a
-        // component that never initialised. The SDK's own host agrees —
-        // `plugprovider.cpp:140` requires `== kResultOk` and reports a failure
-        // otherwise.
-        //
-        // `kNotImplemented` is not tolerated either, unlike the state methods:
-        // `IPluginBase::initialize` is mandatory, so a plugin that has not
-        // implemented it has not implemented the interface.
-        if result != kResultOk {
-            return Err(Vst3Error::PluginError {
+        self.plugin
+            .initialize_component()
+            .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
-                code: result,
-            });
-        }
+                code: e.code(),
+            })?;
 
         self.reconcile_bus_counts();
 
-        // Only now, with the component initialized, is the answer the plugin's
-        // own — `ivstaudioprocessor.h:456` marks the call `[UI-thread & Setup
-        // Done]`. A plugin whose requirements depend on initialization state
-        // (a host-configured mode, a loaded instrument) would otherwise be
-        // asked before it could know.
-        self.interfaces.process_context_requirements =
-            query_process_context_requirements(&self.interfaces.processor);
+        self.plugin.read_process_context_requirements();
 
-        let separate_controller = matches!(self.interfaces.controller, Controller::Separate(_));
+        let separate_controller = self.plugin.has_separate_controller();
 
-        if let Controller::Separate(ctrl) = &self.interfaces.controller {
-            unsafe {
-                let _ = ctrl.initialize(host_ptr);
-            }
-            let ctrl = ctrl.clone();
-            // A refused connection is not fatal — a plugin whose halves cannot
-            // talk to each other still processes audio and still shows an
-            // editor; it just loses its private message channel. That is the
-            // same outcome as a plugin not exposing `IConnectionPoint`, which
-            // this host has always tolerated. What matters is that the failure
-            // does not leave one half wired to a peer that is not wired back.
-            let _connected = self.connect_separate_controller(&ctrl);
+        // A separate controller is initialized with the same host context, and
+        // wired to the component. Neither answer is fatal: the plugin simply
+        // runs unconnected.
+        if separate_controller {
+            let _ = self.plugin.initialize_controller();
+            let _connected = self.plugin.connect_controller();
         }
 
-        self.attach_component_handler();
+        self.plugin.attach_component_handler();
 
-        // Bridge the processor's own state into a *separate* controller so its
-        // editor opens showing the real values, not defaults. A same-object
-        // controller already shares the component's state, so this is only
-        // needed (and only correct) for `Controller::Separate`. `setState` is
-        // the sole other path that reaches `setComponentState`; at load there is
-        // no host-supplied blob, so this reads the component's current state and
-        // pushes it across. Tolerate a plugin with no state (empty blob / the
-        // controller returning `kResultFalse`) — never fail `load()` on a
-        // state-sync miss.
-        if separate_controller {
-            // `read_component_state` only errors if the host-side BStream can't
-            // be wrapped or the plugin's `getState` returns a hard failure;
-            // treat either as "no state to sync" and continue — the editor then
-            // opens at defaults rather than failing the load. (No logging
-            // framework is wired into this crate.)
-            if let Ok(state) = self.read_component_state() {
-                self.push_controller_state(&state);
-            }
+        if separate_controller && let Ok(state) = self.read_component_state() {
+            self.push_controller_state(&state);
         }
 
         Ok(())
@@ -2013,53 +1490,7 @@ impl Vst3Loaded {
     /// the pair is one less.
     #[cfg(feature = "conformance")]
     pub fn host_context_refcount(&self) -> usize {
-        use vst3::Steinberg::Vst::IHostApplication;
-        use vst3::com_scrape_types::Unknown;
-
-        let Some(iface) = self.host.application.as_com_ref::<IHostApplication>() else {
-            return 0;
-        };
-        unsafe {
-            let after_add = IHostApplication::add_ref(iface.as_ptr());
-            IHostApplication::release(iface.as_ptr());
-            after_add - 1
-        }
-    }
-
-    /// `IHostApplication` upcast to `FUnknown`, **borrowed**: the returned
-    /// pointer carries no reference for the caller to hand over or drop. It is
-    /// valid only while `self.host.application` is alive, which is why this is
-    /// private and its result never outlives the calling method.
-    ///
-    /// `IPluginBase::initialize` does **not** take ownership of the context.
-    /// The plugin retains it itself if it keeps it: `ComponentBase::hostContext`
-    /// is an `IPtr<FUnknown>` (`public.sdk/source/vst/vstcomponentbase.h:84`),
-    /// so the bare `hostContext = context;` in `ComponentBase::initialize`
-    /// (`vstcomponentbase.cpp:42`) runs `IPtr::operator=`, which addRefs — and
-    /// the `hostContext = nullptr;` in `terminate` (same file, line 51) releases.
-    /// `IPluginBase::terminate`'s own contract says as much:
-    /// "You have to release all references to any host application interfaces"
-    /// (`pluginterfaces/base/ipluginbase.h:48`).
-    ///
-    /// So the host must lend, not give. Passing an owned `+1` here (a
-    /// `to_com_ptr().into_raw()`) leaks one reference per load, unbounded across
-    /// load/unload cycles. The matching trap is the inverse: because the plugin
-    /// never consumed a reference, a host that "balances" this with a
-    /// `FUnknown::release` on any path frees a reference it does not own — a
-    /// use-after-free, not a leak. Steinberg's own reference host borrows and
-    /// releases nothing on either path
-    /// (`public.sdk/source/vst/hosting/plugprovider.cpp:140,178`).
-    fn host_context_ptr(&self) -> Result<*mut FUnknown> {
-        Ok(self
-            .host
-            .application
-            .as_com_ref::<vst3::Steinberg::Vst::IHostApplication>()
-            .ok_or(Vst3Error::PluginError {
-                stage: LoadStage::Initialization,
-                code: 0,
-            })?
-            .upcast::<FUnknown>()
-            .as_ptr())
+        self.plugin.host_context_refcount()
     }
 
     /// Re-query bus counts, the MIDI buses and the 64-bit answer from the
@@ -2072,7 +1503,7 @@ impl Vst3Loaded {
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.
     pub(crate) fn reconcile_bus_counts(&mut self) {
-        if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_INPUT) {
+        if let Some(layout) = self.plugin.audio_bus_channel_count(BusDirection::Input) {
             // `PluginInfo` carries raw usize channel counts; take the count at
             // this boundary.
             let ch = layout.count() as usize;
@@ -2080,7 +1511,7 @@ impl Vst3Loaded {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_OUTPUT) {
+        if let Some(layout) = self.plugin.audio_bus_channel_count(BusDirection::Output) {
             let ch = layout.count() as usize;
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
@@ -2089,8 +1520,8 @@ impl Vst3Loaded {
         // Re-enumerate the full per-bus layout — `initialize` may have changed
         // bus counts, and aux/sidechain buses are only visible post-init on
         // some plugins.
-        let input_bus_channels = self.interfaces.component.audio_bus_channels(K_INPUT);
-        let output_bus_channels = self.interfaces.component.audio_bus_channels(K_OUTPUT);
+        let input_bus_channels = self.plugin.audio_bus_channels(BusDirection::Input);
+        let output_bus_channels = self.plugin.audio_bus_channels(BusDirection::Output);
         self.info = self
             .info
             .clone()
@@ -2101,18 +1532,11 @@ impl Vst3Loaded {
         // pre-init query in `build_plugin_info` always sees zero. Without this,
         // every instrument reports `has_midi_input == false` and a host that
         // gates MIDI delivery on it never sends the plugin a single note.
-        let receives_midi = unsafe {
-            self.interfaces
-                .component
-                .getBusCount(crate::host::instance::K_EVENT, K_INPUT)
-                > 0
-        };
-        let emits_midi = unsafe {
-            self.interfaces
-                .component
-                .getBusCount(crate::host::instance::K_EVENT, K_OUTPUT)
-                > 0
-        };
+        let receives_midi = self.plugin.bus_count(MediaType::Event, BusDirection::Input) > 0;
+        let emits_midi = self
+            .plugin
+            .bus_count(MediaType::Event, BusDirection::Output)
+            > 0;
         self.info = self
             .info
             .clone()
@@ -2120,30 +1544,8 @@ impl Vst3Loaded {
             .midi_output(emits_midi);
         // `canProcessSampleSize` is `[UI-thread & (Initialized | Connected)]`,
         // and a plugin may settle its answer in `initialize`.
-        let supports_f64 = unsafe {
-            self.interfaces
-                .processor
-                .canProcessSampleSize(crate::types::K_SAMPLE_64_INT)
-                == kResultOk
-        };
+        let supports_f64 = self.plugin.can_process_f64();
         self.info = self.info.clone().f64_support(supports_f64);
-    }
-
-    /// Hands the controller this host's `IComponentHandler` so it can report
-    /// param edits, bus-activation requests, etc.
-    fn attach_component_handler(&self) {
-        let Some(ctrl) = self.interfaces.controller.as_ref() else {
-            return;
-        };
-        let handler_ptr = self
-            .host
-            .handler
-            .as_com_ref::<vst3::Steinberg::Vst::IComponentHandler>()
-            .map(|r| r.as_ptr())
-            .unwrap_or(std::ptr::null_mut());
-        unsafe {
-            let _ = ctrl.setComponentHandler(handler_ptr);
-        }
     }
 }
 
@@ -2178,7 +1580,7 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn take_requests(&self, out: &mut Vec<Request>) {
         tutti_plugin_types::assert_main_thread();
-        out.extend(tutti_plugin_types::taken(self.host.handler.requests()));
+        out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
     /// Whether the plugin is activated: `setActive(1)` has run and
@@ -2199,9 +1601,8 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::mark_main_thread`].
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.midi_cc.publish(MidiCcCell(MidiCcMapping::query(
-            self.interfaces.controller.as_ref(),
-        )));
+        self.midi_cc
+            .publish(MidiCcCell(MidiCcMapping::query(&self.plugin)));
         self.midi_cc.reclaim();
     }
 
@@ -2212,7 +1613,7 @@ impl Vst3Loaded {
     /// not need the crate's private `kInput`/`kOutput` constants and cannot
     /// pass an `i32` that is neither.
     pub fn input_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(K_INPUT)
+        self.bus_topologies(BusDirection::Input)
     }
 
     /// The channel topology of each **output** bus.
@@ -2224,11 +1625,11 @@ impl Vst3Loaded {
     /// this bus by speaker". A bus whose arrangement is fully named yields
     /// `Some`, and its width always equals the count reported beside it.
     pub fn output_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
-        self.bus_topologies(K_OUTPUT)
+        self.bus_topologies(BusDirection::Output)
     }
 
-    fn bus_topologies(&self, direction: i32) -> Vec<Option<ChannelTopology>> {
-        let widths = self.interfaces.component.audio_bus_channels(direction);
+    fn bus_topologies(&self, direction: BusDirection) -> Vec<Option<ChannelTopology>> {
+        let widths = self.plugin.audio_bus_channels(direction);
         self.read_back_arrangements(direction, widths.len())
             .into_iter()
             .zip(widths)
@@ -2244,59 +1645,15 @@ impl Vst3Loaded {
     /// mask carries *which speaker each channel is*, which a popcount discards.
     pub(super) fn read_back_arrangements(
         &self,
-        direction: i32,
+        direction: BusDirection,
         num_buses: usize,
     ) -> Vec<ChannelTopology> {
         (0..num_buses)
-            .map(|i| {
-                let mut arr: SpeakerArrangement = 0;
-                let res = unsafe {
-                    self.interfaces
-                        .processor
-                        .getBusArrangement(direction, i as i32, &mut arr)
-                };
-                if res == kResultOk {
-                    super::speakers::from_arrangement(arr)
-                } else {
-                    ChannelTopology::new([])
-                }
+            .map(|i| match self.plugin.bus_arrangement(direction, i as i32) {
+                Ok(arr) => super::speakers::from_arrangement(arr),
+                Err(_) => ChannelTopology::new([]),
             })
             .collect()
-    }
-}
-
-impl Drop for Vst3Loaded {
-    fn drop(&mut self) {
-        // A plugin dropped while activated (its halves were never rejoined)
-        // stops and deactivates first: `terminate` is for an inactive component.
-        if self.active.active {
-            unsafe {
-                self.interfaces.processor.setProcessing(0);
-                let _ = self.interfaces.component.setActive(0);
-            }
-        }
-        // No main-thread assert: Drop has no main-thread guarantee. See
-        // `close_editor_unchecked`.
-        self.close_editor_unchecked();
-        // Mirror the load-time connect in reverse: for a separate controller,
-        // tear the component↔controller connection down before terminating
-        // either half. No-op for same-object / no controller.
-        self.disconnect_separate_controller();
-        // Retract the handler before terminating. Unlike `initialize`, which
-        // borrows the host context, `setComponentHandler` *retains* — so a
-        // plugin that overrides `terminate` without chaining up to the base
-        // class (which resets it) would hold the handler past its own teardown.
-        // Order — retract, controller, component — follows Steinberg's own
-        // wrapper (`basewrapper.cpp:369`).
-        if let Some(ctrl) = self.interfaces.controller.as_ref() {
-            unsafe {
-                let _ = ctrl.setComponentHandler(std::ptr::null_mut());
-                ctrl.terminate();
-            }
-        }
-        unsafe {
-            self.interfaces.component.terminate();
-        }
     }
 }
 
@@ -2338,76 +1695,6 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
         });
     }
     Ok(())
-}
-
-/// The factor `setContentScaleFactor` sends for a view embedded as
-/// `platform_type` in a window of backing scale `scale`, or `None` where it
-/// must not be sent.
-///
-/// The interface exists "on systems where plug-ins cannot get this
-/// information directly like Microsoft Windows"
-/// (`iplugviewcontentscalesupport.h`). An `NSView` (or `UIView`) already
-/// carries its backing scale in logical-pixel geometry, so a plugin told the
-/// factor as well applies it twice and opens at 2× on a Retina display: the
-/// CLAP host withholds `set_scale` on cocoa for the same reason. VST3 takes a
-/// `float`; a display's scale is far inside its precision.
-fn content_scale_for(
-    platform_type: vst3::Steinberg::FIDString,
-    scale: ContentScale,
-) -> Option<f32> {
-    use vst3::Steinberg::{kPlatformTypeNSView, kPlatformTypeUIView};
-    if platform_type.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null `FIDString` is a NUL-terminated C string: the SDK's
-    // `kPlatformType*` constants are `'static` literals.
-    let name = unsafe { std::ffi::CStr::from_ptr(platform_type) };
-    let logical = [kPlatformTypeNSView, kPlatformTypeUIView]
-        .iter()
-        // SAFETY: the SDK's own NUL-terminated `'static` literals.
-        .any(|&t| name == unsafe { std::ffi::CStr::from_ptr(t) });
-    (!logical).then_some(scale.get() as f32)
-}
-
-/// Does this `isPlatformTypeSupported` result mean "no"?
-///
-/// Only an explicit denial counts. `editorhost` treats anything but
-/// `kResultTrue` as fatal, and copying that would break working plugins: the
-/// SDK's own `CPluginView` — base class of `EditorView`, and so of a large
-/// share of shipping plugins — returns `kNotImplemented` unconditionally
-/// (`public.sdk/source/common/pluginview.cpp`) while its `attached` succeeds
-/// anyway. A view that declines to answer is not a view that said no.
-///
-/// `kInvalidArgument` *is* a refusal: it is what `VSTGUIEditor` returns for a
-/// type it does not handle (`vstguieditor.cpp`), which is precisely the
-/// Wayland-only-view-handed-an-X11-id case this check exists to catch.
-///
-/// The asymmetry is deliberate — a false "unsupported" costs the user their
-/// editor, while a false "supported" only reaches the failure the check was
-/// meant to catch, which is where an unchecked call ends up anyway.
-pub fn platform_type_refused(result: i32) -> bool {
-    result == kResultFalse || result == kInvalidArgument
-}
-
-/// Whether a `getState` / `setState` result counts as success.
-///
-/// **`kNotImplemented`, not `kResultFalse`** — and getting this backwards is not
-/// a hypothetical. The SDK's own `Component` base returns `kNotImplemented` from
-/// both methods (`vstcomponent.cpp:159,165`), so *every* plugin that does not
-/// override state answers that way. Accepting `kResultOk || kResultFalse`
-/// instead rejects exactly those plugins: saving a project containing one fails
-/// with a `PluginError`.
-///
-/// The list matches `verify` in the SDK's own preset writer
-/// (`vstpresetfile.cpp:53`), which is the closest thing to a reference host for
-/// this call and accepts `kResultOk || kNotImplemented`.
-///
-/// `kResultFalse` is deliberately *not* here. Unlike the state methods, where
-/// "I have none" is the common honest answer, a plugin that actively fails a
-/// state round-trip is reporting the blob is bad — and silently returning an
-/// empty one would persist a project that cannot be restored.
-fn state_result_ok(result: i32) -> bool {
-    result == kResultOk || result == kNotImplemented
 }
 
 /// Magic prefixing a two-stream state blob. Chosen to be something no VST3
@@ -2489,130 +1776,15 @@ fn unpack_state(data: &[u8]) -> (&[u8], Option<&[u8]>) {
     (component, (!controller.is_empty()).then_some(controller))
 }
 
-/// Tears a view down: retract the host frame, then tell the view it is removed.
+/// Assembles `PluginInfo` from a class descriptor and the factory. Used by
+/// both [`Vst3Loaded::probe`] (which never creates the processor) and
+/// [`Vst3Loaded::load`].
 ///
-/// The order is the point, and it matches `editorhost`'s `closePlugView`. The
-/// `HostPlugFrame` this view was given dies with the `EditorState` that owned
-/// it, so a plugin still holding the pointer during `removed()` — to report a
-/// final `resizeView`, say — would call through memory about to be freed.
-/// Retracting first makes that unrepresentable rather than merely unlikely.
-///
-/// Split out of `close_editor_unchecked` so the ordering is reachable from a
-/// test without a loaded plugin: the state this runs on can only be built by
-/// `open_editor`, but the sequence itself is what needs pinning.
-// `pub` in a private module: `super` re-exports it only under `conformance`, so
-// this never widens the public API of a normal build.
-pub fn detach_view(view: &ComPtr<IPlugView>) {
-    unsafe {
-        view.setFrame(std::ptr::null_mut());
-        view.removed();
-    }
-}
-
-/// Offer a key press to a view, returning whether the plugin **consumed** it.
-///
-/// `kResultTrue` means consumed; anything else — `kResultFalse`,
-/// `kNotImplemented`, an error — means the host should handle the key itself.
-/// That return value is the whole arbitration mechanism, and it is why these
-/// forwarders return `bool` rather than `Result`: a plugin declining a key is
-/// the normal case, not a failure.
-///
-/// See [`Vst3Loaded::send_key_down`] for the encoding of the three arguments.
-///
-// `pub` in a private module, re-exported only under `conformance` — same
-// arrangement as `detach_view`, and for the same reason: the sequence is worth
-// pinning without a real plugin, and `EditorState` can only be built by
-// `open_editor`.
-pub fn send_key_down(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
-    unsafe { view.onKeyDown(key, virtual_key, modifiers) == kResultTrue }
-}
-
-/// Offer a key release to a view. See [`send_key_down`] — identical contract.
-pub fn send_key_up(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
-    unsafe { view.onKeyUp(key, virtual_key, modifiers) == kResultTrue }
-}
-
-/// Offer a mouse-wheel movement to a view, `distance` in wheel notches.
-///
-/// `IPlugView::onWheel` takes one scalar, so a horizontal or
-/// modifier-qualified scroll cannot be expressed through this interface at
-/// all. Nothing is dropped silently here — there is simply nowhere to put it.
-pub fn send_wheel(view: &ComPtr<IPlugView>, distance: f32) -> bool {
-    unsafe { view.onWheel(distance) == kResultTrue }
-}
-
-/// Tells a view whether it now has keyboard focus.
-///
-/// Unlike the key forwarders this has no consumed/not-consumed answer — it is
-/// a notification, and the spec defines no meaning for a refusal.
-pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
-    unsafe {
-        view.onFocus(u8::from(focused));
-    }
-}
-
-/// Renders a `kPlatformType*` constant as text for error messages. These are C
-/// string literals from the SDK, not Rust `&str`, so they need decoding at the
-/// FFI edge; a malformed one degrades to a placeholder rather than failing the
-/// error path this is already on.
-fn platform_type_name(platform_type: vst3::Steinberg::FIDString) -> String {
-    if platform_type.is_null() {
-        return "<null>".to_string();
-    }
-    // SAFETY: `platform_type` is one of the SDK's static `kPlatformType*`
-    // literals, which are NUL-terminated and live for the program's duration.
-    unsafe { std::ffi::CStr::from_ptr(platform_type) }
-        .to_str()
-        .unwrap_or("<invalid utf-8>")
-        .to_string()
-}
-
-/// Tells the view its content scale via `IPlugViewContentScaleSupport`, if it
-/// implements that interface. No-op for views that don't (the cast returns
-/// `None`) — the common case for non-HiDPI-aware plugins.
-fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
-    if let Some(scale_support) = view.cast::<IPlugViewContentScaleSupport>() {
-        unsafe {
-            let _ = scale_support.setContentScaleFactor(scale);
-        }
-    }
-}
-
-/// Reads the plug-view's `getSize()` and translate it into a `(width, height)`
-/// tuple. Returns `None` if the view refuses — callers fall back to a default.
-fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
-    let mut rect = ViewRect {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    let result = unsafe { view.getSize(&mut rect) };
-    if result == kResultOk {
-        Some((
-            (rect.right - rect.left) as u32,
-            (rect.bottom - rect.top) as u32,
-        ))
-    } else {
-        None
-    }
-}
-
-/// Assembles `PluginInfo` from already-queried interfaces. Used by both
-/// [`Vst3Loaded::probe`] (which may not own an `IAudioProcessor`) and
-/// [`Vst3Loaded::load`] (which does).
-///
-/// `query_buses` reads the bus counts, the MIDI buses and the 64-bit answer,
-/// which the SDK allows only on an initialized component. Both callers pass
-/// `false`: `probe` never initializes, and the load path reads them after
+/// The bus counts, the MIDI buses and the 64-bit answer are left at their
+/// empty defaults: the SDK allows those queries only on an initialized
+/// component. `probe` never initializes, and the load path reads them after
 /// `initialize` (`Vst3Loaded::reconcile_bus_counts`).
-fn build_plugin_info_raw(
-    library: &Vst3Library,
-    component: &ComPtr<IComponent>,
-    processor: Option<&ComPtr<IAudioProcessor>>,
-    class: &AudioClass,
-    query_buses: bool,
-) -> PluginInfo {
+fn build_plugin_info_raw(library: &Vst3Library, class: &AudioClass) -> PluginInfo {
     // The class's own vendor wins over the factory's: `ipluginbase.h:357`
     // documents the field as "overwrite vendor information from factory info".
     // They differ on distributor-published bundles, where the factory names the
@@ -2628,36 +1800,6 @@ fn build_plugin_info_raw(
     // Major.Minor.Subversion.Build). A plugin that declares none falls back to
     // the "1.0.0" placeholder rather than showing an empty version field.
     let version = class.version.clone().unwrap_or_else(|| "1.0.0".to_string());
-    // `PluginInfo` carries raw usize channel counts; take the count at this
-    // boundary. A plugin that reports no bus, or whose query fails, contributes
-    // 0 — the per-bus vecs below carry the same absence, and `bus_channels` in
-    // the server loader is the one place that decides what to do about it.
-    let count = |dir| {
-        if query_buses {
-            component
-                .audio_bus_channel_count(dir)
-                .map_or(0, |l| l.count() as usize)
-        } else {
-            0
-        }
-    };
-    let (num_inputs, num_outputs) = (count(K_INPUT), count(K_OUTPUT));
-    let bus_channels = |dir| {
-        if query_buses {
-            component.audio_bus_channels(dir)
-        } else {
-            Default::default()
-        }
-    };
-    let (input_bus_channels, output_bus_channels) = (bus_channels(K_INPUT), bus_channels(K_OUTPUT));
-    let supports_f64 = query_buses
-        && processor
-            .map(|p| unsafe { p.canProcessSampleSize(crate::types::K_SAMPLE_64_INT) == kResultOk })
-            .unwrap_or(false);
-    let event_bus = |dir| {
-        query_buses && unsafe { component.getBusCount(crate::host::instance::K_EVENT, dir) > 0 }
-    };
-    let (receives_midi, emits_midi) = (event_bus(K_INPUT), event_bus(K_OUTPUT));
 
     PluginInfo::new(
         format!("vst3.{}", cid_to_string(&class.cid_bytes)),
@@ -2665,11 +1807,11 @@ fn build_plugin_info_raw(
     )
     .vendor(vendor)
     .version(version)
-    .audio_io(num_inputs, num_outputs)
-    .bus_channels(input_bus_channels, output_bus_channels)
-    .midi(receives_midi)
-    .midi_output(emits_midi)
-    .f64_support(supports_f64)
+    .audio_io(0, 0)
+    .bus_channels(Vec::new(), Vec::new())
+    .midi(false)
+    .midi_output(false)
+    .f64_support(false)
     .sub_categories(class.sub_categories.clone())
 }
 
@@ -2723,82 +1865,6 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
             stage: LoadStage::Factory,
             reason: "No audio processor classes found in VST3".to_string(),
         })
-}
-
-/// Asks the plugin (via `IProcessContextRequirements`) which `ProcessContext`
-/// fields it actually consumes, so [`crate::types::to_process_context`] can
-/// skip populating the rest.
-///
-/// Plugins that don't implement the interface get [`u32::MAX`] — every bit set,
-/// i.e. "send everything", which is the pre-spec default. The gating is a
-/// strict no-op for them.
-/// Copy a Rust `&str` into a fixed `[char8; 64]` (`i8`) VST3 string buffer as
-/// NUL-terminated ASCII/UTF-8 bytes, truncating to fit (leaving room for the
-/// terminator). Used to fill `RepresentationInfo`'s vendor/name/version/host.
-fn fill_char8_64(dst: &mut [i8; 64], src: &str) {
-    let bytes = src.as_bytes();
-    let n = bytes.len().min(dst.len() - 1);
-    for (slot, &b) in dst.iter_mut().zip(&bytes[..n]) {
-        *slot = b as i8;
-    }
-    dst[n] = 0;
-}
-
-fn query_process_context_requirements(processor: &ComPtr<IAudioProcessor>) -> u32 {
-    match processor.cast::<IProcessContextRequirements>() {
-        Some(reqs) => unsafe { reqs.getProcessContextRequirements() },
-        None => u32::MAX,
-    }
-}
-
-fn query_controller(component: &ComPtr<IComponent>, library: &Vst3Library) -> Controller {
-    if let Some(ctrl) = component.cast::<IEditController>() {
-        return Controller::Same(ctrl);
-    }
-    let mut controller_cid = [0i8; 16];
-    let result = unsafe { component.getControllerClassId(&mut controller_cid) };
-    if result == kResultOk && controller_cid != [0i8; 16] {
-        match library.create_instance::<IEditController>(&controller_cid) {
-            Ok(ctrl) => Controller::Separate(ctrl),
-            Err(_) => Controller::None,
-        }
-    } else {
-        Controller::None
-    }
-}
-
-#[cfg(test)]
-mod char8_fill_tests {
-    use super::fill_char8_64;
-
-    /// A short string is copied verbatim and NUL-terminated.
-    #[test]
-    fn fills_and_terminates() {
-        let mut buf = [0i8; 64];
-        fill_char8_64(&mut buf, "Acme");
-        assert_eq!(&buf[..4], &[b'A' as i8, b'c' as i8, b'm' as i8, b'e' as i8]);
-        assert_eq!(buf[4], 0);
-    }
-
-    /// An over-long string is truncated, always leaving room for the NUL
-    /// terminator at index 63.
-    #[test]
-    fn truncates_leaving_room_for_terminator() {
-        let mut buf = [1i8; 64];
-        let long = "x".repeat(100);
-        fill_char8_64(&mut buf, &long);
-        // 63 chars written, last slot is the terminator.
-        assert!(buf[..63].iter().all(|&b| b == b'x' as i8));
-        assert_eq!(buf[63], 0);
-    }
-
-    /// An empty string yields an immediate terminator.
-    #[test]
-    fn empty_is_just_terminator() {
-        let mut buf = [9i8; 64];
-        fill_char8_64(&mut buf, "");
-        assert_eq!(buf[0], 0);
-    }
 }
 
 #[cfg(test)]
@@ -3182,34 +2248,5 @@ mod unit_group_tests {
         let units = [unit(1, "")];
         let groups = unit_names(&units);
         assert_eq!(groups.get(&1), None);
-    }
-}
-
-#[cfg(test)]
-mod content_scale_tests {
-    use super::{ContentScale, content_scale_for};
-    use vst3::Steinberg::{
-        kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID,
-    };
-
-    /// **The window's scale reaches a view on a physical-pixel window system,
-    /// and never one on a logical-pixel system.** An HWND or X11 view is told
-    /// 2.0; an `NSView` or `UIView`, which already lays out in logical pixels,
-    /// is told nothing (it would apply the factor twice).
-    ///
-    /// Mutation: return `Some(1.0)` → the HWND view reads 1.0 → fails.
-    /// Mutation: drop the logical-pixel check → the `NSView` is told 2.0 →
-    /// fails.
-    #[test]
-    fn the_scale_is_sent_only_on_a_physical_pixel_window_system() {
-        let two = ContentScale::new(2.0).expect("a scale");
-        assert_eq!(content_scale_for(kPlatformTypeHWND, two), Some(2.0));
-        assert_eq!(
-            content_scale_for(kPlatformTypeX11EmbedWindowID, two),
-            Some(2.0)
-        );
-        assert_eq!(content_scale_for(kPlatformTypeNSView, two), None);
-        assert_eq!(content_scale_for(kPlatformTypeUIView, two), None);
-        assert_eq!(content_scale_for(std::ptr::null(), two), None);
     }
 }

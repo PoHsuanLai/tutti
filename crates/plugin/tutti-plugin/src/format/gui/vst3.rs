@@ -37,7 +37,7 @@ impl PluginEditor for Vst3GuiInstance {
             "[vst3-gui] open_editor: creating vst3 handle from ptr {:?}",
             parent.as_ptr()
         );
-        let vst3_handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
+        let vst3_handle = parent;
         tracing::info!("[vst3-gui] open_editor: calling inner.open_editor");
         let size = self
             .inner

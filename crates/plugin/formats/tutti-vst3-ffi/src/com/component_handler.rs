@@ -58,7 +58,7 @@ use vst3::{Class, ComWrapper};
 
 /// Long-running progress notifications emitted by plugins (sample loading,
 /// offline rendering, etc.). Delivered via
-/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
+/// `tutti_vst3_host::Vst3Loaded::poll_plugin_notifications`.
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     /// A new progress operation has begun. `id` uniquely identifies this
@@ -123,6 +123,7 @@ impl ProgressDescription {
             // SAFETY: the caller guarantees a terminator; reading stops at it.
             let unit = unsafe { *cursor };
             (unit != 0).then(|| {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                 cursor = unsafe { cursor.add(1) };
                 unit
             })
@@ -153,7 +154,7 @@ impl std::fmt::Display for ProgressDescription {
 }
 
 /// Unit / program-list change notifications from the plugin. Delivered via
-/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
+/// `tutti_vst3_host::Vst3Loaded::poll_plugin_notifications`.
 #[derive(Debug, Clone)]
 pub enum UnitEvent {
     /// Plugin has selected a different unit (preset category / voice).
@@ -281,10 +282,10 @@ impl RestartFlags {
 
 /// Notifications the plugin's editor pushes through `IComponentHandler` and
 /// its v2/v3/bus-activation extensions, delivered via
-/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
+/// `tutti_vst3_host::Vst3Loaded::poll_plugin_notifications`.
 ///
 /// `restartComponent` is not among them: restart requests are cumulative, so
-/// they are coalesced into the [`RestartOutcome`](crate::RestartOutcome) that
+/// they are coalesced into the `tutti_vst3_host::RestartOutcome` that
 /// poll returns rather than queued one per call.
 ///
 /// Typical usage: a user drags a knob in the plugin UI → the plugin calls
@@ -327,7 +328,7 @@ pub enum ParameterEditEvent {
 }
 
 /// One queued plugin callback, as
-/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications)
+/// `tutti_vst3_host::Vst3Loaded::poll_plugin_notifications`
 /// hands it over, in arrival order across all three kinds.
 #[derive(Debug, Clone)]
 pub enum PluginNotification {
@@ -350,7 +351,7 @@ pub enum PluginNotification {
 /// oldest means a gesture can lose its last `PerformEdit` and its `EndEdit`,
 /// so the host's view of a parameter may be stale. Each drop also raises a
 /// sticky flag, reported once by the next poll as
-/// [`RestartOutcome::notifications_overflowed`](crate::RestartOutcome::notifications_overflowed):
+/// `tutti_vst3_host::RestartOutcome::notifications_overflowed`:
 /// a host seeing it re-reads every parameter value, as for
 /// `kParamValuesChanged`. (Dropping the oldest instead would lose the
 /// `BeginEdit` and break a gesture just the same; there is no order-safe drop.)
@@ -581,6 +582,7 @@ impl IProgressTrait for ComponentHandler {
                 description: desc,
             }));
             if !out_id.is_null() {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
                 unsafe { *out_id = id };
             }
             kResultOk
@@ -637,6 +639,14 @@ impl IUnitHandler2Trait for ComponentHandler {
     }
 }
 
+impl std::fmt::Debug for ComponentHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ComponentHandler")
+            .field("pending", &self.notifications.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,6 +665,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             assert_eq!(ptr.beginEdit(42), kResultOk);
             assert_eq!(ptr.performEdit(42, 0.75), kResultOk);
@@ -687,6 +698,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             assert_eq!(ptr.restartComponent(0b1010), kResultOk);
         }
@@ -707,6 +719,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             ptr.restartComponent(RestartFlags_::kLatencyChanged);
             ptr.restartComponent(RestartFlags_::kIoChanged);
@@ -720,6 +733,7 @@ mod tests {
 
         assert_eq!(handler.take_restart_bits(), 0, "a take consumes the flags");
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe { ptr.restartComponent(RestartFlags_::kParamValuesChanged) };
         assert_eq!(
             handler.take_restart_bits(),
@@ -742,6 +756,7 @@ mod tests {
         let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
 
         let extra = 3;
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             for i in 0..(NOTIFICATION_CAPACITY + extra) as u32 {
                 ptr.performEdit(i, 0.5);
@@ -763,6 +778,7 @@ mod tests {
         );
 
         // Room again once drained; the count is cumulative, and a push that
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         // fits does not raise the flag.
         unsafe { ptr.endEdit(7) };
         assert_eq!(drain(&handler).len(), 1);
@@ -799,6 +815,7 @@ mod tests {
             .chain([0])
             .collect();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         assert_no_alloc::assert_no_alloc(|| unsafe {
             let mut id: ID = 0;
             progress.start(0, long.as_ptr(), &mut id);
@@ -878,6 +895,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         let out_id = unsafe {
             let mut out_id: ID = 0;
             let desc: [u16; 5] = [b'T' as u16, b'e' as u16, b's' as u16, b't' as u16, 0];
@@ -933,6 +951,7 @@ mod tests {
             utf16.push(0x20AC);
         }
         utf16.push(0);
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         let d = unsafe { ProgressDescription::from_utf16_nul(utf16.as_ptr()) };
         assert!(d.as_str().starts_with("\u{FFFD}a\u{e9}\u{20ac}"));
         assert!(d.len() <= PROGRESS_DESCRIPTION_CAPACITY);
@@ -949,6 +968,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IProgress>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             let mut out_id: ID = 0;
             assert_eq!(ptr.start(0, std::ptr::null(), &mut out_id), kResultOk);
@@ -967,6 +987,7 @@ mod tests {
         let handler = ComponentHandler::new();
         let ptr = handler.to_com_ptr::<IUnitHandler>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             assert_eq!(ptr.notifyUnitSelection(5), kResultOk);
             assert_eq!(ptr.notifyProgramListChange(10, 3), kResultOk);
@@ -1001,6 +1022,7 @@ mod tests {
         let progress = handler.to_com_ptr::<IProgress>().unwrap();
         let unit = handler.to_com_ptr::<IUnitHandler>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             unit.notifyUnitSelection(1);
             progress.update(9, 0.5);
@@ -1025,6 +1047,7 @@ mod tests {
 
         let handles: Vec<_> = (0..4)
             .map(|i| {
+                // SAFETY: a COM method called on a live test object with arguments valid for the call.
                 std::thread::spawn(move || unsafe {
                     let r =
                         vst3::ComRef::<IComponentHandler>::from_raw_unchecked(ptr_addr as *mut _);

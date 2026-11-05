@@ -43,10 +43,10 @@ pub use component_handler::{
     PluginNotification, ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
 pub use event_list::{EventList, event_list_ptr};
-pub use host_application::HostApplication;
+pub(crate) use host_application::HostApplication;
 pub use param_changes::{ParameterChangesImpl, param_changes_ptr};
 pub use param_queue::MIN_POINT_ROOM;
-pub use plug_frame::HostPlugFrame;
+pub(crate) use plug_frame::HostPlugFrame;
 #[cfg(target_os = "linux")]
-pub use run_loop::RunLoop;
-pub use stream::BStream;
+pub(crate) use run_loop::RunLoop;
+pub(crate) use stream::BStream;

@@ -26,8 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use vst3::ComPtr;
-use vst3::Steinberg::Vst::{IMidiLearn, IMidiLearnTrait};
+use tutti_vst3_ffi::MidiLearn;
 
 /// Bound on the in-flight CC capture channel. Learning only needs a recent CC,
 /// so a small ring is plenty; overflow drops the oldest-unread silently.
@@ -80,7 +79,7 @@ impl MidiLearnProducer {
 /// load and surviving activate/deactivate cycles, each of which spins up a fresh
 /// [`producer`](Self::producer) for the audio scratch.
 pub(super) struct MidiLearnConsumer {
-    controller: Option<ComPtr<IMidiLearn>>,
+    controller: Option<MidiLearn>,
     armed: Arc<AtomicBool>,
     tx: Sender<CapturedCc>,
     rx: Receiver<CapturedCc>,
@@ -91,7 +90,7 @@ impl MidiLearnConsumer {
     /// `IEditController`), or `None` if the plugin doesn't implement it — in
     /// which case [`forward_pending`](Self::forward_pending) is a no-op and
     /// arming has no observable effect.
-    pub(super) fn new(controller: Option<ComPtr<IMidiLearn>>) -> Self {
+    pub(super) fn new(controller: Option<MidiLearn>) -> Self {
         let (tx, rx) = crossbeam_channel::bounded(CC_CHANNEL_CAPACITY);
         Self {
             controller,
@@ -137,9 +136,7 @@ impl MidiLearnConsumer {
         for (channel, cc) in self.rx.try_iter() {
             // busIndex 0: live CC is reported against the first event bus, the
             // same contract IMidiMapping uses (see midi_mapping.rs).
-            unsafe {
-                controller.onLiveMIDIControllerInput(0, channel, cc);
-            }
+            controller.live_controller_input(channel, cc);
             count += 1;
         }
         count

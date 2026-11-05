@@ -21,7 +21,7 @@
 //! the frame is per-editor-session and comes and goes with `open_editor`, while
 //! handlers registered through the host context outlive it. Pumping is
 //! therefore driven from the library-scoped loop, via
-//! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
+//! `tutti_vst3_host::Vst3Loaded::run_editor_loop_iteration`.
 
 use crate::guard::guard;
 use parking_lot::Mutex;
@@ -40,7 +40,7 @@ use vst3::Steinberg::Linux::{
 #[cfg(target_os = "linux")]
 use super::run_loop::RunLoop;
 
-pub struct HostPlugFrame {
+pub(crate) struct HostPlugFrame {
     /// The latest `resizeView` request not yet taken.
     resize_request: Mutex<Option<EditorSize>>,
     /// Shared with `HostApplication` — see `run_loop.rs`.
@@ -61,7 +61,7 @@ impl Class for HostPlugFrame {
 }
 
 impl HostPlugFrame {
-    pub fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
@@ -70,7 +70,7 @@ impl HostPlugFrame {
     }
 
     /// The latest size the plugin asked for since the last take, if any.
-    pub fn take_resize_request(&self) -> Option<EditorSize> {
+    pub(crate) fn take_resize_request(&self) -> Option<EditorSize> {
         self.resize_request.lock().take()
     }
 }
@@ -81,6 +81,7 @@ impl vst3::Steinberg::IPlugFrameTrait for HostPlugFrame {
             if new_size.is_null() {
                 return kResultOk;
             }
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
             let rect = unsafe { *new_size };
             *self.resize_request.lock() = Some(EditorSize {
                 width: (rect.right - rect.left) as u32,
@@ -159,6 +160,7 @@ mod tests {
         let frame = frame();
         let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         unsafe {
             for (w, h) in [(300, 200), (640, 480), (800, 600)] {
                 let mut r = rect(w, h);
@@ -175,6 +177,7 @@ mod tests {
         );
         assert_eq!(frame.take_resize_request(), None);
 
+        // SAFETY: a COM method called on a live test object with arguments valid for the call.
         // A null rect is ignored rather than clearing or corrupting the cell.
         unsafe {
             let mut r = rect(320, 240);

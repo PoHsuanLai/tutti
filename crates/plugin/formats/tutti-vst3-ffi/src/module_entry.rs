@@ -28,7 +28,9 @@
 
 use std::path::Path;
 
-use crate::error::{LoadStage, Vst3Error};
+use tutti_plugin_types::LoadStage;
+
+use crate::module::LoadError;
 
 /// The module-entry state for one loaded DSO. Holds whatever the exit call
 /// needs and runs it on drop, so entry/exit stay paired even on an early
@@ -37,12 +39,11 @@ pub(crate) struct ModuleEntry {
     inner: platform::Entry,
 }
 
-/// Builds the [`Vst3Error::LoadFailed`] every failure below reports: module
-/// entry runs while the DSO is being opened, so the stage is always
+/// Builds the [`LoadError`] every failure below reports: module entry runs
+/// while the DSO is being opened, so the stage is always
 /// [`LoadStage::Opening`].
-fn load_failed(lib_path: &Path, reason: impl Into<String>) -> Vst3Error {
-    Vst3Error::LoadFailed {
-        path: lib_path.to_path_buf(),
+fn load_failed(_lib_path: &Path, reason: impl Into<String>) -> LoadError {
+    LoadError {
         stage: LoadStage::Opening,
         reason: reason.into(),
     }
@@ -52,10 +53,10 @@ impl ModuleEntry {
     /// Run the platform's module entry point for the DSO `library` opened from
     /// `lib_path`.
     ///
-    /// Returns [`Vst3Error::LoadFailed`] only when the module exports an entry
+    /// Returns a [`LoadError`] only when the module exports an entry
     /// point and that entry point *refused* (returned false). A module with no
     /// entry point is a normal, supported case and yields `Ok`.
-    pub(crate) fn enter(library: &libloading::Library, lib_path: &Path) -> Result<Self, Vst3Error> {
+    pub(crate) fn enter(library: &libloading::Library, lib_path: &Path) -> Result<Self, LoadError> {
         platform::enter(library, lib_path).map(|inner| Self { inner })
     }
 }
@@ -72,13 +73,15 @@ fn symbol<'a, T>(
     library: &'a libloading::Library,
     name: &str,
 ) -> Option<libloading::Symbol<'a, T>> {
+    // SAFETY: the symbol type `T` is the entry/exit signature the caller names; the
+    // symbol borrows `library`, which the caller keeps alive while it is called.
     unsafe { library.get(name).ok() }
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{Path, load_failed, symbol};
-    use crate::error::Vst3Error;
+    use crate::module::LoadError;
     use core_foundation_sys::base::{CFRelease, kCFAllocatorDefault};
     use core_foundation_sys::bundle::{CFBundleCreate, CFBundleRef};
     use core_foundation_sys::url::{CFURLCreateFromFileSystemRepresentation, CFURLRef};
@@ -143,7 +146,7 @@ mod platform {
     pub(super) fn enter(
         library: &libloading::Library,
         lib_path: &Path,
-    ) -> Result<Entry, Vst3Error> {
+    ) -> Result<Entry, LoadError> {
         // `bundleEntry` takes the plugin's own CFBundleRef; without a real
         // bundle there is nothing honest to pass, and handing a plugin a null
         // CFBundleRef invites it to dereference it. Skip the call instead.
@@ -153,6 +156,7 @@ mod platform {
                 exit: None,
             });
         };
+        // SAFETY: `dir` is a bundle directory path; `make_bundle` only reads it.
         let Some(bundle) = (unsafe { make_bundle(dir) }) else {
             return Ok(Entry {
                 bundle: std::ptr::null_mut(),
@@ -164,11 +168,15 @@ mod platform {
         // initialises successfully is never left without its finalizer.
         let exit = symbol::<BundleExitFn>(library, "bundleExit").map(|s| *s);
 
-        if let Some(entry) = symbol::<BundleEntryFn>(library, "bundleEntry")
-            && !unsafe { entry(bundle) }
-        {
-            unsafe { CFRelease(bundle as *const _) };
-            return Err(load_failed(lib_path, "bundleEntry returned false"));
+        if let Some(entry) = symbol::<BundleEntryFn>(library, "bundleEntry") {
+            // SAFETY: `entry` is the module's `bundleEntry`, called once with the
+            // bundle created above, which outlives it.
+            let accepted = unsafe { entry(bundle) };
+            if !accepted {
+                // SAFETY: `bundle` is the +1 reference created above, released once here.
+                unsafe { CFRelease(bundle as *const _) };
+                return Err(load_failed(lib_path, "bundleEntry returned false"));
+            }
         }
         // No `bundleEntry` export: supported, nothing to do. The bundle ref is
         // still released on drop.
@@ -178,9 +186,11 @@ mod platform {
 
     pub(super) fn exit(entry: &mut Entry) {
         if let Some(exit) = entry.exit.take() {
+            // SAFETY: `exit` is the module's `bundleExit`, taken out of the entry so it runs once.
             unsafe { exit() };
         }
         if !entry.bundle.is_null() {
+            // SAFETY: `entry.bundle` is the +1 reference `make_bundle` returned, released once and then nulled.
             unsafe { CFRelease(entry.bundle as *const _) };
             entry.bundle = std::ptr::null_mut();
         }
@@ -190,7 +200,7 @@ mod platform {
 #[cfg(all(unix, not(target_os = "macos")))]
 mod platform {
     use super::{Path, load_failed, symbol};
-    use crate::error::Vst3Error;
+    use crate::module::LoadError;
     use std::ffi::c_void;
 
     type ModuleEntryFn = unsafe extern "C" fn(*mut c_void) -> bool;
@@ -207,7 +217,7 @@ mod platform {
     pub(super) fn enter(
         library: &libloading::Library,
         lib_path: &Path,
-    ) -> Result<Entry, Vst3Error> {
+    ) -> Result<Entry, LoadError> {
         // Resolve the exit half BEFORE calling entry, so a module that
         // initialises successfully is never left without its finalizer.
         let exit = symbol::<ModuleExitFn>(library, "ModuleExit").map(|s| *s);
@@ -235,6 +245,8 @@ mod platform {
         //
         // A symbol address would not substitute: `dladdr` can map one back to
         // the module, but it is not the handle value the SDK specifies.
+        // SAFETY: opening the same module again is what the caller already did once; the
+        // reference is released through `Library`'s drop.
         let handle_raw = unsafe { libloading::os::unix::Library::new(lib_path) }
             .map_err(|e| {
                 load_failed(
@@ -247,8 +259,11 @@ mod platform {
         // Reconstruct the owner immediately, so the reference is released by
         // `Entry`'s drop on every path below — including the refusal below,
         // where `?`-style early return would otherwise leak it.
+        // SAFETY: `handle_raw` came from `into_raw` just above and is owned by exactly one `Library`.
         let handle = unsafe { libloading::os::unix::Library::from_raw(handle_raw) };
 
+        // SAFETY: `entry` is the module's `ModuleEntry`, called once with the module's own handle,
+        // which the `handle` reference keeps valid.
         if !unsafe { entry(handle_raw) } {
             return Err(load_failed(lib_path, "ModuleEntry returned false"));
         }
@@ -261,6 +276,7 @@ mod platform {
 
     pub(super) fn exit(entry: &mut Entry) {
         if let Some(exit) = entry.exit.take() {
+            // SAFETY: `exit` is the module's `ModuleExit`, taken out of the entry so it runs once.
             unsafe { exit() };
         }
         // Release the extra `dlopen` reference only after `ModuleExit` has run:
@@ -273,8 +289,7 @@ mod platform {
 #[cfg(windows)]
 mod platform {
     use super::{Path, load_failed, symbol};
-    use crate::error::Vst3Error;
-
+    use crate::module::LoadError;
     type InitDllFn = unsafe extern "system" fn() -> bool;
     type ExitDllFn = unsafe extern "system" fn() -> bool;
 
@@ -285,13 +300,15 @@ mod platform {
     pub(super) fn enter(
         library: &libloading::Library,
         lib_path: &Path,
-    ) -> Result<Entry, Vst3Error> {
+    ) -> Result<Entry, LoadError> {
         let exit = symbol::<ExitDllFn>(library, "ExitDll").map(|s| *s);
 
-        if let Some(entry) = symbol::<InitDllFn>(library, "InitDll")
-            && !unsafe { entry() }
-        {
-            return Err(load_failed(lib_path, "InitDll returned false"));
+        if let Some(entry) = symbol::<InitDllFn>(library, "InitDll") {
+            // SAFETY: `entry` is the module's `InitDll`, called once.
+            let accepted = unsafe { entry() };
+            if !accepted {
+                return Err(load_failed(lib_path, "InitDll returned false"));
+            }
         }
 
         Ok(Entry { exit })
@@ -299,6 +316,7 @@ mod platform {
 
     pub(super) fn exit(entry: &mut Entry) {
         if let Some(exit) = entry.exit.take() {
+            // SAFETY: `exit` is the module's `ExitDll`, taken out of the entry so it runs once.
             unsafe { exit() };
         }
     }

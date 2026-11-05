@@ -20,45 +20,7 @@
 //! ([`plugin_perform_edit`], [`plugin_restart_component`]), for host paths the
 //! reference plugin never drives itself.
 
-use std::cell::RefCell;
-
-use vst3::Steinberg::Vst::{ProcessData, ProcessSetup};
-
-/// Callback invoked with the `ProcessData` the host built and the
-/// `ProcessSetup` it negotiated at activation.
-pub type Observer = Box<dyn FnMut(&ProcessData, &ProcessSetup)>;
-
-thread_local! {
-    /// Installed observer, if any. Thread-local because `process` runs on the
-    /// audio thread and a test drives it directly on its own thread — there is
-    /// no cross-thread handoff to model here.
-    static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
-}
-
-/// Installs an observer for the current thread, replacing any previous one.
-pub fn set_observer(f: Observer) {
-    OBSERVER.with(|o| *o.borrow_mut() = Some(f));
-}
-
-/// Removes the current thread's observer.
-pub fn clear_observer() {
-    OBSERVER.with(|o| *o.borrow_mut() = None);
-}
-
-/// Hands the built `ProcessData` to the installed observer. Called by
-/// `Vst3Processor::process` just before the plugin sees it.
-///
-/// Borrow-safe against re-entrancy: an observer that somehow drove `process`
-/// again would find the slot borrowed and be skipped rather than panicking.
-pub(crate) fn observe(data: &ProcessData, setup: &ProcessSetup) {
-    OBSERVER.with(|o| {
-        if let Ok(mut slot) = o.try_borrow_mut()
-            && let Some(f) = slot.as_mut()
-        {
-            f(data, setup);
-        }
-    });
-}
+pub use tutti_vst3_ffi::{Observer, clear_observer, set_observer};
 
 /// Calls the host's `IComponentHandler::performEdit` through its COM vtable,
 /// exactly as a plugin would — from whatever thread the caller is on.
@@ -67,20 +29,11 @@ pub(crate) fn observe(data: &ProcessData, setup: &ProcessSetup) {
 /// the host does with queued edits (the plugin server's restart poll must not
 /// drain or allocate for them) has no other way to queue some.
 pub fn plugin_perform_edit(loaded: &super::Vst3Loaded, id: u32, value: f64) {
-    use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait};
-    if let Some(handler) = loaded.host.handler.as_com_ref::<IComponentHandler>() {
-        // SAFETY: the handler is host-implemented and alive for `loaded`'s
-        // lifetime; `performEdit` reads only its two scalar arguments.
-        unsafe { handler.performEdit(id, value) };
-    }
+    loaded.plugin.simulate_perform_edit(id, value);
 }
 
 /// Calls the host's `IComponentHandler::restartComponent(flags)` through its
 /// COM vtable, as a plugin would. See [`plugin_perform_edit`].
 pub fn plugin_restart_component(loaded: &super::Vst3Loaded, flags: i32) {
-    use vst3::Steinberg::Vst::{IComponentHandler, IComponentHandlerTrait};
-    if let Some(handler) = loaded.host.handler.as_com_ref::<IComponentHandler>() {
-        // SAFETY: as in `plugin_perform_edit`.
-        unsafe { handler.restartComponent(flags) };
-    }
+    loaded.plugin.simulate_restart_component(flags);
 }

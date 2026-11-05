@@ -26,7 +26,7 @@ impl std::fmt::Debug for BusInfo {
 impl Default for BusInfo {
     fn default() -> Self {
         Self {
-            inner: unsafe { std::mem::zeroed() },
+            inner: crate::sdk::zeroed(),
         }
     }
 }
@@ -62,7 +62,7 @@ impl BusInfo {
         utf16_to_string(&self.inner.name)
     }
 
-    pub fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
+    pub(crate) fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
         &mut self.inner
     }
 }
@@ -162,7 +162,7 @@ impl Vst3ParameterInfo {
         (self.flags & parameter_flags::IS_WRAP) != 0
     }
 
-    pub fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
         Self {
             id: c.id,
             title: c.title,
@@ -273,7 +273,7 @@ pub mod automation_state {
 /// vst3 crate's `NoteExpressionTypeInfo`, read from the plugin's
 /// `INoteExpressionController::getNoteExpressionInfo`. This is the **read** side
 /// of note expression: it tells the host which per-note expression dimensions a
-/// plugin supports (the [`crate::NoteExpressionValue`] send side is separate).
+/// plugin supports (the `tutti_plugin_types::NoteExpressionValue` send side is separate).
 #[derive(Clone, Debug)]
 pub struct Vst3NoteExpressionInfo {
     /// Expression type id (`NoteExpressionTypeID`). Volume/Pan/Tuning/… use the
@@ -361,7 +361,7 @@ impl Vst3NoteExpressionInfo {
         (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
     }
 
-    pub fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -453,7 +453,7 @@ impl Vst3KeyswitchInfo {
         utf16_to_string(&self.short_title)
     }
 
-    pub fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -515,7 +515,7 @@ impl Vst3UnitInfo {
     /// Decodes the C struct. `program_list` is left unresolved (`None` unless
     /// the raw id is a real one); [`resolve_program_list`](Self::resolve_program_list)
     /// finishes the job once the list ids are known.
-    pub fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
         Self {
             id: c.id,
             parent: (c.parentUnitId != unit_ids::NO_PARENT).then_some(c.parentUnitId),
@@ -529,7 +529,7 @@ impl Vst3UnitInfo {
     /// it. Split from `from_c` because resolving needs every list id, which is
     /// a second call the accessor makes once for the whole enumeration rather
     /// than once per unit.
-    pub fn resolve_program_list(&mut self, known: &[i32]) {
+    pub(crate) fn resolve_program_list(&mut self, known: &[i32]) {
         self.program_list = (self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
             && known.contains(&self.program_list_id_raw))
         .then_some(self.program_list_id_raw);
@@ -551,7 +551,7 @@ pub struct Vst3ProgramListInfo {
 }
 
 impl Vst3ProgramListInfo {
-    pub fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
         Self {
             id: c.id,
             name: utf16_to_string(&c.name),
@@ -595,7 +595,7 @@ pub mod keyswitch_type {
 /// note-expression-physical-UI mapping entry refers to. Mirrors
 /// `PhysicalUITypeIDs_` from the Steinberg SDK. Returned (as the first tuple
 /// element) by
-/// [`Vst3Loaded::physical_ui_mapping`](crate::Vst3Loaded::physical_ui_mapping).
+/// `tutti_vst3_host::Vst3Loaded::physical_ui_mapping`.
 ///
 /// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
 /// the former's lint.
@@ -615,7 +615,7 @@ pub mod physical_ui_type {
 
 /// VST3 `IPrefetchableSupport` result constants, mirroring
 /// `ePrefetchableSupport_` from the Steinberg SDK. Returned by
-/// [`Vst3Loaded::prefetchable_support`](crate::Vst3Loaded::prefetchable_support).
+/// `tutti_vst3_host::Vst3Loaded::prefetchable_support`.
 ///
 /// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
 /// the former's lint.
@@ -648,6 +648,7 @@ mod note_expression_info_tests {
     /// surfaces the flag bits through the boolean accessors.
     #[test]
     fn from_c_decodes_fields_and_flags() {
+        // SAFETY: all-zero bytes are a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
         raw.typeId = 1; // Pan, conventionally.
         raw.title = string128("Pan");
@@ -697,6 +698,7 @@ mod keyswitch_info_tests {
     /// the keyswitch kind.
     #[test]
     fn from_c_decodes_articulation_and_range() {
+        // SAFETY: all-zero bytes are a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
         raw.typeId = keyswitch_type::NOTE_ON_KEYSWITCH;
         raw.title = string128("Staccato");
@@ -735,6 +737,7 @@ mod unit_info_tests {
         name: &str,
         program_list: i32,
     ) -> vst3::Steinberg::Vst::UnitInfo {
+        // SAFETY: all-zero bytes are a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::UnitInfo = unsafe { std::mem::zeroed() };
         raw.id = id;
         raw.parentUnitId = parent;
@@ -807,6 +810,7 @@ mod unit_info_tests {
     /// caller's enumeration loop.
     #[test]
     fn a_negative_program_count_clamps_to_zero() {
+        // SAFETY: all-zero bytes are a valid value of this plain-data SDK struct.
         let mut raw: vst3::Steinberg::Vst::ProgramListInfo = unsafe { std::mem::zeroed() };
         raw.id = 100;
         raw.name = string128("Presets");

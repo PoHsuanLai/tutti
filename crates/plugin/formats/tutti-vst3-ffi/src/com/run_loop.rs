@@ -72,12 +72,12 @@ unsafe impl Send for State {}
 
 /// The host's run loop, shared between every object that exposes `IRunLoop`.
 #[derive(Default)]
-pub struct RunLoop {
+pub(crate) struct RunLoop {
     state: Mutex<State>,
 }
 
 impl RunLoop {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
@@ -87,7 +87,7 @@ impl RunLoop {
     /// A Linux host must call this regularly from its UI thread while a plugin
     /// editor is open; without it the plugin's GUI never redraws and its timers
     /// never tick.
-    pub fn run_iteration(&self) {
+    pub(crate) fn run_iteration(&self) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
 
         let now = Instant::now();
@@ -159,7 +159,7 @@ impl RunLoop {
 
     /// Snapshot of what is registered and what this loop has dispatched.
     #[cfg(feature = "conformance")]
-    pub fn activity(&self) -> super::RunLoopActivity {
+    pub(crate) fn activity(&self) -> super::RunLoopActivity {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         super::RunLoopActivity {
             timers_registered: state.timers.len(),
@@ -171,7 +171,7 @@ impl RunLoop {
 
     // ── The IRunLoop operations, shared by every exposing object ─────────────
 
-    pub fn register_event_handler(
+    pub(crate) fn register_event_handler(
         &self,
         handler: *mut IEventHandler,
         fd: FileDescriptor,
@@ -184,13 +184,13 @@ impl RunLoop {
         kResultOk
     }
 
-    pub fn unregister_event_handler(&self, handler: *mut IEventHandler) -> tresult {
+    pub(crate) fn unregister_event_handler(&self, handler: *mut IEventHandler) -> tresult {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         state.event_handlers.retain(|_, &mut h| h != handler);
         kResultOk
     }
 
-    pub fn register_timer(
+    pub(crate) fn register_timer(
         &self,
         handler: *mut ITimerHandler,
         milliseconds: TimerInterval,
@@ -213,7 +213,7 @@ impl RunLoop {
         kResultOk
     }
 
-    pub fn unregister_timer(&self, handler: *mut ITimerHandler) -> tresult {
+    pub(crate) fn unregister_timer(&self, handler: *mut ITimerHandler) -> tresult {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         state.timers.remove(&(handler as usize));
         kResultOk

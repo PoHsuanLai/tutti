@@ -39,10 +39,6 @@ pub struct Vst3Instance {
     refused: bool,
 }
 
-// SAFETY: the host instances are `Send`, and the instance is driven from one
-// thread at a time.
-unsafe impl Send for Vst3Instance {}
-
 /// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
 fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
     match e {
@@ -492,8 +488,9 @@ impl PluginEditorHost for Vst3Instance {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        // Safety: WindowHandle was validated at the IPC boundary in server.rs
-        let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
+        // The handle was validated at the IPC boundary in server.rs, and is the
+        // host's own `WindowHandle`.
+        let handle = parent;
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;

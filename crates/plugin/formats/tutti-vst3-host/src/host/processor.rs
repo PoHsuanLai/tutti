@@ -16,11 +16,11 @@ use tutti_plugin_types::{
 };
 use tutti_types::ChannelLayout;
 
-use crate::com::{EventList, ParameterChangesImpl, event_list_ptr, param_changes_ptr};
 use crate::types::{
     AudioBuffer, BufferPtrs, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef,
     TransportInfo, Vst3InputEvents, Vst3Sample, to_process_context,
 };
+use tutti_vst3_ffi::{EventList, ParameterChangesImpl, event_list_ptr, param_changes_ptr};
 
 use super::bus_buffers::{BusBuffers, live_len};
 use super::midi_learn::MidiLearnProducer;

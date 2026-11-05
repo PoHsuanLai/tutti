@@ -4736,25 +4736,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-vst3-host"
+name = "tutti-vst3-ffi"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "assert_no_alloc",
+ "crossbeam-queue",
+ "libc",
+ "parking_lot",
+ "tutti-clap-host",
+ "tutti-midi-types",
+ "tutti-plugin-types",
+ "tutti-types",
+ "vst3",
+]
+
+[[package]]
+name = "tutti-vst3-host"
+version = "0.1.0"
+dependencies = [
  "assert_no_alloc",
  "cc",
  "core-foundation-sys",
  "crossbeam-channel",
  "crossbeam-queue",
- "libc",
  "libloading 0.9.0",
- "parking_lot",
  "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
- "tutti-clap-host",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-vst3-ffi",
  "tutti-vst3-host",
  "vst3",
  "winit",

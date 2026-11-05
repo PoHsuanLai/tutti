@@ -2,10 +2,12 @@
 
 use vst3::Steinberg::Vst::{AudioBusBuffers, ProcessModes_, SymbolicSampleSizes_};
 
-use crate::helpers::sdk_enum_i32;
+use crate::sdk::sdk_enum_i32;
 
-pub(crate) const K_SAMPLE_32_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample32);
-pub(crate) const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample64);
+/// `SymbolicSampleSizes::kSample32` as the ABI's `int32`.
+pub const K_SAMPLE_32_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample32);
+/// `SymbolicSampleSizes::kSample64` as the ABI's `int32`.
+pub const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample64);
 
 /// Which of VST3's three processing modes (`ProcessModes_`) the host is asking
 /// for: live playback, offline bounce, or the look-ahead prefetch mode.
@@ -34,7 +36,7 @@ pub(crate) const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSamp
 /// ([`Prepare::mode`](tutti_plugin_types::Prepare::mode)), because reaching it
 /// from any other mode needs a fresh `setupProcessing`, while the
 /// realtime/prefetch pair is switchable on a live instance
-/// ([`Vst3Processor::set_prefetch`](crate::Vst3Processor::set_prefetch)).
+/// (the host's prefetch switch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessMode {
     /// `kRealtime` — live playback under a deadline. The default.
@@ -54,7 +56,7 @@ impl ProcessMode {
     ///
     /// Stays a bare `i32`: both fields are C ABI, which the unit-newtype rule
     /// explicitly carves out.
-    pub(crate) const fn to_vst3(self) -> i32 {
+    pub const fn to_vst3(self) -> i32 {
         sdk_enum_i32(match self {
             Self::Realtime => ProcessModes_::kRealtime,
             Self::Prefetch => ProcessModes_::kPrefetch,
@@ -70,7 +72,7 @@ impl ProcessMode {
     /// involving [`Offline`](Self::Offline) is false: the checker would report
     /// the resulting setup/data disagreement as an error, and a plugin that
     /// reconfigured for offline work has no reason to expect a realtime block.
-    pub(crate) const fn switchable_to(self, other: Self) -> bool {
+    pub const fn switchable_to(self, other: Self) -> bool {
         matches!(
             (self, other),
             (Self::Realtime, Self::Realtime)

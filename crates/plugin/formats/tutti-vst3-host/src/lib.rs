@@ -1,9 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub(crate) mod com;
 mod error;
-mod guard;
 pub(crate) mod helpers;
 pub mod host;
 pub mod types;
@@ -25,13 +23,13 @@ pub use types::{
     vst3_to_note_expression_text, vst3_to_scale,
 };
 
-pub use com::{
+pub use tutti_vst3_ffi::{
     NOTIFICATION_CAPACITY, PROGRESS_DESCRIPTION_CAPACITY, ParameterEditEvent, PluginNotification,
     ProgressDescription, ProgressEvent, RestartFlags, UnitEvent,
 };
 
 #[cfg(feature = "conformance")]
-pub use com::RunLoopActivity;
+pub use tutti_vst3_ffi::RunLoopActivity;
 
 // No `///` here: a doc comment on a `pub mod` re-resolves its intra-doc links in
 // this parent scope, where `Vst3Event`'s methods are not in scope. The module's

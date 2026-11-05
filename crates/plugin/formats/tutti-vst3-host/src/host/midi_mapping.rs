@@ -26,10 +26,10 @@ use vst3::Steinberg::Vst::{
 };
 use vst3::Steinberg::kResultTrue;
 
-use crate::com::EventList;
 use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
 use tutti_types::{Reader, RtVec};
+use tutti_vst3_ffi::EventList;
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
 /// never drops an event the plugin node delivered. Dropping one would cut a
@@ -1249,7 +1249,8 @@ mod tests {
 
     /// The SysEx messages `list` hands the plugin, as `getEvent` reads them.
     fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
-        use crate::types::{K_DATA_EVENT, K_DATA_TYPE_MIDI_SYSEX};
+        use crate::types::K_DATA_EVENT;
+        use tutti_vst3_ffi::K_DATA_TYPE_MIDI_SYSEX;
         use vst3::Steinberg::Vst::{Event, IEventListTrait};
         let mut out = Vec::new();
         unsafe {

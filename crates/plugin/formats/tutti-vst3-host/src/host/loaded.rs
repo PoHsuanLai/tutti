@@ -49,14 +49,14 @@ use vst3::Steinberg::kPlatformTypeNSView;
 #[cfg(target_os = "linux")]
 use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 
-use crate::com::{
-    BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
-};
 use tutti_plugin_types::{
     Control, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
     PluginDescriptor, Request,
 };
 use tutti_types::{ArcLend, ChannelTopology};
+use tutti_vst3_ffi::{
+    BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
+};
 
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
@@ -2910,7 +2910,7 @@ mod state_container_tests {
 #[cfg(test)]
 mod restart_outcome_tests {
     use super::RestartOutcome;
-    use crate::com::RestartFlags;
+    use tutti_vst3_ffi::RestartFlags;
 
     #[test]
     fn default_outcome_is_empty() {

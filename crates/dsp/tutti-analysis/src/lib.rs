@@ -18,9 +18,9 @@
 //! - Loudness: [`measure_loudness`] with a [`LoudnessConfig`] into
 //!   [`Loudness`], or incrementally with [`step_loudness`] and
 //!   [`finish_loudness`].
-//! - Live loudness: [`step_live_loudness`] with a [`LiveLoudnessConfig`] and a
-//!   [`LiveLoudnessState`] reads momentary (400 ms), short-term (3 s) and true
-//!   peak as a [`LiveReading`] after every chunk.
+//! - Windowed loudness: [`step_windowed_loudness`] with a [`WindowedLoudnessConfig`] and a
+//!   [`WindowedLoudnessState`] reads momentary (400 ms), short-term (3 s) and true
+//!   peak as a [`WindowedReading`] after every chunk.
 //! - Stereo: [`correlate`] into a [`StereoReading`], smoothed for a meter by
 //!   [`step_ballistics`].
 //! - Spectral shape: [`spectral_centroid`], [`spectral_flatness`] and
@@ -91,8 +91,9 @@ pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
 pub use key::{Key, KeyEstimate, KeyProfile, Mode, estimate_key, estimate_key_from_mean};
 pub use loudness::{
-    LiveLoudnessConfig, LiveLoudnessState, LiveReading, Loudness, LoudnessConfig, LoudnessState,
-    finish as finish_loudness, measure_loudness, step_live_loudness, step_loudness,
+    Loudness, LoudnessConfig, LoudnessState, WindowedLoudnessConfig, WindowedLoudnessState,
+    WindowedReading, finish as finish_loudness, measure_loudness, step_loudness,
+    step_windowed_loudness,
 };
 // `finish` is renamed on the way out, matching `finish_peaks` /
 // `finish_loudness` above: three modules each have a `finish`, and the bare name

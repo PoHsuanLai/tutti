@@ -34,7 +34,7 @@ use crate::beat;
 use crate::error::{Error, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
-use crate::onset::{DetectionFunction, OnsetConfig, OnsetState, step_onset};
+use crate::onset::{DetectionFunction, OnsetConfig, OnsetState, onset_lag, step_onset};
 use crate::xcorr::cross_correlate;
 
 /// The default analysis window, in samples.
@@ -378,18 +378,6 @@ fn frame_rate(sample_rate: SampleRate, hop: Samples) -> Result<f64> {
         return Err(Error::NonPositiveSampleRate);
     }
     Ok(sample_rate.get() / hop.get() as f64)
-}
-
-/// How far after the start of its frame the onset a spectral-flux peak marks
-/// sits: `3 * window / 4 - hop / 2`.
-///
-/// Flux is the rise in the Hann-weighted magnitude from one frame to the next.
-/// An onset at `p` into a frame was `p + hop` into the last, so the rise is
-/// `w(p) - w(p + hop)`, about `-hop * w'` at `p + hop / 2`, and `w' = sin(2πp/W)
-/// π/W` falls fastest at `3W/4`. The frame grid then places the peak to within
-/// half a hop. (Not `window / 2`: that is right only when `hop = window / 2`.)
-pub(crate) fn onset_lag(geometry: StftGeometry) -> usize {
-    (geometry.window().get() * 3 / 4).saturating_sub(geometry.hop().get() / 2)
 }
 
 /// The detection curve of `samples`, with the first frame zeroed.

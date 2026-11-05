@@ -30,19 +30,6 @@ use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category}
 const UNACTIVATED_RATE: f64 = 44_100.0;
 const UNACTIVATED_BLOCK: usize = 512;
 
-/// Maps the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
-/// A free fn rather than a `From` impl: both `Category` (from `vst`) and
-/// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
-/// rule forbids the impl.
-///
-/// Takes `raw` alongside the decoded enum because `Category::Unknown` is where
-/// the `vst` crate puts every code it does not name, including
-/// `kPlugCategUnknown` itself. Only the number tells those apart, so it is
-/// carried into [`Vst2Category::Unrecognized`] rather than discarded.
-///
-/// This function is never reached without a plugin having answered, so it never
-/// produces [`Vst2Category::Unasked`] — that variant belongs to paths that did
-/// not query at all.
 /// Decode `effGetTailSize` into the shared [`PluginTail`] vocabulary.
 ///
 /// **VST2 is the one format whose zero does not mean "no tail".** The 2.4 spec
@@ -71,6 +58,19 @@ pub(crate) fn decode_tail(raw: isize) -> PluginTail {
     }
 }
 
+/// Maps the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
+/// A free fn rather than a `From` impl: both `Category` (from `vst`) and
+/// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
+/// rule forbids the impl.
+///
+/// Takes `raw` alongside the decoded enum because `Category::Unknown` is where
+/// the `vst` crate puts every code it does not name, including
+/// `kPlugCategUnknown` itself. Only the number tells those apart, so it is
+/// carried into [`Vst2Category::Unrecognized`] rather than discarded.
+///
+/// This function is never reached without a plugin having answered, so it never
+/// produces [`Vst2Category::Unasked`] — that variant belongs to paths that did
+/// not query at all.
 fn map_category(c: Category, raw: i32) -> Vst2Category {
     match c {
         Category::Unknown => Vst2Category::Unrecognized(raw),

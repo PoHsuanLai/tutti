@@ -1,6 +1,6 @@
 //! Decoding a file into a [`Wave`], and reading its header without decoding.
 //!
-//! The entry points are [`Wave::read`], [`Wave::metadata`] and, for
+//! The entry points are [`Wave::read`], [`Wave::read_metadata`] and, for
 //! Bevy, `WaveAsset::from_bytes`. Decoded samples are pinned bit-for-bit by
 //! `tests/decode_golden.rs` against committed fixtures. Codec-gated: with no `wav`/`flac`/`mp3`/`ogg` feature there is no
 //! symphonia and this module does not exist.
@@ -26,7 +26,7 @@ pub type WaveError = Error;
 
 /// Container metadata read from an audio file without decoding any audio.
 ///
-/// Returned by [`Wave::metadata`]. The fields are the container's raw
+/// Returned by [`Wave::read_metadata`]. The fields are the container's raw
 /// answers (`u32` rate, `usize` width). Available with any codec feature.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaveMetadata {
@@ -64,7 +64,7 @@ pub(crate) fn decode_packet_into<'d>(
 /// Open `path` and probe its container, hinting the format from the extension.
 ///
 /// The head every path-based entry point shares; `FileIn::open` and
-/// [`Wave::metadata`] stop here, [`Wave::read`] decodes on from it.
+/// [`Wave::read_metadata`] stop here, [`Wave::read`] decodes on from it.
 pub(crate) fn probe_path(path: &Path) -> Result<Box<dyn FormatReader>, WaveError> {
     let mut hint = Hint::new();
     if let Some(extension_str) = path.extension().and_then(|e| e.to_str()) {
@@ -139,7 +139,7 @@ impl Wave {
     ///
     /// A [`WaveError`] if the file cannot be opened, its container is not one
     /// this build reads, or it has no audio track.
-    pub fn metadata(path: impl AsRef<Path>) -> Result<WaveMetadata, WaveError> {
+    pub fn read_metadata(path: impl AsRef<Path>) -> Result<WaveMetadata, WaveError> {
         let reader = probe_path(path.as_ref())?;
         let track = first_audio_track(&*reader)?;
         Ok(WaveMetadata {

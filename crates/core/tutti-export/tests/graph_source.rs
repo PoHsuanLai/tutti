@@ -360,7 +360,7 @@ fn a_resampled_export_writes_its_render() {
 fn a_peak_normalized_export_writes_its_normalized_render() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 1.0;
-    let normalize = Normalize::to_peak(Db(-1.0));
+    let normalize = Normalize::peak(Db(-1.0));
     let bytes = same_file(
         || sine(440.0),
         &cfg,

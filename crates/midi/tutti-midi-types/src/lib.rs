@@ -96,10 +96,10 @@ pub use ump::{
 /// // Round-trip a phrase through a MIDI 2.0 Clip File, in beats.
 /// let bytes = write_clip_file_from_beats(96, [(Beat(0.0), ev)]);
 /// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
-/// assert_eq!(clip.timed().count(), 1);
+/// assert_eq!(clip.iter().count(), 1);
 ///
 /// // Velocity survives at full MIDI 2.0 width — the point of the format.
-/// let (_, first) = clip.timed().next().unwrap();
+/// let (_, first) = clip.iter().next().unwrap();
 /// assert_eq!(first.velocity_u16(), Some(0x8000));
 /// ```
 ///

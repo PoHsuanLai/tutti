@@ -1,8 +1,8 @@
 //! MIDI 2.0 **Clip File** (M2-116) file I/O — the path-level half of the codec
 //! whose byte-level half lives in [`tutti_midi_types`].
 //!
-//! [`write()`] puts a clip on disk; [`MidiFile::read`](crate::MidiFile::read)
-//! reads either container back. [`MidiFileKind`] decides *which* of the two a
+//! [`read()`] and [`write()`] move a clip to and from disk;
+//! [`MidiFile::read`](crate::MidiFile::read) reads either container. [`MidiFileKind`] decides *which* of the two a
 //! path holds before committing to a parser.
 //!
 //! Extension is not a reliable discriminator — `.mid` and `.midi` are used for
@@ -12,9 +12,9 @@
 
 use std::path::Path;
 
-use tutti_midi_types::{CLIP_FILE_MAGIC, ClipEvent, ClipHeader};
+use tutti_midi_types::{CLIP_FILE_MAGIC, ClipEvent, ClipHeader, ParsedClipFile};
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// The 4-byte Standard MIDI File header chunk id (SMF spec §2.1). A clip file's
 /// magic is `"SMF2CLIP"`, so the two never collide on their first four bytes.
@@ -67,6 +67,25 @@ impl MidiFileKind {
         };
         Ok(Self::detect(&header[..read]))
     }
+}
+
+/// Reads and parses a MIDI 2.0 Clip File from `path`.
+///
+/// Parse errors keep their [`ClipFileError`](tutti_midi_types::ClipFileError)
+/// wording, prefixed with the path. Use [`MidiFileKind::detect_path`] first to
+/// branch on the container programmatically, or
+/// [`MidiFile::read`](crate::MidiFile::read) to accept either.
+///
+/// # Errors
+///
+/// [`Error::Io`](crate::Error::Io) if the file cannot be read, or
+/// [`Error::MidiFileParse`](crate::Error::MidiFileParse) (prefixed with the
+/// path) if the bytes are not a valid Clip File.
+pub fn read(path: impl AsRef<Path>) -> Result<ParsedClipFile> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)?;
+    ParsedClipFile::from_bytes(&bytes)
+        .map_err(|e| Error::MidiFileParse(format!("{}: {e}", path.display())))
 }
 
 /// Writes events to a MIDI 2.0 Clip File at `path`.
@@ -125,9 +144,7 @@ mod tests {
         )
         .unwrap();
 
-        let Ok(MidiFile::Clip(clip)) = MidiFile::read(&path) else {
-            panic!("a clip file reads back as a clip");
-        };
+        let clip = read(&path).unwrap();
         assert_eq!(clip.time_signature(), Some((5, 4)));
         assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(128.0), 0.05));
 
@@ -180,7 +197,8 @@ mod tests {
             Some(MidiFileKind::ClipFile)
         );
         assert!(crate::SmfFile::read(&misnamed).is_err());
-        assert!(MidiFile::read(&misnamed).is_ok());
+        assert!(read(&misnamed).is_ok());
+        assert!(matches!(MidiFile::read(&misnamed), Ok(MidiFile::Clip(_))));
 
         // Readable but unrecognised — `Ok(None)`, not an error.
         let junk = dir.path().join("not_midi.bin");

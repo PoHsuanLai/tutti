@@ -62,7 +62,7 @@ fn smf_bytes() -> Vec<u8> {
 /// velocities the Min-Center-Max figures the spec fixes for 7-bit 127 and 64:
 /// `0xFFFF` and `0x8000`.
 ///
-/// Mutation (run): `timed`'s SMF arm returning the parsed event without
+/// Mutation (run): `iter`'s SMF arm returning the parsed event without
 /// `normalize` (MIDI 1.0 Channel Voice, 7-bit) → the lists differ → fails.
 /// Mutation (run): the SMF arm dropping the second track's channel-3 events
 /// (a `filter` on channel 0 before the conversion) → fails.

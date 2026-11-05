@@ -135,7 +135,7 @@ pub use ports::{Command, Commands, Source, Status};
 // streamability half of it is this crate's own capability — so the host and the
 // butler read one function rather than two copies of a rule.
 //
-// Codec-gated because it *is* the codec layer: `Wave::metadata` and
+// Codec-gated because it *is* the codec layer: `Wave::read_metadata` and
 // `WaveMetadata` are themselves gated in `tutti-io`, so with no format feature
 // there is no header to read. Absent rather than always-`false` — a host that
 // compiled out every codec cannot open files at all, and a probe that silently

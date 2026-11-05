@@ -901,7 +901,7 @@ dropped:
   `Sink<N>`), with widths taken from `ChannelLayout`.
 - **`Wave`, `FileIn`, `WaveAsset`, `WaveMetadata`, `WaveError`**: rehomed
   to `tutti-io` when the surface shrank (see there). The sampler uses `Wave` only as a
-  resident buffer (`new`/`zero`/`from_samples`/`at`/`read`/`metadata`),
+  resident buffer (`new`/`zero`/`from_samples`/`at`/`read`/`read_metadata`),
   so the moved `Wave` is that planar buffer plus the symphonia decode, not the
   855-line original.
 

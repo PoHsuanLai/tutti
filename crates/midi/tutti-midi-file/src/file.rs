@@ -68,7 +68,8 @@ pub struct SmfFile {
 }
 
 impl SmfFile {
-    /// Parses SMF bytes once into both views.
+    /// Parses SMF bytes once into both views: the paired tracks and the merged
+    /// event stream are both built, whichever one the caller reads.
     ///
     /// # Errors
     ///
@@ -84,7 +85,8 @@ impl SmfFile {
         })
     }
 
-    /// Reads and parses the SMF at `path`.
+    /// Reads and parses the SMF at `path`. Builds both views, as
+    /// [`from_bytes`](Self::from_bytes) does.
     ///
     /// # Errors
     ///
@@ -201,7 +203,7 @@ impl MidiFile {
         });
         let clip_events = clip
             .into_iter()
-            .flat_map(|clip| clip.timed().map(|(beat, e)| (beat, normalize(&e))));
+            .flat_map(|clip| clip.iter().map(|(beat, e)| (beat, normalize(&e))));
         smf_events.chain(clip_events)
     }
 
@@ -235,7 +237,7 @@ impl MidiFile {
         match self {
             Self::Smf(smf) => smf.stream.tempo_changes.clone(),
             Self::Clip(clip) => clip
-                .timed()
+                .iter()
                 .filter_map(|(at, e)| flex_tempo_bpm(&e).map(|bpm| (at, Bpm(bpm))))
                 .collect(),
         }

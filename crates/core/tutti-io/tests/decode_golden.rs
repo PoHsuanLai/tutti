@@ -273,19 +273,19 @@ fn the_stream_reads_every_frame_the_load_does() {
     }
 }
 
-/// The header agrees with the decode: `Wave::metadata`'s width, rate **and
+/// The header agrees with the decode: `Wave::read_metadata`'s width, rate **and
 /// frame count** are what `Wave::read` actually produces, for every fixture.
 ///
 /// Restores the fork's `probe_metadata_matches_full_load`, which the move
 /// deleted along with the fork's WAV writer it depended on.
 ///
-/// Mutation: have `Wave::metadata` report `n_frames.map(|n| n + 1)` and every
+/// Mutation: have `Wave::read_metadata` report `n_frames.map(|n| n + 1)` and every
 /// row fails (checked).
 #[test]
 fn the_probe_agrees_with_the_full_load() {
     for &(name, _, _) in GOLDEN {
         let w = Wave::read(asset(name)).expect("load");
-        let meta = Wave::metadata(asset(name)).expect("probe");
+        let meta = Wave::read_metadata(asset(name)).expect("probe");
         assert_eq!(meta.channels, w.channels(), "{name}: probed width");
         assert_eq!(
             meta.sample_rate as f64,

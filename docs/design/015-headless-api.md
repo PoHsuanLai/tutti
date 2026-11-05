@@ -276,7 +276,7 @@ doc comments and is an estimate.
   schedule.
 
 One gap is missing everywhere, not just in bevy-tutti: converting an SMF to
-timed events. `ParsedMidiFile` holds midly messages; `ParsedClipFile::timed`
+timed events. `ParsedMidiFile` holds midly messages; `ParsedClipFile::iter`
 already yields `(Beat, MidiEvent)`.
 
 ## 3. The options
@@ -907,7 +907,7 @@ s.transport().set_tempo(tempo);
 
 let mut config = ExportConfig::default();
 config.render.sample_rate = SampleRate(48_000.0);
-// `end()` is a `Beat`. One tempo is right only for a file that never changes
+// `end_beat()` is a `Beat`. One tempo is right only for a file that never changes
 // it: in general the length integrates over `file.tempo_map()`. An f64
 // converter that does (`BeatDuration::to_seconds` is f32 `Seconds` at one
 // tempo) does not exist yet: §9.6's to add.
@@ -933,8 +933,8 @@ today (`export/request.rs:116-120`).
 
 Three engine changes this example needs, each a **(c)** move in §9:
 
-- `MidiFile::read`, with `timed()` yielding `(Beat, MidiEvent)` for both
-  containers, plus `tempo()` and `end()` (`tempo()` is the
+- `MidiFile::read`, with `iter()` yielding `(Beat, MidiEvent)` for both
+  containers, plus `tempo()` and `end_beat()` (`tempo()` is the
   tempo at beat 0 as an `Option<Bpm>`, since a Clip File may declare none,
   and `tempo_map()` holds every change);
 - `TimedMidiEvent: From<(Beat, MidiEvent)>`, which exists;
@@ -1169,8 +1169,8 @@ Each step is green alone, `bevy-tutti`'s full suite included.
 **Scope:**
 
 - `tutti-midi-file`: `MidiFile` (sniffed SMF or Clip File, today's
-  `MidiFileContents`) with `timed()` → `(Beat, MidiEvent)` for both, plus
-  `tempo()` and `end()`. The SMF half is new (midly →
+  `MidiFileContents`) with `iter()` → `(Beat, MidiEvent)` for both, plus
+  `tempo()` and `end_beat()`. The SMF half is new (midly →
   `MidiEvent::from_midi1_bytes`).
 - `tutti-midi-runtime`: the route-rule compile (rules → `input_ports`, with
   the fallback) as a pure function.
@@ -1181,7 +1181,7 @@ Each step is green alone, `bevy-tutti`'s full suite included.
 
 - An SMF and a Clip File of the same notes yield the same
   `(Beat, MidiEvent)` list, velocity widened. (Only channel-voice messages
-  compare: a clip's `timed()` keeps its Flex Data, a Set Tempo or time
+  compare: a clip's `iter()` keeps its Flex Data, a Set Tempo or time
   signature, while an SMF's meta events are not MIDI messages and are not
   in it.)
 - A note-on at tick 480 of a 480-ppq file lands at `Beat(1.0)`.
@@ -1204,14 +1204,14 @@ What moved, old → new:
   the extension list → `MidiFile::EXTENSIONS`, and `MidiFileLoaderError` →
   `tutti_midi_file::Error` (which gained `Clip` and `UnknownFormat`). The
   SMF variant is `Smf(SmfFile)`: its tracks and its merged stream come from
-  one `midly` parse, behind accessors, so the two cannot disagree; `timed()`
+  one `midly` parse, behind accessors, so the two cannot disagree; `iter()`
   reads the stream, because the paired notes alone would drop every
   controller. `tempo()` is the tempo at beat 0 as `Option<Bpm>` (an SMF
   always answers: a Set Tempo at tick 0, else its spec's 120; a Clip File
   answers only with a Set Tempo at beat 0). `tempo_map()` lists every Set
   Tempo in time order. A file whose tempo changes needs the map: one tempo
   does not give its length in seconds, and §9.6's f64 duration converter
-  must integrate over the map. `end()` is the last event's `Beat`.
+  must integrate over the map. `end_beat()` is the last event's `Beat`.
 - The route compile → `tutti_midi_runtime::compile_routes` over
   `RouteRule { channel, targets }`; `bevy-tutti`'s `rebuild` filters the
   armed rules, compiles, and writes the feeds.
@@ -1294,7 +1294,7 @@ The step is as scoped, with these specifics:
 `Recorder`. If it duplicates `Recorder`'s loop, one of them goes; the
 PR decides which by reading both.
 
-**Properties:** the existing pump tests (ending on `ON_EMPTY`, `stop`
+**Properties:** the existing pump tests (ending on `ON_EMPTY`, `finish`
 joining) run in `tutti-io`.
 
 **Exit:** `bevy-tutti`'s pump systems compile over the moved type.
@@ -1310,8 +1310,8 @@ through. What `AudioPump` had that `Recorder` lacked is now `Recorder`'s:
 - any `AudioOut<S>` and any element `S`, not only `WavOut` and `f32`;
 - `start_with_capacity` (frames per pass, zero taken as one) and
   `ThreadDriver::with_park` (the back-off; `IDLE_PARK` is now public);
-- the non-blocking end a frame loop needs: `stop`, `is_running`,
-  `is_finished` (`RunningPump::is_finished`), and `stop_and_join(&mut self)`,
+- the non-blocking end a frame loop needs: `request_stop`, `is_running`,
+  `is_finished` (`RunningPump::is_finished`), and `finish_in_place(&mut self)`,
   which joins in place and returns `None` once collected.
 
 `bevy_tutti::graph::AudioPump<S>` is a component holding a `Recorder`; its
@@ -1325,7 +1325,7 @@ Tests: `bevy-tutti`'s `audio_io_pump.rs` passes unchanged, plus
 `a_width_mismatch_is_reported_not_recorded`. Their Bevy-free halves are in
 `tutti-io`: `is_finished_reports_a_finite_take_ending_itself_without_blocking`
 (ending on `ON_EMPTY`) and `a_requested_stop_ends_a_live_take_without_blocking`
-(`stop` joining) in `tests/recorder_thread_driver.rs`, and the capacity and
+(`finish` joining) in `tests/recorder_thread_driver.rs`, and the capacity and
 in-place shutdown tests in `recorder.rs`.
 
 ### 9.4 `tutti-session`: graph, bootstrap, commit and the modulation seam

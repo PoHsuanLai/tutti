@@ -192,7 +192,7 @@ fn delta_clockstamps_accumulate_to_the_reported_beats() {
     let bytes = tutti_midi_types::write_clip_file(TPQ, &events);
     let clip = ParsedClipFile::from_bytes(&bytes).expect("a clip we just wrote must parse");
 
-    let got: Vec<f64> = clip.timed().map(|(b, _)| b.get()).collect();
+    let got: Vec<f64> = clip.iter().map(|(b, _)| b.get()).collect();
     assert_eq!(
         got.len(),
         expected.len(),
@@ -452,7 +452,7 @@ fn the_reported_duration_reaches_the_last_event() {
         ],
     );
     let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
-    let last = clip.timed().map(|(b, _)| b).last().unwrap_or(Beat(0.0));
+    let last = clip.iter().map(|(b, _)| b).last().unwrap_or(Beat(0.0));
     assert!(
         clip.duration_beats().get() >= last.get(),
         "a clip whose duration ({}) is shorter than its last event ({}) would \

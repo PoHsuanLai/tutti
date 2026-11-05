@@ -17,7 +17,7 @@ workspace = true
 [features]
 # No codec by default, as on every engine crate: a host doing only mic → WAV
 # needs no decoder. Each feature pulls exactly one symphonia container (and
-# its codec) for `Wave::read`, `Wave::metadata` and `FileIn`. `wav` needs
+# its codec) for `Wave::read`, `Wave::read_metadata` and `FileIn`. `wav` needs
 # `pcm`: WAV is only the container.
 default = []
 wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]

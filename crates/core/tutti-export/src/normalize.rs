@@ -65,7 +65,7 @@ pub enum Normalize {
         target: Db,
         /// True-peak limit in dBTP. When the loudness gain would push the peak
         /// past this, the ceiling wins and the file lands quieter than
-        /// `target`. [`Normalize::to_lufs`] sets it to −1.0.
+        /// `target`. [`Normalize::lufs`] sets it to −1.0.
         ceiling: Db,
     },
 }
@@ -73,7 +73,7 @@ pub enum Normalize {
 impl Normalize {
     /// Loudness normalization with a −1.0 dBTP ceiling — the value streaming
     /// platforms ask for, carried here so callers need not know the number.
-    pub const fn to_lufs(target: Db) -> Self {
+    pub const fn lufs(target: Db) -> Self {
         Self::Lufs {
             target,
             ceiling: Db(-1.0),
@@ -81,7 +81,7 @@ impl Normalize {
     }
 
     /// Peak normalization to `target` dBTP.
-    pub const fn to_peak(target: Db) -> Self {
+    pub const fn peak(target: Db) -> Self {
         Self::Peak { target }
     }
 
@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn peak_moves_the_true_peak_to_the_target() {
         let m = reading(-20.0, -6.0);
-        let gain = Normalize::to_peak(Db(-1.0)).gain_for(&m);
+        let gain = Normalize::peak(Db(-1.0)).gain_for(&m);
         assert!(
             (gain.get() - 5.0).abs() < 1e-5,
             "−6 dBTP to a −1 dBTP target is +5 dB, got {gain:?}"
@@ -231,19 +231,19 @@ mod tests {
     fn lufs_respects_the_true_peak_ceiling() {
         // +6 dB would put a −2 dBTP peak at +4, which is 5 dB over a −1 ceiling.
         let m = reading(-20.0, -2.0);
-        let gain = Normalize::to_lufs(Db(-14.0)).gain_for(&m);
+        let gain = Normalize::lufs(Db(-14.0)).gain_for(&m);
         assert!(
             (gain.get() - 1.0).abs() < 1e-5,
             "the ceiling must pull the loudness gain back, got {gain:?}"
         );
     }
 
-    /// `Normalize::to_lufs` carries the −1.0 dBTP ceiling, so callers do not have
+    /// `Normalize::lufs` carries the −1.0 dBTP ceiling, so callers do not have
     /// to know the number.
     #[test]
     fn lufs_defaults_to_a_minus_one_dbtp_ceiling() {
         assert_eq!(
-            Normalize::to_lufs(Db(-14.0)),
+            Normalize::lufs(Db(-14.0)),
             Normalize::Lufs {
                 target: Db(-14.0),
                 ceiling: Db(-1.0)

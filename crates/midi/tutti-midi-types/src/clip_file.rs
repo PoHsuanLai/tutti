@@ -34,7 +34,7 @@ pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 ///
 /// This is the file's on-wire timing model (relative ticks). If you think in
 /// beats — as most callers do — prefer [`write_clip_file_from_beats`] and
-/// [`ParsedClipFile::timed`], which own the beat↔tick↔delta conversion so you
+/// [`ParsedClipFile::iter`], which own the beat↔tick↔delta conversion so you
 /// never build these by hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClipEvent {
@@ -68,7 +68,7 @@ impl From<(u32, MidiEvent)> for ClipEvent {
 ///
 /// M2-116 §7.1.1 and §7.1.2 say the sequence *should* open with a Set Tempo and
 /// a Set Time Signature, in that order, immediately after Start of Clip. Without
-/// them a reader has no tempo map, so [`ParsedClipFile::timed`]'s beats cannot be
+/// them a reader has no tempo map, so [`ParsedClipFile::iter`]'s beats cannot be
 /// converted to seconds by any importer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipHeader {
@@ -230,7 +230,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 ///     (Beat(2.0), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
 /// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
-/// assert_eq!(clip.timed().count(), 2);
+/// assert_eq!(clip.iter().count(), 2);
 /// ```
 pub fn write_clip_file_from_beats(
     ticks_per_quarter: u16,
@@ -273,7 +273,7 @@ pub struct ParsedClipFile {
     /// is denominated in. Needed to convert any of them to `Beat`.
     pub ticks_per_quarter: u16,
     /// Events in file order. Their positions are relative, so the order is
-    /// load-bearing; use [`timed`](Self::timed) to get absolute `Beat`s.
+    /// load-bearing; use [`iter`](Self::iter) to get absolute `Beat`s.
     pub events: Vec<ClipEvent>,
 }
 
@@ -305,7 +305,7 @@ impl ParsedClipFile {
     /// consume a clip when you schedule in beats.
     ///
     /// Beats are `delta_ticks` summed and divided by [`Self::ticks_per_quarter`].
-    pub fn timed(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
         let tpq = f64::from(self.ticks_per_quarter);
         let mut abs_tick: u64 = 0;
         self.events.iter().map(move |ce| {
@@ -379,7 +379,7 @@ impl ParsedClipFile {
         let mut held: BTreeMap<(MidiGroup, MidiChannel, u8), Vec<(Beat, u16)>> = BTreeMap::new();
         let mut out: Vec<ClipNote> = Vec::new();
 
-        for (beat, event) in self.timed() {
+        for (beat, event) in self.iter() {
             let (Some(note), Some(channel)) = (event.note(), event.channel()) else {
                 continue;
             };
@@ -720,6 +720,29 @@ mod tests {
         assert_eq!(parsed.events, events);
     }
 
+    /// `to_bytes` re-encodes exactly the parsed events, so a parse then
+    /// `to_bytes` is byte-stable and equals the headerless writer.
+    ///
+    /// Mutation (run): have `to_bytes` call `write_clip_file(tpq, &[])` (drop
+    /// the events), or pass `0` for the ticks and this fails.
+    #[test]
+    fn to_bytes_re_encodes_what_from_bytes_parsed() {
+        let events = [
+            ClipEvent::new(
+                0,
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            ),
+            ClipEvent::new(
+                240,
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            ),
+        ];
+        let bytes = write_clip_file(96, &events);
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
+        assert_eq!(parsed.to_bytes(), write_clip_file(96, &events));
+        assert_eq!(parsed.to_bytes(), bytes);
+    }
+
     /// Big-endian words of a clip file body, for byte-level assertions.
     fn body_words(bytes: &[u8]) -> Vec<u32> {
         bytes[8..]
@@ -882,7 +905,7 @@ mod tests {
             ],
         );
         let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
-        let timed: Vec<(Beat, MidiEvent)> = clip.timed().collect();
+        let timed: Vec<(Beat, MidiEvent)> = clip.iter().collect();
         assert_eq!(timed.len(), 3);
         assert!((timed[0].0 - Beat(0.0)).abs() < BeatDuration(1e-9));
         assert!((timed[1].0 - Beat(2.0)).abs() < BeatDuration(1e-9));
@@ -911,7 +934,7 @@ mod tests {
             ],
         );
         let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
-        let beats: Vec<Beat> = clip.timed().map(|(b, _)| b).collect();
+        let beats: Vec<Beat> = clip.iter().map(|(b, _)| b).collect();
         assert_eq!(beats.len(), 2);
         assert!(beats[0] < beats[1]);
         assert!((beats[0] - Beat(0.0)).abs() < BeatDuration(1e-9));
@@ -962,7 +985,7 @@ mod tests {
 
         // The note still lands at beat 0 — the header messages share its
         // zero clockstamp rather than pushing it later.
-        let timed: Vec<(Beat, MidiEvent)> = clip.timed().collect();
+        let timed: Vec<(Beat, MidiEvent)> = clip.iter().collect();
         assert!(timed.iter().all(|(b, _)| *b == Beat(0.0)));
 
         // A clip written without a header simply declares none.
@@ -1014,7 +1037,7 @@ mod tests {
         // than anything that merely looks small.
         let bytes = write_clip_file(1, &[ClipEvent::new(240, ev)]);
         let parsed = ParsedClipFile::from_bytes(&bytes).expect("tpq=1 is a valid tick unit");
-        assert!(parsed.timed().all(|(beat, _)| beat.get().is_finite()));
+        assert!(parsed.iter().all(|(beat, _)| beat.get().is_finite()));
     }
 
     #[test]

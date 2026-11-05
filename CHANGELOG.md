@@ -15,23 +15,22 @@ No aliases are left behind.
 | --- | --- |
 | `AudioFormat::from_path(&Path)` | `AudioFormat::from_path(impl AsRef<Path>)`, over the new `AudioFormat::from_extension(&str)` |
 | `write_buffers`, `render_to_file`, `render_normalized_to_file` `path: &Path` | `path: impl AsRef<Path>` |
-| `Recorder::stop(self)` (signals and joins) | `Recorder::finish` |
-| `Recorder::request_stop(&self)` | `Recorder::stop` (signal only) |
-| `Recorder::shutdown(&mut self)` | `Recorder::stop_and_join` |
+| `Recorder::stop(self)` (signals and joins) | `Recorder::finish` (`request_stop(&self)` keeps its name) |
+| `Recorder::shutdown(&mut self)` | `Recorder::finish_in_place` |
 | `Wave::load` | `Wave::read` |
-| `Wave::probe_metadata` | `Wave::metadata` |
+| `Wave::probe_metadata` | `Wave::read_metadata` |
 | `ControlProgram::from_automation` | `ControlProgram::from_curve` |
-| `Normalize::lufs`, `Normalize::peak` | `Normalize::to_lufs`, `Normalize::to_peak` |
 | `MidiFileKind::sniff`, `sniff_path` | `MidiFileKind::detect`, `detect_path` |
 | `ParsedMidiFile::load(path)`, `parse(bytes)` | `ParsedMidiFile::read(path)`, `from_bytes(bytes)` |
 | `smf::tracks(bytes)`, `smf::tracks_from_path(path)` | `SmfFile::from_bytes(bytes)`, `SmfFile::read(path)`, then `tracks()` or `into_tracks()` |
 | `SmfFile::stream()` | `SmfFile::as_parsed()` |
 | `read_clip_file(bytes)` | `ParsedClipFile::from_bytes(bytes)` |
-| `read_clip_file_from_path(path)` | `MidiFile::read(path)`, matching `MidiFile::Clip` |
+| `read_clip_file_from_path(path)` | `clip::read(path)` |
 | `write_clip_file_to_path` | `clip::write` |
 | `write_midi_file`, `encode_midi_file` | `smf::write`, `smf::to_bytes` |
 | (new) | `ParsedClipFile::to_bytes` |
-| `MidiFile::timed()` (boxed iterator) | `MidiFile::iter()` (`impl Iterator`, no allocation) |
+| `MidiFile::timed()` (boxed iterator) | `MidiFile::iter()` (`impl Iterator`, no boxing) |
+| `ParsedClipFile::timed()` | `ParsedClipFile::iter()` |
 | `MidiFile::end()` | `MidiFile::end_beat()` |
 | `SubscriptionCommand::parse(&str) -> Option` | `impl FromStr` (`Err = UnknownSubscriptionCommand`) |
 | `Direction::from_reverse(bool)` | `impl From<bool> for Direction` |

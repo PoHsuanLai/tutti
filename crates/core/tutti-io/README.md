@@ -21,13 +21,13 @@ Four live pieces, and recording is just a pump between two of them:
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
   Any `AudioIn` into any `AudioOut` of the same element, not only a WAV. It is
   the workspace's one pump loop: `bevy-tutti`'s `AudioPump` component holds a
-  `Recorder` and ends it through the non-blocking `stop`,
-  `is_finished` and `stop_and_join`.
+  `Recorder` and ends it through the non-blocking `request_stop`,
+  `is_finished` and `finish_in_place`.
 
 And the file side, which needs no device either:
 
 - `Wave` — a resident, planar sample buffer: what a sampler voice plays.
-- `Wave::read` / `Wave::metadata` — decode a file into one, or read only
+- `Wave::read` / `Wave::read_metadata` — decode a file into one, or read only
   its header. Behind the codec features.
 - `FileIn` — the streaming read, an `AudioIn` over a file at the file's own
   width, with sample-accurate `seek`. The read-side twin of `WavOut`.
@@ -121,7 +121,7 @@ wav.finalize().expect("header back-patches");
 All off by default (`default = []`):
 
 - `wav` / `flac` / `mp3` / `ogg` — one symphonia container (and codec) each,
-  for `Wave::read`, `Wave::metadata` and `FileIn`. With none, those do
+  for `Wave::read`, `Wave::read_metadata` and `FileIn`. With none, those do
   not exist and `decodable_extensions()` is empty; `Wave` itself is always
   there.
 - `bevy` — the `Asset` derive on `WaveAsset`. Needs a codec as well.

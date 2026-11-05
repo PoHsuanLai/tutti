@@ -254,7 +254,7 @@ impl SubscriptionCommand {
 }
 
 /// A `command` value that names no [`SubscriptionCommand`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownSubscriptionCommand;
 
 impl core::fmt::Display for UnknownSubscriptionCommand {

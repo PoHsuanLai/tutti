@@ -672,7 +672,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
         dc(RATE),
         &cfg,
         &FrozenClock,
-        Normalize::to_lufs(Db(-14.0)),
+        Normalize::lufs(Db(-14.0)),
         &normalized,
     )
     .unwrap();
@@ -709,7 +709,7 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
         dc(RATE),
         &cfg,
         &FrozenClock,
-        Normalize::to_peak(Db(-1.0)),
+        Normalize::peak(Db(-1.0)),
         &path,
     )
     .unwrap();
@@ -760,7 +760,7 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
         dc(RATE),
         &cfg,
         &FrozenClock,
-        Normalize::to_lufs(Db(-14.0)),
+        Normalize::lufs(Db(-14.0)),
         &path,
     )
     .unwrap();
@@ -802,7 +802,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
         built(g, cfg.render.sample_rate),
         &cfg,
         &FrozenClock,
-        Normalize::to_lufs(Db(-14.0)),
+        Normalize::lufs(Db(-14.0)),
         &path,
     )
     .expect("5.1 normalization must not be rejected");
@@ -910,7 +910,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
         silence(),
         &cfg,
         &FrozenClock,
-        Normalize::to_peak(Db(-1.0)),
+        Normalize::peak(Db(-1.0)),
         &path,
     )
     .unwrap();
@@ -978,7 +978,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
         square(),
         &cfg,
         &FrozenClock,
-        Normalize::to_peak(Db(-1.0)),
+        Normalize::peak(Db(-1.0)),
         &path,
     )
     .unwrap();
@@ -1021,7 +1021,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
         dc(cfg.render.sample_rate),
         &cfg,
         &FrozenClock,
-        Normalize::to_peak(Db(-1.0)),
+        Normalize::peak(Db(-1.0)),
         &path,
     )
     .expect_err("an unmeasurable rate must not report success");

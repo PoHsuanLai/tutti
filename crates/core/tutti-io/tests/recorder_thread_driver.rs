@@ -24,10 +24,10 @@
 //! | `while false && running.load(…)` | all three (nothing is ever pumped) |
 //! | `PumpPass::Starved => break` | `a_starving_source_…` (times out in `wait_until`) |
 //! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
-//! | `Recorder::wait` calls `stop_and_join()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
+//! | `Recorder::wait` calls `finish_in_place()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
-//! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`stop` tests (time out) |
-//! | `stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `stop` can no longer end) |
+//! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
+//! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
 //!
 //! The last three tests are the Bevy-free half of `bevy-tutti`'s
 //! `audio_io_pump.rs` (design 015 moved its pump loop here): a finite
@@ -371,7 +371,7 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
 /// hold the loop open to the source's own [`OnEmpty::EndOfStream`], the frame
 /// count would come up short — which is exactly the mutation.
 ///
-/// *Mutation:* make `Recorder::wait` call `stop_and_join()` instead of
+/// *Mutation:* make `Recorder::wait` call `finish_in_place()` instead of
 /// `join_pump()` — i.e. give it `stop`'s flag clear. The file comes back at
 /// one or two 1024-frame polls instead of all 20, and the count assertion
 /// fails. (`Ramp::delay` is what stops that from being a coin flip; see the
@@ -422,7 +422,7 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
 /// **A finite take ends itself, and a host that cannot block can see it.**
 ///
 /// `bevy-tutti`'s drain system polls `is_finished` once per frame and only
-/// then calls `stop_and_join`, so the frame never waits on the pump thread. This is
+/// then calls `finish_in_place`, so the frame never waits on the pump thread. This is
 /// that sequence without Bevy: nobody requests a stop, the source's own
 /// [`OnEmpty::EndOfStream`] ends the loop, and the run flag is still set when
 /// the take is collected, which is what tells "it ended" from "it was ended".
@@ -451,7 +451,7 @@ fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
     );
 
     let result = rec
-        .stop_and_join()
+        .finish_in_place()
         .expect("the take had not been collected yet");
     result.expect("a healthy finite take finalizes cleanly");
 
@@ -465,7 +465,7 @@ fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
 
 /// **A live take ends when asked, and asking does not block.**
 ///
-/// `stop` is what `bevy-tutti`'s `AudioPump::stop` calls from a
+/// `request_stop` is what `bevy-tutti`'s `AudioPump::stop` calls from a
 /// system: it returns at once, the pump notices on its next pass, and
 /// `is_finished` turns true without anyone joining. The collect after it is
 /// then a join that does not wait.
@@ -476,7 +476,7 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
 
     let polls = Arc::new(AtomicUsize::new(0));
     // `ManuallyDrop` so a failed assertion below leaks the pump instead of
-    // joining it. The `Drop` join stops the pump through `stop`, the
+    // joining it. The `Drop` join stops the pump through `request_stop`, the
     // method under test: if that is broken, an unwinding `Drop` would wait on
     // a live take forever, and neither nextest nor CI here has a timeout. A
     // leaked thread dies with the test's process.
@@ -499,14 +499,14 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
         "a starving source never ends its own take"
     );
 
-    rec.stop();
+    rec.request_stop();
     assert!(!rec.is_running());
     wait_until("the pump to notice the request", || rec.is_finished());
 
-    rec.stop_and_join()
+    rec.finish_in_place()
         .expect("the take had not been collected yet")
         .expect("stopping a live take finalizes cleanly");
-    assert!(rec.stop_and_join().is_none(), "a take is collected once");
+    assert!(rec.finish_in_place().is_none(), "a take is collected once");
     // Collected, so this drop joins nothing.
     drop(std::mem::ManuallyDrop::into_inner(rec));
 

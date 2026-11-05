@@ -18,16 +18,10 @@ use crate::events::{EventSink, EventSource, with_input, with_output};
 use crate::plugin::Core;
 use crate::pool::{PoolHandle, PoolRequest};
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for f32 {}
-    impl Sealed for f64 {}
-}
-
 /// A sample width CLAP carries: `f32` through `data32`, `f64` through
 /// `data64`. Private: the width is a runtime [`SampleFormat`], and this only
 /// names the two kernels it selects.
-pub(crate) trait Sample: Copy + Default + Send + sealed::Sealed + 'static {
+pub(crate) trait Sample: Copy + Default + Send + 'static {
     /// A port buffer over `channel_count` channel pointers at `ptrs`.
     #[doc(hidden)]
     fn port_buffer(ptrs: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
@@ -734,6 +728,61 @@ mod tests {
         assert_eq!(
             scratch.bind(&[], &mut outputs, &ports, &ports, 64),
             Err(ProcessError::BlockTooLarge)
+        );
+    }
+
+    /// The 64-bit kernel's `bind` holds the same contracts as the 32-bit one:
+    /// no allocation on a steady block, a padded channel is silent, a layout it
+    /// was not sized for or a short channel is refused.
+    ///
+    /// Mutations (run): drop the `s.len() < frames` check in `bind` -> the
+    /// `BufferTooShort` assertion fails; drop the capacity check -> the table
+    /// grows and the allocation gate aborts; skip the `fill` of a padded
+    /// channel -> the silence assertion fails.
+    #[test]
+    fn the_64bit_scratch_binds_like_the_32bit_one() {
+        let input_ports = [4];
+        let output_ports = [2];
+        let mut scratch = Typed::<f64>::new();
+        scratch.resize_for(&input_ports, &output_ports, 256);
+        for channel in &mut scratch.pad {
+            channel.fill(1.0);
+        }
+        let in_ch = [0.5f64; 256];
+        let mut out_ch = [0.0f64; 256];
+        let inputs: [&[f64]; 1] = [&in_ch];
+        let mut outputs: [&mut [f64]; 1] = [&mut out_ch];
+        scratch
+            .bind(&inputs, &mut outputs, &input_ports, &output_ports, 256)
+            .unwrap();
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..1_000 {
+                scratch
+                    .bind(&inputs, &mut outputs, &input_ports, &output_ports, 256)
+                    .unwrap();
+            }
+            assert_eq!(
+                scratch.bind(&inputs, &mut outputs, &[5], &[1], 256),
+                Err(ProcessError::LayoutMismatch)
+            );
+        });
+        assert!(
+            scratch
+                .pad
+                .iter()
+                .take(4)
+                .all(|c| c.iter().all(|&s| s == 0.0))
+        );
+
+        let short = [0.0f64; 32];
+        let short_in: [&[f64]; 1] = [&short];
+        let mut one = [0.0f64; 256];
+        let mut one_out: [&mut [f64]; 1] = [&mut one];
+        let mut mono = Typed::<f64>::new();
+        mono.resize_for(&[1], &[1], 256);
+        assert_eq!(
+            mono.bind(&short_in, &mut one_out, &[1], &[1], 256),
+            Err(ProcessError::BufferTooShort)
         );
     }
 }

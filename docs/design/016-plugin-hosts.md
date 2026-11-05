@@ -983,14 +983,14 @@ and from CLAP and VST3:
   field is one `deactivate` then one `activate` on any format, which is what
   `HostOp::Reconfigure` plans.
 - **The sample format is a runtime choice at activation.** The Processor is the
-  half that sees samples. Each host crate's `Processor` for the trait is the enum
-  its server loader has today (`ClapInner` over `ClapActive<f32>` and
-  `ClapActive<f64>`, `VstInner` for VST3), moved into the host crate as
-  `ClapProcessor` and `Vst3ProcessorAny`. `process` matches
-  `AudioBufferMut::{F32, F64}` to the arm. The typed `Vst3Processor<T>` stays for a user who fixes the sample type at compile time,
-  through an inherent `activate_typed::<T>`; CLAP has no typed form (see its
-  runtime-format note). The Controller has no sample type:
-  `ClapController`, `Vst3Controller`, `Vst2Controller`, `AuController`.
+  half that sees samples. Each host crate's `Processor` for the trait is one
+  type that holds the activated `SampleFormat` (`ClapProcessor`) or matches
+  `AudioBufferMut::{F32, F64}` to an arm (`Vst3ProcessorAny`). CLAP has no typed
+  form: its one `ClapProcessor` matches the buffer's width once per block (see
+  its runtime-format note). VST3 keeps a typed `Vst3Processor<T>` for a user who
+  fixes the sample type at compile time, through an inherent
+  `activate_typed::<T>`. The Controller has no sample type: `ClapController`,
+  `Vst3Controller`, `Vst2Controller`, `AuController`.
 - **Not object-safe, on purpose.** `Loaded`, `Processor` and `Controller` carry
   each other as associated types and the transitions take values. The typestate
   holds a stale handle unnameable; dynamic dispatch would give that up.
@@ -1059,10 +1059,9 @@ and from CLAP and VST3:
   replacing a bad one with an inert header; a SysEx's bytes must lie inside the
   storage it was handed) and an `EventSink` (a decoded `PluginEvent` per
   push). The raw lists are built on the stack of the call.
-- **Audio buffers.** `PortScratch` and `ProcessCall` bind a block's slices
-  and run `process`. It refuses a channel shorter than the block, which the
-  host crate's pointer tables never checked. `ClapSample` and the typed
-  processors were unchanged by this step; the runtime-format step removes them.
+- **Audio buffers.** `PortScratch` (built for a `SampleFormat`) and `ProcessCall`
+  bind a block's slices and run `process`. It refuses a channel shorter than the
+  block.
 - **Tests.** The unit tests that used stub vtables moved with the code they
   cover. The ones that drove the raw lists now sit in `tests/clap_event_lists.rs`
   (the host crate forbids `unsafe`, a test may use it) over the FFI crate's

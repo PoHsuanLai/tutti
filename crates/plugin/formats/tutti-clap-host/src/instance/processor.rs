@@ -184,19 +184,6 @@ impl ClapProcessor {
             AudioBufferMut::F32(b) => b.sample_rate,
             AudioBufferMut::F64(b) => b.sample_rate,
         };
-        let width = match buffer {
-            AudioBufferMut::F32(_) => SampleFormat::Float32,
-            AudioBufferMut::F64(_) => SampleFormat::Float64,
-        };
-        if width != self.format() {
-            // The message is built only on this path, which is a negotiation bug
-            // upstream and not steady state.
-            return Err(PluginError::Process(
-                "audio buffer sample format does not match the format the CLAP \
-                 plugin was activated with"
-                    .to_string(),
-            ));
-        }
         self.process_shared(buffer, ctx, sample_rate, out)
     }
 

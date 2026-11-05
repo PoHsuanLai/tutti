@@ -25,21 +25,21 @@ use tutti_plugin_types::{
 /// test-side sugar for the processor's runtime `SampleFormat`. The host has no
 /// sample type parameter; this only picks the format value and wraps a typed
 /// buffer for the one `process`.
-pub trait ClapSample: Sample {
+pub trait Width: Sample {
     /// The format an activation at this width negotiates.
     const FORMAT: SampleFormat;
     /// The buffer as the processor takes it.
     fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, Self>) -> AudioBufferMut<'t, 'd>;
 }
 
-impl ClapSample for f32 {
+impl Width for f32 {
     const FORMAT: SampleFormat = SampleFormat::Float32;
     fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, f32>) -> AudioBufferMut<'t, 'd> {
         AudioBufferMut::F32(buffer)
     }
 }
 
-impl ClapSample for f64 {
+impl Width for f64 {
     const FORMAT: SampleFormat = SampleFormat::Float64;
     fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, f64>) -> AudioBufferMut<'t, 'd> {
         AudioBufferMut::F64(buffer)
@@ -48,13 +48,13 @@ impl ClapSample for f64 {
 
 /// The two halves of one activation.
 #[derive(Debug)]
-pub struct Active<T: ClapSample> {
+pub struct Active<T: Width> {
     pair: Option<(ClapProcessor, ClapController)>,
     _width: std::marker::PhantomData<T>,
     prepare: Prepare,
 }
 
-fn prepare_for<T: ClapSample>(rate: f64, frames: u32) -> Prepare {
+fn prepare_for<T: Width>(rate: f64, frames: u32) -> Prepare {
     Prepare {
         rate: SampleRate(rate),
         max_block: Samples(frames as usize),
@@ -66,7 +66,7 @@ fn prepare_for<T: ClapSample>(rate: f64, frames: u32) -> Prepare {
 /// Activation at a rate and block size, on a loaded plugin.
 pub trait Activate {
     /// Activates as `T`; a refusal hands the plugin back with the reason.
-    fn activate_at<T: ClapSample>(
+    fn activate_at<T: Width>(
         self,
         rate: f64,
         frames: u32,
@@ -74,7 +74,7 @@ pub trait Activate {
 }
 
 impl Activate for ClapLoaded {
-    fn activate_at<T: ClapSample>(
+    fn activate_at<T: Width>(
         self,
         rate: f64,
         frames: u32,
@@ -94,7 +94,7 @@ impl Activate for ClapLoaded {
     }
 }
 
-impl<T: ClapSample> Active<T> {
+impl<T: Width> Active<T> {
     fn pair(&self) -> &(ClapProcessor, ClapController) {
         self.pair.as_ref().expect("an Active holds its pair")
     }
@@ -223,7 +223,7 @@ impl<T: ClapSample> Active<T> {
     }
 }
 
-impl<T: ClapSample> Deref for Active<T> {
+impl<T: Width> Deref for Active<T> {
     type Target = ClapController;
 
     fn deref(&self) -> &ClapController {
@@ -231,7 +231,7 @@ impl<T: ClapSample> Deref for Active<T> {
     }
 }
 
-impl<T: ClapSample> DerefMut for Active<T> {
+impl<T: Width> DerefMut for Active<T> {
     fn deref_mut(&mut self) -> &mut ClapController {
         &mut self.pair_mut().1
     }

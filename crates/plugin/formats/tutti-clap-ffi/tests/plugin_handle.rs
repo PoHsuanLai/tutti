@@ -728,7 +728,9 @@ fn the_editor_is_created_once_and_destroyed_once() {
 ///
 /// Mutations (run): bind the 64-bit table as `data32` in `Sample for f64`: the
 /// 64-bit block never reaches `data64` and the tag assertion fails; make the
-/// catch-all arm of `process` answer `Ok`: the mismatch assertion fails.
+/// catch-all arm of `process` answer `Ok`: the mismatch assertions fail; match
+/// only `(Pool::F64, Planar::F32)` and let `(Pool::F32, Planar::F64)` fall to
+/// a kernel: the reverse-direction assertion fails.
 #[test]
 fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
     let _g = lock();
@@ -768,8 +770,8 @@ fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
         },
     )
     .expect("a 64-bit block runs");
-    assert_eq!(left[0], f64::from(probe_tag(0, 0)));
-    assert_eq!(right[0], f64::from(probe_tag(0, 1)));
+    assert_eq!(outputs[0][0], f64::from(probe_tag(0, 0)));
+    assert_eq!(outputs[1][0], f64::from(probe_tag(0, 1)));
 
     // A 32-bit block into the 64-bit scratch: refused, plugin untouched.
     let mut l32 = vec![0.0f32; FRAMES];
@@ -799,5 +801,19 @@ fn one_process_call_runs_either_width_and_refuses_a_mismatch() {
     )
     .expect("a 32-bit block runs");
     assert_eq!(l32[0], probe_tag(0, 0));
+
+    // And the other direction: a 64-bit block into the 32-bit scratch.
+    outputs[0].fill(-1.0);
+    assert_eq!(
+        call(
+            &mut narrow,
+            Planar::F64 {
+                inputs: &[],
+                outputs: &mut outputs,
+            }
+        ),
+        Err(ProcessError::FormatMismatch)
+    );
+    assert_eq!(outputs[0][0], -1.0, "the plugin wrote nothing");
     switch_u32(b"tutti_test_plugin_set_ports_64bit\0", 0);
 }

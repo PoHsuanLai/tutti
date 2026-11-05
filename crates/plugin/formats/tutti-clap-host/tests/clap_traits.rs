@@ -161,8 +161,10 @@ fn render(processor: &mut ClapProcessor, format: SampleFormat) -> Result<(), Plu
 /// of the other width is an error rather than a mis-cast.
 ///
 /// Mutation (run): `Loaded::activate` always taking the `f32` arm → the
-/// `is_f64` assertion in the second half fails; `ClapProcessor::render`
-/// matching `(F64, F32)` to the `F32` arm → the mismatch is not an error.
+/// `is_f64` assertion in the second half fails; the FFI `process` mismatch arm
+/// answering `Ok` → the mismatch is not an error. The mismatch is the
+/// allocation-free `PluginError::Block` the FFI error maps to (mutation run:
+/// `PluginError::Process(String)` in its place → the `Block` match fails).
 #[test]
 fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     let probe = Probe::acquire();
@@ -181,7 +183,10 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     );
 
     let mismatch = render(&mut processor, SampleFormat::Float64).expect_err("wrong width");
-    assert!(matches!(mismatch, PluginError::Process(_)), "{mismatch:?}");
+    assert!(
+        matches!(mismatch, PluginError::Block(why) if why.contains("sample format")),
+        "{mismatch:?}"
+    );
 
     // Deactivation stops processing and gives the plugin back loaded.
     let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
@@ -196,7 +201,10 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     assert!(processor.is_f64());
     render(&mut processor, SampleFormat::Float64).expect("an f64 block renders");
     let mismatch = render(&mut processor, SampleFormat::Float32).expect_err("wrong width");
-    assert!(matches!(mismatch, PluginError::Process(_)), "{mismatch:?}");
+    assert!(
+        matches!(mismatch, PluginError::Block(why) if why.contains("sample format")),
+        "{mismatch:?}"
+    );
     ClapLoaded::deactivate(processor, controller).expect("a pair");
     set_ports_64bit(0);
 }
@@ -280,9 +288,11 @@ fn one_processor_type_renders_both_widths_to_the_same_signal() {
 fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
     let probe = Probe::acquire();
     set_ports_64bit(0);
-    let loaded = probe.load();
+    let mut loaded = probe.load();
     assert!(!loaded.supports_f64());
-    let negotiated = loaded.negotiate_format(SampleFormat::Float64);
+    let negotiated = loaded
+        .negotiate_format(SampleFormat::Float64)
+        .expect("inactive");
     assert_eq!(negotiated, SampleFormat::Float32, "no 64-bit ports");
 
     let mut asked = prepare();
@@ -300,17 +310,65 @@ fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
     ClapLoaded::deactivate(processor, controller).expect("a pair");
 
     set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
-    let capable = probe.load();
+    let mut capable = probe.load();
     assert_eq!(
-        capable.negotiate_format(SampleFormat::Float64),
+        capable
+            .negotiate_format(SampleFormat::Float64)
+            .expect("inactive"),
         SampleFormat::Float64
     );
     assert_eq!(
-        capable.negotiate_format(SampleFormat::Float32),
+        capable
+            .negotiate_format(SampleFormat::Float32)
+            .expect("inactive"),
         SampleFormat::Float32,
         "capability never raises a 32-bit request"
     );
     set_ports_64bit(0);
+}
+
+/// **Ports that are only partly 64-bit negotiate to 32-bit, and negotiation
+/// reads the ports as they are now.** The host hands one width for every
+/// buffer, so one port short of 64-bit is enough. A plugin that drops its
+/// flags after load is negotiated at its current capability, which is the
+/// path the server's loader takes.
+///
+/// Mutation (run): `negotiate_format` skipping `rescan_audio_ports` -> the
+/// loaded-as-capable plugin still answers `Float64` after its flags are gone,
+/// and the last assertion fails. Mutation (run): `read_audio_ports` treating
+/// "any port 64-bit" as capable -> the inputs-only case answers `Float64`.
+#[test]
+fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
+    let probe = Probe::acquire();
+    set_ports_64bit(PORTS_64BIT_INPUTS);
+    let mut inputs_only = probe.load();
+    assert_eq!(
+        inputs_only
+            .negotiate_format(SampleFormat::Float64)
+            .expect("inactive"),
+        SampleFormat::Float32,
+        "inputs only"
+    );
+    set_ports_64bit(PORTS_64BIT_OUTPUTS);
+    assert_eq!(
+        inputs_only
+            .negotiate_format(SampleFormat::Float64)
+            .expect("inactive"),
+        SampleFormat::Float32,
+        "outputs only"
+    );
+
+    set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
+    let mut loaded = probe.load();
+    assert!(loaded.supports_f64());
+    set_ports_64bit(0);
+    assert_eq!(
+        loaded
+            .negotiate_format(SampleFormat::Float64)
+            .expect("inactive"),
+        SampleFormat::Float32,
+        "the flags dropped after load"
+    );
 }
 
 /// **A refused activation hands the plugin back whole.** The plugin is

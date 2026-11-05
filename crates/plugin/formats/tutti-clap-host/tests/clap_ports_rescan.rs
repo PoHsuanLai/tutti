@@ -274,7 +274,7 @@ fn process_f32_block(active: &mut Active<f32>, channels: usize) -> Result<(), Cl
 /// active (CLAP allows `process` only while active), nothing is deactivated a
 /// second time, and the same instance then activates at 32-bit.
 ///
-/// Mutations (run): delete the `T::requires_f64() && ...` check in
+/// Mutations (run): delete the `wide && !self.audio.supports_f64` refusal in
 /// `ClapLoaded::activate_now` → the plugin is activated for 64-bit audio on
 /// ports that do not take them → the `Err` match fails. Return `None` for the
 /// plugin in the `refuse` closure → the `expect` on the returned plugin fails.

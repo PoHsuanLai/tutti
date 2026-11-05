@@ -6,7 +6,6 @@
 //! plugin unrepresentable. This file owns the part the type system cannot
 //! express: the FFI ordering. A plugin that refuses `activate` comes back whole
 //! in [`Refused`].
-//!
 
 use super::ClapLoaded;
 use super::config::{AudioScratch, RangeTable};
@@ -92,15 +91,23 @@ impl ClapLoaded {
 
     /// The format an activation runs at when `requested` is asked of this
     /// plugin: 64-bit only when asked for and every port advertises it, else
-    /// 32-bit (`tutti_plugin_types::negotiate`, fed this plugin's capability as
-    /// last read). A caller that wants the fallback negotiates here and puts
-    /// the result in [`Prepare::format`]; [`Loaded::activate`] itself refuses a
-    /// 64-bit request the plugin cannot take rather than quietly changing it.
+    /// 32-bit (`tutti_plugin_types::negotiate`). The audio ports are read
+    /// again first, so the answer is the plugin's capability now, not as of
+    /// load. A caller that wants the fallback negotiates here and puts the
+    /// result in [`Prepare::format`]; [`Loaded::activate`] reads the ports once
+    /// more and refuses a 64-bit request the plugin can no longer take rather
+    /// than quietly changing it, and hands the plugin back for a retry.
+    ///
+    /// # Errors
+    ///
+    /// [`ClapError::NotSupported`] while the plugin is active (the ports are
+    /// `[!active]`).
     ///
     /// [`Loaded::activate`]: tutti_plugin_types::Loaded::activate
-    #[must_use]
-    pub fn negotiate_format(&self, requested: SampleFormat) -> SampleFormat {
-        negotiate(requested, self.audio.supports_f64)
+    /// [`ClapError::NotSupported`]: crate::ClapError::NotSupported
+    pub fn negotiate_format(&mut self, requested: SampleFormat) -> crate::Result<SampleFormat> {
+        self.rescan_audio_ports()?;
+        Ok(negotiate(requested, self.audio.supports_f64))
     }
 
     /// Activates the plugin at the sample format `prepare` names, splitting it

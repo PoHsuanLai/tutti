@@ -17,7 +17,7 @@ use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
     Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Seat, Stage, State, negotiate,
+    Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;
@@ -190,18 +190,17 @@ impl ClapInstance {
             reason: format!("activate failed: {reason}"),
         };
         // 64-bit only when it was asked for: the session's wire format follows
-        // its preference (f32 by default), not the plugin's capability. The
-        // ports are read again first, so a plugin that dropped its 64-bit flags
-        // since it was opened loads as 32-bit, the clean fallback.
-        loaded
-            .rescan_audio_ports()
-            .map_err(|e| activation_failed(e.to_string()))?;
+        // its preference (f32 by default), not the plugin's capability.
+        // `negotiate_format` reads the ports again first, so a plugin that
+        // dropped its 64-bit flags since it was opened loads as 32-bit.
         let requested = if prefer_f64 {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32
         };
-        let format = negotiate(requested, loaded.supports_f64());
+        let format = loaded
+            .negotiate_format(requested)
+            .map_err(|e| activation_failed(e.to_string()))?;
         let prepare = Prepare {
             rate: SampleRate(sample_rate),
             max_block: Samples(block_size),

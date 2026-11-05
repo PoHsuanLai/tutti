@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
 use std::time::Instant;
+use tutti_plugin_types::RequestWord;
 
 pub(crate) struct TimerEntry {
     pub id: u32,
@@ -34,38 +35,29 @@ pub struct PosixFdEntry {
 }
 
 /// Plugin requests to change its own lifecycle, from `clap_host`'s core
-/// callbacks. Each is latched until the matching `poll_*` drains it.
+/// callbacks. Latched until the matching `take_*` drains it. (A restart, a
+/// main-thread callback, a latency or tail change and a rescan are not here:
+/// they are bits of [`HostState::requests`].)
 #[derive(Debug)]
 pub struct LifecycleFlags {
-    /// The plugin asked to be deactivated and reactivated, typically because
-    /// its port layout or sample-rate needs changed.
-    pub restart_requested: AtomicBool,
     /// The plugin asked the host to resume calling `process`, having gone
     /// idle earlier.
     pub process_requested: AtomicBool,
-    /// The plugin asked for a main-thread callback (`on_main_thread`).
-    pub callback_requested: AtomicBool,
 }
 
 impl LifecycleFlags {
     fn new() -> Self {
         Self {
-            restart_requested: AtomicBool::new(false),
             process_requested: AtomicBool::new(false),
-            callback_requested: AtomicBool::new(false),
         }
     }
 }
 
 /// Notifications about values the host caches but the plugin owns. Each is
-/// latched until the matching `poll_*` drains it; the host then re-reads the
+/// latched until the matching `take_*` drains it; the host then re-reads the
 /// value from the plugin.
 #[derive(Debug)]
 pub struct ProcessingState {
-    /// The plugin's reported latency changed, so PDC compensation is stale.
-    pub latency_changed: AtomicBool,
-    /// The plugin's reported tail length changed.
-    pub tail_changed: AtomicBool,
     /// The plugin's saveable state changed, so a state blob written earlier no
     /// longer matches the instance.
     pub state_dirty: AtomicBool,
@@ -76,8 +68,6 @@ pub struct ProcessingState {
 impl ProcessingState {
     fn new() -> Self {
         Self {
-            latency_changed: AtomicBool::new(false),
-            tail_changed: AtomicBool::new(false),
             state_dirty: AtomicBool::new(false),
             preset_loaded: AtomicBool::new(false),
         }
@@ -124,19 +114,10 @@ impl GuiState {
     }
 }
 
-/// Parameter-side requests from `CLAP_EXT_PARAMS`.
+/// Parameter-side requests from `CLAP_EXT_PARAMS`. (A rescan is a bit of
+/// [`HostState::requests`].)
 #[derive(Debug)]
 pub struct ParamState {
-    /// A `params.rescan` arrived. Tracked apart from
-    /// [`rescan_flags`](Self::rescan_flags) because a plugin may legally
-    /// rescan with no bits set, and "asked for nothing" must stay distinct
-    /// from "never asked".
-    pub rescan_requested: AtomicBool,
-    /// Accumulated `clap_param_rescan_flags` from every `params.rescan` call
-    /// since the last poll (OR-combined). Distinguishes RESCAN_ALL — which the
-    /// spec requires the host handle only while the plugin is deactivated —
-    /// from value-only (RESCAN_VALUES) rescans that can be applied live.
-    pub rescan_flags: AtomicU32,
     /// The plugin asked the host to flush pending parameter changes.
     pub flush_requested: AtomicBool,
 }
@@ -144,8 +125,6 @@ pub struct ParamState {
 impl ParamState {
     fn new() -> Self {
         Self {
-            rescan_requested: AtomicBool::new(false),
-            rescan_flags: AtomicU32::new(0),
             flush_requested: AtomicBool::new(false),
         }
     }
@@ -155,18 +134,6 @@ impl ParamState {
 /// extensions.
 #[derive(Debug)]
 pub struct AudioPortState {
-    /// An `audio-ports.rescan` arrived. Tracked apart from
-    /// [`rescan_flags`](Self::rescan_flags) for the same reason as on
-    /// [`ParamState`]: a bit-less rescan is still a rescan.
-    pub changed: AtomicBool,
-    /// Accumulated `clap_audio_ports_rescan_flags` from every
-    /// `audio-ports.rescan` call since the last poll (OR-combined).
-    ///
-    /// Five of the six flags are `[!active]` in the spec, so a consumer has to
-    /// tell a live-applicable name change from one that requires
-    /// deactivate→re-enumerate→re-activate. OR so multiple rescans between
-    /// polls don't lose bits.
-    pub rescan_flags: AtomicU32,
     /// The set of selectable port configurations changed
     /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`).
     pub config_changed: AtomicBool,
@@ -179,8 +146,6 @@ pub struct AudioPortState {
 impl AudioPortState {
     fn new() -> Self {
         Self {
-            changed: AtomicBool::new(false),
-            rescan_flags: AtomicU32::new(0),
             config_changed: AtomicBool::new(false),
             ambisonic_changed: AtomicBool::new(false),
             surround_changed: AtomicBool::new(false),
@@ -578,7 +543,12 @@ pub struct HostState {
     /// `deactivate`, `Drop`) block on it, which is exactly the intended
     /// serialization.
     pub audio_thread_lock: Mutex<()>,
-    /// Restart / resume-processing / main-thread-callback requests.
+    /// What the plugin asked of the host, by any callback on any thread: a
+    /// restart, a main-thread callback, a latency or tail change, an
+    /// audio-ports or parameter rescan. The main thread takes it once per
+    /// pass ([`ClapLoaded::take_requests`](crate::ClapLoaded::take_requests)).
+    pub requests: RequestWord,
+    /// Resume-processing requests.
     pub lifecycle: LifecycleFlags,
     /// Latency, tail, state-dirty and preset-loaded notifications.
     pub processing: ProcessingState,
@@ -684,6 +654,7 @@ impl HostState {
             main_thread_id: std::thread::current().id(),
             audio_thread_id: AtomicU64::new(NO_AUDIO_THREAD),
             audio_thread_lock: Mutex::new(()),
+            requests: RequestWord::new(),
             lifecycle: LifecycleFlags::new(),
             processing: ProcessingState::new(),
             gui: GuiState::new(),
@@ -699,10 +670,10 @@ impl HostState {
         }
     }
 
-    /// Reads a latch and clear it in one atomic step, returning whether it was
-    /// set. Draining is the point: two consecutive polls of one unrepeated
+    /// Reads a latch and clears it in one atomic step, returning whether it was
+    /// set. Draining is the point: two consecutive takes of one unrepeated
     /// request answer `true` then `false`.
-    pub fn poll(&self, flag: &AtomicBool) -> bool {
+    pub fn take(&self, flag: &AtomicBool) -> bool {
         flag.swap(false, Ordering::AcqRel)
     }
 

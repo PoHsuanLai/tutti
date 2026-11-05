@@ -15,11 +15,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use assert_no_alloc::AllocDisabler;
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::ThreadPoolCapture;
 use tutti_core::{Pool, WorkerPool};
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
 #[global_allocator]
@@ -67,7 +68,7 @@ fn capture() -> ThreadPoolCapture {
 }
 
 /// Arm the probe for `tasks` tasks of `task_us` each, and load + activate.
-fn load(tasks: u32, task_us: u32, nested: bool) -> ClapActive<f32> {
+fn load(tasks: u32, task_us: u32, nested: bool) -> Active<f32> {
     switch_u32(b"tutti_test_plugin_set_thread_pool_tasks\0", tasks);
     switch_u32(b"tutti_test_plugin_set_thread_pool_task_us\0", task_us);
     switch_bool(b"tutti_test_plugin_set_thread_pool_nested\0", nested);
@@ -80,20 +81,20 @@ fn load(tasks: u32, task_us: u32, nested: bool) -> ClapActive<f32> {
         f();
     }
     let path = Path::new(probe_path());
-    let loaded = ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, 512)
-        .expect("reference plugin loads");
+    let loaded =
+        ClapLoaded::load(path, LoadOptions::new().library(path)).expect("reference plugin loads");
     assert!(
         loaded.supports_thread_pool(),
         "the armed probe offers clap.thread-pool"
     );
     loaded
-        .activate::<f32>()
+        .activate_at::<f32>(SAMPLE_RATE, 512)
         .map_err(|(_, e)| e)
         .expect("reference plugin activates")
 }
 
 /// One block, on stack buffers only (so it can run inside a no-alloc gate).
-fn block(inst: &mut ClapActive<f32>) {
+fn block(inst: &mut Active<f32>) {
     let (inl, inr) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
     let (mut outl, mut outr) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
     let outs: &mut [&mut [f32]] = &mut [&mut outl[..], &mut outr[..]];

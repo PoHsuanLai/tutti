@@ -23,10 +23,11 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, MidiEvent, ParameterChanges,
+    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, ParameterChanges,
     TransportInfo,
 };
 // The reference plugin is a dev-dependency (cdylib + rlib), so we share its
@@ -70,14 +71,14 @@ const PROBE_ID: &str = "tutti.conformance-probe";
 /// Load + activate the reference plugin.
 ///
 /// Panics if it wasn't built — [`probe_path`] resolves it or fails loudly.
-fn load_plugin() -> ClapActive<f32> {
+fn load_plugin() -> Active<f32> {
     let path = Path::new(probe_path());
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
-    let loaded = ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+    let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
         .expect("reference plugin should load");
     loaded
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("reference plugin should activate")
 }
@@ -105,7 +106,7 @@ fn read_capture() -> ProcessCapture {
 /// Holds [`CAPTURE_LOCK`] across the `process` → `read_capture` pair so a
 /// parallel test can't overwrite the process-global capture in between.
 fn drive_once(
-    inst: &mut ClapActive<f32>,
+    inst: &mut Active<f32>,
     frames: usize,
     ctx: &ClapProcessContext<'_>,
 ) -> ProcessCapture {
@@ -301,8 +302,10 @@ fn host_callback_round_trips() {
     let ctx = ClapProcessContext::default();
     let _ = drive_once(&mut inst, 64, &ctx);
 
+    let mut requests = Vec::new();
+    inst.take_requests(&mut requests);
     assert!(
-        inst.poll_callback_requested(),
-        "host must record the plugin's request_callback() in HostState"
+        requests.contains(&tutti_plugin_types::Request::Callback),
+        "host must record the plugin's request_callback() in HostState: {requests:?}"
     );
 }

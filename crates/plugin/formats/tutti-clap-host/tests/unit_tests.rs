@@ -723,19 +723,19 @@ fn test_transport_flags_are_distinct_bits() {
 // ── Host state + extensions ──
 
 #[test]
-fn test_host_state_poll_clears_flag() {
+fn test_host_state_take_clears_flag() {
     use std::sync::atomic::Ordering;
 
     let state = HostState::new();
     state
         .lifecycle
-        .restart_requested
+        .process_requested
         .store(true, Ordering::Release);
 
-    // First poll returns true and clears
-    assert!(state.poll(&state.lifecycle.restart_requested));
-    // Second poll returns false
-    assert!(!state.poll(&state.lifecycle.restart_requested));
+    // First take returns true and clears
+    assert!(state.take(&state.lifecycle.process_requested));
+    // Second take returns false
+    assert!(!state.take(&state.lifecycle.process_requested));
 }
 
 #[test]
@@ -909,18 +909,27 @@ fn test_host_get_extension_returns_null_for_null_id() {
     assert!(ptr.is_null());
 }
 
+/// `request_restart` raises `Request::Restart` once.
+///
+/// Mutation (run): `host_request_restart` raising nothing → the second assertion
+/// fails; raising `Callback` → the request list differs.
 #[test]
-fn test_host_request_restart_sets_flag() {
+fn test_host_request_restart_raises_the_request() {
     use std::sync::Arc;
+    use tutti_plugin_types::{Request, taken};
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
     let raw = host.as_raw();
     let request_restart = unsafe { (*raw).request_restart.unwrap() };
 
-    assert!(!state.poll(&state.lifecycle.restart_requested));
+    assert_eq!(taken(&state.requests).count(), 0);
     unsafe { request_restart(raw) };
-    assert!(state.poll(&state.lifecycle.restart_requested));
+    assert_eq!(
+        taken(&state.requests).collect::<Vec<_>>(),
+        [Request::Restart]
+    );
+    assert_eq!(taken(&state.requests).count(), 0, "taken once");
 }
 
 #[test]
@@ -933,12 +942,17 @@ fn test_host_request_process_sets_flag() {
     let request_process = unsafe { (*raw).request_process.unwrap() };
 
     unsafe { request_process(raw) };
-    assert!(state.poll(&state.lifecycle.process_requested));
+    assert!(state.take(&state.lifecycle.process_requested));
 }
 
+/// `request_callback` raises `Request::Callback`.
+///
+/// Mutation (run): `host_request_callback` raising `Restart` → the assertion
+/// fails.
 #[test]
-fn test_host_request_callback_sets_flag() {
+fn test_host_request_callback_raises_the_request() {
     use std::sync::Arc;
+    use tutti_plugin_types::{Request, taken};
 
     let state = Arc::new(HostState::new());
     let host = ClapHost::new(state.clone());
@@ -946,7 +960,10 @@ fn test_host_request_callback_sets_flag() {
     let request_callback = unsafe { (*raw).request_callback.unwrap() };
 
     unsafe { request_callback(raw) };
-    assert!(state.poll(&state.lifecycle.callback_requested));
+    assert_eq!(
+        taken(&state.requests).collect::<Vec<_>>(),
+        [Request::Callback]
+    );
 }
 
 #[test]
@@ -1272,27 +1289,6 @@ fn test_host_timer_register_unregister() {
     // Unregister again should fail (already removed)
     let ok = unsafe { ts.unregister_timer.unwrap()(raw, timer_id) };
     assert!(!ok);
-}
-
-#[test]
-fn test_needs_restart_non_clearing() {
-    use std::sync::atomic::Ordering;
-
-    let state = HostState::new();
-    assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
-
-    state
-        .lifecycle
-        .restart_requested
-        .store(true, Ordering::Release);
-
-    // Non-clearing peek should return true without clearing
-    assert!(state.lifecycle.restart_requested.load(Ordering::Acquire));
-    assert!(state.lifecycle.restart_requested.load(Ordering::Acquire));
-
-    // poll() should clear it
-    assert!(state.poll(&state.lifecycle.restart_requested));
-    assert!(!state.lifecycle.restart_requested.load(Ordering::Acquire));
 }
 
 // ── Extension types ──

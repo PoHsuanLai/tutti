@@ -290,6 +290,13 @@ pub enum Notice {
         /// Why.
         reason: PluginError,
     },
+    /// A call into the plugin panicked outside an activation, a deactivation or
+    /// a rebuild (those tell the host through [`Refused`](Self::Refused)). The
+    /// plugin is lost and nothing leaves [`Stage::Poisoned`].
+    Lost {
+        /// Why.
+        reason: PluginError,
+    },
 }
 
 /// Where a plugin is in its life.
@@ -445,6 +452,22 @@ impl State {
     #[must_use]
     pub fn prepare(&self) -> Option<Prepare> {
         self.prepare
+    }
+
+    /// Records `mode` in the `Prepare` every later activation uses, without
+    /// restarting anything. For a format that applies the render mode live
+    /// (CLAP's `render.set`): the host sets it on the plugin itself, and this
+    /// keeps a later restart or rate change from putting the old mode back.
+    /// An activation already planned takes the new mode too.
+    pub fn set_mode(&mut self, mode: RenderMode) {
+        if let Some(prepare) = self.prepare.as_mut() {
+            prepare.mode = mode;
+        }
+        for task in &mut self.plan.tasks {
+            if let Task::Activate(prepare) = task {
+                prepare.mode = mode;
+            }
+        }
     }
 
     /// The latency last reported.

@@ -25,7 +25,10 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
-pub use instance::{ClapActive, ClapLoaded, ClapProcessContext, ClapSample};
+pub use instance::{
+    ClapController, ClapLoaded, ClapProcessContext, ClapProcessor, ClapProcessorAny, ClapSample,
+    LoadOptions, descriptor_of,
+};
 // `ParamMapping` (param-indication) is part of the speculative surface — gated.
 #[cfg(feature = "clap-extras")]
 pub use instance::ParamMapping;
@@ -53,11 +56,10 @@ pub use types::ClapNoteExpression;
 // but the public re-export is gated so the default API surface stays lean.
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
-    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, AudioPortsRescan, ChannelLayout,
-    ContentScale, EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects,
-    NoteExpressionType, NoteName, NotePortInfo, ParamRescan, ParameterChanges, ParameterPoint,
-    ParameterQueue, PluginInfo, StateContext, SurroundChannel, TransportInfo, VoiceInfo,
-    WindowHandle,
+    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, ContentScale,
+    EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects, NoteExpressionType,
+    NoteName, NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
+    StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle,
 };
 #[cfg(feature = "clap-extras")]
 pub use types::{

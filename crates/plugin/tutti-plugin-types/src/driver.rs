@@ -317,7 +317,12 @@ impl<L: Loaded> Lifecycle<L> {
     ///
     /// A transition that leaves no plugin ([`Refused::plugin`] of `None`, a
     /// panic) poisons, and [`Event::Died`] is stepped for it, so the core's
-    /// `Poisoned` is reached the one way the design allows.
+    /// `Poisoned` is reached the one way the design allows. A panic out of any
+    /// other call (a read, the idle flush, main-thread work) is told with
+    /// [`Notice::Lost`]; a transition's loss is told by its [`Notice::Refused`].
+    ///
+    /// Call it on every idle pass of the host's loop, with [`Event::Tick`]: the
+    /// Controller's retry of refused parameter edits runs there only.
     ///
     /// While the Processor is lent, a plan that needs both halves is parked in
     /// the state by the core; this returns with it parked, and a later `drive`
@@ -338,6 +343,9 @@ impl<L: Loaded> Lifecycle<L> {
                 }
             });
             if self.is_poisoned() {
+                notify(Notice::Lost {
+                    reason: panicked("a call into the plugin"),
+                });
                 return step(state, Event::Died).0;
             }
         }
@@ -348,6 +356,12 @@ impl<L: Loaded> Lifecycle<L> {
                 notify(notice);
                 continue;
             }
+            // A transition that loses the plugin answers `Refused`, which the
+            // core turns into its own notice; any other call tells the host here.
+            let transition = matches!(
+                effect,
+                Effect::CallActivate(_) | Effect::CallDeactivate | Effect::Rebuild
+            );
             let reply = self.apply(effect, hand);
             let (next, effects) = step(state, Event::Replied(reply));
             state = next;
@@ -357,6 +371,11 @@ impl<L: Loaded> Lifecycle<L> {
             if self.is_poisoned() && state.stage() != crate::Stage::Poisoned {
                 let (next, _dropped) = step(state, Event::Died);
                 state = next;
+                if !transition {
+                    notify(Notice::Lost {
+                        reason: panicked("a call into the plugin"),
+                    });
+                }
                 // What already happened is still told; the rest of the plan
                 // has no plugin to run on.
                 for effect in queue.drain(..) {

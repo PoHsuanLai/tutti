@@ -13,7 +13,7 @@
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
 use crate::guard::{guard, or_abort};
-use crate::types::{TrackPortType, TransportRequest, UndoChange};
+use crate::types::{AudioPortsRescan, ParamRescan, TrackPortType, TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{CLAP_PORT_AMBISONIC, clap_host_ambisonic};
 use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
@@ -65,6 +65,7 @@ use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
+use tutti_plugin_types::{Request, RescanScope};
 
 /// Recover the [`HostState`] a plugin's callback is addressing, from the
 /// `host_data` slot of the vtable it was handed.
@@ -100,10 +101,7 @@ pub(super) unsafe extern "C" fn host_request_restart(host: *const ClapHostVtable
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state
-                .lifecycle
-                .restart_requested
-                .store(true, Ordering::Release);
+            Request::Restart.raise(&state.requests);
         }
     })
 }
@@ -126,10 +124,7 @@ pub(super) unsafe extern "C" fn host_request_callback(host: *const ClapHostVtabl
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state
-                .lifecycle
-                .callback_requested
-                .store(true, Ordering::Release);
+            Request::Callback.raise(&state.requests);
         }
     })
 }
@@ -239,13 +234,20 @@ unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, flags: u32)
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state.params.rescan_requested.store(true, Ordering::Release);
-            // Accumulate the flags (RESCAN_ALL / RESCAN_VALUES / RESCAN_INFO /
-            // RESCAN_TEXT) so the consumer can tell a full rescan — which the spec
-            // says must be honoured only while the plugin is deactivated — from a
-            // value-only rescan applicable live. OR so multiple rescans between
-            // polls don't lose bits.
-            state.params.rescan_flags.fetch_or(flags, Ordering::Release);
+            // One bit per scope, so the main thread can tell a full rescan, which
+            // the spec says is honoured only while the plugin is deactivated, from
+            // a value-only one applicable live. Bits accumulate between takes.
+            let rescan = ParamRescan::from_flags(true, flags);
+            for (set, scope) in [
+                (rescan.values, RescanScope::Values),
+                (rescan.text, RescanScope::Text),
+                (rescan.info, RescanScope::Info),
+                (rescan.needs_deactivate(), RescanScope::All),
+            ] {
+                if set {
+                    Request::RescanParams(scope).raise(&state.requests);
+                }
+            }
         }
     })
 }
@@ -285,10 +287,7 @@ unsafe extern "C" fn host_latency_changed(host: *const ClapHostVtable) {
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state
-                .processing
-                .latency_changed
-                .store(true, Ordering::Release);
+            Request::LatencyChanged.raise(&state.requests);
         }
     })
 }
@@ -302,7 +301,7 @@ unsafe extern "C" fn host_tail_changed(host: *const ClapHostVtable) {
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state.processing.tail_changed.store(true, Ordering::Release);
+            Request::TailChanged.raise(&state.requests);
         }
     })
 }
@@ -422,16 +421,12 @@ unsafe extern "C" fn host_audio_ports_rescan(host: *const ClapHostVtable, flags:
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         if let Some(state) = unsafe { get_host_state(host) } {
-            state.audio_ports.changed.store(true, Ordering::Release);
-            // Accumulated for the same reason as `params.rescan` above: five of the
-            // six flags are `[!active]`, so a consumer must be able to tell a
-            // cosmetic name change from a channel-count change that invalidates
-            // every buffer width. OR so multiple rescans between polls don't lose
-            // bits.
-            state
-                .audio_ports
-                .rescan_flags
-                .fetch_or(flags, Ordering::Release);
+            // Five of the six flags are `[!active]`: only those change what a
+            // buffer looks like, so only they ask for a restart. A cosmetic name
+            // change asks for nothing.
+            if AudioPortsRescan::from_flags(true, flags).needs_deactivate() {
+                Request::IoChanged.raise(&state.requests);
+            }
         }
     })
 }
@@ -1370,59 +1365,76 @@ mod tests {
         host
     }
 
-    /// The rescan callback records *which* kinds were requested, not just that
-    /// one was.
+    /// An audio-ports rescan asks for a restart only when a flag that changes a
+    /// buffer's shape is set; a cosmetic name change asks for nothing.
     ///
-    /// This is the finding. `host_audio_ports_rescan` took `flags` and threw it
-    /// away, setting a single bool, so a consumer could not tell a cosmetic
-    /// port rename from a channel-count change that invalidates every buffer
-    /// width — and `PortLayout` went stale against what the plugin expected.
+    /// Mutation (run): `needs_deactivate` replaced by `true` in the callback →
+    /// the names-only rescan raises `IoChanged` and the first assertion fails;
+    /// by `false` → the channel-count rescan raises nothing and the second
+    /// fails.
     #[test]
-    fn the_rescan_callback_records_which_kinds_were_requested() {
+    fn a_ports_rescan_asks_for_a_restart_only_for_a_change_of_shape() {
+        let state = HostState::new();
+        let host = host_for(&state);
+
+        unsafe { host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_NAMES) };
+        assert_eq!(tutti_plugin_types::taken(&state.requests).count(), 0);
+
+        unsafe { host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT) };
+        let got: Vec<_> = tutti_plugin_types::taken(&state.requests).collect();
+        assert_eq!(got, [Request::IoChanged]);
+    }
+
+    /// Two rescans between takes keep both requests, each once.
+    ///
+    /// Mutation (run): the params callback raising only the first scope it
+    /// finds set → the `Text` request is lost and the assertion fails.
+    #[test]
+    fn rescans_between_takes_accumulate_rather_than_overwrite() {
         let state = HostState::new();
         let host = host_for(&state);
 
         unsafe {
-            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+            host_params_rescan(&host, clap_sys::ext::params::CLAP_PARAM_RESCAN_VALUES);
+            host_params_rescan(
+                &host,
+                clap_sys::ext::params::CLAP_PARAM_RESCAN_TEXT
+                    | clap_sys::ext::params::CLAP_PARAM_RESCAN_VALUES,
+            );
         }
-
-        assert!(
-            state.audio_ports.changed.load(Ordering::Acquire),
-            "a rescan must still raise the changed flag"
-        );
-        let flags = state.audio_ports.rescan_flags.load(Ordering::Acquire);
+        let got: Vec<_> = tutti_plugin_types::taken(&state.requests).collect();
         assert_eq!(
-            flags & CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT,
-            CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT,
-            "the callback discarded the flag, so a consumer cannot tell this \
-             from a port rename"
+            got,
+            [
+                Request::RescanParams(RescanScope::Values),
+                Request::RescanParams(RescanScope::Text),
+            ]
         );
     }
 
-    /// Two rescans between polls keep both sets of bits.
+    /// A restart, a callback, a latency and a tail change each reach the word.
     ///
-    /// The accumulation is why the field is `fetch_or` and not a store: a
-    /// plugin that renames a port and then changes a channel count before the
-    /// host polls must not have the second request mask the first, or the host
-    /// applies a channel-count change live.
+    /// Mutation (run): `host_tail_changed` raising `LatencyChanged` → the tail
+    /// request is missing and the assertion fails.
     #[test]
-    fn rescans_between_polls_accumulate_rather_than_overwrite() {
+    fn the_plain_callbacks_raise_their_requests() {
         let state = HostState::new();
         let host = host_for(&state);
-
         unsafe {
-            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_NAMES);
-            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+            host_request_restart(&host);
+            host_request_callback(&host);
+            host_latency_changed(&host);
+            host_tail_changed(&host);
         }
-
-        let flags = state.audio_ports.rescan_flags.load(Ordering::Acquire);
-        assert!(
-            flags & CLAP_AUDIO_PORTS_RESCAN_NAMES != 0,
-            "the first rescan's bits were lost"
-        );
-        assert!(
-            flags & CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT != 0,
-            "the second rescan's bits were lost"
+        let got: Vec<_> = tutti_plugin_types::taken(&state.requests).collect();
+        assert_eq!(
+            got,
+            [
+                Request::Restart,
+                Request::LatencyChanged,
+                Request::TailChanged,
+                Request::Callback,
+            ]
         );
     }
 }

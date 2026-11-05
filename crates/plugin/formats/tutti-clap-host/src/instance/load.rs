@@ -16,24 +16,61 @@ use clap_sys::ext::audio_ports::{
     CLAP_AUDIO_PORT_SUPPORTS_64BITS, clap_audio_port_info, clap_plugin_audio_ports,
 };
 use clap_sys::plugin::clap_plugin;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_plugin_types::BusChannels;
 // The tests below name the type directly to assert on canonicalized widths.
 #[cfg(test)]
 use tutti_plugin_types::ChannelLayout;
 
+/// The rate a plugin that has not been activated reports.
+const PLACEHOLDER_SAMPLE_RATE: f64 = 44_100.0;
+/// The block size a plugin that has not been activated reports.
+const PLACEHOLDER_MAX_FRAMES: u32 = 512;
+
+/// How to load a plugin from a bundle.
+///
+/// The default loads the bundle's first plugin from the bundle itself.
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    library: Option<PathBuf>,
+    plugin_id: Option<String>,
+}
+
+impl LoadOptions {
+    /// The default: the first plugin, opened from the bundle path.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Opens `path` as the binary when it differs from the bundle path (a macOS
+    /// `.clap` bundle's `Contents/MacOS/...`). The bundle path is still what
+    /// `init()` is given.
+    #[must_use]
+    pub fn library(mut self, path: impl Into<PathBuf>) -> Self {
+        self.library = Some(path.into());
+        self
+    }
+
+    /// Loads the plugin with this id from a bundle that ships more than one
+    /// (an id from [`ClapLoaded::probe_all`]). Without it the first plugin loads.
+    #[must_use]
+    pub fn plugin_id(mut self, id: impl Into<String>) -> Self {
+        self.plugin_id = Some(id.into());
+        self
+    }
+}
+
 impl ClapLoaded {
     /// Re-reads the plugin's audio ports: the port layout, the channel totals
     /// in [`info`](Self::info) and [`supports_f64`](Self::supports_f64), which
-    /// were read at load and which the plugin can change (a
-    /// `clap.audio-ports` rescan, see
-    /// [`poll_audio_ports_rescan`](Self::poll_audio_ports_rescan)).
-    /// [`activate`](Self::activate) and the in-place re-activation of a
-    /// rate or block-size change call it, so a plugin brought back through
-    /// either is read afresh without asking. A host calls it directly to
+    /// were read at load and which the plugin can change (a `clap.audio-ports`
+    /// rescan, which arrives as a [`Request::IoChanged`](tutti_plugin_types::Request::IoChanged)).
+    /// [`activate_typed`](Self::activate_typed) calls it, so a plugin brought back
+    /// by an activation is read afresh without asking. A host calls it directly to
     /// see the new layout while deactivated, before choosing what to activate
-    /// it as (a rescan request from the plugin is the occasion).
+    /// it as.
     ///
     /// # Errors
     /// [`ClapError::NotSupported`] while the plugin is active: CLAP lets it
@@ -62,7 +99,8 @@ impl ClapLoaded {
     ///
     /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
     /// no compatible `clap_entry` or plugin factory.
-    pub fn probe(bundle_path: &Path, library_path: Option<&Path>) -> Result<PluginInfo> {
+    pub fn probe(bundle_path: impl AsRef<Path>, library_path: Option<&Path>) -> Result<PluginInfo> {
+        let bundle_path = bundle_path.as_ref();
         let load_path = library_path.unwrap_or(bundle_path);
 
         let library = unsafe {
@@ -86,13 +124,17 @@ impl ClapLoaded {
     /// ship a synth plus companion effects. [`probe`](Self::probe) answers for
     /// the default (first) plugin, which is the whole answer for most bundles;
     /// this is how a caller finds the rest, and the ids it returns are what
-    /// [`load_plugin`](Self::load_plugin) accepts.
+    /// [`LoadOptions::plugin_id`] accepts.
     ///
     /// # Errors
     ///
     /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
     /// no compatible `clap_entry` or plugin factory.
-    pub fn probe_all(bundle_path: &Path, library_path: Option<&Path>) -> Result<Vec<PluginInfo>> {
+    pub fn probe_all(
+        bundle_path: impl AsRef<Path>,
+        library_path: Option<&Path>,
+    ) -> Result<Vec<PluginInfo>> {
+        let bundle_path = bundle_path.as_ref();
         let load_path = library_path.unwrap_or(bundle_path);
 
         let library = unsafe {
@@ -110,18 +152,19 @@ impl ClapLoaded {
         Ok(siblings)
     }
 
-    /// Loads and initializes the first plugin in a `.clap` bundle.
+    /// Loads and initializes a plugin from a `.clap` bundle: the first one, or
+    /// the one `options` names.
     ///
-    /// `sample_rate` (Hz) and `max_frames` (the largest block
-    /// [`process`](crate::ClapActive::process) will be asked for) are fixed
-    /// here and used by [`activate`](Self::activate).
+    /// The rate and the block size are not load parameters: they arrive in the
+    /// [`Prepare`](tutti_plugin_types::Prepare) of an activation. A plugin
+    /// loaded for its editor, parameters and state alone is never activated.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// use tutti_clap_host::ClapLoaded;
+    /// use tutti_clap_host::{ClapLoaded, LoadOptions};
     ///
-    /// let plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
+    /// let plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
     /// println!("{} {}", plugin.info().name, plugin.info().version);
     /// # Ok::<(), tutti_clap_host::ClapError>(())
     /// ```
@@ -131,74 +174,11 @@ impl ClapLoaded {
     /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
     /// compatible `clap_entry` or plugin factory, or the plugin cannot be
     /// created or initialized; `stage` says which step failed.
-    pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
-        Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
-    }
+    pub fn load(bundle_path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+        let bundle_path = bundle_path.as_ref();
+        let library_path = options.library.as_deref();
+        let plugin_id = options.plugin_id.as_deref();
 
-    /// Loads a named plugin from a bundle that ships more than one.
-    ///
-    /// `plugin_id` is an id from [`probe_all`](Self::probe_all). A bundle with
-    /// a single plugin needs [`load`](Self::load), which takes the only one
-    /// there is.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
-    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
-    /// created or initialized; `stage` says which step failed.
-    pub fn load_plugin(
-        path: impl AsRef<Path>,
-        plugin_id: &str,
-        sample_rate: f64,
-        max_frames: u32,
-    ) -> Result<Self> {
-        Self::load_selected(
-            path.as_ref(),
-            None,
-            Some(plugin_id),
-            sample_rate,
-            max_frames,
-        )
-    }
-
-    /// Loads a CLAP plugin with a pre-resolved library path.
-    ///
-    /// `bundle_path` is the original `.clap` bundle directory (passed to `init()`).
-    /// `library_path` is the resolved binary for dlopen. If `None`, `bundle_path`
-    /// is used for both.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
-    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
-    /// created or initialized; `stage` says which step failed.
-    pub fn load_with_library(
-        bundle_path: &Path,
-        library_path: Option<&Path>,
-        sample_rate: f64,
-        max_frames: u32,
-    ) -> Result<Self> {
-        Self::load_selected(bundle_path, library_path, None, sample_rate, max_frames)
-    }
-
-    /// Loads a plugin with every option explicit: a pre-resolved library path
-    /// and an optional plugin id.
-    ///
-    /// `plugin_id` `None` means the bundle's first plugin, which is what every
-    /// single-plugin bundle wants. The other `load*` constructors call this.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
-    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
-    /// created or initialized; `stage` says which step failed.
-    pub fn load_selected(
-        bundle_path: &Path,
-        library_path: Option<&Path>,
-        plugin_id: Option<&str>,
-        sample_rate: f64,
-        max_frames: u32,
-    ) -> Result<Self> {
         let load_path = library_path.unwrap_or(bundle_path);
 
         let library = unsafe {
@@ -282,55 +262,31 @@ impl ClapLoaded {
         let (ports, supports_f64) =
             read_audio_ports(&mut plugin_info, plugin.as_ptr(), &extensions);
 
+        // Placeholders until the first activation, which carries the real rate
+        // and block size in its `Prepare`.
         let audio = AudioConfig {
-            sample_rate,
-            max_frames,
+            sample_rate: PLACEHOLDER_SAMPLE_RATE,
+            max_frames: PLACEHOLDER_MAX_FRAMES,
             supports_f64,
+            f64_active: false,
         };
 
-        Ok(Self {
+        let loaded = Self {
             plugin,
             _entry_guard: entry_guard,
             _library: library,
             _host: host,
             host_state,
             extensions,
+            descriptor: std::cell::OnceCell::new(),
             info: plugin_info,
             audio,
             ports,
             flags: LifecycleFlags::default(),
             work: Default::default(),
             thread_pool: None,
-        })
-    }
-
-    /// Loads a CLAP plugin for editor/parameter/state work only — never for
-    /// audio. The returned instance must NOT be `activate()`d, `process()`d, or
-    /// `start_processing()`d; doing so is a misuse of an editor-only load.
-    ///
-    /// CLAP's `gui`, `params`, and `state` extensions work without activation,
-    /// so this skips the audio-config negotiation a processing load needs. The
-    /// sample rate / max-frames passed to the plugin are placeholders that are
-    /// never used (no `activate()` call consumes them). Use this in the
-    /// in-process GUI host, where audio runs in a separate instance/process.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
-    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
-    /// created or initialized; `stage` says which step failed.
-    pub fn load_editor_only(bundle_path: &Path, library_path: Option<&Path>) -> Result<Self> {
-        // Placeholder audio config: never used because the caller must not
-        // activate this instance. A processing load uses `load_with_library`
-        // with the real sample rate / block size instead.
-        const EDITOR_ONLY_SAMPLE_RATE: f64 = 44_100.0;
-        const EDITOR_ONLY_MAX_FRAMES: u32 = 512;
-        Self::load_with_library(
-            bundle_path,
-            library_path,
-            EDITOR_ONLY_SAMPLE_RATE,
-            EDITOR_ONLY_MAX_FRAMES,
-        )
+        };
+        Ok(loaded)
     }
 }
 

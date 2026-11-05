@@ -35,6 +35,10 @@ pub enum PluginError {
     State(String),
     /// Processing an audio block failed.
     Process(String),
+    /// A block failed for a reason that is a constant. Unlike
+    /// [`Process`](Self::Process) it owns no heap memory, so the audio thread
+    /// can build it for every errored block without allocating.
+    Block(&'static str),
     /// Opening / resizing the plugin editor failed.
     Editor(EditorError),
     /// Any other failure that doesn't fit the categories above.
@@ -49,6 +53,7 @@ impl core::fmt::Display for PluginError {
             }
             Self::State(msg) => write!(f, "plugin state error: {msg}"),
             Self::Process(msg) => write!(f, "plugin process error: {msg}"),
+            Self::Block(why) => write!(f, "plugin process error: {why}"),
             Self::Editor(e) => write!(f, "plugin editor error: {e}"),
             Self::Other(msg) => write!(f, "plugin error: {msg}"),
         }

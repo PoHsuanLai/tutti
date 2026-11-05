@@ -668,3 +668,40 @@ fn a_mapping_change_rebuilds_the_mapping_once() {
         [Notice::NoteExpressionChanged]
     ));
 }
+
+/// **A panic out of the idle flush or a read tells the host the plugin is
+/// lost.** Without the notice the lifecycle poisons silently and the host
+/// keeps a plugin that renders nothing.
+///
+/// Mutation (run): removing both `Notice::Lost` sends in `drive` → no notice
+/// arrives and the assertions fail.
+#[test]
+fn a_panic_outside_a_transition_is_told_to_the_host() {
+    let mut rig = Rig::new();
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    rig.take_notices();
+    rig.plugin.panic_in_latency(true);
+    Request::LatencyChanged.raise(rig.plugin.request_word());
+    rig.tick();
+    assert!(rig.lifecycle.is_poisoned());
+    let notices = rig.take_notices();
+    assert!(
+        notices.iter().any(|n| matches!(n, Notice::Lost { .. })),
+        "{notices:?}"
+    );
+}
+
+/// **A panic in a transition is told once, by `Refused`.**
+///
+/// Mutation (run): sending `Notice::Lost` for a transition too → the count
+/// of `Lost` notices is one and the assertion fails.
+#[test]
+fn a_panic_in_a_transition_is_not_told_twice() {
+    let mut rig = Rig::new();
+    rig.plugin.panic_in_activate(true);
+    rig.op(HostOp::Activate(prepare(48_000.0)));
+    let notices = rig.take_notices();
+    assert!(rig.lifecycle.is_poisoned());
+    assert!(notices.iter().any(|n| matches!(n, Notice::Refused { .. })));
+    assert!(!notices.iter().any(|n| matches!(n, Notice::Lost { .. })));
+}

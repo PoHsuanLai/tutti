@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the CLAP host is a `Loaded`, a `Processor` and a `Controller`
+
+`ClapLoaded` implements `Loaded` and `Control`; activating it gives a
+`ClapProcessorAny` (the realtime half, or `ClapProcessor<T>` through
+`activate_typed::<T>`) and a `ClapController` (the main-thread half, which derefs
+to `ClapLoaded`). `ClapActive<T>` is gone, with `set_sample_rate`,
+`set_max_block_size`, `reactivate`, `needs_restart`, `run_main_thread_work`,
+`load_editor_only`, `load_plugin`, `load_with_library`, `load_selected` and
+`ClapError::Deactivated`: a rate change is a deactivate and an activate, and
+`ClapLoaded::load(path, LoadOptions)` takes no rate or block size, which are the
+activation's. A refused activation hands the plugin back in `Refused`. A parameter
+written to the controller is queued in an edit ring and applied at the head of the
+Processor's next block, before the block's automation. A plugin's restart,
+latency, tail, rescan and callback requests are `RequestWord` bits, taken with
+`ClapLoaded::take_requests` (which also turns due timers and ready descriptors
+into requests) and fed to `Lifecycle::drive`; the `poll_*` latches they replaced
+are gone, and the ones that stay are `take_*`.
+
+Renames (design 016 §2.5): `get_parameter` is `plain_value`,
+`get_parameter_list` is `parameter_list`, `get_state` and `set_state` are
+`Control::save_state` and `load_state`, `get_latency` and `get_tail` are
+`latency_samples` and `tail_samples`, `get_voice_info`, `get_note_name`,
+`get_ambisonic_config`, `get_surround_channel_map`, `get_audio_port_config`,
+`get_remote_controls_page` and `get_trigger_info` lose `get_`, the consuming
+`poll_*` flags are `take_*`, `ProcessOutputRef::to_owned` is `into_owned`,
+`InputEventList::midi_notes` is `supports_midi_notes`, `resource_get_file_path` and
+`resource_files_count` are `resource_file_path` (a `PathBuf`) and
+`resource_file_count`, and path arguments are `impl AsRef<Path>`. `HostState::poll`
+is `take`.
+
+New: `State::set_mode`, `PluginError::Block(&'static str)`, `ClapProcessor::take_edits`, `ClapLoaded::param_requires_process`, `ClapLoaded::take_raised`.
+
+`tutti-plugin-server`'s `ClapInstance` drives a `Lifecycle<ClapLoaded>`:
+`Lifecycle::drive` replaces `service_requests`, `take_changes` and
+`take_io_changed`; a refused rate is rolled back by the bridge to the previous
+configuration, as before.
+
+### Added — `Notice::Lost`
+
+A panic out of any call into the plugin that is not a transition (a read, the idle
+flush, main-thread work) poisons the lifecycle and now tells the host with
+`Notice::Lost`; a transition's loss is still its `Notice::Refused`.
+
 ### Added — host traits, `Lifecycle` and `FakePlugin` in tutti-plugin-types
 
 `Control`, `Loaded`, `Processor`, `Controller`, `Refused`, `Stuck` and `PluginIo`

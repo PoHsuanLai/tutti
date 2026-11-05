@@ -49,11 +49,11 @@ pub enum ClapError {
     /// for (CLAP's `max_frames_count`).
     ///
     /// Audio-thread-raised, so the numbers ride as fields and `Display`
-    /// formats them off-thread. Recovering means growing the scratch via
-    /// `set_max_block_size`; the host cannot resize inside the callback.
+    /// formats them off-thread. Recovering means activating again with a larger
+    /// `Prepare::max_block`; the host cannot resize inside the callback.
     #[error(
         "Processing error: block size {requested} exceeds activated max_frames {max_frames}; \
-         grow it off the audio thread with `set_max_block_size`"
+         activate again with a larger `max_block` off the audio thread"
     )]
     BlockTooLarge {
         /// Frames the `process` call asked for.
@@ -71,14 +71,6 @@ pub enum ClapError {
     #[error("Processing error: plugin refused to start processing")]
     StartProcessingFailed,
 
-    /// An in-place reconfiguration (`set_sample_rate`, `set_max_block_size`)
-    /// deactivated the plugin and could not activate it again, so the
-    /// instance is left deactivated: `process` refuses every block with
-    /// [`ClapError::NotActive`] until it is dropped or replaced. The text says
-    /// why.
-    #[error("Plugin left deactivated: {0}")]
-    Deactivated(String),
-
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]
     StateError(String),
@@ -89,7 +81,7 @@ pub enum ClapError {
     NotActive,
 
     /// A requested capability is not advertised by the plugin (e.g. activating
-    /// as `ClapActive<f64>` when the plugin is 32-bit only).
+    /// at `f64` when the plugin is 32-bit only).
     #[error("Not supported: {0}")]
     NotSupported(String),
 

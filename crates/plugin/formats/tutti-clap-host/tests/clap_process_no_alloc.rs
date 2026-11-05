@@ -23,10 +23,11 @@ use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, MidiEvent, TransportInfo,
+    AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
 };
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
 #[global_allocator]
@@ -134,14 +135,14 @@ fn reset_probe() {
 ///
 /// Panics if it was not built — see [`support::probe_path`] for why that is the
 /// only correct response.
-fn load_probe() -> ClapActive<f32> {
+fn load_probe() -> Active<f32> {
     let path = Path::new(probe_path());
     // The artifact is a bare dylib, so it serves as both bundle and library —
     // the host dlopens it directly, no `.clap` bundle structure needed.
-    let loaded = ClapLoaded::load_with_library(path, Some(path), SAMPLE_RATE, MAX_FRAMES)
+    let loaded = ClapLoaded::load(path, LoadOptions::new().library(path))
         .expect("reference plugin should load");
     loaded
-        .activate::<f32>()
+        .activate_at::<f32>(SAMPLE_RATE, MAX_FRAMES)
         .map_err(|(_, e)| e)
         .expect("reference plugin should activate")
 }
@@ -178,7 +179,7 @@ impl StereoBufs {
 /// Buffer setup is per-iteration but stack-only: two slice reborrows and a
 /// struct literal. No heap touch, so the loop can live inside the gate.
 fn drive(
-    inst: &mut ClapActive<f32>,
+    inst: &mut Active<f32>,
     bufs: &mut StereoBufs,
     iters: usize,
     ctx: &ClapProcessContext<'_>,
@@ -629,7 +630,7 @@ fn sysex_output_events_do_not_allocate() {
 /// One block through the plugin, outside any gate, returning how many points
 /// each output parameter queue holds and the value each ended on.
 fn drive_and_read_param_output(
-    inst: &mut ClapActive<f32>,
+    inst: &mut Active<f32>,
     bufs: &mut StereoBufs,
 ) -> Vec<(u32, usize, f64)> {
     drive_and_read_output(inst, bufs, &[]).0
@@ -638,7 +639,7 @@ fn drive_and_read_param_output(
 /// [`drive_and_read_param_output`] with `midi` sent in, also returning how
 /// many note-offs the plugin's output carried.
 fn drive_and_read_output(
-    inst: &mut ClapActive<f32>,
+    inst: &mut Active<f32>,
     bufs: &mut StereoBufs,
     midi: &[MidiEvent],
 ) -> (Vec<(u32, usize, f64)>, usize) {
@@ -1117,7 +1118,7 @@ fn set_sysex_output_no_alloc(count: u32, bytes: u32) {
 /// The `&mut [&mut [f32]]` fan-out arrays are built once, before the gate, and
 /// the gate only reborrows them — building them per block is what the host is
 /// being tested not to do.
-fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
+fn drive_wide(inst: &mut Active<f32>, channels: usize, iters: usize) {
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {
         transport: Some(&transport),

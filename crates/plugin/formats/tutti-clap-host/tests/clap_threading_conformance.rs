@@ -36,9 +36,10 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 mod support;
+use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::{
     CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS, CMD_REQUEST_RESTART,
     CMD_UNREGISTER_TIMER, Site, ThreadCapture,
@@ -83,14 +84,14 @@ impl Probe {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+        ClapLoaded::load(path, LoadOptions::new().library(path))
             .expect("reference plugin should load")
     }
 
     /// Load + activate the reference plugin through the real host.
-    fn activate(&self) -> ClapActive<f32> {
+    fn activate(&self) -> Active<f32> {
         self.load()
-            .activate::<f32>()
+            .activate_at::<f32>(48_000.0, 512)
             .map_err(|(_, e)| e)
             .expect("reference plugin should activate")
     }
@@ -106,8 +107,16 @@ impl Probe {
     }
 }
 
+/// Whether the plugin asked for `on_main_thread` since the last call. Takes the
+/// word, so a second call answers for what came after the first.
+fn callback_requested(inst: &mut ClapLoaded) -> bool {
+    let mut requests = Vec::new();
+    inst.take_requests(&mut requests);
+    requests.contains(&tutti_plugin_types::Request::Callback)
+}
+
 /// Drive one silent stereo block through the host.
-fn drive_block(inst: &mut ClapActive<f32>, frames: usize) {
+fn drive_block(inst: &mut Active<f32>, frames: usize) {
     let mut out_l = vec![0.0f32; frames];
     let mut out_r = vec![0.0f32; frames];
     let in_l = vec![0.0f32; frames];
@@ -209,7 +218,7 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
     // `process` sets `callback_requested`; honouring it is what runs
     // `on_main_thread`, which is the sixth site.
     assert!(
-        inst.poll_callback_requested(),
+        callback_requested(&mut inst),
         "the plugin called request_callback() from process; the host must record it"
     );
     inst.on_main_thread();
@@ -250,7 +259,7 @@ fn reset_runs_under_the_audio_thread_claim() {
     inst.reset();
     // Runs strictly after `reset` returned: if the claim leaked, the host would
     // still consider this thread the audio thread here.
-    assert!(inst.poll_callback_requested());
+    assert!(callback_requested(&mut inst));
     inst.on_main_thread();
 
     let cap = probe.capture();
@@ -281,7 +290,7 @@ fn audio_thread_role_is_released_when_process_returns() {
     let mut inst = probe.activate();
 
     drive_block(&mut inst, 64);
-    assert!(inst.poll_callback_requested());
+    assert!(callback_requested(&mut inst));
     // Runs after `process` returned; if the claim leaked, the host would still
     // consider this thread the audio thread here.
     inst.on_main_thread();
@@ -305,7 +314,7 @@ fn audio_thread_role_is_released_when_process_returns() {
 /// via the host, and must not fire it more than once per request.
 ///
 /// The at-most-once half is what matters: a peek-instead-of-consume regression
-/// in `poll_callback_requested` would make a host loop call `on_main_thread`
+/// in `take_callback_requested` would make a host loop call `on_main_thread`
 /// every iteration forever. `visits` counts the plugin-side calls, so the count
 /// is checked rather than inferred.
 #[test]
@@ -314,18 +323,18 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
     let mut inst = probe.activate();
 
     assert!(
-        !inst.poll_callback_requested(),
+        !callback_requested(&mut inst),
         "no callback should be pending before the plugin asks for one"
     );
 
     drive_block(&mut inst, 64);
 
     assert!(
-        inst.poll_callback_requested(),
+        callback_requested(&mut inst),
         "the plugin called request_callback() inside process; the host must record it"
     );
     assert!(
-        !inst.poll_callback_requested(),
+        !callback_requested(&mut inst),
         "polling must consume the request — a non-consuming poll makes a host \
          loop call on_main_thread every iteration forever"
     );
@@ -345,22 +354,33 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
     );
 }
 
+/// Whether the plugin asked for a restart since the last call. Takes the word,
+/// so a second call answers for what came after the first.
+fn restart_requested(inst: &mut ClapLoaded) -> bool {
+    let mut requests = Vec::new();
+    inst.take_requests(&mut requests);
+    requests.contains(&tutti_plugin_types::Request::Restart)
+}
+
 /// `request_restart` from inside `process` must reach the host, and the host
-/// must expose it in the two shapes a caller needs: a non-clearing peek
-/// (`needs_restart`) and a consuming poll (`poll_restart_requested`).
+/// must hand it over once: a caller that took it must not see it again.
 ///
 /// Deliberately *not* asserted: that the host deactivates and reactivates by
 /// itself. It must not — CLAP requires the restart to happen outside
 /// `process()`, so the contract is to record the request and let the embedder
-/// pick the moment. The reactivation half is covered by
-/// [`restart_cycle_reactivates_and_reruns_the_plugin_lifecycle`].
+/// (the core, through `Lifecycle`) pick the moment. The reactivation half is
+/// covered by [`restart_cycle_reactivates_and_reruns_the_plugin_lifecycle`].
+///
+/// Mutation (run): `take_requests_with` reading the word with `load` instead
+/// of `swap` → the second assertion fails; `host_request_restart` raising
+/// nothing → the first assertion fails.
 #[test]
 fn request_restart_from_process_reaches_the_host() {
     let probe = Probe::acquire();
     let mut inst = probe.activate();
 
     assert!(
-        !inst.needs_restart(),
+        !restart_requested(&mut inst),
         "no restart should be pending before the plugin asks"
     );
 
@@ -368,22 +388,56 @@ fn request_restart_from_process_reaches_the_host() {
     drive_block(&mut inst, 64);
 
     assert!(
-        inst.needs_restart(),
+        restart_requested(&mut inst),
         "the plugin called request_restart() inside process; the host must record it"
     );
     assert!(
-        inst.needs_restart(),
-        "needs_restart() must be a peek — a caller checking it twice in one frame \
-         must not lose the request"
+        !restart_requested(&mut inst),
+        "taking must consume — otherwise a host restarts the plugin on every \
+         frame after the first request"
     );
-    assert!(
-        inst.poll_restart_requested(),
-        "poll_restart_requested() must return the pending request"
+}
+
+/// **A `params.flush` between `activate` and the first `process` is an
+/// audio-thread call; before activation it is a main-thread call.** CLAP tags
+/// `flush` `[active ? audio-thread : main-thread]`, keyed on activation and not
+/// on whether audio has started. Keying it on processing took the main-thread
+/// branch in this window, which TAL-Reverb-4's validation layer reported as
+/// `clap_plugin_params.flush() was called on the wrong thread`.
+///
+/// Mutation (run): change `if self.flags.active` in `ClapLoaded::flush_params`
+/// to `if false` → the active flush is answered as a main-thread call and the
+/// second assertion fails. (The flag lived on `LifecycleFlags` beside a
+/// `processing` flag that has since moved to the shell; this pins the one key
+/// that matters, `active`.)
+#[test]
+fn a_flush_between_activate_and_the_first_process_is_an_audio_thread_call() {
+    let probe = Probe::acquire();
+    let id = tutti_clap_test_plugin::params_state::probe_params()[0].id;
+
+    let mut loaded = probe.load();
+    loaded.set_plain_value(id, 1.0);
+    assert_roles(
+        &probe.capture(),
+        Site::ParamsFlush,
+        true,
+        false,
+        "flush before activation",
     );
-    assert!(
-        !inst.poll_restart_requested(),
-        "poll_restart_requested() must consume — otherwise a host restarts the \
-         plugin on every frame after the first request"
+
+    thread_reset();
+    let mut inst = loaded
+        .activate_at::<f32>(48_000.0, 512)
+        .map_err(|(_, e)| e)
+        .expect("activates");
+    assert!(!inst.is_processing(), "no block has run");
+    inst.set_plain_value(id, 2.0);
+    assert_roles(
+        &probe.capture(),
+        Site::ParamsFlush,
+        false,
+        true,
+        "flush after activation, before the first process",
     );
 }
 
@@ -402,21 +456,21 @@ fn request_process_is_recorded_independently_of_restart() {
     drive_block(&mut inst, 64);
 
     assert!(
-        inst.poll_process_requested(),
+        inst.take_process_requested(),
         "the plugin called request_process() inside process; the host must record it"
     );
     assert!(
-        !inst.needs_restart(),
-        "request_process() must not set the restart flag — they are different requests"
+        !restart_requested(&mut inst),
+        "request_process() must not raise a restart — they are different requests"
     );
     assert!(
-        !inst.poll_process_requested(),
-        "poll_process_requested() must consume the flag"
+        !inst.take_process_requested(),
+        "take_process_requested() must consume the flag"
     );
 }
 
 /// A full deactivate → reactivate cycle — what an embedder does in response to
-/// `poll_restart_requested()` — must re-run the plugin's lifecycle, and the
+/// a restart request — must re-run the plugin's lifecycle, and the
 /// thread roles must still be right on the second pass.
 ///
 /// A restart that left a stale audio-thread claim behind (or failed to take a
@@ -429,7 +483,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 
     probe.command(CMD_REQUEST_RESTART);
     drive_block(&mut inst, 64);
-    assert!(inst.poll_restart_requested(), "restart was requested");
+    assert!(restart_requested(&mut inst), "restart was requested");
 
     // The embedder's response: drop back to `ClapLoaded`, then re-activate.
     let loaded = inst.deactivate();
@@ -438,7 +492,7 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
     thread_reset();
 
     let mut inst = loaded
-        .activate::<f32>()
+        .activate_at::<f32>(48_000.0, 512)
         .map_err(|(_, e)| e)
         .expect("re-activation after a restart request must succeed");
     drive_block(&mut inst, 64);
@@ -504,7 +558,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
     // rate change. Same discipline as the restart test.
     thread_reset();
 
-    inst.set_sample_rate(target)
+    inst.reconfigure(target, 512)
         .expect("the reference plugin must accept an ordinary DAW sample rate");
 
     assert_eq!(
@@ -534,7 +588,7 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
 
     // The plugin must be usable afterwards, not merely re-activated: the first
     // block at the new rate has to re-run start_processing, because
-    // `reconfigure` stopped processing on the way down.
+    // the deactivation stopped processing on the way down.
     drive_block(&mut inst, 64);
     let cap = probe.capture();
     assert_eq!(
@@ -550,31 +604,6 @@ fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
         false,
         true,
         "process after a rate change",
-    );
-}
-
-/// Setting the rate the plugin is already running at must change nothing.
-///
-/// `set_sample_rate` returns early on an equal rate, and the early return is
-/// what keeps a per-frame caller from tearing the plugin down sixty times a
-/// second. Without this, deleting that guard is invisible: every other
-/// assertion in the test above still holds when the cycle runs redundantly.
-#[test]
-fn setting_the_current_sample_rate_does_not_cycle_the_plugin() {
-    let probe = Probe::acquire();
-    let mut inst = probe.activate();
-    let rate = inst.sample_rate();
-
-    thread_reset();
-    inst.set_sample_rate(rate)
-        .expect("re-setting the current rate must succeed");
-
-    let cap = probe.capture();
-    assert_eq!(
-        cap.sites[Site::Activate as usize].visits,
-        0,
-        "setting the rate the plugin already runs at must not deactivate and \
-         re-activate it"
     );
 }
 
@@ -608,7 +637,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // honouring it is what gets us to `on_main_thread`.
     probe.command(CMD_REGISTER_TIMER);
     drive_block(&mut inst, 64);
-    assert!(inst.poll_callback_requested());
+    assert!(callback_requested(&mut inst));
     inst.on_main_thread();
 
     let cap = probe.capture();
@@ -665,7 +694,7 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     // Unregister, again from the main thread.
     probe.command(CMD_UNREGISTER_TIMER);
     drive_block(&mut inst, 64);
-    assert!(inst.poll_callback_requested());
+    assert!(callback_requested(&mut inst));
     inst.on_main_thread();
     assert!(
         probe.capture().timer_unregistered,
@@ -704,7 +733,7 @@ fn host_routes_plugin_log_lines_at_every_severity() {
     // test measures routing, not the thread model (which the tests above cover).
     probe.command(CMD_LOG_ALL_SEVERITIES);
     drive_block(&mut inst, 64);
-    assert!(inst.poll_callback_requested());
+    assert!(callback_requested(&mut inst));
     // Drain anything the load/activate path logged so the comparison below sees
     // only the probe's lines.
     let _ = inst.drain_log();

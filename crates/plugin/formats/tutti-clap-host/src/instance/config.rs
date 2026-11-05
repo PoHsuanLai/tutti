@@ -1,12 +1,11 @@
 //! Grouped configuration and scratch state for the CLAP instance types.
 //!
-//! [`AudioConfig`] / [`PortLayout`] / [`LifecycleFlags`] live on the
-//! pre-activation `ClapLoaded`; [`AudioScratch`] holds all per-block RT scratch
-//! and lives only on the active `ClapActive<T>` (it exists solely for
-//! `process`).
+//! [`AudioConfig`] / [`PortLayout`] / [`LifecycleFlags`] live on `ClapLoaded`;
+//! [`AudioScratch`] holds all per-block RT scratch and lives only on the
+//! `ClapProcessor<T>` (it exists solely for `process`).
 
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{ParameterChanges, RtNoteExpressions};
+use crate::types::{ClapNoteExpression, ParameterChanges, RtNoteExpressions};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use std::sync::atomic::AtomicI32;
@@ -23,22 +22,27 @@ use tutti_plugin_types::RtMidiEvents;
 /// after.
 const CALLER_PTR_HEADROOM: usize = 8;
 
+/// Note expressions one block can carry in to the plugin.
+pub(crate) const INPUT_NOTE_EXPRESSIONS: usize = 256;
+
 /// Audio format the host presents to the plugin.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AudioConfig {
     pub sample_rate: f64,
     pub max_frames: u32,
     pub supports_f64: bool,
+    /// Whether the current activation hands the plugin 64-bit buffers.
+    pub f64_active: bool,
 }
 
 /// Pre-allocated scratch for one sample type (f32 or f64) used by the RT
 /// process path. Sized once in `activate()` from the plugin's port layout;
-/// [`ClapActive::process`](super::ClapActive::process) reuses these
+/// [`ClapProcessor::process`](super::ClapProcessor::process) reuses these
 /// vectors in place — it never grows or reallocates them on the audio
 /// thread.
 ///
 /// Fields are `pub(crate)` because this struct is an internal buffer pool;
-/// users interact with it only through `ClapActive::process`.
+/// users interact with it only through `ClapProcessor::process`.
 pub struct ProcessScratch<T> {
     pub(crate) channels: Vec<Vec<T>>,
     pub(crate) input_ptrs: Vec<*mut T>,
@@ -60,8 +64,7 @@ pub struct ProcessScratch<T> {
 }
 
 // The raw pointers live inside our own `channels` vec; the whole struct is
-// fine to move across threads together with `ClapActive` (which is
-// already `Send`). Pointers are re-derived on each `process` call.
+// fine to move across threads together with `ClapProcessor`. Pointers are re-derived on each `process` call.
 unsafe impl<T: Send> Send for ProcessScratch<T> {}
 
 impl<T: Copy + Default> ProcessScratch<T> {
@@ -124,10 +127,10 @@ impl<T: Copy + Default> ProcessScratch<T> {
 }
 
 /// All per-block RT scratch for the committed sample type `T`, grouped so it
-/// can live on the active type and drop before the plugin handle.
+/// can live on the Processor and drop before the plugin handle.
 ///
-/// Sized once in `ClapActive::activate`; every `process` call reuses these in
-/// place and never allocates. Because `ClapActive<T>` is monomorphised by `T`,
+/// Sized once in `ClapLoaded::activate_typed`; every `process` call reuses these
+/// in place and never allocates. Because `ClapProcessor<T>` is monomorphised by `T`,
 /// there is exactly one `ProcessScratch<T>` here — the pre-split single type
 /// had to carry both an f32 and an f64 pool.
 pub(crate) struct AudioScratch<T: super::ClapSample> {
@@ -135,23 +138,6 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub process: ProcessScratch<T>,
     /// Refilled per call (UMP → CLAP). Cleared in place; capacity persists.
     pub input_events: InputEventList,
-    /// Per-parameter native range `(param_id, min, max)`, cached at activation.
-    /// CLAP parameter events carry the plugin's **plain** value (CLAP has no
-    /// normalization), but host-side automation authors values normalized
-    /// `0..1` — so incoming param points are denormalized `min + v·(max-min)`
-    /// against this map before the plugin sees them. Sorted by id.
-    pub param_ranges: Vec<(u32, f32, f32)>,
-    /// Whether the plugin reported a nonzero `params.count()` at activation.
-    ///
-    /// An empty `param_ranges` is ambiguous on its own and the two cases need
-    /// opposite handling: no `params` extension means automation must pass
-    /// through unchanged, while a failing `get_info(0)` empties the map by
-    /// truncation in [`parameters`](super::ClapLoaded::parameters), where
-    /// pass-through would hand raw `0..1` to a param expecting a real range.
-    /// Recording the claim separately lets
-    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes)
-    /// tell those apart.
-    pub plugin_claims_params: bool,
     /// Filled by the plugin's `try_push` callback during `process`.
     pub output_events: OutputEventList,
     /// Return pools: `process` drains the plugin's emitted events into these so
@@ -168,9 +154,16 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub out_param_changes: ParameterChanges,
     /// Output parameter points `fill_param_changes` could not keep whole
     /// since activation: see
-    /// [`ClapActive::output_param_points_dropped`](super::ClapActive::output_param_points_dropped).
+    /// [`ClapProcessor::output_param_points_dropped`](super::ClapProcessor::output_param_points_dropped).
     pub out_param_points_dropped: u64,
     pub out_note_expressions: RtNoteExpressions,
+    /// The block's note expressions in CLAP's voice-addressed form, converted
+    /// from the shared vocabulary in place. Reserved at activation to
+    /// [`INPUT_NOTE_EXPRESSIONS`]; past it they are dropped and counted in
+    /// `in_note_expressions_dropped`, so the audio thread never grows it.
+    pub in_note_expressions: Vec<ClapNoteExpression>,
+    /// Note expressions dropped for want of room in `in_note_expressions`.
+    pub in_note_expressions_dropped: u64,
     /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
     /// activate; advances by `frames_count` each processed block; reset to 0
     /// on stop_processing/reactivate. Never derived from transport seconds.
@@ -179,7 +172,7 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     ///
     /// Atomic so the audio thread's `Relaxed` store is readable off-thread
     /// through
-    /// [`ClapActive::last_process_status`](super::ClapActive::last_process_status);
+    /// [`ClapProcessor::last_process_status`](super::ClapProcessor::last_process_status);
     /// as a plain field, TAIL and SLEEP reached callers only via an `eprintln!`
     /// on the audio thread. A plain `AtomicI32` rather than `ArcLend` because
     /// this is a scalar — nothing here can be freed on the audio thread.
@@ -191,17 +184,42 @@ impl<T: super::ClapSample> AudioScratch<T> {
         Self {
             process: ProcessScratch::new(),
             input_events: InputEventList::new(),
-            param_ranges: Vec::new(),
-            plugin_claims_params: false,
             output_events: OutputEventList::new(),
             out_midi: RtMidiEvents::new(),
             out_param_changes: ParameterChanges::new(),
             out_param_points_dropped: 0,
             out_note_expressions: RtNoteExpressions::new(),
+            in_note_expressions: Vec::new(),
+            in_note_expressions_dropped: 0,
             steady_time: 0,
             last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),
         }
     }
+}
+
+/// Each parameter's native range, which the Processor denormalizes automation
+/// and edits against.
+///
+/// CLAP parameter events carry the plugin's **plain** value (CLAP has no
+/// normalization), but host-side automation authors values normalized `0..1`,
+/// so incoming points are denormalized `min + v·(max-min)` against this table.
+/// The Controller publishes it through an [`ArcLend`](tutti_types::ArcLend) at
+/// activation and again after a rescan that changed the parameters; the
+/// Processor lends it once per block.
+#[derive(Debug, Default)]
+pub(crate) struct RangeTable {
+    /// `(param_id, min, max)`, sorted by id.
+    pub ranges: Vec<(u32, f32, f32)>,
+    /// Whether the plugin reported a nonzero `params.count()`.
+    ///
+    /// An empty `ranges` is ambiguous on its own and the two cases need
+    /// opposite handling: no `params` extension means automation must pass
+    /// through unchanged, while a failing `get_info(0)` empties the table by
+    /// truncation, where pass-through would hand raw `0..1` to a param
+    /// expecting a real range. Recording the claim separately lets
+    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes)
+    /// tell those apart.
+    pub claims: bool,
 }
 
 /// Per-port channel layouts for audio IO.
@@ -322,74 +340,19 @@ mod port_layout_tests {
     }
 }
 
-/// Lifecycle sub-state not encoded by the type.
-///
-/// The active-vs-loaded distinction is the type (`ClapActive` vs `ClapLoaded`)
-/// for *callers*, but methods defined on `ClapLoaded` are reachable from both
-/// through `Deref` and cannot see which they were called on. `active` carries
-/// that fact down to them.
+/// Lifecycle sub-state a `ClapLoaded` keeps for the methods that cannot see
+/// which half of an activation they were reached through.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LifecycleFlags {
     /// The plugin's `activate()` has run and `deactivate()` has not.
     ///
-    /// Distinct from `processing`, and the distinction is load-bearing: CLAP tags
-    /// methods like `params.flush` as `[active ? audio-thread : main-thread]`,
-    /// keyed on *activation* — not on whether audio has started flowing. Gating
-    /// those on `processing` treats the window between `activate()` and the first
-    /// `process()` as inactive, and a plugin that knows it is active reports the
-    /// host for calling on the wrong thread.
+    /// Distinct from processing (`Shell::processing`), and the distinction is
+    /// load-bearing: CLAP tags methods like `params.flush` as
+    /// `[active ? audio-thread : main-thread]`, keyed on *activation* and not on
+    /// whether audio has started flowing. Gating those on processing treats the
+    /// window between `activate()` and the first `process()` as inactive, and a
+    /// plugin that knows it is active reports the host for calling on the wrong
+    /// thread.
     pub active: bool,
-    pub processing: bool,
     pub gui_created: bool,
-}
-
-#[cfg(test)]
-mod lifecycle_flag_tests {
-    use super::LifecycleFlags;
-
-    /// `active` and `processing` are different facts, and the window where they
-    /// disagree is the one that matters.
-    ///
-    /// CLAP tags `params.flush` `[active ? audio-thread : main-thread]`. Between
-    /// `activate()` and the first `process()` a plugin is active but not
-    /// processing — and that is exactly when a host pushes initial parameter
-    /// values. Gating the thread choice on `processing` took the main-thread
-    /// branch there against an active plugin, which TAL-Reverb-4's validation
-    /// layer reported as `clap_plugin_params.flush() was called on the wrong
-    /// thread`.
-    ///
-    /// This pins the state machine rather than the call site: if a later edit
-    /// collapses the two flags back into one, the sequence below stops being
-    /// representable and this test stops compiling or starts failing.
-    #[test]
-    fn active_and_processing_are_independent() {
-        let mut flags = LifecycleFlags::default();
-        assert!(
-            !flags.active && !flags.processing,
-            "loaded, not yet activated"
-        );
-
-        // activate() — the plugin is active, but no audio has flowed.
-        flags.active = true;
-        assert!(
-            flags.active && !flags.processing,
-            "the window where the two disagree: `flush` is already an \
-             audio-thread call here, though `processing` is still false"
-        );
-
-        // First process() — start_processing runs.
-        flags.processing = true;
-        assert!(flags.active && flags.processing);
-
-        // stop_processing() without deactivating: back to the disagreeing window.
-        flags.processing = false;
-        assert!(
-            flags.active,
-            "stop_processing does not deactivate — `flush` stays an audio-thread \
-             call until deactivate()"
-        );
-
-        flags.active = false;
-        assert!(!flags.active && !flags.processing);
-    }
 }

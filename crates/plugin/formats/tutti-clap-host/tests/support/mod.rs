@@ -7,4 +7,5 @@
 
 #![allow(dead_code)]
 
+pub mod active;
 pub mod probe_path;

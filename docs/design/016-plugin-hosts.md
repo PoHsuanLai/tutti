@@ -639,16 +639,112 @@ pub struct PluginIo<'a> {
   restart is planned) and the second into `Notice::NoteExpressionChanged`;
   neither restarts. `EFFECT_CAPACITY` and `MAX_STEP_EFFECTS` are 14.
 - `drive` does not step `Event::Returned` itself: that is the threaded `Hand`'s
-  (step 8). `apply` takes the `hand` and ignores it until then.
+  (step 8). `apply` takes the `hand` and ignores it until then, so both are right
+  only for a local hand, whose Processor never leaves the seat and whose `Recall`
+  answers `Returned` at once.
 - Every call into the plugin that is not a transition (the reads, the main-thread
   work, `flush_edits`) is guarded like one: a panic leaves `Poisoned`, and
   `drive` steps `Event::Died`, so the `State` it owns is never lost to an unwind.
+  The host is told: a transition's loss is its `Notice::Refused`, any other
+  call's is `Notice::Lost`.
+- `flush_edits` runs only on `Event::Tick`, so a host that stops ticking never
+  retries an edit a full ring refused. The ticking is the shell's: the loop that
+  calls `drive` calls it with `Event::Tick` on every pass.
 
 - `FakePlugin` is `tutti_plugin_types::fake`, behind the `test-support` feature, so
   the server's tests can use it at step 4.
 
 The capability traits of `format_host.rs` stay until step 4: VST2 and AU, and the
 server's `Plugin` enum, still use them.
+
+**As built (step 2b, CLAP).** CLAP and VST3 land as two changes; this is the CLAP
+one.
+
+- `ClapLoaded` implements `Loaded` and `Control`; `ClapController` implements
+  `Control` and `Controller` and derefs to `ClapLoaded`, so the inherent surface
+  the format has (editor, state contexts, ports, the `clap-extras` extensions)
+  stays reachable while audio runs, as `ClapActive` gave it through `Deref`.
+  The Processor never touches that `ClapLoaded`: it keeps its own copy of the
+  plugin pointer, the port layout and the host state, so the Controller's
+  `&mut ClapLoaded` has no Rust-level alias. The shell is an `Arc` owning the
+  `ClapLoaded`, a `retired` flag and the `processing` flag (distinct from the
+  plugin being active; written under the `[audio-thread]` claim). The
+  Controller's drop retires the shell, takes the claim, stops processing,
+  deactivates and destroys the plugin; the Processor checks `retired` again
+  after it takes the claim.
+- Two values reach the Processor through `ArcLend` rather than the shell: the
+  parameter range table automation and edits are denormalized against (republished
+  by `rescan_parameters(Info | All)`, so a rescan that re-describes parameters
+  still reaches the audio side) and the `clap.thread-pool` pool
+  (`ClapController::set_thread_pool`, which a plain `ClapLoaded` call would not
+  tell the Processor about). Both are lent once per block; the Controller
+  reclaims them on `flush_edits`.
+- The Processor drains the edit ring straight into its input event list, at
+  time 0 and before the block's automation, so where both set one parameter at
+  one time the automation has the last word. That list is the preallocated
+  scratch of §2.6 (no separate merge buffer); it reserves room for as many edits
+  as the ring holds (256), which the parameter-point room does not count.
+- The plugin's calls into the host raise `RequestWord` bits for `Restart`,
+  `IoChanged` (an `audio-ports.rescan` whose flags change a buffer; a names-only
+  rescan asks for nothing), `LatencyChanged`, `TailChanged`, `Callback` and each
+  `RescanParams` scope. `ClapLoaded::take_requests` is the shell's one pass: it
+  takes the word, and turns due timers and ready descriptors into
+  `Request::Timer` and `Request::Fd`; `take_raised` is the word alone, for the
+  second look after main-thread work that asked for more. A latency or tail
+  change raised inside `activate` is answered by the reads after it and is
+  dropped there, as the core's rule 4 expects of a request that arrives while
+  the plugin is activating (the real shell takes the word only between `drive`s,
+  so the host crate drops it).
+- The remaining latches (`process_requested`, `params.request_flush`, state
+  dirty, note ports, GUI closed) are not in the core's `Request` and stay
+  `take_*` flags on `HostState`.
+- `load` takes a `LoadOptions` (library path, plugin id) and no rate or block
+  size: they are the activation's. `ClapLoaded::sample_rate` and `block_size` are
+  placeholders until the first activation. `activate_typed::<T>` is the fixed-type
+  form, with `deactivate_typed`.
+- `set_sample_rate`, `set_max_block_size`, `reactivate`, `needs_restart`,
+  `run_main_thread_work` and `ClapError::Deactivated` are gone: a rate change is
+  `HostOp::Reconfigure`, and a refused activation leaves the plugin loaded, so
+  nothing is "left deactivated" inside an active type. The in-place rollback to
+  the previous rate is the bridge's: after a refused `Reconfigure` it activates
+  at the previous `Prepare`, and only when that is refused too does the plugin
+  stay `Refused` and silent until the next rate. (The session still renders
+  nothing after any rate error, because its clock follows the rate the host asked
+  for.)
+- `PluginIo<'a>` needs one lifetime for the channel tables and their slices
+  (`AudioBufferMut<'a, 'a>`), which a caller holding `AudioBufferMut<'t, 'd>`
+  cannot produce without copying the tables. `ClapProcessorAny::render` takes the
+  buffer, context and output apart and `Processor::process` is that over a
+  `PluginIo`; the server's bridge calls `render` until step 4 settles the
+  lifetimes.
+- `State::set_mode` records a render mode in the `Prepare` without a restart,
+  for a format that applies the mode live (CLAP's `render.set`); the bridge's
+  `set_render_mode` uses it, so a toggle does not cycle the plugin and a later
+  restart keeps the mode.
+- A rejoin does not lose edits: the writes still in the ring and those a full ring
+  had refused are flushed into the plugin after it is deactivated
+  (`params.flush` is legal when inactive). The bridge settles pending writes the
+  same way before a state save or a fork, so they see the writes; a parameter
+  flagged `REQUIRES_PROCESS` is not flushed out of band while the plugin is
+  processing and stays queued.
+- `PluginError::Block(&'static str)` is the error of a failed block: the audio
+  thread builds it without allocating (`Process(String)` stays for off-thread
+  failures).
+- `Notice::Lost` reaches the host as `AsyncEvent::IoChanged` and a log line: the
+  wire has no "lost" message, and adding one is a protocol change.
+- The server's `ClapInstance` is a bridge: it owns a `Lifecycle<ClapLoaded>`, its
+  `State` and a local `Hand`, feeds each pass's requests and a `Tick` to `drive`,
+  and turns the notices into the `AsyncEvent`s the `Plugin` enum already
+  delivers. It keeps the old capability traits until step 4. What it adds over
+  the traits is the same-rate no-op in `set_sample_rate` (the core plans a
+  restart for every `Reconfigure`).
+- `get_*` getters lose the prefix (`latency_samples`, `tail_samples`,
+  `voice_info`, ...; the normalized, typed reads are `Control`'s), the consuming
+  `poll_*` latches are `take_*` (N7), `ProcessOutputRef::to_owned` is
+  `into_owned` (N4), `resource_get_file_path` and `resource_files_count` are
+  `resource_file_path` (a `PathBuf`) and `resource_file_count` (N20), and the
+  path arguments are `impl AsRef<Path>` (N19). The `load_*` family is one `load`
+  (N14).
 
 - **The control surface is `Control`, once.** `Loaded` and `Controller` both
   implement it, so `parameters`, `save_state`, `editor` and the rest are declared

@@ -41,7 +41,8 @@ pub mod wav;
 // RT-callback primitives.
 pub use rt::{
     AudioThreadCell, BlockWaits, BorrowGuard, BorrowRef, ClaimConflict, ClaimTable, Claimed,
-    ClaimedRun, Contended, Held, JobGate, MAX_POS_RING_FRAMES, PackedAtomic, Participant, PosClaim,
+    ClaimedRun, Contended, EditReader, EditWriter, REQUEST_BITS, RequestBit, RequestBits,
+    RequestWord, RingFull, edit_ring, Held, JobGate, MAX_POS_RING_FRAMES, PackedAtomic, Participant, PosClaim,
     PosFrame, PosReader, PosRing, PosWriter, RingWindow, RtScope, RtScopeGuard, RtVec, RwView,
     ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph,
 };

@@ -7,11 +7,15 @@ pub mod bundle;
 mod channels;
 mod classification;
 mod descriptor;
+mod driver;
 mod editor;
 mod error;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake;
 pub mod features;
 mod format_host;
 mod harmony;
+mod host;
 mod lifecycle;
 mod load_stage;
 mod main_thread;
@@ -26,6 +30,7 @@ mod points;
 mod presets;
 mod process;
 mod render_mode;
+mod requests;
 mod sample_format;
 mod sysex;
 mod transport;
@@ -40,7 +45,7 @@ pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
 /// above is here for the same reason.
-pub use tutti_types::{SampleRate, Samples};
+pub use tutti_types::{RequestBit, RequestBits, RequestWord, SampleRate, Samples};
 
 mod layout_support;
 pub use layout_support::LayoutSupport;
@@ -56,6 +61,9 @@ pub use classification::{
     ClapFeature, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories, clap_features_role,
 };
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
+pub use driver::{Hand, Hosted, Lifecycle, Seat};
+pub use host::{Control, Controller, Loaded, PluginIo, Processor, Refused, Stuck};
+pub use requests::{Edit, EditDrain, EditSink, edits, taken};
 pub use editor::{
     AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
     ResizeHints, WindowHandle,

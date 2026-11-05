@@ -722,3 +722,8 @@ jobs:
       - run: cargo test --locked -p tutti-types --release --test split_loom
       - run: cargo test --locked -p tutti-types --release --test job_gate_loom
       - run: cargo test --locked -p tutti-types --release --test task_graph_loom
+      # `RequestWord` (no bit lost, each taken once, a raise orders what
+      # preceded it) and `edit_ring` (each edit applied once, in order, no torn
+      # slot), against the shipped code.
+      - run: cargo test --locked -p tutti-types --release --test request_word_loom
+      - run: cargo test --locked -p tutti-types --release --test edit_ring_loom

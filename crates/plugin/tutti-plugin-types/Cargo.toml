@@ -22,6 +22,10 @@ default = []
 # don't pay for the serde dep.
 serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "tutti-types/serde"]
 
+# `FakePlugin`: a plugin that records every call, for testing what drives one. A
+# consumer's dev-dependency; nothing ships it.
+test-support = []
+
 [dependencies]
 # The capped per-block containers (`MidiEventVec`, the harmony changes): a
 # fixed run of slots that cannot grow, so the cap is the type's.

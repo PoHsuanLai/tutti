@@ -171,6 +171,8 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test split_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test request_word_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test edit_ring_loom
 
 # The `ArcLend` loom models, after changing `arc-lend`'s protocol code: eight
 # of the nine unbounded (exhaustive, about 10 s; CI runs them so too), and

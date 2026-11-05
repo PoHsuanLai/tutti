@@ -27,7 +27,7 @@ by FFT convolution against a measured HRIR sphere (the format
 `hrir_sphere_builder` writes), blending the responses across the sphere face
 the source's direction crosses; the dataset is supplied by the caller as bytes.
 Its output lags its input by one 128-frame convolution step, declared to PDC. `build_vbap_mix` assembles the whole `sources → panners → sum` graph in
-one call, including LFE bass management; `vbap_mix_parts` returns the same mix
+one call, including LFE bass management; `VbapMixParts::new` returns the same mix
 as owned nodes and edges for a graph built another way.
 
 Position changes are de-zippered by a one-pole smoother (50 ms), so a moving

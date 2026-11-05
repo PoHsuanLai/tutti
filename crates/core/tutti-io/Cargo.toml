@@ -17,7 +17,7 @@ workspace = true
 [features]
 # No codec by default, as on every engine crate: a host doing only mic → WAV
 # needs no decoder. Each feature pulls exactly one symphonia container (and
-# its codec) for `Wave::load`, `Wave::probe_metadata` and `FileIn`. `wav` needs
+# its codec) for `Wave::read`, `Wave::read_metadata` and `FileIn`. `wav` needs
 # `pcm`: WAV is only the container.
 default = []
 wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
@@ -51,7 +51,7 @@ ringbuf = "0.4"
 # the root leaf: a file-format codec belongs at the edge that writes files.
 hound = "3.5"
 
-# File decode for `Wave::load` / `FileIn`. No default features: each codec is a
+# File decode for `Wave::read` / `FileIn`. No default features: each codec is a
 # feature above, so a build lists exactly the containers it can read.
 symphonia = { version = "0.5.5", optional = true, default-features = false }
 

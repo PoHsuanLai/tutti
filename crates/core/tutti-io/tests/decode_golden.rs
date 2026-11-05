@@ -112,7 +112,7 @@ fn bit_portable(name: &str) -> bool {
 fn check_digests(rows: impl Iterator<Item = &'static (&'static str, u64, u64)>) {
     let mut failures = Vec::new();
     for &(name, want_load, want_stream) in rows {
-        let w = Wave::load(asset(name)).expect("load");
+        let w = Wave::read(asset(name)).expect("load");
         let got_load = wave_digest(&w);
         let (got_stream, frames) = stream_digest(name);
         if got_load != want_load || got_stream != want_stream {
@@ -146,7 +146,7 @@ fn lossy_decodes_match_the_golden_digests_where_recorded() {
     check_digests(GOLDEN.iter().filter(|r| !bit_portable(r.0)));
 }
 
-/// `(file, channels, frames, per-channel (RMS, peak))` of `Wave::load`,
+/// `(file, channels, frames, per-channel (RMS, peak))` of `Wave::read`,
 /// recorded on Linux x86_64.
 const LEVELS: &[(&str, usize, usize, &[(f64, f64)])] = &[
     (
@@ -211,7 +211,7 @@ fn decoded_levels_match_on_every_platform() {
     const REL: f64 = 1e-5;
     let close = |got: f64, want: f64| (got - want).abs() <= REL * want.abs();
     for &(name, channels, frames, levels) in LEVELS {
-        let w = Wave::load(asset(name)).expect("load");
+        let w = Wave::read(asset(name)).expect("load");
         assert_eq!(w.channels(), channels, "{name}: channels");
         assert_eq!(w.len(), frames, "{name}: frames");
         for (c, &(rms, peak)) in levels.iter().enumerate() {
@@ -247,7 +247,7 @@ fn decoded_levels_match_on_every_platform() {
 #[test]
 fn the_stream_reads_every_frame_the_load_does() {
     for &(name, _, _) in GOLDEN {
-        let w = Wave::load(asset(name)).expect("load");
+        let w = Wave::read(asset(name)).expect("load");
         let ch = w.channels();
         let mut dec = FileIn::open(asset(name)).expect("open");
         let mut buf = vec![0.0f32; 333 * ch];
@@ -273,19 +273,19 @@ fn the_stream_reads_every_frame_the_load_does() {
     }
 }
 
-/// The header agrees with the decode: `probe_metadata`'s width, rate **and
-/// frame count** are what `Wave::load` actually produces, for every fixture.
+/// The header agrees with the decode: `Wave::read_metadata`'s width, rate **and
+/// frame count** are what `Wave::read` actually produces, for every fixture.
 ///
 /// Restores the fork's `probe_metadata_matches_full_load`, which the move
 /// deleted along with the fork's WAV writer it depended on.
 ///
-/// Mutation: have `probe_metadata` report `n_frames.map(|n| n + 1)` and every
+/// Mutation: have `Wave::read_metadata` report `n_frames.map(|n| n + 1)` and every
 /// row fails (checked).
 #[test]
 fn the_probe_agrees_with_the_full_load() {
     for &(name, _, _) in GOLDEN {
-        let w = Wave::load(asset(name)).expect("load");
-        let meta = Wave::probe_metadata(asset(name)).expect("probe");
+        let w = Wave::read(asset(name)).expect("load");
+        let meta = Wave::read_metadata(asset(name)).expect("probe");
         assert_eq!(meta.channels, w.channels(), "{name}: probed width");
         assert_eq!(
             meta.sample_rate as f64,
@@ -340,7 +340,7 @@ fn lag_of(w: &Wave, start: usize, out: &[f32]) -> Option<i64> {
 #[test]
 fn seek_lands_on_the_whole_file_load_frames() {
     for &(name, _, _) in GOLDEN {
-        let w = Wave::load(asset(name)).expect("load");
+        let w = Wave::read(asset(name)).expect("load");
         let ch = w.channels();
         let len = w.len();
         let starts = [1, 700, len / 3, len - 100];
@@ -392,10 +392,10 @@ fn seek_lands_on_the_whole_file_load_frames() {
 #[cfg(feature = "bevy")]
 #[test]
 fn from_bytes_decodes_what_load_decodes() {
-    // Against this platform's own `Wave::load`, not the recorded golden: both
+    // Against this platform's own `Wave::read`, not the recorded golden: both
     // sides run the same decoder here, so this is bit-exact everywhere.
     for &(name, _, _) in GOLDEN {
-        let want = wave_digest(&Wave::load(asset(name)).expect("load"));
+        let want = wave_digest(&Wave::read(asset(name)).expect("load"));
         let bytes = std::fs::read(asset(name)).expect("read fixture");
         let asset = tutti_io::WaveAsset::from_bytes(&bytes).expect("decode bytes");
         assert_eq!(wave_digest(&asset), want, "{name}: from_bytes digest");

@@ -46,7 +46,7 @@ fn flac_refuses_float32_with_the_bit_depth_reason() {
         ..Default::default()
     };
     let dir = tempfile::tempdir().unwrap();
-    match write_buffers(&rendered, &config, &dir.path().join("x.flac")) {
+    match write_buffers(&rendered, &config, dir.path().join("x.flac")) {
         Err(Error::UnsupportedFormat { format, reason }) => {
             assert_eq!(format, "FLAC");
             assert_eq!(reason, UnsupportedReason::BitDepth);

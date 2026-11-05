@@ -227,12 +227,12 @@ pub(in crate::butler) fn load_wave(
         return Some(cached);
     }
 
-    // `Wave::load` is `tutti-io`'s decode path, which is compiled only when a
+    // `Wave::read` is `tutti-io`'s decode path, which is compiled only when a
     // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     {
-        if let Ok(w) = Wave::load(file_path) {
+        if let Ok(w) = Wave::read(file_path) {
             let arc_wave = Arc::new(w);
             let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
             metrics.record_read(bytes);

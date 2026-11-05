@@ -539,7 +539,7 @@ impl MpeIngest {
     fn held_note(&self, channel: u8, is_lower_zone: bool) -> Option<u8> {
         self.voice_map(is_lower_zone)
             .as_ref()
-            .and_then(|map| map.get_note_for_channel(channel))
+            .and_then(|map| map.note_for_channel(channel))
     }
 
     fn get_zone_info(&self, channel: u8) -> Option<ZoneInfo> {

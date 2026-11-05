@@ -56,7 +56,7 @@ pub use tutti_midi_types::Midi1ToMidi2Translator;
 /// re-exported here.
 pub use tutti_midi_types::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
-    read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
+    write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
 };
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

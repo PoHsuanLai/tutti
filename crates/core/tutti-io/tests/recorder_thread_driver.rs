@@ -24,7 +24,7 @@
 //! | `while false && running.load(…)` | all three (nothing is ever pumped) |
 //! | `PumpPass::Starved => break` | `a_starving_source_…` (times out in `wait_until`) |
 //! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
-//! | `Recorder::wait` calls `shutdown()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
+//! | `Recorder::wait` calls `finish_in_place()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
 //! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
 //! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
@@ -238,7 +238,8 @@ fn a_finite_source_ends_its_own_take_and_the_file_is_readable() {
          source — a live-spinning take burns a core until someone calls stop()"
     );
 
-    rec.stop().expect("a healthy finite take finalizes cleanly");
+    rec.finish()
+        .expect("a healthy finite take finalizes cleanly");
 
     let mut reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
     assert_eq!(reader.spec().channels, 2);
@@ -296,7 +297,8 @@ fn a_starving_source_is_ended_only_by_stop() {
         || polls.load(Ordering::Acquire) >= 3,
     );
 
-    rec.stop().expect("stopping a live take finalizes cleanly");
+    rec.finish()
+        .expect("stopping a live take finalizes cleanly");
 
     let reader = hound::WavReader::open(&path)
         .expect("a stopped live take must leave a readable, header-patched WAV");
@@ -341,7 +343,7 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
     });
 
     let err = rec
-        .stop()
+        .finish()
         .expect_err("a panicked pump thread must be reported, not silently joined");
 
     assert!(
@@ -369,7 +371,7 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
 /// hold the loop open to the source's own [`OnEmpty::EndOfStream`], the frame
 /// count would come up short — which is exactly the mutation.
 ///
-/// *Mutation:* make `Recorder::wait` call `shutdown()` instead of
+/// *Mutation:* make `Recorder::wait` call `finish_in_place()` instead of
 /// `join_pump()` — i.e. give it `stop`'s flag clear. The file comes back at
 /// one or two 1024-frame polls instead of all 20, and the count assertion
 /// fails. (`Ramp::delay` is what stops that from being a coin flip; see the
@@ -420,7 +422,7 @@ fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
 /// **A finite take ends itself, and a host that cannot block can see it.**
 ///
 /// `bevy-tutti`'s drain system polls `is_finished` once per frame and only
-/// then calls `shutdown`, so the frame never waits on the pump thread. This is
+/// then calls `finish_in_place`, so the frame never waits on the pump thread. This is
 /// that sequence without Bevy: nobody requests a stop, the source's own
 /// [`OnEmpty::EndOfStream`] ends the loop, and the run flag is still set when
 /// the take is collected, which is what tells "it ended" from "it was ended".
@@ -448,7 +450,9 @@ fn is_finished_reports_a_finite_take_ending_itself_without_blocking() {
         "no stop was requested: the source's EndOfStream ended the take"
     );
 
-    let result = rec.shutdown().expect("the take had not been collected yet");
+    let result = rec
+        .finish_in_place()
+        .expect("the take had not been collected yet");
     result.expect("a healthy finite take finalizes cleanly");
 
     let reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
@@ -499,10 +503,10 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
     assert!(!rec.is_running());
     wait_until("the pump to notice the request", || rec.is_finished());
 
-    rec.shutdown()
+    rec.finish_in_place()
         .expect("the take had not been collected yet")
         .expect("stopping a live take finalizes cleanly");
-    assert!(rec.shutdown().is_none(), "a take is collected once");
+    assert!(rec.finish_in_place().is_none(), "a take is collected once");
     // Collected, so this drop joins nothing.
     drop(std::mem::ManuallyDrop::into_inner(rec));
 

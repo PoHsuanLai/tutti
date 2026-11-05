@@ -283,7 +283,7 @@ impl Open {
             // wave: no second, interleaved copy.
             None => {
                 drop(decoder);
-                Wave::load(&file.path)
+                Wave::read(&file.path)
                     .map(|wave| Self::Resident(Arc::new(wave)))
                     .map_err(|e| e.to_string())
             }

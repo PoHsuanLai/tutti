@@ -182,7 +182,7 @@ impl CompressorCore {
     /// is an audio signal, not an atomic. No extra clamp: threshold has no
     /// min/max in the setter.
     #[inline]
-    pub fn compute_gain(
+    pub fn gain(
         &mut self,
         block: &CompressorBlock,
         i: usize,
@@ -502,7 +502,7 @@ impl Node for CompressorNode {
         for (i, g) in gains.iter_mut().enumerate() {
             let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
-            *g = self.core.compute_gain(&block, i, size, sc, threshold);
+            *g = self.core.gain(&block, i, size, sc, threshold);
         }
         apply_gain_lane(gains, ch, &inputs, &mut outputs);
         Status::Modified

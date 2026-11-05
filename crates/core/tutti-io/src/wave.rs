@@ -1,11 +1,11 @@
 //! [`Wave`]: a resident, planar, multichannel sample buffer.
 //!
-//! A buffer only: build it, index it, decode a file into it. Decoding a file *into* a `Wave` is in [`decode`](crate::Wave::load), behind
+//! A buffer only: build it, index it, decode a file into it. Decoding a file *into* a `Wave` is in [`decode`](crate::Wave::read), behind
 //! the codec features; the buffer itself needs none.
 
 /// Multichannel audio held in memory, one `Vec<f32>` per channel.
 ///
-/// What a sampler voice plays and what `Wave::load` decodes a file into
+/// What a sampler voice plays and what `Wave::read` decodes a file into
 /// (with a codec feature). Planar rather than interleaved because its
 /// consumers index it by `(channel, frame)`. Every channel has the same
 /// length, [`len`](Self::len). The sample rate is carried as data; nothing

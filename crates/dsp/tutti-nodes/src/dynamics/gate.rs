@@ -167,7 +167,7 @@ impl GateCore {
     /// it — the audio-rate modulation path, which stays per sample. No extra
     /// clamp — the setter stores threshold unclamped.
     #[inline]
-    pub fn compute_gain(
+    pub fn gain(
         &mut self,
         block: &GateBlock,
         i: usize,
@@ -450,7 +450,7 @@ impl Node for GateNode {
         for (i, g) in gains.iter_mut().enumerate() {
             let sc = *g;
             let threshold = threshold_fed.map(|v| Db(v[i]));
-            *g = self.core.compute_gain(&block, i, size, sc, threshold);
+            *g = self.core.gain(&block, i, size, sc, threshold);
         }
         apply_gain_lane(gains, ch, &inputs, &mut outputs);
         Status::Modified
@@ -865,7 +865,7 @@ mod tests {
     /// not over the threshold (closed), and the gate recovers on the next
     /// finite level. An infinite level is over every finite threshold.
     ///
-    /// Mutation (run): in `compute_gain` open the gate on
+    /// Mutation (run): in `gain` open the gate on
     /// `!(sc_level < block.threshold_linear)` → a NaN level opens it and the
     /// `gate_level() == 0.0` assertion fails.
     #[test]
@@ -875,16 +875,16 @@ mod tests {
         core.update_coefficients([None, None]);
         let block = core.begin_block();
         for i in 0..64 {
-            let g = core.compute_gain(&block, i, 64, f32::NAN, None);
+            let g = core.gain(&block, i, 64, f32::NAN, None);
             assert!(g.is_finite(), "gain {g} at {i}");
             assert_eq!(core.gate_level(), 0.0);
         }
         let block = core.begin_block();
         for i in 0..2048 {
-            core.compute_gain(&block, i % 64, 64, 0.5, None);
+            core.gain(&block, i % 64, 64, 0.5, None);
         }
         assert!(core.is_open(), "recovers on a finite level");
-        let g = core.compute_gain(&block, 0, 64, f32::INFINITY, None);
+        let g = core.gain(&block, 0, 64, f32::INFINITY, None);
         assert!(g.is_finite() && core.gate_level().is_finite());
     }
 

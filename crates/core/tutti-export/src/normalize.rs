@@ -174,8 +174,9 @@ pub fn render_normalized_to_file(
     config: &ExportConfig,
     clock: &dyn RenderClock,
     normalize: Normalize,
-    path: &Path,
+    path: impl AsRef<Path>,
 ) -> Result<Written> {
+    let path = path.as_ref();
     let rendered = render_to_buffers(graph, config, clock)?;
 
     // Convert first, so what is measured is what is written.

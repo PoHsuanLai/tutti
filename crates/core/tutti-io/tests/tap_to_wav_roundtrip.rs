@@ -106,7 +106,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
         "an empty tap is a producer that has not caught up, not end-of-stream"
     );
 
-    rec.stop().expect("the take finalizes cleanly");
+    rec.finish().expect("the take finalizes cleanly");
 
     let mut reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
     assert_eq!(reader.spec().channels, 2);
@@ -167,7 +167,7 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
         "no frame may be lost between bursts"
     );
 
-    rec.stop().expect("the take finalizes cleanly");
+    rec.finish().expect("the take finalizes cleanly");
 
     let mut reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
     assert_eq!(reader.len() as usize, BURST * BURSTS * 2);

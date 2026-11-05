@@ -49,12 +49,12 @@ use super::PortId;
 ///
 /// ```compile_fail,E0599
 /// let inputs = tutti_midi_hardware::HardwareMidiInputs::new(16);
-/// let handle = inputs.create_input_port("In");
+/// let handle = inputs.open_input_port("In");
 /// let second = handle.clone();
 /// ```
 ///
 /// and the manager hands one out only from
-/// [`create_input_port`](super::HardwareMidiInputs::create_input_port).
+/// [`open_input_port`](super::HardwareMidiInputs::open_input_port).
 pub struct InputProducerHandle {
     producer: HeapProd<(Instant, MidiEvent)>,
     port: PortId,

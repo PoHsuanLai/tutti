@@ -16,7 +16,7 @@
 //!
 //! - Filters: [`SvfFilterNode`] ([`SvfType`]), [`LadderFilterNode`]
 //!   ([`LadderType`]), [`EqBandNode`]; the coefficient solvers
-//!   [`compute_svf_coeffs`] and [`compute_ladder_coeffs`]; [`Real`], the
+//!   [`SvfCoeffs::new`] and [`LadderCoeffs::new`]; [`Real`], the
 //!   `f32`/`f64` state type.
 //! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
@@ -79,7 +79,7 @@ pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
 mod filter;
 pub use filter::{
     BandState, EqBandNode, LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType, Real,
-    SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType, compute_ladder_coeffs, compute_svf_coeffs,
+    SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType,
 };
 
 mod dynamics;

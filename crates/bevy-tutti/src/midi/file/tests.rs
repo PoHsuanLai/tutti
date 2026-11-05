@@ -7,7 +7,7 @@
 
 use super::*;
 use bevy_ecs::system::RunSystemOnce;
-use tutti_midi_file::smf::{MidiWriteConfig, SmfMessage, SmfTimedEvent, encode_midi_file};
+use tutti_midi_file::smf::{self, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 use tutti_types::Beat;
 
 /// An app with the plugin and the pools it needs.
@@ -28,7 +28,7 @@ fn temp_path(name: &str) -> std::path::PathBuf {
 
 /// A one-note SMF's bytes.
 fn smf_bytes() -> Vec<u8> {
-    encode_midi_file(
+    smf::to_bytes(
         &[vec![
             SmfTimedEvent {
                 time_beats: Beat(0.0),

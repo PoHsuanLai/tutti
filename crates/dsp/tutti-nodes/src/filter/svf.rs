@@ -89,64 +89,66 @@ pub struct SvfCoeffs {
     pub m2: f64,
 }
 
-/// Computes SVF filter coefficients from parameters (pure function, no state).
-///
-/// The three tuning parameters are three different units, and taking them as
-/// [`Hz`] / [`Q`] / [`Db`] is what keeps them apart. As bare `f32`s they are
-/// adjacent and interchangeable — the call reads as a run of positional numbers,
-/// `(LowPass, 1000.0, 0.707, 0.0, 44100.0)`, where transposing any two compiles
-/// and detunes the filter.
-pub fn compute_svf_coeffs(
-    filter_type: SvfType,
-    freq: impl Into<Hz>,
-    q: impl Into<Q>,
-    gain_db: impl Into<Db>,
-    sample_rate: impl Into<SampleRate>,
-) -> SvfCoeffs {
-    let (freq, q, gain_db) = (freq.into().get(), q.into().get(), gain_db.into().get());
-    let sample_rate = sample_rate.into();
-    // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
-    let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
-    let g0 = (core::f64::consts::PI * fc / sample_rate.get()).tan();
-    let q = (q as f64).max(0.01);
-    let a = 10.0_f64.powf(gain_db as f64 / 40.0);
+impl SvfCoeffs {
+    /// Computes SVF filter coefficients from parameters (pure function, no state).
+    ///
+    /// The three tuning parameters are three different units, and taking them as
+    /// [`Hz`] / [`Q`] / [`Db`] is what keeps them apart. As bare `f32`s they are
+    /// adjacent and interchangeable — the call reads as a run of positional numbers,
+    /// `(LowPass, 1000.0, 0.707, 0.0, 44100.0)`, where transposing any two compiles
+    /// and detunes the filter.
+    pub fn new(
+        filter_type: SvfType,
+        freq: impl Into<Hz>,
+        q: impl Into<Q>,
+        gain_db: impl Into<Db>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> SvfCoeffs {
+        let (freq, q, gain_db) = (freq.into().get(), q.into().get(), gain_db.into().get());
+        let sample_rate = sample_rate.into();
+        // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
+        let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
+        let g0 = (core::f64::consts::PI * fc / sample_rate.get()).tan();
+        let q = (q as f64).max(0.01);
+        let a = 10.0_f64.powf(gain_db as f64 / 40.0);
 
-    // RBJ cookbook shapes: a bell's damping is `1/(Q*A)`, and a shelf's
-    // midpoint (half the dB gain) sits at `fc`, so its prototype is tuned
-    // `sqrt(A)` away.
-    let k = match filter_type {
-        SvfType::Bell => 1.0 / (q * a),
-        _ => 1.0 / q,
-    };
-    let g = match filter_type {
-        SvfType::LowShelf => g0 / a.sqrt(),
-        SvfType::HighShelf => g0 * a.sqrt(),
-        _ => g0,
-    };
+        // RBJ cookbook shapes: a bell's damping is `1/(Q*A)`, and a shelf's
+        // midpoint (half the dB gain) sits at `fc`, so its prototype is tuned
+        // `sqrt(A)` away.
+        let k = match filter_type {
+            SvfType::Bell => 1.0 / (q * a),
+            _ => 1.0 / q,
+        };
+        let g = match filter_type {
+            SvfType::LowShelf => g0 / a.sqrt(),
+            SvfType::HighShelf => g0 * a.sqrt(),
+            _ => g0,
+        };
 
-    let a1 = 1.0 / (1.0 + g * (g + k));
-    let a2 = g * a1;
-    let a3 = g * a2;
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
 
-    let (m0, m1, m2) = match filter_type {
-        SvfType::LowPass => (0.0, 0.0, 1.0),
-        SvfType::HighPass => (1.0, -k, -1.0),
-        SvfType::BandPass => (0.0, 1.0, 0.0),
-        SvfType::Notch => (1.0, -k, 0.0),
-        // Allpass: flat magnitude, all-pass phase. m1 = -2k (vs notch's -k).
-        SvfType::Allpass => (1.0, -2.0 * k, 0.0),
-        SvfType::Bell => (1.0, k * (a * a - 1.0), 0.0),
-        SvfType::LowShelf => (1.0, k * (a - 1.0), a * a - 1.0),
-        SvfType::HighShelf => (a * a, k * (1.0 - a) * a, 1.0 - a * a),
-    };
+        let (m0, m1, m2) = match filter_type {
+            SvfType::LowPass => (0.0, 0.0, 1.0),
+            SvfType::HighPass => (1.0, -k, -1.0),
+            SvfType::BandPass => (0.0, 1.0, 0.0),
+            SvfType::Notch => (1.0, -k, 0.0),
+            // Allpass: flat magnitude, all-pass phase. m1 = -2k (vs notch's -k).
+            SvfType::Allpass => (1.0, -2.0 * k, 0.0),
+            SvfType::Bell => (1.0, k * (a * a - 1.0), 0.0),
+            SvfType::LowShelf => (1.0, k * (a - 1.0), a * a - 1.0),
+            SvfType::HighShelf => (a * a, k * (1.0 - a) * a, 1.0 - a * a),
+        };
 
-    SvfCoeffs {
-        a1,
-        a2,
-        a3,
-        m0,
-        m1,
-        m2,
+        SvfCoeffs {
+            a1,
+            a2,
+            a3,
+            m0,
+            m1,
+            m2,
+        }
     }
 }
 
@@ -170,7 +172,7 @@ struct SvfCoefficients<F: Real> {
 
 impl<F: Real> SvfCoefficients<F> {
     fn solve(filter_type: SvfType, freq: Hz, q: Q, gain_db: Db, sample_rate: SampleRate) -> Self {
-        let c = compute_svf_coeffs(filter_type, freq, q, gain_db, sample_rate);
+        let c = SvfCoeffs::new(filter_type, freq, q, gain_db, sample_rate);
         Self {
             a1: F::from_f64(c.a1),
             a2: F::from_f64(c.a2),
@@ -728,7 +730,7 @@ impl<F: Real> Clone for SvfFilterNode<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::test_utils::{generate_sine, make_impulse, rms};
+    use crate::filter::test_utils::{generate_sine, impulse, rms};
     use crate::test_support::{RATE, drive_block, prepared};
     use tutti_graph::contract::{assert_param_fork, drive};
 
@@ -841,7 +843,7 @@ mod tests {
     fn test_svf_impulse_response_finite() {
         let ir = render(
             SvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707),
-            &make_impulse(1024),
+            &impulse(1024),
         );
         let first_half_energy: f32 = ir[..512].iter().map(|s| s * s).sum();
         let second_half_energy: f32 = ir[512..].iter().map(|s| s * s).sum();
@@ -934,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_lowpass_m_values() {
-        let c = compute_svf_coeffs(SvfType::LowPass, 1000.0, 0.707, 0.0, 44100.0);
+        let c = SvfCoeffs::new(SvfType::LowPass, 1000.0, 0.707, 0.0, 44100.0);
         assert!((c.m0 - 0.0).abs() < 1e-10);
         assert!((c.m1 - 0.0).abs() < 1e-10);
         assert!((c.m2 - 1.0).abs() < 1e-10);
@@ -943,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_highpass_m_values() {
-        let c = compute_svf_coeffs(SvfType::HighPass, 1000.0, 0.707, 0.0, 44100.0);
+        let c = SvfCoeffs::new(SvfType::HighPass, 1000.0, 0.707, 0.0, 44100.0);
         assert!((c.m0 - 1.0).abs() < 1e-10);
         assert!((c.m2 - (-1.0)).abs() < 1e-10);
     }
@@ -1049,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_bell_zero_gain_is_unity() {
-        let c = compute_svf_coeffs(SvfType::Bell, 1000.0, 1.0, 0.0, 44100.0);
+        let c = SvfCoeffs::new(SvfType::Bell, 1000.0, 1.0, 0.0, 44100.0);
         assert!(
             (c.m1).abs() < 1e-10,
             "Bell with 0dB gain should have m1≈0, got {}",
@@ -1065,9 +1067,9 @@ mod tests {
     /// make, so the two are never quietly given one type again.
     #[test]
     fn cutoff_and_q_are_not_interchangeable() {
-        let right = compute_svf_coeffs(SvfType::LowPass, Hz(1000.0), Q(0.707), Db(0.0), 44100.0);
+        let right = SvfCoeffs::new(SvfType::LowPass, Hz(1000.0), Q(0.707), Db(0.0), 44100.0);
         // What the transposed call computes: a 0.707 Hz cutoff at Q 1000.
-        let swapped = compute_svf_coeffs(SvfType::LowPass, Hz(0.707), Q(1000.0), Db(0.0), 44100.0);
+        let swapped = SvfCoeffs::new(SvfType::LowPass, Hz(0.707), Q(1000.0), Db(0.0), 44100.0);
         assert!(
             (right.a2 - swapped.a2).abs() > 1e-6,
             "the swap has to be observable, or this test proves nothing"
@@ -1076,8 +1078,8 @@ mod tests {
 
     #[test]
     fn test_svf_coeffs_deterministic() {
-        let c1 = compute_svf_coeffs(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
-        let c2 = compute_svf_coeffs(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
+        let c1 = SvfCoeffs::new(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
+        let c2 = SvfCoeffs::new(SvfType::LowPass, 500.0, 0.707, 0.0, 44100.0);
         assert_eq!(c1.a1, c2.a1);
         assert_eq!(c1.a2, c2.a2);
         assert_eq!(c1.m0, c2.m0);

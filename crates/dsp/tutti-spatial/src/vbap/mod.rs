@@ -5,7 +5,7 @@
 //!   layout; [`VbapPannerControls`] move it while it renders.
 //! - [`build_vbap_mix`] assembles the whole `sources → panners → sum` graph,
 //!   including LFE bass management, into a `tutti_graph::GraphBuilder`;
-//!   [`vbap_mix_parts`] returns the same mix as owned nodes and edges, for a
+//!   [`VbapMixParts::new`] returns the same mix as owned nodes and edges, for a
 //!   graph built another way.
 //! - [`VbapError`] is what building a panner or mix can fail with, and
 //!   [`Result`] its alias.
@@ -22,7 +22,5 @@ mod node;
 mod panner;
 
 pub use error::{Result, VbapError};
-pub use mix::{
-    VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix, vbap_mix_parts,
-};
+pub use mix::{VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix};
 pub use node::{VbapPannerControls, VbapPannerNode};

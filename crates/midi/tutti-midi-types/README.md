@@ -23,7 +23,7 @@ Around it, six public modules:
 - [`translation`] — the MIDI 1↔2 boundary and its bit-scaling, also reachable
   at the root as [`convert`].
 
-The MIDI 2.0 Clip File codec ([`read_clip_file`] / [`write_clip_file`],
+The MIDI 2.0 Clip File codec ([`ParsedClipFile::from_bytes`] / [`write_clip_file`],
 M2-116), [`MidiMessage`], [`NoteId`] and the [`MidiIn`] / [`MidiOut`] traits
 are at the crate root. `midi2` and `midly` are re-exported whole, so a
 consumer matching this crate's version needs no dependency entry of its own.

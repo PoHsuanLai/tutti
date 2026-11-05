@@ -8,16 +8,14 @@ pub mod svf;
 pub use real::Real;
 
 pub use eq_band::{BandState, EqBandNode};
-pub use ladder::{
-    LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType, compute_ladder_coeffs,
-};
-pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType, compute_svf_coeffs};
+pub use ladder::{LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType};
+pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType};
 
 #[cfg(test)]
 pub(super) mod test_utils {
     use tutti_graph::Node;
 
-    pub fn make_impulse(len: usize) -> Vec<f32> {
+    pub fn impulse(len: usize) -> Vec<f32> {
         let mut buf = vec![0.0f32; len];
         buf[0] = 1.0;
         buf

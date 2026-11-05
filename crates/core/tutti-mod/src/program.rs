@@ -463,7 +463,7 @@ impl ControlProgram {
 
     /// A program of automation alone: the curve where it has a value, the
     /// knob elsewhere.
-    pub fn from_automation(curve: Arc<dyn Curve>) -> Self {
+    pub fn from_curve(curve: Arc<dyn Curve>) -> Self {
         Self {
             automation: Some(curve.frozen().unwrap_or(curve)),
             layers: Box::new([]),

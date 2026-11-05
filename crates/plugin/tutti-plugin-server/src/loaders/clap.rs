@@ -7,7 +7,7 @@
 //! notices and the server's [`AsyncEvent`]s.
 
 use std::path::Path;
-use tutti_clap_host::{ClapLoaded, ClapProcessorAny, LoadOptions};
+use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
 use tutti_plugin::server::{
     ContentScale, EditorPresence, EditorSize, LoadedPlugin, Normalized, ParamId, ParameterInfo,
     PluginAudio, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
@@ -91,7 +91,7 @@ struct Opened {
 pub struct ClapInstance {
     lifecycle: Lifecycle<ClapLoaded>,
     state: State,
-    hand: Hand<ClapProcessorAny>,
+    hand: Hand<ClapProcessor>,
     meta: Meta,
     /// What the plugin asked of the host since the last pass, reused.
     requests: Vec<Request>,

@@ -13,31 +13,52 @@
 use std::ops::{Deref, DerefMut};
 
 use tutti_clap_host::{
-    AudioBuffer, ClapController, ClapLoaded, ClapProcessContext, ClapProcessor, ClapSample,
+    AudioBuffer, ClapController, ClapLoaded, ClapProcessContext, ClapProcessor,
     instance::ProcessOutputRef,
 };
-use tutti_plugin_types::{PluginError, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{
+    AudioBufferMut, Loaded, PluginError, Prepare, RenderMode, Sample, SampleFormat, SampleRate,
+    Samples,
+};
+
+/// A sample width a suite names with a type (`Active<f32>`, `AudioBuffer32`):
+/// test-side sugar for the processor's runtime `SampleFormat`. The host has no
+/// sample type parameter; this only picks the format value and wraps a typed
+/// buffer for the one `process`.
+pub trait ClapSample: Sample {
+    /// The format an activation at this width negotiates.
+    const FORMAT: SampleFormat;
+    /// The buffer as the processor takes it.
+    fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, Self>) -> AudioBufferMut<'t, 'd>;
+}
+
+impl ClapSample for f32 {
+    const FORMAT: SampleFormat = SampleFormat::Float32;
+    fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, f32>) -> AudioBufferMut<'t, 'd> {
+        AudioBufferMut::F32(buffer)
+    }
+}
+
+impl ClapSample for f64 {
+    const FORMAT: SampleFormat = SampleFormat::Float64;
+    fn wrap<'t, 'd: 't>(buffer: AudioBuffer<'t, 'd, f64>) -> AudioBufferMut<'t, 'd> {
+        AudioBufferMut::F64(buffer)
+    }
+}
 
 /// The two halves of one activation.
 #[derive(Debug)]
 pub struct Active<T: ClapSample> {
-    pair: Option<(ClapProcessor<T>, ClapController)>,
+    pair: Option<(ClapProcessor, ClapController)>,
+    _width: std::marker::PhantomData<T>,
     prepare: Prepare,
-}
-
-fn format_of<T: ClapSample>() -> SampleFormat {
-    if T::requires_f64() {
-        SampleFormat::Float64
-    } else {
-        SampleFormat::Float32
-    }
 }
 
 fn prepare_for<T: ClapSample>(rate: f64, frames: u32) -> Prepare {
     Prepare {
         rate: SampleRate(rate),
         max_block: Samples(frames as usize),
-        format: format_of::<T>(),
+        format: T::FORMAT,
         mode: RenderMode::Realtime,
     }
 }
@@ -59,9 +80,10 @@ impl Activate for ClapLoaded {
         frames: u32,
     ) -> Result<Active<T>, (ClapLoaded, PluginError)> {
         let prepare = prepare_for::<T>(rate, frames);
-        match self.activate_typed::<T>(prepare) {
+        match <ClapLoaded as Loaded>::activate(self, prepare) {
             Ok(pair) => Ok(Active {
                 pair: Some(pair),
+                _width: std::marker::PhantomData,
                 prepare,
             }),
             Err(refused) => Err((
@@ -73,16 +95,16 @@ impl Activate for ClapLoaded {
 }
 
 impl<T: ClapSample> Active<T> {
-    fn pair(&self) -> &(ClapProcessor<T>, ClapController) {
+    fn pair(&self) -> &(ClapProcessor, ClapController) {
         self.pair.as_ref().expect("an Active holds its pair")
     }
 
-    fn pair_mut(&mut self) -> &mut (ClapProcessor<T>, ClapController) {
+    fn pair_mut(&mut self) -> &mut (ClapProcessor, ClapController) {
         self.pair.as_mut().expect("an Active holds its pair")
     }
 
     /// The realtime half.
-    pub fn processor(&mut self) -> &mut ClapProcessor<T> {
+    pub fn processor(&mut self) -> &mut ClapProcessor {
         &mut self.pair_mut().0
     }
 
@@ -92,7 +114,13 @@ impl<T: ClapSample> Active<T> {
         buffer: &mut AudioBuffer<T>,
         ctx: &ClapProcessContext<'_>,
     ) -> tutti_clap_host::Result<ProcessOutputRef<'_>> {
-        self.pair_mut().0.process(buffer, ctx)
+        let mut wrapped = T::wrap(AudioBuffer {
+            inputs: buffer.inputs,
+            outputs: &mut *buffer.outputs,
+            num_samples: buffer.num_samples,
+            sample_rate: buffer.sample_rate,
+        });
+        self.pair_mut().0.process(&mut wrapped, ctx)
     }
 
     /// [`ClapProcessor::reset`].
@@ -158,8 +186,8 @@ impl<T: ClapSample> Active<T> {
     /// Ends the activation: the plugin comes back deactivated.
     pub fn deactivate(mut self) -> ClapLoaded {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        ClapLoaded::deactivate_typed(processor, controller)
-            .map_err(|(_, _, reason)| reason)
+        <ClapLoaded as Loaded>::deactivate(processor, controller)
+            .map_err(|stuck| stuck.reason)
             .expect("the halves are a pair")
     }
 
@@ -172,11 +200,11 @@ impl<T: ClapSample> Active<T> {
     /// previous configuration is the server bridge's, tested there.)
     pub fn reconfigure(&mut self, rate: f64, frames: u32) -> Result<(), PluginError> {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        let loaded = ClapLoaded::deactivate_typed(processor, controller)
-            .map_err(|(_, _, reason)| reason)
+        let loaded = <ClapLoaded as Loaded>::deactivate(processor, controller)
+            .map_err(|stuck| stuck.reason)
             .expect("the halves are a pair");
         let wanted = prepare_for::<T>(rate, frames);
-        match loaded.activate_typed::<T>(wanted) {
+        match <ClapLoaded as Loaded>::activate(loaded, wanted) {
             Ok(pair) => {
                 self.pair = Some(pair);
                 self.prepare = wanted;

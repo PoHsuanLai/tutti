@@ -1,4 +1,4 @@
-//! Activation: `ClapLoaded`'s metadata accessors, [`activate_typed`] and the
+//! Activation: `ClapLoaded`'s metadata accessors, `activate_now` and the
 //! FFI pair `activate_plugin` / `deactivate_plugin` the transitions are built
 //! from, and the `Drop` teardown.
 //!
@@ -7,7 +7,6 @@
 //! express: the FFI ordering. A plugin that refuses `activate` comes back whole
 //! in [`Refused`].
 //!
-//! [`activate_typed`]: ClapLoaded::activate_typed
 
 use super::ClapLoaded;
 use super::config::{AudioScratch, RangeTable};
@@ -19,7 +18,7 @@ use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
-use tutti_plugin_types::{PluginError, Prepare, Refused, Request, taken};
+use tutti_plugin_types::{PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken};
 use tutti_types::ArcLend;
 
 /// Heap reservation for pooled per-call event scratch on a `ClapProcessor`,
@@ -91,24 +90,35 @@ impl ClapLoaded {
         );
     }
 
-    /// Activates the plugin at a sample format fixed by `T`, splitting it into
-    /// the realtime [`ClapProcessor<T>`] and the main-thread
-    /// [`ClapController`]. This is [`Loaded::activate`] for a user who fixes the
-    /// sample type at compile time; the trait's version picks `T` from
-    /// [`Prepare::format`] and wraps the processor in [`ClapProcessorAny`].
+    /// The format an activation runs at when `requested` is asked of this
+    /// plugin: 64-bit only when asked for and every port advertises it, else
+    /// 32-bit (`tutti_plugin_types::negotiate`, fed this plugin's capability as
+    /// last read). A caller that wants the fallback negotiates here and puts
+    /// the result in [`Prepare::format`]; [`Loaded::activate`] itself refuses a
+    /// 64-bit request the plugin cannot take rather than quietly changing it.
+    ///
+    /// [`Loaded::activate`]: tutti_plugin_types::Loaded::activate
+    #[must_use]
+    pub fn negotiate_format(&self, requested: SampleFormat) -> SampleFormat {
+        negotiate(requested, self.audio.supports_f64)
+    }
+
+    /// Activates the plugin at the sample format `prepare` names, splitting it
+    /// into the realtime [`ClapProcessor`] and the main-thread
+    /// [`ClapController`]. The format is a value of the processor, not a type:
+    /// it chooses the scratch the processor is built with, and each block is
+    /// matched against it once.
     ///
     /// The plugin's audio ports are read again first (they can change while it
     /// is deactivated, and the 64-bit flag is one of them), the render mode is
     /// applied, and the scratch is sized from what the plugin now declares.
     ///
-    /// [`Loaded::activate`]: tutti_plugin_types::Loaded::activate
-    /// [`ClapProcessorAny`]: super::ClapProcessorAny
-    ///
     /// # Errors
     ///
     /// [`Refused`] carries the **unconsumed** `ClapLoaded` beside the reason, so
     /// a refusal costs the configuration and not the instance: a plugin that
-    /// declines 64-bit audio is retried at `f32` against the same mapped
+    /// declines 64-bit audio is retried at `f32` (see
+    /// [`negotiate_format`](Self::negotiate_format)) against the same mapped
     /// library and the same instance. Both failure paths preserve it: the
     /// `f64` check returns before any FFI runs, and a plugin-side refusal
     /// leaves the instance untouched and not active.
@@ -121,10 +131,11 @@ impl ClapLoaded {
     // the caller can retry or fall back; boxing it would defeat that ownership
     // return and add a heap alloc on the (rare) failure path.
     #[allow(clippy::result_large_err)]
-    pub fn activate_typed<T: super::ClapSample>(
+    pub(crate) fn activate_now(
         mut self,
         prepare: Prepare,
-    ) -> std::result::Result<(ClapProcessor<T>, ClapController), Refused<Self>> {
+    ) -> std::result::Result<(ClapProcessor, ClapController), Refused<Self>> {
+        let wide = prepare.format == SampleFormat::Float64;
         self.assert_main_thread();
         let refuse = |plugin: Self, error: ClapError| Refused {
             plugin: Some(plugin),
@@ -149,7 +160,7 @@ impl ClapLoaded {
             return Err(refuse(self, e));
         }
 
-        if T::requires_f64() && !self.audio.supports_f64 {
+        if wide && !self.audio.supports_f64 {
             let err = ClapError::NotSupported(format!(
                 "Plugin '{}' does not support 64-bit audio processing",
                 self.info.name
@@ -162,11 +173,11 @@ impl ClapLoaded {
             self.audio = previous;
             return Err(refuse(self, e));
         }
-        self.audio.f64_active = T::requires_f64();
+        self.audio.f64_active = wide;
 
         let table = self.read_param_ranges();
         let max_frames = self.audio.max_frames as usize;
-        let mut scratch = AudioScratch::<T>::new();
+        let mut scratch = AudioScratch::new(prepare.format);
         let port_channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
             ports.iter().map(|c| u32::from(c.count())).collect()
         };
@@ -260,7 +271,7 @@ impl ClapLoaded {
         }
     }
 
-    /// Calls the plugin's `activate` FFI. Shared by `activate_typed` and the
+    /// Calls the plugin's `activate` FFI. Shared by `activate_now` and the
     /// transitions built on it.
     pub(crate) fn activate_plugin(&mut self) -> Result<()> {
         if let Err(e) = self
@@ -322,11 +333,7 @@ impl ClapLoaded {
 /// (`InputEventList::add_param_changes`). Also reserves the SysEx reassembly
 /// buffer (`InputEventList::reserve_sysex`). Off the audio thread; grows only
 /// (a smaller block keeps the room).
-fn reserve_input_events<T: super::ClapSample>(
-    scratch: &mut AudioScratch<T>,
-    table: &RangeTable,
-    max_frames: usize,
-) {
+fn reserve_input_events(scratch: &mut AudioScratch, table: &RangeTable, max_frames: usize) {
     let param_points =
         ParameterChanges::point_budget(table.ranges.len(), ParameterQueue::chunk_room(max_frames));
     let events = &mut scratch.input_events;
@@ -351,11 +358,7 @@ fn reserve_input_events<T: super::ClapSample>(
 /// so it never refuses a note-off; past it each of the plugin's parameters
 /// keeps its latest value. A push past either room is refused
 /// (`ClapProcessor::output_events_refused`).
-fn reserve_output_params<T: super::ClapSample>(
-    scratch: &mut AudioScratch<T>,
-    table: &RangeTable,
-    max_frames: usize,
-) {
+fn reserve_output_params(scratch: &mut AudioScratch, table: &RangeTable, max_frames: usize) {
     let queues = table.ranges.len().max(PARAM_QUEUE_CAPACITY);
     let points = ParameterQueue::chunk_room(max_frames);
     let budget = ParameterChanges::point_budget(queues, points);
@@ -404,7 +407,7 @@ mod tests {
     fn activation_reserves_the_pool_budget_not_params_times_room() {
         for params in [2_000u32, 16_384] {
             for frames in [512usize, 4096] {
-                let mut scratch = AudioScratch::<f32>::new();
+                let mut scratch = AudioScratch::new(SampleFormat::Float32);
                 let table = RangeTable {
                     ranges: (0..params).map(|id| (id, 0.0, 1.0)).collect(),
                     claims: true,
@@ -456,7 +459,7 @@ mod tests {
         use tutti_plugin_types::ParameterPoint;
         const PARAMS: u32 = 2_000;
         const FRAMES: usize = 512;
-        let mut scratch = AudioScratch::<f32>::new();
+        let mut scratch = AudioScratch::new(SampleFormat::Float32);
         let table = RangeTable {
             ranges: (0..PARAMS).map(|id| (id, 0.0, 1.0)).collect(),
             claims: true,

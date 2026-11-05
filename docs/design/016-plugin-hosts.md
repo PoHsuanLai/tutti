@@ -700,8 +700,9 @@ one.
   `take_*` flags on `HostState`.
 - `load` takes a `LoadOptions` (library path, plugin id) and no rate or block
   size: they are the activation's. `ClapLoaded::sample_rate` and `block_size` are
-  placeholders until the first activation. `activate_typed::<T>` is the fixed-type
-  form, with `deactivate_typed`.
+  placeholders until the first activation. The sample format is `Prepare::format`, a runtime value: `ClapProcessor`
+  has no sample type, and `ClapLoaded::negotiate_format` gives the format a
+  plugin without 64-bit ports falls back to.
 - `set_sample_rate`, `set_max_block_size`, `reactivate`, `needs_restart`,
   `run_main_thread_work` and `ClapError::Deactivated` are gone: a rate change is
   `HostOp::Reconfigure`, and a refused activation leaves the plugin loaded, so
@@ -713,7 +714,7 @@ one.
   for.)
 - `PluginIo<'a>` needs one lifetime for the channel tables and their slices
   (`AudioBufferMut<'a, 'a>`), which a caller holding `AudioBufferMut<'t, 'd>`
-  cannot produce without copying the tables. `ClapProcessorAny::render` takes the
+  cannot produce without copying the tables. `ClapProcessor::render` takes the
   buffer, context and output apart and `Processor::process` is that over a
   `PluginIo`; the server's bridge calls `render` until step 4 settles the
   lifetimes.
@@ -985,10 +986,10 @@ and from CLAP and VST3:
   half that sees samples. Each host crate's `Processor` for the trait is the enum
   its server loader has today (`ClapInner` over `ClapActive<f32>` and
   `ClapActive<f64>`, `VstInner` for VST3), moved into the host crate as
-  `ClapProcessorAny` and `Vst3ProcessorAny`. `process` matches
-  `AudioBufferMut::{F32, F64}` to the arm. The typed `ClapProcessor<T>` and
-  `Vst3Processor<T>` stay for a user who fixes the sample type at compile time,
-  through an inherent `activate_typed::<T>`. The Controller has no sample type:
+  `ClapProcessor` and `Vst3ProcessorAny`. `process` matches
+  `AudioBufferMut::{F32, F64}` to the arm. The typed `Vst3Processor<T>` stays for a user who fixes the sample type at compile time,
+  through an inherent `activate_typed::<T>`; CLAP has no typed form (see its
+  runtime-format note). The Controller has no sample type:
   `ClapController`, `Vst3Controller`, `Vst2Controller`, `AuController`.
 - **Not object-safe, on purpose.** `Loaded`, `Processor` and `Controller` carry
   each other as associated types and the transitions take values. The typestate
@@ -1058,15 +1059,32 @@ and from CLAP and VST3:
   replacing a bad one with an inert header; a SysEx's bytes must lie inside the
   storage it was handed) and an `EventSink` (a decoded `PluginEvent` per
   push). The raw lists are built on the stack of the call.
-- **Audio buffers.** `PortScratch<T>` and `ProcessCall` bind a block's slices
+- **Audio buffers.** `PortScratch` and `ProcessCall` bind a block's slices
   and run `process`. It refuses a channel shorter than the block, which the
   host crate's pointer tables never checked. `ClapSample` and the typed
-  processors are unchanged by this step.
+  processors were unchanged by this step; the runtime-format step removes them.
 - **Tests.** The unit tests that used stub vtables moved with the code they
   cover. The ones that drove the raw lists now sit in `tests/clap_event_lists.rs`
   (the host crate forbids `unsafe`, a test may use it) over the FFI crate's
   `#[doc(hidden)]` `*_raw_for_test` hooks (feature `test-support`), and the suites that call the callbacks
   through `ClapHost`'s vtable get it from `tests/support/raw.rs`.
+
+**As built (CLAP runtime format).** The sample format is a value, not a type
+parameter.
+
+- `ClapProcessor` is one type with a `SampleFormat` fixed at activation
+  (`Prepare::format`). `ClapProcessor<T>`, `ClapProcessorAny`, `ClapSample`,
+  `activate_typed` and `deactivate_typed` are gone; `ClapProcessor::process` takes
+  an `AudioBufferMut` and matches it to the width once per block.
+- The FFI crate's `PortScratch::new(SampleFormat)` holds the pool for that
+  width, and `ProcessCall` carries a `Planar` (`F32` or `F64` tables). One
+  match per block enters a private generic kernel, so each width is a separate
+  monomorphisation behind the match. A buffer of the other width is
+  `ProcessError::FormatMismatch` (`ClapError::FormatMismatch` in the host); it
+  is not converted.
+- `activate` refuses a 64-bit request on a plugin without 64-bit ports.
+  `ClapLoaded::negotiate_format(requested)` is `negotiate` over the plugin's
+  capability, the fallback to 32-bit a caller applies before it activates.
 
 #### The split reaches one instance: why that is sound
 
@@ -1245,7 +1263,7 @@ pub enum AnyPlugin {
 }
 ```
 
-`AnyProcessor` is the same enum over the four Processors (`Clap(ClapProcessorAny)`,
+`AnyProcessor` is the same enum over the four Processors (`Clap(ClapProcessor)`,
 `Vst3(Vst3ProcessorAny)`, `Vst2(Vst2Processor)`, `Au(AuProcessor)`), and
 implements `Processor`. It is what the realtime thread holds.
 
@@ -1675,14 +1693,14 @@ Existing items cite their file and line. "New" means it does not exist today.
 
 | Today | Becomes |
 |---|---|
-| `ClapLoaded` (`instance/mod.rs:66`) | `impl Loaded`; `type Processor = ClapProcessorAny`, `type Controller = ClapController` (both new) |
-| `ClapActive<T>` (`instance/mod.rs:99`) | splits: `ClapProcessor<T>` (`start_processing`, `process`, `stop_processing`, `reset`, `flush`, the audio claim becomes its `&mut`) and `ClapController` (everything else, no `T`). `ClapProcessorAny` (new: the `F32`/`F64` enum of `ClapInner`, `loaders/clap.rs:174`) is the trait's `Processor` |
+| `ClapLoaded` (`instance/mod.rs:66`) | `impl Loaded`; `type Processor = ClapProcessor`, `type Controller = ClapController` (both new) |
+| `ClapActive<T>` (`instance/mod.rs:99`) | splits: `ClapProcessor` (`start_processing`, `process`, `stop_processing`, `reset`, `flush`, the audio claim becomes its `&mut`) and `ClapController` (everything else, no `T`). `ClapProcessor` holds a `SampleFormat` and is the trait's `Processor` |
 | `ClapLoaded::load(impl AsRef<Path>, f64, u32)` and `load_plugin`, `load_with_library`, `load_selected`, `load_editor_only` (`instance/load.rs`) | inherent. The rate and block arguments go: they arrive in `Prepare`. One `load` plus a `LoadOptions` |
-| `ClapLoaded::activate::<T>(self) -> Result<ClapActive<T>, (Self, ClapError)>` (`lifecycle.rs:109`) | `Loaded::activate(self, Prepare) -> Result<(ClapProcessorAny, ClapController), Refused<Self>>`; `Prepare::format` picks `T`, `Prepare` replaces the rate and block read from `AudioConfig`; `activate_typed::<T>` is the fixed-type form |
+| `ClapLoaded::activate::<T>(self) -> Result<ClapActive<T>, (Self, ClapError)>` (`lifecycle.rs:109`) | `Loaded::activate(self, Prepare) -> Result<(ClapProcessor, ClapController), Refused<Self>>`; `Prepare::format` is stored in the processor, `Prepare` replaces the rate and block read from `AudioConfig`; `ClapLoaded::activate_now` is the crate-internal form |
 | `ClapActive::deactivate(self) -> ClapLoaded` (`lifecycle.rs:329`) | `Loaded::deactivate(processor, controller)`; `Stuck` only for halves of two activations |
 | `ClapActive::reactivate`, `set_sample_rate`, `set_max_block_size` (`lifecycle.rs:441,427,469`) | deleted: `HostOp::Reconfigure` plans `CallDeactivate`, `CallActivate` |
 | `ClapActive::rescan_params` (`lifecycle.rs:567`) | `Control::rescan_parameters(scope)` |
-| `ClapActive::process(&mut AudioBuffer<T>, &ClapProcessContext)` (`instance/audio.rs:295`) | `Processor::process(&mut PluginIo)` on `ClapProcessorAny`; `stop` is `stop_processing` |
+| `ClapActive::process(&mut AudioBuffer<T>, &ClapProcessContext)` (`instance/audio.rs:295`) | `Processor::process(&mut PluginIo)` on `ClapProcessor`; `stop` is `stop_processing` |
 | `get_latency() -> u32` (`ports.rs:262`), `get_tail() -> Option<u32>` (`ports.rs:279`) | `Controller::latency() -> Samples`, `Controller::tail() -> PluginTail` |
 | `get_parameter(u32) -> Option<f64>` plain (`params.rs:99`), `get_parameter_list` (`params.rs:190`) | `Control::parameter(ParamId) -> Option<Normalized>`, `Control::parameters` |
 | `get_state`, `set_state` (`state.rs:23,50`) | `Control::save_state`, `load_state`; `state_with_context`, `set_state_with_context` stay inherent |
@@ -1896,7 +1914,7 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    **2b** is the CLAP and VST3 impls and the server loaders' switch. `Control`, `Loaded`,
    `Processor`, `Controller`, `Refused`, `Stuck`, `PluginIo`, `Lifecycle`, `Hand`
    (local only) and `Hosted`; `RequestWord` and `EditRing` with their loom models;
-   `ClapProcessorAny`, `ClapController`, `Vst3ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands
+   `ClapProcessor`, `ClapController`, `Vst3ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands
    the plugin back; the `FakePlugin`. The server's CLAP and VST3 loaders become
    the impls plus a probe, and `Lifecycle::drive` replaces `service_requests` and
    `poll_restart`.

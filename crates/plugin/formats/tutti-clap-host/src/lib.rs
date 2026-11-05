@@ -14,8 +14,7 @@ pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
 pub use instance::{
-    ClapController, ClapLoaded, ClapProcessContext, ClapProcessor, ClapProcessorAny, ClapSample,
-    LoadOptions, descriptor_of,
+    ClapController, ClapLoaded, ClapProcessContext, ClapProcessor, LoadOptions, descriptor_of,
 };
 // `ParamMapping` (param-indication) is part of the speculative surface — gated.
 #[cfg(feature = "clap-extras")]

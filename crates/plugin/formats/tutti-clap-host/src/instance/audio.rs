@@ -4,7 +4,7 @@ use super::ClapProcessor;
 use super::config::AudioScratch;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::types::{AudioBuffer, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
+use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
     CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
@@ -14,7 +14,8 @@ use clap_sys::events::{
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process_status};
 use std::sync::atomic::Ordering;
-use tutti_clap_ffi::{ProcessCall, ProcessError};
+use tutti_clap_ffi::{Planar, ProcessCall, ProcessError};
+use tutti_plugin_types::AudioBufferMut;
 use tutti_plugin_types::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
@@ -61,8 +62,9 @@ impl<'a> ProcessOutputRef<'a> {
 ///
 /// ```no_run
 /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-/// # use tutti_clap_host::{AudioBuffer32, ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
-/// # fn ex(plugin: &mut ClapProcessor<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+/// # use tutti_plugin_types::AudioBufferMut;
+/// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+/// # fn ex(plugin: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
 /// let transport = TransportInfo::default().with_tempo(120.0);
 /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
@@ -90,34 +92,14 @@ pub struct ClapProcessContext<'a> {
     pub transport: Option<&'a TransportInfo>,
 }
 
-/// The two sample widths a CLAP activation runs at, `f32` and `f64`.
-///
-/// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields; the
-/// FFI crate fills the right one ([`tutti_clap_ffi::Sample`]), and this trait
-/// only names which width needs the plugin's 64-bit support.
-pub trait ClapSample: tutti_plugin_types::Sample + tutti_clap_ffi::Sample {
-    /// Whether this width needs every port to advertise 64-bit support.
-    fn requires_f64() -> bool;
-}
-
-impl ClapSample for f32 {
-    fn requires_f64() -> bool {
-        false
-    }
-}
-
-impl ClapSample for f64 {
-    fn requires_f64() -> bool {
-        true
-    }
-}
-
-impl<T: ClapSample> ClapProcessor<T> {
+impl ClapProcessor {
     /// Processes one block of audio through the plugin.
     ///
-    /// The sample format is fixed at activation: `ClapProcessor<f32>` takes an
-    /// `AudioBuffer32`, `ClapProcessor<f64>` an `AudioBuffer64`. (The 64-bit
-    /// support check happened once in [`ClapLoaded::activate_typed`](super::ClapLoaded::activate_typed).)
+    /// The sample format is a value fixed at activation
+    /// ([`format`](Self::format)): the block's [`AudioBufferMut`] must be the
+    /// same width, matched once per block, and a block of the other width is
+    /// refused ([`ClapError::FormatMismatch`]) before the plugin is called. (The
+    /// 64-bit support check happened once in `Loaded::activate`.)
     ///
     /// Call from the audio thread. The first call after activation (or after
     /// a [`stop`](Self::stop)) also runs the plugin's `start_processing`. The
@@ -130,6 +112,8 @@ impl<T: ClapSample> ClapProcessor<T> {
     ///
     /// # Errors
     ///
+    /// - [`ClapError::FormatMismatch`] if the buffer's width is not the one the
+    ///   processor was activated with.
     /// - [`ClapError::BlockTooLarge`] if the buffer holds more frames than the
     ///   instance was activated for; activate again with a larger
     ///   `Prepare::max_block` off the audio thread.
@@ -143,8 +127,9 @@ impl<T: ClapSample> ClapProcessor<T> {
     ///
     /// ```no_run
     /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-    /// # use tutti_clap_host::{AudioBuffer32, ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
-    /// # fn ex(active: &mut ClapProcessor<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+    /// # use tutti_plugin_types::AudioBufferMut;
+    /// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
+    /// # fn ex(active: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {
     /// let transport = TransportInfo::default().with_tempo(120.0);
     /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
@@ -157,12 +142,35 @@ impl<T: ClapSample> ClapProcessor<T> {
     /// ```
     pub fn process(
         &mut self,
-        buffer: &mut AudioBuffer<T>,
+        buffer: &mut AudioBufferMut<'_, '_>,
         ctx: &ClapProcessContext<'_>,
     ) -> Result<ProcessOutputRef<'_>> {
         let empty_params = ParameterChanges::new();
         let params = ctx.params.unwrap_or(&empty_params);
-        self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
+        let (frames, audio) = match buffer {
+            AudioBufferMut::F32(b) => (
+                b.num_samples,
+                Planar::F32 {
+                    inputs: b.inputs,
+                    outputs: &mut *b.outputs,
+                },
+            ),
+            AudioBufferMut::F64(b) => (
+                b.num_samples,
+                Planar::F64 {
+                    inputs: b.inputs,
+                    outputs: &mut *b.outputs,
+                },
+            ),
+        };
+        self.process_impl(
+            audio,
+            frames,
+            ctx.midi,
+            params,
+            ctx.expressions,
+            ctx.transport,
+        )
     }
 
     /// Parameter points the host sent past the room this instance was
@@ -258,7 +266,8 @@ impl<T: ClapSample> ClapProcessor<T> {
 
     fn process_impl(
         &mut self,
-        buffer: &mut AudioBuffer<T>,
+        audio: Planar<'_, '_>,
+        frames: usize,
         midi_events: &[MidiEvent],
         param_changes: &ParameterChanges,
         note_expressions: &[ClapNoteExpression],
@@ -269,7 +278,7 @@ impl<T: ClapSample> ClapProcessor<T> {
             return Err(ClapError::NotActive);
         }
 
-        let num_samples = buffer.num_samples as u32;
+        let num_samples = frames as u32;
 
         if num_samples > self.max_frames {
             return Err(ClapError::BlockTooLarge {
@@ -316,7 +325,7 @@ impl<T: ClapSample> ClapProcessor<T> {
 
         self.scratch.output_events.clear();
 
-        self.do_process(buffer, num_samples, transport)
+        self.do_process(audio, num_samples, transport)
     }
 
     /// Hands the block to the plugin through the FFI crate, which binds the
@@ -325,7 +334,7 @@ impl<T: ClapSample> ClapProcessor<T> {
     /// zeroes the outputs on `CLAP_PROCESS_ERROR`.
     fn do_process(
         &mut self,
-        buffer: &mut AudioBuffer<T>,
+        audio: Planar<'_, '_>,
         num_samples: u32,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
@@ -342,8 +351,7 @@ impl<T: ClapSample> ClapProcessor<T> {
         } = &mut self.scratch;
         let outcome = self.audio_side.process(ProcessCall {
             scratch: process,
-            inputs: buffer.inputs,
-            outputs: &mut *buffer.outputs,
+            audio,
             input_ports: &self.input_ports,
             output_ports: &self.output_ports,
             frames: num_samples,
@@ -359,6 +367,7 @@ impl<T: ClapSample> ClapProcessor<T> {
             Ok(status) => status,
             Err(ProcessError::Retired) => return Err(ClapError::NotActive),
             Err(ProcessError::StartFailed) => return Err(ClapError::StartProcessingFailed),
+            Err(ProcessError::FormatMismatch) => return Err(ClapError::FormatMismatch),
             Err(ProcessError::BufferTooShort) => return Err(ClapError::BufferTooShort),
             Err(ProcessError::LayoutMismatch) => return Err(ClapError::LayoutMismatch),
             Err(ProcessError::BlockTooLarge) => {

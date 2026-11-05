@@ -250,7 +250,7 @@ Three modelling strategies are in use, and the choice is forced by the format's
 own contract rather than picked for consistency.
 
 **Consuming type-state — VST3 and CLAP.** `Vst3Loaded → Vst3Instance<T>` and
-`ClapLoaded → (ClapProcessor<T>, ClapController)`. Both formats define a large, fully legal
+`ClapLoaded → (ClapProcessor, ClapController)`. Both formats define a large, fully legal
 pre-activation surface: the parameter tree, units and program lists, note
 expression, state save/restore and the editor are all reachable before any audio
 buffer exists, and a host is *expected* to read them there. "Loaded but not

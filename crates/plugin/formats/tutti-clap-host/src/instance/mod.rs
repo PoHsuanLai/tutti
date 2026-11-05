@@ -39,13 +39,13 @@ mod thread_pool;
 #[cfg(feature = "clap-extras")]
 mod undo;
 
-pub use audio::{ClapProcessContext, ClapSample, ProcessOutput, ProcessOutputRef};
+pub use audio::{ClapProcessContext, ProcessOutput, ProcessOutputRef};
 pub use control::descriptor_of;
 pub use controller::ClapController;
 pub use load::LoadOptions;
 #[cfg(feature = "clap-extras")]
 pub use params::ParamMapping;
-pub use processor::{ClapProcessor, ClapProcessorAny};
+pub use processor::ClapProcessor;
 
 use crate::host::HostState;
 use crate::types::PluginInfo;
@@ -58,8 +58,7 @@ use tutti_plugin_types::PluginDescriptor;
 ///
 /// This is the state for GUI / parameter / state work — CLAP's `gui`,
 /// `params`, and `state` extensions all work without activation. Activate it
-/// with [`Loaded::activate`](tutti_plugin_types::Loaded::activate) (or
-/// [`activate_typed`](ClapLoaded::activate_typed) for a fixed sample type) to
+/// with [`Loaded::activate`](tutti_plugin_types::Loaded::activate) to
 /// get a [`ClapProcessor`] that can render; `process` does not exist here, and
 /// the type system enforces that you activate first.
 pub struct ClapLoaded {

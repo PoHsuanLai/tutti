@@ -8,15 +8,14 @@ use std::sync::Arc;
 
 use tutti_plugin_types::{
     Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
-    Prepare, Processor, Refused, RestartRules, SampleFormat, Samples, Stuck,
+    Prepare, Refused, RestartRules, Samples, Stuck,
 };
 use tutti_types::ArcLend;
 
+use super::ClapLoaded;
 use super::config::RangeTable;
-use super::processor::{ClapProcessor, ClapProcessorAny};
+use super::processor::ClapProcessor;
 use super::thread_pool::PoolCell;
-use super::{ClapLoaded, ClapSample};
-use tutti_clap_ffi::AudioSide;
 
 /// The main-thread half of an activation: the whole control surface of a
 /// [`ClapLoaded`], reached through `Deref`, with parameter writes redirected
@@ -132,7 +131,7 @@ impl Drop for ClapController {
 
 impl Controller for ClapController {
     type Loaded = ClapLoaded;
-    type Processor = ClapProcessorAny;
+    type Processor = ClapProcessor;
 
     fn latency(&self) -> Samples {
         Samples(self.latency_samples() as usize)
@@ -196,19 +195,15 @@ impl ClapController {
 }
 
 impl ClapLoaded {
-    /// Rejoins the halves of one activation of any sample type: checks they are
-    /// a pair, stops the Processor, drops it, and hands back the plugin
-    /// deactivated.
+    /// Rejoins the halves of one activation: checks they are a pair, stops the
+    /// Processor, drops it, and hands back the plugin deactivated.
     // The error carries the halves and the whole plugin back, which is the point.
     #[allow(clippy::result_large_err)]
-    fn rejoin<P>(
-        mut processor: P,
+    fn rejoin(
+        mut processor: ClapProcessor,
         mut controller: ClapController,
-        side_of: impl Fn(&P) -> &AudioSide,
-        stop: impl FnOnce(&mut P),
-        take_edits: impl FnOnce(&mut P, &mut Vec<(ParamId, Normalized)>),
-    ) -> Result<ClapLoaded, (P, ClapController, PluginError)> {
-        if !controller.loaded().plugin.owns(side_of(&processor)) {
+    ) -> Result<ClapLoaded, (ClapProcessor, ClapController, PluginError)> {
+        if !controller.loaded().plugin.owns(processor.audio_side()) {
             return Err((
                 processor,
                 controller,
@@ -223,11 +218,11 @@ impl ClapLoaded {
                 PluginError::Other("the activation has a third handle".into()),
             ));
         }
-        stop(&mut processor);
+        processor.stop();
         // Edits no block has drained would die with the ring. Older first: what
         // the ring held, then what a full ring had refused.
         let mut pending = Vec::new();
-        take_edits(&mut processor, &mut pending);
+        processor.take_edits(&mut pending);
         pending.append(&mut std::mem::take(&mut controller.unsent));
         drop(processor);
         let mut loaded = controller
@@ -242,61 +237,24 @@ impl ClapLoaded {
         }
         Ok(loaded)
     }
-
-    /// [`Loaded::deactivate`] for a processor of a fixed sample type, as
-    /// [`activate_typed`](Self::activate_typed) made it.
-    ///
-    /// # Errors
-    ///
-    /// The halves come back, with the reason, when they are of two activations.
-    #[allow(clippy::result_large_err)]
-    pub fn deactivate_typed<T: ClapSample>(
-        processor: ClapProcessor<T>,
-        controller: ClapController,
-    ) -> Result<ClapLoaded, (ClapProcessor<T>, ClapController, PluginError)> {
-        Self::rejoin(
-            processor,
-            controller,
-            |p| p.audio_side(),
-            ClapProcessor::stop,
-            ClapProcessor::take_edits,
-        )
-    }
 }
 
 impl Loaded for ClapLoaded {
-    type Processor = ClapProcessorAny;
+    type Processor = ClapProcessor;
     type Controller = ClapController;
 
     /// CLAP restarts for latency and for the audio ports.
     const RESTARTS: RestartRules = RestartRules::CLAP;
 
-    fn activate(
-        self,
-        prepare: Prepare,
-    ) -> Result<(ClapProcessorAny, ClapController), Refused<Self>> {
-        match prepare.format {
-            SampleFormat::Float64 => self
-                .activate_typed::<f64>(prepare)
-                .map(|(p, c)| (ClapProcessorAny::F64(p), c)),
-            _ => self
-                .activate_typed::<f32>(prepare)
-                .map(|(p, c)| (ClapProcessorAny::F32(p), c)),
-        }
+    fn activate(self, prepare: Prepare) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
+        self.activate_now(prepare)
     }
 
     fn deactivate(
-        processor: ClapProcessorAny,
+        processor: ClapProcessor,
         controller: ClapController,
-    ) -> Result<Self, Stuck<ClapProcessorAny, ClapController>> {
-        Self::rejoin(
-            processor,
-            controller,
-            |p| p.audio_side(),
-            Processor::stop,
-            ClapProcessorAny::take_edits,
-        )
-        .map_err(|(processor, controller, reason)| Stuck {
+    ) -> Result<Self, Stuck<ClapProcessor, ClapController>> {
+        Self::rejoin(processor, controller).map_err(|(processor, controller, reason)| Stuck {
             processor,
             controller,
             reason,

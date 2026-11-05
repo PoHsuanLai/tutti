@@ -12,6 +12,8 @@ use clap_sys::process::{
     CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, clap_process, clap_process_status,
 };
 
+use tutti_plugin_types::SampleFormat;
+
 use crate::events::{EventSink, EventSource, with_input, with_output};
 use crate::plugin::Core;
 use crate::pool::{PoolHandle, PoolRequest};
@@ -23,8 +25,9 @@ mod sealed {
 }
 
 /// A sample width CLAP carries: `f32` through `data32`, `f64` through
-/// `data64`. Sealed: a third width has no field to travel in.
-pub trait Sample: Copy + Default + Send + sealed::Sealed + 'static {
+/// `data64`. Private: the width is a runtime [`SampleFormat`], and this only
+/// names the two kernels it selects.
+pub(crate) trait Sample: Copy + Default + Send + sealed::Sealed + 'static {
     /// A port buffer over `channel_count` channel pointers at `ptrs`.
     #[doc(hidden)]
     fn port_buffer(ptrs: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
@@ -70,19 +73,22 @@ pub enum ProcessError {
     /// buffers than the scratch was sized for (`resize_for`); nothing was
     /// called, and nothing allocated.
     LayoutMismatch,
+    /// The block's sample width is not the width the scratch was made for;
+    /// nothing was called.
+    FormatMismatch,
     /// The plugin returned `CLAP_PROCESS_ERROR`; its outputs were zeroed.
     PluginReturnedError,
 }
 
-/// The channel-pointer tables of a port layout, and the silent channels that
-/// stand in for any the caller does not supply.
+/// The channel-pointer tables of one sample width, and the silent channels
+/// that stand in for any the caller does not supply.
 ///
-/// Sized once off the audio thread ([`resize_for`](Self::resize_for)) so that
+/// Sized once off the audio thread (`resize_for`) so that
 /// `process` allocates nothing. The pointers it holds are rewritten at the
 /// start of every block from that block's slices and read only inside the same
 /// `process` call, so none outlives the borrow it came from.
 #[derive(Debug)]
-pub struct PortScratch<T: Sample> {
+struct Typed<T: Sample> {
     pad: Vec<Vec<T>>,
     input_ptrs: Vec<*mut T>,
     output_ptrs: Vec<*mut T>,
@@ -103,18 +109,11 @@ struct Capacity {
 // SAFETY: the raw pointers are scratch rewritten and read inside one `process`
 // call and never dereferenced across calls or threads; the rest is `Vec`s of
 // `T: Send`.
-unsafe impl<T: Sample> Send for PortScratch<T> {}
+unsafe impl<T: Sample> Send for Typed<T> {}
 
-impl<T: Sample> Default for PortScratch<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Sample> PortScratch<T> {
-    /// An empty scratch; [`resize_for`](Self::resize_for) before use.
-    #[must_use]
-    pub fn new() -> Self {
+impl<T: Sample> Typed<T> {
+    /// An empty scratch; `resize_for` before use.
+    fn new() -> Self {
         Self {
             pad: Vec::new(),
             input_ptrs: Vec::new(),
@@ -127,7 +126,7 @@ impl<T: Sample> PortScratch<T> {
 
     /// Sizes the tables for ports of `inputs` / `outputs` channels each and
     /// blocks up to `max_frames`. Allocates; off the audio thread.
-    pub fn resize_for(&mut self, inputs: &[u32], outputs: &[u32], max_frames: usize) {
+    fn resize_for(&mut self, inputs: &[u32], outputs: &[u32], max_frames: usize) {
         let in_total: usize = inputs.iter().map(|&c| c as usize).sum();
         let out_total: usize = outputs.iter().map(|&c| c as usize).sum();
         self.pad.clear();
@@ -228,14 +227,84 @@ impl<T: Sample> PortScratch<T> {
     }
 }
 
+/// Which width a scratch holds, as a value.
+#[derive(Debug)]
+enum Pool {
+    F32(Typed<f32>),
+    F64(Typed<f64>),
+}
+
+/// The channel-pointer tables of a port layout at one sample format, and the
+/// silent channels that stand in for any the caller does not supply.
+///
+/// The format is a value chosen when the scratch is made (the activation's
+/// negotiated one); `process` matches it once per block against the width of
+/// the caller's buffers and runs one of two kernels. Sized once off the audio
+/// thread ([`resize_for`](Self::resize_for)) so that `process` allocates
+/// nothing; the pointers it holds are rewritten at the start of every block
+/// and read only inside the same `process` call.
+#[derive(Debug)]
+pub struct PortScratch {
+    pool: Pool,
+}
+
+impl PortScratch {
+    /// An empty scratch for `format`; [`resize_for`](Self::resize_for) before
+    /// use.
+    #[must_use]
+    pub fn new(format: SampleFormat) -> Self {
+        Self {
+            pool: match format {
+                SampleFormat::Float32 => Pool::F32(Typed::new()),
+                SampleFormat::Float64 => Pool::F64(Typed::new()),
+            },
+        }
+    }
+
+    /// The format this scratch was made for.
+    #[must_use]
+    pub fn format(&self) -> SampleFormat {
+        match self.pool {
+            Pool::F32(_) => SampleFormat::Float32,
+            Pool::F64(_) => SampleFormat::Float64,
+        }
+    }
+
+    /// Sizes the tables for ports of `inputs` / `outputs` channels each and
+    /// blocks up to `max_frames`. Allocates; off the audio thread.
+    pub fn resize_for(&mut self, inputs: &[u32], outputs: &[u32], max_frames: usize) {
+        match &mut self.pool {
+            Pool::F32(t) => t.resize_for(inputs, outputs, max_frames),
+            Pool::F64(t) => t.resize_for(inputs, outputs, max_frames),
+        }
+    }
+}
+
+/// A block's planar channels at their width.
+#[derive(Debug)]
+pub enum Planar<'a, 'b> {
+    /// 32-bit channels.
+    F32 {
+        /// Input channels.
+        inputs: &'a [&'b [f32]],
+        /// Output channels.
+        outputs: &'a mut [&'b mut [f32]],
+    },
+    /// 64-bit channels.
+    F64 {
+        /// Input channels.
+        inputs: &'a [&'b [f64]],
+        /// Output channels.
+        outputs: &'a mut [&'b mut [f64]],
+    },
+}
+
 /// Everything one block hands the plugin.
-pub struct ProcessCall<'a, 'b, T: Sample> {
-    /// The channel tables.
-    pub scratch: &'a mut PortScratch<T>,
-    /// The caller's input channels.
-    pub inputs: &'a [&'b [T]],
-    /// The caller's output channels.
-    pub outputs: &'a mut [&'b mut [T]],
+pub struct ProcessCall<'a, 'b> {
+    /// The channel tables, at the activation's format.
+    pub scratch: &'a mut PortScratch,
+    /// The caller's channels, at the same width as the scratch.
+    pub audio: Planar<'a, 'b>,
     /// Channels of each input port.
     pub input_ports: &'a [u32],
     /// Channels of each output port.
@@ -254,7 +323,7 @@ pub struct ProcessCall<'a, 'b, T: Sample> {
     pub pool: Option<&'a PoolHandle>,
 }
 
-impl<T: Sample> std::fmt::Debug for ProcessCall<'_, '_, T> {
+impl std::fmt::Debug for ProcessCall<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProcessCall")
             .field("frames", &self.frames)
@@ -262,6 +331,18 @@ impl<T: Sample> std::fmt::Debug for ProcessCall<'_, '_, T> {
             .field("output_ports", &self.output_ports)
             .finish_non_exhaustive()
     }
+}
+
+/// What a block carries besides its channels, once the width is chosen.
+struct Rest<'a> {
+    input_ports: &'a [u32],
+    output_ports: &'a [u32],
+    frames: u32,
+    steady_time: i64,
+    transport: Option<&'a clap_event_transport>,
+    in_events: &'a dyn EventSource,
+    out_events: &'a mut dyn EventSink,
+    pool: Option<&'a PoolHandle>,
 }
 
 /// The audio-thread half of one activation: the entries `process` runs
@@ -348,14 +429,13 @@ impl AudioSide {
     /// # Errors
     /// See [`ProcessError`]; every error but `PluginReturnedError` leaves the
     /// plugin uncalled.
-    pub fn process<T: Sample>(
+    pub fn process(
         &mut self,
-        call: ProcessCall<'_, '_, T>,
+        call: ProcessCall<'_, '_>,
     ) -> Result<clap_process_status, ProcessError> {
         let ProcessCall {
             scratch,
-            inputs,
-            outputs,
+            audio,
             input_ports,
             output_ports,
             frames,
@@ -365,6 +445,45 @@ impl AudioSide {
             out_events,
             pool,
         } = call;
+        let rest = Rest {
+            input_ports,
+            output_ports,
+            frames,
+            steady_time,
+            transport,
+            in_events,
+            out_events,
+            pool,
+        };
+        // One match per block selects the kernel for the block's width.
+        match (&mut scratch.pool, audio) {
+            (Pool::F32(typed), Planar::F32 { inputs, outputs }) => {
+                self.process_typed(typed, inputs, outputs, rest)
+            }
+            (Pool::F64(typed), Planar::F64 { inputs, outputs }) => {
+                self.process_typed(typed, inputs, outputs, rest)
+            }
+            _ => Err(ProcessError::FormatMismatch),
+        }
+    }
+
+    fn process_typed<T: Sample>(
+        &mut self,
+        scratch: &mut Typed<T>,
+        inputs: &[&[T]],
+        outputs: &mut [&mut [T]],
+        rest: Rest<'_>,
+    ) -> Result<clap_process_status, ProcessError> {
+        let Rest {
+            input_ports,
+            output_ports,
+            frames,
+            steady_time,
+            transport,
+            in_events,
+            out_events,
+            pool,
+        } = rest;
         let _claim = self.core.roles.claim();
         if self.is_retired() {
             return Err(ProcessError::Retired);
@@ -455,7 +574,7 @@ mod tests {
         let input_ports = [2, 2];
         let output_ports = [2];
         let max_frames = 512usize;
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = Typed::<f32>::new();
         scratch.resize_for(&input_ports, &output_ports, max_frames);
 
         // The caller provides 2 input channels and 2 outputs.
@@ -501,7 +620,7 @@ mod tests {
     /// the allocation gate aborts the test.
     #[test]
     fn a_layout_the_scratch_was_not_sized_for_is_refused_without_allocating() {
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = Typed::<f32>::new();
         scratch.resize_for(&[2, 2], &[2], 512);
         let in_a = [0.0f32; 512];
         let in_b = [0.0f32; 512];
@@ -534,7 +653,7 @@ mod tests {
         let input_ports = [4];
         let output_ports = [2];
         let max_frames = 256usize;
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = Typed::<f32>::new();
         scratch.resize_for(&input_ports, &output_ports, max_frames);
         for channel in &mut scratch.pad {
             channel.fill(1.0);
@@ -589,7 +708,7 @@ mod tests {
     #[test]
     fn a_channel_shorter_than_the_block_is_refused() {
         let ports = [1];
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = Typed::<f32>::new();
         scratch.resize_for(&ports, &ports, 64);
         let short = [0.0f32; 32];
         let mut out = [0.0f32; 64];
@@ -609,7 +728,7 @@ mod tests {
     #[test]
     fn a_block_longer_than_the_scratch_is_refused() {
         let ports = [2];
-        let mut scratch = PortScratch::<f32>::new();
+        let mut scratch = Typed::<f32>::new();
         scratch.resize_for(&ports, &ports, 16);
         let mut outputs: [&mut [f32]; 0] = [];
         assert_eq!(

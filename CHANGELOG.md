@@ -14,13 +14,13 @@ the latency, tail and layout re-reads for every plugin format, with no FFI and n
 plugin (design 016 §2.1). New in `tutti-plugin-types`: `Event`, `HostOp`,
 `Request`, `RescanScope`, `Effect`, `Reply`, `Notice`, `Stage`, `State`,
 `Prepare`, `RestartRules`, `TimerId`, `FdId`, `Effects`, `EFFECT_CAPACITY`,
-`step`; `SampleRate` is re-exported beside `Samples`. Nothing calls it yet.
+`MAX_STEP_EFFECTS`, `TIMERS_PER_TICK`, `FDS_PER_TICK`, `step`; `SampleRate` is re-exported beside `Samples`. Nothing calls it yet.
 `proptest` joins the crate's dev-dependencies.
 
 ### Changed — SampleFormat and Layout move to tutti-plugin-types
 
 `SampleFormat` is defined in `tutti-plugin-types` (`tutti_plugin::protocol` still
-re-exports it, and it gains `Hash`). The CLAP loader's private `BusLayout` is
+re-exports it). The CLAP loader's private `BusLayout` is
 `tutti_plugin_types::Layout`, with public fields.
 
 ### Changed — std-idiomatic names in tutti-types, tutti-core, tutti-cpal and tutti-graph

@@ -353,12 +353,21 @@ Four things the block leaves open are fixed as follows.
   `RescanParams(All)` restart on every format. A change that does not restart
   is re-read in place: `ReadLatency`, `ReadTail`, `ReadLayout`. A `TailChanged`
   never restarts.
-- **Timers and descriptors** are `TimerId(u32)` and `FdId(i32)`. At most
-  `PENDING_TIMERS` and `PENDING_FDS` (3 each) distinct ones wait for a tick, so
-  the effect bound holds; the shell raises a due timer or a ready descriptor
-  again. A `Callback` makes the tick emit `RunMainThread` alone, because it may
+- **Timers and descriptors** are `TimerId(u32)` and `FdId(i32)`, widths that
+  follow the formats' ABIs. A tick runs at most `TIMERS_PER_TICK` and
+  `FDS_PER_TICK` (3 each) so the effect bound holds, and the rest stay pending:
+  `State::has_backlog` tells the shell to tick again. None is dropped, which
+  does not depend on whether a format's timers advance their deadline when
+  raised or its descriptors are level-triggered. `MAX_STEP_EFFECTS` (12, the
+  busiest tick) is asserted at compile time to fit `EFFECT_CAPACITY`, and `emit`
+  asserts rather than drops. A `Callback` makes the tick emit `RunMainThread` alone, because it may
   ask for the rest; the `Replied(Done)` that answers it plans the remainder as
   the tick would have, without running a second callback.
+- **A refused rebuild.** `Reply::Refused` to a `Rebuild` leaves the plugin
+  `Refused` and remembers it: the next `Activate` or `Reconfigure` rebuilds
+  before it activates, since a plugin whose reload failed (VST3) cannot be
+  trusted to activate as it is. A refusal clears everything pending, timers and
+  descriptors included.
 - **Rule 4's "announced" and "stage changed".** A figure is announced when the
   request that raised it was folded into the plan or re-read that produced the
   figure. A layout read notifies `IoChanged` when it differs, or when the
@@ -372,8 +381,7 @@ Four things the block leaves open are fixed as follows.
    emits nothing; in `Poisoned` nothing. `Reconfigure` in `Active` emits
    `Recall`, `CallDeactivate`, `CallActivate`; in `Loaded` or `Refused` it is
    `Activate`.
-2. `Replied(Activated)` moves to `Active`, clears the pending latency and tail
-   requests (the reads below answer them) and emits `ReadLatency`, `ReadTail`,
+2. `Replied(Activated)` moves to `Active` and emits `ReadLatency`, `ReadTail`,
    `ReadLayout`, then `Lend`. The reads precede the lend, so a format whose
    latency read is not legal during processing (VST3) never sees one.
 3. `Replied(Refused)` moves to `Refused { rate }` and emits
@@ -391,8 +399,10 @@ Four things the block leaves open are fixed as follows.
    ask for the rest; `RescanParams(Info | All)` reads after the activation, a
    `Values` or `Text` rescan emits `Notify(ParamValuesChanged)` and no restart.
 6. A request raised *during* a `CallActivate` is delivered before that effect's
-   `Replied`, and a `LatencyChanged` or `TailChanged` that arrives while
-   `settling` is dropped: the reads in rule 2 answer it.
+   `Replied`. A `LatencyChanged` or `TailChanged` is accepted only while
+   `Active`, so one raised while the plugin activates is dropped and one raised
+   before the deactivation is answered when the deactivation completes (rule 9):
+   the reads in rule 2 answer both.
 7. A request on a `Loaded`, `Refused` or `Poisoned` plugin is consumed and
    changes nothing, except `Callback`, `Timer` and `Fd` on `Loaded`, which run.
 8. `Died`, from any stage, moves to `Poisoned`, which absorbs every later event,
@@ -404,7 +414,15 @@ Four things the block leaves open are fixed as follows.
    `Prepare`, `Deactivate` replaces the tail with `CallDeactivate`, and a request
    only sets its bit; `Tick` plans just the effects the Controller can run
    (`RunMainThread`, `RunTimer`, `ServiceFd`, reads) and leaves the bits that need a
-   restart pending for the `Tick` after the return.
+   restart pending. The plan is the restart: when `Replied(Deactivated)` comes
+   the pending `Restart`, `IoChanged`, `LatencyChanged`, `TailChanged` and
+   `RescanParams(All)` are answered by the activation and its reads, an `All`
+   adding a parameter re-read, and a `Reload` joins the plan as a `Rebuild`, so
+   the `Tick` after the return plans nothing a second time. `Activate(p)` on a
+   plan in flight is `Reconfigure(p)`: the latest wins.
+   An op raised while a `CallActivate` is in flight is kept (the latest one)
+   and replayed once the activation is answered, `Activated` or `Refused`; a
+   replayed `Reconfigure` or `Deactivate` starts with `Recall`.
 10. `Replied(Stuck)` leaves the plugin `Active`, abandons the rest of the plan,
     emits `Notify(Stuck)` and `Lend`.
 
@@ -453,6 +471,9 @@ Four things the block leaves open are fixed as follows.
   `EFFECT_CAPACITY` effects.
 - `Poisoned` absorbs: every later event emits no effect and leaves it
   `Poisoned`.
+- The host's latest op wins: with `Reconfigure` and `Deactivate` raised between
+  any effect and its reply, the plugin settles in the state the last one asked
+  for, with no plan in flight.
 
 `proptest` is a dev-dependency of `tutti-core` and `tutti-graph` at `1.9.0`;
 `tutti-plugin-types` adds the same. The properties run the core through a test
@@ -719,7 +740,9 @@ pub enum Lifecycle<L: Loaded> {
     Active { controller: L::Controller, seat: Seat<L::Processor>, swap: Swap<L> },
     /// The plugin refused `rate`; it is loaded, and renders nothing.
     Refused { plugin: L, rate: SampleRate },
-    /// A transition failed and left no plugin, or the process died.
+    /// A transition failed and left no plugin, or the process died. The shell
+    /// sends `Event::Died` for it: the core's `Stage::Poisoned` is reached
+    /// only that way.
     Poisoned,
 }
 
@@ -1349,7 +1372,7 @@ makes it.
 - **`Lifecycle<L>` against a `FakeLoaded`** (`FakePlugin`, which implements
   `Loaded`, `Processor` and `Controller`): the interpreter's contract (a refused
   activation leaves `Refused` with the plugin intact and no half pair, a lost
-  plugin poisons, a panic in `activate` poisons, `Stuck` restores both halves, a
+  plugin poisons (and sends `Event::Died`), a panic in `activate` poisons the same way, `Stuck` restores both halves, a
   pair from two activations is refused) without a plugin. Lent-state cases run
   with a `Handoff` and a test thread standing in for the realtime thread: a
   `Reconfigure` while lent parks, the Processor returns, the plan runs once; a

@@ -209,6 +209,8 @@ struct Shell {
     choices: Vec<u8>,
     at: usize,
     during_activate: Vec<Request>,
+    /// Host ops raised between an effect and its reply.
+    inject: Vec<HostOp>,
     trace: Vec<Rec>,
 }
 
@@ -225,6 +227,7 @@ impl Shell {
             choices,
             at: 0,
             during_activate: Vec::new(),
+            inject: Vec::new(),
             trace: Vec::new(),
         }
     }
@@ -336,6 +339,10 @@ impl Shell {
         let (mut q, mut all) = (VecDeque::new(), Vec::new());
         self.feed(event, &mut q, &mut all);
         while let Some(effect) = q.pop_front() {
+            if !self.inject.is_empty() && self.pick(2) == 0 {
+                let op = self.inject.remove(0);
+                self.feed(Event::Op(op), &mut q, &mut all);
+            }
             let r = self.perform(&effect, &mut q, &mut all);
             self.feed(Event::Replied(r), &mut q, &mut all);
         }
@@ -492,7 +499,7 @@ proptest! {
     }
 
     /// The plugin renders only in `Active`: a `Lend` is emitted only into it,
-    /// and `Refused` is left only by an activation (or by dying).
+    /// and `Refused` is left only by emitting an activation (or by dying).
     ///
     /// Mutation: let `HostOp::Deactivate` take a `Refused` stage to `Loaded`
     /// (match `Stage::Active | Stage::Refused { .. }` in its idle arm and set
@@ -514,10 +521,8 @@ proptest! {
             if matches!(rec.before, Stage::Refused { .. })
                 && !matches!(rec.after, Stage::Refused { .. })
             {
-                prop_assert!(matches!(
-                    rec.kind,
-                    Kind::ActivateOp | Kind::ReconfigureOp | Kind::Died
-                ));
+                let activates = rec.fx.iter().any(|f| matches!(f, Fx::Activate(_)));
+                prop_assert!(activates || rec.kind == Kind::Died);
             }
         }
     }
@@ -573,10 +578,8 @@ proptest! {
     /// A latency or tail change raised while the plugin activates is answered
     /// by the reads after it: the next tick restarts nothing.
     ///
-    /// Mutation: the activation clears these bits (`Reply::Activated`) and
-    /// `on_request` drops them, each enough alone. Remove both (delete the two
-    /// `self.pending.* = false` lines and make the arm `active || activating`)
-    /// and the tick restarts.
+    /// Mutation: make the `LatencyChanged | TailChanged` arm of `on_request`
+    /// `active || activating`; the bit is then kept and the tick restarts.
     #[test]
     fn a_change_raised_inside_an_activation_does_not_restart_it(
         io in any::<bool>(),
@@ -620,9 +623,9 @@ proptest! {
     /// A reload subsumes every other request: one rebuild, one rejoin, one
     /// activation, one notice, however many finer requests came with it.
     ///
-    /// Mutation: in `plan_restart` drop the `reload` condition from
-    /// `restart`'s tasks (do not push `Task::Rebuild`) and the rebuild count
-    /// fails; stop calling `clear_requests` and a second tick restarts again.
+    /// Mutation: in `plan_restart` do not push `Task::Rebuild` and the rebuild
+    /// count fails; stop calling `clear_requests` there and the last tick
+    /// repeats the parameter notices.
     #[test]
     fn a_reload_subsumes_the_finer_requests(
         rules in rules(),
@@ -640,8 +643,10 @@ proptest! {
         prop_assert_eq!(count(&fx, |f| *f == Fx::Deactivate), 1);
         prop_assert_eq!(count(&fx, |f| matches!(f, Fx::Activate(_))), 1);
         prop_assert_eq!(count(&fx, |f| *f == Fx::Reloaded), 1);
-        let again = shell.send(Event::Tick);
-        prop_assert_eq!(count(&again, |f| matches!(f, Fx::Rebuild | Fx::Deactivate)), 0);
+        while shell.state.has_backlog() {
+            shell.send(Event::Tick);
+        }
+        prop_assert!(shell.send(Event::Tick).is_empty());
     }
 
     /// A rejoin never meets a Processor that is away: `CallDeactivate` and
@@ -700,14 +705,15 @@ proptest! {
     /// `step` is total and bounded: no event in any state panics or emits more
     /// than `EFFECT_CAPACITY` effects.
     ///
-    /// Mutation: raise `PENDING_TIMERS` and `PENDING_FDS` to 8 together; a tick
-    /// that runs them all then exceeds the bound and fails (`emit` asserts it).
+    /// Mutation: drop the `.min(TIMERS_PER_TICK)` and `.min(FDS_PER_TICK)`
+    /// caps in `tick`; a tick that runs every pending one exceeds the bound
+    /// and fails (`emit` asserts it).
     #[test]
     fn step_is_total_and_bounded(
         rules in rules(),
         n in any::<u8>(),
-        timers in prop::collection::vec(0u32..12, 0..12),
-        fds in prop::collection::vec(0i32..12, 0..12),
+        timers in prop::collection::vec(0u32..40, 0..40),
+        fds in prop::collection::vec(0i32..40, 0..40),
         events in prop::collection::vec(any_event(), 0..64),
     ) {
         let mut s = active(rules, prep(n));
@@ -806,22 +812,21 @@ fn rule_1_activate_and_reconfigure() {
     assert!(matches!(s.stage(), Stage::Refused { .. }));
 }
 
-// Mutation: with `on_request` dropping a latency raised during an activation
-// (rule 6) the bit never exists; remove that drop and the clearing in the
-// `Activated` arm together and the tick below plans a restart; fails.
+// Mutation: delete `p.latency = false;` and `p.tail = false;` from
+// `settle_requests`; the bits raised before the deactivation survive it and
+// the tick below restarts.
 #[test]
-fn rule_2_an_activation_clears_the_pending_latency_and_tail() {
+fn rule_2_a_change_raised_before_the_deactivation_is_answered_by_the_reads() {
     let p = prep(1);
     let s = active(RESTARTS, p);
-    // Reconfigure; a latency change arrives while the new activation runs.
     let (s, _) = go(s, Event::Op(HostOp::Reconfigure(p)));
     let (s, _) = reply(s, Reply::Returned);
-    let (s, _) = reply(s, Reply::Deactivated);
     let s = req(s, Request::LatencyChanged);
+    let s = req(s, Request::TailChanged);
+    let (s, _) = reply(s, Reply::Deactivated);
     let (s, fx) = reply(s, Reply::Activated);
     assert_eq!(fx, [Fx::Latency, Fx::Tail, Fx::Layout, Fx::Lend]);
-    let (_, fx) = go(s, Event::Tick);
-    assert!(fx.is_empty());
+    assert!(go(s, Event::Tick).1.is_empty());
 }
 
 // Mutation: in the `Refused` arm, push `Effect::ReadTail` after the notice,
@@ -993,9 +998,9 @@ fn rule_5_a_rescan_restarts_only_when_it_must() {
     );
 }
 
-// Mutation: as for the activation clearing its bits (rule 2): the drop in
-// `on_request` and that clearing cover each other, so remove both and the
-// first tick below restarts; fails.
+// Mutation: make the `LatencyChanged | TailChanged` arm of `on_request`
+// `active || activating`; the first tick below restarts. Make `IoChanged`
+// ignored while activating and the last one does not.
 #[test]
 fn rule_6_a_request_during_an_activation_is_kept_except_latency_and_tail() {
     let p = prep(1);
@@ -1102,9 +1107,9 @@ fn rule_9_a_plan_parks_behind_a_lent_processor_and_runs_once() {
     assert!(fx.is_empty());
     let (s, fx) = reply(s, Reply::Deactivated);
     assert_eq!(fx, [Fx::Activate(r)]);
-    // The restart bit left pending is acted on by the tick after the return.
+    // The restart raised meanwhile is answered by the plan itself.
     let (s, _) = reply(s, Reply::Activated);
-    assert_eq!(go(s, Event::Tick).1, [Fx::Recall]);
+    assert!(go(s, Event::Tick).1.is_empty());
 }
 
 // Mutation: make `HostOp::Deactivate` on a parked plan push to the tasks
@@ -1155,5 +1160,262 @@ fn a_reply_that_answers_nothing_is_ignored() {
         assert!(fx.is_empty());
         assert_eq!(next.stage(), Stage::Active);
         assert!(!next.is_busy());
+    }
+}
+
+// Mutation: delete `p.restart = false;` from `settle_requests`; the tick
+// after the re-activation recalls again.
+#[test]
+fn a_request_raised_while_a_plan_waits_is_answered_by_the_plan() {
+    let q = prep(2);
+    // Parks behind a lent Processor, then takes `request` while it waits.
+    let park = |request| {
+        let s = active(RESTARTS, prep(1));
+        let (s, _) = go(s, Event::Op(HostOp::Reconfigure(q)));
+        let (s, _) = reply(s, Reply::Lent);
+        let s = req(s, request);
+        let (s, fx) = go(s, Event::Returned);
+        assert_eq!(fx, [Fx::Deactivate]);
+        s
+    };
+    let finish = |s: State| {
+        let (s, _) = reply(s, Reply::Activated);
+        assert!(go(s, Event::Tick).1.is_empty());
+    };
+    for request in [
+        Request::Restart,
+        Request::IoChanged,
+        Request::LatencyChanged,
+    ] {
+        let (s, fx) = reply(park(request), Reply::Deactivated);
+        assert_eq!(fx, [Fx::Activate(q)], "{request:?}");
+        finish(s);
+    }
+    // A rescan of everything re-reads the parameters after the activation.
+    let (s, fx) = reply(
+        park(Request::RescanParams(RescanScope::All)),
+        Reply::Deactivated,
+    );
+    assert_eq!(fx, [Fx::Activate(q)]);
+    let (s, fx) = reply(s, Reply::Activated);
+    assert_eq!(
+        fx[4..],
+        [
+            Fx::Params(RescanScope::All),
+            Fx::ParamTitles,
+            Fx::ParamValues
+        ]
+    );
+    assert!(go(s, Event::Tick).1.is_empty());
+    // A reload is not lost: the rebuild joins the plan.
+    let (s, fx) = reply(park(Request::Reload), Reply::Deactivated);
+    assert_eq!(fx, [Fx::Rebuild]);
+    let (s, fx) = reply(s, Reply::Rebuilt);
+    assert_eq!(fx, [Fx::Reloaded, Fx::Activate(q)]);
+    finish(s);
+}
+
+// Mutation: in `on_op` make `HostOp::Activate` on a busy plan do nothing
+// (`_ => {}`); the activation is lost.
+#[test]
+fn an_activate_raised_while_a_plan_waits_is_the_latest_intent() {
+    let (p, q) = (prep(1), prep(2));
+    let s = active(RESTARTS, p);
+    let (s, _) = go(s, Event::Op(HostOp::Deactivate));
+    let (s, _) = reply(s, Reply::Lent);
+    let (s, fx) = go(s, Event::Op(HostOp::Activate(q)));
+    assert!(fx.is_empty());
+    let (s, fx) = go(s, Event::Returned);
+    assert_eq!(fx, [Fx::Deactivate]);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert_eq!(fx, [Fx::Activate(q)]);
+    assert_eq!(s.prepare(), Some(q));
+}
+
+// Mutation: delete the `self.replay(out);` call from the `Activated` arm, or
+// store only the first op raised (`self.later.get_or_insert(op)`); fails.
+#[test]
+fn an_op_raised_during_an_activation_runs_when_it_ends() {
+    let (p, q) = (prep(1), prep(2));
+    // The latest of several wins.
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let (s, fx) = go(s, Event::Op(HostOp::Reconfigure(q)));
+    assert!(fx.is_empty());
+    let (s, fx) = go(s, Event::Op(HostOp::Deactivate));
+    assert!(fx.is_empty());
+    let (s, fx) = reply(s, Reply::Activated);
+    assert_eq!(
+        fx,
+        [Fx::Latency, Fx::Tail, Fx::Layout, Fx::Lend, Fx::Recall]
+    );
+    let (s, _) = reply(s, Reply::Returned);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert!(fx.is_empty());
+    assert_eq!(s.stage(), Stage::Loaded);
+    // A reconfigure runs the same way and lands on its prepare.
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let (s, _) = go(s, Event::Op(HostOp::Reconfigure(q)));
+    let (s, fx) = reply(s, Reply::Activated);
+    assert_eq!(fx.last(), Some(&Fx::Recall));
+    let (s, _) = reply(s, Reply::Returned);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert_eq!(fx, [Fx::Activate(q)]);
+    assert_eq!(s.prepare(), Some(q));
+    // An activate raised during a refused activation retries it.
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let (s, _) = go(s, Event::Op(HostOp::Activate(q)));
+    let (_, fx) = reply(s, Reply::Refused(err()));
+    assert_eq!(fx, [Fx::RefusedNotice, Fx::Activate(q)]);
+}
+
+// Mutation: delete the `.min(TIMERS_PER_TICK)` and `.min(FDS_PER_TICK)` caps
+// (everything runs at once), or make `has_backlog` always false; fails.
+#[test]
+fn timers_and_descriptors_over_the_cap_wait_for_the_next_tick() {
+    let mut s = State::new(REST);
+    for i in 0..5 {
+        s = req(s, Request::Timer(TimerId(i)));
+    }
+    for i in 0..4 {
+        s = req(s, Request::Fd(FdId(i)));
+    }
+    // A repeated id is one entry.
+    s = req(s, Request::Timer(TimerId(4)));
+    let (s, fx) = go(s, Event::Tick);
+    assert_eq!(
+        fx,
+        [
+            Fx::Timer(0),
+            Fx::Timer(1),
+            Fx::Timer(2),
+            Fx::Fd(0),
+            Fx::Fd(1),
+            Fx::Fd(2)
+        ]
+    );
+    assert!(s.has_backlog());
+    let (s, fx) = go(s, Event::Tick);
+    assert_eq!(fx, [Fx::Timer(3), Fx::Timer(4), Fx::Fd(3)]);
+    assert!(!s.has_backlog());
+}
+
+// Mutation: make `MAX_STEP_EFFECTS` one less (`+ 5`), or delete the
+// `ReadLayout` branch of `read_without_restart`; the count no longer equals it.
+#[test]
+fn the_busiest_tick_emits_exactly_the_documented_maximum() {
+    let mut s = active(REST, prep(1));
+    for i in 0..TIMERS_PER_TICK as u32 {
+        s = req(s, Request::Timer(TimerId(i)));
+    }
+    for i in 0..FDS_PER_TICK as i32 {
+        s = req(s, Request::Fd(FdId(i)));
+    }
+    for r in [
+        Request::LatencyChanged,
+        Request::TailChanged,
+        Request::IoChanged,
+        Request::RescanParams(RescanScope::Values),
+        Request::RescanParams(RescanScope::Info),
+    ] {
+        s = req(s, r);
+    }
+    let (_, fx) = go(s, Event::Tick);
+    assert_eq!(fx.len(), MAX_STEP_EFFECTS);
+    assert_eq!(MAX_STEP_EFFECTS, EFFECT_CAPACITY);
+}
+
+// Mutation: in the `Refused` arm keep the timers (`clear_requests` instead of
+// `Pending::default()`); the stale timer runs after the revival.
+#[test]
+fn a_refusal_forgets_what_was_pending() {
+    let p = prep(1);
+    let (s, _) = go(State::new(RESTARTS), Event::Op(HostOp::Activate(p)));
+    let s = req(s, Request::Timer(TimerId(1)));
+    let s = req(s, Request::Fd(FdId(2)));
+    let s = req(s, Request::Callback);
+    let (s, _) = reply(s, Reply::Refused(err()));
+    let (s, _) = go(s, Event::Op(HostOp::Activate(p)));
+    let (s, _) = reply(s, Reply::Activated);
+    assert!(go(s, Event::Tick).1.is_empty());
+}
+
+// Mutation: drop `self.rebuild_pending |= ...` from the `Refused` arm; the
+// retry activates a plugin whose rebuild failed.
+#[test]
+fn a_refused_rebuild_is_retried_before_the_activation() {
+    let p = prep(1);
+    let s = req(active(RESTARTS, p), Request::Reload);
+    let (s, _) = go(s, Event::Tick);
+    let (s, _) = reply(s, Reply::Returned);
+    let (s, fx) = reply(s, Reply::Deactivated);
+    assert_eq!(fx, [Fx::Rebuild]);
+    let (s, fx) = reply(s, Reply::Refused(err()));
+    assert_eq!(fx, [Fx::RefusedNotice]);
+    assert!(matches!(s.stage(), Stage::Refused { .. }));
+    let (s, fx) = go(s, Event::Op(HostOp::Activate(p)));
+    assert_eq!(fx, [Fx::Rebuild]);
+    let (s, fx) = reply(s, Reply::Rebuilt);
+    assert_eq!(fx, [Fx::Reloaded, Fx::Activate(p)]);
+    // Once rebuilt, a later refusal retries the activation alone.
+    let (s, _) = reply(s, Reply::Refused(err()));
+    let (_, fx) = go(s, Event::Op(HostOp::Activate(p)));
+    assert_eq!(fx, [Fx::Activate(p)]);
+}
+
+// Mutation: delete `std::mem::take(&mut self.after_main)` (clear only on
+// `Done`); the unrelated `Done` below plans a restart.
+#[test]
+fn only_the_answer_to_the_main_thread_work_continues_the_tick() {
+    let s = req(active(RESTARTS, prep(1)), Request::Callback);
+    let (s, fx) = go(s, Event::Tick);
+    assert_eq!(fx, [Fx::Main]);
+    // The work is answered with something other than `Done`.
+    let (s, fx) = reply(s, Reply::NotActive);
+    assert!(fx.is_empty());
+    let s = req(s, Request::Restart);
+    let (_, fx) = reply(s, Reply::Done);
+    assert!(fx.is_empty());
+}
+
+proptest! {
+    /// The host's latest op wins: with ops raised between any effect and its
+    /// reply, the plugin settles in the state the last op asked for, idle.
+    ///
+    /// Mutation: delete the `self.replay(out);` call from the `Activated` arm
+    /// (an op raised during an activation is lost); or make `HostOp::Reconfigure`
+    /// on a busy plan do nothing (`_ => {}`); this fails.
+    #[test]
+    fn the_latest_op_wins_whenever_it_is_raised(
+        rules in rules(),
+        ops in prop::collection::vec((any::<bool>(), any::<u8>()), 1..8),
+        choices in prop::collection::vec(any::<u8>(), 1..16),
+        local in any::<bool>(),
+    ) {
+        let rt = if local { Rt::Local } else { Rt::Thread };
+        let mut shell = Shell::new(rules, Refuse::Never, rt, choices);
+        let op = |(activate, n): (bool, u8)| {
+            if activate { HostOp::Reconfigure(prep(n)) } else { HostOp::Deactivate }
+        };
+        shell.inject = ops[1..].iter().copied().map(op).collect();
+        shell.op(op(ops[0]));
+        while !shell.inject.is_empty() {
+            let next = shell.inject.remove(0);
+            shell.op(next);
+        }
+        while shell.returning {
+            shell.return_processor();
+        }
+        prop_assert!(!shell.state.is_busy());
+        match op(*ops.last().unwrap()) {
+            HostOp::Reconfigure(p) => {
+                prop_assert_eq!(shell.state.stage(), Stage::Active);
+                prop_assert_eq!(shell.state.prepare(), Some(p));
+            }
+            _ => prop_assert_eq!(shell.state.stage(), Stage::Loaded),
+        }
+        for rec in &shell.trace {
+            prop_assert!(!rec.rejoin_while_out);
+            prop_assert!(!rec.transition_out_of_turn);
+        }
     }
 }

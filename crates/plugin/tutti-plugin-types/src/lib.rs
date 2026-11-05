@@ -74,6 +74,11 @@ pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
+pub use lifecycle::{
+    EFFECT_CAPACITY, Effect, Effects, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice,
+    Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId,
+    step,
+};
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
@@ -83,10 +88,6 @@ pub use midi1_decoder::{
 };
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
-pub use lifecycle::{
-    EFFECT_CAPACITY, Effect, Effects, Event, FdId, HostOp, Notice, PENDING_FDS, PENDING_TIMERS,
-    Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TimerId, step,
-};
 pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };

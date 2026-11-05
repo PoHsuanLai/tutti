@@ -34,16 +34,23 @@ pub const EFFECT_CAPACITY: usize = 12;
 /// The effects of one [`step`], in the order to perform them.
 pub type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
 
-/// How many distinct timers one [`State`] keeps pending between ticks.
-///
-/// A timer raised past the bound is dropped; the shell raises a due timer
-/// again on its next pass.
-pub const PENDING_TIMERS: usize = 3;
+/// How many due timers one tick runs. The rest stay pending: see
+/// [`State::has_backlog`].
+pub const TIMERS_PER_TICK: usize = 3;
 
-/// How many distinct file descriptors one [`State`] keeps pending between
-/// ticks. A descriptor raised past the bound is dropped; a ready descriptor is
-/// reported again.
-pub const PENDING_FDS: usize = 3;
+/// How many ready file descriptors one tick services. The rest stay pending:
+/// see [`State::has_backlog`].
+pub const FDS_PER_TICK: usize = 3;
+
+/// The most effects one [`step`] emits: a tick that runs a full set of timers
+/// and descriptors, reads the latency, tail and layout, notifies a values
+/// rescan and reads and notifies an info rescan. No other step comes near it;
+/// the assertion below keeps [`EFFECT_CAPACITY`] at or above it.
+pub const MAX_STEP_EFFECTS: usize = TIMERS_PER_TICK + FDS_PER_TICK + 6;
+
+const _: () = assert!(MAX_STEP_EFFECTS <= EFFECT_CAPACITY);
+
+// The id widths follow the formats' ABIs (CLAP's `clap_id` timer, a POSIX fd).
 
 /// A plugin timer, as the format names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -288,8 +295,10 @@ pub enum Stage {
         /// The rate that was refused.
         rate: SampleRate,
     },
-    /// A transition failed and left no plugin, or the process hosting it died.
-    /// Nothing leaves this stage.
+    /// The plugin is lost. Reached only by [`Event::Died`], which the shell
+    /// sends when a transition leaves no plugin (a failed activation that hands
+    /// nothing back, a panic) or the process hosting it is gone. Nothing leaves
+    /// this stage.
     Poisoned,
 }
 
@@ -336,8 +345,8 @@ struct Pending {
     text: bool,
     info: bool,
     all: bool,
-    timers: ArrayVec<TimerId, PENDING_TIMERS>,
-    fds: ArrayVec<FdId, PENDING_FDS>,
+    timers: Vec<TimerId>,
+    fds: Vec<FdId>,
 }
 
 impl Pending {
@@ -370,12 +379,17 @@ pub struct State {
     announced_tail: bool,
     revived: bool,
     after_main: bool,
+    /// The host's latest op, raised while an activation was in flight.
+    later: Option<HostOp>,
+    /// A rebuild was refused: the next activation rebuilds first.
+    rebuild_pending: bool,
     pending: Pending,
     plan: Plan,
 }
 
 impl State {
     /// A freshly loaded plugin of a format with these restart rules.
+    #[must_use]
     pub fn new(rules: RestartRules) -> Self {
         Self {
             rules,
@@ -388,49 +402,66 @@ impl State {
             announced_tail: false,
             revived: false,
             after_main: false,
+            later: None,
+            rebuild_pending: false,
             pending: Pending::default(),
             plan: Plan::default(),
         }
     }
 
     /// Where the plugin is.
+    #[must_use]
     pub fn stage(&self) -> Stage {
         self.stage
     }
 
     /// Whether the plugin is split and producing audio: true only in
     /// [`Stage::Active`].
+    #[must_use]
     pub fn renders(&self) -> bool {
         matches!(self.stage, Stage::Active)
     }
 
     /// The `Prepare` of the latest activation, requested or running.
+    #[must_use]
     pub fn prepare(&self) -> Option<Prepare> {
         self.prepare
     }
 
     /// The latency last reported.
+    #[must_use]
     pub fn latency(&self) -> Option<Samples> {
         self.latency
     }
 
     /// The tail last reported.
+    #[must_use]
     pub fn tail(&self) -> Option<PluginTail> {
         self.tail
     }
 
     /// The layout last reported.
+    #[must_use]
     pub fn layout(&self) -> Option<&Layout> {
         self.layout.as_ref()
     }
 
     /// Whether the rest of a plan waits for the Processor to return from the
     /// realtime thread.
+    #[must_use]
     pub fn is_parked(&self) -> bool {
         self.plan.wait == Wait::Parked
     }
 
+    /// Whether timers or file descriptors are left over from a tick that ran
+    /// its share ([`TIMERS_PER_TICK`], [`FDS_PER_TICK`]): the shell ticks again.
+    #[must_use]
+    pub fn has_backlog(&self) -> bool {
+        !self.pending.timers.is_empty() || !self.pending.fds.is_empty()
+    }
+
     /// Whether a plan is under way, so an effect's reply is awaited.
+    #[must_use]
     pub fn is_busy(&self) -> bool {
         self.plan.wait != Wait::Idle
     }
@@ -449,8 +480,12 @@ pub fn step(mut state: State, event: Event) -> (State, Effects) {
 }
 
 fn emit(out: &mut Effects, effect: Effect) {
-    let pushed = out.try_push(effect);
-    debug_assert!(pushed.is_ok(), "a step exceeded EFFECT_CAPACITY");
+    // A dropped effect would wedge the plugin mid-plan, so overflow is a bug
+    // that must stop. `MAX_STEP_EFFECTS` bounds every step below the capacity.
+    assert!(
+        out.try_push(effect).is_ok(),
+        "a step exceeded EFFECT_CAPACITY"
+    );
 }
 
 impl State {
@@ -477,21 +512,31 @@ impl State {
         self.plan = Plan::default();
         self.pending = Pending::default();
         self.after_main = false;
+        self.later = None;
+        self.rebuild_pending = false;
     }
 
     fn on_op(&mut self, op: HostOp, out: &mut Effects) {
+        // An op raised while an activation is in flight cannot change the
+        // plan yet: the latest one is replayed once the activation is answered.
+        if self.plan.wait == Wait::Activate {
+            self.later = Some(op);
+            return;
+        }
         match op {
-            HostOp::Activate(p) => {
-                if self.plan.wait == Wait::Idle && !matches!(self.stage, Stage::Active) {
-                    self.begin(&[Task::Activate(p)], out);
+            HostOp::Activate(p) => match self.plan.wait {
+                Wait::Idle => {
+                    if !matches!(self.stage, Stage::Active) {
+                        self.begin(&[Task::Activate(p)], out);
+                    }
                 }
-            }
+                _ => self.plan.set_activate(p),
+            },
             HostOp::Reconfigure(p) => match (self.plan.wait, self.stage) {
                 (Wait::Idle, Stage::Active) => {
                     self.begin(&[Task::Deactivate, Task::Activate(p)], out)
                 }
                 (Wait::Idle, _) => self.begin(&[Task::Activate(p)], out),
-                (Wait::Activate, _) => {}
                 _ => self.plan.set_activate(p),
             },
             HostOp::Deactivate => match (self.plan.wait, self.stage) {
@@ -511,6 +556,9 @@ impl State {
     fn begin(&mut self, tasks: &[Task], out: &mut Effects) {
         self.plan.tasks.clear();
         self.plan.tasks.extend(tasks.iter().copied());
+        if self.rebuild_pending && !matches!(self.stage, Stage::Active) {
+            self.plan.tasks.insert(0, Task::Rebuild);
+        }
         if matches!(self.stage, Stage::Active) {
             emit(out, Effect::Recall);
             self.plan.wait = Wait::Recall;
@@ -565,8 +613,8 @@ impl State {
             Request::Callback | Request::Timer(_) | Request::Fd(_) => {
                 active || matches!(self.stage, Stage::Loaded)
             }
-            // Raised while the plugin activates: the reads after it answer.
-            Request::LatencyChanged | Request::TailChanged => active && !activating,
+            // Not while loaded: the reads after an activation answer them.
+            Request::LatencyChanged | Request::TailChanged => active,
             _ => active || activating,
         };
         if !accepted {
@@ -586,12 +634,12 @@ impl State {
             Request::RescanParams(RescanScope::All) => p.all = true,
             Request::Timer(id) => {
                 if !p.timers.contains(&id) {
-                    let _ = p.timers.try_push(id);
+                    p.timers.push(id);
                 }
             }
             Request::Fd(id) => {
                 if !p.fds.contains(&id) {
-                    let _ = p.fds.try_push(id);
+                    p.fds.push(id);
                 }
             }
         }
@@ -637,10 +685,12 @@ impl State {
             emit(out, Effect::RunMainThread);
             return;
         }
-        for id in std::mem::take(&mut self.pending.timers) {
+        let timers = self.pending.timers.len().min(TIMERS_PER_TICK);
+        for id in self.pending.timers.drain(..timers) {
             emit(out, Effect::RunTimer(id));
         }
-        for id in std::mem::take(&mut self.pending.fds) {
+        let fds = self.pending.fds.len().min(FDS_PER_TICK);
+        for id in self.pending.fds.drain(..fds) {
             emit(out, Effect::ServiceFd(id));
         }
         if !matches!(self.stage, Stage::Active) {
@@ -724,31 +774,35 @@ impl State {
 
     fn on_reply(&mut self, reply: Reply, out: &mut Effects) {
         let wait = self.plan.wait;
+        // `RunMainThread` is emitted alone, so the next reply of any kind is
+        // its answer.
+        let continuing = std::mem::take(&mut self.after_main);
         match reply {
             Reply::Activated if wait == Wait::Activate => {
                 self.stage = Stage::Active;
-                // The reads below answer these.
-                self.pending.latency = false;
-                self.pending.tail = false;
                 emit(out, Effect::ReadLatency);
                 emit(out, Effect::ReadTail);
                 emit(out, Effect::ReadLayout);
                 emit(out, Effect::Lend);
                 self.advance(out);
+                self.replay(out);
             }
             Reply::Refused(reason) if matches!(wait, Wait::Activate | Wait::Rebuild) => {
                 let Some(prepare) = self.prepare else { return };
                 let rate = prepare.rate;
                 self.stage = Stage::Refused { rate };
+                self.rebuild_pending |= wait == Wait::Rebuild;
                 self.plan = Plan::default();
-                self.pending.clear_requests();
+                self.pending = Pending::default();
                 self.announced_latency = false;
                 self.announced_tail = false;
                 self.revived = false;
                 emit(out, Effect::Notify(Notice::Refused { rate, reason }));
+                self.replay(out);
             }
             Reply::Deactivated if wait == Wait::Deactivate => {
                 self.stage = Stage::Loaded;
+                self.settle_requests();
                 self.advance(out);
             }
             Reply::Stuck(reason) if wait == Wait::Deactivate => {
@@ -757,6 +811,7 @@ impl State {
                 emit(out, Effect::Lend);
             }
             Reply::Rebuilt if wait == Wait::Rebuild => {
+                self.rebuild_pending = false;
                 emit(out, Effect::Notify(Notice::Reloaded));
                 self.advance(out);
             }
@@ -787,12 +842,43 @@ impl State {
                     emit(out, Effect::Notify(Notice::IoChanged));
                 }
             }
-            Reply::Done if self.after_main => {
-                self.after_main = false;
-                self.tick(out, false);
-            }
+            Reply::Done if continuing => self.tick(out, false),
             // A reply to nothing in flight, or one that needs no action.
             _ => {}
+        }
+    }
+}
+
+impl State {
+    /// Replays the op that was raised during an activation.
+    fn replay(&mut self, out: &mut Effects) {
+        if let Some(op) = self.later.take() {
+            self.on_op(op, out);
+        }
+    }
+
+    /// The plugin is deactivated and will be activated again by the plan: the
+    /// restart-needing requests raised meanwhile are answered by it. The reads
+    /// after the activation answer a latency, tail or layout change; a reload
+    /// is folded into the plan; a rescan of everything re-reads the parameters.
+    fn settle_requests(&mut self) {
+        let p = &mut self.pending;
+        let (reload, all) = (p.reload, p.all);
+        self.announced_latency |= p.latency;
+        self.announced_tail |= p.tail;
+        p.restart = false;
+        p.io = false;
+        p.latency = false;
+        p.tail = false;
+        p.reload = false;
+        p.all = false;
+        let tasks = &mut self.plan.tasks;
+        if reload && !tasks.contains(&Task::Rebuild) {
+            tasks.insert(0, Task::Rebuild);
+        }
+        if (reload || all) && tasks.iter().any(|t| matches!(t, Task::Activate(_))) {
+            tasks.retain(|t| !matches!(t, Task::ReadParams(_)));
+            tasks.push(Task::ReadParams(RescanScope::All));
         }
     }
 }

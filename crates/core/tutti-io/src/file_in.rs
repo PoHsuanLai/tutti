@@ -38,6 +38,10 @@ use tutti_core::{ChannelLayout, Samples};
 use crate::WaveError;
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};
 
+/// What [`FileIn::error`] reports when the stream ends before the container's
+/// frame count.
+const TRUNCATED: &str = "stream ended before the container's frame count";
+
 /// A streaming decoder over an audio file's first audio track, as an
 /// [`AudioIn`].
 ///
@@ -92,6 +96,10 @@ pub struct FileIn {
     /// the decoder primer. [`seek`](Self::seek) steps back past it when the
     /// frames it swallowed include the one asked for.
     skipped_primer: Option<u64>,
+    /// The decode error that ended a [`poll_into`](AudioIn::poll_into) stream
+    /// early, kept for [`error`](Self::error). Sticky until a
+    /// [`seek`](Self::seek) succeeds.
+    fault: Option<WaveError>,
 }
 
 impl std::fmt::Debug for FileIn {
@@ -109,6 +117,7 @@ impl std::fmt::Debug for FileIn {
             .field("cursor", &self.cursor)
             .field("seekable", &self.seekable)
             .field("skipped_primer", &self.skipped_primer)
+            .field("faulted", &self.fault.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -185,6 +194,7 @@ impl FileIn {
             cursor: 0,
             seekable,
             skipped_primer: None,
+            fault: None,
         })
     }
 
@@ -257,6 +267,20 @@ impl FileIn {
         }
     }
 
+    /// The decode error that cut a [`poll_into`](AudioIn::poll_into) stream
+    /// short, if one did: a packet that failed to decode, or a stream that
+    /// ended before the container's frame count (where a damaged frame can
+    /// read as a clean end of file).
+    ///
+    /// `poll_into` has no error channel: a failed read returns the frames
+    /// decoded before it and then `0`, the same as end-of-file. A consumer
+    /// that sees `0` asks here to tell a corrupt file from a finished one.
+    /// The fault is sticky (later polls return `0` without decoding on) and
+    /// cleared by a successful [`seek`](Self::seek).
+    pub fn error(&self) -> Option<&WaveError> {
+        self.fault.as_ref()
+    }
+
     /// Returns the frame the next sequential read will produce.
     pub fn cursor(&self) -> u64 {
         self.cursor
@@ -268,13 +292,30 @@ impl FileIn {
     ///
     /// `out.len()` should be a multiple of [`channels`](Self::channels); a
     /// partial trailing frame is not filled. This is the fallible form of
-    /// [`poll_into`](AudioIn::poll_into), which folds a decode error into
-    /// end-of-stream.
+    /// [`poll_into`](AudioIn::poll_into), which ends the stream on a decode
+    /// error and keeps it for [`error`](Self::error).
     ///
     /// # Errors
     ///
     /// A [`WaveError`] if reading or decoding a packet fails.
     pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<usize, WaveError> {
+        match self.fill(out) {
+            (_, Some(error)) => Err(error),
+            (filled, None) => Ok(filled),
+        }
+    }
+
+    /// Whether the stream has ended short of the container's own frame count.
+    ///
+    /// A damaged frame can read as a clean end of file: the demuxer reports
+    /// end-of-stream where it lost sync, so the only evidence is the count.
+    fn truncation(&self) -> bool {
+        self.total_frames.is_some_and(|total| self.cursor < total)
+    }
+
+    /// [`fill_sequential_interleaved`](Self::fill_sequential_interleaved),
+    /// keeping the frames filled before a decode error.
+    fn fill(&mut self, out: &mut [f32]) -> (usize, Option<WaveError>) {
         let ch = self.channels.max(1);
         let capacity_frames = out.len() / ch;
         let mut filled = 0usize;
@@ -294,14 +335,15 @@ impl FileIn {
             }
 
             // Need another packet.
-            let (decoded, _) = self.decode_next_packet()?;
-            if decoded == 0 {
-                // End-of-stream — leave the untouched tail for the caller.
-                break;
+            match self.decode_next_packet() {
+                // End-of-stream: leave the untouched tail for the caller.
+                Ok((0, _)) => break,
+                Ok(_) => {}
+                Err(error) => return (filled, Some(error)),
             }
         }
 
-        Ok(filled)
+        (filled, None)
     }
 
     /// Positions the stream so the next read produces frame `start` exactly.
@@ -378,21 +420,23 @@ impl FileIn {
         }
 
         self.cursor = start;
+        self.fault = None;
         Ok(())
     }
 }
 
-/// Sequential reads at the file's **own** channel width. A decode error
-/// surfaces as end-of-stream (`0`); use
-/// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) to see
-/// it.
+/// Sequential reads at the file's **own** channel width. A decode error ends
+/// the stream (`0` from then on) and is kept for [`FileIn::error`]; use
+/// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) to get
+/// it back as a `Result`.
 ///
 /// No downmix happens here: `layout()` describes exactly what `poll_into`
 /// produces. A caller wanting stereo folds each frame through
 /// [`tutti_core::fold_frame`].
 impl AudioIn for FileIn {
-    /// A file has an end, and this impl folds a decode error into it (see the
-    /// doc above): either way `0` means there is no more to read.
+    /// A file has an end, and a decode error ends the stream there too (see the
+    /// doc above): either way `0` means there is no more to read, and
+    /// [`FileIn::error`] says which.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
     /// The file's own width — what [`poll_into`](Self::poll_into) actually
@@ -411,7 +455,16 @@ impl AudioIn for FileIn {
     /// The inherent [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved)
     /// returns the same count as a bare `usize`.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
+        if self.fault.is_some() {
+            return Samples::ZERO;
+        }
+        let (filled, mut fault) = self.fill(out);
+        let ended = filled < out.len() / self.channels.max(1);
+        if fault.is_none() && ended && self.truncation() {
+            fault = Some(Error::DecodeError(TRUNCATED));
+        }
+        self.fault = fault;
+        Samples(filled)
     }
 }
 
@@ -562,6 +615,75 @@ mod tests {
         // A further poll at EOF yields nothing.
         let mut more = [[0.0f32; 2]; 8];
         assert_eq!(dec.poll_into(more.as_flattened_mut()), Samples::ZERO);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The repo's FLAC fixture with one byte flipped in its middle: the
+    /// container still opens, and a later frame fails its checksum.
+    fn corrupt_flac(tag: &str) -> std::path::PathBuf {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/audio/stereo.flac");
+        let mut bytes = std::fs::read(src).expect("fixture");
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xFF;
+        let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(format!("{tag}.flac"));
+        std::fs::write(&path, bytes).expect("write");
+        path
+    }
+
+    /// A decode error ends the stream as `0`, but leaves the cause on
+    /// [`FileIn::error`], keeps the frames read before it, and stays ended.
+    ///
+    /// The fixture's damaged frame reads as end-of-stream to the demuxer, so
+    /// this pins the frame-count check.
+    ///
+    /// Mutation (run): `truncation` returning `false`, or `poll_into` storing
+    /// `fault` as `None` (the old `unwrap_or(0)`), fails the `error()`
+    /// assertion.
+    #[test]
+    fn a_decode_error_is_kept_not_folded_into_end_of_file() {
+        let clean = FileIn::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../assets/audio/stereo.flac"),
+        )
+        .expect("open clean");
+        let total = clean.total_frames().expect("flac reports a length") as usize;
+        assert!(clean.error().is_none());
+
+        let path = corrupt_flac("corrupt");
+        let mut dec = FileIn::open(&path).expect("a corrupt body still opens");
+        let ch = dec.channels();
+        let mut buf = vec![0.0f32; 1024 * ch];
+        let mut frames = 0usize;
+        loop {
+            let n = dec.poll_into(&mut buf).get();
+            if n == 0 {
+                break;
+            }
+            frames += n;
+        }
+        assert!(dec.error().is_some(), "the stream ended on a decode error");
+        assert!(
+            frames > 0 && frames < total,
+            "kept the good prefix: {frames} of {total}"
+        );
+        assert_eq!(dec.poll_into(&mut buf), Samples::ZERO, "sticky");
+        assert!(dec.error().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A finished file has no error to report.
+    ///
+    /// Mutation (run): `truncation` returning `true` fails this.
+    #[test]
+    fn a_clean_end_of_file_has_no_error() {
+        let path = write_test_wav(3_000, "clean_end");
+        let mut dec = FileIn::open(&path).expect("open");
+        let mut buf = vec![0.0f32; 4096 * 2];
+        while dec.poll_into(&mut buf).get() > 0 {}
+        assert!(dec.error().is_none());
         let _ = std::fs::remove_file(&path);
     }
 

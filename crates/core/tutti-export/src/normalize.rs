@@ -165,7 +165,7 @@ impl Normalize {
 ///
 /// # Errors
 ///
-/// Everything [`render_to_buffers`](crate::render_to_buffers) and
+/// Everything [`render_to_buffers`] and
 /// [`write_buffers`] return, plus [`Error::Unmeasurable`](crate::Error::Unmeasurable) when the loudness
 /// cannot be measured, and [`Error::Resample`](crate::Error::Resample) if the sample-rate conversion
 /// fails.

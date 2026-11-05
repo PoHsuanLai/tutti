@@ -805,50 +805,11 @@ pub enum ContextMenuTarget {
 
 /// A single item in a plugin-supplied context menu.
 ///
-/// Submenus are expressed as a flat sequence bracketed by
-/// [`BeginSubmenu`](Self::BeginSubmenu) / [`EndSubmenu`](Self::EndSubmenu)
-/// rather than by nesting, matching CLAP's builder callback order.
-#[derive(Debug, Clone)]
-pub enum ContextMenuItem {
-    /// A clickable entry.
-    Entry {
-        /// Text to display.
-        label: String,
-        /// Whether the entry can be chosen.
-        is_enabled: bool,
-        /// Id to pass back when the entry is chosen.
-        action_id: u32,
-    },
-    /// A clickable entry carrying a checkbox.
-    CheckEntry {
-        /// Text to display.
-        label: String,
-        /// Whether the entry can be chosen.
-        is_enabled: bool,
-        /// Current state of the checkbox.
-        is_checked: bool,
-        /// Id to pass back when the entry is chosen.
-        action_id: u32,
-    },
-    /// A horizontal divider.
-    Separator,
-    /// A non-clickable heading.
-    Title {
-        /// Text to display.
-        title: String,
-        /// Whether the heading renders as active.
-        is_enabled: bool,
-    },
-    /// Opens a submenu; items until the matching `EndSubmenu` belong to it.
-    BeginSubmenu {
-        /// Text to display for the submenu.
-        label: String,
-        /// Whether the submenu can be opened.
-        is_enabled: bool,
-    },
-    /// Closes the most recently opened submenu.
-    EndSubmenu,
-}
+/// Submenus are expressed as a flat sequence bracketed by `BeginSubmenu` /
+/// `EndSubmenu` rather than by nesting, matching CLAP's builder callback
+/// order. The type is the FFI crate's, which builds it from the plugin's
+/// builder calls.
+pub use tutti_clap_ffi::MenuItem as ContextMenuItem;
 
 /// A request to reconfigure a single audio port's channel count/type.
 #[derive(Debug, Clone)]

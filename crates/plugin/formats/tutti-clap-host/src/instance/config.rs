@@ -6,23 +6,15 @@
 
 use crate::events::{InputEventList, OutputEventList};
 use crate::types::{ClapNoteExpression, ParameterChanges, RtNoteExpressions};
-use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use std::sync::atomic::AtomicI32;
+use tutti_clap_ffi::PortScratch;
 use tutti_plugin_types::BusChannels;
 use tutti_plugin_types::ChannelLayout;
 use tutti_plugin_types::RtMidiEvents;
 
-/// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
-/// so a caller supplying more channels than the plugin consumes does not grow
-/// the pool on the audio thread. See [`ProcessScratch::caller_input_ptrs`].
-///
-/// 8 covers the realistic over-supply (a 7.1 host feeding a stereo plugin) for
-/// 64 bytes a side; past it, one heap grow on the first such block and none
-/// after.
-const CALLER_PTR_HEADROOM: usize = 8;
-
-/// Note expressions one block can carry in to the plugin.
+/// How many converted note expressions one block can carry; reserved at
+/// activation so converting never grows the buffer.
 pub(crate) const INPUT_NOTE_EXPRESSIONS: usize = 256;
 
 /// Audio format the host presents to the plugin.
@@ -35,107 +27,15 @@ pub(crate) struct AudioConfig {
     pub f64_active: bool,
 }
 
-/// Pre-allocated scratch for one sample type (f32 or f64) used by the RT
-/// process path. Sized once in `activate()` from the plugin's port layout;
-/// [`ClapProcessor::process`](super::ClapProcessor::process) reuses these
-/// vectors in place — it never grows or reallocates them on the audio
-/// thread.
-///
-/// Fields are `pub(crate)` because this struct is an internal buffer pool;
-/// users interact with it only through `ClapProcessor::process`.
-pub struct ProcessScratch<T> {
-    pub(crate) channels: Vec<Vec<T>>,
-    pub(crate) input_ptrs: Vec<*mut T>,
-    pub(crate) output_ptrs: Vec<*mut T>,
-    pub(crate) input_bufs: Vec<clap_audio_buffer>,
-    pub(crate) output_bufs: Vec<clap_audio_buffer>,
-    /// The *caller's* channel pointers for this block, one entry per channel
-    /// the caller supplied — distinct from `input_ptrs`/`output_ptrs`, which
-    /// are the plugin-facing arrays after zero-padding to the port layout.
-    ///
-    /// These were small-vector locals in `process` (16 pointers inline, then
-    /// the heap), which spilled to
-    /// the heap every block past 16 channels a side — reachable through
-    /// supported layouts, since two 8-channel ports or a third-order ambisonic
-    /// bus already sit at the inline bound. Pooled here instead, sized from the
-    /// port layout in `resize_for`.
-    pub(crate) caller_input_ptrs: Vec<*mut T>,
-    pub(crate) caller_output_ptrs: Vec<*mut T>,
-}
-
-// The raw pointers live inside our own `channels` vec; the whole struct is
-// fine to move across threads together with `ClapProcessor`. Pointers are re-derived on each `process` call.
-unsafe impl<T: Send> Send for ProcessScratch<T> {}
-
-impl<T: Copy + Default> ProcessScratch<T> {
-    pub fn new() -> Self {
-        Self {
-            channels: Vec::new(),
-            input_ptrs: Vec::new(),
-            output_ptrs: Vec::new(),
-            input_bufs: Vec::new(),
-            output_bufs: Vec::new(),
-            caller_input_ptrs: Vec::new(),
-            caller_output_ptrs: Vec::new(),
-        }
-    }
-
-    /// Pre-allocate every vector. Called from `activate()` after the port
-    /// layout and max-frames are known, so the RT path never grows these.
-    ///
-    /// Channel pool layout: the first `input_channels_total` entries serve
-    /// the input side; the next `output_channels_total` serve the output
-    /// side. This split keeps input and output pads independent.
-    pub fn resize_for(
-        &mut self,
-        input_channels_total: usize,
-        output_channels_total: usize,
-        max_frames: usize,
-        num_input_ports: usize,
-        num_output_ports: usize,
-    ) {
-        let total_channel_bufs = input_channels_total + output_channels_total;
-        self.channels.clear();
-        self.channels.reserve_exact(total_channel_bufs);
-        for _ in 0..total_channel_bufs {
-            self.channels.push(vec![T::default(); max_frames]);
-        }
-
-        self.input_ptrs.clear();
-        self.input_ptrs.reserve_exact(input_channels_total);
-        self.output_ptrs.clear();
-        self.output_ptrs.reserve_exact(output_channels_total);
-
-        self.input_bufs.clear();
-        self.input_bufs.reserve_exact(num_input_ports);
-        self.output_bufs.clear();
-        self.output_bufs.reserve_exact(num_output_ports);
-
-        // Headroom above the port layout: `refill_port_buffers` clamps with
-        // `.min(wanted)`, but the caller's extra pointers are collected before
-        // the clamp discards them, so an over-supplying caller would otherwise
-        // be exactly the case that still grows the pool on the audio thread.
-        // Additive, not a multiplier — over-supply is a handful of channels,
-        // not a proportion of the layout.
-        self.caller_input_ptrs.clear();
-        self.caller_input_ptrs
-            .reserve_exact(input_channels_total + CALLER_PTR_HEADROOM);
-        self.caller_output_ptrs.clear();
-        self.caller_output_ptrs
-            .reserve_exact(output_channels_total + CALLER_PTR_HEADROOM);
-    }
-}
-
 /// All per-block RT scratch for the committed sample type `T`, grouped so it
 /// can live on the Processor and drop before the plugin handle.
 ///
 /// Sized once in `ClapLoaded::activate_typed`; every `process` call reuses these
 /// in place and never allocates. Because `ClapProcessor<T>` is monomorphised by `T`,
-/// there is exactly one `ProcessScratch<T>` here — the pre-split single type
-/// had to carry both an f32 and an f64 pool.
+/// there is exactly one `PortScratch<T>` here.
 pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// Channel pool + per-port `clap_audio_buffer` descriptors.
-    pub process: ProcessScratch<T>,
+    pub process: PortScratch<T>,
     /// Refilled per call (UMP → CLAP). Cleared in place; capacity persists.
     pub input_events: InputEventList,
     /// Filled by the plugin's `try_push` callback during `process`.
@@ -182,7 +82,7 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
 impl<T: super::ClapSample> AudioScratch<T> {
     pub fn new() -> Self {
         Self {
-            process: ProcessScratch::new(),
+            process: PortScratch::new(),
             input_events: InputEventList::new(),
             output_events: OutputEventList::new(),
             out_midi: RtMidiEvents::new(),
@@ -346,7 +246,7 @@ mod port_layout_tests {
 pub(crate) struct LifecycleFlags {
     /// The plugin's `activate()` has run and `deactivate()` has not.
     ///
-    /// Distinct from processing (`Shell::processing`), and the distinction is
+    /// Distinct from processing (`AudioSide::is_processing`), and the distinction is
     /// load-bearing: CLAP tags methods like `params.flush` as
     /// `[active ? audio-thread : main-thread]`, keyed on *activation* and not on
     /// whether audio has started flowing. Gating those on processing treats the

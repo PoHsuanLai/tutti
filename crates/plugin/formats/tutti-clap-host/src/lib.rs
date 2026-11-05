@@ -1,26 +1,14 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Every `unsafe` the CLAP host needs is in `tutti-clap-ffi`.
+#![forbid(unsafe_code)]
 
 mod error;
 mod events;
-mod guard;
 pub mod host;
 pub mod instance;
 pub mod topology;
 pub mod types;
-
-/// Copies a nul-terminated C string into an owned `String`, substituting lossy
-/// replacement for invalid UTF-8. Returns an empty string if `ptr` is null.
-///
-/// # Safety
-/// `ptr` must be null or point to a valid, nul-terminated C string.
-pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
-    if ptr.is_null() {
-        String::new()
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned() }
-    }
-}
 
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};

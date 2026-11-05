@@ -1,13 +1,11 @@
 //! Plugin state save/load and preset loading.
 
 use super::ClapLoaded;
-use super::ext;
 use crate::error::{ClapError, Result};
 use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
-use clap_sys::factory::preset_discovery::CLAP_PRESET_DISCOVERY_LOCATION_FILE;
 use std::path::Path;
-use std::ptr;
+use tutti_clap_ffi::{CallError, Extension};
 
 impl ClapLoaded {
     /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
@@ -22,18 +20,19 @@ impl ClapLoaded {
     /// loaded the plugin.
     pub(crate) fn read_state(&self) -> Result<Vec<u8>> {
         self.assert_main_thread();
-        let state_ext = unsafe { ext::opt(self.extensions.state.state) }
-            .ok_or_else(|| ClapError::StateError("No state extension".to_string()))?;
-        let save_fn = state_ext
-            .save
-            .ok_or_else(|| ClapError::StateError("No save function".to_string()))?;
-
         let mut stream = OutputStream::new();
-        if !unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw()) } {
-            return Err(ClapError::StateError("Save failed".to_string()));
+        match self.plugin.state_save(&mut stream) {
+            Ok(()) => Ok(stream.into_data()),
+            Err(CallError::NoExtension) => {
+                Err(ClapError::StateError("No state extension".to_string()))
+            }
+            Err(CallError::NoFunction) => {
+                Err(ClapError::StateError("No save function".to_string()))
+            }
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Save failed".to_string()))
+            }
         }
-
-        Ok(stream.into_data())
     }
 
     /// Restores plugin state from bytes previously returned by [`Control::save_state`](tutti_plugin_types::Control::save_state).
@@ -52,19 +51,19 @@ impl ClapLoaded {
         if data.is_empty() {
             return Ok(());
         }
-
-        let state_ext = unsafe { ext::opt(self.extensions.state.state) }
-            .ok_or_else(|| ClapError::StateError("No state extension".to_string()))?;
-        let load_fn = state_ext
-            .load
-            .ok_or_else(|| ClapError::StateError("No load function".to_string()))?;
-
         let mut stream = InputStream::new(data);
-        if !unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw()) } {
-            return Err(ClapError::StateError("Load failed".to_string()));
+        match self.plugin.state_load(&mut stream) {
+            Ok(()) => Ok(()),
+            Err(CallError::NoExtension) => {
+                Err(ClapError::StateError("No state extension".to_string()))
+            }
+            Err(CallError::NoFunction) => {
+                Err(ClapError::StateError("No load function".to_string()))
+            }
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Load failed".to_string()))
+            }
         }
-
-        Ok(())
     }
 
     /// Saves state, telling the plugin whether it is being saved for a
@@ -93,18 +92,19 @@ impl ClapLoaded {
     /// loaded the plugin.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
-        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) }
-            && let Some(save_fn) = ext.save
+        let mut stream = OutputStream::new();
+        match self
+            .plugin
+            .state_save_with_context(&mut stream, context.into())
         {
-            let mut stream = OutputStream::new();
-            if !unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                return Err(ClapError::StateError(format!(
-                    "Context-aware save failed for {context:?}"
-                )));
-            }
-            return Ok(stream.into_data());
+            Ok(()) => Ok(stream.into_data()),
+            Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
+                "Context-aware save failed for {context:?}"
+            ))),
+            // A plugin without the context extension, or without its `save`,
+            // is asked for its plain state instead.
+            Err(CallError::NoExtension | CallError::NoFunction) => self.read_state(),
         }
-        self.read_state()
     }
 
     /// Loads state with a specific [`StateContext`].
@@ -132,24 +132,23 @@ impl ClapLoaded {
         if data.is_empty() {
             return Ok(());
         }
-        if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) }
-            && let Some(load_fn) = ext.load
+        let mut stream = InputStream::new(data);
+        match self
+            .plugin
+            .state_load_with_context(&mut stream, context.into())
         {
-            let mut stream = InputStream::new(data);
-            if !unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                return Err(ClapError::StateError(format!(
-                    "Context-aware load failed for {context:?}"
-                )));
-            }
-            return Ok(());
+            Ok(()) => Ok(()),
+            Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
+                "Context-aware load failed for {context:?}"
+            ))),
+            Err(CallError::NoExtension | CallError::NoFunction) => self.write_state(data),
         }
-        self.write_state(data)
     }
 
     /// Whether the plugin implements `CLAP_EXT_STATE_CONTEXT`.
     #[must_use]
     pub fn supports_state_context(&self) -> bool {
-        !self.extensions.state.context.is_null()
+        self.plugin.supports(Extension::StateContext)
     }
 
     /// Whether the plugin implements `CLAP_EXT_PRESET_LOAD`, i.e. whether
@@ -161,7 +160,7 @@ impl ClapLoaded {
     /// already knows.
     #[must_use]
     pub fn supports_preset_load(&self) -> bool {
-        !self.extensions.state.preset_load.is_null()
+        self.plugin.supports(Extension::PresetLoad)
     }
 
     /// Asks the plugin to load a preset from the file at `path` via
@@ -177,24 +176,17 @@ impl ClapLoaded {
     /// loaded the plugin.
     pub fn load_preset_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
         self.assert_main_thread();
-        let ext = unsafe { ext::opt(self.extensions.state.preset_load) }
-            .ok_or_else(|| ClapError::StateError("No preset-load extension".to_string()))?;
-        let from_location_fn = ext
-            .from_location
-            .ok_or_else(|| ClapError::StateError("No from_location function".to_string()))?;
-        let location = std::ffi::CString::new(path.as_ref().to_string_lossy().as_ref())
-            .map_err(|e| ClapError::StateError(format!("Invalid path: {e}")))?;
-        if unsafe {
-            from_location_fn(
-                self.plugin.as_ptr(),
-                CLAP_PRESET_DISCOVERY_LOCATION_FILE,
-                location.as_ptr(),
-                ptr::null(),
-            )
-        } {
-            Ok(())
-        } else {
-            Err(ClapError::StateError("Preset load failed".to_string()))
+        match self.plugin.preset_load_file(path.as_ref()) {
+            Ok(()) => Ok(()),
+            Err(CallError::NoExtension) => Err(ClapError::StateError(
+                "No preset-load extension".to_string(),
+            )),
+            Err(CallError::NoFunction) => Err(ClapError::StateError(
+                "No from_location function".to_string(),
+            )),
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Preset load failed".to_string()))
+            }
         }
     }
 }

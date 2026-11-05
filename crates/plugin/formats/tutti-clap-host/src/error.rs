@@ -71,6 +71,16 @@ pub enum ClapError {
     #[error("Processing error: plugin refused to start processing")]
     StartProcessingFailed,
 
+    /// The port layout needs more channels or ports than the activation's
+    /// scratch was sized for. The plugin was not called.
+    #[error("Processing error: the port layout is larger than the activation sized for")]
+    LayoutMismatch,
+
+    /// A channel slice of the buffer is shorter than the block. The plugin was
+    /// not called.
+    #[error("Processing error: a channel buffer is shorter than the block")]
+    BufferTooShort,
+
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]
     StateError(String),

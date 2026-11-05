@@ -116,10 +116,9 @@ fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64
 
 impl PluginEditor for ClapGuiInstance {
     fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
-        let clap_handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         let size = self
             .inner
-            .open_editor(clap_handle, scale)
+            .open_editor(parent, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,

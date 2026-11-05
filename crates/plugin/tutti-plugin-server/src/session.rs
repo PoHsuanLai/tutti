@@ -1156,7 +1156,9 @@ mod tests {
     /// f32 even in an f64 session: the host hands one width for every buffer.
     ///
     /// Mutation (run): `check_f64_support` scanning the outputs only (the old
-    /// check) → the session negotiates f64; fails.
+    /// check) → the session negotiates f64; fails. The loader
+    /// using `requested` instead of `negotiate_format`'s answer → the
+    /// activation is refused; fails.
     #[test]
     #[cfg(feature = "clap")]
     fn an_f64_session_runs_a_clap_plugin_with_f32_inputs_in_f32() {

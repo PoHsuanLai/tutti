@@ -21,6 +21,9 @@
 //! - Windowed loudness: [`step_windowed_loudness`] with a [`WindowedLoudnessConfig`] and a
 //!   [`WindowedLoudnessState`] reads momentary (400 ms), short-term (3 s) and true
 //!   peak as a [`WindowedReading`] after every chunk.
+//! - Spectrum: [`step_spectrum`] with a [`SpectrumConfig`] and a
+//!   [`SpectrumState`] streams power in dB per bin or [`Banding`] band, with
+//!   [`Smoothing`], held peaks and a rolling spectrogram.
 //! - Stereo: [`correlate`] into a [`StereoReading`], smoothed for a meter by
 //!   [`step_ballistics`].
 //! - Spectral shape: [`spectral_centroid`], [`spectral_flatness`] and
@@ -69,6 +72,7 @@ mod peaks;
 // The module header carries the description.
 mod pitch;
 mod silence;
+mod spectrum;
 mod stereo;
 mod tempo;
 mod transform;
@@ -111,6 +115,7 @@ pub use peaks::{
 pub use silence::{
     Region, SilenceConfig, SilenceState, finish as finish_silence, step_silence, strip_silence,
 };
+pub use spectrum::{Banding, Smoothing, SpectrumConfig, SpectrumState, step_spectrum};
 pub use stereo::{
     Ballistics, BallisticsState, StereoLevels, StereoReading, correlate, step_ballistics,
 };

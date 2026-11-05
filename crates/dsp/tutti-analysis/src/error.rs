@@ -98,6 +98,25 @@ pub enum Error {
     /// A windowed-loudness setting or input that is out of range; the text names it.
     #[error("invalid loudness parameter: {0}")]
     InvalidLoudnessParameter(&'static str),
+    /// A spectrum band that holds no bin: the window is too short for it.
+    #[error(
+        "band {band} ({lower}..{upper}) holds no bin: a window of {window} samples \
+         holds every band"
+    )]
+    EmptyBand {
+        /// The first band with no bin, counting from the lowest.
+        band: usize,
+        /// Its lower edge, in [`Hz`].
+        lower: Hz,
+        /// Its upper edge, in [`Hz`].
+        upper: Hz,
+        /// A window, in [`Samples`], at least as wide as the narrowest band
+        /// needs, so that every band holds a bin.
+        window: Samples,
+    },
+    /// A spectrum setting or input that is out of range; the text names it.
+    #[error("invalid spectrum parameter: {0}")]
+    InvalidSpectrumParameter(&'static str),
     /// No pitch to read a key from: no frames, silent, or a chroma so flat
     /// that every key correlates alike.
     #[error("no tonal content: silent or flat chroma")]

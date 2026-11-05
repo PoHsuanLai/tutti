@@ -141,7 +141,7 @@ fn a_rescan_rereads_the_f64_flag() {
 /// one nobody has to remember to rescan for.
 ///
 /// Mutation (run): delete the `rescan_audio_ports` call in
-/// `ClapLoaded::activate_typed` → the `f64` activation is refused on the stale
+/// `ClapLoaded::activate_now` → the `f64` activation is refused on the stale
 /// flag, and the second one is not → both `expect`s fail.
 #[test]
 fn activation_rereads_the_f64_flag() {
@@ -215,7 +215,7 @@ fn a_rescan_of_an_active_plugin_is_refused() {
 /// scratch for one stereo bus.
 ///
 /// Mutation (run): delete the `self.rescan_audio_ports()` call in
-/// `ClapLoaded::activate_typed` → the port count stays 1 → the first assertion
+/// `ClapLoaded::activate_now` → the port count stays 1 → the first assertion
 /// fails.
 #[test]
 fn a_rate_change_rereads_the_port_layout() {
@@ -274,8 +274,8 @@ fn process_f32_block(active: &mut Active<f32>, channels: usize) -> Result<(), Cl
 /// active (CLAP allows `process` only while active), nothing is deactivated a
 /// second time, and the same instance then activates at 32-bit.
 ///
-/// Mutations (run): delete the `T::requires_f64() && ...` check in
-/// `ClapLoaded::activate_typed` → the plugin is activated for 64-bit audio on
+/// Mutations (run): delete the `wide && !self.audio.supports_f64` refusal in
+/// `ClapLoaded::activate_now` → the plugin is activated for 64-bit audio on
 /// ports that do not take them → the `Err` match fails. Return `None` for the
 /// plugin in the `refuse` closure → the `expect` on the returned plugin fails.
 /// Remove the `flags.active` guard in `ClapLoaded::deactivate_plugin` → the
@@ -323,7 +323,7 @@ fn an_f64_activation_on_dropped_flags_is_refused_with_the_plugin_intact() {
 /// rescan; a 3-channel block must index the new scratch, not a stereo one (a
 /// panic) or grow the pointer vectors (an allocation on the audio path).
 ///
-/// Mutation (run): size the scratch in `activate_typed` from a layout read
+/// Mutation (run): size the scratch in `activate_now` from a layout read
 /// before the rescan → the 3-channel block indexes past the scratch or
 /// allocates → this test aborts (SIGABRT, "memory allocation failed" under
 /// `assert_no_alloc`).
@@ -362,7 +362,7 @@ fn a_refused_activation_with_a_new_layout_leaves_ports_the_next_one_fits() {
 /// processes the new width.
 ///
 /// Mutation (run): delete the `self.loaded.rescan_audio_ports()?;` line in
-/// `ClapLoaded::activate_typed` → the totals are unchanged → the assertion fails.
+/// `ClapLoaded::activate_now` → the totals are unchanged → the assertion fails.
 #[test]
 fn a_successful_rate_change_exposes_the_new_layout() {
     let probe = Probe::acquire();

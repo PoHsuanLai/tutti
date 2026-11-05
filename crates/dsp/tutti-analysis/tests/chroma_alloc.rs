@@ -1,31 +1,39 @@
 //! A chroma step allocates nothing once its state holds the buffers.
 //!
 //! The crate carries no `assert_no_alloc` dev-dependency (see its Cargo.toml),
-//! so this binary counts allocations with its own global allocator. It holds a
-//! single test, so no other thread allocates while it counts.
+//! so this binary counts allocations with its own global allocator. It counts
+//! per thread, so the harness's other threads do not show up in a count.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use tutti_analysis::{ChromaConfig, ChromaState, FftScratch, StftGeometry, Tuning, step_chroma};
 use tutti_types::{Cents, Samples};
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // Per thread: the harness's own threads allocate while a test counts.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn count() {
+    // `try_with`: an allocation during thread teardown finds no slot.
+    let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+}
 
 // SAFETY: every method forwards to `System` unchanged; the counter is the only
 // addition.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        count();
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
+        count();
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -35,9 +43,9 @@ static A: Counting = Counting;
 
 /// Allocations made by `f`.
 fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::SeqCst);
+    let before = ALLOCATIONS.with(Cell::get);
     f();
-    ALLOCATIONS.load(Ordering::SeqCst) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 /// After one step has built the buffers and planned the FFT, further steps, a

@@ -162,6 +162,14 @@ pub struct PumpLoop<I, O, S = f32> {
     scratch: Vec<S>,
 }
 
+impl<I, O, S> std::fmt::Debug for PumpLoop<I, O, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PumpLoop")
+            .field("scratch_len", &self.scratch.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<I, O, S> PumpLoop<I, O, S>
 where
     S: Copy,
@@ -369,6 +377,12 @@ pub struct ManualDriver {
     slot: Arc<std::sync::Mutex<Option<Box<dyn ErasedPump>>>>,
 }
 
+impl std::fmt::Debug for ManualDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManualDriver").finish_non_exhaustive()
+    }
+}
+
 /// The caller's half of a [`ManualDriver`]: runs passes and reports what they
 /// did.
 ///
@@ -377,6 +391,12 @@ pub struct ManualDriver {
 /// that a shutdown ran.
 pub struct ManualPump {
     slot: Arc<std::sync::Mutex<Option<Box<dyn ErasedPump>>>>,
+}
+
+impl std::fmt::Debug for ManualPump {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManualPump").finish_non_exhaustive()
+    }
 }
 
 /// [`PumpLoop`] with its endpoint and element types erased.
@@ -449,6 +469,12 @@ impl ManualPump {
 /// which every [`ManualPump::pump_once`] returns `None`.
 pub struct ManualRunning {
     slot: Arc<std::sync::Mutex<Option<Box<dyn ErasedPump>>>>,
+}
+
+impl std::fmt::Debug for ManualRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManualRunning").finish_non_exhaustive()
+    }
 }
 
 impl RunningPump for ManualRunning {
@@ -553,6 +579,15 @@ pub struct Recorder {
     status: Arc<FinalizeStatus>,
 }
 
+impl std::fmt::Debug for Recorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recorder")
+            .field("running", &self.running)
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The finalize outcome of a [`Recorder`] that was dropped rather than
 /// stopped.
 ///
@@ -561,7 +596,7 @@ pub struct Recorder {
 /// directly and is the path to prefer; `Drop` cannot return anything, and a
 /// failed finalize means an unpatched WAV header — an unreadable file — so the
 /// error is stored here rather than lost.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct FinalizeStatus {
     /// Set once the drop-path finalize has run, whatever its outcome.
     /// Separate from the message so "succeeded" and "has not happened" are
@@ -940,8 +975,7 @@ mod tests {
         let wide =
             WavOut::create(&wide_path, 48_000.0, 6u16, BitDepth::Float32).expect("sink opens");
         let err = Recorder::start(stereo_src(), wide)
-            .err()
-            .expect("a width mismatch must be refused, not recorded");
+            .expect_err("a width mismatch must be refused, not recorded");
         // The typed variant carries both layouts as values, so a caller can
         // branch on the widths without parsing the message.
         assert!(

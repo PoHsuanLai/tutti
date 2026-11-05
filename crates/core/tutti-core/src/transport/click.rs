@@ -267,6 +267,21 @@ pub struct ClickNode {
     latched_until: Beat,
 }
 
+impl std::fmt::Debug for ClickNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClickNode")
+            .field("settings", &self.settings)
+            .field("meter", &self.meter)
+            .field("preroll", &self.preroll)
+            .field("sample_rate", &self.sample_rate)
+            .field("click_pos", &self.click_pos)
+            .field("is_accent", &self.is_accent)
+            .field("last_click_onset", &self.last_click_onset)
+            .field("latched_until", &self.latched_until)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ClickNode {
     /// A click node reading the count-in flag of `transport` and `settings`.
     /// Its click waveforms are rendered when it is prepared, at the graph's

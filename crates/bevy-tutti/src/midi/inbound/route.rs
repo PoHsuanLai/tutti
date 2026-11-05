@@ -193,6 +193,7 @@ fn nodes_changed(nodes: &Option<Res<MidiEngineNodes>>) -> bool {
 ///
 /// [`rebuild`] runs before the event wiring, so a routing change reaches the
 /// graph in the frame's commit, with any graph edit that motivated it.
+#[derive(Debug)]
 pub struct MidiRoutePlugin;
 
 impl Plugin for MidiRoutePlugin {

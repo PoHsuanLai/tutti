@@ -63,6 +63,7 @@ impl From<bool> for BandState {
 /// `match` per block and passes samples through bit-exactly.
 ///
 /// `F` is the internal state precision; defaults to `f64`.
+#[derive(Debug)]
 pub struct EqBandNode<F: Real = f64> {
     svf: SvfFilterNode<F>,
     state: BandState,

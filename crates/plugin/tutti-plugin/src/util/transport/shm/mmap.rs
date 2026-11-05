@@ -25,6 +25,7 @@ pub(super) fn as_bytes_mut<T: Copy>(slice: &mut [T]) -> &mut [u8] {
 }
 
 /// Interior-mutable mmap region, prefixed by a [`SlabHeader`].
+#[derive(Debug)]
 pub(super) struct MmapCell(UnsafeCell<MmapMut>);
 
 // SAFETY: this is cross-process shared memory, so `Sync` cannot mean what it

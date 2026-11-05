@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `Debug` on every public type
+
+The workspace now warns on `missing_debug_implementations`. Public types
+derive `Debug`, or implement it by hand where a field is an FFI handle, a
+closure, a trait object or an audio-thread ring. Those impls show the
+meaningful scalar fields and omit sample buffers, plugin state and handles.
+
 ### Fixed — `Send` impls that rested on a promise
 
 `tutti-cpal` no longer has `unsafe impl Send` for `CpalStream` or the mic's

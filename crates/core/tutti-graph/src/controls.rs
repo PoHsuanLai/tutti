@@ -107,6 +107,12 @@ pub struct ParamSetBuilder {
     slots: Vec<Slot>,
 }
 
+impl std::fmt::Debug for ParamSetBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParamSetBuilder").finish_non_exhaustive()
+    }
+}
+
 impl ParamSetBuilder {
     /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`.
     ///
@@ -152,6 +158,7 @@ pub trait ParamNode: Node + Sized {
 /// The fork source [`param_parts`] hands the editor: a template of the node
 /// that shares its cells (so a fork reads them as they are when it is
 /// taken), and its [`ParamSet`].
+#[derive(Debug)]
 pub struct ParamFork<N> {
     template: N,
     params: ParamSet,

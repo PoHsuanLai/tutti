@@ -198,6 +198,7 @@ impl MidiOutDrops {
 /// There is no `#[cfg]` here: every backend yields a `Box<dyn MidiOut>`, so
 /// a CoreMIDI port and an ALSA port are one static type, and which messages
 /// survive is not a property of where the binary was built.
+#[derive(Debug)]
 pub struct MidiOutRouter<'a> {
     /// The open output, JR-stamping as it sends. `None` when nothing is
     /// connected: a sink that is present but silently discarding would
@@ -324,6 +325,7 @@ impl<T> MidiRouteRule<T> {
 }
 
 /// One clip: its controls and the target it feeds.
+#[derive(Debug)]
 struct Clip {
     controls: MidiClipControls,
     target: AudioNode,
@@ -355,6 +357,24 @@ pub(crate) struct MidiState {
     /// The drop count the last `MidiOut` phase reported, and when.
     drops_seen: u64,
     reported_at: Option<Instant>,
+}
+
+impl std::fmt::Debug for MidiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiState")
+            .field("clips", &self.clips)
+            .field("rules", &self.rules)
+            .field("fallback", &self.fallback)
+            .field("minted", &self.minted)
+            .field("routed", &self.routed)
+            .field("host_routes", &self.host_routes)
+            .field("out", &self.out)
+            .field("stamping", &self.stamping)
+            .field("drops", &self.drops)
+            .field("drops_seen", &self.drops_seen)
+            .field("reported_at", &self.reported_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// How often a rising drop count is reported at most
@@ -403,6 +423,7 @@ impl MidiState {
 /// The session's MIDI (design 015 §4.3): live inputs, clips, the hardware
 /// input's routes and the hardware out. [`Session::midi`](crate::Session::midi)
 /// hands it out; what it edits goes out with the next update's commit.
+#[derive(Debug)]
 pub struct Midi<'a> {
     pub(crate) graph: &'a mut Graph,
     pub(crate) state: &'a mut MidiState,

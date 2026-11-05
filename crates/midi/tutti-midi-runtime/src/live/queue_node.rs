@@ -42,6 +42,15 @@ pub struct MidiQueueNode {
     scratch: Box<[MidiEvent]>,
 }
 
+impl std::fmt::Debug for MidiQueueNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiQueueNode")
+            .field("rx", &self.rx)
+            .field("tx", &self.tx)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MidiQueueNode {
     /// A node with an empty ring of [`MIDI_QUEUE_CAPACITY`] events.
     pub fn new() -> Self {

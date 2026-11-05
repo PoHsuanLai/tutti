@@ -18,6 +18,15 @@ pub struct CircularBuffer<T: Copy + Default> {
     write: usize,
 }
 
+impl<T: Copy + Default> std::fmt::Debug for CircularBuffer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CircularBuffer")
+            .field("capacity", &self.buf.len())
+            .field("write", &self.write)
+            .finish()
+    }
+}
+
 impl<T: Copy + Default> CircularBuffer<T> {
     /// Allocates a ring of `capacity` slots, zeroed, with the write cursor at 0.
     ///
@@ -145,6 +154,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
 /// and never grows past the allocation [`new`](Self::new) makes: each
 /// [`push`](Self::push) evicts the entry leaving the window *before* adding
 /// the new one. A clone keeps that allocation.
+#[derive(Debug)]
 pub struct MonotonicMinDeque {
     entries: VecDeque<(u64, f32)>,
     window: usize,

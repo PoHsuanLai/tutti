@@ -62,6 +62,18 @@ pub(crate) struct VbapPanner {
     last_solve: Option<([u32; 4], BlockGains)>,
 }
 
+impl std::fmt::Debug for VbapPanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VbapPanner")
+            .field("panner", &self.panner)
+            .field("smoother", &self.smoother)
+            .field("has_rear_speakers", &self.has_rear_speakers)
+            .field("settled_at", &self.settled_at)
+            .field("last_solve", &self.last_solve)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VbapPanner {
     fn new_with_layout(panner: VBAPanner) -> Self {
         let sample_rate = SampleRate(48000.0);
@@ -426,7 +438,7 @@ fn same_bits(a: (Azimuth, Elevation), b: (Azimuth, Elevation)) -> bool {
 /// `mono` records which branch produced them: a mono set is one gain vector
 /// (`a`) applied to the folded pair, a stereo set is two — `a` for the left
 /// virtual source, `b` for the right. Entries past the speaker count are zero.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockGains {
     pub(crate) mono: bool,
     pub(crate) a: [f32; MAX_SPEAKERS],

@@ -243,6 +243,17 @@ pub struct IrSpectra {
     output_ring: usize,
 }
 
+impl std::fmt::Debug for IrSpectra {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrSpectra")
+            .field("block_size", &self.block_size)
+            .field("ir_len", &self.ir_len)
+            .field("input_ring", &self.input_ring)
+            .field("output_ring", &self.output_ring)
+            .finish_non_exhaustive()
+    }
+}
+
 impl IrSpectra {
     /// Partition and transform `ir` at `block_size`, which must be a power
     /// of two. Allocates; control thread.
@@ -391,6 +402,21 @@ struct LevelState {
     seeded: bool,
     /// A step of a forward transform ran in the current call.
     crossed: bool,
+}
+
+impl std::fmt::Debug for LevelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelState")
+            .field("current", &self.current)
+            .field("accumulated", &self.accumulated)
+            .field("begun", &self.begun)
+            .field("base", &self.base)
+            .field("step", &self.step)
+            .field("spread_from", &self.spread_from)
+            .field("seeded", &self.seeded)
+            .field("crossed", &self.crossed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LevelState {
@@ -568,6 +594,16 @@ pub struct Convolver {
     output: Vec<f32>,
     /// Frames consumed since construction or the last reset.
     pushed: u64,
+}
+
+impl std::fmt::Debug for Convolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Convolver")
+            .field("spectra", &self.spectra)
+            .field("levels", &self.levels)
+            .field("pushed", &self.pushed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Convolver {

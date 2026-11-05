@@ -43,7 +43,7 @@ impl FrequencyRange {
 }
 
 /// The block's depth / feedback / mix — where the next block's ramps start.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct PhaserControls {
     depth: f32,
     fb: f32,
@@ -139,6 +139,23 @@ pub struct PhaserNode {
     authored_max_hz: Hz,
     /// `None` until the first block (and after `reset`).
     last: Option<PhaserControls>,
+}
+
+impl std::fmt::Debug for PhaserNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhaserNode")
+            .field("stages", &self.stages)
+            .field("width", &self.width)
+            .field("phase_offsets", &self.phase_offsets)
+            .field("phases", &self.phases)
+            .field("lfo", &self.lfo)
+            .field("mix", &self.mix)
+            .field("sample_rate", &self.sample_rate)
+            .field("range", &self.range)
+            .field("authored_max_hz", &self.authored_max_hz)
+            .field("last", &self.last)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PhaserNode {

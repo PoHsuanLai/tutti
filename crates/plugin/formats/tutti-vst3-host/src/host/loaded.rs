@@ -98,6 +98,15 @@ pub struct Vst3Loaded {
     pub(super) _library: Arc<Vst3Library>,
 }
 
+impl std::fmt::Debug for Vst3Loaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Loaded")
+            .field("info", &self.info)
+            .field("_library", &self._library)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Summary of the host-side state changes triggered by draining one or more
 /// `restartComponent(flags)` requests through
 /// [`Vst3Loaded::poll_plugin_notifications`].

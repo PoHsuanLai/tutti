@@ -47,6 +47,7 @@ use tutti_midi_types::CCNumber;
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
 /// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
+#[derive(Debug)]
 pub enum ClapEvent {
     /// A voice starts. Host→plugin.
     NoteOn(clap_event_note),
@@ -728,6 +729,7 @@ pub trait EventList {
 /// The `#[repr(C)]` layout places `clap_input_events` first so that
 /// [`Self::as_raw`] pointers are valid for the plugin's FFI expectations.
 #[repr(C)]
+#[derive(Debug)]
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
     pub(crate) events: Vec<ClapEvent>,
@@ -1272,6 +1274,21 @@ pub struct OutputEventList {
     /// Pushes `try_push` refused since the list was built: see
     /// [`events_refused`](Self::events_refused).
     refused: u64,
+}
+
+impl std::fmt::Debug for OutputEventList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputEventList")
+            .field("list", &self.list)
+            .field("events", &self.events)
+            .field("room", &self.room)
+            .field("param_room", &self.param_room)
+            .field("param_pushed", &self.param_pushed)
+            .field("latest", &self.latest)
+            .field("coalesced", &self.coalesced)
+            .field("refused", &self.refused)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OutputEventList {

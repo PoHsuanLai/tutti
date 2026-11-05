@@ -66,7 +66,7 @@ pub struct PluginProbed {
 /// In-flight probes, keyed by path so the same file is not probed twice at once.
 ///
 /// Private: [`start_probe`] fills this and [`poll_probes`] drains it.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct InFlightProbes {
     tasks: std::collections::HashMap<std::path::PathBuf, Task<Result<PluginRecord, BridgeError>>>,
 }

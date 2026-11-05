@@ -94,6 +94,16 @@ pub struct PluginLoad {
     state: Option<Vec<u8>>,
 }
 
+impl std::fmt::Debug for PluginLoad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginLoad")
+            .field("path", &self.path)
+            .field("rate", &self.rate)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PluginLoad {
     /// Bridge settings other than the defaults (a catalog's, say).
     pub fn with_config(mut self, config: AudioConfig) -> Self {
@@ -193,6 +203,14 @@ pub struct PluginLoaded {
     opened: Opened,
 }
 
+impl std::fmt::Debug for PluginLoaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginLoaded")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PluginLoaded {
     /// The plugin's file.
     pub fn path(&self) -> &Path {
@@ -255,6 +273,25 @@ pub struct HostedPlugin {
     /// earlier read lands nowhere.
     #[cfg(feature = "modulation")]
     mirror_token: Arc<()>,
+}
+
+impl std::fmt::Debug for HostedPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("HostedPlugin");
+        d.field("handle", &self.handle)
+            .field("controls", &self.controls)
+            .field("meter", &self.meter)
+            .field("liveness", &self.liveness)
+            .field("status", &self.status)
+            .field("told", &self.told)
+            .field("snapshot_token", &self.snapshot_token)
+            .field("snapshot_at", &self.snapshot_at);
+        #[cfg(feature = "modulation")]
+        d.field("mirror", &self.mirror)
+            .field("param_read", &self.param_read)
+            .field("mirror_token", &self.mirror_token);
+        d.finish_non_exhaustive()
+    }
 }
 
 impl HostedPlugin {
@@ -415,6 +452,15 @@ pub struct PluginSnapshotTaken {
     token: Arc<()>,
 }
 
+impl std::fmt::Debug for PluginSnapshotTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginSnapshotTaken")
+            .field("node", &self.node)
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PluginSnapshotTaken {
     /// The plugin's node.
     pub fn node(&self) -> AudioNode {
@@ -465,6 +511,7 @@ impl std::fmt::Debug for PluginParamRead {
 /// A finished [`PluginParamRead`], for [`Session::land_params`].
 #[cfg(feature = "modulation")]
 #[must_use = "land it with `Session::land_params`"]
+#[derive(Debug)]
 pub struct PluginParamsRead {
     node: AudioNode,
     values: std::collections::HashMap<u32, f32>,
@@ -481,6 +528,7 @@ impl PluginParamsRead {
 }
 
 /// `Phase::RenderMode`'s record: the mode last announced.
+#[derive(Debug)]
 pub(crate) struct RenderModeState {
     pub(crate) announced: tutti_plugin::RenderMode,
 }

@@ -57,6 +57,15 @@ pub struct DelayLine {
     max_delay_samples: usize,
 }
 
+impl std::fmt::Debug for DelayLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelayLine")
+            .field("write_pos", &self.write_pos)
+            .field("max_delay_samples", &self.max_delay_samples)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DelayLine {
     /// Allocates a line holding up to `max_delay_samples` frames of history.
     ///
@@ -178,7 +187,7 @@ fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
 
 /// The block's raw scalar controls — what the next block's ramps start from.
 /// `fb`/`cf` are bounded as a pair per sample, after ramping.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct DelayControls {
     fb: f32,
     cf: f32,
@@ -268,6 +277,26 @@ pub struct DelayLineNode {
     /// into a recirculating line stays there for good.
     good: [LastGood; 3],
     good_delay: Vec<LastGood>,
+}
+
+impl std::fmt::Debug for DelayLineNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelayLineNode")
+            .field("delays", &self.delays)
+            .field("delay_time", &self.delay_time)
+            .field("feedback", &self.feedback)
+            .field("cross_feedback", &self.cross_feedback)
+            .field("cross_routed", &self.cross_routed)
+            .field("mix", &self.mix)
+            .field("interpolation", &self.interpolation)
+            .field("sample_rate", &self.sample_rate)
+            .field("max_delay", &self.max_delay)
+            .field("last", &self.last)
+            .field("delay_ramps", &self.delay_ramps)
+            .field("good", &self.good)
+            .field("good_delay", &self.good_delay)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`DelayLineNode`] lets the graph modulate, in port order.

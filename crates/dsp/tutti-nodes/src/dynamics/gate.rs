@@ -16,7 +16,7 @@ use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 use crate::ramp::{LastGood, block_driven};
 
 /// Shared gate state used by the per-sample gain computation.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct GateCore {
     pub threshold_db: Param<Db>,
     pub timing: AttackRelease,
@@ -226,6 +226,15 @@ pub struct GateNode {
     channels: ChannelLayout,
     /// The per-frame gain lane, sized to the prepared `MaxBlock`.
     gains: Vec<f32>,
+}
+
+impl std::fmt::Debug for GateNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GateNode")
+            .field("core", &self.core)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`GateNode`] lets the graph modulate, in port order.

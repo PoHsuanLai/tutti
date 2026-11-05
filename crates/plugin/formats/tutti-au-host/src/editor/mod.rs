@@ -32,6 +32,12 @@ pub struct AuEditor {
     unit: AudioUnit,
 }
 
+impl std::fmt::Debug for AuEditor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuEditor").finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the view is released only by this type's `Drop`, and the raw pointer
 // leaves only through `view_ptr()`, so there is no aliasing across threads.
 unsafe impl Send for AuEditor {}

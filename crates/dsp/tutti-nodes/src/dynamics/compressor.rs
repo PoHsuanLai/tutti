@@ -16,7 +16,7 @@ use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Ta
 use crate::ramp::{LastGood, block_driven};
 
 /// Shared compressor state used by the per-sample gain computation.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct CompressorCore {
     pub threshold: ThresholdParams,
     pub ratio: Param<CompressionRatio>,
@@ -234,6 +234,15 @@ pub struct CompressorNode {
     channels: ChannelLayout,
     /// The per-frame gain lane, sized to the prepared `MaxBlock`.
     gains: Vec<f32>,
+}
+
+impl std::fmt::Debug for CompressorNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressorNode")
+            .field("core", &self.core)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`CompressorNode`] lets the graph modulate, in port order:

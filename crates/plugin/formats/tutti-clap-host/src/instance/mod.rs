@@ -87,6 +87,21 @@ pub struct ClapLoaded {
     pub(crate) thread_pool: Option<Arc<dyn tutti_graph::Pool>>,
 }
 
+impl std::fmt::Debug for ClapLoaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClapLoaded")
+            .field("_library", &self._library)
+            .field("_host", &self._host)
+            .field("host_state", &self.host_state)
+            .field("info", &self.info)
+            .field("audio", &self.audio)
+            .field("ports", &self.ports)
+            .field("flags", &self.flags)
+            .field("thread_pool", &self.thread_pool)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A fully-active CLAP plugin ready to [`process`](ClapActive::process) audio.
 ///
 /// The sample format `T` is fixed at activation: `ClapActive<f32>` (the
@@ -102,6 +117,14 @@ pub struct ClapActive<T: ClapSample = f32> {
     pub(crate) scratch: AudioScratch<T>,
     pub(crate) loaded: ClapLoaded,
     pub(crate) _sample: PhantomData<T>,
+}
+
+impl<T: ClapSample> std::fmt::Debug for ClapActive<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClapActive")
+            .field("loaded", &self.loaded)
+            .finish_non_exhaustive()
+    }
 }
 
 // Safety: CLAP plugins are designed to be called from a single thread

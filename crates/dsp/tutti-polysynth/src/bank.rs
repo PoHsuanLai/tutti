@@ -221,6 +221,30 @@ pub(crate) struct VoiceBank {
     out: [[f32; CONTROL_BLOCK]; 2],
 }
 
+impl std::fmt::Debug for VoiceBank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceBank")
+            .field("osc", &self.osc)
+            .field("filter", &self.filter)
+            .field("env_config", &self.env_config)
+            .field("shape", &self.shape)
+            .field("gain_glide", &self.gain_glide)
+            .field("sample_rate", &self.sample_rate)
+            .field("stride", &self.stride)
+            .field("voices", &self.voices)
+            .field("next_seed", &self.next_seed)
+            .field("phase", &self.phase)
+            .field("inc", &self.inc)
+            .field("inc_target", &self.inc_target)
+            .field("env", &self.env)
+            .field("env_slope", &self.env_slope)
+            .field("env_target", &self.env_target)
+            .field("stage", &self.stage)
+            .field("live", &self.live)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VoiceBank {
     /// Build a bank for `voices` voices of `stride` sub-voices each.
     ///

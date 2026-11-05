@@ -96,6 +96,15 @@ pub struct Plugins {
     audio: AudioConfig,
 }
 
+impl std::fmt::Debug for Plugins {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Plugins")
+            .field("config", &self.config)
+            .field("audio", &self.audio)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Plugins {
     /// Creates a catalog backed by any [`PluginCatalog`] implementation.
     ///
@@ -438,6 +447,7 @@ impl Plugins {
 ///
 /// Holding a ticket does not block; [`join`](Self::join) waits for the scan and
 /// [`try_join`](Self::try_join) polls.
+#[derive(Debug)]
 pub struct ScanTicket {
     catalog_rx: crossbeam_channel::Receiver<Box<dyn PluginCatalog>>,
     config: CatalogConfig,

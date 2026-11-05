@@ -50,7 +50,7 @@ use tutti_core::MasterMeter;
 /// Derefs to [`MasterMeter`]: read it with [`MasterMeter::get`], switch it with
 /// `enable`/`disable`. Reading is lock-free and safe from any system; the audio
 /// callback writes it.
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone, Default, Debug)]
 pub struct MeteringRes(pub MasterMeter);
 
 impl std::ops::Deref for MeteringRes {

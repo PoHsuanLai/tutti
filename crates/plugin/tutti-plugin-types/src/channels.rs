@@ -93,6 +93,7 @@ impl Sample for f64 {}
 /// let mut p = tutti_plugin_types::BufferPtrs::<f32>::new(1, 1);
 /// p.output[0] = std::ptr::null_mut();
 /// ```
+#[derive(Debug)]
 pub struct BufferPtrs<T> {
     input: Vec<*const T>,
     output: Vec<*mut T>,
@@ -206,6 +207,17 @@ pub struct AudioBuffer<'t, 'd: 't, T: Sample = f32> {
     pub sample_rate: f64,
 }
 
+impl<T: Sample> std::fmt::Debug for AudioBuffer<'_, '_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioBuffer")
+            .field("inputs", &self.inputs.len())
+            .field("outputs", &self.outputs.len())
+            .field("num_samples", &self.num_samples)
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
     /// Creates a block over the given channel tables.
     ///
@@ -267,6 +279,7 @@ pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
 /// Carries [`AudioBuffer`]'s two lifetimes verbatim (`'t` = channel tables,
 /// `'d` = sample data, `'d: 't`) so the split survives the enum boundary — a
 /// caller can still build the output table with a short-lived borrow.
+#[derive(Debug)]
 pub enum AudioBufferMut<'t, 'd: 't> {
     /// A 32-bit block.
     F32(AudioBuffer<'t, 'd, f32>),

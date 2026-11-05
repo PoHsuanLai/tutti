@@ -187,6 +187,18 @@ pub struct Vst2Instance {
     changes: Vst2Changes,
 }
 
+impl std::fmt::Debug for Vst2Instance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst2Instance")
+            .field("initial_values", &self.initial_values)
+            .field("metadata", &self.metadata)
+            .field("block_size", &self.block_size)
+            .field("double_precision", &self.double_precision)
+            .field("changes", &self.changes)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: every field is either `Send` or its non-`Send`-ness has been
 // addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers
 // inside `vst::host::PluginInstance` point at heap memory this crate owns;

@@ -5,7 +5,7 @@ use tutti_core::{Azimuth, Elevation, SampleRate, Samples, Seconds};
 
 pub const DEFAULT_POSITION_SMOOTH_TIME: Seconds = Seconds(0.05);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExponentialSmoother {
     value: f32,
     coeff: f32,

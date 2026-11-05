@@ -229,7 +229,7 @@ mod asset {
     ///
     /// Wraps an `Arc<Wave>`, so cloning shares the samples; derefs to
     /// [`Wave`]. The asset loader itself lives in `bevy-tutti`.
-    #[derive(Clone, bevy_asset::Asset, bevy_reflect::TypePath)]
+    #[derive(Clone, bevy_asset::Asset, bevy_reflect::TypePath, Debug)]
     pub struct WaveAsset(pub Arc<Wave>);
 
     impl core::ops::Deref for WaveAsset {

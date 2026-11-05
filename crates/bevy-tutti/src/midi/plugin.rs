@@ -32,6 +32,7 @@ use bevy_app::{App, Plugin};
 /// build reads it, and `TuttiPlugin` builds the engine before adding this
 /// plugin, so a resource created here would always be too late. A host that
 /// wants MPE inserts it before adding `TuttiPlugin`.
+#[derive(Debug)]
 pub struct TuttiMidiPlugin;
 
 impl Plugin for TuttiMidiPlugin {

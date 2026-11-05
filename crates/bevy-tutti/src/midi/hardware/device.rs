@@ -253,6 +253,7 @@ pub fn midi_device_poll_system(
 /// Adds hardware device connect/disconnect servicing and hot-plug polling
 /// (feature `midi-hardware`). Part of
 /// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin).
+#[derive(Debug)]
 pub struct MidiDevicePlugin;
 
 impl Plugin for MidiDevicePlugin {

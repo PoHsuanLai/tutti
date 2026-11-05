@@ -70,6 +70,7 @@ pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -
 ///
 /// The transport itself is not installed: the node reads it from each block's
 /// `Env` once it is in a graph. What is left to give it is the meter.
+#[derive(Debug)]
 pub struct TransportView<'a>(&'a mut PluginClient);
 
 impl TransportView<'_> {

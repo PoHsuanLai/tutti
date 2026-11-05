@@ -164,6 +164,7 @@ pub fn flex_metadata_broadcast_system(
 /// [`UmpOut`](crate::midi::UmpOut) to the session
 /// (`AudioGraphRes::midi`'s `set_hardware_out`), which the output pumps
 /// drain to.
+#[derive(Debug)]
 pub struct MidiMetadataPlugin;
 
 impl Plugin for MidiMetadataPlugin {

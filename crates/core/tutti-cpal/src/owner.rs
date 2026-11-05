@@ -15,6 +15,7 @@ use crate::error::{Error, Result};
 /// The handle to a value owned by its own thread. Dropping it asks that
 /// thread to drop the value and waits for it, so the stream is stopped when the drop
 /// returns.
+#[derive(Debug)]
 pub(crate) struct Owned {
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,

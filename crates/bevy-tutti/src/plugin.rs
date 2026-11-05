@@ -76,6 +76,7 @@ use crate::soundfont::TuttiSoundFontPlugin;
 /// With the `soundfont`, `midi` or `sampler` feature, when the app has no
 /// `AssetServer` (add `bevy_asset::AssetPlugin`, part of `DefaultPlugins`,
 /// first): those subsystems register asset loaders.
+#[derive(Debug)]
 pub struct TuttiPlugin {
     /// Index into the host's output-device list, or `None` for the system
     /// default.

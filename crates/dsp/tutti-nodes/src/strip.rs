@@ -58,7 +58,7 @@ pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
 /// `Clone` shares the three cells: it is the template
 /// [`tutti_graph::param_parts`] forks from ([`ParamNode::fork_fresh`] is the
 /// copy that shares nothing).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BusStripNode {
     volume: Param<Amplitude>,
     pan: Param<Pan>,

@@ -19,7 +19,7 @@ use crate::{
 /// plugin advertised
 /// [`Features::SEQUENCER_CONTEXT`](crate::Features::SEQUENCER_CONTEXT). Only the
 /// VST3 loader reads it.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ExpressiveContext<'a> {
     /// Chord events in effect this block. `None` when the host sends no chord
     /// track — not "no chord".
@@ -40,7 +40,7 @@ pub struct ExpressiveContext<'a> {
 /// Each best-effort field is `Some` only when the plugin advertised the
 /// matching bit in [`Features::CONSUMES`](crate::Features) — the host gates the
 /// send on the flag, never on the plugin's format.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProcessContext<'a> {
     /// MIDI for this block, in ascending time order. An empty slice rather than
     /// an `Option` — every format takes MIDI, so there is no "did not send"
@@ -106,7 +106,7 @@ impl<'a> ProcessContext<'a> {
 /// survives from block to block and the realtime path stops allocating once
 /// warm. Reset it with [`clear`](Self::clear), never by assigning a fresh
 /// value — that discards exactly the capacity the reuse exists for.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProcessOutput {
     /// MIDI the plugin emitted this block — a note effect's output, or an
     /// instrument echoing what it consumed.

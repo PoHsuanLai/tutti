@@ -94,6 +94,22 @@ pub struct FileIn {
     skipped_primer: Option<u64>,
 }
 
+impl std::fmt::Debug for FileIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileIn")
+            .field("track_id", &self.track_id)
+            .field("channels", &self.channels)
+            .field("sample_rate", &self.sample_rate)
+            .field("total_frames", &self.total_frames)
+            .field("leftover", &self.leftover)
+            .field("leftover_pos", &self.leftover_pos)
+            .field("cursor", &self.cursor)
+            .field("seekable", &self.seekable)
+            .field("skipped_primer", &self.skipped_primer)
+            .finish_non_exhaustive()
+    }
+}
+
 impl FileIn {
     /// Returns the file's length in frames, if the container reports it.
     pub fn total_frames(&self) -> Option<u64> {

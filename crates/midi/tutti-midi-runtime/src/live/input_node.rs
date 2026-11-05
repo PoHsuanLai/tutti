@@ -91,6 +91,19 @@ pub struct MidiInputNode {
     dropped: Arc<AtomicU64>,
 }
 
+impl std::fmt::Debug for MidiInputNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiInputNode")
+            .field("scratch", &self.scratch)
+            .field("out", &self.out)
+            .field("translator", &self.translator)
+            .field("mpe", &self.mpe)
+            .field("mpe_request", &self.mpe_request)
+            .field("dropped", &self.dropped)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MidiInputNode {
     /// A node polling `input` each block (`None`: a node that sends nothing),
     /// with MPE ingestion off. The node owns `input`: build one per node (for
@@ -136,7 +149,7 @@ impl MidiInputNode {
 }
 
 /// The host's handle on a [`MidiInputNode`]: its MPE mode. Cheap to clone.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiInputControls {
     /// What the node reads; the controls publish to it and read it back with
     /// `ArcLend::current`.

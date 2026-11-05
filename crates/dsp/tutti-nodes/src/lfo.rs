@@ -106,6 +106,7 @@ impl core::fmt::Display for LfoMode {
 /// construction and the beat it reads is its block's own; a consumer behind a
 /// latent path is aligned by the compiler, which delays this node's edge into
 /// it like any other source's.
+#[derive(Debug)]
 pub struct ModulatorNode<M: Modulator> {
     modulator: M,
     mode: LfoMode,

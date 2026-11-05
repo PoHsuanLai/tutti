@@ -101,7 +101,7 @@ impl ModDelayConfig {
 }
 
 /// The block's depth / feedback / mix — where the next block's ramps start.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ModDelayControls {
     depth: f32,
     fb: f32,
@@ -168,6 +168,24 @@ pub struct ModDelayNode {
     /// The step the last block ran at, which stepped on the pending control
     /// point; `None` before the first block and after `reset` or `prepare`.
     last_inc: Option<PhaseIncrement>,
+}
+
+impl std::fmt::Debug for ModDelayNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModDelayNode")
+            .field("config", &self.config)
+            .field("delays", &self.delays)
+            .field("phase_offsets", &self.phase_offsets)
+            .field("lfo", &self.lfo)
+            .field("controls", &self.controls)
+            .field("sample_rate", &self.sample_rate)
+            .field("last", &self.last)
+            .field("phases", &self.phases)
+            .field("seg_pos", &self.seg_pos)
+            .field("points_valid", &self.points_valid)
+            .field("last_inc", &self.last_inc)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ModDelayNode {

@@ -52,7 +52,7 @@ pub const DECLARED: &str = "declared";
 /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) handed
 /// back (`IntoNode::Controls`), kept on its entity: a clip node's
 /// `MidiClipControls`, a filter's `ParamSet`.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct NodeControls<C: Send + Sync + 'static>(pub C);
 
 /// Make each listed type a `tutti_session::SessionNode` whose controls are
@@ -137,7 +137,7 @@ macro_rules! param_graph_node {
 
 /// What [`reconcile`] saw last: each entity's node (to move its feeds when
 /// it is re-bound) and the sinks it wrote a declaration for.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Reconciled {
     bound: HashMap<Entity, AudioNode>,
     declared: HashSet<Entity>,
@@ -196,6 +196,7 @@ pub fn reconcile(
 
 /// Reconciles [`EventSources`] into the graph each frame, after spawning and
 /// before compensation (as the audio wiring does).
+#[derive(Debug)]
 pub struct GraphEventsPlugin;
 
 impl Plugin for GraphEventsPlugin {

@@ -116,6 +116,7 @@ fn unconfigured_channels() -> ChannelLayout {
 // `&mut self` method reaches it with `get_mut`, lock-free; a `&self` query
 // takes the lock, uncontended — the resource's own borrow already serializes
 // access.
+#[derive(Debug)]
 pub struct AudioGraphRes(
     Mutex<Session>,
     // Test builds: every phase run through `run_phase{,_with_mods}`, in order,

@@ -352,8 +352,7 @@ fn a_state_the_second_instance_refuses_is_a_named_fork_error() {
 
     let err = client
         .fork_instance(ForkMode::Live)
-        .err()
-        .expect("the second instance refuses the state");
+        .expect_err("the second instance refuses the state");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
         "expected LoadState, got {err:?}"
@@ -567,8 +566,7 @@ fn a_second_instance_of_another_plugin_is_a_mismatch() {
     env.set("TUTTI_VST2_PROBE_UNIQUE_ID", "4242");
     let err = client
         .fork_instance(ForkMode::Live)
-        .err()
-        .expect("a different plugin is not a fork");
+        .expect_err("a different plugin is not a fork");
     match err {
         PluginForkError::Mismatch {
             expected, found, ..
@@ -600,8 +598,7 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client
         .fork_instance(ForkMode::Live)
-        .err()
-        .expect("program 1 does not exist in the second instance");
+        .expect_err("program 1 does not exist in the second instance");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
         "expected LoadState, got {err:?}"

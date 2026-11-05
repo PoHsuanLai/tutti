@@ -154,7 +154,7 @@ pub fn compute_svf_coeffs(
 ///
 /// One set serves every channel: the params are one linked control surface, so
 /// widening replicates only the integrator state.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
@@ -313,6 +313,18 @@ pub struct SvfFilterNode<F: Real = f64> {
     /// The last finite cutoff / Q / gain the cells held: a non-finite write
     /// reads as unchanged, so it never reaches the solve (see [`LastGood`]).
     good: [LastGood; 3],
+}
+
+impl<F: Real> std::fmt::Debug for SvfFilterNode<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SvfFilterNode")
+            .field("filter_type", &self.filter_type)
+            .field("frequency", &self.frequency)
+            .field("q", &self.q)
+            .field("gain_db", &self.gain_db)
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params an [`SvfFilterNode`] lets the graph modulate, in port order.

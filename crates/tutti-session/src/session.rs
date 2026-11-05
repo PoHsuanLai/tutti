@@ -79,7 +79,7 @@ pub const PHASES: &[Phase] = &[
 ];
 
 /// What one phase reads besides the session.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PhaseCx<'a> {
     /// The time thresholds are measured on (a test passes its own).
     pub now: Instant,
@@ -122,6 +122,13 @@ pub struct ModInput<'a> {
     pub declarations: tutti_mod::Declarations<'a>,
     /// The host's keys, resolved.
     pub keys: &'a dyn crate::ModKeys,
+}
+
+#[cfg(feature = "modulation")]
+impl std::fmt::Debug for ModInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModInput").finish_non_exhaustive()
+    }
 }
 
 /// Something an [`update`](Session::update) found for the host.
@@ -260,7 +267,7 @@ impl std::fmt::Debug for SessionEvent {
 /// input, the clock (Beat Clock and MTC, off until a host enables it) and the
 /// hardware out the clock feeds, with their controls.
 #[cfg(feature = "midi")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiNodes {
     /// The hardware input's node: its ports feed what a route rule names.
     pub input: AudioNode,
@@ -316,6 +323,7 @@ pub struct MidiNodes {
 /// session.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO));
 /// assert!(block.iter().all(|&s| s == 0.5));
 /// ```
+#[derive(Debug)]
 pub struct Session {
     pub(crate) graph: Graph,
     pub(crate) transport: Transport,

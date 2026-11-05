@@ -144,7 +144,7 @@ impl Default for PluginRequest {
 /// Private field, no constructor: [`plugin_load_start`] inserts this and
 /// [`plugin_load_promote`] drains it. A host that could build one could hand the
 /// promoter a task belonging to no request.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct PendingPlugin {
     task: Task<PluginLoaded>,
     /// Hosted in process (VST2): the plugin opens in

@@ -588,8 +588,7 @@ fn a_failing_fork_source_is_a_named_error_with_its_cause() {
 
     let err = ed
         .fork(ForkTarget::Master, ForkMode::Live, pre)
-        .err()
-        .expect("a failing source fails the fork");
+        .expect_err("a failing source fails the fork");
     let ForkError::Source { key, cause } = &err else {
         panic!("expected ForkError::Source, got {err:?}");
     };
@@ -1368,8 +1367,7 @@ fn a_failing_build_names_its_key_and_hands_back_what_it_built() {
     let (error, remains) = std::thread::spawn(move || {
         pending
             .build()
-            .err()
-            .expect("the failing deferred build fails it")
+            .expect_err("the failing deferred build fails it")
     })
     .join()
     .expect("the build thread");
@@ -1507,7 +1505,7 @@ fn a_build_whose_commit_fails_hands_back_the_graph() {
         .fork_gather(ForkTarget::Master, ForkMode::Live, pre)
         .expect("gathers: the spec is checked at the commit");
     let (error, remains) =
-        std::thread::spawn(move || pending.build().err().expect("the commit fails"))
+        std::thread::spawn(move || pending.build().expect_err("the commit fails"))
             .join()
             .expect("the build thread");
     assert!(

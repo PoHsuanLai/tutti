@@ -68,15 +68,45 @@ pub struct Io<'a> {
     params: &'a [ParamInput<'a>],
 }
 
+impl std::fmt::Debug for Io<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Io")
+            .field("frames", &self.frames)
+            .field("inputs", &self.inputs.len())
+            .field("outputs", &self.outputs.len())
+            .field("silent", &self.silent)
+            .field("constant", &self.constant)
+            .field("in_place", &self.in_place)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The audio inputs, while the outputs are borrowed too.
 pub struct Inputs<'s> {
     slices: &'s [&'s [f32]],
     in_place: InPlaceMask,
 }
 
+impl std::fmt::Debug for Inputs<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inputs")
+            .field("channels", &self.slices.len())
+            .field("in_place", &self.in_place)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The audio outputs, while the inputs are borrowed too.
 pub struct Outputs<'s, 'a> {
     slices: &'s mut [&'a mut [f32]],
+}
+
+impl std::fmt::Debug for Outputs<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Outputs")
+            .field("channels", &self.slices.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// One channel's input and output together.
@@ -90,6 +120,21 @@ pub enum Channel<'s> {
     },
     /// One buffer: it holds the input now and must hold the output after.
     InPlace(&'s mut [f32]),
+}
+
+impl std::fmt::Debug for Channel<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Channel::Split { input, .. } => f
+                .debug_struct("Channel::Split")
+                .field("len", &input.len())
+                .finish_non_exhaustive(),
+            Channel::InPlace(buf) => f
+                .debug_struct("Channel::InPlace")
+                .field("len", &buf.len())
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl Channel<'_> {

@@ -28,7 +28,7 @@ const DEFAULT_LANE: usize = 512;
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
 /// block, not a flat field soup.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct LookaheadRing {
     /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
     /// construction — never resized in the RT path.
@@ -184,6 +184,25 @@ pub struct LimiterNode {
     gain_reduction_db: Db,
     sample_rate: SampleRate,
     follower: EnvelopeFollower,
+}
+
+impl std::fmt::Debug for LimiterNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LimiterNode")
+            .field("threshold_db", &self.threshold_db)
+            .field("ceiling_db", &self.ceiling_db)
+            .field("release", &self.release)
+            .field("good_release", &self.good_release)
+            .field("ring", &self.ring)
+            .field("lookahead", &self.lookahead)
+            .field("layout", &self.layout)
+            .field("channels", &self.channels)
+            .field("envelope", &self.envelope)
+            .field("gain_reduction_db", &self.gain_reduction_db)
+            .field("sample_rate", &self.sample_rate)
+            .field("follower", &self.follower)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`LimiterNode`] lets the graph modulate, in port order.
@@ -587,6 +606,7 @@ impl Clone for LimiterNode {
 /// clamps at the cell's ceiling, and a NaN given to
 /// [`new`](Self::new) starts the node at 0 dB. `±∞` dB are ceilings: `+∞`
 /// passes everything, `-∞` mutes.
+#[derive(Debug)]
 pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
     /// The linear ceiling the unmodulated path clamps at: never NaN.

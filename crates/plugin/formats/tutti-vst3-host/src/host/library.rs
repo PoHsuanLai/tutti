@@ -50,6 +50,14 @@ pub struct Vst3Library {
     _library: Library,
 }
 
+impl std::fmt::Debug for Vst3Library {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Library")
+            .field("_library", &self._library)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Host name reported to plugins through `IHostApplication::getName`, both at
 /// factory level (`setHostContext`) and per instance.
 pub(crate) const HOST_NAME: &str = "vst3-host";

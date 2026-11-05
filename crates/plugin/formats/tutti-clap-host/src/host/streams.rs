@@ -13,6 +13,14 @@ pub struct OutputStream {
     stream: clap_ostream,
 }
 
+impl std::fmt::Debug for OutputStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputStream")
+            .field("stream", &self.stream)
+            .finish_non_exhaustive()
+    }
+}
+
 impl OutputStream {
     /// Creates an empty output stream.
     pub fn new() -> Self {
@@ -68,6 +76,15 @@ pub struct InputStream<'a> {
     data: &'a [u8],
     position: usize,
     stream: clap_istream,
+}
+
+impl std::fmt::Debug for InputStream<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputStream")
+            .field("len", &self.data.len())
+            .field("position", &self.position)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> InputStream<'a> {

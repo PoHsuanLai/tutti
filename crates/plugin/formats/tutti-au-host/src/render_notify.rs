@@ -534,6 +534,12 @@ pub struct RenderNotify {
     state: Arc<NotifyState>,
 }
 
+impl std::fmt::Debug for RenderNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderNotify").finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the fields are an opaque AudioUnit handle and an `Arc` whose payload
 // is a `Send + Sync` closure plus an atomic. The AU calls the notify on its
 // render thread, which is why `new` requires `Send + Sync` of the host closure.

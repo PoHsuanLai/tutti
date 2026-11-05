@@ -11,7 +11,7 @@ use tutti_io::WaveAsset;
 
 /// In-memory loader for [`WaveAsset`]. Reads the entire payload, then
 /// delegates to [`WaveAsset::from_bytes`].
-#[derive(Default, TypePath)]
+#[derive(Default, TypePath, Debug)]
 pub struct WaveAssetLoader;
 
 /// Why a `.wav` failed to load.

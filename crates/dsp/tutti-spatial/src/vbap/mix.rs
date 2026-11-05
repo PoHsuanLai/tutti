@@ -91,6 +91,7 @@ pub struct VbapMixEdge {
 
 /// The bass-management send of a layout with an LFE channel: every source's
 /// first channel summed to mono, then low-passed at 120 Hz.
+#[derive(Debug)]
 pub struct VbapLfeSend {
     /// Mono sum of every source's channel 0 ([`VbapMixNode::LfeSum`]).
     pub sum: ChannelSumNode,
@@ -109,6 +110,7 @@ pub struct VbapLfeSend {
 /// `i`th source. The mix's output is the [`sum`](Self::sum), `layout`-wide.
 /// [`insert_into`](Self::insert_into) is that step for a [`GraphBuilder`], and
 /// `build_vbap_mix` is exactly `vbap_mix_parts(..)?.insert_into(..)`.
+#[derive(Debug)]
 pub struct VbapMixParts {
     /// One panner per source, placed at the source's position, in source
     /// order ([`VbapMixNode::Panner`]).

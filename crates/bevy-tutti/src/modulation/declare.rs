@@ -419,6 +419,12 @@ pub struct Mods<'w, 's> {
     commands: Commands<'w, 's>,
 }
 
+impl std::fmt::Debug for Mods<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mods").finish_non_exhaustive()
+    }
+}
+
 impl Mods<'_, '_> {
     /// A source of any kind.
     pub fn source(&mut self, kind: impl ModSourceKind) -> Entity {

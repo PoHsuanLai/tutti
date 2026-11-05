@@ -187,6 +187,18 @@ pub struct Engine {
     load: Arc<LoadMeter>,
 }
 
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("settings", &self.settings)
+            .field("graph", &self.graph)
+            .field("fader", &self.fader)
+            .field("capacity", &self.capacity)
+            .field("load", &self.load)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {

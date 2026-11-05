@@ -60,6 +60,7 @@ use super::header::{Direction, RING_SLOTS, SLAB_HEADER_BYTES, slot_for};
 use super::mmap::{MmapCell, as_bytes, as_bytes_mut};
 
 /// Who is responsible for the backing file's lifetime.
+#[derive(Debug)]
 enum Ownership {
     /// Created the slab; unlinks the backing file on drop.
     Owner,
@@ -72,6 +73,7 @@ enum Ownership {
 /// Create on one side, open on the other with a matching [`SlabLayout`].
 /// The creator owns the backing file and unlinks it on drop; the opener
 /// is a view.
+#[derive(Debug)]
 pub struct AudioSlab {
     mmap: MmapCell,
     name: String,
@@ -707,9 +709,7 @@ mod tests {
         let path = shm_path(&n);
         std::fs::write(&path, vec![0xABu8; byte_size(&l)]).unwrap();
 
-        let err = AudioSlab::open(n, l)
-            .err()
-            .expect("a foreign file must not open");
+        let err = AudioSlab::open(n, l).expect_err("a foreign file must not open");
         assert!(
             format!("{err}").contains("not a tutti audio slab"),
             "expected a magic failure, got: {err}"
@@ -727,9 +727,7 @@ mod tests {
         let _owner = AudioSlab::create(n.clone(), small).unwrap();
 
         let big = stereo_layout(256, SampleFormat::Float32);
-        let err = AudioSlab::open(n, big)
-            .err()
-            .expect("an oversized layout must not open");
+        let err = AudioSlab::open(n, big).expect_err("an oversized layout must not open");
         assert!(format!("{err}").contains("bytes"), "got: {err}");
     }
 

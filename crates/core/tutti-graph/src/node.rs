@@ -1104,6 +1104,14 @@ pub struct NodeParts<C> {
     pub fork: Option<Box<dyn ForkSource>>,
 }
 
+impl<C> std::fmt::Debug for NodeParts<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeParts")
+            .field("forkable", &self.fork.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<C> IntoNode for NodeParts<C> {
     type Controls = C;
 

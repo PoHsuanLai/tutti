@@ -34,6 +34,13 @@ pub struct ParameterChangeSink {
     inner: Arc<Mutex<Option<ParamCb>>>,
 }
 
+impl std::fmt::Debug for ParameterChangeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParameterChangeSink")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ParameterChangeSink {
     /// Creates an empty sink, which drops every notification until a callback is
     /// installed.
@@ -63,6 +70,12 @@ impl ParameterChangeSink {
 #[derive(Clone, Default)]
 pub(crate) struct RefreshSink {
     inner: Arc<Mutex<Option<RefreshCb>>>,
+}
+
+impl std::fmt::Debug for RefreshSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshSink").finish_non_exhaustive()
+    }
 }
 
 impl RefreshSink {
@@ -96,6 +109,12 @@ impl RefreshSink {
 #[derive(Clone, Default)]
 pub(crate) struct InvalidateSink {
     inner: Arc<Mutex<Option<InvalidateCb>>>,
+}
+
+impl std::fmt::Debug for InvalidateSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvalidateSink").finish_non_exhaustive()
+    }
 }
 
 impl InvalidateSink {

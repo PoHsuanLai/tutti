@@ -20,6 +20,12 @@ pub struct MeteringContext {
     right: Box<[f32]>,
 }
 
+impl std::fmt::Debug for MeteringContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeteringContext").finish_non_exhaustive()
+    }
+}
+
 impl MeteringContext {
     /// Allocates both scratch planes at the 8192-frame ceiling.
     ///

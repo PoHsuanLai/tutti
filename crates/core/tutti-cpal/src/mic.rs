@@ -62,6 +62,7 @@ const MONITOR_RING_FRAMES: usize = 480;
 /// Keeps the `cpal` input stream alive on its own thread. The callback runs for
 /// as long as this value exists; dropping it stops capture. The field is never
 /// read — ownership *is* the API, as with the output side's `CpalStream`.
+#[derive(Debug)]
 struct StreamHandle(
     #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] Owned,
 );
@@ -84,6 +85,15 @@ pub struct MicIn {
     sample_rate: SampleRate,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
+}
+
+impl std::fmt::Debug for MicIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MicIn")
+            .field("sample_rate", &self.sample_rate)
+            .field("_stream", &self._stream)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MicIn {

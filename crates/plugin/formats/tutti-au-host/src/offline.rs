@@ -339,6 +339,15 @@ pub struct PushScratch {
     sample_position: f64,
 }
 
+impl std::fmt::Debug for PushScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushScratch")
+            .field("block_size", &self.block_size)
+            .field("sample_position", &self.sample_position)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PushScratch {
     /// Allocates for the given per-bus input and output widths.
     ///

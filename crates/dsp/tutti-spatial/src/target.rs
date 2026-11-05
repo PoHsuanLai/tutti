@@ -15,7 +15,7 @@ use crate::smoothing::{DEFAULT_POSITION_SMOOTH_TIME, ExponentialSmoother};
 ///
 /// The two fields are different types on purpose: a bearing wraps (190° is
 /// 170° to the right), a height saturates (past straight up, you stop).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SpatialTarget {
     /// Bearing in [`Azimuth`] degrees, wrapped onto the circle: 0 is front,
     /// 90 left, -90 right. Written lock-free from the control thread and read
@@ -86,7 +86,7 @@ pub(crate) fn hold_finite(slot: &mut f32, value: f32) -> f32 {
 /// Shared because that asymmetry is easy to get wrong twice. Give the bearing
 /// the linear form and a source crossing behind the listener (170° → -170°, a
 /// 20° move) sweeps 340° the wrong way around the head.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct AngleSmoother {
     azimuth: ExponentialSmoother,
     elevation: ExponentialSmoother,

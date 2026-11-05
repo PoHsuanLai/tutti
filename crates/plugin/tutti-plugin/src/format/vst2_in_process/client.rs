@@ -43,6 +43,7 @@ use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 /// takes) **by state transfer**: a second instance of the plugin, from the same
 /// library, restored from this one's saved state. See
 /// [`fork_instance`](Self::fork_instance).
+#[derive(Debug)]
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Vst2Instance>>,
     pub(super) metadata: PluginInfo,
@@ -134,7 +135,7 @@ pub(super) enum RateDelivery {
 /// A clone shares the meter slot and reads it through a reader of its own
 /// (`Reader::clone` registers one on the same cell), and carries the counter
 /// and the last snapshot as they stand. Only a test clones a feed.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct TransportFeed {
     /// The node's meter slot, shared with its controls
     /// ([`InProcessVst2Client::meter`]), so a meter installed through them

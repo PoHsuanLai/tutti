@@ -113,7 +113,7 @@ pub struct MidiFileAsset {
 
 /// Loader for [`MidiFileAsset`]. Reads the whole payload, then decodes it with
 /// [`MidiFile::from_bytes`]; it claims [`MidiFile::EXTENSIONS`].
-#[derive(Default, TypePath)]
+#[derive(Default, TypePath, Debug)]
 pub struct MidiFileAssetLoader;
 
 impl AssetLoader for MidiFileAssetLoader {
@@ -172,7 +172,7 @@ impl MidiFileWrite {
 ///
 /// Replaces the [`MidiFileWrite`] request once the write starts, until
 /// [`MidiFileWritten`] fires.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct MidiFileWriteInFlight {
     task: Task<std::io::Result<()>>,
 }
@@ -242,6 +242,7 @@ pub fn poll_midi_file_writes(
 /// Part of [`TuttiMidiPlugin`](super::TuttiMidiPlugin). Needs an
 /// `AssetServer` (`bevy_asset::AssetPlugin`) and the task pools
 /// (`bevy_app::TaskPoolPlugin`) in the app.
+#[derive(Debug)]
 pub struct MidiFilePlugin;
 
 impl Plugin for MidiFilePlugin {

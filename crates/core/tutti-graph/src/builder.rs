@@ -159,6 +159,15 @@ pub struct GraphBuilder {
     units: Vec<Pending>,
 }
 
+impl std::fmt::Debug for GraphBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphBuilder")
+            .field("spec", &self.spec)
+            .field("shapes", &self.shapes)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GraphBuilder {
     /// An empty graph with `inputs` global input channels and `outputs`
     /// global output channels, every output silent until wired.
@@ -649,6 +658,16 @@ pub struct Renderer {
     transport: TransportFn,
 }
 
+impl std::fmt::Debug for Renderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Renderer")
+            .field("editor", &self.editor)
+            .field("executor", &self.executor)
+            .field("block", &self.block)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Renderer {
     /// Drives `executor`, draining back into `editor`. Transport stopped at
     /// beat zero ([`Transport::default`]); blocks at the prepared maximum.
@@ -863,6 +882,7 @@ impl Renderer {
 /// let mut solo = Solo::new(ForkByClone(Half), Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// assert_eq!(solo.render_input(&[&[1.0; 3]]), vec![vec![0.5; 3]]);
 /// ```
+#[derive(Debug)]
 pub struct Solo<C> {
     renderer: Renderer,
     key: NodeKey,

@@ -10,6 +10,7 @@
 //! `IPlugView::attached` — a segfault on the first editor open. See
 //! `run_loop.rs` for the full mechanism and how it was confirmed.
 
+use crate::guard::guard;
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
@@ -89,11 +90,15 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         handler: *mut IEventHandler,
         fd: FileDescriptor,
     ) -> tresult {
-        self.run_loop.register_event_handler(handler, fd)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.register_event_handler(handler, fd)
+        })
     }
 
     unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
-        self.run_loop.unregister_event_handler(handler)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.unregister_event_handler(handler)
+        })
     }
 
     unsafe fn registerTimer(
@@ -101,22 +106,28 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
         handler: *mut ITimerHandler,
         milliseconds: TimerInterval,
     ) -> tresult {
-        self.run_loop.register_timer(handler, milliseconds)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.register_timer(handler, milliseconds)
+        })
     }
 
     unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
-        self.run_loop.unregister_timer(handler)
+        guard(vst3::Steinberg::kInternalError, || {
+            self.run_loop.unregister_timer(handler)
+        })
     }
 }
 
 impl IHostApplicationTrait for HostApplication {
     unsafe fn getName(&self, name: *mut String128) -> tresult {
-        if name.is_null() {
-            return kInvalidArgument;
-        }
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        unsafe { *name = self.name };
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            if name.is_null() {
+                return kInvalidArgument;
+            }
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            unsafe { *name = self.name };
+            kResultOk
+        })
     }
 
     unsafe fn createInstance(
@@ -125,33 +136,35 @@ impl IHostApplicationTrait for HostApplication {
         iid: *mut TUID,
         obj: *mut *mut c_void,
     ) -> tresult {
-        if cid.is_null() || iid.is_null() || obj.is_null() {
-            return kInvalidArgument;
-        }
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        let cid_bytes: [u8; 16] = unsafe { std::mem::transmute(*cid) };
-        let iid_bytes: [u8; 16] = unsafe { std::mem::transmute(*iid) };
-        let imessage_iid: [u8; 16] =
-            unsafe { std::mem::transmute(vst3::Steinberg::Vst::IMessage_iid) };
-        let iattrlist_iid: [u8; 16] =
-            unsafe { std::mem::transmute(vst3::Steinberg::Vst::IAttributeList_iid) };
+        guard(vst3::Steinberg::kInternalError, || {
+            if cid.is_null() || iid.is_null() || obj.is_null() {
+                return kInvalidArgument;
+            }
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            let cid_bytes: [u8; 16] = unsafe { std::mem::transmute(*cid) };
+            let iid_bytes: [u8; 16] = unsafe { std::mem::transmute(*iid) };
+            let imessage_iid: [u8; 16] =
+                unsafe { std::mem::transmute(vst3::Steinberg::Vst::IMessage_iid) };
+            let iattrlist_iid: [u8; 16] =
+                unsafe { std::mem::transmute(vst3::Steinberg::Vst::IAttributeList_iid) };
 
-        if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
-            let msg = Message::new();
-            if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
-                unsafe { *obj = ptr.into_raw() as *mut c_void };
-                return kResultOk;
+            if cid_bytes == imessage_iid && iid_bytes == imessage_iid {
+                let msg = Message::new();
+                if let Some(ptr) = msg.to_com_ptr::<IMessage>() {
+                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    return kResultOk;
+                }
             }
-        }
-        if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
-            let attrs = AttributeList::new();
-            if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
-                unsafe { *obj = ptr.into_raw() as *mut c_void };
-                return kResultOk;
+            if cid_bytes == iattrlist_iid && iid_bytes == iattrlist_iid {
+                let attrs = AttributeList::new();
+                if let Some(ptr) = attrs.to_com_ptr::<IAttributeList>() {
+                    unsafe { *obj = ptr.into_raw() as *mut c_void };
+                    return kResultOk;
+                }
             }
-        }
-        unsafe { *obj = std::ptr::null_mut() };
-        kNotImplemented
+            unsafe { *obj = std::ptr::null_mut() };
+            kNotImplemented
+        })
     }
 }
 
@@ -203,16 +216,18 @@ const SUPPORTED_IIDS: &[TUID] = &[
 
 impl IPlugInterfaceSupportTrait for HostApplication {
     unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
-        if iid.is_null() {
-            return kInvalidArgument;
-        }
-        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
-        let queried = unsafe { *iid };
-        if SUPPORTED_IIDS.contains(&queried) {
-            kResultTrue
-        } else {
-            kResultFalse
-        }
+        guard(vst3::Steinberg::kInternalError, || {
+            if iid.is_null() {
+                return kInvalidArgument;
+            }
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            let queried = unsafe { *iid };
+            if SUPPORTED_IIDS.contains(&queried) {
+                kResultTrue
+            } else {
+                kResultFalse
+            }
+        })
     }
 }
 

@@ -6,6 +6,8 @@ use super::ClapLoaded;
 #[cfg(feature = "clap-extras")]
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
+#[cfg(feature = "clap-extras")]
+use crate::guard::guard;
 use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
 use crate::types::{
@@ -1415,62 +1417,64 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     item_kind: u32,
     item_data: *const c_void,
 ) -> bool {
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    if builder.is_null() || unsafe { (*builder).ctx.is_null() } {
-        return false;
-    }
-    let items = unsafe { &mut *((*builder).ctx as *mut Vec<ContextMenuItem>) };
-    let item = match item_kind {
-        CLAP_CONTEXT_MENU_ITEM_ENTRY => {
-            if item_data.is_null() {
-                return false;
-            }
-            let entry = unsafe { &*(item_data as *const clap_context_menu_entry) };
-            ContextMenuItem::Entry {
-                label: unsafe { cstr_to_string(entry.label) },
-                is_enabled: entry.is_enabled,
-                action_id: entry.action_id,
-            }
+    guard(false, || {
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        if builder.is_null() || unsafe { (*builder).ctx.is_null() } {
+            return false;
         }
-        CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY => {
-            if item_data.is_null() {
-                return false;
+        let items = unsafe { &mut *((*builder).ctx as *mut Vec<ContextMenuItem>) };
+        let item = match item_kind {
+            CLAP_CONTEXT_MENU_ITEM_ENTRY => {
+                if item_data.is_null() {
+                    return false;
+                }
+                let entry = unsafe { &*(item_data as *const clap_context_menu_entry) };
+                ContextMenuItem::Entry {
+                    label: unsafe { cstr_to_string(entry.label) },
+                    is_enabled: entry.is_enabled,
+                    action_id: entry.action_id,
+                }
             }
-            let entry = unsafe { &*(item_data as *const clap_context_menu_check_entry) };
-            ContextMenuItem::CheckEntry {
-                label: unsafe { cstr_to_string(entry.label) },
-                is_enabled: entry.is_enabled,
-                is_checked: entry.is_checked,
-                action_id: entry.action_id,
+            CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY => {
+                if item_data.is_null() {
+                    return false;
+                }
+                let entry = unsafe { &*(item_data as *const clap_context_menu_check_entry) };
+                ContextMenuItem::CheckEntry {
+                    label: unsafe { cstr_to_string(entry.label) },
+                    is_enabled: entry.is_enabled,
+                    is_checked: entry.is_checked,
+                    action_id: entry.action_id,
+                }
             }
-        }
-        CLAP_CONTEXT_MENU_ITEM_SEPARATOR => ContextMenuItem::Separator,
-        CLAP_CONTEXT_MENU_ITEM_TITLE => {
-            if item_data.is_null() {
-                return false;
+            CLAP_CONTEXT_MENU_ITEM_SEPARATOR => ContextMenuItem::Separator,
+            CLAP_CONTEXT_MENU_ITEM_TITLE => {
+                if item_data.is_null() {
+                    return false;
+                }
+                let title = unsafe { &*(item_data as *const clap_context_menu_item_title) };
+                ContextMenuItem::Title {
+                    title: unsafe { cstr_to_string(title.title) },
+                    is_enabled: title.is_enabled,
+                }
             }
-            let title = unsafe { &*(item_data as *const clap_context_menu_item_title) };
-            ContextMenuItem::Title {
-                title: unsafe { cstr_to_string(title.title) },
-                is_enabled: title.is_enabled,
+            CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU => {
+                if item_data.is_null() {
+                    return false;
+                }
+                let sub = unsafe { &*(item_data as *const clap_context_menu_submenu) };
+                ContextMenuItem::BeginSubmenu {
+                    label: unsafe { cstr_to_string(sub.label) },
+                    is_enabled: sub.is_enabled,
+                }
             }
-        }
-        CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU => {
-            if item_data.is_null() {
-                return false;
-            }
-            let sub = unsafe { &*(item_data as *const clap_context_menu_submenu) };
-            ContextMenuItem::BeginSubmenu {
-                label: unsafe { cstr_to_string(sub.label) },
-                is_enabled: sub.is_enabled,
-            }
-        }
-        CLAP_CONTEXT_MENU_ITEM_END_SUBMENU => ContextMenuItem::EndSubmenu,
-        _ => return false,
-    };
-    items.push(item);
-    true
+            CLAP_CONTEXT_MENU_ITEM_END_SUBMENU => ContextMenuItem::EndSubmenu,
+            _ => return false,
+        };
+        items.push(item);
+        true
+    })
 }
 
 #[cfg(feature = "clap-extras")]
@@ -1478,15 +1482,17 @@ pub(super) unsafe extern "C" fn context_menu_builder_supports(
     _builder: *const clap_context_menu_builder,
     item_kind: u32,
 ) -> bool {
-    matches!(
-        item_kind,
-        CLAP_CONTEXT_MENU_ITEM_ENTRY
-            | CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY
-            | CLAP_CONTEXT_MENU_ITEM_SEPARATOR
-            | CLAP_CONTEXT_MENU_ITEM_TITLE
-            | CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU
-            | CLAP_CONTEXT_MENU_ITEM_END_SUBMENU
-    )
+    guard(false, || {
+        matches!(
+            item_kind,
+            CLAP_CONTEXT_MENU_ITEM_ENTRY
+                | CLAP_CONTEXT_MENU_ITEM_CHECK_ENTRY
+                | CLAP_CONTEXT_MENU_ITEM_SEPARATOR
+                | CLAP_CONTEXT_MENU_ITEM_TITLE
+                | CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU
+                | CLAP_CONTEXT_MENU_ITEM_END_SUBMENU
+        )
+    })
 }
 
 #[cfg(test)]

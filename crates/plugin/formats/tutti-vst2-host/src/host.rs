@@ -348,8 +348,12 @@ impl Host for HostState {
                     self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
                 }
             } else if matches!(event.event_type, vst::api::EventType::SysEx) {
-                let sysex = unsafe { &*(event_ptr as *const vst::api::SysExEvent) };
-                self.push_sysex_out(sysex);
+                // `read_unaligned`: the header's alignment (4) does not prove the
+                // plugin's `SysExEvent` (8). The struct holds no owned data, so
+                // the copy needs no drop.
+                let sysex =
+                    unsafe { std::ptr::read_unaligned(event_ptr.cast::<vst::api::SysExEvent>()) };
+                self.push_sysex_out(&sysex);
             }
         }
     }

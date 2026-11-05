@@ -1,5 +1,6 @@
 //! IBStream COM implementation backed by an in-memory `Cursor<Vec<u8>>`.
 
+use crate::guard::guard;
 use std::ffi::c_void;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 
@@ -52,31 +53,34 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_read: *mut i32,
     ) -> tresult {
-        if num_bytes == 0 {
-            if !num_bytes_read.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3 ABI.
-                unsafe { *num_bytes_read = 0 };
-            }
-            return kResultOk;
-        }
-        if num_bytes < 0 || buffer.is_null() {
-            if !num_bytes_read.is_null() {
-                unsafe { *num_bytes_read = 0 };
-            }
-            return kInvalidArgument;
-        }
-        let mut cursor = self.cursor.lock();
-        let buf = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize) };
-        match cursor.read(buf) {
-            Ok(n) => {
+        guard(vst3::Steinberg::kInternalError, || {
+            if num_bytes == 0 {
                 if !num_bytes_read.is_null() {
-                    unsafe { *num_bytes_read = n as i32 };
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *num_bytes_read = 0 };
                 }
-                kResultOk
+                return kResultOk;
             }
-            Err(_) => kInvalidArgument,
-        }
+            if num_bytes < 0 || buffer.is_null() {
+                if !num_bytes_read.is_null() {
+                    unsafe { *num_bytes_read = 0 };
+                }
+                return kInvalidArgument;
+            }
+            let mut cursor = self.cursor.lock();
+            let buf =
+                unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize) };
+            match cursor.read(buf) {
+                Ok(n) => {
+                    if !num_bytes_read.is_null() {
+                        unsafe { *num_bytes_read = n as i32 };
+                    }
+                    kResultOk
+                }
+                Err(_) => kInvalidArgument,
+            }
+        })
     }
 
     unsafe fn write(
@@ -85,62 +89,69 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_written: *mut i32,
     ) -> tresult {
-        if num_bytes == 0 {
-            if !num_bytes_written.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                // VST3 ABI.
-                unsafe { *num_bytes_written = 0 };
-            }
-            return kResultOk;
-        }
-        if num_bytes < 0 || buffer.is_null() {
-            if !num_bytes_written.is_null() {
-                unsafe { *num_bytes_written = 0 };
-            }
-            return kInvalidArgument;
-        }
-        let mut cursor = self.cursor.lock();
-        let buf = unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) };
-        match cursor.write(buf) {
-            Ok(n) => {
+        guard(vst3::Steinberg::kInternalError, || {
+            if num_bytes == 0 {
                 if !num_bytes_written.is_null() {
-                    unsafe { *num_bytes_written = n as i32 };
+                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                    // VST3 ABI.
+                    unsafe { *num_bytes_written = 0 };
                 }
-                kResultOk
+                return kResultOk;
             }
-            Err(_) => kInvalidArgument,
-        }
+            if num_bytes < 0 || buffer.is_null() {
+                if !num_bytes_written.is_null() {
+                    unsafe { *num_bytes_written = 0 };
+                }
+                return kInvalidArgument;
+            }
+            let mut cursor = self.cursor.lock();
+            let buf =
+                unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) };
+            match cursor.write(buf) {
+                Ok(n) => {
+                    if !num_bytes_written.is_null() {
+                        unsafe { *num_bytes_written = n as i32 };
+                    }
+                    kResultOk
+                }
+                Err(_) => kInvalidArgument,
+            }
+        })
     }
 
     unsafe fn seek(&self, pos: i64, mode: i32, result: *mut i64) -> tresult {
-        let seek_from = match mode {
-            m if m == sdk_enum_i32(kIBSeekSet) => SeekFrom::Start(pos as u64),
-            m if m == sdk_enum_i32(kIBSeekCur) => SeekFrom::Current(pos),
-            m if m == sdk_enum_i32(kIBSeekEnd) => SeekFrom::End(pos),
-            _ => return kInvalidArgument,
-        };
-        let mut cursor = self.cursor.lock();
-        match cursor.seek(seek_from) {
-            Ok(new_pos) => {
-                if !result.is_null() {
-                    // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
-                    // VST3 ABI.
-                    unsafe { *result = new_pos as i64 };
+        guard(vst3::Steinberg::kInternalError, || {
+            let seek_from = match mode {
+                m if m == sdk_enum_i32(kIBSeekSet) => SeekFrom::Start(pos as u64),
+                m if m == sdk_enum_i32(kIBSeekCur) => SeekFrom::Current(pos),
+                m if m == sdk_enum_i32(kIBSeekEnd) => SeekFrom::End(pos),
+                _ => return kInvalidArgument,
+            };
+            let mut cursor = self.cursor.lock();
+            match cursor.seek(seek_from) {
+                Ok(new_pos) => {
+                    if !result.is_null() {
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                        // VST3 ABI.
+                        unsafe { *result = new_pos as i64 };
+                    }
+                    kResultOk
                 }
-                kResultOk
+                Err(_) => kInvalidArgument,
             }
-            Err(_) => kInvalidArgument,
-        }
+        })
     }
 
     unsafe fn tell(&self, pos: *mut i64) -> tresult {
-        let cursor = self.cursor.lock();
-        if !pos.is_null() {
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
-            // ABI.
-            unsafe { *pos = cursor.position() as i64 };
-        }
-        kResultOk
+        guard(vst3::Steinberg::kInternalError, || {
+            let cursor = self.cursor.lock();
+            if !pos.is_null() {
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // ABI.
+                unsafe { *pos = cursor.position() as i64 };
+            }
+            kResultOk
+        })
     }
 }
 

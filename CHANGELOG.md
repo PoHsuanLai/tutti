@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — host callbacks no longer abort on a panic
+
+Every `extern "C"` CLAP host callback (63) and every VST3 host COM method
+(53) runs its body in a `catch_unwind` guard and answers "not handled" instead
+of aborting the process. CLAP's `try_push` reads a plugin's event with
+`read_unaligned`, and the VST2 event header is cast from its `Vec<u64>`
+backing, so no event cast widens alignment unproven.
+
 ### Changed — lint, metadata and docs.rs policy
 
 `#![forbid(unsafe_code)]` is on every library with no `unsafe` (14 crates), and

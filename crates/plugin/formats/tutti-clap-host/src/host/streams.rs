@@ -3,6 +3,7 @@
 //! Used by state save/load — plugins read from an [`InputStream`] and write
 //! to an [`OutputStream`] without the host ever having to touch FFI.
 
+use crate::guard::guard;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use std::ffi::c_void;
 use std::ptr;
@@ -54,12 +55,14 @@ unsafe extern "C" fn ostream_write(
     buffer: *const c_void,
     size: u64,
 ) -> i64 {
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let out_buffer = unsafe { &mut *((*stream).ctx as *mut Vec<u8>) };
-    let data = unsafe { std::slice::from_raw_parts(buffer as *const u8, size as usize) };
-    out_buffer.extend_from_slice(data);
-    size as i64
+    guard(-1, || {
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let out_buffer = unsafe { &mut *((*stream).ctx as *mut Vec<u8>) };
+        let data = unsafe { std::slice::from_raw_parts(buffer as *const u8, size as usize) };
+        out_buffer.extend_from_slice(data);
+        size as i64
+    })
 }
 
 /// Readable stream that hands out slices of a caller-owned byte buffer
@@ -106,20 +109,45 @@ unsafe extern "C" fn istream_read(
     buffer: *mut c_void,
     size: u64,
 ) -> i64 {
-    // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
-    // valid per the CLAP ABI.
-    let input = unsafe { &mut *((*stream).ctx as *mut InputStream) };
-    let remaining = input.data.len() - input.position;
-    let to_read = (size as usize).min(remaining);
+    guard(-1, || {
+        // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
+        // valid per the CLAP ABI.
+        let input = unsafe { &mut *((*stream).ctx as *mut InputStream) };
+        let remaining = input.data.len() - input.position;
+        let to_read = (size as usize).min(remaining);
 
-    if to_read == 0 {
-        return 0;
+        if to_read == 0 {
+            return 0;
+        }
+
+        let source = &input.data[input.position..input.position + to_read];
+        let dest = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, to_read) };
+        dest.copy_from_slice(source);
+
+        input.position += to_read;
+        to_read as i64
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic inside a real stream callback answers CLAP's `-1` (error)
+    /// instead of aborting. A position past the end makes `len - position`
+    /// overflow, which panics (unwinding) with overflow checks on.
+    ///
+    /// Mutation: drop the `guard` from `istream_read`: the panic crosses the
+    /// `extern "C"` boundary and the test process aborts.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_panic_inside_a_stream_callback_answers_an_error() {
+        let bytes = [1u8, 2, 3];
+        let mut stream = InputStream::new(&bytes);
+        stream.position = bytes.len() + 1;
+        let raw = stream.as_raw();
+        let mut out = [0u8; 4];
+        let got = unsafe { ((*raw).read.unwrap())(raw, out.as_mut_ptr().cast(), 4) };
+        assert_eq!(got, -1);
     }
-
-    let source = &input.data[input.position..input.position + to_read];
-    let dest = unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, to_read) };
-    dest.copy_from_slice(source);
-
-    input.position += to_read;
-    to_read as i64
 }

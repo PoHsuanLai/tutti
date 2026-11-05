@@ -25,6 +25,13 @@ VST3 host also clamps the channel counts it hands `fill_bus` to the table's
 slot counts, which closes an out-of-bounds read when a caller passed more
 channels than the tables held.
 
+### Changed — ALSA UMP bindings are their own `-sys` crate
+
+The hand-written `snd_seq_*` / `snd_ump_*` FFI and the alsa-lib probe moved from
+`tutti-midi-hardware` into the new `tutti-alsa-ump-sys` (`links = "asound"`,
+Linux only). `tutti-midi-hardware::backend` is now private; reach the backend
+through `MidiSession`.
+
 ### Fixed — VST2 loads no longer race on a global
 
 `vst-tutti`'s `static mut LOAD_POINTER` is a thread-local that points at the

@@ -5,7 +5,7 @@
 
 // No `///` on these: a doc comment on a `pub mod` shadows the module's own
 // `//!` and re-resolves its intra-doc links in this scope.
-pub mod backend;
+mod backend;
 pub mod capability;
 pub mod endpoints;
 pub mod error;

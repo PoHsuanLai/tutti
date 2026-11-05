@@ -27,7 +27,6 @@ mod client;
 mod enumerate;
 mod input;
 mod output;
-pub mod sys;
 
 use crate::InputProducerHandle;
 use crate::capability::{EndpointId, EndpointInfo};

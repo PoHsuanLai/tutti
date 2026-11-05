@@ -3,8 +3,8 @@
 use std::os::raw::c_int;
 
 use super::client::{SeqClient, cstr};
-use super::sys;
 use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
+use tutti_alsa_ump_sys as sys;
 
 /// Which direction an endpoint is being listed for.
 #[derive(Clone, Copy, PartialEq, Eq)]

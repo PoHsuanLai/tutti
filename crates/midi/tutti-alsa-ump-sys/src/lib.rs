@@ -1,28 +1,26 @@
-//! Hand-written FFI for the part of ALSA's **UMP sequencer** API (alsa-lib ≥
-//! 1.2.10) that the ALSA backend uses.
+//! Raw FFI for the part of ALSA's sequencer and **UMP** API (alsa-lib >= 1.2.10)
+//! that `alsa-sys` does not bind.
 //!
-//! This is not a general ALSA binding: it declares only the functions, types
-//! and constants the backend calls, with alsa-lib's C names so they can be
-//! looked up in its headers. Applications use [`MidiSession`](crate::MidiSession)
-//! instead. The published `alsa-sys` / `alsa` crates have no `snd_ump_*` /
-//! `snd_seq_ump_*` bindings, which is why these are written by hand.
+//! Not a general ALSA binding: it declares the functions, types and constants
+//! the UMP path calls, with alsa-lib's C names so they can be looked up in its
+//! headers. `tutti-midi-hardware` has the safe wrappers. Linux only; empty
+//! elsewhere.
 //!
 //! # The struct is measured, not guessed
 //!
-//! [`snd_seq_ump_event_t`] mirrors a C struct whose last member is a union. That
-//! is the highest-risk thing in this backend: a wrong layout is not a compile
-//! error, it is silent memory corruption on the MIDI thread. Every offset below
-//! was read off the real header with `offsetof` on the target
-//! (alsa-lib 1.2.14, x86_64), and compile-time assertions re-check them so a
-//! drift breaks the build instead of the audio.
+//! [`snd_seq_ump_event_t`] mirrors a C struct whose last member is a union. A
+//! wrong layout is not a compile error, it is silent memory corruption. Every
+//! offset was read off the real header with `offsetof` on the target
+//! (alsa-lib 1.2.14, x86_64), and compile-time asserts below re-check them.
 //!
 //! # Version floors
 //!
-//! Everything declared here needs alsa-lib 1.2.10 (the `alsa_ump` cfg that
-//! `build.rs` sets). `build.rs` also detects 1.2.13, which adds
-//! `snd_seq_create_ump_endpoint` / `snd_seq_create_ump_block` (the
-//! `alsa_ump_create` cfg); those are not declared here.
+//! Everything declared here needs alsa-lib 1.2.10, reported to dependents by
+//! `build.rs` as `DEP_ASOUND_ALSA_UMP`. It also detects 1.2.13
+//! (`DEP_ASOUND_ALSA_UMP_CREATE`), which adds `snd_seq_create_ump_endpoint`;
+//! that is not declared here.
 
+#![cfg(target_os = "linux")]
 #![allow(
     non_camel_case_types,
     reason = "FFI type names mirror alsa-lib's C spelling, so a reader can grep the header"
@@ -98,30 +96,6 @@ impl Default for snd_seq_ump_event_t {
     }
 }
 
-/// Compile-time guards on the layout above.
-///
-/// A hand-written `repr(C)` over a C struct is only correct until the C side
-/// moves. These turn that into a build break rather than corruption at runtime —
-/// which matters because the failure mode otherwise is a garbled event on the
-/// MIDI thread, with nothing pointing back here.
-mod layout {
-    use super::*;
-
-    const _: () = assert!(std::mem::size_of::<snd_seq_ump_event_t>() == 32);
-    const _: () = assert!(std::mem::align_of::<snd_seq_ump_event_t>() == 4);
-    const _: () = assert!(std::mem::size_of::<snd_seq_addr_t>() == 2);
-
-    // Field offsets, as measured with `offsetof` on the target.
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, type_) == 0);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, flags) == 1);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, tag) == 2);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, queue) == 3);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, time) == 4);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, source) == 12);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, dest) == 14);
-    const _: () = assert!(std::mem::offset_of!(snd_seq_ump_event_t, ump) == 16);
-}
-
 // --- Constants -------------------------------------------------------------
 
 /// `SND_SEQ_OPEN_DUPLEX` — read and write.
@@ -170,7 +144,9 @@ pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
 
 // --- Functions -------------------------------------------------------------
 
-#[link(name = "asound")]
+// Only declared when `build.rs` found alsa-lib >= 1.2.10 (`cfg(alsa_ump)`); the
+// types and constants above stay unconditional.
+#[cfg(alsa_ump)]
 unsafe extern "C" {
     // Client lifecycle.
     /// Open a sequencer client handle; `streams` and `mode` are alsa-lib's `SND_SEQ_OPEN_*` / `SND_SEQ_NONBLOCK` flags.
@@ -312,26 +288,27 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// Turn an ALSA return code into this crate's error.
-///
-/// ALSA reports failure as a negative `errno`, so the sign carries the meaning
-/// and the magnitude is the code. Centralised so no call site re-derives it.
-pub(crate) fn check(code: c_int, operation: &'static str) -> crate::error::Result<c_int> {
-    if code < 0 {
-        Err(crate::error::Error::Alsa { operation, code })
-    } else {
-        Ok(code)
-    }
-}
+/// The measured `snd_seq_ump_event_t` size, alignment and field offsets, checked
+/// at compile time (they need no libasound). Mutation, done: changing the
+/// expected `dest` offset 14 -> 15 made `cargo check` fail; restored.
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<snd_seq_ump_event_t>() == 32);
+    assert!(align_of::<snd_seq_ump_event_t>() == 4);
+    assert!(size_of::<snd_seq_addr_t>() == 2);
+    assert!(offset_of!(snd_seq_ump_event_t, type_) == 0);
+    assert!(offset_of!(snd_seq_ump_event_t, flags) == 1);
+    assert!(offset_of!(snd_seq_ump_event_t, tag) == 2);
+    assert!(offset_of!(snd_seq_ump_event_t, queue) == 3);
+    assert!(offset_of!(snd_seq_ump_event_t, time) == 4);
+    assert!(offset_of!(snd_seq_ump_event_t, source) == 12);
+    assert!(offset_of!(snd_seq_ump_event_t, dest) == 14);
+    assert!(offset_of!(snd_seq_ump_event_t, ump) == 16);
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // NOTE: the struct layout (size 32, align 4, and every field offset) is
-    // pinned by the `const _: () = assert!(...)` block above, which fails the
-    // *build* rather than a test run. A runtime test restating a subset of those
-    // numbers cannot fail on its own, so it is not written here.
 
     /// A zeroed event is the "nothing set" starting point the send path fills
     /// in; if `Default` ever stopped being all-zero, a stale `dest` would send

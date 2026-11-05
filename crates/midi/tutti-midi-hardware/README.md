@@ -54,7 +54,7 @@ assert_eq!(session.send(&[note]), 1);
 - [`HardwareMidiDrain`]: one reader's state on those rings, owned by the node
   that drains them; it implements [`MidiIn`].
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what enumeration returns.
-- [`MidiEndpoints`]: the backend trait; [`backend::active`] returns this
+- [`MidiEndpoints`]: the backend trait; [`MidiSession::new`] picks this
   platform's implementation.
 - [`Sysex7ByteAssembler`]: reassembles SysEx7 runs from a byte stream
   (`F0 … F7`, realtime bytes passed through). No backend here uses it.
@@ -83,11 +83,11 @@ an id, or [`MidiSession::disconnect_all_inputs`].
 | Linux | ALSA UMP sequencer | Needs alsa-lib ≥ 1.2.10. Kernel ≥ 6.5 converts UMP↔legacy at the port boundary, so it works against MIDI 1.0 hardware. |
 | Windows | stub | No `windows` crate version binds Windows MIDI Services; WinRT `Devices.Midi` is MIDI 1.0 message types. Enumerates nothing, [`Error::Unsupported`] on open. |
 
-[`backend::active`] picks one, once, at construction; nothing downstream learns
+[`MidiSession::new`] picks one, once, at construction; nothing downstream learns
 which OS it is talking to.
 
-**A build may have no backend, and it is not an error.** On Linux, `build.rs`
-probes alsa-lib via `pkg-config`; below 1.2.10 (or with no alsa-lib) it emits a
+**A build may have no backend, and it is not an error.** On Linux, the
+`tutti-alsa-ump-sys` build script probes alsa-lib via `pkg-config`; below 1.2.10 (or with no alsa-lib) it emits a
 `cargo:warning` naming the version and compiles the same stub Windows gets:
 zero endpoints, and [`Error::Unsupported`] naming the reason. So code using this
 crate compiles everywhere and simply enumerates nothing where there is no

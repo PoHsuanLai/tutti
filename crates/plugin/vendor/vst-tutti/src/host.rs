@@ -388,20 +388,24 @@ pub struct PluginInstance {
 }
 
 /// An owned `Box<Arc<T>>` with `T` erased, freed on drop.
+///
+/// `AEffect::reserved1` points into this box, so a plugin must not call the host after
+/// `effClose`: the box is freed once the instance drops, and a later callback would read freed
+/// memory.
 struct HostRef {
     ptr: *mut c_void,
     free: unsafe fn(*mut c_void),
 }
 
-// SAFETY: the pointer is only dereferenced to free it, in `Drop`; the `Arc<T>` behind it is
-// already shared with the plugin's threads through `callback_wrapper`.
+// SAFETY: `HostRef::new` only accepts `T: Send + Sync`. Dropping runs `T`'s destructor and
+// decrements a shared count, which is sound from any thread for such a `T`.
 unsafe impl Send for HostRef {}
-// SAFETY: as for `Send`; there is no shared access to the pointer at all.
+// SAFETY: as for `Send`; the pointer is never shared out through `&HostRef`.
 unsafe impl Sync for HostRef {}
 
 impl HostRef {
     /// Boxes `host`; the box's address is what `AEffect::reserved1` carries.
-    fn new<T>(host: Arc<T>) -> HostRef {
+    fn new<T: Send + Sync + 'static>(host: Arc<T>) -> HostRef {
         unsafe fn free<T>(ptr: *mut c_void) {
             // SAFETY: `ptr` came from `Box::into_raw` of a `Box<Arc<T>>` in `HostRef::new`.
             drop(unsafe { Box::from_raw(ptr as *mut Arc<T>) });
@@ -549,7 +553,7 @@ impl Editor for EditorInstance {
     }
 }
 
-impl<T: Host> PluginLoader<T> {
+impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// Load a plugin at the given path with the given host.
     ///
     /// The host is passed as a plain `Arc<T>`, **not** `Arc<Mutex<T>>`.
@@ -2571,9 +2575,12 @@ mod tests {
     /// Two threads inside `main` at once each get their own host's answer, and the host `Arc`
     /// is released when the loader goes.
     ///
+    /// Answers are collected and asserted after both joins, so a failure cannot strand the
+    /// other thread at the barrier.
+    ///
     /// Mutation: replace `LOAD_HOST` with a `static AtomicPtr` (store in `call_main`, load in
-    /// `callback_wrapper`). Both threads store before the barrier opens, so one reads the
-    /// other's pointer and the id assertion fails on the first iteration.
+    /// `callback_wrapper`). Both threads store before the barrier opens, so in every iteration
+    /// the thread that stored first reads the other's pointer, and the assertion fails.
     #[cfg(unix)]
     #[test]
     fn concurrent_loads_reach_their_own_host() {
@@ -2581,19 +2588,65 @@ mod tests {
             .into_iter()
             .map(|id| {
                 std::thread::spawn(move || {
-                    for _ in 0..200 {
-                        let (mut loader, host) = loader(id);
-                        assert!(loader.call_main().is_null());
-                        assert_eq!(ANSWERED.get(), id as isize, "callback reached another host");
-                        drop(loader);
-                        assert_eq!(Arc::strong_count(&host), 1, "loader leaked a host Arc");
-                    }
+                    (0..200)
+                        .map(|_| {
+                            let (mut loader, host) = loader(id);
+                            assert!(loader.call_main().is_null());
+                            let answer = ANSWERED.get();
+                            drop(loader);
+                            (answer, Arc::strong_count(&host))
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect();
-        for t in threads {
-            t.join().unwrap();
+        for (t, id) in threads.into_iter().zip([11isize, 22]) {
+            for (answer, count) in t.join().unwrap() {
+                assert_eq!(answer, id, "callback reached another host");
+                assert_eq!(count, 1, "loader leaked a host Arc");
+            }
         }
+    }
+
+    /// A load started inside `main` on the same thread leaves the outer load's pointer in
+    /// place when it returns.
+    ///
+    /// Mutation: make `Restore::drop` always `set(null)`; the outer pointer is lost and the
+    /// assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn nested_load_restores_the_outer_pointer() {
+        thread_local! {
+            static OUTER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+            static AFTER_INNER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+        }
+        fn inner_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            ptr::null_mut()
+        }
+        fn outer_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            OUTER.set(LOAD_HOST.get());
+            let host = Arc::new(IdHost(2));
+            let lib: Library = libloading::os::unix::Library::this().into();
+            let mut inner = PluginLoader {
+                main: inner_main,
+                lib: Arc::new(lib),
+                host,
+            };
+            inner.call_main();
+            AFTER_INNER.set(LOAD_HOST.get());
+            ptr::null_mut()
+        }
+
+        let lib: Library = libloading::os::unix::Library::this().into();
+        let mut outer = PluginLoader {
+            main: outer_main,
+            lib: Arc::new(lib),
+            host: Arc::new(IdHost(1)),
+        };
+        outer.call_main();
+        assert!(!OUTER.get().is_null());
+        assert_eq!(AFTER_INNER.get(), OUTER.get());
+        assert!(LOAD_HOST.get().is_null());
     }
 
     /// `main` leaves nothing behind on the loading thread: a callback after it returns, with

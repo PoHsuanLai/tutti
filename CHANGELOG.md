@@ -14,7 +14,8 @@ loader's own host for the duration of `VSTPluginMain`, so two threads loading
 plugins at once each reach their own host (it was a data race, reachable from
 safe code). The per-load `Box<Arc<_>>` leak is gone, and the box behind
 `AEffect::reserved1` is now owned by the `PluginInstance` and freed after
-`effClose`.
+`effClose`; a plugin must not call the host after `effClose`. `PluginLoader`
+now requires `T: Host + Send + Sync + 'static`.
 
 ### Changed — lint, metadata and docs.rs policy
 

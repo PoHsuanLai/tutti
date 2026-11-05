@@ -80,10 +80,10 @@ assert_eq!(mix.bounds(), None);
 assert_eq!(mix.step_count(), None); // `Unknown`, not "continuous"
 assert_eq!(mix.flag(ParamFlags::AUTOMATABLE), None); // unreported, not `false`
 
-// Arithmetic on the number means something for one model and nothing for
-// the other, so the address is asked rather than cast.
-assert_eq!(cutoff.id.index(), None);
-assert_eq!(mix.id.index(), Some(3));
+// The id is the plugin's own number, and the type has no arithmetic: a host
+// hands it back, it does not count with it.
+assert_eq!(cutoff.id, ParamId::new(0x8000_0001));
+assert_eq!(mix.id.get(), 3);
 
 // The seam speaks normalized `0..=1`; `to_plain` maps onto the declared range.
 assert_eq!(cutoff.to_plain(Normalized::new(1.0).get()), 20_000.0);

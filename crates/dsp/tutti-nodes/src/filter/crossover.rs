@@ -10,12 +10,15 @@
 //! and the rest, split 1 divides the rest into band 1 and the rest, and so
 //! on. A band split off before the last crossover has not been through the
 //! later all-passes its siblings share, so it runs through the all-pass of
-//! each later crossover. Every band then carries the phase of every
-//! crossover, and the sum of all bands has flat magnitude.
+//! each later crossover. Every band then has the same phase response: for a
+//! crossover with denominator `D`, `LP^2`, `HP^2` and the all-pass all have
+//! phase `-2 * arg D`. The bands are phase-aligned at every frequency, so
+//! they sum without cancelling, and the sum has flat magnitude.
 //!
-//! The filters are IIR, so they are **not linear-phase**: the bands'
-//! individual phase responses differ, and only their sum is phase-coherent in
-//! magnitude. They add no latency.
+//! The filters are IIR, so the response is **not linear-phase**: the shared
+//! phase rotates with frequency (the group delay is not constant), and
+//! the sum is an all-pass, not a delayed copy of the input. They add no
+//! latency.
 
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::fmt;
@@ -37,6 +40,7 @@ const SOLVE_CEILING: f64 = 0.499;
 
 /// Why a [`Crossover`] or crossover-based node refused its settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum CrossoverError {
     /// The band count is outside the supported range.
     Bands {
@@ -46,6 +50,13 @@ pub enum CrossoverError {
         min: usize,
         /// The most supported.
         max: usize,
+    },
+    /// A whole set of frequencies has the wrong length.
+    Count {
+        /// How many were given.
+        got: usize,
+        /// How many there are crossovers.
+        expected: usize,
     },
     /// The channel count is zero, or more channels than the graph has ports
     /// for.
@@ -88,6 +99,9 @@ impl fmt::Display for CrossoverError {
         match *self {
             Self::Bands { bands, min, max } => {
                 write!(f, "{bands} bands: a crossover has {min} to {max}")
+            }
+            Self::Count { got, expected } => {
+                write!(f, "{got} frequencies given for {expected} crossovers")
             }
             Self::Channels { channels } => write!(f, "{channels} channels is not supported"),
             Self::SampleRate => f.write_str("the sample rate must be finite and positive"),
@@ -200,9 +214,13 @@ impl State {
 ///
 /// let mut xo = Crossover::new(&[Hz(200.0), Hz(2_000.0)], 48_000.0).unwrap();
 /// assert_eq!(xo.bands(), 3);
-/// let bands = xo.split(1.0);
-/// // The sum of the bands is the all-pass of the input: unity magnitude.
-/// assert!(bands[..3].iter().all(|b| b.is_finite()));
+/// // The sum of the bands is an all-pass of the input: a constant 1.0
+/// // settles to a sum of 1.0 (unity gain at DC).
+/// let mut sum = 0.0;
+/// for _ in 0..48_000 {
+///     sum = xo.split(1.0)[..3].iter().sum::<f32>();
+/// }
+/// assert!((sum - 1.0).abs() < 1e-5);
 /// ```
 #[derive(Clone, Debug)]
 pub struct Crossover {
@@ -308,10 +326,9 @@ impl Crossover {
     /// changes then.
     pub fn set_frequencies(&mut self, frequencies: &[Hz]) -> Result<(), CrossoverError> {
         if frequencies.len() != self.splits() {
-            return Err(CrossoverError::Bands {
-                bands: frequencies.len() + 1,
-                min: self.bands,
-                max: self.bands,
+            return Err(CrossoverError::Count {
+                got: frequencies.len(),
+                expected: self.splits(),
             });
         }
         validate(frequencies, SampleRate(self.rate))?;
@@ -524,6 +541,19 @@ impl CrossoverControls {
     }
 }
 
+/// Clamps each of `frequencies` under what the coefficients can be solved at
+/// for `rate`, keeping them strictly increasing: index `i` of `n` is capped at
+/// `SOLVE_CEILING * rate * (1 - 0.01 * (n - 1 - i))`, a strictly increasing
+/// cap, so the minimum of it and a strictly increasing set still is. A
+/// frequency out of range costs only itself, not the whole set.
+pub(crate) fn fit_to_rate(frequencies: &mut [Hz], rate: SampleRate) {
+    let n = frequencies.len();
+    for (i, f) in frequencies.iter_mut().enumerate() {
+        let cap = SOLVE_CEILING * rate.get() * (1.0 - 0.01 * (n - 1 - i) as f64);
+        *f = Hz(f64::from(f.get()).min(cap) as f32);
+    }
+}
+
 /// The checks on moving crossover `i` to `hz`: finite, above 0, between the
 /// neighbours `at(i - 1)` and `at(i + 1)`.
 pub(crate) fn check_neighbours(
@@ -548,15 +578,17 @@ pub(crate) fn check_neighbours(
 /// channel.
 ///
 /// `channels` inputs, `bands * channels` outputs, band-major: output
-/// `band * channels + channel`. The bands are not delayed and the node adds no
+/// `band * channels + channel`. That layout is fixed, and `bands * channels`
+/// is at most the graph's 64 ports ([`CrossoverNode::new`] refuses more). The
+/// bands are not delayed and the node adds no
 /// latency; the sum of the bands has flat magnitude and the phase of the
 /// crossovers' all-pass (see [`Crossover`] for why, and for what
 /// "not linear-phase" means for the bands).
 ///
 /// Its controls ([`CrossoverControls`]) move the crossover frequencies, read
-/// once per block and ramped across it. A set the node cannot use (a
-/// frequency at or above Nyquist, or out of order after a write race) reads
-/// as unchanged.
+/// once per block and ramped across it. A frequency at or above what the rate
+/// allows is held just under it (about 0.499 of the rate) without disturbing
+/// the others; a set out of order after a write race reads as unchanged.
 pub struct CrossoverNode {
     layout: ChannelLayout,
     bands: usize,
@@ -600,6 +632,22 @@ impl CrossoverNode {
         })
     }
 
+    /// The frequency cells read once, held to the last finite value and
+    /// fitted to `rate` ([`fit_to_rate`]).
+    fn read_targets(&mut self, rate: SampleRate) -> [Hz; MAX_SPLITS] {
+        let mut targets = [Hz(0.0); MAX_SPLITS];
+        let n = self.bands - 1;
+        for ((t, cell), good) in targets
+            .iter_mut()
+            .zip(&self.frequencies)
+            .zip(&mut self.good)
+        {
+            *t = Hz(good.read(cell.load().get()));
+        }
+        fit_to_rate(&mut targets[..n], rate);
+        targets
+    }
+
     /// The handles on the frequencies.
     #[must_use]
     pub fn controls(&self) -> CrossoverControls {
@@ -637,8 +685,12 @@ impl Node for CrossoverNode {
     }
 
     fn prepare(&mut self, p: &Prepare) {
+        let targets = self.read_targets(p.sample_rate());
         for f in &mut self.filters {
             f.set_sample_rate(p.sample_rate());
+            // Taken whole by the `reset`, so the first block does not ramp
+            // in from the constructor's values.
+            let _ = f.set_frequencies(&targets[..self.bands - 1]);
             f.reset();
         }
         self.scratch = vec![0.0; self.bands * p.max_block().get()];
@@ -648,17 +700,12 @@ impl Node for CrossoverNode {
         let n = io.frames();
         let ch = usize::from(self.layout.count());
         let splits = self.bands - 1;
-        let mut targets = [Hz(0.0); MAX_SPLITS];
-        for ((t, cell), good) in targets
-            .iter_mut()
-            .zip(&self.frequencies)
-            .zip(&mut self.good)
-        {
-            *t = Hz(good.read(cell.load().get()));
-        }
+        let targets = self.read_targets(self.filters[0].sample_rate());
         let (inputs, mut outputs) = io.split();
         for (c, filter) in self.filters.iter_mut().enumerate() {
-            // An unusable set (out of order, at Nyquist) keeps the last one.
+            // `read_targets` fitted every entry to the rate, so only a set
+            // out of order (a write race between two cells) is refused, and
+            // it keeps the last one.
             let _ = filter.set_frequencies(&targets[..splits]);
             let out = &mut self.scratch[..self.bands * n];
             filter.split_block(&inputs.get(c)[..n], out);
@@ -719,6 +766,7 @@ mod tests {
     use crate::test_support::{amplitude_at, lock_in, sine};
     use crate::test_support::{prepared, render_chunked};
     use tutti_graph::Node;
+    use tutti_types::Tail;
 
     const RATE: f64 = 48_000.0;
     /// A whole number of periods of every tone on the 5 Hz grid.
@@ -799,6 +847,10 @@ mod tests {
     }
 
     /// Six bands, the most, sum flat.
+    ///
+    /// Mutation (run): drop the `all_pass` loop in `tick` → the upper
+    /// crossovers' sums dip → fails; one Butterworth section per branch →
+    /// fails.
     #[test]
     fn six_bands_sum_to_flat_magnitude() {
         assert_flat(&[100.0, 300.0, 1_000.0, 3_000.0, 9_000.0]);
@@ -1013,6 +1065,14 @@ mod tests {
 
     /// A rate that is not finite and positive changes nothing; a frequency a
     /// lower rate leaves above Nyquist still solves to a finite, stable filter.
+    ///
+    /// The bound: LR4 has no gain peaking, so a unit sine leaves each band at
+    /// most 1 in steady state; the cascaded 2nd-order Butterworth step
+    /// response overshoots by under 25 %, so 1.5 leaves margin for the
+    /// transient and still fails a filter that has gone unstable.
+    ///
+    /// Mutation (run): accept any rate in `set_sample_rate` (`if true`) → the
+    /// NaN rate sticks → fails.
     #[test]
     fn a_rate_change_keeps_the_filter_finite() {
         let mut c = xo(&[100.0, 20_000.0]).unwrap();
@@ -1026,7 +1086,7 @@ mod tests {
                 peak = peak.max(b.abs());
             }
         }
-        assert!(peak < 4.0, "{peak}");
+        assert!(peak < 1.5, "{peak}");
     }
 
     /// `reset` clears the state: after it, silence in is silence out.
@@ -1049,6 +1109,11 @@ mod tests {
     /// The node routes band-major: output `band * channels + channel`, with
     /// each channel filtered on its own.
     ///
+    /// The shape declares what the node is: zero latency, an IIR's unknown tail,
+    /// and a moderate cost.
+    ///
+    /// Mutation (run): `Tail::None` or `Cost::Heavy` in `shape` → fails.
+    ///
     /// Mutation (run): index outputs `c * bands + b` → the silent right
     /// channel's outputs carry the left's bands → fails.
     #[test]
@@ -1056,6 +1121,9 @@ mod tests {
         let mut node = prepared(CrossoverNode::new(ChannelLayout::STEREO, &[Hz(1_000.0)]).unwrap());
         let shape = node.shape();
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 4));
+        assert_eq!(shape.latency, tutti_types::Latency::default());
+        assert_eq!(shape.tail, Tail::Unknown);
+        assert_eq!(shape.cost, Cost::Moderate);
         let left = sine(100.0, RATE, SETTLE + WINDOW);
         let out = render(&mut node, &[left, vec![0.0; SETTLE + WINDOW]]);
         let warp = |f: f64| libm::tan(core::f64::consts::PI * f / RATE);
@@ -1116,6 +1184,10 @@ mod tests {
     }
 
     /// The node refuses a layout it has no ports for, and bad frequencies.
+    ///
+    /// Mutation (run): drop the `channels == 0 ||` test in `CrossoverNode::new`
+    /// → the empty layout builds → fails; `MAX_PORTS` to `MAX_PORTS + 4` →
+    /// the 66-port layout builds → fails.
     #[test]
     fn the_node_validates_its_layout_and_frequencies() {
         assert!(matches!(
@@ -1141,9 +1213,132 @@ mod tests {
         assert!(CrossoverNode::new(ChannelLayout::MONO, &[Hz(9.0), Hz(3.0)]).is_err());
     }
 
+    /// The messages say what is wrong, including a whole set of the wrong length.
+    ///
+    /// Mutation (run): change "increase" in the `Order` message → fails; return
+    /// `Bands` for a wrong length in `set_frequencies` → the message reads
+    /// "4 to 4" → fails.
     #[test]
     fn errors_name_what_is_wrong() {
         let e = xo(&[500.0, 100.0]).unwrap_err().to_string();
         assert!(e.contains("crossover 1") && e.contains("increase"), "{e}");
+        let mut c = xo(&[100.0, 200.0, 300.0]).unwrap();
+        let e = c.set_frequencies(&[Hz(1.0)]).unwrap_err();
+        assert_eq!(
+            e,
+            CrossoverError::Count {
+                got: 1,
+                expected: 3
+            }
+        );
+        assert_eq!(e.to_string(), "1 frequencies given for 3 crossovers");
+    }
+
+    /// Every band of a 3- or 4-band split has the same phase at every
+    /// frequency it carries: `LP^2`, `HP^2` and the all-pass all have phase
+    /// `-2 arg D`. Compared where a band has at least 0.1 of the tone (a
+    /// weaker band's phase is below the lock-in's resolution of `TOL / 0.1`).
+    ///
+    /// Mutation (run): drop the `all_pass` loop in `tick` → band 0 lacks the
+    /// later crossovers' phase → the phases differ at the lower crossover →
+    /// fails.
+    #[test]
+    fn every_band_has_the_same_phase() {
+        for freqs in [vec![120.0, 2_500.0], vec![120.0, 1_000.0, 6_000.0]] {
+            let mut compared = 0;
+            for hz in [
+                100.0, 120.0, 200.0, 500.0, 1_000.0, 2_500.0, 4_000.0, 6_000.0, 9_000.0,
+            ] {
+                let (bands, _) = bands_at(&freqs, hz);
+                let loud: Vec<_> = bands.iter().filter(|z| mag(**z) > 0.1).collect();
+                for pair in loud.windows(2) {
+                    let (a, b) = (pair[0], pair[1]);
+                    let cross = (a.0 * b.1 - a.1 * b.0) / (mag(*a) * mag(*b));
+                    let dot = (a.0 * b.0 + a.1 * b.1) / (mag(*a) * mag(*b));
+                    assert!(
+                        cross.abs() < 2e-5 && dot > 0.0,
+                        "{freqs:?} at {hz}: {cross} {dot}"
+                    );
+                    compared += 1;
+                }
+            }
+            assert!(
+                compared >= 3,
+                "{freqs:?}: only {compared} overlapping pairs"
+            );
+        }
+    }
+
+    /// A node at 22.05 kHz with one frequency above its Nyquist still moves the
+    /// others: the out-of-range one is held under the rate, not the whole set
+    /// frozen.
+    ///
+    /// Mutation (run): drop the `fit_to_rate` call in `read_targets` →
+    /// `set_frequencies` refuses the set at the rate, every crossover stays
+    /// where it was → the 300 Hz split never lands → fails.
+    #[test]
+    fn a_frequency_above_the_rate_does_not_freeze_the_others() {
+        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(200.0), Hz(15_000.0)]).unwrap();
+        let controls = node.controls();
+        let rate = 22_050.0;
+        let mut node = tutti_graph::contract::prepared(node, SampleRate(rate), 1024);
+        controls.set_frequency(0, Hz(300.0)).unwrap();
+        // 9 555 frames are 130 whole periods of 300 Hz at 22.05 kHz.
+        let len = 9_555 + 12_000;
+        let out = render(&mut node, &[sine(300.0, rate, len)]);
+        // The split moved: the low band is half amplitude at 300 Hz.
+        let low = amplitude_at(&out[0][12_000..], 300.0, rate);
+        assert!((low - 0.5).abs() < TOL, "{low}");
+        // The top crossover is under Nyquist, so the top band exists and is finite.
+        assert!(out[2].iter().all(|s| s.is_finite()));
+        let cap = SOLVE_CEILING * rate;
+        assert!(node.filters[0].target[1] <= cap + 1e-2 && node.filters[0].target[1] > 300.0);
+    }
+
+    /// `prepare` takes the cells' values whole, so the first block does not
+    /// ramp in from the constructor's frequencies.
+    ///
+    /// Mutation (run): drop the `set_frequencies` in `prepare` → the filter
+    /// is still at the constructor's 500 Hz → fails.
+    #[test]
+    fn prepare_reads_the_cells() {
+        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();
+        node.controls().set_frequency(0, Hz(2_000.0)).unwrap();
+        let node = prepared(node);
+        assert_eq!(node.filters[0].current[0], 2_000.0);
+        assert_eq!(node.filters[0].target[0], 2_000.0);
+    }
+
+    /// While four bands' frequencies all ramp, the sum keeps unit amplitude.
+    ///
+    /// A unit 1 kHz tone through `[120, 1000, 6000]` moving to
+    /// `[150, 1300, 5000]` across 256-frame blocks. The sampled peak of a
+    /// 48-samples-per-period sine is at least `cos(pi / 48)`, 2.1e-3 under 1,
+    /// so the bound is 3e-3 (measured: 2e-4 under 1 on the sampled peak, so
+    /// the ramp's own deviation is under that).
+    ///
+    /// Mutation (run): drop the `all_pass` loop in `tick` → the sum is no
+    /// longer unit → fails.
+    #[test]
+    fn the_sum_stays_flat_while_frequencies_ramp() {
+        let mut c = xo(&[120.0, 1_000.0, 6_000.0]).unwrap();
+        let x = sine(1_000.0, RATE, SETTLE + 4_096);
+        let mut sum = Vec::new();
+        for (k, chunk) in x.chunks(256).enumerate() {
+            if k * 256 == SETTLE {
+                c.set_frequencies(&[Hz(150.0), Hz(1_300.0), Hz(5_000.0)])
+                    .unwrap();
+            }
+            let mut out = vec![0.0; 4 * chunk.len()];
+            c.split_block(chunk, &mut out);
+            for i in 0..chunk.len() {
+                sum.push((0..4).map(|b| out[b * chunk.len() + i]).sum::<f32>());
+            }
+        }
+        // The first 1 kHz period after the move starts to the last of the ramp.
+        let peak = sum[SETTLE..SETTLE + 1_024]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((peak - 1.0).abs() < 3e-3, "peak {peak}");
     }
 }

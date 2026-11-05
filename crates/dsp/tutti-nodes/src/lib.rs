@@ -42,8 +42,9 @@
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
-// The one fallible construction is a crossover's (`CrossoverError`); the rest
-// of this crate has no `Error` type.
+// The fallible constructions are the crossover's (`Crossover::new`,
+// `CrossoverNode::new`, `MultibandCompressorNode::new`), all `CrossoverError`;
+// the rest of this crate has no `Error` type.
 
 // Per-block control reads and the ramps that keep them from stepping.
 mod ramp;

@@ -105,6 +105,16 @@ impl CompressorCore {
         Db(self.follower.value())
     }
 
+    /// Detaches every control cell (see [`Param::detach`]): the `fork_fresh`
+    /// half of the core, keeping the current values. A cell added to the core
+    /// is detached here, once, for every node that forks it.
+    pub fn detach(&mut self) {
+        self.threshold.detach();
+        self.ratio.detach();
+        self.timing.detach();
+        self.makeup_db.detach();
+    }
+
     /// The sidechain peak the detector last saw. An `Amplitude`, not a
     /// unitless envelope — `GateCore::gate_level` has the same shape and name
     /// but is a 0..1 open-fraction, and the types are what stop the two being
@@ -541,10 +551,7 @@ impl ParamNode for CompressorNode {
     /// address but is read per block), its envelope cleared.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.core.threshold.detach();
-        fork.core.ratio.detach();
-        fork.core.timing.detach();
-        fork.core.makeup_db.detach();
+        fork.core.detach();
         Node::reset(&mut fork);
         fork
     }

@@ -4,30 +4,36 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::fmt;
 
-use tutti_core::{Arc, AtomicF32, CompressionRatio, Db, Hz, Param, SampleRate, Seconds, Tail};
+use tutti_core::{Arc, CompressionRatio, Db, Hz, Param, SampleRate, Seconds, Tail};
 use tutti_graph::{Cost, Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::ChannelLayout;
 
 use super::compressor::CompressorCore;
 use super::params::AttackRelease;
-use crate::filter::{Crossover, CrossoverError};
+use crate::filter::{Crossover, CrossoverError, fit_crossovers_to_rate};
 use crate::fresh::{Fresh, fresh_parts};
 use crate::ramp::LastGood;
 
-/// Crossover frequencies a band count starts with, in Hz.
-fn default_crossovers(bands: usize) -> &'static [f32] {
+/// The crossover frequencies a band count starts with.
+fn default_crossovers(bands: usize) -> &'static [Hz] {
     match bands {
-        2 => &[1_000.0],
-        3 => &[200.0, 3_000.0],
-        _ => &[120.0, 1_000.0, 6_000.0],
+        2 => &[Hz(1_000.0)],
+        3 => &[Hz(200.0), Hz(3_000.0)],
+        _ => &[Hz(120.0), Hz(1_000.0), Hz(6_000.0)],
     }
 }
 
-/// A band's settings at construction.
+/// The threshold a band starts at.
 const DEFAULT_THRESHOLD: Db = Db(-18.0);
-const DEFAULT_RATIO: f32 = 2.0;
+/// The ratio a band starts at.
+const DEFAULT_RATIO: CompressionRatio = CompressionRatio(2.0);
+/// The attack a band starts at.
 const DEFAULT_ATTACK: Seconds = Seconds(0.010);
+/// The release a band starts at.
 const DEFAULT_RELEASE: Seconds = Seconds(0.100);
+
+/// The most crossovers: one fewer than the bands.
+const MAX_CROSSOVERS: usize = MultibandCompressorNode::MAX_BANDS - 1;
 
 /// The handles on one band's settings. Clones share the cells.
 #[derive(Clone, Debug)]
@@ -39,7 +45,7 @@ pub struct BandControls {
     makeup: Param<Db>,
     bypass: Arc<AtomicBool>,
     solo: Arc<AtomicBool>,
-    reduction: Arc<AtomicF32>,
+    reduction: Param<Db>,
 }
 
 impl BandControls {
@@ -80,7 +86,9 @@ impl BandControls {
     }
 
     /// Bypasses the band's compressor: the band passes unreduced and without
-    /// makeup, and still sums into the output. Its detector is held cleared.
+    /// makeup, and still sums into the output. The gain blends to unity across
+    /// a block, and the compressor keeps running meanwhile, so releasing the
+    /// bypass resumes from a warm detector.
     pub fn set_bypass(&self, on: bool) {
         self.bypass.store(on, Ordering::Release);
     }
@@ -140,15 +148,16 @@ impl BandControls {
         self.solo.load(Ordering::Acquire)
     }
 
-    /// The gain reduction the band applied over the last block, in [`Db`]: a
-    /// **measurement**, for a reduction meter. Larger is more reduction;
-    /// [`Db::UNITY`] is none (also while the band is bypassed).
+    /// The largest gain reduction the compressor applied in the last block,
+    /// in [`Db`]: a **measurement**, for a reduction meter. Larger is more
+    /// reduction; [`Db::UNITY`] is none (also while the band is fully
+    /// bypassed).
     ///
-    /// The node writes it once per block with a relaxed store, so reading it
-    /// from any thread is wait-free.
+    /// The node writes it once per block, so reading it from any thread is
+    /// wait-free.
     #[must_use]
     pub fn gain_reduction_db(&self) -> Db {
-        Db(self.reduction.load(Ordering::Relaxed))
+        self.reduction.load()
     }
 }
 
@@ -214,7 +223,10 @@ struct Band {
     core: CompressorCore,
     bypass: Arc<AtomicBool>,
     solo: Arc<AtomicBool>,
-    reduction: Arc<AtomicF32>,
+    reduction: Param<Db>,
+    /// The bypass weight (1 bypassed, 0 compressing) the previous block ended
+    /// on; `None` until the first block.
+    bypassed: Option<f32>,
     /// The audibility (1 sounding, 0 muted by another band's solo) the
     /// previous block ended on; `None` until the first block.
     audible: Option<f32>,
@@ -304,31 +316,43 @@ impl MultibandCompressorNode {
             return Err(CrossoverError::Channels { channels });
         }
         let defaults = default_crossovers(bands);
-        let hz: Vec<Hz> = defaults.iter().map(|&f| Hz(f)).collect();
-        let proto = Crossover::new(&hz, SampleRate::DEFAULT)?;
+        let proto = Crossover::new(defaults, SampleRate::DEFAULT)?;
         Ok(Self {
             layout,
             bands: (0..bands)
                 .map(|_| Band {
                     core: CompressorCore::new(
                         DEFAULT_THRESHOLD,
-                        CompressionRatio(DEFAULT_RATIO),
+                        DEFAULT_RATIO,
                         DEFAULT_ATTACK,
                         DEFAULT_RELEASE,
                     ),
                     bypass: Arc::new(AtomicBool::new(false)),
                     solo: Arc::new(AtomicBool::new(false)),
-                    reduction: Arc::new(AtomicF32::new(0.0)),
+                    reduction: Param::new(Db::UNITY),
+                    bypassed: None,
                     audible: None,
                 })
                 .collect(),
-            crossovers: hz.iter().map(|&f| Param::new(f)).collect(),
-            good: defaults.iter().map(|&f| LastGood::new(f)).collect(),
+            crossovers: defaults.iter().map(|&f| Param::new(f)).collect(),
+            good: defaults.iter().map(|f| LastGood::new(f.get())).collect(),
             filters: vec![proto; channels],
             split: Vec::new(),
             gains: Vec::new(),
             max_block: 0,
         })
+    }
+
+    /// The crossover cells read once, held to the last finite value and
+    /// fitted to `rate`.
+    fn read_targets(&mut self, rate: SampleRate) -> [Hz; MAX_CROSSOVERS] {
+        let mut targets = [Hz(0.0); MAX_CROSSOVERS];
+        let n = self.bands.len() - 1;
+        for ((t, cell), good) in targets.iter_mut().zip(&self.crossovers).zip(&mut self.good) {
+            *t = Hz(good.read(cell.load().get()));
+        }
+        fit_crossovers_to_rate(&mut targets[..n], rate);
+        targets
     }
 
     /// The handles on the bands' settings and the crossovers.
@@ -346,7 +370,7 @@ impl MultibandCompressorNode {
                     makeup: b.core.makeup_db.handle(),
                     bypass: Arc::clone(&b.bypass),
                     solo: Arc::clone(&b.solo),
-                    reduction: Arc::clone(&b.reduction),
+                    reduction: b.reduction.handle(),
                 })
                 .collect(),
             crossovers: self.crossovers.clone(),
@@ -365,14 +389,14 @@ impl MultibandCompressorNode {
         self.layout
     }
 
-    /// Band `band`'s gain reduction as of the last block, in [`Db`] (see
+    /// Band `band`'s largest gain reduction in the last block, in [`Db`] (see
     /// [`BandControls::gain_reduction_db`]); [`Db::UNITY`] past the last
     /// band.
     #[must_use]
     pub fn gain_reduction_db(&self, band: usize) -> Db {
         self.bands
             .get(band)
-            .map_or(Db::UNITY, |b| Db(b.reduction.load(Ordering::Relaxed)))
+            .map_or(Db::UNITY, |b| b.reduction.load())
     }
 }
 
@@ -389,8 +413,13 @@ impl Node for MultibandCompressorNode {
     }
 
     fn prepare(&mut self, p: &Prepare) {
+        let targets = self.read_targets(p.sample_rate());
+        let splits = self.bands.len() - 1;
         for f in &mut self.filters {
             f.set_sample_rate(p.sample_rate());
+            // Taken whole by the `reset` below, so the first block does not
+            // ramp in from the constructor's frequencies.
+            let _ = f.set_frequencies(&targets[..splits]);
         }
         for b in &mut self.bands {
             b.core.set_sample_rate(p.sample_rate());
@@ -405,53 +434,65 @@ impl Node for MultibandCompressorNode {
         let n = io.frames();
         let ch = self.filters.len();
         let nb = self.bands.len();
-        let mut targets = [Hz(0.0); 3];
-        for ((t, cell), good) in targets.iter_mut().zip(&self.crossovers).zip(&mut self.good) {
-            *t = Hz(good.read(cell.load().get()));
-        }
+        let targets = self.read_targets(self.filters[0].sample_rate());
         let (inputs, mut outputs) = io.split();
 
         let stride = nb * self.max_block;
         for (c, filter) in self.filters.iter_mut().enumerate() {
-            // An unusable set (out of order, at Nyquist) keeps the last one.
+            // `read_targets` fitted every entry to the rate, so only a set
+            // out of order (a write race between two cells) is refused, and
+            // it keeps the last one.
             let _ = filter.set_frequencies(&targets[..nb - 1]);
             filter.split_block(&inputs.get(c)[..n], &mut self.split[c * stride..][..nb * n]);
         }
 
-        let any_solo = self.bands.iter().any(|b| b.solo.load(Ordering::Acquire));
+        // Each flag once, so a write mid-block cannot split the bands'
+        // view of who is soloed.
+        let mut solo = [false; Self::MAX_BANDS];
+        let mut bypass = [false; Self::MAX_BANDS];
+        for (b, band) in self.bands.iter().enumerate() {
+            solo[b] = band.solo.load(Ordering::Acquire);
+            bypass[b] = band.bypass.load(Ordering::Acquire);
+        }
+        let any_solo = solo.iter().any(|&s| s);
         for c in 0..ch {
             outputs.get(c)[..n].fill(0.0);
         }
         let gains = &mut self.gains[..n];
         for (b, band) in self.bands.iter_mut().enumerate() {
-            let audible_to = if any_solo && !band.solo.load(Ordering::Acquire) {
-                0.0
-            } else {
-                1.0
-            };
+            let audible_to = if any_solo && !solo[b] { 0.0 } else { 1.0 };
             let audible_from = band.audible.replace(audible_to).unwrap_or(audible_to);
+            let bypass_to = if bypass[b] { 1.0 } else { 0.0 };
+            let bypass_from = band.bypassed.replace(bypass_to).unwrap_or(bypass_to);
 
-            // One reduction per frame from the band's loudest channel.
-            if band.bypass.load(Ordering::Acquire) {
-                band.core.reset();
-                gains.fill(1.0);
-            } else {
-                gains.fill(0.0);
-                for c in 0..ch {
-                    let x = &self.split[c * stride + b * n..][..n];
-                    for (level, &s) in gains.iter_mut().zip(x) {
-                        *level = level.max(s.abs());
-                    }
-                }
-                band.core.update_coefficients([None, None]);
-                let block = band.core.begin_block([None, None]);
-                for (i, g) in gains.iter_mut().enumerate() {
-                    *g = band.core.gain(&block, i, n, *g, None);
+            // One reduction per frame from the band's loudest channel. The
+            // compressor runs while bypassed too, so a release finds it warm.
+            gains.fill(0.0);
+            for c in 0..ch {
+                let x = &self.split[c * stride + b * n..][..n];
+                for (level, &s) in gains.iter_mut().zip(x) {
+                    *level = level.max(s.abs());
                 }
             }
+            band.core.update_coefficients([None, None]);
+            let block = band.core.begin_block([None, None]);
+            let mut deepest = 0.0f32;
+            for (i, g) in gains.iter_mut().enumerate() {
+                *g = band.core.gain(&block, i, n, *g, None);
+                deepest = deepest.max(band.core.gain_reduction_db().get());
+            }
+            let held = bypass_from == 1.0 && bypass_to == 1.0;
             band.reduction
-                .store(band.core.gain_reduction_db().get(), Ordering::Relaxed);
+                .store(if held { Db::UNITY } else { Db(deepest) });
 
+            if bypass_from != 0.0 || bypass_to != 0.0 {
+                // Blend toward unity (makeup included) as the bypass takes hold.
+                for (i, g) in gains.iter_mut().enumerate() {
+                    let t = (i + 1) as f32 / n as f32;
+                    let w = bypass_from + (bypass_to - bypass_from) * t;
+                    *g = *g * (1.0 - w) + w;
+                }
+            }
             if audible_from == 0.0 && audible_to == 0.0 {
                 continue;
             }
@@ -478,7 +519,8 @@ impl Node for MultibandCompressorNode {
         for b in &mut self.bands {
             b.core.reset();
             b.audible = None;
-            b.reduction.store(0.0, Ordering::Relaxed);
+            b.bypassed = None;
+            b.reduction.store(Db::UNITY);
         }
     }
 }
@@ -509,13 +551,10 @@ impl Fresh for MultibandCompressorNode {
             c.detach();
         }
         for b in &mut fork.bands {
-            b.core.threshold.detach();
-            b.core.ratio.detach();
-            b.core.timing.detach();
-            b.core.makeup_db.detach();
+            b.core.detach();
             b.bypass = Arc::new(AtomicBool::new(b.bypass.load(Ordering::Acquire)));
             b.solo = Arc::new(AtomicBool::new(b.solo.load(Ordering::Acquire)));
-            b.reduction = Arc::new(AtomicF32::new(0.0));
+            b.reduction = Param::new(Db::UNITY);
         }
         Node::reset(&mut fork);
         fork
@@ -729,6 +768,190 @@ mod tests {
         let dc = mean(&out[0][SETTLE..]);
         assert!(dc < 0.4 || dc > 0.6, "compressing again: {dc}");
         assert!(b0.gain_reduction_db() > Db(1.0));
+    }
+
+    /// Toggling bypass on a band reducing 12 dB steps no more than one ramp
+    /// step per frame, both ways, and the compressor stays warm.
+    ///
+    /// DC 0.5 through band 0 at -30 dB, 2:1 is reduced by
+    /// `(-6.02 + 30) / 2 = 11.99 dB` to 0.1253. Bypassing ramps the next
+    /// 64-frame block up to 0.5 in 64 equal steps of `0.375 / 64`, so its first
+    /// frame is within 1.5 steps of 0.1253; releasing it ramps back down to the
+    /// *running* detector's gain (0.1253 again, to 1e-3: a detector reset by
+    /// the bypass would end near 0.5).
+    ///
+    /// Mutation (run): the blend weight taken whole (`bypass_from =
+    /// bypass_to`) → the first frame jumps to 0.5 → fails; `band.core.reset()`
+    /// while bypassed → the release ends near 0.5 → fails.
+    #[test]
+    fn toggling_bypass_ramps_and_keeps_the_compressor_warm() {
+        let (n, c) = node(2);
+        let b0 = c.band(0).unwrap();
+        b0.set_threshold(-30.0);
+        b0.set_ratio(2.0);
+        b0.set_attack(0.001);
+        b0.set_release(0.001);
+        let mut n = prepared(n);
+        render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
+        let reduced = 0.5 * libm::pow(10.0, -(30.0 + 20.0 * libm::log10(0.5)) / 2.0 / 20.0);
+        let step = (0.5 - reduced) / 64.0;
+
+        b0.set_bypass(true);
+        let up = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
+        assert!(
+            (up[0] as f64 - reduced).abs() <= 1.5 * step,
+            "first {}",
+            up[0]
+        );
+        assert!((up[63] - 0.5).abs() < 1e-6, "last {}", up[63]);
+        assert!(up.windows(2).all(|w| w[1] >= w[0]), "monotone rise");
+        // Held bypassed for a while, then released.
+        render_chunked(&mut n, &[vec![0.5f32; 4_800]], 512);
+        assert_eq!(b0.gain_reduction_db(), Db::UNITY);
+        b0.set_bypass(false);
+        let down = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
+        assert!(
+            (down[0] - 0.5).abs() as f64 <= 1.5 * step,
+            "first {}",
+            down[0]
+        );
+        assert!(
+            (down[63] as f64 - reduced).abs() < 1e-3,
+            "last {}",
+            down[63]
+        );
+        assert!(down.windows(2).all(|w| w[1] <= w[0]), "monotone fall");
+    }
+
+    /// The meter holds the largest reduction of the block, not its last frame.
+    ///
+    /// DC 0.5 reduced 10.48 dB (-20 dB, 4:1), then a block of silence with a
+    /// 1 ms release: band 0's level (the low-pass's slow tail) starts the
+    /// block near 0.5 and the follower falls across it, so the first frames
+    /// hold nearly the full reduction and the last does not.
+    ///
+    /// Mutation (run): store the follower's last value (`band.core
+    /// .gain_reduction_db()` after the loop) instead of `deepest` → the meter
+    /// equals the last frame's → fails.
+    #[test]
+    fn the_meter_holds_the_blocks_largest_reduction() {
+        let (n, c) = node(2);
+        let b0 = c.band(0).unwrap();
+        b0.set_threshold(-20.0);
+        b0.set_ratio(4.0);
+        b0.set_attack(0.001);
+        b0.set_release(0.001);
+        let mut n = prepared(n);
+        render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
+        render_chunked(&mut n, &[vec![0.0f32; 64]], 64);
+        let last = n.bands[0].core.gain_reduction_db();
+        let meter = b0.gain_reduction_db();
+        assert!(meter > Db(10.0), "{meter:?}");
+        assert!(last < meter - Db(1.0), "last {last:?} vs meter {meter:?}");
+    }
+
+    /// Two soloed bands are both heard, and the bands being phase-aligned, their
+    /// amplitudes add.
+    ///
+    /// Bands 1 and 2 of four at 3 kHz: band 1 is `HP(120) * LP(1 kHz)` (and a
+    /// unit all-pass), band 2 `HP(120) * HP(1 kHz) * LP(6 kHz)`.
+    ///
+    /// Mutation (run): `solo[b] = ...` only for the last soloed band (clear the
+    /// earlier flags) → one band is heard → fails.
+    #[test]
+    fn several_solos_are_all_heard() {
+        let (n, c) = node(4);
+        unity(&c);
+        c.band(1).unwrap().set_solo(true);
+        c.band(2).unwrap().set_solo(true);
+        let mut n = prepared(n);
+        let out = render_chunked(&mut n, &[dc_and_tone(0.5, 0.2)], 512);
+        let y = &out[0][SETTLE..];
+        let hp = |fc: f64| {
+            let x4 = warp(3_000.0, fc).powi(4);
+            x4 / (1.0 + x4)
+        };
+        let lp = |fc: f64| 1.0 / (1.0 + warp(3_000.0, fc).powi(4));
+        let want = 0.2 * hp(120.0) * (lp(1_000.0) + hp(1_000.0) * lp(6_000.0));
+        let amp = amplitude_at(y, 3_000.0, FS);
+        assert!((amp - want).abs() < 1e-6, "{amp} vs {want}");
+        assert!(
+            mean(y).abs() < 1e-6,
+            "the DC (band 0) is heard: {}",
+            mean(y)
+        );
+    }
+
+    /// Releasing a solo brings the muted bands back across the block, rising.
+    ///
+    /// Mutation (run): `audible_from = audible_to` → the first frame is 0.5
+    /// at once → fails.
+    #[test]
+    fn un_soloing_ramps_the_bands_back() {
+        let (n, c) = node(2);
+        unity(&c);
+        c.band(1).unwrap().set_solo(true);
+        let mut n = prepared(n);
+        render_chunked(&mut n, &[vec![0.5f32; SETTLE]], 512);
+        c.band(1).unwrap().set_solo(false);
+        let y = render_chunked(&mut n, &[vec![0.5f32; 64]], 64).remove(0);
+        assert!(y[0].abs() <= 1.5 * 0.5 / 64.0, "first {}", y[0]);
+        assert!((y[63] - 0.5).abs() < 1e-6, "last {}", y[63]);
+        assert!(y.windows(2).all(|w| w[1] >= w[0]), "monotone rise");
+    }
+
+    /// A band both soloed and bypassed is heard unprocessed; bypassing a band
+    /// another band's solo mutes leaves it muted.
+    ///
+    /// Mutation (run): skip the bypass blend when the band is soloed → the
+    /// soloed, bypassed band is compressed → fails; skip the solo mute for
+    /// bypassed bands → the muted DC is heard → fails.
+    #[test]
+    fn solo_and_bypass_combine() {
+        let (n, c) = node(2);
+        let b0 = c.band(0).unwrap();
+        b0.set_threshold(-30.0);
+        b0.set_ratio(8.0);
+        b0.set_makeup(6.0);
+        b0.set_bypass(true);
+        b0.set_solo(true);
+        let mut n = prepared(n);
+        let x = vec![0.5f32; SETTLE + WINDOW];
+        let out = render_chunked(&mut n, std::slice::from_ref(&x), 512);
+        assert!((mean(&out[0][SETTLE..]) - 0.5).abs() < TOL);
+        b0.set_solo(false);
+        c.band(1).unwrap().set_solo(true);
+        let out = render_chunked(&mut n, &[x], 512);
+        assert!(
+            mean(&out[0][SETTLE..]).abs() < TOL,
+            "{}",
+            mean(&out[0][SETTLE..])
+        );
+    }
+
+    /// A crossover above the prepare rate's limit does not freeze the others.
+    ///
+    /// Four bands at 22.05 kHz with the top crossover at 15 kHz (over
+    /// Nyquist): it is held under the rate, and moving the lowest crossover
+    /// still reaches the filter: a DC of 0.5 stays in band 0 whatever the split,
+    /// so the check is on the filter's target.
+    ///
+    /// Mutation (run): drop `fit_crossovers_to_rate` in `read_targets` → the
+    /// set is refused and the move never lands → fails.
+    #[test]
+    fn a_crossover_above_the_rate_does_not_freeze_the_others() {
+        let (n, c) = node(4);
+        c.set_crossover(2, Hz(15_000.0)).unwrap();
+        let mut n = tutti_graph::contract::prepared(n, SampleRate(22_050.0), 1024);
+        c.set_crossover(0, Hz(150.0)).unwrap();
+        render_chunked(&mut n, &[vec![0.0f32; 64]], 64);
+        let f = &n.filters[0];
+        assert_eq!(f.frequency(0), Some(Hz(150.0)));
+        let top = f.frequency(2).unwrap().get();
+        assert!(
+            top > 1_000.0 && f64::from(top) <= 0.499 * 22_050.0 + 1e-2,
+            "{top}"
+        );
     }
 
     /// A soloed band is all that is heard: the output is that band's
@@ -978,12 +1201,47 @@ mod tests {
         assert_eq!(theirs.band(1).unwrap().makeup(), Db(5.0));
         assert!(theirs.band(2).unwrap().bypassed() && theirs.band(0).unwrap().soloed());
         assert_eq!(theirs.crossover(1), Some(Hz(4_000.0)));
-        theirs
-            .band(1)
-            .unwrap()
-            .reduction
-            .store(7.0, Ordering::Relaxed);
+        theirs.band(1).unwrap().reduction.store(Db(7.0));
         assert_eq!(live.band(1).unwrap().gain_reduction_db(), Db::UNITY);
+    }
+
+    /// The fork the graph takes (`into_parts().fork`) renders from the values
+    /// set when it was taken, not from later writes, and leaves the live
+    /// node's meter alone.
+    ///
+    /// Band 0 at -20 dB, 4:1 reduces a DC of 0.5 by the analytic 10.48 dB.
+    /// After the fork is taken the live node is bypassed and given +20 dB of
+    /// makeup: a fork sharing either cell would not render the reduced level.
+    ///
+    /// Mutation (run): drop `b.core.detach()` in `fresh` → the fork follows
+    /// the live bypass and makeup → fails; drop the meter replacement → the
+    /// live meter reads the fork's reduction → fails.
+    #[test]
+    fn the_graphs_fork_renders_from_the_values_it_took() {
+        use tutti_graph::{ForkMode, IntoNode};
+        let (n, live) = node(2);
+        let b0 = live.band(0).unwrap();
+        b0.set_threshold(-20.0);
+        b0.set_ratio(4.0);
+        b0.set_attack(0.001);
+        b0.set_release(0.001);
+        let parts = n.into_parts();
+        let forked = parts.fork.unwrap().fork(ForkMode::Offline).unwrap();
+        b0.set_bypass(true);
+        b0.set_makeup(20.0);
+        b0.set_solo(false);
+        let mut fork = forked.node;
+        fork.prepare(&Prepare::new(RATE, tutti_core::Samples(1024)));
+        let out = render_chunked(fork.as_mut(), &[vec![0.5f32; SETTLE]], 512);
+        let reduction = (20.0 * libm::log10(0.5) + 20.0) * 0.75;
+        let want = 0.5 * libm::pow(10.0, -reduction / 20.0);
+        let dc = mean(&out[0][SETTLE - WINDOW..]);
+        assert!((dc - want).abs() < 5e-6 * want, "{dc} vs {want}");
+        assert_eq!(
+            b0.gain_reduction_db(),
+            Db::UNITY,
+            "the fork wrote the live meter"
+        );
     }
 
     /// Zero latency, no param ports, `Tail::Unknown`, heavy.
@@ -1001,6 +1259,9 @@ mod tests {
     }
 
     /// A one-frame block and a full 1024-frame block both render.
+    ///
+    /// Mutation (run): size `gains` as `vec![0.0; 64]` in `prepare` → the
+    /// 1024-frame block indexes past it → fails.
     #[test]
     fn any_block_up_to_the_prepared_maximum_renders() {
         let (n, c) = node(4);

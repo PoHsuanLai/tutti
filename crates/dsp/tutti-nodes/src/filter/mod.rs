@@ -9,8 +9,10 @@ pub mod svf;
 
 pub use real::Real;
 
-pub(crate) use crossover::check_neighbours as check_crossover_neighbours;
 pub use crossover::{Crossover, CrossoverControls, CrossoverError, CrossoverNode};
+pub(crate) use crossover::{
+    check_neighbours as check_crossover_neighbours, fit_to_rate as fit_crossovers_to_rate,
+};
 pub use eq_band::{BandState, EqBandNode};
 pub use ladder::{LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType};
 pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType};

@@ -17,7 +17,7 @@ use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
     Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Seat, Stage, State,
+    Samples, Seat, Stage, State, negotiate,
 };
 
 use crate::loaders::common::Meta;
@@ -196,11 +196,12 @@ impl ClapInstance {
         loaded
             .rescan_audio_ports()
             .map_err(|e| activation_failed(e.to_string()))?;
-        let format = if prefer_f64 && loaded.supports_f64() {
+        let requested = if prefer_f64 {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32
         };
+        let format = negotiate(requested, loaded.supports_f64());
         let prepare = Prepare {
             rate: SampleRate(sample_rate),
             max_block: Samples(block_size),

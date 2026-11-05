@@ -298,6 +298,7 @@ impl AudioSlab {
         channel: usize,
         data: &[T],
     ) -> Result<()> {
+        self.check_width::<T>()?;
         let offset = self.offset_of(direction, seq, channel)?;
         if data.len() > self.layout.samples_per_channel {
             return Err(oob("data length exceeds buffer capacity"));
@@ -314,12 +315,24 @@ impl AudioSlab {
         channel: usize,
         output: &mut [T],
     ) -> Result<usize> {
+        self.check_width::<T>()?;
         let offset = self.offset_of(direction, seq, channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());
         let copy_bytes = copy_samples * std::mem::size_of::<T>();
         let src = &self.mmap.as_slice()[offset..offset + copy_bytes];
         as_bytes_mut(&mut output[..copy_samples]).copy_from_slice(src);
         Ok(copy_samples)
+    }
+
+    /// The sample type a caller names must be the width the slab was laid out
+    /// at: the layout's stride is in `sample_size()` bytes, so a wider type
+    /// would write past its channel and a narrower one would read the wrong
+    /// samples.
+    fn check_width<T: Sample>(&self) -> Result<()> {
+        if std::mem::size_of::<T>() != self.layout.sample_size() {
+            return Err(oob("sample type does not match the slab's sample format"));
+        }
+        Ok(())
     }
 
     /// Byte offset of one channel of one slot of one direction's ring.
@@ -483,6 +496,25 @@ mod tests {
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    /// A caller's sample type must be the slab's width: a mismatch is an error
+    /// both ways and touches nothing.
+    ///
+    /// Mutation: drop either `check_width` call: the matching write or read
+    /// below returns `Ok` (the `f64` write into an `f32` slab spills into the
+    /// next channel) and the assertion fails.
+    #[test]
+    fn a_sample_type_of_the_wrong_width_is_refused() {
+        let slab = AudioSlab::create(name("width32"), layout(32, SampleFormat::Float32)).unwrap();
+        assert!(slab.write_input(1, 0, &[0.5f64; 32]).is_err());
+        assert!(slab.read_input_into(1, 0, &mut [0.0f64; 32]).is_err());
+        assert!(slab.write_input(1, 0, &[0.5f32; 32]).is_ok());
+
+        let wide = AudioSlab::create(name("width64"), layout(32, SampleFormat::Float64)).unwrap();
+        assert!(wide.write_output(1, 0, &[0.5f32; 32]).is_err());
+        assert!(wide.read_output_into(1, 0, &mut [0.0f32; 32]).is_err());
+        assert!(wide.write_output(1, 0, &[0.5f64; 32]).is_ok());
     }
 
     #[test]

@@ -4,13 +4,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use super::client::SeqClient;
+use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
-use super::sys;
 use crate::InputProducerHandle;
 use crate::capability::EndpointId;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
+use tutti_alsa_ump_sys as sys;
 use tutti_midi_types::ump::split_ump_stream;
 
 /// How long the pump sleeps when the queue is empty.
@@ -69,7 +69,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     )?;
 
     // SAFETY: `seq` is open; the address came from enumeration.
-    sys::check(
+    check(
         unsafe { sys::snd_seq_connect_from(seq.raw(), port, src_client, src_port) },
         "snd_seq_connect_from",
     )?;

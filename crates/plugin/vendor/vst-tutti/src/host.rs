@@ -4,7 +4,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use num_traits::Float;
 
 use libloading::Library;
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::ffi::CString;
@@ -382,6 +382,46 @@ pub struct PluginInstance {
     /// and consulted by [`Plugin::get_editor`], which previously asked nothing
     /// and handed back an `EditorInstance` for every plugin loaded.
     has_editor: bool,
+    /// The `Box<Arc<T>>` that `AEffect::reserved1` points at. It is declared last so it drops
+    /// after [`Drop`] has sent `effClose`, the last call that can reach the host.
+    host_ref: Option<HostRef>,
+}
+
+/// An owned `Box<Arc<T>>` with `T` erased, freed on drop.
+///
+/// `AEffect::reserved1` points into this box, so a plugin must not call the host after
+/// `effClose`: the box is freed once the instance drops, and a later callback would read freed
+/// memory.
+struct HostRef {
+    ptr: *mut c_void,
+    free: unsafe fn(*mut c_void),
+}
+
+// SAFETY: `HostRef::new` only accepts `T: Send + Sync`. Dropping runs `T`'s destructor and
+// decrements a shared count, which is sound from any thread for such a `T`.
+unsafe impl Send for HostRef {}
+// SAFETY: as for `Send`; the pointer is never shared out through `&HostRef`.
+unsafe impl Sync for HostRef {}
+
+impl HostRef {
+    /// Boxes `host`; the box's address is what `AEffect::reserved1` carries.
+    fn new<T: Send + Sync + 'static>(host: Arc<T>) -> HostRef {
+        unsafe fn free<T>(ptr: *mut c_void) {
+            // SAFETY: `ptr` came from `Box::into_raw` of a `Box<Arc<T>>` in `HostRef::new`.
+            drop(unsafe { Box::from_raw(ptr as *mut Arc<T>) });
+        }
+        HostRef {
+            ptr: Box::into_raw(Box::new(host)) as *mut c_void,
+            free: free::<T>,
+        }
+    }
+}
+
+impl Drop for HostRef {
+    fn drop(&mut self) {
+        // SAFETY: `free` is the monomorphization that matches `ptr`, and runs once.
+        unsafe { (self.free)(self.ptr) };
+    }
 }
 
 struct PluginParametersInstance {
@@ -513,7 +553,7 @@ impl Editor for EditorInstance {
     }
 }
 
-impl<T: Host> PluginLoader<T> {
+impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// Load a plugin at the given path with the given host.
     ///
     /// The host is passed as a plain `Arc<T>`, **not** `Arc<Mutex<T>>`.
@@ -587,11 +627,21 @@ impl<T: Host> PluginLoader<T> {
     }
 
     /// Call the VST entry point and retrieve a (possibly null) pointer.
-    unsafe fn call_main(&mut self) -> *mut AEffect {
-        // SAFETY: `LOAD_POINTER` is a `static mut`, so this is sound only while no other
-        // loader reads or writes it. That is not enforced: two loaders running at once race on
-        // it (a known issue, fixed separately), so callers must load one plugin at a time.
-        unsafe { LOAD_POINTER = Box::into_raw(Box::new(Arc::clone(&self.host))) as *mut c_void };
+    ///
+    /// While `main` runs, this thread's [`LOAD_HOST`] points at `self.host`, so the plugin's
+    /// callbacks made during initialization (on this thread) reach this loader's host.
+    fn call_main(&mut self) -> *mut AEffect {
+        // Restores the previous value on exit, so a plugin whose `main` loads another plugin on
+        // the same thread nests correctly.
+        struct Restore(*mut c_void);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                LOAD_HOST.set(self.0);
+            }
+        }
+
+        // `&self.host` outlives the call below: `self` is borrowed for all of `call_main`.
+        let _restore = Restore(LOAD_HOST.replace(&self.host as *const Arc<T> as *mut c_void));
         (self.main)(callback_wrapper::<T>)
     }
 
@@ -602,18 +652,20 @@ impl<T: Host> PluginLoader<T> {
     pub fn instance(&mut self) -> Result<PluginInstance, PluginLoadError> {
         // Call the plugin main function. This also passes the plugin main function as the closure
         // could not return an error if the symbol wasn't found
-        let effect = unsafe { self.call_main() };
+        let effect = self.call_main();
 
         if effect.is_null() {
             return Err(PluginLoadError::InstanceFailed);
         }
 
-        unsafe {
-            // Move the host to the heap and add it to the `AEffect` struct for future reference
-            (*effect).reserved1 = Box::into_raw(Box::new(Arc::clone(&self.host))) as isize;
-        }
+        // The instance owns the box, so it is freed after `effClose`; its heap address is stable.
+        let host_ref = HostRef::new(Arc::clone(&self.host));
+        // SAFETY: `effect` is non-null and was just returned by the plugin's `main`; nothing
+        // else reads `reserved1` until the plugin calls back with this effect pointer.
+        unsafe { (*effect).reserved1 = host_ref.ptr as isize };
 
-        let instance = PluginInstance::new(effect, Arc::clone(&self.lib));
+        let mut instance = PluginInstance::new(effect, Arc::clone(&self.lib));
+        instance.host_ref = Some(host_ref);
 
         let api_ver = instance.dispatch(plugin::OpCode::GetApiVersion, 0, 0, ptr::null_mut(), 0.0);
         if api_ver >= 2400 {
@@ -787,6 +839,7 @@ impl PluginInstance {
             can_replacing: false,
             can_double_replacing: false,
             has_editor: false,
+            host_ref: None,
         };
 
         unsafe {
@@ -1792,20 +1845,18 @@ impl<T: Float> HostBuffer<T> {
     }
 }
 
-/// HACK: a pointer to store the host so that it can be accessed from the `callback_wrapper`
-/// function passed to the plugin.
-///
-/// When the plugin is being loaded, a `Box<Arc<T>>` is transmuted to a `*mut c_void` pointer
-/// and placed here. When the plugin calls the callback during initialization, the host refers to
-/// this pointer to get a handle to the Host. After initialization, this pointer is invalidated and
-/// the host pointer is placed into a [reserved field] in the instance `AEffect` struct.
-///
-/// The issue with this approach is that if 2 plugins are simultaneously loaded with 2 different
-/// host instances, this might fail as one host may receive a pointer to the other one. In practice
-/// this is a rare situation as you normally won't have 2 separate host instances loading at once.
-///
-/// [reserved field]: ../api/struct.AEffect.html#structfield.reserved1
-static mut LOAD_POINTER: *mut c_void = std::ptr::null_mut::<c_void>();
+thread_local! {
+    /// The `*const Arc<T>` of the loader running `VSTPluginMain` on this thread, null otherwise.
+    ///
+    /// A plugin calls the host callback during `main` on the loading thread, before the host
+    /// can store its pointer in `AEffect::reserved1`. Thread-local, so concurrent loads on
+    /// different threads each see their own host without a lock. Once `main` returns the
+    /// instance's `reserved1` carries the host, and this is null again.
+    ///
+    /// No process-wide load lock is needed for the host pointer. A callback during `main` from
+    /// a thread the plugin spawned finds null and answers `0`.
+    static LOAD_HOST: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+}
 
 /// Function passed to plugin to handle dispatching host opcodes.
 ///
@@ -1838,11 +1889,11 @@ extern "C" fn callback_wrapper<T: Host>(
             let host: &T = &*reserved;
 
             interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
-        // In this case, the plugin is still undergoing initialization and so `LOAD_POINTER` is
+        // In this case, the plugin is still undergoing initialization and so `LOAD_HOST` is
         // dereferenced
         } else {
             // Used only during the plugin initialization
-            let load_ptr = LOAD_POINTER as *const Arc<T>;
+            let load_ptr = LOAD_HOST.get() as *const Arc<T>;
             if load_ptr.is_null() {
                 return 0;
             }
@@ -2475,5 +2526,157 @@ mod tests {
         }
         assert_eq!(output_left, vec![2.0; LENGTH]);
         assert_eq!(output_right, vec![2.0; LENGTH]);
+    }
+
+    /// `Host` that answers `audioMasterCurrentId` with its own number.
+    struct IdHost(i32);
+
+    impl Host for IdHost {
+        fn get_plugin_id(&self) -> i32 {
+            self.0
+        }
+    }
+
+    /// Rendezvous inside `main`, so both loads are mid-initialization at once.
+    #[cfg(unix)]
+    static IN_MAIN: std::sync::Barrier = std::sync::Barrier::new(2);
+
+    #[cfg(unix)]
+    thread_local! {
+        /// What the host callback answered inside this thread's last `main`.
+        static ANSWERED: Cell<isize> = const { Cell::new(-1) };
+    }
+
+    /// A `VSTPluginMain` that calls back during initialization, as plugins do, after both
+    /// loading threads are inside it.
+    #[cfg(unix)]
+    fn probing_main(callback: crate::api::HostCallbackProc) -> *mut AEffect {
+        IN_MAIN.wait();
+        // SAFETY: `callback` is `callback_wrapper`, which accepts a null effect while loading;
+        // opcode 2 is `audioMasterCurrentId`.
+        let answer = unsafe { callback(ptr::null_mut(), 2, 0, 0, ptr::null_mut(), 0.0) };
+        ANSWERED.set(answer);
+        ptr::null_mut()
+    }
+
+    #[cfg(unix)]
+    fn loader(id: i32) -> (PluginLoader<IdHost>, Arc<IdHost>) {
+        let host = Arc::new(IdHost(id));
+        // The loader only runs `main`, so any library handle will do.
+        let lib: Library = libloading::os::unix::Library::this().into();
+        let loader = PluginLoader {
+            main: probing_main,
+            lib: Arc::new(lib),
+            host: Arc::clone(&host),
+        };
+        (loader, host)
+    }
+
+    /// Two threads inside `main` at once each get their own host's answer, and the host `Arc`
+    /// is released when the loader goes.
+    ///
+    /// Answers are collected and asserted after both joins, so a failure cannot strand the
+    /// other thread at the barrier.
+    ///
+    /// Mutation: replace `LOAD_HOST` with a `static AtomicPtr` (store in `call_main`, load in
+    /// `callback_wrapper`). Both threads store before the barrier opens, so in every iteration
+    /// the thread that stored first reads the other's pointer, and the assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_loads_reach_their_own_host() {
+        let threads: Vec<_> = [11, 22]
+            .into_iter()
+            .map(|id| {
+                std::thread::spawn(move || {
+                    (0..200)
+                        .map(|_| {
+                            let (mut loader, host) = loader(id);
+                            assert!(loader.call_main().is_null());
+                            let answer = ANSWERED.get();
+                            drop(loader);
+                            (answer, Arc::strong_count(&host))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for (t, id) in threads.into_iter().zip([11isize, 22]) {
+            for (answer, count) in t.join().unwrap() {
+                assert_eq!(answer, id, "callback reached another host");
+                assert_eq!(count, 1, "loader leaked a host Arc");
+            }
+        }
+    }
+
+    /// A load started inside `main` on the same thread leaves the outer load's pointer in
+    /// place when it returns.
+    ///
+    /// Mutation: make `Restore::drop` always `set(null)`; the outer pointer is lost and the
+    /// assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn nested_load_restores_the_outer_pointer() {
+        thread_local! {
+            static OUTER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+            static AFTER_INNER: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
+        }
+        fn inner_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            ptr::null_mut()
+        }
+        fn outer_main(_: crate::api::HostCallbackProc) -> *mut AEffect {
+            OUTER.set(LOAD_HOST.get());
+            let host = Arc::new(IdHost(2));
+            let lib: Library = libloading::os::unix::Library::this().into();
+            let mut inner = PluginLoader {
+                main: inner_main,
+                lib: Arc::new(lib),
+                host,
+            };
+            inner.call_main();
+            AFTER_INNER.set(LOAD_HOST.get());
+            ptr::null_mut()
+        }
+
+        let lib: Library = libloading::os::unix::Library::this().into();
+        let mut outer = PluginLoader {
+            main: outer_main,
+            lib: Arc::new(lib),
+            host: Arc::new(IdHost(1)),
+        };
+        outer.call_main();
+        assert!(!OUTER.get().is_null());
+        assert_eq!(AFTER_INNER.get(), OUTER.get());
+        assert!(LOAD_HOST.get().is_null());
+    }
+
+    /// `main` leaves nothing behind on the loading thread: a callback after it returns, with
+    /// no `reserved1` to go on, is answered `0`.
+    ///
+    /// Mutation: skip the `Restore` guard in `call_main`; `LOAD_HOST` keeps pointing at the
+    /// dead loader and the null assertion fails.
+    #[cfg(unix)]
+    #[test]
+    fn load_host_is_null_after_main() {
+        // A one-party barrier would hang on the shared one, so run `main` on a pair.
+        let other = std::thread::spawn(|| {
+            let (mut loader, _host) = loader(2);
+            loader.call_main();
+        });
+        let (mut loader, _host) = loader(1);
+        loader.call_main();
+        other.join().unwrap();
+        assert!(LOAD_HOST.get().is_null());
+        let answer = callback_wrapper::<IdHost>(ptr::null_mut(), 2, 0, 0, ptr::null_mut(), 0.0);
+        assert_eq!(answer, 0);
+    }
+
+    /// The box `reserved1` points at is freed with its owner.
+    #[test]
+    fn host_ref_releases_its_arc() {
+        let host = Arc::new(IdHost(3));
+        let held = HostRef::new(Arc::clone(&host));
+        assert_eq!(Arc::strong_count(&host), 2);
+        drop(held);
+        assert_eq!(Arc::strong_count(&host), 1);
     }
 }

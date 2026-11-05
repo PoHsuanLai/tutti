@@ -17,6 +17,41 @@ enforces this. CLAP's `try_push` reads a plugin's event with
 `read_unaligned`, and the VST2 event header is cast from its `Vec<u64>`
 backing, so no event cast widens alignment unproven.
 
+### Fixed — `Send` impls that rested on a promise
+
+`tutti-cpal` no longer has `unsafe impl Send` for `CpalStream` or the mic's
+stream handle (`cpal::Stream` is `!Send`: CoreAudio and WASAPI tie it to its
+creating thread, and `CpalStream` is `pub`). Each stream is now built, played
+and dropped on a thread of its own, and the handle is a channel plus a join
+handle: dropping it, from any thread, drops the stream on its owner and waits.
+`CpalStream` is still `Send`. Opening a stream or a `MicIn` now spawns a
+thread, and a panic while opening is reported as `Error::Io`.
+`tutti-plugin-types`'s `BufferPtrs<T>` is `Send`/`Sync` only for
+`T: Sample`; its `input`/`output` fields are private (use `input_len`/
+`output_len`), the input table is `*const T`, and `prepare` returns
+`(*const *const c_void, *mut *mut c_void)`, so the cast to the C APIs'
+`**mut` for inputs is made, with its safety argument, at the FFI call. The
+VST3 host also clamps the channel counts it hands `fill_bus` to the table's
+slot counts, which closes an out-of-bounds read when a caller passed more
+channels than the tables held.
+
+### Changed — ALSA UMP bindings are their own `-sys` crate
+
+The hand-written `snd_seq_*` / `snd_ump_*` FFI and the alsa-lib probe moved from
+`tutti-midi-hardware` into the new `tutti-alsa-ump-sys` (`links = "asound"`,
+Linux only). `tutti-midi-hardware::backend` is now private; reach the backend
+through `MidiSession`.
+
+### Fixed — VST2 loads no longer race on a global
+
+`vst-tutti`'s `static mut LOAD_POINTER` is a thread-local that points at the
+loader's own host for the duration of `VSTPluginMain`, so two threads loading
+plugins at once each reach their own host (it was a data race, reachable from
+safe code). The per-load `Box<Arc<_>>` leak is gone, and the box behind
+`AEffect::reserved1` is now owned by the `PluginInstance` and freed after
+`effClose`; a plugin must not call the host after `effClose`. `PluginLoader`
+now requires `T: Host + Send + Sync + 'static`.
+
 ### Changed — lint, metadata and docs.rs policy
 
 `#![forbid(unsafe_code)]` is on every library with no `unsafe` (14 crates), and

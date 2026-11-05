@@ -388,7 +388,7 @@ fn frame_rate(sample_rate: SampleRate, hop: Samples) -> Result<f64> {
 /// `w(p) - w(p + hop)`, about `-hop * w'` at `p + hop / 2`, and `w' = sin(2πp/W)
 /// π/W` falls fastest at `3W/4`. The frame grid then places the peak to within
 /// half a hop. (Not `window / 2`: that is right only when `hop = window / 2`.)
-fn onset_lag(geometry: StftGeometry) -> usize {
+pub(crate) fn onset_lag(geometry: StftGeometry) -> usize {
     (geometry.window().get() * 3 / 4).saturating_sub(geometry.hop().get() / 2)
 }
 

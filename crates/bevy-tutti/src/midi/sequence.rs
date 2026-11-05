@@ -80,7 +80,7 @@ impl MidiSourceInstall {
 /// entity. The node is the sequencer's, not an entity's: emptied when the
 /// last install naming its target goes (which ends its notes), removed
 /// when the target loses its node.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct SequencedClips {
     clips: HashMap<Entity, AudioNode>,
     /// Each install's target as [`rebuild`] last saw it: where a removed
@@ -253,6 +253,7 @@ pub fn rebuild(
 }
 
 /// Compiles [`MidiSourceInstall`]s into clip nodes.
+#[derive(Debug)]
 pub struct MidiSequencePlugin;
 
 impl Plugin for MidiSequencePlugin {

@@ -36,7 +36,7 @@ use tutti_core::transport::{ClickState, Timeline, Transport};
 /// Everything takes `&self` (the state is atomics), so `Res` suffices. That also
 /// means **`Res<TransportRes>` never triggers change detection** — a host that
 /// wants "did the tempo change this frame" diffs the value itself.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct TransportRes(pub Transport);
 
 impl TransportRes {
@@ -120,7 +120,7 @@ impl std::ops::Deref for TransportRes {
 /// Accent is not among them, and has no setter: it is derived from the meter's
 /// downbeat. A standalone accent count would have to default to something —
 /// and any default is wrong for some time signature.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct MetronomeRes(pub Arc<ClickState>);
 
 impl std::ops::Deref for MetronomeRes {

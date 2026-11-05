@@ -393,6 +393,13 @@ pub struct AuParameterListener {
     _block: RcBlock<AuEventListenerBlock>,
 }
 
+impl std::fmt::Debug for AuParameterListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuParameterListener")
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the fields are an opaque AudioToolbox handle, an opaque AudioUnit, a
 // dispatch queue, and a heap block — all documented by AudioToolbox/libdispatch
 // as usable from any thread. `new` already requires the host closure to be

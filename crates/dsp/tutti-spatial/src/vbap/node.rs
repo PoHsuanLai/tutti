@@ -100,7 +100,7 @@ use crate::target::hold_finite;
 /// A clone shares the node's control cells (so a clone taken as a fork's
 /// template reads the placement as it is when the fork is taken) and copies
 /// its de-zipper state. A fork detaches the cells and resets the copy.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VbapPannerNode {
     panner: VbapPanner,
     layout: ChannelLayout,
@@ -137,7 +137,7 @@ pub struct VbapPannerNode {
 /// bearing, height, spread or width to address these by, and a position is
 /// a pair (a bearing wraps, a height saturates), which a single `f32` address
 /// would split.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VbapPannerControls {
     target: SpatialTarget,
     /// VBAP diffusion, `0..1`: how many speakers a point source is smeared

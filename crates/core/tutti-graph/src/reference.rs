@@ -133,6 +133,7 @@ struct RefRamp {
     started: bool,
 }
 
+#[derive(Debug)]
 struct RefFifo {
     pending: Vec<(u64, Event)>,
     len: u64,
@@ -202,6 +203,33 @@ pub struct Reference {
     /// rules in `src/play.rs`'s module docs, not through its `PlayState`.
     play: PlayReading,
     play_playing: bool,
+}
+
+impl std::fmt::Debug for Reference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reference")
+            .field("prepare", &self.prepare)
+            .field("graph", &self.graph)
+            .field("arrival", &self.arrival)
+            .field("delays", &self.delays)
+            .field("audio_lines", &self.audio_lines.len())
+            .field("fb_audio", &self.fb_audio.len())
+            .field("fb_event", &self.fb_event.len())
+            .field("inject", &self.inject.len())
+            .field("next_id", &self.next_id)
+            .field("cancelled", &self.cancelled)
+            .field("suspended", &self.suspended)
+            .field("landing", &self.landing.len())
+            .field("late", &self.late)
+            .field("unrouted", &self.unrouted)
+            .field("dropped", &self.dropped)
+            .field("reset_time", &self.reset_time)
+            .field("frame", &self.frame)
+            .field("ranges", &self.ranges)
+            .field("play", &self.play)
+            .field("play_playing", &self.play_playing)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Reference {

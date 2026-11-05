@@ -224,7 +224,7 @@ impl std::fmt::Debug for ExportRequest {
 /// Observe it to know whether an export is running. Gating a spawn system on
 /// `not(any_with_component::<ExportInFlight>)` avoids piling up request
 /// entities, but is not needed for safety.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct ExportInFlight {
     task: Task<tutti_session::ExportRendered>,
     /// The node bindings when the render started, which name a node a

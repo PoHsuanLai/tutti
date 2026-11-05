@@ -16,7 +16,7 @@ use tutti_plugin::handles::ContentScale;
 ///
 /// Not `Debug` / `Reflect`: `PluginHandle` wraps a foreign plugin-control
 /// handle that implements neither.
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct PluginEmitter {
     /// The control-thread handle: parameters, editor open/close, state
     /// save/load. `Arc`-backed, so cloning it into a task is cheap.
@@ -29,7 +29,7 @@ pub struct PluginEmitter {
 /// entities carrying this.
 ///
 /// Not `Reflect`: `EditorCapabilities` is a foreign type.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct PluginEditorOpen {
     /// The Bevy `Window` entity this host spawned to hold the plugin's editor.
     pub editor_window: Entity,
@@ -70,7 +70,7 @@ pub struct PluginEditorOpen {
 ///
 /// Carries no size: the plugin owns the window, so there is no geometry here
 /// for the host to apply.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct PluginFloatingEditorOpen;
 
 /// Whether this entity has an editor open, in either hosting mode.

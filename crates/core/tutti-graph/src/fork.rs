@@ -351,6 +351,12 @@ pub struct Forked {
     pub health: Option<Arc<dyn ForkHealth>>,
 }
 
+impl fmt::Debug for Forked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Forked").finish_non_exhaustive()
+    }
+}
+
 impl Forked {
     /// A unit with no health probe.
     #[must_use]

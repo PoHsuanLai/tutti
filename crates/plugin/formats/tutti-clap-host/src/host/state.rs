@@ -24,6 +24,7 @@ pub(crate) struct TimerEntry {
 /// One POSIX file descriptor the plugin asked the host to watch
 /// (`CLAP_EXT_POSIX_FD_SUPPORT`).
 #[cfg(unix)]
+#[derive(Debug)]
 pub struct PosixFdEntry {
     /// The descriptor to poll. Owned by the plugin — the host watches it but
     /// must not close it.
@@ -34,6 +35,7 @@ pub struct PosixFdEntry {
 
 /// Plugin requests to change its own lifecycle, from `clap_host`'s core
 /// callbacks. Each is latched until the matching `poll_*` drains it.
+#[derive(Debug)]
 pub struct LifecycleFlags {
     /// The plugin asked to be deactivated and reactivated, typically because
     /// its port layout or sample-rate needs changed.
@@ -58,6 +60,7 @@ impl LifecycleFlags {
 /// Notifications about values the host caches but the plugin owns. Each is
 /// latched until the matching `poll_*` drains it; the host then re-reads the
 /// value from the plugin.
+#[derive(Debug)]
 pub struct ProcessingState {
     /// The plugin's reported latency changed, so PDC compensation is stale.
     pub latency_changed: AtomicBool,
@@ -82,6 +85,7 @@ impl ProcessingState {
 }
 
 /// Editor-window requests the plugin raised through `CLAP_EXT_GUI`.
+#[derive(Debug)]
 pub struct GuiState {
     /// The plugin reported its editor closed. Says nothing about whether the
     /// window survived — [`window_destroyed`](Self::window_destroyed) carries
@@ -121,6 +125,7 @@ impl GuiState {
 }
 
 /// Parameter-side requests from `CLAP_EXT_PARAMS`.
+#[derive(Debug)]
 pub struct ParamState {
     /// A `params.rescan` arrived. Tracked apart from
     /// [`rescan_flags`](Self::rescan_flags) because a plugin may legally
@@ -148,6 +153,7 @@ impl ParamState {
 
 /// Port-topology change notifications, from the audio-ports family of
 /// extensions.
+#[derive(Debug)]
 pub struct AudioPortState {
     /// An `audio-ports.rescan` arrived. Tracked apart from
     /// [`rescan_flags`](Self::rescan_flags) for the same reason as on
@@ -184,6 +190,7 @@ impl AudioPortState {
 
 /// Note-side change notifications, from the note-ports, note-names and
 /// voice-info extensions.
+#[derive(Debug)]
 pub struct NoteState {
     /// The note-port layout changed and must be re-enumerated.
     pub ports_changed: AtomicBool,
@@ -205,6 +212,7 @@ impl NoteState {
 
 /// Undo/redo traffic from `CLAP_EXT_UNDO`, in both directions: steps the
 /// plugin recorded, and requests it made of the host's undo stack.
+#[derive(Debug)]
 pub struct UndoState {
     /// A change the plugin opened with `begin_change` has neither been
     /// committed via `change_made` nor withdrawn via `cancel_change`. Not a
@@ -254,6 +262,7 @@ pub struct LogRecord {
 /// behind a host that never drains is a leak, not a diagnostic. Oldest lines go
 /// first, and `dropped` counts them so a consumer does not read a truncated
 /// history as a complete one.
+#[derive(Debug)]
 pub struct LogState {
     pub(crate) records: Mutex<std::collections::VecDeque<LogRecord>>,
     pub(crate) dropped: AtomicU32,
@@ -312,6 +321,16 @@ pub struct TimerState {
     /// value costs one pass, which recomputes it), and a pass over the timers
     /// sets it exactly. It lets the per-block pass skip the timers lock.
     next_due: AtomicU64,
+}
+
+impl std::fmt::Debug for TimerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimerState")
+            .field("next_id", &self.next_id)
+            .field("epoch", &self.epoch)
+            .field("next_due", &self.next_due)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TimerState {
@@ -380,6 +399,7 @@ impl TimerState {
 /// The shape is [`LogState`]'s, for the same reason: a bounded ring plus a
 /// counter, so "the host dropped requests" stays distinguishable from "the
 /// plugin made none".
+#[derive(Debug)]
 pub struct TransportState {
     pub(crate) requests: Mutex<std::collections::VecDeque<TransportRequest>>,
     pub(crate) dropped: AtomicU32,
@@ -452,6 +472,7 @@ impl TransportState {
 }
 
 /// Remote-control page state from `CLAP_EXT_REMOTE_CONTROLS`.
+#[derive(Debug)]
 pub struct RemoteControlState {
     /// The plugin's set of remote-control pages changed and must be
     /// re-enumerated.
@@ -473,6 +494,7 @@ impl RemoteControlState {
 ///
 /// Unlike the latch groups above, most of this is state the *host* publishes
 /// for the plugin to read rather than a request the plugin made.
+#[derive(Debug)]
 pub struct ResourceState {
     pub(crate) track_info: Mutex<Option<TrackInfo>>,
     pub(crate) tuning_infos: Mutex<Vec<TuningInfo>>,
@@ -506,6 +528,7 @@ impl ResourceState {
 }
 
 /// Shared state for host↔plugin communication via atomic flags.
+#[derive(Debug)]
 pub struct HostState {
     /// The thread that constructed this `HostState`, taken as the
     /// `[main-thread]` role for the instance's whole life. Fixed at
@@ -632,6 +655,7 @@ fn thread_id_hash(id: ThreadId) -> u64 {
 /// Borrows the [`HostState`], not the instance. Callers that need `&mut self`
 /// while the claim is alive clone the `Arc<HostState>` into a local first and
 /// claim off that local, so the borrow does not reach back into `self`.
+#[derive(Debug)]
 pub struct AudioThreadClaim<'a> {
     state: &'a HostState,
     // Held for the claim's lifetime; declared last so it releases only after

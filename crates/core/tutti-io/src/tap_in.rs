@@ -46,6 +46,7 @@ use tutti_core::{ChannelLayout, Samples, TapCons};
 /// rec.stop()
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct TapIn {
     cons: TapCons,
 }

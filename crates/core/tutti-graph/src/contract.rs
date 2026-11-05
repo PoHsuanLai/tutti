@@ -373,6 +373,19 @@ pub struct Row {
     lead: u64,
 }
 
+impl std::fmt::Debug for Row {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Row")
+            .field("name", &self.name)
+            .field("excite", &self.excite)
+            .field("detect", &self.detect)
+            .field("output", &self.output)
+            .field("latency", &self.latency)
+            .field("lead", &self.lead)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Row {
     /// A row for the node `make` builds (a fresh one per run).
     ///
@@ -1703,6 +1716,16 @@ pub struct BlockRig {
     outputs: Vec<Vec<f32>>,
 }
 
+impl std::fmt::Debug for BlockRig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockRig")
+            .field("_editor", &self._editor)
+            .field("exec", &self.exec)
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
+
 impl BlockRig {
     /// `node`, alone, prepared at `rate` for blocks of `frames`, with
     /// silent inputs. Returns its controls.
@@ -1812,6 +1835,18 @@ pub struct Direct<N> {
     outputs: Vec<Vec<f32>>,
     events_in: Vec<Vec<Event>>,
     events_out: Vec<Vec<Event>>,
+}
+
+impl<N> std::fmt::Debug for Direct<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Direct")
+            .field("rate", &self.rate)
+            .field("frames", &self.frames)
+            .field("len", &self.len)
+            .field("frame", &self.frame)
+            .field("transport", &self.transport)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<N: Node> Direct<N> {

@@ -68,7 +68,7 @@ impl Default for MpeModeConfig {
 /// A mode change resets MPE voice allocation, so drive it from a change
 /// detector rather than each frame (setting the mode in force changes
 /// nothing).
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct MpeModeRes(pub MidiInputControls);
 
 impl std::ops::Deref for MpeModeRes {
@@ -176,6 +176,7 @@ pub fn detach_live_midi(
 /// wiring, so a new queue is wired on the frame it is made, and the
 /// [`detach_live_midi`] observer. Part of
 /// [`TuttiMidiPlugin`](super::TuttiMidiPlugin).
+#[derive(Debug)]
 pub struct LiveMidiPlugin;
 
 impl Plugin for LiveMidiPlugin {

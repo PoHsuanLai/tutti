@@ -29,6 +29,7 @@ pub const MAX_FRAMES: usize = 8192;
 /// Built once on the control thread and shared as an `Arc` between the
 /// [`TuttiDriver`](crate::TuttiDriver) (or [`AudioEngine`]) that owns the stream
 /// and the stream's callback, which passes it to [`process_audio`].
+#[derive(Debug)]
 pub struct AudioCallbackState {
     pub(crate) engine: Engine,
     pub(crate) meter: MasterMeter,

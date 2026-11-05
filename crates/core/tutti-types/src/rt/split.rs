@@ -161,6 +161,7 @@ fn release_exclusive(word: &AtomicU32) {
 /// A slice whose elements can be claimed one at a time, exclusively, from
 /// any thread holding a `&SplitMut`. See the module docs
 /// (`src/rt/split.rs`).
+#[derive(Debug)]
 pub struct SplitMut<'a, T> {
     base: *mut T,
     len: usize,
@@ -279,6 +280,12 @@ pub struct Claimed<'s, T> {
     word: &'s AtomicU32,
 }
 
+impl<T> std::fmt::Debug for Claimed<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Claimed").finish_non_exhaustive()
+    }
+}
+
 impl<T> Deref for Claimed<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -305,6 +312,14 @@ pub struct ClaimedRun<'s, T> {
     words: &'s [AtomicU32],
 }
 
+impl<T> std::fmt::Debug for ClaimedRun<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimedRun")
+            .field("len", &self.run.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T> Deref for ClaimedRun<'_, T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
@@ -329,6 +344,7 @@ impl<T> Drop for ClaimedRun<'_, T> {
 /// A slice cut into chunks of `stride` elements, each of which can be read
 /// by several threads at once or written by one, through an [`RwView`]. See
 /// the module docs (`src/rt/split.rs`).
+#[derive(Debug)]
 pub struct SplitRw<'a, T> {
     base: *mut T,
     chunks: usize,
@@ -446,6 +462,7 @@ impl std::fmt::Debug for Held {
 /// view drops. A chunk the view already holds is not claimed again.
 ///
 /// `!Send` and `!Sync` (it holds `&Held`, whose cells are one thread's).
+#[derive(Debug)]
 #[must_use = "its claims are released when it drops"]
 pub struct RwView<'v, T> {
     split: &'v SplitRw<'v, T>,

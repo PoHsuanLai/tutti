@@ -107,6 +107,7 @@ fn bump(counter: &'static std::thread::LocalKey<Cell<u64>>) {
 /// It counts what goes through Rust's global allocator. Allocations a C
 /// library makes for itself (glibc's bookkeeping for a thread-local
 /// destructor, for example) do not pass through it and are not seen.
+#[derive(Debug)]
 pub struct CountingAlloc;
 
 // SAFETY: every method forwards to `System` with the same arguments, and the

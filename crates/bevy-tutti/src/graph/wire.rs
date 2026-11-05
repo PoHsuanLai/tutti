@@ -528,6 +528,7 @@ pub fn unwire_removed_sources(
 /// the frame's wiring. It edits the graph and never commits —
 /// [`commit_graph`](crate::graph::commit_graph) coalesces.
 /// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin) adds it.
+#[derive(Debug)]
 pub struct GraphWirePlugin;
 
 impl Plugin for GraphWirePlugin {

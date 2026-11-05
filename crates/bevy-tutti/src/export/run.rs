@@ -174,7 +174,7 @@ fn invalid(reason: impl Into<String>) -> tutti_export::Error {
 /// export failed on. Taken on the main thread when the render starts, and
 /// kept with the render ([`ExportInFlight`]): a fork can fail mid-render,
 /// long after the world was last readable.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct NodeNames {
     nodes: HashMap<Entity, tutti_core::AudioNode>,
     by_key: HashMap<NodeKey, (Entity, Option<String>)>,

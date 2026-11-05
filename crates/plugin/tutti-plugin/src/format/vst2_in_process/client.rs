@@ -104,6 +104,18 @@ pub struct InProcessVst2Client {
     pub(super) segments: SegmentPoints,
 }
 
+/// Omits `inner`: its mutex is the audio path's, so formatting must not take it.
+impl std::fmt::Debug for InProcessVst2Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InProcessVst2Client")
+            .field("metadata", &self.metadata)
+            .field("frames", &self.frames)
+            .field("sample_rate", &self.sample_rate)
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Who tells the plugin the rate the node is prepared at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RateDelivery {
@@ -134,7 +146,7 @@ pub(super) enum RateDelivery {
 /// A clone shares the meter slot and reads it through a reader of its own
 /// (`Reader::clone` registers one on the same cell), and carries the counter
 /// and the last snapshot as they stand. Only a test clones a feed.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct TransportFeed {
     /// The node's meter slot, shared with its controls
     /// ([`InProcessVst2Client::meter`]), so a meter installed through them

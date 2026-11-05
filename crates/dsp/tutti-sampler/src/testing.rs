@@ -25,6 +25,7 @@ use tutti_graph::{Env, Node, Transport, TransportChanges, contract};
 /// closure that renders. A mock that never moved would have every frame
 /// derive the same position, and an equivalence test over it would pass no
 /// matter what the code under test does.
+#[derive(Debug)]
 pub struct MockTransport {
     playing: AtomicBool,
     /// `f64` bits — `AtomicF64` is not in std.

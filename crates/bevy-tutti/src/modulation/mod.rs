@@ -130,6 +130,7 @@ pub enum ModulationSystems {
 /// Not added by [`TuttiPlugin`](crate::TuttiPlugin); add it after it. Its
 /// systems are gated on [`engine_ready`] and need
 /// [`AudioGraphRes`](crate::graph::AudioGraphRes).
+#[derive(Debug)]
 pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {

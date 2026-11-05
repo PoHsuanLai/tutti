@@ -39,6 +39,7 @@ pub const MIDI_OUT_CAPACITY: usize = 1024;
 /// let out = editor.insert(NodeKey(1), "midi out", MidiOutNode::new());
 /// assert_eq!(out.dropped(), 0);
 /// ```
+#[derive(Debug)]
 pub struct MidiOutNode {
     tx: Option<MidiSender>,
     parts: Option<MidiOutControls>,
@@ -79,7 +80,7 @@ impl Default for MidiOutNode {
 
 /// The host's handle on a [`MidiOutNode`]: the ring's pop half. Cheap to
 /// clone; one clone at a time should poll it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiOutControls {
     rx: Arc<MidiReceiver>,
     dropped: Arc<AtomicU64>,

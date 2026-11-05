@@ -368,6 +368,27 @@ pub struct Editor {
     revision: u64,
 }
 
+impl std::fmt::Debug for Editor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Editor")
+            .field("out", &self.out)
+            .field("fades_out", &self.fades_out)
+            .field("sent", &self.sent)
+            .field("prepare", &self.prepare)
+            .field("fades", &self.fades)
+            .field("latency_cuts", &self.latency_cuts)
+            .field("next_gen", &self.next_gen)
+            .field("planned", &self.plan.is_some())
+            .field("committed", &self.committed)
+            .field("poisoned", &self.poisoned)
+            .field("limits", &self.limits)
+            .field("event_capacity", &self.event_capacity)
+            .field("param_ranges", &self.param_ranges.len())
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A panic payload as text.
 fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
     p.downcast_ref::<&str>()

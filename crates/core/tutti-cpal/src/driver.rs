@@ -40,6 +40,7 @@ pub struct DeviceInfo {
 /// Only [`TuttiDriver::restart_with`] and [`TuttiDriver::restart_on`] create
 /// one, and only for the duration of the hook, so what it reaches of the
 /// audio thread's state is reached only while no callback can run.
+#[derive(Debug)]
 pub struct Stopped<'a> {
     state: &'a AudioCallbackState,
 }

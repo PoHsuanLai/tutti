@@ -61,7 +61,7 @@ const CI_GROUP: MidiGroup = MidiGroup::FIRST;
 /// initiator that probes peers. Built from a [`DiscoveryData`] identity and a
 /// seed MUID, supplied by the caller (e.g. a hash of the device name) rather
 /// than drawn from a random source.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct CiRes {
     /// The answering side: replies to inbound Discovery / Profile / Property.
     pub responder: CiResponder,
@@ -171,7 +171,7 @@ pub fn ci_ingest_system(
 // ---------------------------------------------------------------------------
 
 /// The UMP-Stream discoverer state — the inquiring half of endpoint negotiation.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct EndpointDiscoveryRes {
     /// Accumulates reply events until an endpoint assembles. Stateless until a
     /// discovery starts, which is why this resource can be defaulted in.
@@ -248,6 +248,7 @@ pub fn endpoint_ingest_system(
 /// supplies (`app.insert_resource(CiRes::new(identity, seed))`); the CI systems
 /// early-out until it's present. [`EndpointDiscoveryRes`] is defaulted in
 /// (stateless until a discovery starts).
+#[derive(Debug)]
 pub struct MidiNegotiationPlugin;
 
 impl Plugin for MidiNegotiationPlugin {

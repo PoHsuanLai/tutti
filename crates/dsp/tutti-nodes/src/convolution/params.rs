@@ -10,7 +10,7 @@ use tutti_core::{Amplitude, Arc, AtomicF32, Mix, Param};
 ///
 /// - `mix`: 0.0 = fully dry, 1.0 = fully wet.
 /// - `gain`: linear multiplier applied to the wet signal before mixing.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WetDry {
     /// Blend between the dry input and the convolved signal: `0.0` fully dry,
     /// `1.0` fully wet.

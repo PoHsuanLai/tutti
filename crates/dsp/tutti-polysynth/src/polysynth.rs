@@ -68,6 +68,7 @@ use std::sync::Arc;
 /// assert_eq!(out.len(), 2); // stereo
 /// # Ok::<(), tutti_polysynth::Error>(())
 /// ```
+#[derive(Debug)]
 pub struct PolySynth {
     config: SynthConfig,
     allocator: VoiceAllocator,

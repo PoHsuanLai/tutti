@@ -152,6 +152,14 @@ pub struct LiveResizeRegistry {
     handles: std::collections::HashMap<bevy_ecs::entity::Entity, LiveResizeHandle>,
 }
 
+impl std::fmt::Debug for LiveResizeRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveResizeRegistry")
+            .field("observers", &self.handles.len())
+            .finish()
+    }
+}
+
 impl LiveResizeRegistry {
     /// Store the observer for `entity`, replacing (and dropping, on this
     /// thread) any observer it already had.

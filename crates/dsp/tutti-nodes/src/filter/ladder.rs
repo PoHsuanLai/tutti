@@ -88,7 +88,7 @@ pub fn compute_ladder_coeffs(
 ///
 /// `g1` is the one-pole stage gain `g / (1 + g)` with `g = tan(π·fc/sr)`,
 /// solved once with the `tan` rather than divided out every sample.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct LadderCoefficients<F: Real> {
     g1: F,
     k: F,
@@ -234,6 +234,18 @@ pub struct LadderFilterNode<F: Real = f64> {
     /// non-finite write reads as unchanged, so it never reaches the solve or
     /// the saturator (see [`LastGood`]).
     good: [LastGood; 3],
+}
+
+impl<F: Real> std::fmt::Debug for LadderFilterNode<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LadderFilterNode")
+            .field("ladder_type", &self.ladder_type)
+            .field("frequency", &self.frequency)
+            .field("resonance", &self.resonance)
+            .field("drive", &self.drive)
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`LadderFilterNode`] lets the graph modulate, in port order.

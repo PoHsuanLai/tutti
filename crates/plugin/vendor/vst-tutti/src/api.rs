@@ -115,6 +115,7 @@ pub type GetParameterProc = unsafe extern "C" fn(effect: *mut AEffect, index: i3
 /// Used with the VST API to pass around plugin information.
 #[allow(non_snake_case)]
 #[repr(C)]
+#[derive(Debug)]
 pub struct AEffect {
     /// Magic number. Must be `['V', 'S', 'T', 'P']`.
     pub magic: i32,
@@ -297,6 +298,7 @@ impl AEffect {
 /// is verified against `aeffectx.h`, and `size_of` is pinned to the measured
 /// 136 bytes by a test in this module.
 #[repr(C)]
+#[derive(Debug)]
 pub struct ParameterProperties {
     /// Step increment for the float value, in normalized units.
     pub step_float: f32,
@@ -342,6 +344,7 @@ pub struct ParameterProperties {
 ///
 /// `size_of` is pinned to the measured 80 bytes by a test in this module.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MidiProgramName {
     /// Index the host is asking about; the host writes this before dispatch
     /// and the plugin fills the rest.
@@ -367,6 +370,7 @@ pub struct MidiProgramName {
 ///
 /// `size_of` is pinned to the measured 76 bytes by a test in this module.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MidiProgramCategory {
     /// Index the host is asking about; written by the host before dispatch.
     pub this_category_index: i32,
@@ -386,6 +390,7 @@ pub struct MidiProgramCategory {
 ///
 /// `size_of` is pinned to the measured 80 bytes by a test in this module.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MidiKeyName {
     /// Program the question is scoped to; written by the host before dispatch.
     pub this_program_index: i32,
@@ -401,6 +406,7 @@ pub struct MidiKeyName {
 
 /// Information about a channel. Only some hosts use this information.
 #[repr(C)]
+#[derive(Debug)]
 pub struct ChannelProperties {
     /// Channel name.
     pub name: [u8; MAX_LABEL],
@@ -421,7 +427,7 @@ pub struct ChannelProperties {
 /// Tells the host how the channels are intended to be used in the plugin. Only useful for some
 /// hosts.
 #[repr(i32)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum SpeakerArrangementType {
     /// User defined arrangement.
     Custom = -2,
@@ -551,6 +557,7 @@ impl From<Supported> for isize {
 
 /// Denotes in which thread the host is in.
 #[repr(i32)]
+#[derive(Debug)]
 pub enum ProcessLevel {
     /// Unsupported by host.
     Unknown = 0,
@@ -568,6 +575,7 @@ pub enum ProcessLevel {
 /// Language that the host is using.
 #[repr(i32)]
 #[allow(missing_docs)]
+#[derive(Debug)]
 pub enum HostLanguage {
     English = 1,
     German,
@@ -579,6 +587,7 @@ pub enum HostLanguage {
 
 /// The file operation to perform.
 #[repr(i32)]
+#[derive(Debug)]
 pub enum FileSelectCommand {
     /// Load a file.
     Load = 0,
@@ -592,6 +601,7 @@ pub enum FileSelectCommand {
 
 // TODO: investigate removing this.
 /// Format to select files.
+#[derive(Debug)]
 pub enum FileSelectType {
     /// Regular file selector.
     Regular,
@@ -599,6 +609,7 @@ pub enum FileSelectType {
 
 /// File type descriptor.
 #[repr(C)]
+#[derive(Debug)]
 pub struct FileType {
     /// Display name of file type.
     pub name: [u8; 128],
@@ -618,6 +629,7 @@ pub struct FileType {
 
 /// File selector descriptor used in `host::OpCode::OpenFileSelector`.
 #[repr(C)]
+#[derive(Debug)]
 pub struct FileSelect {
     /// The type of file selection to perform.
     pub command: FileSelectCommand,
@@ -652,6 +664,7 @@ pub struct FileSelect {
 
 /// A struct which contains events.
 #[repr(C)]
+#[derive(Debug)]
 pub struct Events {
     /// Number of events.
     pub num_events: i32,
@@ -761,7 +774,7 @@ pub enum EventType {
 /// let midi_event: &MidiEvent = unsafe { std::mem::transmute(event) };
 /// ```
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Event {
     /// The type of event. This lets you know which event this object should be casted to.
     ///
@@ -816,6 +829,7 @@ pub struct Event {
 
 /// A midi event.
 #[repr(C)]
+#[derive(Debug)]
 pub struct MidiEvent {
     /// Should be `EventType::Midi`.
     pub event_type: EventType,
@@ -863,7 +877,7 @@ pub struct MidiEvent {
 /// `plugin::CanDo` has a `ReceiveSysExEvent` variant which lets the host query the plugin as to
 /// whether this event is supported.
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SysExEvent {
     /// Should be `EventType::SysEx`.
     pub event_type: EventType,
@@ -898,6 +912,7 @@ unsafe impl Send for SysExEvent {}
 #[repr(C)]
 #[derive(Clone, Default, Copy)]
 /// Describes the time at the start of the block currently being processed
+#[derive(Debug)]
 pub struct TimeInfo {
     /// current Position in audio samples (always valid)
     pub sample_pos: f64,

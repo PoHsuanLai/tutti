@@ -38,7 +38,7 @@ use crate::ramp::{LastGood, Ramp, block_driven};
 /// blend itself comb-filtered. The latency is the convolver's block size, fixed
 /// at construction and independent of the sample rate, so the ring is sized once
 /// there and `prepare` has nothing to resize.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct DryAlign {
     ring: CircularBuffer<f32>,
 }
@@ -175,6 +175,21 @@ pub struct ConvolverNode {
     /// block's end is the next block's ramp start, so a NaN would carry into
     /// the block after it (see [`LastGood`]).
     good: [LastGood; 2],
+}
+
+impl std::fmt::Debug for ConvolverNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConvolverNode")
+            .field("convolvers", &self.convolvers)
+            .field("dry", &self.dry)
+            .field("config", &self.config)
+            .field("params", &self.params)
+            .field("sample_rate", &self.sample_rate)
+            .field("latency_samples", &self.latency_samples)
+            .field("last", &self.last)
+            .field("good", &self.good)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConvolverNode {

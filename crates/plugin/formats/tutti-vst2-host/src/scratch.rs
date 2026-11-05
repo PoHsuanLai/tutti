@@ -47,6 +47,17 @@ pub struct RenderScratch {
     pub(crate) output_ptrs_f64: Vec<*mut f64>,
 }
 
+impl std::fmt::Debug for RenderScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderScratch")
+            .field("input_ptrs", &self.input_ptrs)
+            .field("output_ptrs", &self.output_ptrs)
+            .field("input_ptrs_f64", &self.input_ptrs_f64)
+            .field("output_ptrs_f64", &self.output_ptrs_f64)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the raw pointers point into the owned `Vec<Vec<_>>` fields
 // within the same struct. They are never read concurrently — callers
 // ensure exclusive access (subprocess server holds a single instance;

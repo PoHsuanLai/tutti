@@ -941,7 +941,7 @@ impl PluginParameters for DummyPluginParameters {}
 ///
 /// All methods in this struct will panic if the `HostCallback` was constructed using
 /// `Default::default()` rather than being set to the value passed to `Plugin::new`.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct HostCallback {
     callback: Option<HostCallbackProc>,
     effect: *mut AEffect,

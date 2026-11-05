@@ -90,6 +90,16 @@ pub struct IsolateRow<N> {
     controls: Vec<(String, Write<N>)>,
 }
 
+impl<N> std::fmt::Debug for IsolateRow<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IsolateRow")
+            .field("name", &self.name)
+            .field("frames", &self.frames)
+            .field("controls", &self.controls.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<N: ParamNode + Clone> IsolateRow<N> {
     /// A row for the node `make` builds, fresh for every control.
     pub fn new(name: &str, make: impl Fn() -> N + 'static) -> Self {

@@ -77,7 +77,7 @@ pub type MidiEventVec = Vec<MidiEvent>;
 ///
 /// [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
 /// [`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
     /// offset within the block. Empty is normal for an effect.

@@ -50,7 +50,7 @@ use crate::plugin_host::PluginsRes;
 /// While the scan runs [`PluginsRes`] is **absent** — the catalog is on the scan
 /// thread. Systems that read it already take `Option<Res<PluginsRes>>`; it is
 /// one of the two resources `engine_ready` deliberately does not cover.
-#[derive(Message)]
+#[derive(Message, Debug)]
 pub struct RescanPlugins;
 
 /// One plugin examined, or a phase change. Forwarded verbatim from the
@@ -70,7 +70,7 @@ pub struct ScanProgressed(
 /// expected. Blacklisted records are excluded from `records()`/`iter()`, which
 /// means a hidden plugin is invisible with no explanation unless the host says
 /// something — see [`catalog`](super::catalog) for the un-blacklist path.
-#[derive(Message)]
+#[derive(Message, Debug)]
 pub struct PluginsScanned(
     /// The scan tally: scanned, new, failed, blacklisted, newly blacklisted.
     pub ScanResult,
@@ -107,7 +107,7 @@ pub enum PluginCatalogState {
 /// Private fields: [`start_scan`] inserts this, a host does not build one — the
 /// handle and ticket must come from the same [`Plugins::spawn_rescan`] call, and
 /// pairing two halves from different scans would deadlock or cross catalogs.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct InFlightScan {
     handle: ScanHandle,
     /// `Option` because `try_join` consumes the ticket: [`poll_scan`] takes it

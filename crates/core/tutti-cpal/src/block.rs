@@ -55,6 +55,18 @@ pub struct OutputBlock {
     last_rendered_frames: usize,
 }
 
+impl std::fmt::Debug for OutputBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputBlock")
+            .field("state", &self.state)
+            .field("layout", &self.layout)
+            .field("channels", &self.channels)
+            .field("metering_ctx", &self.metering_ctx)
+            .field("last_rendered_frames", &self.last_rendered_frames)
+            .finish_non_exhaustive()
+    }
+}
+
 impl OutputBlock {
     /// Allocate the callback's working set for a device of `layout` width.
     ///

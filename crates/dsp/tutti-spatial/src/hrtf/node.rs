@@ -34,6 +34,7 @@ use crate::target::hold_finite;
 /// accepted; preparing at a new rate resamples the dataset and allocates.
 ///
 /// Available with the `hrtf` feature.
+#[derive(Debug)]
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
     /// The position and blend cells — the same ones the
@@ -57,7 +58,7 @@ pub struct HrtfBinauralNode {
 /// Its own type rather than a [`tutti_graph::ParamSet`]: `UnitParam` has no
 /// bearing or height, and a position is a pair (a bearing wraps, a height
 /// saturates) that one `f32` address would split.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HrtfBinauralControls {
     target: SpatialTarget,
     blend: Param<Mix>,

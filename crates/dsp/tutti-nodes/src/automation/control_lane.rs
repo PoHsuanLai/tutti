@@ -85,9 +85,19 @@ struct Shared {
     unranged: AtomicU64,
 }
 
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared")
+            .field("generation", &self.generation.load(Ordering::Relaxed))
+            .field("resync", &self.resync.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 /// A reader on a lane's cell ([`LaneControls::probe_reader`]): what a test
 /// of an owner's sweep lends through to stand in for a block. Not API.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct LaneProbe(Reader<Published>);
 
 impl LaneProbe {
@@ -101,7 +111,7 @@ impl LaneProbe {
 /// The handles a [`ControlLaneNode`]'s owner keeps: the program it
 /// evaluates, its knob, its range (a plugin lane's), and its counters.
 /// Cheap to clone; every clone reaches the same lane.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LaneControls(Arc<Shared>);
 
 impl LaneControls {
@@ -304,6 +314,16 @@ pub struct ControlLaneNode {
     walk: Walk,
     seen: Seen,
     scratch: Vec<Event>,
+}
+
+impl std::fmt::Debug for ControlLaneNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlLaneNode")
+            .field("program", &self.program)
+            .field("native", &self.native)
+            .field("scratch_len", &self.scratch.len())
+            .finish_non_exhaustive()
+    }
 }
 
 fn fresh_walk() -> Walk {

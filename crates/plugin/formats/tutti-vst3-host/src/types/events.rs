@@ -42,7 +42,7 @@ use vst3::Steinberg::Vst::Event_::EventTypes_;
 /// families (chords, scales, expression texts, integer expressions). Grouping
 /// them keeps the `process` / `update_from_sources` signatures readable rather
 /// than threading six parallel slices.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Vst3InputEvents<'a> {
     /// UMP MIDI for the block, in ascending frame-offset order.
     pub midi: &'a [MidiEvent],

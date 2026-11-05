@@ -111,7 +111,7 @@ use tutti_core::{PrerollTable, Samples};
 /// `.0` taken before that keeps reading the old table. Clone it again when
 /// the resource changes (`Res::is_changed`), or compare it with `.0`
 /// (`Arc::ptr_eq`).
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone, Default, Debug)]
 pub struct ChannelCompensation(pub Arc<PrerollTable>);
 
 impl ChannelCompensation {
@@ -188,6 +188,7 @@ pub(crate) fn mirror_world(world: &mut World) {
 /// Optional: [`TuttiPlugin`](crate::TuttiPlugin) does not add it, and the
 /// compensation figures are published without it. See the
 /// [module docs](self).
+#[derive(Debug)]
 pub struct LatencyCompensationPlugin;
 
 impl Plugin for LatencyCompensationPlugin {

@@ -55,6 +55,13 @@ pub struct OptionalCapabilities {
     pub presets: Option<Arc<dyn HostPresets>>,
 }
 
+impl std::fmt::Debug for OptionalCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OptionalCapabilities")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Whether a plugin is still answering — [`PluginHandle::status`].
 ///
 /// Two variants because the engine can only speak to what it can *detect*. A
@@ -172,6 +179,19 @@ pub struct PluginHandle {
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
     server_pid: Option<u32>,
+}
+
+impl std::fmt::Debug for PluginHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginHandle")
+            .field("descriptor", &self.descriptor)
+            .field("loaded", &self.loaded)
+            .field("param_sink", &self.param_sink)
+            .field("refresh_sink", &self.refresh_sink)
+            .field("invalidate_sink", &self.invalidate_sink)
+            .field("server_pid", &self.server_pid)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PluginHandle {

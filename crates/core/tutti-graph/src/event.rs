@@ -1008,6 +1008,16 @@ pub struct EventWriter<'a> {
     dropped: Option<&'a Cell<u32>>,
 }
 
+impl std::fmt::Debug for EventWriter<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventWriter")
+            .field("cap", &self.cap)
+            .field("frames", &self.frames)
+            .field("len", &self.buf.as_ref().map(|b| b.len()))
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> EventWriter<'a> {
     /// A writer over `buf`, which the caller has cleared. At most `cap` events
     /// are accepted, and only at offsets `< frames`.

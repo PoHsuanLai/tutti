@@ -18,6 +18,7 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// list atomically (a sibling temp file, fsynced, then renamed over the real
 /// path), so a crash mid-write leaves the previous file intact. This is the
 /// store behind [`Plugins::with_json_catalog`](crate::catalog::Plugins::with_json_catalog).
+#[derive(Debug)]
 pub struct JsonCatalog {
     records: HashMap<PathBuf, PluginRecord>,
     db_path: PathBuf,

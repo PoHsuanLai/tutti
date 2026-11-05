@@ -251,6 +251,14 @@ pub struct Vst3Active<T: Vst3Sample = f32> {
     deactivated: bool,
 }
 
+impl<T: Vst3Sample> std::fmt::Debug for Vst3Active<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Active")
+            .field("deactivated", &self.deactivated)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T: Vst3Sample> Vst3Active<T> {
     /// Reads a plugin's metadata without initializing it; see
     /// [`Vst3Loaded::probe`].

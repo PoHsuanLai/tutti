@@ -154,6 +154,14 @@ pub struct AuMidiOutput {
     sysex_dropped: Arc<AtomicU64>,
 }
 
+impl std::fmt::Debug for AuMidiOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuMidiOutput")
+            .field("sysex_dropped", &self.sysex_dropped.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 /// What the AU says about its MIDI output streams.
 ///
 /// The stream count is `names.len()`. It is not stored separately: Apple defines

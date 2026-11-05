@@ -178,6 +178,18 @@ pub struct WorkerPoolBuilder {
     name: String,
 }
 
+impl std::fmt::Debug for WorkerPoolBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkerPoolBuilder")
+            .field("participants", &self.participants)
+            .field("spin", &self.spin)
+            .field("idle", &self.idle)
+            .field("waits", &self.waits)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WorkerPoolBuilder {
     /// Between jobs, how long a helper spins after its last job before it
     /// starts yielding. Default 50 µs.

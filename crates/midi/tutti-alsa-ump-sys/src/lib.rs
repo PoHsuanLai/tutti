@@ -29,17 +29,21 @@
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 /// Opaque sequencer handle.
+#[derive(Debug)]
 pub enum snd_seq_t {}
 
 /// Opaque `snd_ump_block_info_t`. Accessed only through its getters, so the
 /// layout never needs to be declared — the reason those are preferred over
 /// declaring the struct.
+#[derive(Debug)]
 pub enum snd_ump_block_info_t {}
 
 /// Opaque `snd_seq_client_info_t`.
+#[derive(Debug)]
 pub enum snd_seq_client_info_t {}
 
 /// Opaque `snd_seq_port_info_t`.
+#[derive(Debug)]
 pub enum snd_seq_port_info_t {}
 
 /// A sequencer address: `(client, port)`.
@@ -68,7 +72,7 @@ pub struct snd_seq_addr_t {
 /// "direct" dispatch (no queue), so the field is written as zero and never read.
 /// Declaring a union we do not use would be layout risk for nothing.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct snd_seq_ump_event_t {
     /// Event type (`SND_SEQ_EVENT_*`).
     pub type_: u8,

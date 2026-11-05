@@ -32,7 +32,7 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// [`status()`](DiskStreamer::status) builds a `DiskVoice` to wire into the
 /// graph. Neither is wrapped in ECS vocabulary — both speak in channel indices
 /// and `Timeline` placements, which is clip-scheduling policy a host owns.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct DiskStreamerRes(
     /// The engine handle. Reachable through this crate's `Deref` too, which is
     /// how the two ports above are normally called.

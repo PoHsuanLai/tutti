@@ -35,6 +35,15 @@ pub(crate) struct HrirSphere {
     responses: Vec<f32>,
 }
 
+impl std::fmt::Debug for HrirSphere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HrirSphere")
+            .field("rate", &self.rate)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A little-endian cursor that reports a short read as an error, never a
 /// panic.
 struct Cursor<'a> {
@@ -289,6 +298,7 @@ fn resample_batched(
 
 /// One face prepared for lookup: its vertices and the inverse of the matrix
 /// whose columns are their positions.
+#[derive(Debug)]
 struct Face {
     verts: [u32; 3],
     inverse: [[f32; 3]; 3],
@@ -374,6 +384,18 @@ pub(crate) struct HrtfSet {
     /// Vertex directions, normalized, for the nearest-vertex fallback.
     directions: Vec<[f32; 3]>,
     faces: Vec<Face>,
+}
+
+impl std::fmt::Debug for HrtfSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HrtfSet")
+            .field("rate", &self.rate)
+            .field("ir_len", &self.ir_len)
+            .field("fft_len", &self.fft_len)
+            .field("fft", &self.fft)
+            .field("faces", &self.faces.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl HrtfSet {

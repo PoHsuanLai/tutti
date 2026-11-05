@@ -247,6 +247,17 @@ struct Parked {
     curve: CrossfadeCurve,
 }
 
+impl std::fmt::Debug for Parked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parked")
+            .field("id", &self.id)
+            .field("node", &self.node)
+            .field("fade", &self.fade)
+            .field("curve", &self.curve)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a parked crossfade came to on a retry.
 pub(crate) enum Retried {
     Landed {
@@ -299,6 +310,23 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<AudioNode, crate::HostedPlugin>,
+}
+
+impl std::fmt::Debug for Graph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("Graph");
+        d.field("editor", &self.editor)
+            .field("edited", &self.edited)
+            .field("commits", &self.commits)
+            .field("render_workers", &self.render_workers)
+            .field("feeds", &self.feeds)
+            .field("fed_edges", &self.fed_edges)
+            .field("parked", &self.parked)
+            .field("next_crossfade", &self.next_crossfade);
+        #[cfg(feature = "plugin")]
+        d.field("plugins", &self.plugins);
+        d.finish_non_exhaustive()
+    }
 }
 
 /// What a commit came to.
@@ -1742,6 +1770,16 @@ pub struct AudioSide {
     /// executor sends its boxes back to it. `None` for the live graph's
     /// audio side, whose editor stays in the graph.
     _editor: Option<Editor>,
+}
+
+impl std::fmt::Debug for AudioSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioSide")
+            .field("exec", &self.exec)
+            .field("transport", &self.transport)
+            .field("_editor", &self._editor)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AudioSide {

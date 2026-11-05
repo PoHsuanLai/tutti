@@ -81,7 +81,7 @@ impl NoteId {
 /// collide — the storage half of per-note addressing. Audio-thread safe: no
 /// allocation, only a linear probe over `N` slots. `N` is the max simultaneous
 /// notes (e.g. 128); [`insert`](Self::insert) returns `false` when full.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PerNoteMap<T, const N: usize> {
     ids: [Option<NoteId>; N],
     vals: [T; N],

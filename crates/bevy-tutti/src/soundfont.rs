@@ -53,7 +53,7 @@ impl SoundFontAsset {
 
 /// In-memory loader for [`SoundFontAsset`]. Reads the whole `.sf2` payload,
 /// then delegates to [`SoundFontAsset::from_bytes`].
-#[derive(Default, TypePath)]
+#[derive(Default, TypePath, Debug)]
 pub struct SoundFontAssetLoader;
 
 /// Why loading a `.sf2` asset failed.
@@ -161,7 +161,7 @@ pub struct PlaySoundFont {
 /// [`SoundFontUnit::with_preset`] build (the unit at the graph's rate, its
 /// channel on the entity's preset) on the [`AsyncComputeTaskPool`].
 /// `promote_pending_soundfonts` drains it.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct PendingSoundFontUnit {
     task: Task<Result<SoundFontUnit, tutti_soundfont::Error>>,
 }
@@ -278,6 +278,7 @@ pub fn promote_pending_soundfonts(
 /// Added by [`TuttiPlugin`](crate::TuttiPlugin) with the `soundfont` feature.
 /// Needs an `AssetServer` (`bevy_asset::AssetPlugin`) already in the app; the
 /// systems run in [`GraphReconcileSystems::Spawn`], gated on [`engine_ready`].
+#[derive(Debug)]
 pub struct TuttiSoundFontPlugin;
 
 impl Plugin for TuttiSoundFontPlugin {

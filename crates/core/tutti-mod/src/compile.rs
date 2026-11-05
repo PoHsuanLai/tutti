@@ -83,6 +83,9 @@ fn adsr_valid(adsr: &Adsr) -> bool {
 }
 
 /// What a source is.
+///
+/// Exhaustive: [`compile`] handles each kind its own way, so a new kind is a
+/// change every consumer has to see.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
     /// A wave on a clock: a closed-form layer, no node. The clock's anchor
@@ -129,6 +132,9 @@ pub enum RouteTarget {
 }
 
 /// A route: a source into a target, shaped by an amount.
+///
+/// Plain data, built with a struct literal: every field is independent, and
+/// [`compile`] refuses a combination it cannot run ([`CompileError`]).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RouteDecl {
     /// What modulates.
@@ -156,6 +162,8 @@ impl RouteDecl {
 /// A target's range and automation. The knob is a cell, not a declaration
 /// (doc 014 §4.2), and so is the range the lane reads: the range here is
 /// checked, and the host stores it into the target's range cell.
+///
+/// Plain data, built with a struct literal; [`compile`] checks it.
 #[derive(Clone)]
 pub struct TargetDecl {
     /// The range's bottom.
@@ -179,6 +187,11 @@ impl fmt::Debug for TargetDecl {
 }
 
 /// Everything a host declares, as slices of `(key, value)` in any order.
+///
+/// Plain data, built with a struct literal: three borrowed slices with no
+/// invariant of their own. The limits ([`MAX_LANE_LAYERS`](crate::MAX_LANE_LAYERS),
+/// [`MAX_LANE_INPUTS`](crate::MAX_LANE_INPUTS)) are on what they compile to,
+/// and [`compile`] refuses a declaration past them.
 #[derive(Clone, Copy, Debug)]
 pub struct Declarations<'a> {
     /// The sources.
@@ -204,6 +217,9 @@ pub struct SourceNode {
 }
 
 /// A signal-driven source's node kind and params.
+///
+/// Exhaustive: each kind needs a node in `tutti-nodes`, so a new kind is a
+/// change that crate has to see.
 #[derive(Clone, Copy, Debug)]
 pub enum SignalKind {
     /// An envelope follower: one-pole attack and release on its audio
@@ -279,7 +295,11 @@ pub struct Compiled {
 impl Eq for Compiled {}
 
 /// Why [`compile`] refused, by name.
+///
+/// This is the modulation compiler's error; the graph compiler's is
+/// `tutti_graph::CompileError`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompileError {
     /// Two sources with one key.
     DuplicateSource(SourceKey),

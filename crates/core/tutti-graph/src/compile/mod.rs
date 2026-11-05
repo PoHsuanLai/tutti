@@ -100,7 +100,11 @@ pub enum CycleEdge {
 }
 
 /// Why a [`ValidGraph`] could not be compiled against these shapes.
+///
+/// This is the graph compiler's error; the modulation compiler's is
+/// `tutti_mod::CompileError`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompileError {
     /// A feedback edge's delay is shorter than the `MaxBlock` being compiled
     /// for: a block cannot read samples it has not produced yet. For an

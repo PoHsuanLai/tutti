@@ -22,8 +22,15 @@ pub enum Error {
     /// The requested [`AudioFormat`](crate::AudioFormat) cannot be written: its
     /// cargo feature is off, its extension is unrecognised, or the format does
     /// not support the configured bit depth (FLAC refuses `Float32`).
-    #[error("Unsupported format: {0}")]
-    UnsupportedFormat(String),
+    #[error("Unsupported format {format}: {reason}")]
+    UnsupportedFormat {
+        /// The format's name (`"FLAC"`); for an unrecognised extension, the
+        /// extension lowercased and without its dot, or `"(none)"` when the
+        /// path has none.
+        format: String,
+        /// Why it cannot be written.
+        reason: UnsupportedReason,
+    },
 
     /// A config field the encoder cannot act on — a zero sample rate, a zero
     /// channel count. Caught before any frame is rendered.
@@ -35,23 +42,10 @@ pub enum Error {
     #[error("Encoding error: {0}")]
     Encoding(String),
 
-    /// The render loop could not produce the planned frames.
-    ///
-    /// Reserved: no path in this crate constructs it today. A render is driven
-    /// to a known frame count and its source never starves.
-    #[error("Render error: {0}")]
-    Render(String),
-
     /// The resampler could not be constructed for this rate pair, or rejected a
     /// chunk.
     #[error("Resampling error: {0}")]
     Resample(String),
-
-    /// The samples handed in are not something an encoder can write.
-    ///
-    /// Reserved: no path in this crate constructs it today.
-    #[error("Invalid audio data: {0}")]
-    InvalidData(String),
 
     /// A width the render cannot use, which means **zero** and nothing else.
     ///
@@ -124,6 +118,29 @@ pub enum Error {
         /// `tutti_plugin::PluginRenderFault`).
         cause: tutti_graph::ForkCause,
     },
+}
+
+/// Why an [`AudioFormat`](crate::AudioFormat) cannot be written
+/// ([`Error::UnsupportedFormat`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UnsupportedReason {
+    /// The format's cargo feature is off in this build.
+    FeatureDisabled,
+    /// No format is written for the file extension.
+    UnknownExtension,
+    /// The format cannot hold the configured bit depth (FLAC refuses `Float32`).
+    BitDepth,
+}
+
+impl std::fmt::Display for UnsupportedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::FeatureDisabled => "its cargo feature is not enabled",
+            Self::UnknownExtension => "the extension is not recognised",
+            Self::BitDepth => "it cannot hold the configured bit depth",
+        })
+    }
 }
 
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error

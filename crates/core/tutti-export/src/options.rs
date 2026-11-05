@@ -50,9 +50,10 @@ impl AudioFormat {
             "flac" => Ok(Self::Flac(Flac::default())),
             "aiff" | "aif" => Ok(Self::Aiff),
             "ogg" => Ok(Self::OggVorbis(Ogg::default())),
-            _ => Err(Error::UnsupportedFormat(format!(
-                "Unknown extension: .{ext}"
-            ))),
+            _ => Err(Error::UnsupportedFormat {
+                format: if ext.is_empty() { "(none)".into() } else { ext },
+                reason: crate::UnsupportedReason::UnknownExtension,
+            }),
         }
     }
 }

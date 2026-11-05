@@ -16,6 +16,7 @@ pub use tutti_plugin_types::LoadStage;
 
 /// Errors returned by Audio Unit host operations.
 #[derive(Error, Debug, Clone)]
+#[non_exhaustive]
 pub enum AuError {
     /// The AU could not be loaded. `stage` says how far the load got, which
     /// separates "this component cannot be instantiated at all" from "it

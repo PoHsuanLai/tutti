@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{Error, Result};
+pub use error::{Error, Result, UnsupportedReason};
 
 mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};

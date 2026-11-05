@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// What tutti-core's fallible operations report.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// An engine configuration value was rejected; the string names which.
     #[error("Invalid config: {0}")]

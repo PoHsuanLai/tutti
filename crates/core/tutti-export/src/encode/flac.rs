@@ -53,9 +53,10 @@ impl FlacEncoder {
         opts: crate::options::Flac,
     ) -> Result<Self> {
         if config.encode.bit_depth == BitDepth::Float32 {
-            return Err(Error::UnsupportedFormat(
-                "FLAC does not support 32-bit float".into(),
-            ));
+            return Err(Error::UnsupportedFormat {
+                format: "FLAC".into(),
+                reason: crate::UnsupportedReason::BitDepth,
+            });
         }
         Ok(Self {
             path: path.to_path_buf(),

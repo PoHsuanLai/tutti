@@ -267,6 +267,7 @@ pub struct Corners {
 
 /// Why [`ControlProgram::new`] refused a program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProgramError {
     /// More than [`MAX_LANE_LAYERS`] layers.
     TooManyLayers {

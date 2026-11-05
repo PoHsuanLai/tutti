@@ -124,6 +124,7 @@ static NEXT_PAIR: AtomicU64 = AtomicU64::new(0);
 
 /// Why [`Editor::schedule`](crate::Editor::schedule) refused a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScheduleError {
     /// Nothing has been committed yet, so there is no node to address.
     NoPlan,
@@ -157,6 +158,20 @@ pub enum ScheduleError {
         /// The id.
         id: CommandId,
     },
+}
+
+impl ScheduleError {
+    /// Whether retrying the same command later can succeed: no plan yet, or
+    /// the queue full.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::NoPlan | Self::Backpressure => true,
+            Self::NoSuchPort { .. }
+            | Self::ResolutionTooCoarse { .. }
+            | Self::Poisoned
+            | Self::UnknownCommand { .. } => false,
+        }
+    }
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -616,6 +631,27 @@ mod tests {
     use super::*;
     use crate::event::Ump;
     use tutti_types::{Frame, NodeKey};
+
+    // Mutation: make `is_transient` return true for `Poisoned` (or false for
+    // `Backpressure`); this fails.
+    #[test]
+    fn only_a_missing_plan_or_a_full_queue_is_transient() {
+        let to = EventIn {
+            node: NodeKey(1),
+            port: 0,
+        };
+        assert!(ScheduleError::NoPlan.is_transient());
+        assert!(ScheduleError::Backpressure.is_transient());
+        assert!(!ScheduleError::NoSuchPort { to }.is_transient());
+        assert!(
+            !ScheduleError::ResolutionTooCoarse {
+                to,
+                sink: Resolution::Frames(64)
+            }
+            .is_transient()
+        );
+        assert!(!ScheduleError::Poisoned.is_transient());
+    }
 
     fn send(tx: &mut CommandTx, frame: u64) -> CommandId {
         tx.send(

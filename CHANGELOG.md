@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — error and kind enums are `#[non_exhaustive]`
+
+Every public error enum, and the stage, kind and format enums a new variant is
+plausible for (`ScheduleError`, `ForkError`, `CommitError`, both `CompileError`s,
+`Vst3Error`, `ClapError`, `Vst2Error`, `AuError`, `LoadStage`, `PluginFormat`,
+the DSP mode enums, and the rest of the crates' errors), is `#[non_exhaustive]`,
+so adding a variant is not a breaking change and a `match` from another crate
+needs a wildcard arm. Enums the workspace must handle exhaustively stay
+exhaustive (`SignalKind`, `Source`, `PluginError`, `RenderMode`,
+`AutomationMode`, `MetronomeMode`, `MotionEvent`, `Polarity`, `Resolution`).
+`ScheduleError::is_transient` says whether a refused command is worth retrying.
+
+`tutti_export::Error` lost `Render` and `InvalidData`, which nothing
+constructed, and `UnsupportedFormat` is now
+`UnsupportedFormat { format: String, reason: UnsupportedReason }`. The two
+`CompileError`s keep their names and each doc names the other, and tutti-mod's
+`Declarations`, `RouteDecl` and `TargetDecl` are documented as plain data built
+with struct literals.
+
 ### Added — `Debug` on every public type
 
 The workspace now warns on `missing_debug_implementations`. Public types

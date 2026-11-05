@@ -345,6 +345,7 @@ impl Default for Topology {
 /// of them, and reporting one fault at a time turns a single edit into a
 /// bisection.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Invalid {
     /// An edge names a node that is not in [`Topology::nodes`].
     UnknownNode {

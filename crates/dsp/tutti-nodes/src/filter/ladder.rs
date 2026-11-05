@@ -36,6 +36,7 @@ const RES_EPS: f32 = 0.0001;
 /// which tap is read, so the type costs nothing to switch. The 24 dB variants
 /// are the classic Moog sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum LadderType {
     /// Low-pass at 12 dB/octave — the second stage tap. The default.
     #[default]

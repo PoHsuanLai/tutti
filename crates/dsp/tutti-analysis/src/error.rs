@@ -11,6 +11,7 @@ use crate::window::{CosineWindow, Window};
 
 /// Everything that can go wrong constructing or feeding an analysis.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A zero-length analysis window.
     #[error("analysis window is zero-length")]

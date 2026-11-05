@@ -807,6 +807,7 @@ impl Event {
 
 /// Why a slice is not a valid [`SortedEvents`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EventOrderError {
     /// The event at this index has a smaller offset than the one before it.
     Unsorted {
@@ -978,6 +979,7 @@ impl std::ops::Deref for SortedEvents<'_> {
 
 /// Why [`EventWriter::push`] refused an event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EventRejected {
     /// The port's preallocated buffer is full. The event is dropped; the
     /// executor counts it (see

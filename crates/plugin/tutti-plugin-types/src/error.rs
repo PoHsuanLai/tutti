@@ -120,6 +120,7 @@ impl Delivered {
 /// stop using this plugin and [`NoStateRoute`](Self::NoStateRoute) means never
 /// offer the operation again for this backend.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StateError {
     /// The plugin process is gone. Permanent — every later call answers the same.
     #[error("plugin subprocess has crashed")]

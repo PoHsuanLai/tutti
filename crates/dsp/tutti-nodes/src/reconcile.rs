@@ -91,6 +91,7 @@ pub enum Feed {
 /// Why [`Modulation::apply`] refused. A refusal changes nothing: neither
 /// the editor nor the reconciler's own state.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ReconcileError {
     /// The declarations do not compile.
     Compile(CompileError),
@@ -1031,14 +1032,10 @@ impl Modulation {
                 port: 0,
             };
             if let Err(e) = editor.schedule(At::NextBlock, to, EventKind::Resync) {
-                match e {
-                    ScheduleError::Backpressure | ScheduleError::NoPlan => {
-                        self.resync.insert(s);
-                    }
-                    ScheduleError::NoSuchPort { .. }
-                    | ScheduleError::ResolutionTooCoarse { .. }
-                    | ScheduleError::Poisoned
-                    | ScheduleError::UnknownCommand { .. } => self.resyncs_dropped += 1,
+                if e.is_transient() {
+                    self.resync.insert(s);
+                } else {
+                    self.resyncs_dropped += 1;
                 }
                 if first.is_ok() {
                     first = Err(e);

@@ -17,6 +17,7 @@ use thiserror::Error;
 
 /// What can go wrong reading or writing a MIDI file.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The file could not be read or written at all — missing, unreadable, or
     /// the write failed.

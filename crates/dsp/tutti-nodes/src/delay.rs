@@ -25,6 +25,7 @@ use crate::ramp::{LastGood, Ramp, block_driven, finite_or};
 /// between samples, and how that gap is filled is what separates a clean chorus
 /// from a gritty one. At a fixed, integral delay all three agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum InterpolationMode {
     /// Round to the nearest whole sample. Cheapest, and it quantises the delay
     /// to frame boundaries — a swept delay steps audibly ("zipper"). Fine for a

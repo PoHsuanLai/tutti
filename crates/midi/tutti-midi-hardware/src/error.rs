@@ -9,6 +9,7 @@ use thiserror::Error;
 
 /// What can go wrong opening or driving an OS MIDI endpoint.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// A filesystem or descriptor error surfaced from `std::io`.
     #[error("IO error: {0}")]

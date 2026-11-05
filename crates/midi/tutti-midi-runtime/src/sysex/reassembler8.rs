@@ -32,6 +32,7 @@ const SYSEX8_BYTES_PER_PACKET: usize = 13;
 
 /// Why a SysEx8 run ended without a usable payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Sysex8Abort {
     /// The sender aborted it: an End UMP with `# of bytes` = 0xF (§7.8.1), i.e.
     /// "the previous data is an incomplete message, or the resulting quality of

@@ -17,6 +17,7 @@ use tutti_core::{Depth, Hz, Q, Resonance, Semitones};
 /// variants except [`Noise`](Self::Noise) track the voice's pitch; `Noise`
 /// ignores it entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum OscillatorType {
     /// A pure sine — no harmonics for the filter to work on.
     Sine,
@@ -46,6 +47,7 @@ pub enum OscillatorType {
 ///
 /// All four share one cutoff and one `Q`; only the output tap differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SvfMode {
     /// Passes below cutoff. The default, and the conventional subtractive tap.
     #[default]
@@ -73,6 +75,7 @@ pub enum SvfMode {
 /// The nodes downstream take `Resonance` and `Q` respectively; these fields
 /// carry that distinction all the way in.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum FilterType {
     /// A four-pole Moog-style ladder lowpass, 24 dB/octave.
     Moog {

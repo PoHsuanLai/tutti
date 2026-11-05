@@ -106,6 +106,7 @@ pub const DEFAULT_BLOCK_CAPACITY: Samples = Samples(8192);
 
 /// Why [`Engine::new`] refused a graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphEngineError {
     /// The executor is not the editor's: they were not built together.
     NotAPair,

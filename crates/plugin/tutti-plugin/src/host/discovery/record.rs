@@ -68,6 +68,7 @@ pub use tutti_plugin_types::{ClapFeature, PluginRole, Vst3PlugType, Vst3SubCateg
 
 /// A plugin format, as recognized from a file's extension.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PluginFormat {
     /// Steinberg VST3.
     Vst3,

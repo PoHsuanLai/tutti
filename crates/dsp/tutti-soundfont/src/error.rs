@@ -11,6 +11,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Once a [`crate::SoundFontUnit`] exists, rendering and forking are
 /// infallible.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Reading the `.sf2` from disk failed.
     #[error("IO error: {0}")]

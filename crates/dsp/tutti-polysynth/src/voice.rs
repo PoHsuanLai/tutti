@@ -80,6 +80,7 @@ impl MpeVoiceState {
 /// whatever the strategy says, and among those the quietest goes first — so a
 /// chord fading out is consumed before a held note is cut off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum AllocationStrategy {
     /// Take the voice that started longest ago. The default, and the safe
     /// general choice: it cuts the note the player is least likely to still be
@@ -105,6 +106,7 @@ pub enum AllocationStrategy {
 /// How many notes may sound at once, and whether a new note restarts the
 /// envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum VoiceMode {
     /// Polyphonic: notes sound simultaneously up to `max_voices`, then the
     /// [`AllocationStrategy`] decides. The default.

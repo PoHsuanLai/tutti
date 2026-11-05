@@ -14,6 +14,7 @@ pub type Result<T> = std::result::Result<T, Vst3Error>;
 
 /// Errors produced while loading, initializing, or driving a VST3 plugin.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Vst3Error {
     /// A file-system or factory-level failure that aborted loading before the
     /// plugin could be instantiated. `stage` pinpoints which step failed.

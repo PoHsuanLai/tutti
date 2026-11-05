@@ -761,6 +761,7 @@ pub struct TransportChange {
 
 /// Why [`TransportChanges::push`] refused a change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransportChangeRejected {
     /// At [`Offset::ZERO`]. A change at the block's first frame is the
     /// block's transport, not a change inside it.

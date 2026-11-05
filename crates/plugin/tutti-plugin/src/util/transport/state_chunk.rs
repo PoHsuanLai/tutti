@@ -63,6 +63,8 @@ impl Default for Reassembler {
 ///
 /// Separate from `StateError` because this layer does not know which direction
 /// it is serving; the caller maps it to the right typed error for its side.
+///
+/// Exhaustive: the plugin server maps each cause to its own message.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ChunkError {
     /// A chunk arrived out of order, repeated, or after `last`. The sequence is

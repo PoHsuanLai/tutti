@@ -14,6 +14,7 @@ use tutti_core::{Hz, SampleRate, Seconds, Semitones};
 /// When a new note glides from the previous pitch rather than jumping to its
 /// own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PortamentoMode {
     /// Glide into every note, whether or not the previous one is still held.
     Always,
@@ -33,6 +34,7 @@ pub enum PortamentoMode {
 /// even in musical interval, not in [`Hz`] — and all three end exactly on the
 /// target. The curve only reshapes how the progress fraction advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PortamentoCurve {
     /// Constant rate of interval change. The default.
     #[default]

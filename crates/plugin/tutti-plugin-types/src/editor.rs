@@ -236,6 +236,7 @@ impl<'de> serde::Deserialize<'de> for WindowHandle {
 /// Each variant names a distinct cause, so a UI can say what went wrong and
 /// whether retrying makes sense.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum EditorError {
     /// The plugin-server subprocess died, so there is nothing left to embed.
     /// Not retryable without reloading the plugin.

@@ -194,6 +194,9 @@ pub(crate) struct AudioPipeline {
     /// The point room `plugin_output`'s parameter queues were reserved with
     /// ([`reserve_params`](Self::reserve_params)).
     param_room: usize,
+    /// Blocks the plugin failed since the pipeline was built. A failed block
+    /// publishes nothing (the host reads silence) and the session goes on.
+    failed_blocks: u64,
 }
 
 impl AudioPipeline {
@@ -204,7 +207,13 @@ impl AudioPipeline {
             buffers: AudioBuffers::new(format),
             plugin_output: ProcessOutput::default(),
             param_room: 0,
+            failed_blocks: 0,
         }
+    }
+
+    /// Blocks the plugin failed since the pipeline was built.
+    pub(crate) fn failed_blocks(&self) -> u64 {
+        self.failed_blocks
     }
 
     /// The MIDI the plugin emitted during the most recent
@@ -289,8 +298,12 @@ impl AudioPipeline {
     ///
     /// # Errors
     ///
-    /// Returns an error only if the plugin's own `process` fails. A slab read or
-    /// write failure is absorbed into the silence path above.
+    /// Never fails on the plugin's account: a block the plugin's `process`
+    /// fails is counted ([`failed_blocks`](Self::failed_blocks)), leaves its
+    /// MIDI empty and publishes nothing, so the host reads it as silence, and
+    /// the server goes on to the next block. (An error out of here ends the
+    /// server loop, which a licence hiccup or a refused preset load must not.)
+    /// A slab read or write failure is absorbed into the silence path above.
     pub(crate) fn process(
         &mut self,
         plugin: &mut dyn PluginInstance,
@@ -377,6 +390,7 @@ impl AudioPipeline {
         let Self {
             buffers,
             plugin_output,
+            failed_blocks,
             ..
         } = self;
         plugin_output.clear();
@@ -398,29 +412,35 @@ impl AudioPipeline {
                 // Stack-allocated slice tables — no per-block Vec::collect.
                 // The helper builds the `AudioBuffer` internally so its
                 // four field lifetimes unify in a single inner scope.
-                with_audio_buffer_f32(
+                let processed = with_audio_buffer_f32(
                     &input[..in_n],
                     &mut output[..out_n],
                     num_samples,
                     sample_rate,
                     |buf| plugin.process(buf, &ctx, plugin_output),
-                )?;
-                // Sanitize before it leaves the subprocess: a misbehaving
-                // plugin can emit NaN/Inf that would otherwise poison the
-                // entire downstream graph. Unconditional — this is a
-                // production hazard, and a finite-check per sample is cheap
-                // on an already memory-bound path.
-                for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
-                    for s in &mut chan[..num_samples] {
-                        if !s.is_finite() {
-                            *s = 0.0;
+                );
+                if let Err(error) = processed {
+                    note_failed_block(failed_blocks, &error);
+                    plugin_output.clear();
+                    all_channels_written = false;
+                } else {
+                    // Sanitize before it leaves the subprocess: a misbehaving
+                    // plugin can emit NaN/Inf that would otherwise poison the
+                    // entire downstream graph. Unconditional — this is a
+                    // production hazard, and a finite-check per sample is cheap
+                    // on an already memory-bound path.
+                    for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
+                        for s in &mut chan[..num_samples] {
+                            if !s.is_finite() {
+                                *s = 0.0;
+                            }
                         }
-                    }
-                    if shm
-                        .write_output::<f32>(seq, ch, &chan[..num_samples])
-                        .is_err()
-                    {
-                        all_channels_written = false;
+                        if shm
+                            .write_output::<f32>(seq, ch, &chan[..num_samples])
+                            .is_err()
+                        {
+                            all_channels_written = false;
+                        }
                     }
                 }
             }
@@ -435,25 +455,31 @@ impl AudioPipeline {
                 for chan in output.iter_mut().take(out_n) {
                     chan[..num_samples].fill(0.0);
                 }
-                with_audio_buffer_f64(
+                let processed = with_audio_buffer_f64(
                     &input[..in_n],
                     &mut output[..out_n],
                     num_samples,
                     sample_rate,
                     |buf| plugin.process(buf, &ctx, plugin_output),
-                )?;
-                // Sanitize NaN/Inf — see the F32 arm above.
-                for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
-                    for s in &mut chan[..num_samples] {
-                        if !s.is_finite() {
-                            *s = 0.0;
+                );
+                if let Err(error) = processed {
+                    note_failed_block(failed_blocks, &error);
+                    plugin_output.clear();
+                    all_channels_written = false;
+                } else {
+                    // Sanitize NaN/Inf — see the F32 arm above.
+                    for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
+                        for s in &mut chan[..num_samples] {
+                            if !s.is_finite() {
+                                *s = 0.0;
+                            }
                         }
-                    }
-                    if shm
-                        .write_output::<f64>(seq, ch, &chan[..num_samples])
-                        .is_err()
-                    {
-                        all_channels_written = false;
+                        if shm
+                            .write_output::<f64>(seq, ch, &chan[..num_samples])
+                            .is_err()
+                        {
+                            all_channels_written = false;
+                        }
                     }
                 }
             }
@@ -490,6 +516,17 @@ impl AudioPipeline {
         Ok(AudioOutput {
             latency_us: start.elapsed().as_micros() as u64,
         })
+    }
+}
+
+/// Counts a block the plugin failed, and says so on the first and then on every
+/// 1024th: the line is rate-limited so a plugin that fails every block cannot
+/// turn the audio phase into a log writer. Nothing is built for a block that
+/// is not logged.
+fn note_failed_block(count: &mut u64, error: &tutti_plugin::server::PluginError) {
+    *count += 1;
+    if *count == 1 || *count % 1024 == 0 {
+        tracing::warn!("the plugin failed {} block(s), the latest: {error}", *count);
     }
 }
 

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 204ed4e14afb72c3a37051cce9f354d8f7fad401ba5ce549691f205a4606da7c # shrinks to rules = RestartRules { io: false, latency: false }, choices = [0, 49, 0], events = [Activate(0), Activate(0), Req(Restart)]

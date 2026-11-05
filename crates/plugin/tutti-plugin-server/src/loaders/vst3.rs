@@ -142,7 +142,9 @@ impl Vst3Instance {
     /// reason of a refusal it told, if any.
     fn drive(&mut self, event: Event) -> Option<PluginError> {
         let mut told = Vec::new();
-        let state = self.state.clone();
+        // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
+        // in its place is built without allocating and is replaced below.
+        let state = std::mem::replace(&mut self.state, Lifecycle::<Vst3Loaded>::initial_state());
         self.state = self
             .lifecycle
             .drive(state, event, &mut self.hand, |n| told.push(n));
@@ -239,9 +241,13 @@ impl Vst3Instance {
     /// `kLatencyChanged`, `kPrefetchableSupportChanged` or `kReloadComponent`, a
     /// re-read for the rest) and the lifecycle performs it. The plugin's edits,
     /// progress and unit news are discarded unread (the server has never
-    /// forwarded them), so the host's bounded queue holds no backlog. Call it
-    /// between blocks, on the thread that loaded the plugin; with nothing
-    /// requested it allocates nothing.
+    /// forwarded them), so the host's bounded queue holds no backlog.
+    ///
+    /// Call it between blocks, on the thread that loaded the plugin. A pass in
+    /// which the plugin asked for nothing and the core has nothing pending (the
+    /// idle pass every dispatch takes) does not enter the lifecycle and
+    /// allocates nothing. A pass that has work allocates, as a rate change does:
+    /// the core queues its effects.
     pub fn poll(&mut self) -> Vec<AsyncEvent> {
         self.serve();
         std::mem::take(&mut self.events)
@@ -263,6 +269,13 @@ impl Vst3Instance {
                 loaded.take_requests(&mut requests);
             }
             let asked = !requests.is_empty();
+            if !asked && self.state.is_quiet() {
+                // All a tick would do: retry what a full edit ring refused.
+                if let Some(control) = self.lifecycle.control() {
+                    control.flush_edits();
+                }
+                break;
+            }
             for request in requests.drain(..) {
                 self.drive(Event::Request(request));
             }

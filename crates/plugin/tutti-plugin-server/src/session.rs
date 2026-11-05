@@ -1463,6 +1463,156 @@ mod tests {
         );
     }
 
+    /// The probe bundle `Plugin::load` picks the format from, as a session
+    /// loads it, with a slab sized to what the plugin declared.
+    #[cfg(feature = "vst3")]
+    fn load_vst3_probe(name: &str) -> (Session, AudioSlab) {
+        let bundle = std::path::Path::new(crate::test_utils::vst3_probe_path())
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "vst3"))
+            .expect("the probe module is inside its bundle")
+            .to_path_buf();
+        let mut s = Session::new();
+        s.handle(HostMessage::LoadPlugin {
+            path: bundle,
+            sample_rate: 48_000.0,
+            block_size: 512,
+            preferred_format: SampleFormat::Float32,
+            shm_name: name.to_string(),
+        })
+        .unwrap();
+        let loaded = s.plugin.as_ref().unwrap().instance().loaded().clone();
+        let layout = tutti_plugin::server::SlabLayout {
+            samples_per_channel: 8192,
+            format: s.clock.format,
+            slots: tutti_plugin::server::RING_SLOTS as u32,
+            inputs: loaded.inputs.to_vec(),
+            outputs: loaded.outputs.to_vec(),
+        };
+        let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
+        let guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
+        s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
+        (s, guard)
+    }
+
+    /// One block of `frames` silent frames through `s`'s slab, and whether it
+    /// was published.
+    #[cfg(any(feature = "vst3", feature = "clap"))]
+    fn run_silent_block(s: &mut Session, shm: &AudioSlab, seq: u64, frames: usize) -> bool {
+        let layout = shm.layout_ref().clone();
+        for ch in 0..layout.input_channels() {
+            shm.write_input::<f32>(seq, ch, &vec![0.0; frames]).unwrap();
+        }
+        shm.publish_input(seq);
+        let reply = s
+            .handle(HostMessage::ProcessAudio(Box::new(
+                tutti_plugin::server::ProcessAudioData {
+                    seq,
+                    num_samples: frames,
+                    ..Default::default()
+                },
+            )))
+            .expect("a failed block does not end the server")
+            .into_reply();
+        assert!(
+            matches!(reply, BridgeMessage::AudioProcessed { seq: s, .. } if s == seq),
+            "{reply:?}"
+        );
+        shm.has_output(seq)
+    }
+
+    /// **A block the plugin fails is silence and is counted; the server goes
+    /// on.** The failure used to leave `handle` as an error, which ends the
+    /// server loop, so one `kResultFalse` (a preset load, a licence hiccup)
+    /// read as a plugin crash.
+    ///
+    /// Mutation (run): restoring the `?` on the plugin's `process` in
+    /// `AudioPipeline::process` (the failure returned) → the first `handle`
+    /// errors → fails.
+    #[test]
+    #[cfg(feature = "vst3")]
+    fn a_vst3_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let failing = {
+            // SAFETY: `plugin_load_lock` is held, as every loader test that reads
+            // this variable holds it. `kMisbehaveProcessFails`.
+            unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "4") };
+            let (mut s, shm) = load_vst3_probe("fails_vst3");
+            unsafe { std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR") };
+            for seq in 1..=3 {
+                assert!(
+                    !run_silent_block(&mut s, &shm, seq, 128),
+                    "a failed block publishes nothing, so the host reads silence"
+                );
+            }
+            assert_eq!(s.pipeline.failed_blocks(), 3);
+            assert!(s.drain_async_events().is_empty());
+            s.pipeline.failed_blocks()
+        };
+        assert_eq!(failing, 3);
+        // The same server code with a plugin that behaves renders and publishes.
+        let (mut s, shm) = load_vst3_probe("renders_vst3");
+        assert!(run_silent_block(&mut s, &shm, 1, 128));
+        assert_eq!(s.pipeline.failed_blocks(), 0);
+    }
+
+    /// The same for CLAP, whose host refuses a block longer than the activated
+    /// maximum (`BlockTooLarge`), which also used to end the server; the next,
+    /// valid block renders.
+    ///
+    /// Mutation (run): as above.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_clap_block_the_plugin_fails_is_silence_and_the_server_goes_on() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, shm) = load_clap("fails_clap", SampleFormat::Float32);
+        // The plugin was activated for blocks of up to 512 frames.
+        assert!(!run_silent_block(&mut s, &shm, 1, 600));
+        assert_eq!(s.pipeline.failed_blocks(), 1);
+        assert!(
+            run_silent_block(&mut s, &shm, 2, 64),
+            "the next block renders"
+        );
+        assert_eq!(s.pipeline.failed_blocks(), 1);
+    }
+
+    /// **An idle dispatch allocates nothing**: the drain every message is
+    /// followed by, with the plugin having asked for nothing. The lifecycle is
+    /// not entered, so nothing is cloned or queued on the render thread.
+    ///
+    /// Mutation (run): the bridge cloning its `State` for each `drive` again
+    /// together with `serve` driving a tick on every pass aborts inside the
+    /// gate. Neither alone does: without the clone an idle tick allocates
+    /// nothing either, so the quiet check is the second line of defence, not
+    /// the first.
+    #[test]
+    #[cfg(feature = "vst3")]
+    fn an_idle_drain_does_not_allocate_vst3() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, _shm) = load_vst3_probe("idle_vst3");
+        // Warm: the first pass sizes the bridge's request buffer.
+        assert!(s.drain_async_events().is_empty());
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..64 {
+                assert!(s.drain_async_events().is_empty());
+            }
+        });
+    }
+
+    /// As above, for CLAP.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn an_idle_drain_does_not_allocate_clap() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut s, _shm) = load_clap("idle_clap", SampleFormat::Float32);
+        assert!(s.drain_async_events().is_empty());
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..64 {
+                assert!(s.drain_async_events().is_empty());
+            }
+        });
+    }
+
     /// A plugin that says its parameter list changed gets its parameter
     /// output re-reserved by `drain_async_events`, at the plugin's count.
     ///

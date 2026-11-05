@@ -340,14 +340,20 @@ impl Host for HostState {
             // Safety: events is valid for num_events pointers in the flexible array.
             let event_ptr = unsafe { *base.add(i) };
             let event = unsafe { &*event_ptr };
-            if matches!(event.event_type, vst::api::EventType::Midi) {
+            // Read a whole struct only if the plugin says it is that big.
+            let declared = usize::try_from(event.byte_size).unwrap_or(0);
+            if matches!(event.event_type, vst::api::EventType::Midi)
+                && declared >= std::mem::size_of::<vst::api::MidiEvent>()
+            {
                 let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
                 if let Some(converted) = to_midi(midi_event)
                     && self.midi_out_tx.push(converted).is_err()
                 {
                     self.dropped_midi_out.fetch_add(1, Ordering::Relaxed);
                 }
-            } else if matches!(event.event_type, vst::api::EventType::SysEx) {
+            } else if matches!(event.event_type, vst::api::EventType::SysEx)
+                && declared >= std::mem::size_of::<vst::api::SysExEvent>()
+            {
                 // `read_unaligned`: the header's alignment (4) does not prove the
                 // plugin's `SysExEvent` (8). The struct holds no owned data, so
                 // the copy needs no drop.
@@ -743,6 +749,41 @@ mod tests {
             assert_eq!(done, vec![message], "{len} bytes");
             assert_eq!(host.dropped_midi_out(), 0);
         }
+    }
+
+    /// **An event whose `byte_size` is shorter than its struct is ignored**,
+    /// not read past its declared end.
+    ///
+    /// Mutation (run): drop the `declared >=` conditions in `process_events` →
+    /// both events are queued → fails.
+    #[test]
+    fn an_event_shorter_than_its_struct_is_ignored() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        let mut payload = vec![0xF0u8, 1, 2, 0xF7];
+        let mut sysex = sysex_event(0, &mut payload);
+        sysex.byte_size = 8;
+        deliver(&host, &mut sysex);
+
+        let note = tutti_midi_types::MidiEvent::note_on(
+            tutti_midi_types::MidiGroup::FIRST,
+            tutti_midi_types::MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
+        let mut midi = crate::midi::from_midi(&note).expect("MIDI-1 form");
+        midi.byte_size = 8;
+        let events = vst::api::Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [&raw mut midi as *mut vst::api::Event, std::ptr::null_mut()],
+        };
+        host.process_events(&events);
+        assert!(host.midi_out_tx.is_empty());
+
+        // The same events with their true sizes are delivered.
+        sysex.byte_size = std::mem::size_of::<vst::api::SysExEvent>() as i32;
+        deliver(&host, &mut sysex);
+        assert!(!host.midi_out_tx.is_empty());
     }
 
     /// A SysEx that does not fit the queue is dropped whole and counted once,

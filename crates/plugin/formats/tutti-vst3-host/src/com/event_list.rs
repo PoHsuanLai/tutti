@@ -471,6 +471,12 @@ impl IEventListTrait for EventList {
     }
 
     unsafe fn getEvent(&self, index: i32, e: *mut Event) -> tresult {
+        // Defined output even if the body panics.
+        if !e.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call; an
+            // all-zero `Event` is a valid value.
+            unsafe { std::ptr::write_bytes(e, 0, 1) };
+        }
         guard(vst3::Steinberg::kInternalError, || {
             if e.is_null() {
                 return kInvalidArgument;

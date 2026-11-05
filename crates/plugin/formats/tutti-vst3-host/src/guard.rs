@@ -1,10 +1,12 @@
-//! The panic guard every COM method the host implements runs its body in.
+//! The panic guard the COM methods the host implements run their bodies in
+//! (all but `createContextMenu`, which only returns null).
 //!
 //! A panic unwinding out of the `extern "system"` shim the `vst3` crate
 //! generates aborts the process, which takes the host (in-process) or the
 //! plugin server with it. A method answers `kInternalError` (or its null /
 //! zero) instead.
 
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,13 +16,23 @@ static REPORTED: AtomicBool = AtomicBool::new(false);
 /// value) and note it on stderr once per process.
 ///
 /// No-panic path: `catch_unwind` does not allocate, so this is safe on the
-/// audio thread. The report allocates, but only on the first panic.
+/// audio thread. Only the guard's own line is once-only: the default panic
+/// hook still prints, allocates and takes locks on every panic. Under
+/// `panic = "abort"` the guards do nothing and a panic aborts.
+///
+/// The report cannot panic (`writeln!` to a `stderr()` handle returns an
+/// error instead), and the panic payload is forgotten rather than dropped,
+/// since a payload's `Drop` could itself panic outside the `catch_unwind`.
 pub(crate) fn guard<R>(fallback: R, f: impl FnOnce() -> R) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
-        Err(_) => {
+        Err(payload) => {
+            std::mem::forget(payload);
             if !REPORTED.swap(true, Ordering::Relaxed) {
-                eprintln!("[tutti-vst3-host] a host COM method panicked; answered 'not handled'");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[tutti-vst3-host] a host COM method panicked; answered 'not handled'"
+                );
             }
             fallback
         }

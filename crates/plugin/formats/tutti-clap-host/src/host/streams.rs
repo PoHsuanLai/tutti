@@ -134,12 +134,11 @@ mod tests {
     use super::*;
 
     /// A panic inside a real stream callback answers CLAP's `-1` (error)
-    /// instead of aborting. A position past the end makes `len - position`
-    /// overflow, which panics (unwinding) with overflow checks on.
+    /// instead of aborting. A position past the end makes the slice bounds
+    /// check panic (unwinding), in release builds too.
     ///
     /// Mutation: drop the `guard` from `istream_read`: the panic crosses the
     /// `extern "C"` boundary and the test process aborts.
-    #[cfg(debug_assertions)]
     #[test]
     fn a_panic_inside_a_stream_callback_answers_an_error() {
         let bytes = [1u8, 2, 3];

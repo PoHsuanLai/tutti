@@ -509,6 +509,11 @@ impl IProgressTrait for ComponentHandler {
         optional_description: *const u16,
         out_id: *mut ID,
     ) -> tresult {
+        // Defined output even if the body panics.
+        if !out_id.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call.
+            unsafe { *out_id = 0 };
+        }
         guard(vst3::Steinberg::kInternalError, || {
             let id = self.next_progress_id.fetch_add(1, Ordering::SeqCst);
             // SAFETY: the interface passes null or a NUL-terminated string.

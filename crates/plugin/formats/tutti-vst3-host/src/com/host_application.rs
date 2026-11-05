@@ -136,6 +136,11 @@ impl IHostApplicationTrait for HostApplication {
         iid: *mut TUID,
         obj: *mut *mut c_void,
     ) -> tresult {
+        // Defined output even if the body panics.
+        if !obj.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call.
+            unsafe { *obj = std::ptr::null_mut() };
+        }
         guard(vst3::Steinberg::kInternalError, || {
             if cid.is_null() || iid.is_null() || obj.is_null() {
                 return kInvalidArgument;
@@ -216,7 +221,8 @@ const SUPPORTED_IIDS: &[TUID] = &[
 
 impl IPlugInterfaceSupportTrait for HostApplication {
     unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
-        guard(vst3::Steinberg::kInternalError, || {
+        // `kResultFalse`: "not supported" is also the honest answer after a panic.
+        guard(vst3::Steinberg::kResultFalse, || {
             if iid.is_null() {
                 return kInvalidArgument;
             }

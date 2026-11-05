@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed — host callbacks no longer abort on a panic
 
-Every `extern "C"` CLAP host callback (63) and every VST3 host COM method
-(53) runs its body in a `catch_unwind` guard and answers "not handled" instead
-of aborting the process. CLAP's `try_push` reads a plugin's event with
+The CLAP host callbacks (62 in a `catch_unwind` guard; `request_exec` aborts
+instead, because tasks may already have run) and the VST3 host COM methods (52)
+answer "not handled" instead of aborting the process on a panic. Only
+callbacks that return a constant are unguarded; `scripts/check-guards.sh`
+enforces this. CLAP's `try_push` reads a plugin's event with
 `read_unaligned`, and the VST2 event header is cast from its `Vec<u64>`
 backing, so no event cast widens alignment unproven.
 

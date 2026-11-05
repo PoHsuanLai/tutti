@@ -1712,7 +1712,8 @@ unsafe extern "C" fn output_events_try_push(
         // SAFETY: a CLAP host callback: the plugin passes back the pointer it was handed, with arguments
         // valid per the CLAP ABI.
         let output_list = unsafe { &mut *(list as *mut OutputEventList) };
-        let header = unsafe { &*event };
+        // Read unaligned like the event below: the plugin's own storage.
+        let header = unsafe { read_event::<clap_event_header>(event) };
 
         // Only core events are read below. An event of another space can reuse a
         // core type number for a different, smaller struct, and a `size` under
@@ -1813,7 +1814,7 @@ unsafe extern "C" fn output_events_try_push(
                     // Taken *after* the extend, since that is the last thing that
                     // can reallocate `data` and move its bytes.
                     let inner = clap_event_midi_sysex {
-                        header: *header,
+                        header,
                         port_index: e.port_index,
                         buffer: data.as_ptr(),
                         size: data.len() as u32,
@@ -3773,30 +3774,47 @@ mod tests {
         }
     }
 
-    /// Every event pointer an input list hands the plugin is 8-aligned
-    /// (the events are `ClapEvent` values, whose payloads are the C structs),
-    /// across pushes of mixed sizes.
+    /// Every event pointer an input list hands the plugin has the alignment
+    /// its payload struct needs (8 for note and param, 4 for `clap_event_midi`),
+    /// across pushes of mixed sizes. The needs are read off the C structs, so
+    /// the test does not depend on how rustc lays out `ClapEvent`.
     ///
     /// Mutation: offset every odd index's pointer by 4 bytes in
-    /// `input_events_get`: the assertion fails at index 1.
+    /// `input_events_get`: the note-off at index 3 fails.
     #[test]
-    fn input_event_pointers_are_8_aligned_across_mixed_sizes() {
+    fn input_event_pointers_have_the_alignment_their_payload_needs() {
         let mut events = Vec::new();
+        let mut needs = Vec::new();
         for i in 0..64u32 {
-            events.push(match i % 4 {
-                0 => ClapEvent::note_on(i, 0, 60, 1.0),
-                1 => ClapEvent::midi(i, 0, [0x90, 60, 100]),
-                2 => ClapEvent::param_value(i, 3, 0.5),
-                _ => ClapEvent::note_off(i, 0, 60, 0.0),
-            });
+            let (event, need) = match i % 4 {
+                0 => (
+                    ClapEvent::note_on(i, 0, 60, 1.0),
+                    align_of::<clap_event_note>(),
+                ),
+                1 => (
+                    ClapEvent::midi(i, 0, [0x90, 60, 100]),
+                    align_of::<clap_event_midi>(),
+                ),
+                2 => (
+                    ClapEvent::param_value(i, 3, 0.5),
+                    align_of::<clap_event_param_value>(),
+                ),
+                _ => (
+                    ClapEvent::note_off(i, 0, 60, 0.0),
+                    align_of::<clap_event_note>(),
+                ),
+            };
+            events.push(event);
+            needs.push(need);
         }
+        assert!(needs.contains(&8) && needs.contains(&4));
         let list = InputEventList::from_events(events);
         let raw = list.as_raw();
         let n = unsafe { input_events_size(raw) };
         assert_eq!(n, 64);
         for i in 0..n {
             let h = unsafe { input_events_get(raw, i) };
-            assert_eq!(h as usize % 8, 0, "event {i} at {h:p}");
+            assert_eq!(h as usize % needs[i as usize], 0, "event {i} at {h:p}");
         }
     }
 }

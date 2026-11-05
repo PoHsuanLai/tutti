@@ -53,6 +53,11 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_read: *mut i32,
     ) -> tresult {
+        // Defined output even if the body panics.
+        if !num_bytes_read.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call.
+            unsafe { *num_bytes_read = 0 };
+        }
         guard(vst3::Steinberg::kInternalError, || {
             if num_bytes == 0 {
                 if !num_bytes_read.is_null() {
@@ -89,6 +94,11 @@ impl IBStreamTrait for BStream {
         num_bytes: i32,
         num_bytes_written: *mut i32,
     ) -> tresult {
+        // Defined output even if the body panics.
+        if !num_bytes_written.is_null() {
+            // SAFETY: a COM out-parameter the plugin passes valid for this call.
+            unsafe { *num_bytes_written = 0 };
+        }
         guard(vst3::Steinberg::kInternalError, || {
             if num_bytes == 0 {
                 if !num_bytes_written.is_null() {

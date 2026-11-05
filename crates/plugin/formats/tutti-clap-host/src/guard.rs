@@ -1,9 +1,12 @@
-//! The panic guard every `extern "C"` host callback runs its body in.
+//! The panic guard the `extern "C"` host callbacks run their bodies in
+//! (all but the ones that only return a constant; `check-guards.sh` lists
+//! them).
 //!
 //! A panic unwinding out of an `extern "C"` function aborts the process, which
 //! takes the host (in-process) or the plugin server with it. A callback
 //! answers "not handled" instead.
 
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,15 +16,47 @@ static REPORTED: AtomicBool = AtomicBool::new(false);
 /// value) and note it on stderr once per process.
 ///
 /// No-panic path: `catch_unwind` does not allocate, so this is safe on the
-/// audio thread. The report allocates, but only on the first panic.
+/// audio thread. Only the guard's own line is once-only: the default panic
+/// hook still prints, allocates and takes locks on every panic. Under
+/// `panic = "abort"` the guards do nothing and a panic aborts.
+///
+/// The report cannot panic (`writeln!` to a `stderr()` handle returns an
+/// error instead), and the panic payload is forgotten rather than dropped,
+/// since a payload's `Drop` could itself panic outside the `catch_unwind`.
 pub(crate) fn guard<R>(fallback: R, f: impl FnOnce() -> R) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
-        Err(_) => {
+        Err(payload) => {
+            std::mem::forget(payload);
             if !REPORTED.swap(true, Ordering::Relaxed) {
-                eprintln!("[tutti-clap-host] a host callback panicked; answered 'not handled'");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[tutti-clap-host] a host callback panicked; answered 'not handled'"
+                );
             }
             fallback
+        }
+    }
+}
+
+/// Run `f`; if it panics, abort the process.
+///
+/// For `clap.thread-pool`'s `request_exec`: a `false` answer tells the plugin
+/// to run all its tasks itself, but a panic can come after some already ran
+/// (or while a pool participant is still inside the job), which would run a
+/// task twice or leave one racing. Nothing before the pool runs can panic;
+/// a panic after it is not recoverable, so it aborts, as it did before the
+/// guards.
+pub(crate) fn or_abort<R>(f: impl FnOnce() -> R) -> R {
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => {
+            std::mem::forget(payload);
+            let _ = writeln!(
+                std::io::stderr(),
+                "[tutti-clap-host] a panic inside clap.thread-pool request_exec; aborting"
+            );
+            std::process::abort()
         }
     }
 }

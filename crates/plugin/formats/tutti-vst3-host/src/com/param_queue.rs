@@ -180,7 +180,7 @@ impl ParamValueQueueImpl {
 impl IParamValueQueueTrait for ParamValueQueueImpl {
     /// `kNoParamId` while another thread is resetting the queue.
     unsafe fn getParameterId(&self) -> u32 {
-        guard(0, || self.try_param_id().unwrap_or(kNoParamId))
+        guard(kNoParamId, || self.try_param_id().unwrap_or(kNoParamId))
     }
 
     /// Zero while another thread is writing the queue.

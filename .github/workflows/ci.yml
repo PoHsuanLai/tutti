@@ -89,6 +89,9 @@ jobs:
       # `tutti-session` re-exports no crate whole. Perl over the source, no
       # build, so it belongs with the other static gates.
       - run: scripts/check-adapter.sh
+      # Every CLAP host callback and VST3 host COM method runs in the panic
+      # guard (python3 over the source, no build).
+      - run: scripts/check-guards.sh
 
   clippy:
     name: clippy

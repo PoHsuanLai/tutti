@@ -396,7 +396,9 @@ impl MidiSendBuffer {
 
         // The header was sized for `room` events at construction.
         let words = header_words(num_events);
-        debug_assert!(words <= self.header.len());
+        // Cannot fail: `num_events <= room` (the refusal above), and `header`
+        // was sized by `header_words(room)` in `with_capacity` and never shrinks.
+        assert!(words <= self.header.len());
         // Zero only the bytes that will be touched — keeps Drop semantics clean.
         // (Header carries 2 i32s + a pointer table; the rest doesn't
         // matter because the plugin reads `num_events` first.)

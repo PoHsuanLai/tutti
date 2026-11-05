@@ -12,7 +12,7 @@
 #[cfg(unix)]
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
-use crate::guard::guard;
+use crate::guard::{guard, or_abort};
 use crate::types::{TrackPortType, TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{CLAP_PORT_AMBISONIC, clap_host_ambisonic};
 use clap_sys::ext::audio_ports::{
@@ -628,6 +628,11 @@ unsafe extern "C" fn host_track_info_get(
     host: *const ClapHostVtable,
     info: *mut clap_track_info,
 ) -> bool {
+    if !info.is_null() {
+        // Defined output even if the body panics (`guard` answers `false`).
+        // SAFETY: the plugin passes a valid `clap_track_info` to fill.
+        unsafe { (*info).flags = 0 };
+    }
     guard(false, || {
         if info.is_null() {
             return false;
@@ -952,7 +957,8 @@ unsafe extern "C" fn host_thread_pool_request_exec(
     host: *const ClapHostVtable,
     num_tasks: u32,
 ) -> bool {
-    guard(false, || {
+    // Not `guard(false, ..)`: see `or_abort`.
+    or_abort(|| {
         if host.is_null() {
             return false;
         }
@@ -1037,6 +1043,14 @@ unsafe extern "C" fn host_tuning_get_info(
     tuning_index: u32,
     info: *mut clap_tuning_info,
 ) -> bool {
+    if !info.is_null() {
+        // Defined output even if the body panics (`guard` answers `false`).
+        // SAFETY: the plugin passes a valid `clap_tuning_info` to fill.
+        unsafe {
+            (*info).name[0] = 0;
+            (*info).is_dynamic = false;
+        }
+    }
     guard(false, || {
         if info.is_null() {
             return false;

@@ -1,11 +1,23 @@
 //! Chord detection: major and minor triads from a chromagram.
 //!
-//! Each frame is scored against 24 binary triad templates (root, third and
-//! fifth) by cosine similarity, and against a "no chord" state, which is the
-//! flat chroma: a frame with no pitch scores 1 for it, and a noise-like one,
-//! near-flat, scores higher for it than for any triad. The states are then
-//! smoothed by a Viterbi search over 25 states in the manner of Mauch (2010):
-//! an emission of `sharpness * similarity` per frame, a probability
+//! A frame is read in three steps.
+//!
+//! 1. **Floor removal.** The frame's median column is subtracted and what is
+//!    left clamped at zero, so a triad standing over a diffuse floor of
+//!    harmonics, leakage and noise reads as the triad. A frame with nothing
+//!    left (silent, flat, or all but a few columns equal) has no pitch.
+//! 2. **Templates.** Each of 24 binary triad templates (root, third, fifth)
+//!    scores the cosine similarity with what is left.
+//! 3. **No chord.** A fixed score of 0.85 stands for "no chord" in a frame that
+//!    has pitch, and 1 in a frame that has none. A frame must therefore match
+//!    a triad better than 0.85 to read as a chord. A single pitch class, which
+//!    every triad containing it matches at `1/sqrt(3) = 0.577`, and a bare
+//!    fifth or third, which the triads that contain it match at
+//!    `sqrt(2/3) = 0.816`, are under it: they have no root or mode to name. A
+//!    triad with a third at 0.15 of its root and fifth still reads, at 0.87.
+//!
+//! The 25 states are then smoothed by a Viterbi search in the manner of Mauch
+//! (2010): an emission of `sharpness * score` per frame, a probability
 //! [`self_transition`](ChordConfig::self_transition) of staying in a state and
 //! the rest shared evenly among the other 24. A short flicker costs two
 //! switches and a short chord pays for them, so the prior sets how many frames
@@ -14,26 +26,40 @@
 //! The search is O(frames x states): with an even switch probability the best
 //! way into a state is a stay or a switch from the best other state, found
 //! from the two highest scores of the last frame, and the backpointers are one
-//! byte per frame and state.
+//! byte per frame and state. Scores are `f64` and each frame's are shifted so
+//! the best is 0, so a long input costs no precision: unshifted, they grow by
+//! the emission each frame, and a few million frames at a high sharpness would
+//! leave the stay cost under one unit in the last place.
+//!
+//! The scoring is in `f64` and divides by the frame's own norm, so the result
+//! does not depend on the chroma's scale, to the extremes of `f32`.
 //!
 //! # Time
 //!
 //! Frame `i` of a [`StftGeometry`] covers `i * hop .. i * hop + window`, and
 //! owns the samples up to the midpoints between its centre and its neighbours':
 //! a change between frames `j - 1` and `j` is at `j * hop + (window - hop) / 2`.
-//! The first span starts at 0 and the last ends at the end of the last window,
-//! `(frames - 1) * hop + window`. A change at sample `T` between two
-//! sustained chords is placed within `(window + hop) / 2` of it: frames whose
-//! windows hold only one chord, which are those centred more than `window / 2`
-//! from `T`, read that chord, so the first frame to read the new one is
-//! centred within `window / 2 + hop` after `T`, and its boundary half a hop
-//! before that. Only triads are named: a seventh reads as its triad.
+//! A span that starts at frame 0 starts at sample 0, and one that ends at the
+//! last frame ends at the end of the last window, `(frames - 1) * hop +
+//! window`. A change at sample `T` between two sustained chords puts the end
+//! of the old one and the start of the new one each within `(window + hop) / 2`
+//! of it: frames whose windows hold only one chord, which are those centred
+//! more than `window / 2` from `T`, read that chord and no other, so the old
+//! chord's last frame is centred within `hop` of `T - window / 2` or later and
+//! before `T + window / 2`, the new one's first likewise, and a boundary is
+//! half a hop from a centre. Frames between may read neither, which leaves a
+//! gap. Only triads are named: a seventh reads as its triad.
+//!
+//! The geometry must be the one the chroma was taken at; build the config with
+//! [`ChordConfig::from_chroma`] so it is. A different window or hop places the
+//! spans at the wrong samples without any error, because a grid holds no
+//! record of how it was made.
 //!
 //! Where no chord is detected there is no span.
 
 use tutti_types::{PitchClass, Samples};
 
-use crate::chroma::CLASSES;
+use crate::chroma::{CLASSES, ChromaConfig};
 use crate::error::{Error, Result};
 use crate::geometry::StftGeometry;
 use crate::grid::Grid;
@@ -48,6 +74,16 @@ const MAX_FRAMES: usize = 1 << 19;
 
 /// The largest emission sharpness accepted.
 const MAX_SHARPNESS: f32 = 100.0;
+
+/// What the Viterbi scores are held in; wide, because they are summed over
+/// every frame.
+type Score = f64;
+
+/// The score of "no chord" in a frame with pitch: the cosine similarity a frame
+/// must beat to read as a triad. Between the 0.816 of a bare fifth and the 0.87
+/// of a triad with a third at 0.15 of the others, and clear of the 0.577 of a
+/// single pitch class.
+const TRIAD_FLOOR: f64 = 0.85;
 
 /// The notes of a triad, as offsets above its root.
 const MAJOR: [usize; 3] = [0, 4, 7];
@@ -85,7 +121,8 @@ pub struct ChordConfig {
 }
 
 impl ChordConfig {
-    /// Places spans on `geometry`'s frames with a self-transition of 0.9 and a
+    /// Places spans on `geometry`'s frames, which must be the ones the chroma
+    /// was taken at (see [`from_chroma`](Self::from_chroma)), with a self-transition of 0.9 and a
     /// sharpness of 8: a chord must last about three frames to be kept.
     #[must_use]
     pub fn new(geometry: StftGeometry) -> Self {
@@ -94,6 +131,14 @@ impl ChordConfig {
             self_transition: 0.9,
             sharpness: 8.0,
         }
+    }
+
+    /// A config for the chroma `chroma` makes: its geometry, with the default
+    /// smoothing. Prefer this to [`new`](Self::new) so the spans are placed on
+    /// the grid the frames were taken on.
+    #[must_use]
+    pub fn from_chroma(chroma: &ChromaConfig) -> Self {
+        Self::new(chroma.geometry())
     }
 
     /// The probability of staying in a state from one frame to the next. 1/25
@@ -176,11 +221,18 @@ pub fn detect_chords(chroma: &Grid<f32>, cfg: &ChordConfig) -> Result<Vec<ChordS
     spans(&path, cfg.geometry)
 }
 
-/// Cosine similarity of `frame` to each state, in state order; 1 for "no
-/// chord" and 0 for the rest when the frame is all zero.
-fn similarities(frame: &[f32]) -> [f32; STATES] {
-    let mut sims = [0.0f32; STATES];
-    let norm = frame.iter().map(|v| v * v).sum::<f32>().sqrt();
+/// How well `frame` fits each state, in state order: the cosine similarity of
+/// what stands above the frame's median column with each triad, and
+/// [`TRIAD_FLOOR`] for "no chord". A frame with nothing above its median
+/// scores 1 for "no chord" and 0 for the rest.
+fn similarities(frame: &[f32]) -> [f64; STATES] {
+    let mut sims = [0.0f64; STATES];
+    let mut x: [f64; CLASSES] = core::array::from_fn(|i| f64::from(frame[i]));
+    let mut sorted = x;
+    sorted.sort_by(f64::total_cmp);
+    let median = (sorted[CLASSES / 2 - 1] + sorted[CLASSES / 2]) / 2.0;
+    x.iter_mut().for_each(|v| *v = (*v - median).max(0.0));
+    let norm = x.iter().map(|v| v * v).sum::<f64>().sqrt();
     if norm.is_nan() || norm <= 0.0 {
         sims[NO_CHORD] = 1.0;
         return sims;
@@ -191,19 +243,19 @@ fn similarities(frame: &[f32]) -> [f32; STATES] {
         } else {
             (state - CLASSES, MINOR)
         };
-        let dot: f32 = notes.iter().map(|n| frame[(root + n) % CLASSES]).sum();
-        *sim = dot / (norm * 3.0f32.sqrt());
+        let dot: f64 = notes.iter().map(|n| x[(root + n) % CLASSES]).sum();
+        *sim = dot / (norm * 3.0f64.sqrt());
     }
-    sims[NO_CHORD] = frame.iter().sum::<f32>() / (norm * (CLASSES as f32).sqrt());
+    sims[NO_CHORD] = TRIAD_FLOOR;
     sims
 }
 
 /// The best state per frame under the emission and transition model.
 fn viterbi(chroma: &Grid<f32>, cfg: &ChordConfig) -> Vec<u8> {
     let frames = chroma.frames().get();
-    let stay = cfg.self_transition.ln();
-    let switch = ((1.0 - cfg.self_transition) / (STATES - 1) as f32).ln();
-    let emit = |frame: &[f32]| similarities(frame).map(|s| s * cfg.sharpness);
+    let stay = Score::from(cfg.self_transition).ln();
+    let switch = ((1.0 - Score::from(cfg.self_transition)) / (STATES - 1) as Score).ln();
+    let emit = |frame: &[f32]| similarities(frame).map(|s| s as Score * Score::from(cfg.sharpness));
 
     let mut score = emit(chroma.row(0.into()));
     let mut back = vec![0u8; frames * STATES];
@@ -218,7 +270,7 @@ fn viterbi(chroma: &Grid<f32>, cfg: &ChordConfig) -> Vec<u8> {
             }
         }
         let emission = emit(chroma.row(t.into()));
-        let mut next = [0.0f32; STATES];
+        let mut next = [0.0 as Score; STATES];
         for s in 0..STATES {
             let other = if s == top { second } else { top };
             let (from, via) = if score[s] + stay >= score[other] + switch {
@@ -229,7 +281,8 @@ fn viterbi(chroma: &Grid<f32>, cfg: &ChordConfig) -> Vec<u8> {
             back[t * STATES + s] = from as u8;
             next[s] = via + emission[s];
         }
-        score = next;
+        let best = next.iter().copied().fold(Score::MIN, Score::max);
+        score = next.map(|v| v - best);
     }
 
     let mut state = (0..STATES).fold(0, |b, s| if score[s] > score[b] { s } else { b });
@@ -352,8 +405,7 @@ mod tests {
     }
 
     /// Silence is no chord, with similarity 1 for the "no chord" state only;
-    /// a flat or noise-like chroma is no chord too, and a lone note is a chord
-    /// (it is a third of a triad, and flat is a twelfth of a note).
+    /// a flat or noise-like chroma is no chord too.
     ///
     /// Mutation checked: scoring "no chord" 0 for silence reads silence as the
     /// lowest-numbered chord, C major, and fails.
@@ -374,9 +426,155 @@ mod tests {
             })
             .collect();
         assert!(run(&noise, &cfg()).is_empty());
-        let mut note = [0.0; CLASSES];
-        note[2] = 1.0;
-        assert_eq!(run(&[note; 5], &cfg()).len(), 1);
+    }
+
+    /// A single pitch class, a bass line of them and a bare fifth are no chord:
+    /// a single note matches each of its six triads at `1/sqrt(3) = 0.577` and
+    /// a fifth matches two of them at `sqrt(2/3) = 0.816`, both under the 0.85
+    /// of "no chord"; none names a root and mode.
+    ///
+    /// Mutation checked: a `TRIAD_FLOOR` of 0.5 reads the lone note as a chord
+    /// and fails; 0.7 reads the fifth as one and fails.
+    #[test]
+    fn a_lone_note_a_bass_line_and_a_fifth_are_no_chord() {
+        let note = |class: usize| {
+            let mut x = [0.0; CLASSES];
+            x[class] = 1.0;
+            x
+        };
+        let best = |x: &[f32]| {
+            similarities(x)[..NO_CHORD]
+                .iter()
+                .copied()
+                .fold(0.0, f64::max)
+        };
+        assert!((best(&note(2)) - 1.0 / 3.0f64.sqrt()).abs() < 1e-12);
+        assert!(run(&[note(2); 6], &cfg()).is_empty());
+        let bass: Vec<_> = [0, 7, 9, 5, 0, 7, 5, 0]
+            .iter()
+            .flat_map(|&c| [note(c); 4])
+            .collect();
+        assert!(run(&bass, &cfg()).is_empty());
+        let mut fifth = [0.0; CLASSES];
+        (fifth[0], fifth[7]) = (1.0, 1.0);
+        assert!((best(&fifth) - (2.0f64 / 3.0).sqrt()).abs() < 1e-12);
+        assert!(run(&[fifth; 6], &cfg()).is_empty());
+        // A third at 0.15 of the others is still a triad.
+        let mut weak = triad(0, false);
+        weak[4] = 0.15;
+        assert_eq!(run(&[weak; 6], &cfg()).len(), 1);
+    }
+
+    /// A triad at 1 standing over a floor of 0.2 to 0.4 in every other column
+    /// is that triad: the floor is removed before the templates are scored.
+    /// Unremoved, a floor of 0.4 leaves the triad matching at 0.82, under the
+    /// 0.85 of "no chord" (at a floor of 0.2 to 0.4 on average, 0.88 would
+    /// still pass, so the constant 0.4 case is the one that pins it).
+    ///
+    /// Mutation checked: not subtracting the median fails.
+    #[test]
+    fn a_triad_over_a_realistic_floor_is_still_the_triad() {
+        let mut rng = StdRng::seed_from_u64(5);
+        for (root, minor, constant) in [(0, false, None), (9, true, None), (7, false, Some(0.4))] {
+            let rows: Vec<[f32; CLASSES]> = (0..30)
+                .map(|_| {
+                    let mut x = triad(root, minor);
+                    for v in x.iter_mut().filter(|v| **v == 0.0) {
+                        *v = constant.unwrap_or_else(|| rng.gen_range(0.2..0.4));
+                    }
+                    x
+                })
+                .collect();
+            let quality = if minor {
+                ChordQuality::Minor
+            } else {
+                ChordQuality::Major
+            };
+            assert_eq!(
+                roots(&run(&rows, &cfg())),
+                [(PitchClass::from_semitones_above_c(root as u8), quality)]
+            );
+        }
+    }
+
+    /// Scaling the chroma by 1e30 or 1e-30 changes nothing: the squares are
+    /// held in `f64`, and the scores are cosines. The sequence has noise,
+    /// where an unscaled score would turn it into chords or a triad into none.
+    ///
+    /// Mutation checked: summing the squares in `f32` overflows at 1e30 and
+    /// underflows at 1e-30; dropping the norm from the cosine fails both.
+    #[test]
+    fn the_chords_do_not_depend_on_the_scale() {
+        let mut rng = StdRng::seed_from_u64(9);
+        let mut rows: Vec<[f32; CLASSES]> = (0..40)
+            .map(|_| core::array::from_fn(|_| rng.gen_range(0.3..1.0)))
+            .collect();
+        rows.extend([triad(0, false); 10]);
+        rows.extend([triad(9, true); 10]);
+        let at = |scale: f32| -> Vec<ChordSpan> {
+            let scaled: Vec<_> = rows.iter().map(|r| r.map(|v| v * scale)).collect();
+            run(&scaled, &cfg())
+        };
+        let unit = at(1.0);
+        assert_eq!(unit.len(), 2);
+        assert_eq!(at(1e30), unit);
+        assert_eq!(at(1e-30), unit);
+    }
+
+    /// A stay is not a switch into oneself. At a self-transition of 0.02 a
+    /// switch (`ln(0.98 / 24) = -3.20`) costs less than a stay (`ln 0.02 =
+    /// -3.91`), so the best way into the leading state is from the runner-up.
+    /// After a C triad, a frame that matches C at 0.90 (above "no chord" by
+    /// 0.05, 0.4 of an emission) is best read as "no chord": it is worth
+    /// `0.71` more to come into that state from C by a switch than into C by a
+    /// stay, which a search that let C "switch" into itself would miss.
+    ///
+    /// Mutation checked: taking the best other state as the overall top, so
+    /// a state could switch into itself, reads both frames as C.
+    #[test]
+    fn a_state_cannot_switch_into_itself() {
+        let mut second = [0.0; CLASSES];
+        (second[0], second[4], second[7]) = (1.0, 0.4, 0.4);
+        let sim = similarities(&second)[0];
+        assert!(sim > 0.85 && sim < 0.939, "{sim}");
+        let config = cfg().with_self_transition(0.02).unwrap();
+        let path = viterbi(&grid(&[triad(0, false), second]), &config);
+        assert_eq!(path, [0, NO_CHORD as u8]);
+    }
+
+    /// Long input keeps the stay prior exact. At the highest self-transition an
+    /// `f32` holds (`1 - 6e-8`) a switch costs 19.8 and a stay nothing, so one
+    /// odd frame (an F triad among 300000 C triads, worth `sharpness * 2/3`
+    /// over C) is kept exactly when `sharpness * 2/3 > 2 * 19.8`. At a
+    /// sharpness within 0.3 of that either side, 300000 frames of unshifted
+    /// scores near 2e7 have no resolution left (one unit in the last place of
+    /// an `f32` there is 2) and a margin of 0.3 vanishes.
+    ///
+    /// Mutation checked: `Score = f32` together with removing the per-frame
+    /// shift of the best score to 0 keeps the odd frame on both sides and
+    /// fails. Either change alone passes: `f64` holds 2e7 to 4e-9, and the
+    /// shift keeps an `f32` near 0.
+    #[test]
+    fn a_long_input_keeps_the_stay_prior() {
+        let p = f32::from_bits(1.0f32.to_bits() - 1);
+        let (stay, switch) = (f64::from(p).ln(), ((1.0 - f64::from(p)) / 24.0).ln());
+        let cost = 2.0 * (stay - switch);
+        let (c, f) = (triad(0, false), triad(5, false));
+        let mut rows = vec![c; 300_000];
+        rows.push(f);
+        rows.extend([c; 100]);
+        let grid = grid(&rows);
+        for (offset, kept) in [(0.3, true), (-0.3, false)] {
+            // The F frame's margin over C is two thirds of the sharpness.
+            let sharpness = ((cost + offset) * 1.5) as f32;
+            let config = cfg()
+                .with_self_transition(p)
+                .unwrap()
+                .with_sharpness(sharpness)
+                .unwrap();
+            let spans = detect_chords(&grid, &config).unwrap();
+            assert_eq!(spans.len(), if kept { 3 } else { 1 }, "offset {offset}");
+        }
     }
 
     /// A one-frame flicker is gone under the default prior, and kept when the
@@ -410,7 +608,8 @@ mod tests {
     /// the even share, where a state must not "switch" into itself).
     ///
     /// Mutation checked: taking the best other state as always the overall top
-    /// (ignoring the runner-up) fails at 0.02.
+    /// (ignoring the runner-up) fails at 0.02 for seed 11; that case does not
+    /// rest on the seed: see `a_state_cannot_switch_into_itself`.
     #[test]
     fn viterbi_is_the_best_path() {
         let mut rng = StdRng::seed_from_u64(11);
@@ -420,12 +619,13 @@ mod tests {
                 let rows: Vec<[f32; CLASSES]> = (0..4)
                     .map(|_| core::array::from_fn(|_| rng.gen_range(0.0..1.0)))
                     .collect();
+                let p = f64::from(p);
                 let (stay, switch) = (p.ln(), ((1.0 - p) / 24.0).ln());
-                let emit: Vec<[f32; STATES]> = rows
+                let emit: Vec<[f64; STATES]> = rows
                     .iter()
-                    .map(|r| similarities(r).map(|s| s * config.sharpness))
+                    .map(|r| similarities(r).map(|s| s * f64::from(config.sharpness)))
                     .collect();
-                let mut best = (f32::MIN, [0usize; 4]);
+                let mut best = (f64::MIN, [0usize; 4]);
                 for code in 0..STATES.pow(4) {
                     let path: [usize; 4] =
                         core::array::from_fn(|i| code / STATES.pow(i as u32) % STATES);
@@ -452,7 +652,8 @@ mod tests {
     /// end of the last window.
     ///
     /// Mutation checked: using the frame's start `j * hop` as the boundary
-    /// fails every geometry.
+    /// fails every geometry with a window other than the hop (where the two
+    /// coincide).
     #[test]
     fn spans_sit_between_frame_centres() {
         let (c, f) = (triad(0, false), triad(5, false));

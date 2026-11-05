@@ -129,7 +129,7 @@ fn a_triad_of_sines_is_the_chord_c_major() {
     chord_tones(&mut x, 0, 2.0, 0, false, 1);
     let cfg = config();
     let c = chroma(&x, &cfg, &mut FftScratch::new()).unwrap();
-    let spans = detect_chords(c.grid(), &ChordConfig::new(cfg.geometry())).unwrap();
+    let spans = detect_chords(c.grid(), &ChordConfig::from_chroma(&cfg)).unwrap();
     assert_eq!(spans.len(), 1);
     assert_eq!(
         (spans[0].root, spans[0].quality),
@@ -161,7 +161,7 @@ fn everything_rotates_by_the_transposition() {
         ];
         want.sort_unstable();
         assert_eq!(top(&c.mean(), 3), want, "k {k}");
-        let spans = detect_chords(c.grid(), &ChordConfig::new(cfg.geometry())).unwrap();
+        let spans = detect_chords(c.grid(), &ChordConfig::from_chroma(&cfg)).unwrap();
         assert_eq!(spans.len(), 1, "k {k}");
         assert_eq!(
             (spans[0].root.semitones_above_c(), spans[0].quality),
@@ -244,12 +244,15 @@ fn a_detuned_scale_resolves_and_its_tuning_is_read() {
     assert_eq!(c.tuning(), Cents(12.0));
 }
 
-/// C-F-G-C, 1.5 s each, comes out as those four chords with each boundary
-/// within `(window + hop) / 2` of its true sample: a frame whose window holds
-/// only one chord reads it, so the first frame to read the new chord is
-/// centred no more than `window / 2 + hop` after the change, and its boundary
-/// is half a hop before its centre. The ends are the start and the end of the
-/// last window.
+/// C-F-G-C, 1.5 s each, comes out as those four chords with each end and each
+/// start within `(window + hop) / 2` of the true change. A frame whose window
+/// holds only one chord, which is one centred over `window / 2` from the
+/// change, reads that chord and no other. So the old chord's last frame is
+/// centred before `T + window / 2` and after `T - window / 2 - hop`, the new
+/// chord's first frame likewise, and a boundary is half a hop from a centre:
+/// both land in `T +- (window + hop) / 2`. Frames that hold both may read
+/// neither, which is the gap between the spans. The first span starts at 0 and
+/// the last ends at the end of the last window.
 ///
 /// Mutation checked: placing each boundary at the end of the frame's window,
 /// `j * hop + window`, which is `(window + hop) / 2` late and so past the
@@ -279,8 +282,9 @@ fn a_progression_has_its_boundaries_where_the_chords_change() {
         (4096, 4096),
     ] {
         let g = geometry(window, hop);
-        let c = chroma(&x, &ChromaConfig::new(g).unwrap(), &mut fft).unwrap();
-        let spans = detect_chords(c.grid(), &ChordConfig::new(g)).unwrap();
+        let chroma_cfg = ChromaConfig::new(g).unwrap();
+        let c = chroma(&x, &chroma_cfg, &mut fft).unwrap();
+        let spans = detect_chords(c.grid(), &ChordConfig::from_chroma(&chroma_cfg)).unwrap();
         let got: Vec<_> = spans.iter().map(|s| (s.root, s.quality)).collect();
         let want: Vec<_> = progression
             .iter()
@@ -290,25 +294,28 @@ fn a_progression_has_its_boundaries_where_the_chords_change() {
         let tolerance = (window + hop) / 2 + 1;
         assert_eq!(spans[0].start, Samples(0));
         assert_eq!(spans[3].end, Samples(g.output_len(c.grid().frames()).get()));
+        // Frames that hold both chords may read neither, so the old chord's
+        // end and the new one's start are each placed, with a gap between.
         for i in 1..4 {
-            assert_eq!(spans[i - 1].end, spans[i].start);
-            let at = spans[i].start.get();
-            assert!(
-                at.abs_diff(i * each) <= tolerance,
-                "{window}/{hop}: {at} vs {}",
-                i * each
-            );
+            assert!(spans[i - 1].end <= spans[i].start);
+            for at in [spans[i - 1].end.get(), spans[i].start.get()] {
+                assert!(
+                    at.abs_diff(i * each) <= tolerance,
+                    "{window}/{hop}: {at} vs {}",
+                    i * each
+                );
+            }
         }
     }
 }
 
 /// Silence has no pitch anywhere: zero chroma, no key, no chord. Noise has
-/// chroma but no chord (a flat chroma scores best for "no chord"), and a key
+/// chroma but no chord (too flat to match a triad), and a key
 /// with far less confidence than a scale's. NaN, infinity and a buffer
 /// shorter than a window are errors.
 ///
 /// Mutation checked: skipping the flat-chroma check in the key reads silence
-/// as a key and fails; scoring a flat chroma 0 for "no chord" makes chords
+/// as a key and fails; scoring "no chord" 0 in a frame with pitch makes chords
 /// appear in the noise; a key confidence fixed at certain fails the noise
 /// comparison.
 #[test]
@@ -321,7 +328,7 @@ fn silence_noise_and_bad_input() {
         estimate_key(silent.grid(), KeyProfile::Temperley).unwrap_err(),
         Error::NoTonalContent
     );
-    let chords = ChordConfig::new(cfg.geometry());
+    let chords = ChordConfig::from_chroma(&cfg);
     assert!(detect_chords(silent.grid(), &chords).unwrap().is_empty());
 
     let mut rng = StdRng::seed_from_u64(3);

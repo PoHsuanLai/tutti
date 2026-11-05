@@ -7,7 +7,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tutti_analysis::{
-    Banding, FftScratch, Smoothing, SpectrumConfig, SpectrumState, StftGeometry, step_spectrum,
+    Banding, FftScratch, FrameCount, Smoothing, SpectrumConfig, SpectrumState, StftGeometry,
+    step_spectrum,
 };
 use tutti_types::{Db, Hz, Samples, Seconds};
 
@@ -64,7 +65,7 @@ fn a_spectrum_step_does_not_allocate() {
         .unwrap()
         .with_peak_hold(Seconds(0.5), Db(20.0))
         .unwrap()
-        .with_spectrogram(7)
+        .with_spectrogram(FrameCount(7))
         .unwrap();
     let signal: Vec<f32> = (0..48_000)
         .map(|i| 0.4 * (std::f32::consts::TAU * 1234.5 * i as f32 / 48_000.0).sin())
@@ -92,7 +93,7 @@ fn a_spectrum_step_does_not_allocate() {
             for block in signal.chunks(500) {
                 step_spectrum(&cfg, &mut state, block, &mut fft).unwrap();
             }
-            let _ = (state.bins(), state.peaks(), state.spectrogram().count());
+            let _ = (state.levels(), state.peaks(), state.spectrogram().count());
         });
         assert_eq!(after_reset, 0, "reset and steps");
     }

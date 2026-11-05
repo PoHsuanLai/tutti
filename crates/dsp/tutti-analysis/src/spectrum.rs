@@ -13,9 +13,11 @@
 //! A bin's level is the power of its amplitude, in dB, referenced to a sine of
 //! amplitude 1: a sine of amplitude `a` centred on a bin reads `20 log10(a)`
 //! there. With coherent window gain `g` over `N` samples, a bin `X` reads
-//! `10 log10(4 |X|^2 / (g N)^2)`. The reference is a sine, so the DC and
-//! Nyquist bins, which carry no negative-frequency image, read 6 dB under what
-//! the same amplitude would read in any other bin. Off the centre of a bin a
+//! `10 log10(4 |X|^2 / (g N)^2)`. The DC bin, and the Nyquist bin of an even
+//! window, have no negative-frequency image to carry half the amplitude, so
+//! they drop the factor 4: a DC offset `A` reads `20 log10(A)` and a Nyquist
+//! tone of amplitude `A` reads `20 log10(A)`, as a sine would on any other
+//! bin. Off the centre of a bin a
 //! tone loses up to the window's scalloping loss (1.42 dB for Hann), and a
 //! window of `N` samples spreads a tone over the bins its main lobe covers.
 //!
@@ -28,8 +30,19 @@
 //! With [`Banding::Octave`] or [`Banding::Log`] each output is a band, and its
 //! power is the sum of the power of the bins it holds: a band's level is a
 //! power over its width, not a mean. A bin belongs to the band whose
-//! `[lower, upper)` edges contain its frequency. A band that holds no bin is
-//! refused at construction, so the bands cannot be finer than the bins.
+//! `[lower, upper)` edges contain its frequency. The DC bin is never in a band
+//! (the lowest edge is above 0), and the Nyquist bin is not when `max` is
+//! Nyquist. A sine inside one band reads its level plus the window's noise
+//! bandwidth in power: `10 log10(1.5)` = 1.76 dB for Hann, the sum of its
+//! main bin and two half-amplitude neighbours.
+//!
+//! A band that holds no bin is refused at construction
+//! ([`Error::EmptyBand`]); the bands cannot be finer than the bins. A band of
+//! width `w` Hz is sure to hold a bin once the window is at least `rate / w`
+//! samples, so the narrowest band, the lowest, sets the window a banding
+//! needs: third-octave bands from 20 Hz (the first is 5.2 Hz wide) at 48 kHz
+//! need 16384 samples. The error names the first empty band and a window that
+//! holds every band.
 //!
 //! # Smoothing, peaks, spectrogram
 //!
@@ -48,12 +61,13 @@
 //! (`tests/spectrum_alloc.rs`). An [`FftScratch`] shared with a different size
 //! re-plans, which allocates.
 
-use tutti_types::{Db, Hz, Seconds};
+use tutti_types::{Db, Hz, Samples, Seconds};
 
 use crate::Complex;
 use crate::error::{Error, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
+use crate::grid::{BinCount, FrameCount};
 use crate::stereo::Ballistics;
 
 /// The smallest and largest window accepted.
@@ -118,6 +132,14 @@ impl Smoothing {
 }
 
 /// How the bins of a frame are grouped into outputs.
+///
+/// A banding's lowest band is its narrowest, and it must hold a bin: the
+/// window must be at least `rate / width` samples for a first band of `width`
+/// Hz, else [`SpectrumConfig::with_banding`] refuses with [`Error::EmptyBand`].
+/// Bands do not merge or skip: a banding either has every band it names or is
+/// refused. The DC bin is in no band, and the Nyquist bin is in none when `max`
+/// is Nyquist. A band reads the summed power of its bins, so a sine inside one
+/// reads about 1.76 dB over its amplitude with a Hann window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Banding {
@@ -205,9 +227,11 @@ impl SpectrumConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidSpectrumParameter`] for a count outside its range, a
-    /// band that holds no bin, or a spectrogram that would then exceed its
-    /// size cap; [`Error::EmptyFrequencyRange`] when a bound is not finite and
+    /// [`Error::InvalidSpectrumParameter`] for a count outside its range, or a
+    /// spectrogram that would then exceed its size cap (more outputs per
+    /// column than before, as when returning to [`Banding::Bins`]);
+    /// [`Error::EmptyBand`] for a band that holds no bin;
+    /// [`Error::EmptyFrequencyRange`] when a bound is not finite and
     /// positive, `min` is not below `max`, or no whole band fits;
     /// [`Error::AboveNyquist`] when `max` exceeds half the sample rate.
     pub fn with_banding(mut self, banding: Banding) -> Result<Self> {
@@ -259,7 +283,8 @@ impl SpectrumConfig {
     /// # Errors
     ///
     /// [`Error::InvalidSpectrumParameter`] unless `hold` is finite and within
-    /// `0..=3600` seconds and `decay` finite and within `0..=10000` dB.
+    /// `0..=3600` seconds and no more than 4294967295 frames, and `decay` is
+    /// finite and within `0..=10000` dB.
     pub fn with_peak_hold(mut self, hold: Seconds, decay: Db) -> Result<Self> {
         if !(0.0..=MAX_SECONDS).contains(&hold.get()) {
             return Err(Error::InvalidSpectrumParameter(
@@ -273,6 +298,11 @@ impl SpectrumConfig {
         }
         self.peak_hold = hold;
         self.peak_decay = decay;
+        if self.peak_hold_frames().get() > u32::MAX as usize {
+            return Err(Error::InvalidSpectrumParameter(
+                "peak hold: more than 4294967295 frames",
+            ));
+        }
         Ok(self)
     }
 
@@ -282,12 +312,9 @@ impl SpectrumConfig {
     ///
     /// [`Error::InvalidSpectrumParameter`] when `columns` times the outputs
     /// exceeds 4194304 cells.
-    pub fn with_spectrogram(mut self, columns: usize) -> Result<Self> {
-        self.columns = columns;
-        if let Err(e) = self.check_cells(self.outputs()) {
-            self.columns = 0;
-            return Err(e);
-        }
+    pub fn with_spectrogram(mut self, columns: FrameCount) -> Result<Self> {
+        self.columns = columns.get();
+        self.check_cells(self.outputs().get())?;
         Ok(self)
     }
 
@@ -336,18 +363,20 @@ impl SpectrumConfig {
     /// Columns the spectrogram keeps.
     #[inline]
     #[must_use]
-    pub fn spectrogram_columns(&self) -> usize {
-        self.columns
+    pub fn spectrogram_columns(&self) -> FrameCount {
+        FrameCount(self.columns)
     }
 
     /// Outputs per frame: bins or bands.
     #[must_use]
-    pub fn outputs(&self) -> usize {
+    pub fn outputs(&self) -> BinCount {
         // The banding was validated by the builder that set it.
-        self.band_edges()
-            .ok()
-            .flatten()
-            .map_or(self.bins(), |e| e.len() - 1)
+        BinCount(
+            self.band_edges()
+                .ok()
+                .flatten()
+                .map_or(self.bins(), |e| e.len() - 1),
+        )
     }
 
     /// Time between frames.
@@ -357,13 +386,17 @@ impl SpectrumConfig {
         Seconds((hop / self.geometry.sample_rate().get()) as f32)
     }
 
-    /// Whole frames a peak is held for: the hold rounded up to the frame
-    /// interval.
+    /// Whole frames a peak is held for: the hold rounded up to the hop.
+    ///
+    /// Worked in `f64` from the integer hop, since the `f32` frame interval
+    /// would turn an exact multiple into one frame too many. The hold itself is
+    /// an `f32` with a relative error of at most 2^-24 (6e-8), so a millionth
+    /// of slack keeps 0.1 s at a hop of 480 samples and 48 kHz at 10 frames.
     #[must_use]
-    pub fn peak_hold_frames(&self) -> u32 {
-        let frames = f64::from(self.peak_hold.get()) / f64::from(self.frame_interval().get());
-        // Under 3600 s over a frame of at least a sample at 10 MHz.
-        frames.ceil() as u32
+    pub fn peak_hold_frames(&self) -> FrameCount {
+        let hop = self.geometry.hop().get() as f64;
+        let frames = f64::from(self.peak_hold.get()) * self.geometry.sample_rate().get() / hop;
+        FrameCount((frames * (1.0 - 1e-6)).ceil() as usize)
     }
 
     fn bins(&self) -> usize {
@@ -451,10 +484,19 @@ impl SpectrumConfig {
             .iter()
             .map(|&e| ((e / width).ceil() as usize).min(bins))
             .collect();
-        if first.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(Error::InvalidSpectrumParameter(
-                "banding: a band holds no bin",
-            ));
+        if let Some(band) = first.windows(2).position(|w| w[0] >= w[1]) {
+            // A band `w` Hz wide holds a bin once the bin spacing is within `w`.
+            let narrowest = edges
+                .windows(2)
+                .map(|e| e[1] - e[0])
+                .fold(f64::MAX, f64::min);
+            let needed = (self.geometry.sample_rate().get() / narrowest).ceil();
+            return Err(Error::EmptyBand {
+                band,
+                lower: Hz(edges[band] as f32),
+                upper: Hz(edges[band + 1] as f32),
+                window: Samples((needed.min((1u64 << 40) as f64) as usize).next_power_of_two()),
+            });
         }
         Ok(Some(first))
     }
@@ -498,7 +540,7 @@ impl SpectrumState {
     #[must_use]
     pub fn new(cfg: &SpectrumConfig, fft: &mut FftScratch) -> Self {
         let size = cfg.geometry.window().get();
-        let outputs = cfg.outputs();
+        let outputs = cfg.outputs().get();
         let band_bins = cfg.band_edges().ok().flatten().unwrap_or_default();
         let width = cfg.bin_width();
         let frequencies: Vec<Hz> = match cfg.edge_frequencies().ok().flatten() {
@@ -562,7 +604,7 @@ impl SpectrumState {
     /// [`floor`]: SpectrumConfig::floor
     #[inline]
     #[must_use]
-    pub fn bins(&self) -> &[Db] {
+    pub fn levels(&self) -> &[Db] {
         &self.levels
     }
 
@@ -582,7 +624,7 @@ impl SpectrumState {
     }
 
     /// The kept columns of levels, oldest first, each as long as
-    /// [`bins`](Self::bins). Empty without a spectrogram, and shorter than
+    /// [`levels`](Self::levels). Empty without a spectrogram, and shorter than
     /// the configured columns until that many frames have been analysed.
     pub fn spectrogram(&self) -> impl ExactSizeIterator<Item = &[Db]> + '_ {
         let (columns, width) = (self.cfg.columns, self.levels.len());
@@ -603,28 +645,41 @@ impl SpectrumState {
     /// Analyses the ring as the frame that just became due.
     fn analyse(&mut self, fft: &mut FftScratch) {
         let cfg = self.cfg;
-        let (older, newer) = self.ring.split_at(self.write);
-        self.frame[..newer.len()].copy_from_slice(newer);
-        self.frame[newer.len()..].copy_from_slice(older);
+        // The ring's oldest sample is at `write`.
+        let (newer, older) = self.ring.split_at(self.write);
+        self.frame[..older.len()].copy_from_slice(older);
+        self.frame[older.len()..].copy_from_slice(newer);
         fft.forward(&self.frame, &self.window, &mut self.spectrum);
 
-        // `4 |X|^2 / (g N)^2`: a sine of amplitude `a` on a bin reads `a^2`.
+        // `4 |X|^2 / (g N)^2`: a sine of amplitude `a` on a bin reads `a^2`. DC,
+        // and Nyquist of an even window, have no image: `|X|^2 / (g N)^2`.
         let gain = f64::from(cfg.geometry.magnitude_gain());
         let scale = (4.0 / (gain * gain)) as f32;
-        let power = |bin: &Complex| clamp_power(bin.norm_sqr() * scale);
+        let size = self.ring.len();
+        let power = |k: usize, bin: &Complex| {
+            let lone = k == 0 || (size.is_multiple_of(2) && k == size / 2);
+            clamp_power(bin.norm_sqr() * if lone { scale / 4.0 } else { scale })
+        };
         let smoothing = cfg.smoothing.ballistics();
         let dt = cfg.frame_interval();
         let first = self.frames == 0;
-        let hold = cfg.peak_hold_frames();
+        // Validated to fit by `with_peak_hold`.
+        let hold = cfg.peak_hold_frames().get() as u32;
         let decay = cfg.peak_decay.get() * dt.get();
         let floor = cfg.floor;
 
         for i in 0..self.power.len() {
             let raw = if self.band_bins.is_empty() {
-                power(&self.spectrum[i])
+                power(i, &self.spectrum[i])
             } else {
-                let band = &self.spectrum[self.band_bins[i]..self.band_bins[i + 1]];
-                clamp_power(band.iter().map(|b| f64::from(power(b))).sum::<f64>() as f32)
+                let (lo, hi) = (self.band_bins[i], self.band_bins[i + 1]);
+                let band = &self.spectrum[lo..hi];
+                clamp_power(
+                    band.iter()
+                        .enumerate()
+                        .map(|(j, b)| f64::from(power(lo + j, b)))
+                        .sum::<f64>() as f32,
+                )
             };
             let coefficient = smoothing.coefficient(raw > self.power[i], dt);
             // A coefficient of 1 is no smoothing; assigning keeps the
@@ -769,7 +824,7 @@ mod tests {
         let mut frames = Vec::new();
         for block in signal.chunks(cfg.geometry().hop().get()) {
             if step_spectrum(cfg, &mut state, block, &mut fft).unwrap() {
-                frames.push(state.bins().to_vec());
+                frames.push(state.levels().to_vec());
             }
         }
         (state, frames)
@@ -924,7 +979,14 @@ mod tests {
                     }
                     _ => cfg.floor().get(),
                 };
-                for (k, l) in state.bins().iter().enumerate() {
+                for (k, l) in state.levels().iter().enumerate() {
+                    // DC and an even window's Nyquist drop the factor 4.
+                    let lone = k == 0 || (size.is_multiple_of(2) && k == size / 2);
+                    let level = if lone && level > cfg.floor().get() {
+                        level - 6.0206
+                    } else {
+                        level
+                    };
                     assert!(
                         (l.get() - level).abs() < FFT_TOL,
                         "{size}/{hop} frame at {start}, bin {k}: {l:?} vs {level}"
@@ -950,7 +1012,7 @@ mod tests {
                 max: Hz(12_000.0),
             })
             .unwrap()
-            .with_spectrogram(6)
+            .with_spectrogram(FrameCount(6))
             .unwrap();
         let mut rng = StdRng::seed_from_u64(7);
         let signal: Vec<f32> = (0..9_000).map(|_| rng.gen_range(-1.0..1.0)).collect();
@@ -962,7 +1024,7 @@ mod tests {
             }
             let cols: Vec<Vec<Db>> = state.spectrogram().map(<[Db]>::to_vec).collect();
             (
-                state.bins().to_vec(),
+                state.levels().to_vec(),
                 state.peaks().to_vec(),
                 cols,
                 state.frames_seen(),
@@ -1019,7 +1081,7 @@ mod tests {
             step_spectrum(&cfg, &mut state, block, &mut fft).unwrap();
             let mean = picked
                 .iter()
-                .map(|&k| 10f64.powf(f64::from(state.bins()[k].get()) / 10.0))
+                .map(|&k| 10f64.powf(f64::from(state.levels()[k].get()) / 10.0))
                 .sum::<f64>()
                 / picked.len() as f64;
             stats.push(mean / want);
@@ -1106,7 +1168,7 @@ mod tests {
         let mut series = Vec::new();
         for block in signal.chunks(hop) {
             if step_spectrum(&cfg, &mut state, block, &mut fft).unwrap() {
-                series.push((state.bins()[32].get(), state.peaks()[32].get()));
+                series.push((state.levels()[32].get(), state.peaks()[32].get()));
             }
         }
         // The last frame whose level is its own peak is where the hold starts.
@@ -1115,7 +1177,7 @@ mod tests {
             .rposition(|&(l, p)| l == p && l > -20.0)
             .unwrap();
         let dt = cfg.frame_interval().get();
-        let held = cfg.peak_hold_frames() as usize;
+        let held = cfg.peak_hold_frames().get();
         assert!(held as f32 * dt >= hold.get() && (held - 1) as f32 * dt < hold.get());
         assert_eq!(held, 24);
 
@@ -1145,7 +1207,9 @@ mod tests {
     #[test]
     fn the_spectrogram_keeps_the_newest_columns_in_order() {
         let (size, hop, columns) = (1536, 512, 5);
-        let cfg = config(size, hop).with_spectrogram(columns).unwrap();
+        let cfg = config(size, hop)
+            .with_spectrogram(FrameCount(columns))
+            .unwrap();
         let ramp: Vec<f32> = (0..size + hop * 11)
             .map(|i| {
                 let a = 0.01 + 0.04 * (i / hop) as f64;
@@ -1159,7 +1223,7 @@ mod tests {
         let mut seen: Vec<Vec<Db>> = Vec::new();
         for block in ramp.chunks(hop) {
             if step_spectrum(&cfg, &mut state, block, &mut fft).unwrap() {
-                seen.push(state.bins().to_vec());
+                seen.push(state.levels().to_vec());
                 let cols: Vec<Vec<Db>> = state.spectrogram().map(<[Db]>::to_vec).collect();
                 let n = seen.len().min(columns);
                 assert_eq!(cols, seen[seen.len() - n..], "after {} frames", seen.len());
@@ -1259,14 +1323,129 @@ mod tests {
         }
     }
 
+    /// A band with no bin is refused with the band, its edges and a window that
+    /// holds every band. Third-octave bands from 20 Hz at 48 kHz: the second
+    /// (25.2 to 31.7 Hz) sits between the bins of a 4096-point window, 11.7 Hz
+    /// apart. The window named is for the narrowest band, the first, 5.198 Hz
+    /// wide: `rate / width` = 9234 rounded up to a power of two, 16384, where
+    /// the same banding is accepted.
+    ///
+    /// Mutations (run):
+    /// - the narrowest width taken as the widest (`f64::min` -> `f64::max`
+    ///   fold in `narrowest`) -> fails the window.
+    /// - `position(..)` reporting `band + 1` -> fails the band index.
+    #[test]
+    fn an_empty_band_names_itself_and_the_window_that_holds_it() {
+        let banding = Banding::Octave {
+            per_octave: 3,
+            min: Hz(20.0),
+            max: Hz(20_000.0),
+        };
+        let Err(Error::EmptyBand {
+            band,
+            lower,
+            upper,
+            window,
+        }) = config(4096, 1024).with_banding(banding)
+        else {
+            panic!("a 4096-point window cannot hold the lowest third-octave band");
+        };
+        assert_eq!(band, 1);
+        assert!((lower.get() - 20.0 * 2f32.powf(1.0 / 3.0)).abs() < 1e-4);
+        assert!((upper.get() - 20.0 * 2f32.powf(2.0 / 3.0)).abs() < 1e-4);
+        assert_eq!(window, Samples(16_384));
+        assert!(config(16_384, 4096).with_banding(banding).is_ok());
+    }
+
+    /// DC and an even window's Nyquist bin have no image, so a DC offset `A`
+    /// reads `20 log10(A)` (the Hann window sums to `N/2`, `|X_0| = A N / 2`)
+    /// and a Nyquist tone `A (-1)^n` does too.
+    ///
+    /// Mutation (run): drop the `lone` case from `power` -> both read 6 dB high.
+    #[test]
+    fn dc_and_nyquist_read_their_amplitude() {
+        let size = 1024;
+        let cfg = config(size, size);
+        let want = db(20.0 * 0.25f64.log10());
+        let (_, dc) = run(&cfg, &vec![0.25f32; size]);
+        assert!((dc[0][0].get() - want).abs() < FFT_TOL, "{:?}", dc[0][0]);
+        let nyquist: Vec<f32> = (0..size)
+            .map(|i| if i % 2 == 0 { 0.25 } else { -0.25 })
+            .collect();
+        let (_, frames) = run(&cfg, &nyquist);
+        assert!(
+            (frames[0][size / 2].get() - want).abs() < FFT_TOL,
+            "{:?}",
+            frames[0][size / 2]
+        );
+    }
+
+    /// A bin-centred sine inside one band reads its level plus `10 log10(1.5)`
+    /// = 1.76 dB: Hann's main bin and two half-amplitude neighbours sum to
+    /// `1 + 2 * (1/2)^2` = 1.5 of the sine's power.
+    ///
+    /// Mutation (run): sum -> maximum of the bins in a band -> reads the sine's
+    /// own level and fails.
+    #[test]
+    fn a_sine_inside_a_band_reads_the_noise_bandwidth_excess() {
+        let size = 1536;
+        let cfg = config(size, size)
+            .with_banding(Banding::Octave {
+                per_octave: 1,
+                min: Hz(700.0),
+                max: Hz(2800.0),
+            })
+            .unwrap();
+        let (state, frames) = run(&cfg, &tone(size, 1000.0, 0.5));
+        let want = db(20.0 * 0.5f64.log10() + 10.0 * 1.5f64.log10());
+        let band = state
+            .frequencies()
+            .iter()
+            .position(|f| f.get() < 1000.0 && f.get() > 900.0);
+        let level = frames[0][band.unwrap()].get();
+        assert!((level - want).abs() < FFT_TOL, "{level} vs {want}");
+    }
+
+    /// The hold is a whole number of frames worked from the integer hop, so an
+    /// exact multiple is not over-held by the `f32` frame interval: 1.0 s at a
+    /// hop of 480 samples and 48 kHz is 100 frames, not 101, and 0.1 s (an `f32`
+    /// a hair over a tenth) is 10.
+    ///
+    /// Mutation (run): the old `hold / frame_interval` in `f32` -> 101 for
+    /// 1.0 s.
+    #[test]
+    fn the_hold_is_a_whole_number_of_frames_without_over_holding() {
+        let cfg = config(1920, 480);
+        let frames = |hold: f32| {
+            cfg.with_peak_hold(Seconds(hold), Db(20.0))
+                .unwrap()
+                .peak_hold_frames()
+                .get()
+        };
+        assert_eq!(frames(1.0), 100);
+        assert_eq!(frames(0.1), 10);
+        assert_eq!(frames(0.0), 0);
+        assert_eq!(frames(0.25), 25);
+        // A hair over a frame holds the next.
+        assert_eq!(frames(0.0101), 2);
+        assert!(matches!(
+            SpectrumConfig::new(StftGeometry::new(10_000_000.0, Samples(64), Samples(1)).unwrap())
+                .unwrap()
+                .with_peak_hold(Seconds(3600.0), Db(1.0)),
+            Err(Error::InvalidSpectrumParameter(_))
+        ));
+    }
+
     /// Settings are checked, NaN and infinity included, and sizes are capped
     /// before anything is allocated.
     ///
     /// Mutations (run):
     /// - `MIN_WINDOW` 64 -> 1 -> fails the size cases.
     /// - drop the `MAX_SPECTROGRAM_CELLS` check -> fails the cell case.
-    /// - drop the "a band holds no bin" check (`if false`) -> fails the fine
-    ///   banding case.
+    /// - drop `check_cells` from `with_banding` -> fails the return-to-bins
+    ///   case.
+    /// - drop the empty-band check (`w[0] >= w[1] + 1000` in `position`) -> fails the fine
+    ///   banding cases.
     #[test]
     fn bad_settings_are_errors() {
         let bad = |r: Result<SpectrumConfig>| matches!(r, Err(Error::InvalidSpectrumParameter(_)));
@@ -1302,15 +1481,18 @@ mod tests {
         for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, -301.0] {
             assert!(bad(cfg.with_floor(Db(v))), "{v}");
         }
-        assert!(bad(cfg.with_spectrogram(usize::MAX)));
-        assert!(bad(cfg.with_spectrogram((1 << 22) / 513 + 1)));
-        assert!(cfg.with_spectrogram((1 << 22) / 513).is_ok());
+        assert!(bad(cfg.with_spectrogram(FrameCount(usize::MAX))));
+        assert!(bad(cfg.with_spectrogram(FrameCount((1 << 22) / 513 + 1))));
+        assert!(cfg.with_spectrogram(FrameCount((1 << 22) / 513)).is_ok());
         let banded = cfg.with_banding(Banding::Log {
             count: 4000,
             min: Hz(100.0),
             max: Hz(20_000.0),
         });
-        assert!(bad(banded), "4000 bands of 513 bins cannot all hold a bin");
+        assert!(
+            matches!(banded, Err(Error::EmptyBand { .. })),
+            "4000 bands of 513 bins cannot all hold a bin"
+        );
 
         let oct = |per_octave, min: f32, max: f32| {
             cfg.with_banding(Banding::Octave {
@@ -1321,7 +1503,7 @@ mod tests {
         };
         assert!(bad(oct(0, 100.0, 1000.0)) && bad(oct(49, 100.0, 1000.0)));
         assert!(
-            bad(oct(48, 100.0, 20_000.0)),
+            matches!(oct(48, 100.0, 20_000.0), Err(Error::EmptyBand { .. })),
             "1/48 octave is finer than the bins"
         );
         for (min, max) in [
@@ -1343,13 +1525,16 @@ mod tests {
             oct(1, 100.0, 150.0),
             Err(Error::EmptyFrequencyRange { .. })
         ));
-        assert!(bad(cfg.with_spectrogram(8000).unwrap().with_banding(
-            Banding::Log {
-                count: 1024,
-                min: Hz(100.0),
-                max: Hz(20_000.0)
-            }
-        )));
+        // Returning to per-bin outputs multiplies the cells per column: a
+        // spectrogram sized for 17 bands is not one for 513 bins.
+        let banded = oct(3, 400.0, 20_000.0)
+            .unwrap()
+            .with_spectrogram(FrameCount(100_000))
+            .unwrap();
+        assert!(matches!(
+            banded.with_banding(Banding::Bins),
+            Err(Error::InvalidSpectrumParameter(m)) if m.contains("spectrogram")
+        ));
         assert!(matches!(
             cfg.with_banding(Banding::Log {
                 count: 0,
@@ -1369,16 +1554,16 @@ mod tests {
     /// - `reset` without `self.peaks.fill` -> fails the reset case.
     #[test]
     fn input_is_checked_and_state_stays_finite() {
-        let cfg = config(256, 64).with_spectrogram(4).unwrap();
+        let cfg = config(256, 64).with_spectrogram(FrameCount(4)).unwrap();
         let mut fft = FftScratch::new();
         let mut state = SpectrumState::new(&cfg, &mut fft);
-        assert!(state.bins().iter().all(|&l| l == cfg.floor()));
+        assert!(state.levels().iter().all(|&l| l == cfg.floor()));
 
         step_spectrum(&cfg, &mut state, &vec![0.0; 1000], &mut fft).unwrap();
-        assert!(state.bins().iter().all(|&l| l == cfg.floor()), "silence");
+        assert!(state.levels().iter().all(|&l| l == cfg.floor()), "silence");
         assert!(state.peaks().iter().all(|&l| l == cfg.floor()));
 
-        let before = (state.frames_seen(), state.bins().to_vec());
+        let before = (state.frames_seen(), state.levels().to_vec());
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let mut block = vec![0.1f32; 500];
             block[499] = bad;
@@ -1386,26 +1571,26 @@ mod tests {
                 step_spectrum(&cfg, &mut state, &block, &mut fft),
                 Err(Error::NonFiniteInput)
             );
-            assert_eq!((state.frames_seen(), state.bins().to_vec()), before);
+            assert_eq!((state.frames_seen(), state.levels().to_vec()), before);
         }
 
         step_spectrum(&cfg, &mut state, &vec![3.0e38; 600], &mut fft).unwrap();
         assert!(
             state
-                .bins()
+                .levels()
                 .iter()
                 .chain(state.peaks())
                 .all(|l| l.get().is_finite())
         );
-        assert!(state.bins().iter().all(|l| l.get() <= 200.0));
+        assert!(state.levels().iter().all(|l| l.get() <= 200.0));
         step_spectrum(&cfg, &mut state, &vec![0.0; 600], &mut fft).unwrap();
-        assert!(state.bins().iter().all(|l| l.get().is_finite()));
+        assert!(state.levels().iter().all(|l| l.get().is_finite()));
 
         state.reset();
         assert_eq!(state.frames_seen(), 0);
         assert!(
             state
-                .bins()
+                .levels()
                 .iter()
                 .chain(state.peaks())
                 .all(|&l| l == cfg.floor())

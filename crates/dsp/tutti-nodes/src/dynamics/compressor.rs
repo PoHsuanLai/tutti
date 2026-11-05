@@ -323,6 +323,7 @@ impl CompressorNode {
     /// gradual instead of grabbing. `0.0` is a hard knee — the default. Typical
     /// musical values are 6–12 dB; the band straddles the threshold, so half
     /// sits below it.
+    #[must_use]
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
         self.core = self.core.with_soft_knee(knee_db);
         self
@@ -333,6 +334,7 @@ impl CompressorNode {
     /// Compression lowers the peaks, so makeup restores the perceived level —
     /// it is what makes a compressed signal comparable to the uncompressed one.
     /// Applied unconditionally, including when nothing is being reduced.
+    #[must_use]
     pub fn with_makeup(mut self, makeup_db: impl Into<Db>) -> Self {
         self.core = self.core.with_makeup(makeup_db);
         self

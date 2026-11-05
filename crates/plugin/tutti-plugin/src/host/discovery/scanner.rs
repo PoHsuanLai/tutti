@@ -39,6 +39,7 @@ pub enum ScanPhase {
 
 /// Channels for monitoring a scan started by [`PluginScanner::spawn_scan`].
 #[derive(Debug)]
+#[must_use]
 pub struct ScanHandle {
     /// Per-plugin progress, emitted as the scan advances.
     pub progress_rx: Receiver<ScanProgress>,
@@ -108,6 +109,7 @@ impl PluginScanner {
     }
 
     /// Consumes the scanner and returns the inner catalog.
+    #[must_use]
     pub fn into_catalog(self) -> Box<dyn PluginCatalog> {
         self.catalog
     }

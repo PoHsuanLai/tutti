@@ -69,6 +69,7 @@ impl CCMapping {
     /// `min_value` and `max_value` are in the target's units and are not
     /// validated against each other; passing them reversed is the supported way
     /// to invert a controller.
+    #[must_use]
     pub fn new(
         channel: Option<MidiChannel>,
         cc_number: CCNumber,

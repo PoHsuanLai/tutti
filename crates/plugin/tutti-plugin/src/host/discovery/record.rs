@@ -41,6 +41,7 @@ pub enum Blacklist {
 
 impl Blacklist {
     /// Returns whether this record is barred from loading.
+    #[must_use]
     pub fn is_blacklisted(&self) -> bool {
         matches!(self, Blacklist::Blacklisted { .. })
     }
@@ -128,6 +129,7 @@ impl PluginRecord {
     /// Sugar over [`role`](Self::role) for the common two-way browser split.
     /// A [`Generator`](PluginRole::Generator) is deliberately **not** an
     /// instrument: it makes sound without being played.
+    #[must_use]
     pub fn is_instrument(&self) -> bool {
         self.role() == PluginRole::Instrument
     }

@@ -178,6 +178,7 @@ impl FeatureReport {
     /// Takes both together so a loader cannot report a bit it never probed, nor
     /// probe a bit it left unset — the same constructor discipline as
     /// [`ParameterInfo::with_flags`](crate::ParameterInfo::with_flags).
+    #[must_use]
     pub fn new(probed: Features, features: Features) -> Self {
         Self {
             probed,

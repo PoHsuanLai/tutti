@@ -110,6 +110,7 @@ impl GraphTail {
     /// a caller-chosen guess, and [`known`](Self::known) is what it would guess
     /// from. Neither decision is made here; a caller that wants either to be no
     /// tail writes `unwrap_or(Samples::ZERO)` and is seen to have decided.
+    #[must_use]
     pub const fn samples(self) -> Option<Samples> {
         if self.unbounded || self.unknown_nodes > 0 {
             return None;
@@ -125,12 +126,14 @@ impl GraphTail {
     /// [`unknown_nodes`](Self::unknown_nodes) and decided they do not matter.
     /// Prefer [`samples`](Self::samples), which cannot be spent without that
     /// decision being visible.
+    #[must_use]
     pub const fn known(self) -> Samples {
         self.known
     }
 
     /// Returns whether any node reaching an output never decays, or a feedback
     /// cycle rings.
+    #[must_use]
     pub const fn is_unbounded(self) -> bool {
         self.unbounded
     }
@@ -139,6 +142,7 @@ impl GraphTail {
     ///
     /// Zero means every node that can affect the output answered, so
     /// [`samples`](Self::samples) is `Some` unless the graph is unbounded.
+    #[must_use]
     pub const fn unknown_nodes(self) -> usize {
         self.unknown_nodes
     }
@@ -184,6 +188,7 @@ impl GraphTail {
     /// let eight_seconds = Samples(8 * 48_000);
     /// assert_eq!(tail.resolve(eight_seconds), eight_seconds);
     /// ```
+    #[must_use]
     pub fn resolve(self, cap: Samples) -> Samples {
         if self.unbounded {
             return cap;

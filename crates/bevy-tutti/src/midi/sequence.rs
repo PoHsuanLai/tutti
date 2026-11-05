@@ -69,6 +69,7 @@ pub struct MidiSourceInstall {
 
 impl MidiSourceInstall {
     /// Creates an install that plays `events` at `target`.
+    #[must_use]
     pub fn new(target: Entity, events: Vec<TimedMidiEvent>) -> Self {
         Self { target, events }
     }

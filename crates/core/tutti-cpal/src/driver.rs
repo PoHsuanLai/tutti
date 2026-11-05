@@ -143,6 +143,7 @@ impl TuttiDriver {
 
     /// Returns whether the stream is open and its device has not been reported
     /// gone (see [`AudioEngine::is_running`]).
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.audio_engine.is_running()
     }

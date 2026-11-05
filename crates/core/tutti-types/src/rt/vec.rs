@@ -56,6 +56,7 @@ pub struct RtVec<T, const N: usize> {
 
 impl<T, const N: usize> RtVec<T, N> {
     /// Creates an empty collection with `N` inline slots.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: ArrayVec::new(),

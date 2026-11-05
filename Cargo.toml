@@ -114,6 +114,8 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
 #

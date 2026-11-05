@@ -80,6 +80,7 @@ pub struct EnvelopeFollowerNode {
 impl EnvelopeFollowerNode {
     /// A follower of an `input`-wide signal, sending as `source`, with
     /// time constants `attack` and `release`.
+    #[must_use]
     pub fn new(source: SourceId, attack: Seconds, release: Seconds, input: ChannelLayout) -> Self {
         let rate = SampleRate::DEFAULT;
         Self {
@@ -99,6 +100,7 @@ impl EnvelopeFollowerNode {
     /// The node `decl` describes (what `tutti_mod::compile` gives each
     /// follower), following an `input`-wide signal: `None` when `decl` is
     /// not a follower. The rate comes at `prepare`.
+    #[must_use]
     pub fn from_decl(decl: &SourceNode, input: ChannelLayout) -> Option<Self> {
         match decl.kind {
             SignalKind::Follower { attack, release } => {
@@ -113,6 +115,7 @@ impl EnvelopeFollowerNode {
     /// edit rebuilds it), since a lane holds the old node's last piece until
     /// this one sends, and a silent follower otherwise sends nothing. A
     /// fork (the node reset) does not keep it.
+    #[must_use]
     pub fn replacing(mut self) -> Self {
         // NaN is no value it could have sent: the first grid piece goes out.
         self.sent = f32::NAN;

@@ -388,6 +388,7 @@ impl<F: Real> SvfFilterNode<F> {
 
     /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
     /// immediately. Read only by the gain-bearing filter types.
+    #[must_use]
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);

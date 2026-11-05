@@ -148,6 +148,7 @@ impl ModulatorNode<Wave> {
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further. Its phase increment takes the rate [`Node::prepare`] hands
     /// it.
+    #[must_use]
     pub fn new(shape: LfoShape) -> Self {
         Self::with_modulator(Wave::Shape { shape, seed: 0 })
     }
@@ -155,6 +156,7 @@ impl ModulatorNode<Wave> {
     /// The random shapes' seed: seed 0 is the plain sequence, the one a
     /// [`tutti_mod::Lfo`] of the same seed produces in a control lane.
     /// Ignored by a wave that is not a shape.
+    #[must_use]
     pub fn with_seed(mut self, seed: u64) -> Self {
         if let Wave::Shape { seed: s, .. } = &mut self.modulator {
             *s = seed;
@@ -216,6 +218,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// 2-*beat* cycle, not 2 Hz. Setting a rate in one clock's unit selects
     /// that clock, which is the only reading under which both calls mean what
     /// they say.
+    #[must_use]
     pub fn with_frequency(mut self, hz: impl Into<Hz>) -> Self {
         self.mode = LfoMode::FreeRunning;
         self.frequency.store(hz.into());
@@ -232,6 +235,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// stored in it and read back as a `BeatDuration`. The mode decides which
     /// of the two readings applies, so every entry point that writes the cell
     /// has to set it — see [`with_frequency`](Self::with_frequency).
+    #[must_use]
     pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<BeatDuration>) -> Self {
         self.mode = LfoMode::BeatSynced;
         self.frequency
@@ -250,6 +254,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// Bipolar: a negative depth inverts the modulator, so `-1.0` is the same
     /// shape phase-flipped and `0.0` is flat. Values past full scale saturate
     /// rather than wrapping.
+    #[must_use]
     pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
         self.depth.store(Depth::new_clamped(depth.into().get()));
         self
@@ -263,6 +268,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// `floor`-based fraction, so a negative offset lags rather than reading
     /// off the front of the shape. An offset past a whole cycle also moves a
     /// random wave to a later step.
+    #[must_use]
     pub fn with_phase_offset(self, offset: impl Into<PhaseIncrement>) -> Self {
         self.phase_offset.store(offset.into());
         self

@@ -42,6 +42,12 @@ impl StftGeometry {
     /// skipping the audio between frames. Such a grid analyses fine and cannot
     /// reconstruct, which is why the inverse path goes through
     /// [`cola`](Self::cola) instead of this.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ZeroWindow`] or [`Error::ZeroHop`] for a zero length, and
+    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
+    /// NaN.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -77,6 +83,7 @@ impl StftGeometry {
     /// Whether frames overlap at all. False for a decimated display grid,
     /// which leaves gaps of unanalysed audio between frames.
     #[inline]
+    #[must_use]
     pub fn frames_overlap(self) -> bool {
         self.hop < self.window
     }
@@ -117,6 +124,13 @@ impl StftGeometry {
     /// that reconstructs under Hann may not under Blackman, and the difference
     /// is silent — the transform runs, and the output has a 2.1% amplitude
     /// ripple that reads as a tremolo nobody asked for.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`new`](Self::new) returns, plus
+    /// [`Error::HopExceedsWindow`] when frames do not overlap and
+    /// [`Error::NotColaCompliant`] when the hop does not divide the window at
+    /// the overlap `window_fn` requires.
     pub fn cola_with(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -142,6 +156,7 @@ impl StftGeometry {
 
     /// The analysis window in [`Samples`] — also the FFT size.
     #[inline]
+    #[must_use]
     pub const fn window(self) -> Samples {
         self.window
     }
@@ -149,6 +164,7 @@ impl StftGeometry {
     /// How far frames advance, in [`Samples`]. Smaller than the window whenever
     /// frames overlap.
     #[inline]
+    #[must_use]
     pub const fn hop(self) -> Samples {
         self.hop
     }
@@ -156,12 +172,14 @@ impl StftGeometry {
     /// The rate the analyzed buffer is denominated at, which sets what each bin
     /// is worth in [`Hz`].
     #[inline]
+    #[must_use]
     pub const fn sample_rate(self) -> SampleRate {
         self.sample_rate
     }
 
     /// The window *shape*. See [`window`](Self::window) for its length.
     #[inline]
+    #[must_use]
     pub const fn window_fn(self) -> CosineWindow {
         self.window_fn
     }
@@ -180,6 +198,7 @@ impl StftGeometry {
     /// analyses fine and reconstructs with a 2.1% ripple. Use
     /// [`cola_with`](Self::cola_with) when the result must invert.
     #[inline]
+    #[must_use]
     pub const fn with_window_fn(mut self, window_fn: CosineWindow) -> Self {
         self.window_fn = window_fn;
         self
@@ -192,6 +211,7 @@ impl StftGeometry {
     /// own COLA factor (a fact about the *window*, given by
     /// [`CosineWindow::cola_overlap`]).
     #[inline]
+    #[must_use]
     pub fn is_cola(self) -> bool {
         self.window.get().is_multiple_of(self.hop.get())
             && self.window.get() / self.hop.get() >= self.window_fn.cola_overlap()
@@ -203,18 +223,21 @@ impl StftGeometry {
     /// exactly why storing both on two separate structs invited a consumer to
     /// reach for the wrong one.
     #[inline]
+    #[must_use]
     pub fn freq_bins(self) -> BinCount {
         BinCount(self.window.get() / 2)
     }
 
     /// Real-spectrum bins including Nyquist — the complex path's count.
     #[inline]
+    #[must_use]
     pub fn bins_per_frame(self) -> BinCount {
         BinCount(self.window.get() / 2 + 1)
     }
 
     /// The centre frequency of a bin.
     #[inline]
+    #[must_use]
     pub fn bin_frequency(self, bin: BinIndex) -> Hz {
         Hz((bin.get() as f64 * self.sample_rate.get() / self.window.get() as f64) as f32)
     }
@@ -231,6 +254,7 @@ impl StftGeometry {
 
     /// How many samples resynthesizing `frames` frames produces.
     #[inline]
+    #[must_use]
     pub fn output_len(self, frames: FrameCount) -> Samples {
         if frames.get() == 0 {
             return Samples(0);
@@ -241,6 +265,7 @@ impl StftGeometry {
     /// The delay this grid imposes: one whole window must arrive before the
     /// first frame can be analyzed.
     #[inline]
+    #[must_use]
     pub fn latency(self) -> Seconds {
         Seconds(self.window.get() as f32 / self.sample_rate.get() as f32)
     }
@@ -252,6 +277,7 @@ impl StftGeometry {
     /// field reads. A short name would put an allocation and two free reads at
     /// the same apparent cost.
     #[inline]
+    #[must_use]
     pub fn window_coefficients(self) -> Vec<f32> {
         self.window_fn.coefficients(self.window.get())
     }
@@ -268,6 +294,7 @@ impl StftGeometry {
     /// spelled out rather than provided because "gain" and "the thing you
     /// multiply by" being two methods is how one of them gets used by mistake.
     #[inline]
+    #[must_use]
     pub fn magnitude_gain(self) -> f32 {
         self.window_fn.coherent_gain() * self.window.get().max(1) as f32
     }

@@ -183,6 +183,7 @@ impl AutomationLaneNode {
     /// A copy of this lane for a fork: the curve's
     /// [`frozen`](Curve::frozen) copy when it has one, the shared `Arc`
     /// otherwise (read-only once shared), and no last value.
+    #[must_use]
     pub fn fork_fresh(&self) -> Self {
         Self {
             curve: self

@@ -93,6 +93,7 @@ impl ChannelLayout {
     pub const QUAD: Self = Self(4);
 
     /// Returns the channel count this layout describes.
+    #[must_use]
     pub const fn count(self) -> u16 {
         self.0
     }
@@ -102,6 +103,7 @@ impl ChannelLayout {
     /// The canonical "is there a second channel to read?" test, for the very
     /// common node shape that takes `left` and falls back to `left` for `right`
     /// when the input is mono. [`EMPTY`](Self::EMPTY) is not mono.
+    #[must_use]
     pub const fn is_mono(self) -> bool {
         self.0 == 1
     }
@@ -111,6 +113,7 @@ impl ChannelLayout {
     ///
     /// [`EMPTY`](Self::EMPTY) is neither mono nor multi: it has no channels at
     /// all. Both predicates report `false` for it.
+    #[must_use]
     pub const fn is_multi(self) -> bool {
         self.0 > 1
     }
@@ -121,6 +124,7 @@ impl ChannelLayout {
     /// `n.into()`. This exists because `From::from` cannot be `const`, so a
     /// `const` item or an associated constant has no other way to spell a width
     /// that isn't one of the named ones. The `From` impls delegate here.
+    #[must_use]
     pub const fn from_count(n: u16) -> Self {
         Self(n)
     }

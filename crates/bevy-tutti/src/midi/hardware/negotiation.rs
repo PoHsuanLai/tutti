@@ -73,6 +73,7 @@ impl CiRes {
     /// Builds the CI state from this device's identity, seeding both MUIDs from
     /// `muid_seed` (initiator and responder get distinct MUIDs so a self-probe on
     /// a shared bus doesn't read as a collision).
+    #[must_use]
     pub fn new(identity: DiscoveryData, muid_seed: u32) -> Self {
         Self {
             responder: CiResponder::new(Muid::from_seed(muid_seed), identity),

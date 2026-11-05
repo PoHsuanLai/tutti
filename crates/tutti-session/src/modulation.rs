@@ -89,6 +89,7 @@ impl ParamRef {
 
     /// The reconciler's key: the node's key bits and the param. What a
     /// refusal of the session's own declarations names.
+    #[must_use]
     pub fn key(self) -> TargetKey {
         TargetKey {
             node: key(self.node).0,
@@ -97,6 +98,7 @@ impl ParamRef {
     }
 
     /// The `ParamRef` a key of the session's own names.
+    #[must_use]
     pub fn from_key(target: TargetKey) -> Self {
         Self {
             node: AudioNode(NodeKey(target.node)),
@@ -261,6 +263,7 @@ pub struct Take {
 impl Take {
     /// A take recording into `recorder` (a fresh one, or
     /// `Recorder::overdub` over the lane's envelope).
+    #[must_use]
     pub fn new(recorder: Recorder) -> Self {
         Self {
             recorder,
@@ -303,6 +306,7 @@ impl Take {
     }
 
     /// The finished envelope, as the automation curve it becomes.
+    #[must_use]
     pub fn finish(self) -> Arc<dyn Curve> {
         Arc::new(self.recorder.finish())
     }
@@ -861,6 +865,7 @@ impl Mods<'_> {
     }
 
     /// Whether nothing is declared.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.own.is_empty()
     }

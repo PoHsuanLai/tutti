@@ -488,6 +488,7 @@ impl ControlProgram {
     /// Exactly one curve's segments: automation, no layers, no inputs. A
     /// native target's lane sends such a program's shaped pieces as they
     /// are (exact mode, doc 014 §5.4).
+    #[must_use]
     pub fn is_pure_automation(&self) -> bool {
         self.automation.is_some() && self.layers.is_empty() && self.inputs.is_empty()
     }
@@ -644,6 +645,7 @@ impl Layer {
     /// Whether this layer's offset is the same at every time: a constant
     /// wave, scaled by nothing or by another constant. A lane whose layers
     /// are all constant (and with no automation) does not walk the grid.
+    #[must_use]
     pub fn is_constant(&self) -> bool {
         matches!(self.wave, Wave::Const(_))
             && self

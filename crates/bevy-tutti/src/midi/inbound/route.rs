@@ -106,12 +106,14 @@ impl MidiRouteRule {
     }
 
     /// Adds a destination.
+    #[must_use]
     pub fn to(mut self, target: Entity) -> Self {
         self.targets.push(target);
         self
     }
 
     /// Declares the rule without arming it.
+    #[must_use]
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self

@@ -34,6 +34,7 @@ impl PlayReading {
     pub const EPOCHS: u32 = 1 << EPOCH_BITS;
 
     /// The reading `frames` later, in the same epoch.
+    #[must_use]
     pub fn after(self, frames: Samples) -> Self {
         Self {
             epoch: self.epoch,
@@ -43,6 +44,7 @@ impl PlayReading {
 
     /// One word: 24 bits of epoch high, 40 of play low (play wraps past
     /// `2^40` frames, 265 days at 48 kHz).
+    #[must_use]
     pub const fn pack(self) -> u64 {
         ((self.epoch as u64 & EPOCH_MASK as u64) << (64 - EPOCH_BITS))
             | (self.play.get() & PLAY_MASK)

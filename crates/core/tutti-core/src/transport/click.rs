@@ -127,6 +127,7 @@ pub struct ClickSettings {
 
 impl ClickSettings {
     /// Default settings: mode [`MetronomeMode::Off`], half volume, 4/4.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
@@ -186,6 +187,7 @@ impl ClickSettings {
     /// itself is immutable, so the fresh cell holds the same `Arc` rather
     /// than a copy. Control thread: it allocates, and reads the meter from
     /// the control side's mirror, never the node's cell.
+    #[must_use]
     pub fn snapshot(&self) -> ClickSettings {
         let fresh = ClickSettings::new();
         fresh

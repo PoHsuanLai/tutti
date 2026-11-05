@@ -280,6 +280,7 @@ impl Reference {
     }
 
     /// An interpreter with no graph.
+    #[must_use]
     pub fn new(prepare: Prepare) -> Self {
         Self {
             prepare,
@@ -827,6 +828,10 @@ impl Reference {
 
     /// Renders one block with the transport changing inside it. Same contract
     /// as [`Executor::process_with_changes`](crate::Executor::process_with_changes).
+    ///
+    /// # Panics
+    ///
+    /// If the graph has a cycle.
     pub fn process_with_changes(
         &mut self,
         frames: usize,

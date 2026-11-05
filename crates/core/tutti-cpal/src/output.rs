@@ -132,6 +132,7 @@ impl AudioEngine {
     /// card. Such an engine can only be started with
     /// [`start_with`](Self::start_with); [`start`](Self::start) and
     /// [`device_name`](Self::device_name) return [`Error::InvalidDevice`].
+    #[must_use]
     pub fn from_spec(spec: OutputSpec) -> Self {
         Self {
             spec,
@@ -262,6 +263,7 @@ impl AudioEngine {
     ///
     /// A stream whose device was unplugged reads `false` here even though it
     /// has not been stopped; see [`StreamFaults::is_disconnected`].
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.is_some() && !self.faults.is_disconnected()
     }

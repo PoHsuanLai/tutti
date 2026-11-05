@@ -14,6 +14,7 @@ impl Vst2Instance {
     /// Probed once at load, so this does not call into the plugin. `false`
     /// means [`open_editor`](Self::open_editor) has nothing to open. The same
     /// answer as [`PluginInfo::has_editor`](crate::PluginInfo::has_editor).
+    #[must_use]
     pub fn has_editor(&self) -> bool {
         self.handle.has_editor()
     }

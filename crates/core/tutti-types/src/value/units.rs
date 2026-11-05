@@ -155,11 +155,13 @@ macro_rules! unit_bounded {
         impl $name {
             /// Returns the smaller of the two, in this unit.
             #[inline]
+            #[must_use]
             pub fn min(self, other: Self) -> Self {
                 Self(<$raw>::min(self.0, other.0))
             }
             /// Returns the larger of the two, in this unit.
             #[inline]
+            #[must_use]
             pub fn max(self, other: Self) -> Self {
                 Self(<$raw>::max(self.0, other.0))
             }
@@ -169,6 +171,7 @@ macro_rules! unit_bounded {
             ///
             /// Panics if `lo > hi`, matching `f32::clamp` / `f64::clamp`.
             #[inline]
+            #[must_use]
             pub fn clamp(self, lo: Self, hi: Self) -> Self {
                 Self(<$raw>::clamp(self.0, lo.0, hi.0))
             }
@@ -404,6 +407,7 @@ impl Seconds {
     /// step that is not above zero (or NaN), with a positive time constant,
     /// moves nothing: 0.
     #[inline]
+    #[must_use]
     pub fn one_pole_coeff_over(self, step: Seconds) -> f32 {
         if self.0 > 0.0 {
             if step.0 > 0.0 {
@@ -470,6 +474,7 @@ impl Db {
 
     /// This gain as a linear amplitude multiplier.
     #[inline]
+    #[must_use]
     pub fn to_amplitude(self) -> Amplitude {
         Amplitude(10.0_f32.powf(self.0 / 20.0))
     }
@@ -487,6 +492,7 @@ impl Db {
     /// `From<Amplitude> for Db` is this method, so `.into()` also yields `-inf`
     /// for silence — reach for it only where that is correct.
     #[inline]
+    #[must_use]
     pub fn from_amplitude(amp: Amplitude) -> Db {
         Db(20.0 * amp.0.log10())
     }
@@ -536,6 +542,7 @@ impl Amplitude {
 
     /// This amplitude in decibels, with silence pinned to [`Db::FLOOR`].
     #[inline]
+    #[must_use]
     pub fn to_db(self) -> Db {
         Db::from_amplitude(self)
     }
@@ -564,6 +571,7 @@ impl Mix {
 
     /// Constrain into `0..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Mix {
         Mix(v).clamp(Self::DRY, Self::WET)
     }
@@ -571,6 +579,7 @@ impl Mix {
     /// Crossfades `dry` and `wet` at this position:
     /// `dry * (1.0 - mix) + wet * mix`.
     #[inline]
+    #[must_use]
     pub fn blend(self, dry: f32, wet: f32) -> f32 {
         dry * (1.0 - self.0) + wet * self.0
     }
@@ -604,6 +613,7 @@ impl Feedback {
 
     /// Constrain into the stable range.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Feedback {
         Feedback(v).clamp(Self::NONE, Self::MAX_STABLE)
     }
@@ -653,6 +663,7 @@ impl Depth {
 
     /// Constrain into `-1..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Depth {
         Depth(v).clamp(Self::INVERTED, Self::FULL)
     }
@@ -698,6 +709,7 @@ impl Spread {
 
     /// Constrain into `0..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Spread {
         Spread(v).clamp(Self::POINT, Self::DIFFUSE)
     }
@@ -725,6 +737,7 @@ impl StereoWidth {
     /// Constrain to non-negative. Deliberately no upper bound — widening past
     /// the source is a legitimate effect.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> StereoWidth {
         StereoWidth(v.max(0.0))
     }
@@ -765,6 +778,7 @@ impl CompressionRatio {
 
     /// Constrain to a real compression ratio.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> CompressionRatio {
         CompressionRatio(v.max(1.0))
     }
@@ -789,6 +803,7 @@ impl Q {
 
     /// Constrain above zero, since `Q` divides into the damping term.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Q {
         Q(v.max(f32::MIN_POSITIVE))
     }
@@ -817,6 +832,7 @@ impl Resonance {
 
     /// Constrain into `0..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Resonance {
         Resonance(v).clamp(Self::NONE, Self::SELF_OSCILLATION)
     }
@@ -863,6 +879,7 @@ impl Confidence {
 
     /// Constrain into `0..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Confidence {
         Confidence(v).clamp(Self::NONE, Self::CERTAIN)
     }
@@ -874,6 +891,7 @@ impl Confidence {
     /// the estimates are independent, and the name is where that precondition
     /// is stated.
     #[inline]
+    #[must_use]
     pub fn combine(self, other: Confidence) -> Confidence {
         Confidence(self.0 * other.0)
     }
@@ -911,6 +929,7 @@ impl Correlation {
 
     /// Constrain into `-1..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Correlation {
         Correlation(v).clamp(Self::INVERTED, Self::MONO)
     }
@@ -920,6 +939,7 @@ impl Correlation {
     /// Named because the threshold is a convention, and a bare comparison at
     /// the call site hides that it is one.
     #[inline]
+    #[must_use]
     pub fn has_phase_issues(self) -> bool {
         self.0 < -0.3
     }
@@ -929,6 +949,7 @@ impl Correlation {
     /// A derivation, not a second field: storing both lets a smoother move one
     /// without the other and leave the pair contradicting itself.
     #[inline]
+    #[must_use]
     pub fn to_stereo_width(self) -> StereoWidth {
         StereoWidth(1.0 - self.0)
     }
@@ -965,6 +986,7 @@ impl Pan {
 
     /// Constrain into `-1..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Pan {
         Pan(v).clamp(Self::LEFT, Self::RIGHT)
     }
@@ -1011,6 +1033,7 @@ impl Velocity {
 
     /// Constrain into `0..=1`.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Velocity {
         Velocity(v).clamp(Self::SILENT, Self::MAX)
     }
@@ -1022,6 +1045,7 @@ impl Velocity {
     /// naming it keeps the *loudness* reading — which is the instrument's job,
     /// not arithmetic's — from being spelled the same way.
     #[inline]
+    #[must_use]
     pub fn scaled(self, factor: f32) -> Velocity {
         Velocity::new_clamped(self.0 * factor)
     }
@@ -1068,6 +1092,7 @@ impl Azimuth {
     /// Uses `rem_euclid`, not `%` — plain `%` preserves the dividend's sign, so
     /// it leaves negative inputs outside the range it is supposed to enforce.
     #[inline]
+    #[must_use]
     pub fn wrap(self) -> Azimuth {
         Azimuth((self.0 + 180.0).rem_euclid(360.0) - 180.0)
     }
@@ -1078,12 +1103,14 @@ impl Azimuth {
     /// gives the long way around: from 170 to -170 it reports -340 degrees
     /// rather than the correct +20.
     #[inline]
+    #[must_use]
     pub fn shortest_arc_to(self, to: Azimuth) -> ArcDegrees {
         ArcDegrees(Azimuth(to.0 - self.0).wrap().0)
     }
 
     /// Rotate by a signed arc, wrapping. The replacement for `+`.
     #[inline]
+    #[must_use]
     pub fn rotate_by(self, arc: ArcDegrees) -> Azimuth {
         Azimuth(self.0 + arc.0).wrap()
     }
@@ -1093,6 +1120,7 @@ impl Azimuth {
     /// The replacement for `a + (b - a) * t`, which takes the long way around
     /// the seam and is audible as a panner sweeping the wrong direction.
     #[inline]
+    #[must_use]
     pub fn lerp_shortest(self, to: Azimuth, t: f32) -> Azimuth {
         self.rotate_by(self.shortest_arc_to(to) * t)
     }
@@ -1126,12 +1154,14 @@ impl Elevation {
     /// Constrain to the pole-to-pole range. Saturating, unlike
     /// [`Azimuth::wrap`] — the distinction the split exists to enforce.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Elevation {
         Elevation(v).clamp(Self::DOWN, Self::UP)
     }
 
     /// Tilt by a signed arc, clamped at the poles. The replacement for `+`.
     #[inline]
+    #[must_use]
     pub fn tilt_by(self, arc: ArcDegrees) -> Elevation {
         Elevation::new_clamped(self.0 + arc.0)
     }
@@ -1139,6 +1169,7 @@ impl Elevation {
     /// Straight-line interpolation, `t` in `0..=1`. Correct here precisely
     /// because there is no seam to cross.
     #[inline]
+    #[must_use]
     pub fn lerp(self, to: Elevation, t: f32) -> Elevation {
         Elevation::new_clamped(self.0 + (to.0 - self.0) * t)
     }
@@ -1236,18 +1267,21 @@ impl Phase {
     /// Correct for negative increments too, which is what a reverse-rate
     /// modulator produces.
     #[inline]
+    #[must_use]
     pub fn advance(self, d: PhaseIncrement) -> Phase {
         Phase::wrapped(self.0 + d.0)
     }
 
     /// Shift by a constant offset, wrapping — an LFO's phase-offset control.
     #[inline]
+    #[must_use]
     pub fn offset_by(self, offset: PhaseIncrement) -> Phase {
         self.advance(offset)
     }
 
     /// This phase in radians, `[0, 2·pi)` — for the `sin`/`cos` call.
     #[inline]
+    #[must_use]
     pub fn to_radians(self) -> Radians {
         Radians(self.0 * core::f32::consts::TAU)
     }
@@ -1315,18 +1349,21 @@ impl Radians {
 
     /// `sin` of this angle.
     #[inline]
+    #[must_use]
     pub fn sin(self) -> f32 {
         self.0.sin()
     }
 
     /// `cos` of this angle.
     #[inline]
+    #[must_use]
     pub fn cos(self) -> f32 {
         self.0.cos()
     }
 
     /// The equivalent [`Phase`] in turns, wrapped into `[0, 1)`.
     #[inline]
+    #[must_use]
     pub fn to_phase(self) -> Phase {
         Phase::wrapped(self.0 / core::f32::consts::TAU)
     }
@@ -1349,6 +1386,7 @@ impl Radians {
     /// unbounded time. Wrapping *before* comparing is also why [`Ord`] on this
     /// type is a trap — see the omission note below.
     #[inline]
+    #[must_use]
     pub fn wrapped_signed(self) -> Radians {
         let tau = core::f32::consts::TAU;
         Radians(self.0 - tau * ((self.0 + core::f32::consts::PI) / tau).floor())
@@ -1390,6 +1428,7 @@ impl Bpm {
     /// the tempo actually moved; comparing floats for equality would re-derive
     /// on every buffer from ULP noise.
     #[inline]
+    #[must_use]
     pub fn differs_from(self, other: Bpm, epsilon: f64) -> bool {
         (self.0 - other.0).abs() > epsilon
     }
@@ -1420,6 +1459,7 @@ unit_affine!(Beat, BeatDuration);
 impl Beat {
     /// The start of the beat this position falls in.
     #[inline]
+    #[must_use]
     pub fn floor(self) -> Beat {
         Beat(self.0.floor())
     }
@@ -1427,6 +1467,7 @@ impl Beat {
     /// How far into the current beat this position is — a *displacement* from
     /// [`floor`](Self::floor), not a position.
     #[inline]
+    #[must_use]
     pub fn fract(self) -> BeatDuration {
         BeatDuration(self.0 - self.0.floor())
     }
@@ -1442,6 +1483,7 @@ impl Beat {
     /// part. `None` for a non-positive span — a frozen source holds its phase
     /// offset instead.
     #[inline]
+    #[must_use]
     pub fn cycles_of(self, beats_per_cycle: BeatDuration) -> Option<f64> {
         (beats_per_cycle.0 > 0.0).then(|| self.0 / beats_per_cycle.0)
     }
@@ -1477,12 +1519,14 @@ impl Cents {
     /// the raw `f32` today are correct by luck; this is the form that stays
     /// correct once they hold the typed value.
     #[inline]
+    #[must_use]
     pub fn to_semitones(self) -> Semitones {
         Semitones(self.0 / 100.0)
     }
 
     /// This offset as a frequency multiplier. 1200 cents doubles the pitch.
     #[inline]
+    #[must_use]
     pub fn to_pitch_ratio(self) -> f32 {
         2.0_f32.powf(self.0 / 1200.0)
     }
@@ -1495,6 +1539,7 @@ impl Cents {
     /// the unison a caller building a scale degree wants — rather than a NaN
     /// that reaches a frequency table before anyone notices.
     #[inline]
+    #[must_use]
     pub fn from_pitch_ratio(ratio: f32) -> Cents {
         if ratio > 0.0 {
             Cents(1200.0 * ratio.log2())
@@ -1511,12 +1556,14 @@ impl Semitones {
     /// This offset in cents. The inverse of [`Cents::to_semitones`], and
     /// likewise a converter rather than a scalar multiply.
     #[inline]
+    #[must_use]
     pub fn to_cents(self) -> Cents {
         Cents(self.0 * 100.0)
     }
 
     /// This offset as a frequency multiplier. 12 semitones doubles the pitch.
     #[inline]
+    #[must_use]
     pub fn to_pitch_ratio(self) -> f32 {
         2.0_f32.powf(self.0 / 12.0)
     }
@@ -1536,6 +1583,7 @@ impl Semitones {
     /// logarithm. That is the omission rule's own failure mode: the inverse
     /// was added for one unit and not its twin.
     #[inline]
+    #[must_use]
     pub fn from_pitch_ratio(ratio: f32) -> Semitones {
         if ratio > 0.0 {
             Semitones(12.0 * ratio.log2())
@@ -1687,6 +1735,7 @@ impl SampleRate {
     /// Narrowing to `Hz`'s `f32` is safe here: Nyquist is at most ~96 kHz for
     /// any real device rate, well inside `f32`'s exact-integer range.
     #[inline]
+    #[must_use]
     pub fn nyquist(self) -> Hz {
         Hz((self.0 * 0.5) as f32)
     }
@@ -1702,6 +1751,7 @@ impl SampleRate {
     /// `margin` is clamped to `0.0..=1.0`: above 1.0 it would return a
     /// frequency *above* Nyquist, which is the bug this guards.
     #[inline]
+    #[must_use]
     pub fn nyquist_scaled(self, margin: f32) -> Hz {
         Hz((self.0 * f64::from(margin.clamp(0.0, 1.0)) * 0.5) as f32)
     }
@@ -1811,6 +1861,7 @@ impl PlaybackRate {
     /// read position NaN and silence the clip permanently, which is far worse
     /// than ignoring the request.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Self {
         if !v.is_finite() {
             Self::UNITY
@@ -1824,6 +1875,7 @@ impl PlaybackRate {
     /// The single composition point for the two rates. Both operands are named,
     /// so the pair cannot be swapped or one of them silently dropped.
     #[inline]
+    #[must_use]
     pub fn read_rate(self, src: SrcRatio) -> ReadRate {
         ReadRate(self.0 as f64 * src.0 as f64)
     }
@@ -1866,6 +1918,7 @@ impl ReadRate {
     /// [`SamplePosition`] rather than a count because that is what a caller does
     /// with it — seats or advances a fractional read cursor.
     #[inline]
+    #[must_use]
     pub fn advance(self, out: Samples) -> SamplePosition {
         SamplePosition(self.0 * out.get() as f64)
     }
@@ -1883,6 +1936,7 @@ impl ReadRate {
     /// the stretcher's rate, and the two are computed by different owners (the
     /// source knows `speed`, the filter knows the stretch factor).
     #[inline]
+    #[must_use]
     pub fn then(self, other: Self) -> Self {
         Self(self.0 * other.0)
     }
@@ -1917,6 +1971,7 @@ impl StretchFactor {
     /// [`PlaybackRate::new_clamped`]. As there, the raw `new` is unchecked —
     /// use this on any path carrying user input.
     #[inline]
+    #[must_use]
     pub fn new_clamped(v: f32) -> Self {
         if !v.is_finite() {
             Self::UNITY
@@ -1955,12 +2010,14 @@ unit_scalable!(SamplePosition, f64);
 impl SamplePosition {
     /// The integer sample index this position falls in.
     #[inline]
+    #[must_use]
     pub fn floor(self) -> SamplePosition {
         SamplePosition(self.0.floor())
     }
 
     /// The interpolation fraction between this index and the next.
     #[inline]
+    #[must_use]
     pub fn fract(self) -> f64 {
         self.0 - self.0.floor()
     }
@@ -1979,6 +2036,7 @@ impl SamplePosition {
     /// starting from `entry`" is `entry.advanced_by(window)`, keeping the
     /// fraction that rounding each side first would lose.
     #[inline]
+    #[must_use]
     pub fn advanced_by(self, frames: Samples) -> SamplePosition {
         SamplePosition(self.0 + frames.0 as f64)
     }
@@ -1993,6 +2051,7 @@ impl SamplePosition {
     /// by intent — stating it here means a caller cannot read the cast and
     /// wonder.
     #[inline]
+    #[must_use]
     pub fn to_samples_floor(self) -> Samples {
         Samples(self.0.floor().max(0.0) as usize)
     }
@@ -2008,6 +2067,7 @@ impl SamplePosition {
     /// that frame has to be resident or the reader interpolates against data it
     /// does not have.
     #[inline]
+    #[must_use]
     pub fn to_samples_ceil(self) -> Samples {
         Samples(self.0.ceil().max(0.0) as usize)
     }
@@ -2044,6 +2104,7 @@ impl BeatDuration {
     /// on purpose. (No clock steps by either: a playhead is a frame count,
     /// [`TimelineSegment`](super::TimelineSegment).)
     #[inline]
+    #[must_use]
     pub fn to_seconds(self, tempo: Bpm) -> Seconds {
         if tempo.0 <= 0.0 {
             return Seconds(0.0);
@@ -2053,12 +2114,14 @@ impl BeatDuration {
 
     /// Magnitude, discarding direction.
     #[inline]
+    #[must_use]
     pub fn abs(self) -> BeatDuration {
         BeatDuration(self.0.abs())
     }
 
     /// Whether this span moves forward. `LoopRange`'s non-empty invariant.
     #[inline]
+    #[must_use]
     pub fn is_positive(self) -> bool {
         self.0 > 0.0
     }
@@ -2068,6 +2131,7 @@ impl BeatDuration {
     /// `%` on floats keeps the sign of the dividend, so a negative overshoot
     /// would wrap *outside* the span. This is the wrapping-safe form.
     #[inline]
+    #[must_use]
     pub fn rem_euclid(self, rhs: BeatDuration) -> BeatDuration {
         BeatDuration(self.0.rem_euclid(rhs.0))
     }

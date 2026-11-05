@@ -41,30 +41,35 @@ impl NoteId {
     /// ≥ 128 can never alias a different pair or read back changed.
     /// [`MidiChannel`] already carries the 4-bit guarantee for its half.
     #[inline]
+    #[must_use]
     pub const fn from_channel_note(channel: MidiChannel, note: u8) -> Self {
         Self(((channel.get() as u32) << 8) | (note & 0x7f) as u32)
     }
 
     /// Note-Number-Rotation identity: an allocator-minted distinct value.
     #[inline]
+    #[must_use]
     pub const fn from_raw(v: u32) -> Self {
         Self(v)
     }
 
     /// The MIDI note number, for the [`from_channel_note`](Self::from_channel_note) encoding.
     #[inline]
+    #[must_use]
     pub const fn note_number(self) -> u8 {
         (self.0 & 0x7f) as u8
     }
 
     /// The MIDI channel, for the [`from_channel_note`](Self::from_channel_note) encoding.
     #[inline]
+    #[must_use]
     pub const fn channel(self) -> MidiChannel {
         MidiChannel::new(((self.0 >> 8) & 0x0f) as u8)
     }
 
     /// The opaque backing value.
     #[inline]
+    #[must_use]
     pub const fn raw(self) -> u32 {
         self.0
     }
@@ -94,6 +99,7 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
     /// Allocation-free — the storage is inline arrays, which is what makes this
     /// usable on the audio thread.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             ids: [None; N],

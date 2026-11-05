@@ -62,6 +62,7 @@ impl PluginMeter {
 
     /// Whether a meter is installed. Control side: reads the slot's own
     /// record, never the node's cell.
+    #[must_use]
     pub fn has_meter(&self) -> bool {
         self.0.is_following()
     }

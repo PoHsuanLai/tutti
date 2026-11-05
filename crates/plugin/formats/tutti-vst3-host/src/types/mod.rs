@@ -69,6 +69,7 @@ pub struct ProcessOutputRef<'a> {
 
 impl<'a> ProcessOutputRef<'a> {
     /// Snapshots into an owned [`ProcessOutput`]. Allocates; off-RT only.
+    #[must_use]
     pub fn to_owned(self) -> ProcessOutput {
         ProcessOutput {
             midi_events: self.midi_events.to_vec(),
@@ -145,12 +146,14 @@ impl PluginInfo {
     }
 
     /// Sets the vendor string.
+    #[must_use]
     pub fn vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = vendor.into();
         self
     }
 
     /// Sets the version string.
+    #[must_use]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -159,6 +162,7 @@ impl PluginInfo {
     /// Sets the `|`-delimited subcategories. Takes an `Option` rather than a
     /// string so a v1-only factory's "cannot report" survives the builder — see
     /// [`sub_categories`](Self::sub_categories).
+    #[must_use]
     pub fn sub_categories(mut self, sub_categories: Option<String>) -> Self {
         self.sub_categories = sub_categories;
         self
@@ -167,6 +171,7 @@ impl PluginInfo {
     /// Sets the bus-0 channel counts. For plugins with aux or sidechain buses,
     /// follow with [`bus_channels`](Self::bus_channels) — the totals fall back
     /// to these counts only while no per-bus layout is recorded.
+    #[must_use]
     pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
         self.num_inputs = inputs;
         self.num_outputs = outputs;
@@ -176,6 +181,7 @@ impl PluginInfo {
     /// Records the full per-bus channel layout (one entry per audio bus, in
     /// bus-index order). The main bus (`[0]`) is expected to match
     /// [`num_inputs`](Self::num_inputs) / [`num_outputs`](Self::num_outputs).
+    #[must_use]
     pub fn bus_channels(
         mut self,
         input_bus_channels: Vec<usize>,
@@ -210,18 +216,21 @@ impl PluginInfo {
 
     /// Sets whether the plugin has a MIDI **input** bus. The output direction is
     /// separate — see [`midi_output`](Self::midi_output).
+    #[must_use]
     pub fn midi(mut self, has_midi: bool) -> Self {
         self.has_midi_input = has_midi;
         self
     }
 
     /// Sets whether the plugin emits MIDI the host can read back.
+    #[must_use]
     pub fn midi_output(mut self, has_midi_output: bool) -> Self {
         self.has_midi_output = has_midi_output;
         self
     }
 
     /// Sets whether the plugin advertises `kSample64` processing.
+    #[must_use]
     pub fn f64_support(mut self, supports: bool) -> Self {
         self.supports_f64 = supports;
         self

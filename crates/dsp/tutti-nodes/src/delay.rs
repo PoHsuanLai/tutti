@@ -72,6 +72,7 @@ impl DelayLine {
     /// The backing buffer is one frame longer than the maximum delay, so that
     /// an interpolating read at exactly `max_delay_samples` still has a second
     /// tap to blend toward. Allocates — build before going live.
+    #[must_use]
     pub fn new(max_delay_samples: usize) -> Self {
         Self {
             buffer: vec![0.0; max_delay_samples + 1],
@@ -416,6 +417,7 @@ impl DelayLineNode {
     /// errors, never audio-thread ones. A NaN or infinite weight would survive
     /// the row scaling (`inf / inf` is NaN) and poison the loop it feeds
     /// forever, so it is refused here rather than rendered.
+    #[must_use]
     pub fn with_cross_feedback_matrix(mut self, matrix: &[f32]) -> Self {
         let n = self.width();
         assert_eq!(
@@ -449,6 +451,7 @@ impl DelayLineNode {
     ///
     /// Baked at construction — there is no live setter, because the mode is a
     /// build-time quality choice rather than something to automate.
+    #[must_use]
     pub fn with_interpolation(mut self, mode: InterpolationMode) -> Self {
         self.interpolation = mode;
         self

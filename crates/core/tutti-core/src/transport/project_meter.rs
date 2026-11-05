@@ -66,6 +66,7 @@ struct ProjectState {
 
 impl ProjectMeter {
     /// A project meter holding `meter`, followed by nothing yet.
+    #[must_use]
     pub fn new(meter: MeterMap) -> Self {
         Self(Arc::new(ProjectInner {
             cell: Arc::new(ArcLend::new(meter)),
@@ -272,6 +273,7 @@ impl MeterSlot {
     }
 
     /// Whether a project meter is followed.
+    #[must_use]
     pub fn is_following(&self) -> bool {
         self.follows().is_some()
     }

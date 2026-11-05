@@ -47,6 +47,7 @@ impl MidiEvent {
     /// `words` must be 1, 2, or 4 entries long matching the UMP message type
     /// in the first word's top nibble. Extra slots in `data` are zero-padded.
     #[inline]
+    #[must_use]
     pub fn from_ump(frame_offset: u32, words: &[u32]) -> Self {
         let mut data = [0u32; 4];
         let n = words.len().min(4);
@@ -138,6 +139,7 @@ impl UmpMessageType {
 
 impl MidiEvent {
     /// `true` if this is a Channel Voice 1 or 2 Note On with non-zero velocity.
+    #[must_use]
     pub fn is_note_on(&self) -> bool {
         use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;
@@ -150,6 +152,7 @@ impl MidiEvent {
     }
 
     /// `true` if this is a Note Off (or MIDI 1.0 velocity-0 NoteOn).
+    #[must_use]
     pub fn is_note_off(&self) -> bool {
         use midi2::UmpMessage;
         use midi2::channel_voice1::ChannelVoice1;

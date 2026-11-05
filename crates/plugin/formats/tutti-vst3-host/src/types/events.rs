@@ -63,6 +63,7 @@ pub struct Vst3InputEvents<'a> {
 impl Vst3InputEvents<'_> {
     /// True when no stream carries an event this block, so staging can be
     /// skipped entirely.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.midi.is_empty()
             && self.note_expressions.is_empty()
@@ -412,6 +413,7 @@ impl Vst3Event {
     /// encoding direction is the plugin's event list's: it keeps the MIDI
     /// stream's per-note bend ranges, which one event alone cannot carry.
     #[inline]
+    #[must_use]
     pub fn to_midi(&self) -> Option<MidiEvent> {
         vst3_to_midi_event(self)
     }
@@ -1513,6 +1515,7 @@ pub struct NoteExpressionIntValue {
 
 impl NoteExpressionIntValue {
     /// Stage into a [`Vst3Event`]. No arena is needed — the payload is an `i64`.
+    #[must_use]
     pub fn to_vst3_event(&self) -> Vst3Event {
         Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
             header: EventHeader {

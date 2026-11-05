@@ -39,6 +39,7 @@ pub struct EventSources(pub Vec<Entity>);
 
 impl EventSources {
     /// Creates a declaration fed by `entity` alone.
+    #[must_use]
     pub fn from(entity: Entity) -> Self {
         Self(vec![entity])
     }

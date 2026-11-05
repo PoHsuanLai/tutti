@@ -293,6 +293,7 @@ impl LimiterNode {
     ///
     /// Allocates and clears the rings, so call it during setup — never on a
     /// live node.
+    #[must_use]
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
         // Keep the request, not just the count it derives: `prepare`
         // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
@@ -309,6 +310,7 @@ impl LimiterNode {
     ///
     /// Short releases are louder but pump audibly on dense material; longer
     /// ones sound transparent and hold reduction through a passage.
+    #[must_use]
     pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
         self.release
             .store(Seconds(Self::clamp_release(release_secs.into().get())));

@@ -98,6 +98,7 @@ pub struct NoteExpressionChanges {
 
 impl NoteExpressionChanges {
     /// Builds an empty batch.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -111,6 +112,7 @@ impl NoteExpressionChanges {
     }
 
     /// Returns `true` when the block carries no note expression.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }

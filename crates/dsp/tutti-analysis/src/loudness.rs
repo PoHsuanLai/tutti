@@ -122,6 +122,7 @@ impl LoudnessState {
     ///
     /// Returns `None` for a layout `ebur128` cannot meter (zero channels), so
     /// the failure is a value rather than a panic inside a render.
+    #[must_use]
     pub fn new(cfg: &LoudnessConfig) -> Option<Self> {
         let channels = u32::from(cfg.layout.count());
         if channels == 0 {

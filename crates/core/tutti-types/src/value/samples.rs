@@ -63,6 +63,7 @@ impl Samples {
 
     /// Wraps a raw count already denominated in **frames**.
     #[inline]
+    #[must_use]
     pub const fn new(v: usize) -> Self {
         Self(v)
     }
@@ -70,6 +71,7 @@ impl Samples {
     /// Returns the raw **frame** count. Multiply by the channel width to reach
     /// a sample index into an interleaved buffer.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
@@ -80,6 +82,7 @@ impl Samples {
     /// Saturates: a signal already later than `target` needs no delay, and
     /// never a negative one.
     #[inline]
+    #[must_use]
     pub const fn align_to(self, target: Samples) -> Samples {
         Samples(target.0.saturating_sub(self.0))
     }
@@ -92,6 +95,7 @@ impl Samples {
     /// than the buffer held has a bug upstream, and wrapping to ~1.8e19 would
     /// turn that bug into an out-of-bounds read.
     #[inline]
+    #[must_use]
     pub const fn remaining_after(self, taken: Samples) -> Samples {
         Samples(self.0.saturating_sub(taken.0))
     }
@@ -102,6 +106,7 @@ impl Samples {
     /// difference between "clamp to zero and carry on" and "this ordering was
     /// supposed to be impossible".
     #[inline]
+    #[must_use]
     pub const fn checked_sub(self, rhs: Samples) -> Option<Samples> {
         match self.0.checked_sub(rhs.0) {
             Some(v) => Some(Samples(v)),
@@ -111,6 +116,7 @@ impl Samples {
 
     /// Returns whether this is an empty span (no frames at all).
     #[inline]
+    #[must_use]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }
@@ -130,6 +136,7 @@ impl Samples {
     /// from a corrupt count, and slicing with `usize::MAX` panics at the slice
     /// rather than wrapping to a short, plausible-looking window.
     #[inline]
+    #[must_use]
     pub const fn interleaved_len(self, layout: crate::ChannelLayout) -> usize {
         self.0.saturating_mul(layout.count() as usize)
     }
@@ -148,6 +155,7 @@ impl Samples {
     /// than a divide-by-zero panic. That is the answer a pump over an empty bus
     /// wants: nothing to move.
     #[inline]
+    #[must_use]
     pub const fn from_interleaved_len(len: usize, layout: crate::ChannelLayout) -> Samples {
         match layout.count() {
             0 => Samples::ZERO,

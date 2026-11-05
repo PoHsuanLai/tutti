@@ -80,6 +80,7 @@ pub struct LoadMeter {
 
 impl LoadMeter {
     /// A meter that has measured nothing.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

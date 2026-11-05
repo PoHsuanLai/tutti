@@ -83,6 +83,7 @@ impl Default for Sysex7PacketReassembler {
 impl Sysex7PacketReassembler {
     /// A reassembler with no in-flight messages, bounded at
     /// [`DEFAULT_MAX_SYSEX_BYTES`].
+    #[must_use]
     pub fn new() -> Self {
         Self::with_max_bytes(DEFAULT_MAX_SYSEX_BYTES)
     }
@@ -98,6 +99,7 @@ impl Sysex7PacketReassembler {
     /// Pass a peer's advertised `max_sysex_size` (M2-101 §5.5.3) when it is
     /// known; the floor the spec guarantees is 128 bytes, or 512 for a device
     /// supporting Profile Configuration or Property Exchange.
+    #[must_use]
     pub fn with_max_bytes(max_bytes: usize) -> Self {
         Self {
             in_flight: Vec::new(),

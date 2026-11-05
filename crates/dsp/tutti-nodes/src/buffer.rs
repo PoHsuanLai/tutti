@@ -33,6 +33,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
     /// `capacity` is clamped to at least 1, so a degenerate request yields a
     /// one-slot ring rather than a buffer whose every index panics. Allocates —
     /// build it before the node goes live, never inside `process`.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             buf: vec![T::default(); capacity.max(1)],
@@ -46,6 +47,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
     /// This never grows and never reads back as 0; the ring is full of
     /// `T::default()` from construction.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -56,6 +58,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
     /// Present because `clippy::len_without_is_empty` asks for it alongside
     /// [`len`](Self::len).
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
@@ -139,6 +142,7 @@ impl<T: Copy + Default> CircularBuffer<T> {
     /// Direct access to the backing slice (e.g. for fractional-sample reads
     /// that need their own index math).
     #[inline]
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.buf
     }
@@ -174,6 +178,7 @@ impl MonotonicMinDeque {
     ///
     /// Size it to the lookahead window in samples. Allocates: call it
     /// during setup, never inside `process`.
+    #[must_use]
     pub fn new(window: usize) -> Self {
         let window = window.max(1);
         Self {
@@ -249,6 +254,7 @@ impl MonotonicMinDeque {
     /// True before the first [`push`](Self::push) and after
     /// [`clear`](Self::clear); a limiter reads it as "no gain reduction is in
     /// flight yet".
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

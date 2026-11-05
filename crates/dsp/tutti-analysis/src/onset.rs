@@ -106,6 +106,7 @@ pub struct OnsetConfig {
 impl OnsetConfig {
     /// Defaults: a 0.3 threshold multiplier, unity sensitivity, and a 50 ms
     /// minimum gap.
+    #[must_use]
     pub fn new(geometry: StftGeometry, function: DetectionFunction) -> Self {
         let min_gap = Seconds(0.05).to_samples(geometry.sample_rate().get());
         Self {
@@ -118,12 +119,14 @@ impl OnsetConfig {
     }
 
     /// Multiplier on the adaptive threshold. Higher rejects more.
+    #[must_use]
     pub fn with_threshold(mut self, threshold: impl Into<Amplitude>) -> Self {
         self.threshold = threshold.into();
         self
     }
 
     /// Gain applied to the detection function before thresholding.
+    #[must_use]
     pub fn with_sensitivity(mut self, sensitivity: impl Into<Amplitude>) -> Self {
         self.sensitivity = sensitivity.into();
         self
@@ -134,6 +137,7 @@ impl OnsetConfig {
     /// Takes [`Seconds`], like every other time-valued setter in the engine —
     /// milliseconds on one setter and seconds on another of the same type is
     /// how a gap ends up a thousand times off.
+    #[must_use]
     pub fn with_min_gap(mut self, gap: impl Into<Seconds>) -> Self {
         self.min_gap = gap.into().to_samples(self.geometry.sample_rate().get());
         self
@@ -217,6 +221,7 @@ pub struct OnsetState {
 
 impl OnsetState {
     /// An empty carry: no previous frame, no accumulated novelty.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -322,6 +327,11 @@ pub fn finish(cfg: &OnsetConfig, state: &OnsetState) -> Vec<Onset> {
 ///
 /// Folds [`step_onset`] — the same implementation the streaming path uses, so
 /// the two cannot drift.
+///
+/// # Errors
+///
+/// Never; the `Result` keeps the signature of the other whole-buffer
+/// analyses. A buffer shorter than one window yields no onsets.
 pub fn detect_onsets(
     cfg: &OnsetConfig,
     samples: &[f32],

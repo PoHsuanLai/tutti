@@ -375,11 +375,13 @@ impl<'a> Io<'a> {
 
 impl Inputs<'_> {
     /// Number of channels.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.slices.len()
     }
 
     /// Whether there are none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slices.is_empty()
     }
@@ -401,11 +403,13 @@ impl Inputs<'_> {
 
 impl<'s, 'a> Outputs<'s, 'a> {
     /// Number of channels.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.slices.len()
     }
 
     /// Whether there are none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slices.is_empty()
     }

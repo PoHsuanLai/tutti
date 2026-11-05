@@ -53,6 +53,7 @@ impl std::fmt::Debug for MidiQueueNode {
 
 impl MidiQueueNode {
     /// A node with an empty ring of [`MIDI_QUEUE_CAPACITY`] events.
+    #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = MidiMailbox::with_capacity(MIDI_QUEUE_CAPACITY);
         Self {

@@ -244,6 +244,7 @@ impl ConvolverNode {
     ///
     /// The rate caveat on the type applies: `ir` carries no rate and nothing
     /// resamples it.
+    #[must_use]
     pub fn new(ir: &[f32], block_size: usize) -> Self {
         Self::build(vec![Convolver::new(ir, block_size)], IrChannelConfig::Mono)
     }
@@ -251,6 +252,7 @@ impl ConvolverNode {
     /// A 1-channel convolver using the default block size.
     ///
     /// The rate caveat on the type applies unchanged.
+    #[must_use]
     pub fn with_ir(ir: &[f32]) -> Self {
         Self::build(vec![Convolver::with_ir(ir)], IrChannelConfig::Mono)
     }

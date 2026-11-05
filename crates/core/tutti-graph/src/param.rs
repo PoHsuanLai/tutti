@@ -66,6 +66,7 @@ impl ParamPorts {
     ///
     /// Where [`try_new`](Self::try_new) returns an error (in a `const`
     /// context, at compile time — where a node's list usually is).
+    #[must_use]
     pub const fn new(ids: &[UnitParam]) -> Self {
         match Self::try_new(ids) {
             Ok(p) => p,
@@ -105,16 +106,19 @@ impl ParamPorts {
     }
 
     /// The params, in port order.
+    #[must_use]
     pub fn as_slice(&self) -> &[UnitParam] {
         &self.ids[..self.len as usize]
     }
 
     /// How many.
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Whether there are none.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -194,12 +198,14 @@ impl ParamRange {
     };
 
     /// `min..=max`.
+    #[must_use]
     pub const fn new(min: f32, max: f32) -> Self {
         Self { min, max }
     }
 
     /// The bounds, ordered so `clamp` cannot panic.
     #[inline]
+    #[must_use]
     pub fn ordered(self) -> (f32, f32) {
         (self.min.min(self.max), self.max.max(self.min))
     }
@@ -250,6 +256,7 @@ pub enum ParamInput<'a> {
 impl<'a> ParamInput<'a> {
     /// The per-frame values, when modulated.
     #[inline]
+    #[must_use]
     pub fn frames(self) -> Option<&'a [f32]> {
         match self {
             Self::Base => None,

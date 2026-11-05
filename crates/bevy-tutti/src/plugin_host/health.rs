@@ -106,6 +106,7 @@ impl PluginHealth {
     }
 
     /// Whether this plugin has been written off.
+    #[must_use]
     pub fn is_dead(&self) -> bool {
         matches!(self.status, PluginLiveness::Dead { .. })
     }

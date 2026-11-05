@@ -611,6 +611,7 @@ impl Convolver {
     ///
     /// `block_size` is rounded up to the next power of two; it is the head
     /// partition and the latency.
+    #[must_use]
     pub fn new(ir: &[f32], block_size: usize) -> Self {
         let block_size = block_size.next_power_of_two().max(2);
         Self::over(Arc::new(IrSpectra::new(ir, block_size)))
@@ -649,6 +650,7 @@ impl Convolver {
     /// A convolver over this one's IR, sharing its spectra, in the state of
     /// a freshly built one: nothing of this one's running state is copied.
     /// Allocates the new state (the spectra are not copied).
+    #[must_use]
     pub fn fresh(&self) -> Self {
         Self::over(Arc::clone(&self.spectra))
     }
@@ -659,6 +661,7 @@ impl Convolver {
     }
 
     /// Creates a convolver with the default block size (`512`).
+    #[must_use]
     pub fn with_ir(ir: &[f32]) -> Self {
         Self::new(ir, DEFAULT_BLOCK_SIZE)
     }

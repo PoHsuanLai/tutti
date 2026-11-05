@@ -125,6 +125,7 @@ pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
 
 impl PluginsRes {
     /// Wraps a catalog as the world's one [`PluginsRes`].
+    #[must_use]
     pub fn new(plugins: tutti_plugin::catalog::Plugins) -> Self {
         Self(plugins)
     }

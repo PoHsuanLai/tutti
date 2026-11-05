@@ -167,6 +167,7 @@ fn exts_for(arch_dir: &str, kind: ModuleKind) -> &'static [&'static str] {
 /// every file in it is a candidate — and `read_dir` order is arbitrary, so
 /// "take the first file" is a coin flip that reports a healthy plugin as
 /// corrupt. This is what makes the enumeration in [`any_module_in_bundle`] safe.
+#[must_use]
 pub fn is_link_byproduct(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),

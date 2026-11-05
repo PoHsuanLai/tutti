@@ -444,6 +444,7 @@ impl ControlLaneNode {
     /// A fresh lane for a fork: the last published program, the knob and
     /// range as they are now in cells of its own, the same address, and no
     /// piece in flight (doc 014 §5.6). Control thread.
+    #[must_use]
     pub fn fork_fresh(&self) -> Self {
         Self::fresh_over(&self.shared, &self.make, self.native)
     }

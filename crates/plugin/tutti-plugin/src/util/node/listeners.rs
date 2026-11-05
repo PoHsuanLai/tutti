@@ -44,6 +44,7 @@ impl std::fmt::Debug for ParameterChangeSink {
 impl ParameterChangeSink {
     /// Creates an empty sink, which drops every notification until a callback is
     /// installed.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

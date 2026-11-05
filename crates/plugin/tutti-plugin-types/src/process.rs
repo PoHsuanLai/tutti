@@ -58,11 +58,13 @@ pub struct ProcessContext<'a> {
 
 impl<'a> ProcessContext<'a> {
     /// Builds a context with no MIDI and every best-effort input absent.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Attaches this block's MIDI (builder).
+    #[must_use]
     pub fn midi(mut self, events: &'a [MidiEvent]) -> Self {
         self.midi_events = events;
         self
@@ -70,6 +72,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches parameter automation (builder). Call only when the plugin
     /// advertised [`Features::PARAM_AUTOMATION`](crate::Features).
+    #[must_use]
     pub fn params(mut self, changes: &'a ParameterChanges) -> Self {
         self.param_changes = Some(changes);
         self
@@ -77,6 +80,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches note expression (builder). Call only when the plugin advertised
     /// [`Features::NOTE_EXPRESSION`](crate::Features).
+    #[must_use]
     pub fn note_expression(mut self, changes: &'a NoteExpressionChanges) -> Self {
         self.note_expression = Some(changes);
         self
@@ -84,6 +88,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches transport state (builder). Call only when the plugin advertised
     /// [`Features::TRANSPORT`](crate::Features).
+    #[must_use]
     pub fn transport(mut self, info: &'a TransportInfo) -> Self {
         self.transport = Some(info);
         self
@@ -91,6 +96,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches sequencer context (builder). Call only when the plugin
     /// advertised [`Features::SEQUENCER_CONTEXT`](crate::Features).
+    #[must_use]
     pub fn expressive(mut self, ctx: ExpressiveContext<'a>) -> Self {
         self.expressive = Some(ctx);
         self

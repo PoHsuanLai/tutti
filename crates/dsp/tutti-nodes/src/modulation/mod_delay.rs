@@ -241,6 +241,7 @@ impl ModDelayNode {
     /// # Panics
     ///
     /// If `offsets.len()` is not the node's width — a build-time shape error.
+    #[must_use]
     pub fn with_phase_offsets(mut self, offsets: &[PhaseIncrement]) -> Self {
         assert_eq!(
             offsets.len(),

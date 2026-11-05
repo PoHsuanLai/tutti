@@ -311,6 +311,11 @@ check-bevy-free:
 check-adapter:
     scripts/check-adapter.sh
 
+# Every CLAP host callback and VST3 host COM method runs its body in the
+# panic guard (or is on the script's constant-only allow-list). No build.
+check-guards:
+    scripts/check-guards.sh
+
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant
 # path, and doc comments in ```text / ```ignore blocks are never compiled — so
@@ -411,4 +416,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-adapter check-features check-loom test test-features test-editor test-doc doc
+ci: lint check-paths check-bevy-free check-adapter check-guards check-features check-loom test test-features test-editor test-doc doc

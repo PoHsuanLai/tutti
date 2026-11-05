@@ -324,6 +324,7 @@ impl Path {
 
     /// Whether the path needs an event excitation. The audio-impulse rows
     /// run every other one.
+    #[must_use]
     pub const fn needs_events(self) -> bool {
         matches!(
             self,
@@ -1108,6 +1109,7 @@ pub struct ParamEcho {
 
 impl ParamEcho {
     /// An echo of `param`.
+    #[must_use]
     pub fn new(param: UnitParam) -> Self {
         Self { param }
     }
@@ -1170,6 +1172,7 @@ const PULSE_GRID_PHASE: u64 = 3;
 
 impl Pulse {
     /// A pulse delayed by `latency`, declared as its [`Shape::latency`].
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self {
             latency,
@@ -1255,6 +1258,7 @@ pub struct Lookahead {
 
 impl Lookahead {
     /// A delay of `latency`, declared as such.
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self {
             latency,
@@ -1303,6 +1307,7 @@ pub struct Latent {
 
 impl Latent {
     /// A silent node declaring `latency`.
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self { latency }
     }
@@ -1333,6 +1338,7 @@ pub struct Emitter {
 
 impl Emitter {
     /// An emitter armed for `at`.
+    #[must_use]
     pub fn new(at: Frame, kind: EventKind) -> Self {
         Self { at, kind }
     }
@@ -1374,6 +1380,7 @@ pub struct ParamPulse {
 
 impl ParamPulse {
     /// A pulse of `amplitude` on `param` at `at`.
+    #[must_use]
     pub fn new(at: Frame, param: UnitParam, amplitude: f32) -> Self {
         Self {
             at,

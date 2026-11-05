@@ -56,6 +56,7 @@ pub struct Vst2Changes {
 
 impl Vst2Changes {
     /// Whether nothing changed.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -428,6 +429,7 @@ impl Vst2Instance {
 
     /// Whether the plugin was told `effSetProcessPrecision(64)`, which is what
     /// makes [`process_f64`](Self::process_f64) enter `processReplacingF64`.
+    #[must_use]
     pub fn is_double_precision(&self) -> bool {
         self.double_precision
     }
@@ -440,6 +442,7 @@ impl Vst2Instance {
     }
 
     /// Returns `true` while the plugin is resumed (processing enabled).
+    #[must_use]
     pub fn is_resumed(&self) -> bool {
         self.handle.resumed
     }
@@ -573,6 +576,7 @@ impl Vst2Instance {
     }
 
     /// Returns `true` while the host reports itself as rendering offline.
+    #[must_use]
     pub fn is_offline_render(&self) -> bool {
         self.host_link.state.is_offline()
     }
@@ -752,6 +756,7 @@ impl Vst2Instance {
     /// Ask before [`set_bypass`](Self::set_bypass): `Maybe` is the common
     /// answer and is not a yes. A plugin that does not advertise one has to be
     /// bypassed by the host instead, by not routing audio through it.
+    #[must_use]
     pub fn supports_soft_bypass(&self) -> bool {
         use vst::api::Supported;
         use vst::plugin::{CanDo, Plugin as _};

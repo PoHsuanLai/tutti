@@ -127,16 +127,19 @@ impl Vst3ParameterInfo {
     }
 
     /// True if the parameter is read-only.
+    #[must_use]
     pub fn is_read_only(&self) -> bool {
         (self.flags & parameter_flags::IS_READ_ONLY) != 0
     }
 
     /// True if the parameter should be hidden from the host UI.
+    #[must_use]
     pub fn is_hidden(&self) -> bool {
         (self.flags & parameter_flags::IS_HIDDEN) != 0
     }
 
     /// True if the parameter is the bypass parameter.
+    #[must_use]
     pub fn is_bypass(&self) -> bool {
         (self.flags & parameter_flags::IS_BYPASS) != 0
     }
@@ -148,11 +151,13 @@ impl Vst3ParameterInfo {
     /// `[0, program_count)` in the unit's program list. This is the *only*
     /// route, which is why the flag has to survive the boundary rather than
     /// stopping at the format layer.
+    #[must_use]
     pub fn is_program_change(&self) -> bool {
         (self.flags & parameter_flags::IS_PROGRAM_CHANGE) != 0
     }
 
     /// True if the parameter wraps around at its extremes.
+    #[must_use]
     pub fn is_wrap(&self) -> bool {
         (self.flags & parameter_flags::IS_WRAP) != 0
     }
@@ -215,6 +220,7 @@ pub mod automation_state {
     /// both the mode vocabulary and its `IAutomationState` ABI — so
     /// `tutti-plugin-types` stays format-agnostic. Pass the result to
     /// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
+    #[must_use]
     pub fn from_mode(mode: AutomationMode) -> i32 {
         match mode {
             AutomationMode::Off => NONE,
@@ -226,6 +232,7 @@ pub mod automation_state {
 
     /// Decodes a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
     /// (inverse of [`from_mode`]). Unknown bits beyond read|write are ignored.
+    #[must_use]
     pub fn to_mode(bits: i32) -> AutomationMode {
         match (bits & READ != 0, bits & WRITE != 0) {
             (false, false) => AutomationMode::Off,
@@ -330,22 +337,26 @@ impl Vst3NoteExpressionInfo {
     }
 
     /// True if the expression is bipolar (centred at 0.5, e.g. pan/tuning).
+    #[must_use]
     pub fn is_bipolar(&self) -> bool {
         (self.flags & note_expression_flags::IS_BIPOLAR) != 0
     }
 
     /// True if the expression is one-shot (sampled at note-on only).
+    #[must_use]
     pub fn is_one_shot(&self) -> bool {
         (self.flags & note_expression_flags::IS_ONE_SHOT) != 0
     }
 
     /// True if the expression carries an absolute (rather than relative) value.
+    #[must_use]
     pub fn is_absolute(&self) -> bool {
         (self.flags & note_expression_flags::IS_ABSOLUTE) != 0
     }
 
     /// True if [`associated_parameter_id`](Self::associated_parameter_id) is
     /// meaningful.
+    #[must_use]
     pub fn is_associated_parameter_id_valid(&self) -> bool {
         (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
     }
@@ -496,6 +507,7 @@ pub struct Vst3UnitInfo {
 impl Vst3UnitInfo {
     /// True when this unit named a program list the plugin does not publish.
     /// Always `false` for a unit that simply has no list.
+    #[must_use]
     pub fn has_dangling_program_list(&self) -> bool {
         self.program_list.is_none() && self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
     }

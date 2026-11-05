@@ -678,6 +678,7 @@ impl Drop for AudioThreadClaim<'_> {
 impl HostState {
     /// Builds an unclaimed `HostState`, taking the calling thread as the
     /// `[main-thread]` role for the instance's whole life.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             main_thread_id: std::thread::current().id(),

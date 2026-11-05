@@ -106,6 +106,7 @@ impl UmpOut {
     }
 
     /// Whether it JR-stamps.
+    #[must_use]
     pub fn is_stamping(&self) -> bool {
         self.stamping
     }
@@ -312,12 +313,14 @@ impl<T> MidiRouteRule<T> {
     }
 
     /// Adds a destination.
+    #[must_use]
     pub fn to(mut self, target: T) -> Self {
         self.targets.push(target);
         self
     }
 
     /// Declares the rule without arming it.
+    #[must_use]
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self

@@ -890,12 +890,20 @@ pub trait PluginParameters: Sync {
     /// the source of the bytes and has no dispatch result to relay. The host's
     /// `PluginParametersInstance` overrides it with the real `effGetChunk`
     /// return.
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkError`] when the chunk read failed. The default never errs.
     fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
         Ok(self.get_preset_data())
     }
 
     /// Bank counterpart of
     /// [`try_get_preset_data`](Self::try_get_preset_data).
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkError`] when the chunk read failed. The default never errs.
     fn try_get_bank_data(&self) -> Result<Vec<u8>, ChunkError> {
         Ok(self.get_bank_data())
     }

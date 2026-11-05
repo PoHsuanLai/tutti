@@ -117,6 +117,7 @@ pub struct ExportRequest {
 
 impl ExportRequest {
     /// Creates a request with no [`prepare`](ExportRequest::prepare) hook.
+    #[must_use]
     pub fn new(
         source: ExportSource,
         target: ExportTarget,
@@ -136,6 +137,7 @@ impl ExportRequest {
 
     /// Renders against `timeline`: [`ExportClock::timeline`], set on a
     /// request already built.
+    #[must_use]
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
         T: RenderClock + tutti_core::transport::OfflineClock + 'static,
@@ -151,6 +153,7 @@ impl ExportRequest {
     ///
     /// Annotate the edit's argument (`|prepared: PreparedGraph<'_>|`) so it
     /// takes a graph of any lifetime.
+    #[must_use]
     pub fn with_prepare<F, E>(mut self, prepare: F) -> Self
     where
         F: Fn(&World) -> E + Send + Sync + 'static,
@@ -171,6 +174,7 @@ impl ExportRequest {
     ///
     /// A request-side switch rather than a figure because the caller cannot
     /// know it: the graph it describes is only built when the render starts.
+    #[must_use]
     pub fn trim_reported_latency(mut self) -> Self {
         self.latency_from_graph = true;
         self
@@ -189,6 +193,7 @@ impl ExportRequest {
     /// is not trimmed is rendered on top of the tail (not counted against
     /// `cap`): untrimmed, the file keeps the programme's last frames and is
     /// `duration_seconds` plus the latency plus the tail long.
+    #[must_use]
     pub fn with_reported_tail(mut self, cap: Samples) -> Self {
         self.tail_from_graph = Some(cap);
         self

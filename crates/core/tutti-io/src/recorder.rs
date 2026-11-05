@@ -800,6 +800,7 @@ impl Recorder {
     /// This reports the *flag*, not the driver: a finite source that ran out
     /// has stopped while this still reads `true`. Ask
     /// [`is_finished`](Self::is_finished) for that.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
@@ -811,6 +812,7 @@ impl Recorder {
     /// once a requested stop has been noticed. `false` after a shutdown, since
     /// there is no pump left to report on; a [`ManualDriver`] take is never
     /// finished on its own (its caller runs the passes).
+    #[must_use]
     pub fn is_finished(&self) -> bool {
         self.handle.as_ref().is_some_and(|h| h.is_finished())
     }

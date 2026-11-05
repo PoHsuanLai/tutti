@@ -234,6 +234,7 @@ impl<S> AudioPump<S> {
     /// [`EndOfStream`](tutti_core::io::OnEmpty::EndOfStream) source that ran out
     /// has exited while this still reads `true`, until the drain observes it. A
     /// pump refused at start was never running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.take {
             Take::Running(recorder) => recorder.is_running(),

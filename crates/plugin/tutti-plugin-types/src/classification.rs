@@ -228,6 +228,7 @@ impl Vst3PlugType {
     }
 
     /// The facet as the SDK spells it, so a parsed set can be written back.
+    #[must_use]
     pub fn as_sdk_str(&self) -> &str {
         match self {
             Self::Fx => "Fx",
@@ -348,6 +349,7 @@ impl Vst3SubCategories {
     }
 
     /// `true` when the plugin declared no facet at all.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.facets.is_empty()
     }
@@ -505,6 +507,7 @@ impl ClapFeature {
     }
 
     /// The tag as the CLAP header spells it.
+    #[must_use]
     pub fn as_clap_str(&self) -> &str {
         match self {
             Self::Instrument => "instrument",

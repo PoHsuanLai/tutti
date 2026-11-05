@@ -39,6 +39,7 @@ impl ClapLoaded {
     /// advertises 64-bit support (and it has at least one). Activating as
     /// `ClapActive<f64>` requires this, because the host hands one sample
     /// width for every buffer.
+    #[must_use]
     pub fn supports_f64(&self) -> bool {
         self.audio.supports_f64
     }
@@ -254,6 +255,7 @@ impl ClapLoaded {
     /// Whether the plugin is active. False for an instance a failed
     /// reconfiguration left deactivated ([`ClapError::Deactivated`]), which
     /// refuses every `process` with [`ClapError::NotActive`].
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.flags.active
     }

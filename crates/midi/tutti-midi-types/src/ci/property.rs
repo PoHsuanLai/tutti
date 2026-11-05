@@ -227,6 +227,7 @@ pub enum SubscriptionCommand {
 
 impl SubscriptionCommand {
     /// The wire string for this command (the header JSON's `command` value).
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Start => "start",
@@ -254,6 +255,7 @@ impl SubscriptionCommand {
     ///
     /// `End` is the only command either side may send — §11.5 lets the
     /// subscription be ended "by either the Initiator or the Responder".
+    #[must_use]
     pub fn is_valid_from(&self, is_initiator: bool) -> bool {
         match self {
             Self::Start => is_initiator,

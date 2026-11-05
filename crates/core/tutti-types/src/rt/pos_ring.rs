@@ -223,6 +223,7 @@ impl PosRing {
     /// plays (for a reader that taps positions behind the one it plays).
     /// Allocates the slots, so call it off the audio thread.
     #[allow(clippy::new_ret_no_self)] // the ring is its two ends
+    #[must_use]
     pub fn new(frames: usize, stride: usize, keep_behind: u64) -> (PosWriter, PosReader) {
         let frames = frames.clamp(1, MAX_POS_RING_FRAMES);
         let stride = stride.max(1);

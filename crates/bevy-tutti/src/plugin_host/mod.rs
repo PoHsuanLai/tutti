@@ -88,6 +88,7 @@ pub use scan::{
 /// VSTGUI and every other plugin GUI framework assumes it. Inserted with
 /// `insert_non_send`, so any system taking `NonSend<PluginEditorMainThread>` is
 /// pinned by Bevy's own scheduler rather than by convention.
+#[derive(Debug)]
 pub struct PluginEditorMainThread;
 
 /// Whether this app has windowing, and so whether a plugin editor can exist.
@@ -119,11 +120,12 @@ pub fn windowing_ready(
 /// supertraits, which propagate through `Box<dyn ..>`), so Bevy's
 /// `ResMut<PluginsRes>` exclusivity is the only synchronization needed — no
 /// extra `Mutex`.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
 
 impl PluginsRes {
     /// Wraps a catalog as the world's one [`PluginsRes`].
+    #[must_use]
     pub fn new(plugins: tutti_plugin::catalog::Plugins) -> Self {
         Self(plugins)
     }
@@ -162,6 +164,7 @@ impl PluginsRes {
 /// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not
 /// add one itself, since a host that configured its own pool sizes would have
 /// them silently replaced.
+#[derive(Debug)]
 pub struct TuttiHostingPlugin;
 
 impl Plugin for TuttiHostingPlugin {

@@ -553,6 +553,10 @@ pub unsafe fn add(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
 ///
 /// Empty slice is a no-op, as in [`add`], and for the same `paramErr` reason.
 ///
+/// # Errors
+/// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+/// family.
+///
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.
 pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
@@ -616,6 +620,10 @@ pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()>
 /// The header says the AU fires a notification on this property when the mapping
 /// completes; a host that would rather not poll can watch for it through
 /// [`crate::listener`].
+///
+/// # Errors
+/// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+/// family.
 ///
 /// # Safety
 /// `unit` must reference a live, valid AudioUnit.

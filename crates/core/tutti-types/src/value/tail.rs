@@ -118,6 +118,7 @@ impl Tail {
     /// `None`, for opposite reasons — one has no information, the other has
     /// information that is not a number. A caller that wants to treat either as
     /// zero says so with `unwrap_or(Samples::ZERO)` and is seen to have decided.
+    #[must_use]
     pub const fn samples(self) -> Option<Samples> {
         match self {
             Self::None => Some(Samples::ZERO),
@@ -130,6 +131,7 @@ impl Tail {
     /// [`None`](Self::None) and `kInfiniteTail` (`u32::MAX`) is
     /// [`Unbounded`](Self::Unbounded). Every other count is finite, including
     /// those at or above `INT32_MAX`, which only CLAP reads as infinite.
+    #[must_use]
     pub fn from_vst3_samples(raw: u32) -> Self {
         match raw {
             0 => Self::None,
@@ -142,6 +144,7 @@ impl Tail {
     /// and any value at or above `INT32_MAX` is [`Unbounded`](Self::Unbounded)
     /// (`clap/ext/tail.h`: "any value greater or equal to INT32_MAX implies
     /// infinite tail").
+    #[must_use]
     pub fn from_clap_samples(raw: u32) -> Self {
         match raw {
             0 => Self::None,
@@ -182,6 +185,7 @@ impl Tail {
     /// a chain containing something that never decays never decays — and
     /// `Unknown` wins over the rest, since a node that did not report is not
     /// evidence of a short tail.
+    #[must_use]
     pub fn then(self, next: Self) -> Self {
         match (self, next) {
             (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,
@@ -205,6 +209,7 @@ impl Tail {
     /// Summing two paths leaves the longer one's support untouched, so a merge
     /// takes the max rather than the sum: the question is when the signal last
     /// leaves.
+    #[must_use]
     pub fn beside(self, other: Self) -> Self {
         match (self, other) {
             (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,

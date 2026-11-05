@@ -119,6 +119,7 @@ use core::marker::PhantomData;
 /// ```
 // Mutation: with the `_thread` field removed the guard is `Send` again, and
 // this `compile_fail` doctest compiles, so `cargo test --doc` fails it.
+#[derive(Debug)]
 pub struct ScopedNoDenormals {
     #[cfg(target_arch = "x86_64")]
     prev_mxcsr: u32,
@@ -135,6 +136,7 @@ impl ScopedNoDenormals {
     /// Cheap enough for the audio thread: two register accesses, no allocation
     /// and no syscall.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         #[cfg(target_arch = "x86_64")]
         {

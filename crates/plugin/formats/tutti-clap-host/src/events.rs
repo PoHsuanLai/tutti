@@ -48,6 +48,7 @@ use tutti_midi_types::CCNumber;
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
 /// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
+#[derive(Debug)]
 pub enum ClapEvent {
     /// A voice starts. Host→plugin.
     NoteOn(clap_event_note),
@@ -469,6 +470,7 @@ impl ClapEvent {
     /// plugins consume when the host has no parameter mapping for it. Returns
     /// `None` for UMP variants with no MIDI-1 form (utility) and for SysEx,
     /// which [`InputEventList::add_midi`] reassembles into a `MidiSysex`.
+    #[must_use]
     pub fn from_midi(event: &MidiEvent, ranges: &PerNoteBendRanges) -> Option<Self> {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
         use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
@@ -591,6 +593,7 @@ impl ClapEvent {
         clippy::cast_possible_truncation,
         reason = "CLAP carries velocities and expression values as f64; the MIDI-2 conversion helpers take f32"
     )]
+    #[must_use]
     pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
@@ -729,6 +732,7 @@ pub trait EventList {
 /// The `#[repr(C)]` layout places `clap_input_events` first so that
 /// [`Self::as_raw`] pointers are valid for the plugin's FFI expectations.
 #[repr(C)]
+#[derive(Debug)]
 pub struct InputEventList {
     pub(crate) list: clap_input_events,
     pub(crate) events: Vec<ClapEvent>,
@@ -1157,6 +1161,7 @@ impl InputEventList {
 
     /// Raw pointer to the `clap_input_events` struct for FFI. Valid only
     /// while `self` is not moved or dropped.
+    #[must_use]
     pub fn as_raw(&self) -> *const clap_input_events {
         &self.list as *const _ as *const _
     }
@@ -1277,6 +1282,21 @@ pub struct OutputEventList {
     /// Pushes `try_push` refused since the list was built: see
     /// [`events_refused`](Self::events_refused).
     refused: u64,
+}
+
+impl std::fmt::Debug for OutputEventList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputEventList")
+            .field("list", &self.list)
+            .field("events", &self.events)
+            .field("room", &self.room)
+            .field("param_room", &self.param_room)
+            .field("param_pushed", &self.param_pushed)
+            .field("latest", &self.latest)
+            .field("coalesced", &self.coalesced)
+            .field("refused", &self.refused)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OutputEventList {
@@ -1422,6 +1442,7 @@ impl OutputEventList {
 
     /// Extracts MIDI events from the output as UMP [`MidiEvent`]s,
     /// dropping non-MIDI events.
+    #[must_use]
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
         let mut out = Vec::new();
         for e in &self.events {
@@ -1462,6 +1483,7 @@ impl OutputEventList {
     /// Extracts parameter-value events into a [`ParameterChanges`] grouped
     /// by parameter ID. Allocates as it needs to and keeps every point, each
     /// queue sized to its points; off the audio thread only.
+    #[must_use]
     pub fn to_param_changes(&self) -> ParameterChanges {
         let mut grouped: Vec<(ParamAddress, Vec<ParameterPoint>)> = Vec::new();
         for (addr, point) in self.param_points() {

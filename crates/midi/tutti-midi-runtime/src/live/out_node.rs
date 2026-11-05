@@ -39,6 +39,7 @@ pub const MIDI_OUT_CAPACITY: usize = 1024;
 /// let out = editor.insert(NodeKey(1), "midi out", MidiOutNode::new());
 /// assert_eq!(out.dropped(), 0);
 /// ```
+#[derive(Debug)]
 pub struct MidiOutNode {
     tx: Option<MidiSender>,
     parts: Option<MidiOutControls>,
@@ -47,6 +48,7 @@ pub struct MidiOutNode {
 
 impl MidiOutNode {
     /// A node with an empty ring of [`MIDI_OUT_CAPACITY`] events.
+    #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = MidiMailbox::with_capacity(MIDI_OUT_CAPACITY);
         let dropped = Arc::new(AtomicU64::new(0));
@@ -78,7 +80,7 @@ impl Default for MidiOutNode {
 
 /// The host's handle on a [`MidiOutNode`]: the ring's pop half. Cheap to
 /// clone; one clone at a time should poll it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiOutControls {
     rx: Arc<MidiReceiver>,
     dropped: Arc<AtomicU64>,

@@ -181,6 +181,15 @@ pub(crate) struct HrtfBinaural {
     aim: AngleSmoother,
 }
 
+impl std::fmt::Debug for HrtfBinaural {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HrtfBinaural")
+            .field("fill", &self.fill)
+            .field("face_hint", &self.face_hint)
+            .finish_non_exhaustive()
+    }
+}
+
 impl HrtfBinaural {
     /// Parses `hrir_bytes` and prepares the sphere at `sample_rate`. Control
     /// thread.

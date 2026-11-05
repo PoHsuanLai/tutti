@@ -155,7 +155,7 @@ pub fn compute_svf_coeffs(
 ///
 /// One set serves every channel: the params are one linked control surface, so
 /// widening replicates only the integrator state.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
@@ -316,6 +316,18 @@ pub struct SvfFilterNode<F: Real = f64> {
     good: [LastGood; 3],
 }
 
+impl<F: Real> std::fmt::Debug for SvfFilterNode<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SvfFilterNode")
+            .field("filter_type", &self.filter_type)
+            .field("frequency", &self.frequency)
+            .field("q", &self.q)
+            .field("gain_db", &self.gain_db)
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The params an [`SvfFilterNode`] lets the graph modulate, in port order.
 /// Cutoff and Q are read per sample; the gain (a shelf's or a bell's) is
 /// block-rate in the node (ramped across the block), so a driven port is
@@ -377,6 +389,7 @@ impl<F: Real> SvfFilterNode<F> {
 
     /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
     /// immediately. Read only by the gain-bearing filter types.
+    #[must_use]
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);

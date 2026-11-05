@@ -116,6 +116,7 @@ fn unconfigured_channels() -> ChannelLayout {
 // `&mut self` method reaches it with `get_mut`, lock-free; a `&self` query
 // takes the lock, uncontended — the resource's own borrow already serializes
 // access.
+#[derive(Debug)]
 pub struct AudioGraphRes(
     Mutex<Session>,
     // Test builds: every phase run through `run_phase{,_with_mods}`, in order,
@@ -176,6 +177,10 @@ impl AudioGraphRes {
     /// A [`set_param`](Self::set_param) lands on the next rendered block, on
     /// this graph as on an engine's: there is no control-side copy of a node
     /// for it to land on at once.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "`build_detached` has no failing path"
+    )]
     pub fn headless(inputs: usize, outputs: usize) -> Self {
         Self::from_session(
             Session::builder()
@@ -335,6 +340,12 @@ impl AudioGraphRes {
     /// same ports and latency, a plain swap otherwise.
     /// [`crossfade_plugin_node`](crate::graph::crossfade_plugin_node) does
     /// this with the incoming plugin's captured controls.
+    ///
+    /// # Errors
+    ///
+    /// As [`replace`](Self::replace): [`ReplaceRefused::Busy`] while the graph
+    /// re-prepares, with `client` handed back unbound;
+    /// [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in it.
     #[cfg(feature = "plugin")]
     pub fn replace_plugin(
         &mut self,
@@ -378,6 +389,12 @@ impl AudioGraphRes {
     /// `Busy` one waiting instead, and
     /// [`crossfade_audio_node`](crate::graph::crossfade_audio_node) binds the
     /// incoming controls once it lands.
+    ///
+    /// # Errors
+    ///
+    /// [`ReplaceRefused::Busy`] while the graph re-prepares, handing `incoming`
+    /// back; [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in
+    /// it, dropping `incoming`.
     pub fn replace<N: tutti_graph::IntoNode>(
         &mut self,
         node: AudioNode,

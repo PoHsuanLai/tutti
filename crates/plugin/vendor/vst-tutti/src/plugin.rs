@@ -890,12 +890,20 @@ pub trait PluginParameters: Sync {
     /// the source of the bytes and has no dispatch result to relay. The host's
     /// `PluginParametersInstance` overrides it with the real `effGetChunk`
     /// return.
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkError`] when the chunk read failed. The default never errs.
     fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
         Ok(self.get_preset_data())
     }
 
     /// Bank counterpart of
     /// [`try_get_preset_data`](Self::try_get_preset_data).
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkError`] when the chunk read failed. The default never errs.
     fn try_get_bank_data(&self) -> Result<Vec<u8>, ChunkError> {
         Ok(self.get_bank_data())
     }
@@ -933,7 +941,7 @@ impl PluginParameters for DummyPluginParameters {}
 ///
 /// All methods in this struct will panic if the `HostCallback` was constructed using
 /// `Default::default()` rather than being set to the value passed to `Plugin::new`.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct HostCallback {
     callback: Option<HostCallbackProc>,
     effect: *mut AEffect,

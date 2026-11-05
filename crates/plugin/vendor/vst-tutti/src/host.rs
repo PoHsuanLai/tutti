@@ -331,6 +331,7 @@ impl Error for PluginLoadError {}
 ///
 /// The only functionality this struct provides is loading plugins, which can be done via the
 /// [`load`](#method.load) method.
+#[derive(Debug)]
 pub struct PluginLoader<T: Host> {
     main: PluginMain,
     lib: Arc<Library>,
@@ -352,6 +353,7 @@ pub struct MidiChannelCounts {
 
 /// An instance of an externally loaded VST plugin.
 #[allow(dead_code)] // To keep `lib` around.
+#[derive(Debug)]
 pub struct PluginInstance {
     params: Arc<PluginParametersInstance>,
     /// The `dlopen` handle, deliberately leaked on drop.
@@ -397,6 +399,14 @@ struct HostRef {
     free: unsafe fn(*mut c_void),
 }
 
+impl fmt::Debug for HostRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostRef")
+            .field("ptr", &self.ptr)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: `HostRef::new` only accepts `T: Send + Sync`. Dropping runs `T`'s destructor and
 // decrements a shared count, which is sound from any thread for such a `T`.
 unsafe impl Send for HostRef {}
@@ -426,6 +436,13 @@ impl Drop for HostRef {
 
 struct PluginParametersInstance {
     effect: UnsafeCell<*mut AEffect>,
+}
+
+impl fmt::Debug for PluginParametersInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PluginParametersInstance")
+            .finish_non_exhaustive()
+    }
 }
 
 unsafe impl Send for PluginParametersInstance {}
@@ -572,6 +589,12 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     /// Upon success, this method returns a [`PluginLoader`](.) object which you can use to call
     /// [`instance`](#method.instance) to create a new instance of the plugin.
     ///
+    /// # Errors
+    ///
+    /// [`PluginLoadError::InvalidPath`] if the library at `path` cannot be
+    /// opened, and [`PluginLoadError::NotAPlugin`] if it has no `VSTPluginMain`
+    /// entry point.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -649,6 +672,12 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     ///
     /// If the instance is successfully created, a [`PluginInstance`]
     /// is returned. This struct implements the [`Plugin` trait](../plugin/trait.Plugin.html).
+    ///
+    /// # Errors
+    ///
+    /// [`PluginLoadError::InstanceFailed`] if the plugin's entry point returns
+    /// no instance, and [`PluginLoadError::InvalidApiVersion`] if the instance
+    /// speaks a VST API version this library does not support.
     pub fn instance(&mut self) -> Result<PluginInstance, PluginLoadError> {
         // Call the plugin main function. This also passes the plugin main function as the closure
         // could not return an error if the symbol wasn't found
@@ -1754,6 +1783,7 @@ impl PluginParameters for PluginParametersInstance {
 /// plugin.process(&mut audio_buffer);
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct HostBuffer<T: Float> {
     inputs: Vec<*const T>,
     outputs: Vec<*mut T>,

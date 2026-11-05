@@ -144,6 +144,7 @@ pub struct FeedbackFrom {
 
 impl FeedbackFrom {
     /// Creates a feedback edge from `from`, delayed by `delay` frames.
+    #[must_use]
     pub const fn new(from: OutPort, delay: Samples) -> Self {
         Self { from, delay }
     }
@@ -405,6 +406,7 @@ impl Invalid {
     /// Returns whether this fault blocks validity.
     ///
     /// Only [`Unconnected`](Self::Unconnected) does not.
+    #[must_use]
     pub fn is_fatal(&self) -> bool {
         !matches!(self, Invalid::Unconnected { .. })
     }
@@ -429,6 +431,7 @@ impl Valid {
     ///
     /// Consuming rather than clone-and-get, so a caller that means to *edit* the
     /// graph gives up the proof it was checked — which is the wrapper's point.
+    #[must_use]
     pub fn into_inner(self) -> Topology {
         self.0
     }

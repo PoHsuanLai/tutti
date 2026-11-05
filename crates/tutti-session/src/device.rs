@@ -83,6 +83,7 @@ impl Device {
     }
 
     /// Whether the stream is open and its device has not been reported gone.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.driver.is_running()
     }

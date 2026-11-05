@@ -121,6 +121,14 @@ pub struct AutomationLaneNode {
     last_value: f32,
 }
 
+impl std::fmt::Debug for AutomationLaneNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutomationLaneNode")
+            .field("last_value", &self.last_value)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Another name for [`AutomationLaneNode`], kept for consumers that spell
 /// it this way. The lane is not generic over the envelope's label.
 pub type LiveAutomationLane = AutomationLaneNode;
@@ -175,6 +183,7 @@ impl AutomationLaneNode {
     /// A copy of this lane for a fork: the curve's
     /// [`frozen`](Curve::frozen) copy when it has one, the shared `Arc`
     /// otherwise (read-only once shared), and no last value.
+    #[must_use]
     pub fn fork_fresh(&self) -> Self {
         Self {
             curve: self

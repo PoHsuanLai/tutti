@@ -71,6 +71,7 @@ pub mod process_context_flags {
 /// - [`TransportInfo::samples_to_nearest_clock`] → `samplesToNextClock`,
 ///   under `kClockValid`, when derivable
 /// - `sample_rate` → `sampleRate` (always)
+#[must_use]
 pub fn to_process_context(
     t: &TransportInfo,
     requirements: u32,

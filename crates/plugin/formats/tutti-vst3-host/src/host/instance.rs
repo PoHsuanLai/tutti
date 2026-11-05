@@ -251,6 +251,14 @@ pub struct Vst3Active<T: Vst3Sample = f32> {
     deactivated: bool,
 }
 
+impl<T: Vst3Sample> std::fmt::Debug for Vst3Active<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vst3Active")
+            .field("deactivated", &self.deactivated)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T: Vst3Sample> Vst3Active<T> {
     /// Reads a plugin's metadata without initializing it; see
     /// [`Vst3Loaded::probe`].
@@ -450,6 +458,7 @@ impl<T: Vst3Sample> Vst3Active<T> {
 
     /// Drops back to the non-processing [`Vst3Loaded`] state, reversing
     /// `setProcessing(1)` + `setActive(1)`.
+    #[must_use]
     pub fn deactivate(mut self) -> Vst3Loaded {
         self.stop_processing();
         let _ = self.set_active(false);
@@ -662,12 +671,10 @@ impl<T: Vst3Sample> Vst3Active<T> {
 
         // Refill the pooled input/output ParameterChanges wrappers in
         // place instead of building fresh ComWrappers every block.
-        let have_input_params = effective_params.map(|pc| !pc.is_empty()).unwrap_or(false);
-        if have_input_params {
-            self.audio
-                .input
-                .param_changes
-                .refill_from_changes(effective_params.unwrap());
+        let input_params = effective_params.filter(|pc| !pc.is_empty());
+        let have_input_params = input_params.is_some();
+        if let Some(changes) = input_params {
+            self.audio.input.param_changes.refill_from_changes(changes);
         } else {
             self.audio.input.param_changes.clear_in_place();
         }

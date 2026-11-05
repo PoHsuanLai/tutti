@@ -182,6 +182,7 @@ use bevy_ecs::prelude::*;
 /// `start_exports` is gated on the engine being ready (it reads the graph);
 /// `poll_exports` is not, so a render still in flight when the engine tears
 /// down is still reported rather than left hanging.
+#[derive(Debug)]
 pub struct ExportPlugin;
 
 impl Plugin for ExportPlugin {

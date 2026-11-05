@@ -20,6 +20,7 @@ pub struct IpcMidiEvent {
 
 impl IpcMidiEvent {
     /// Converts to the engine's [`MidiEvent`], which is the same data off-wire.
+    #[must_use]
     pub fn to_midi_event(&self) -> MidiEvent {
         MidiEvent {
             frame_offset: self.frame_offset,

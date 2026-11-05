@@ -6,7 +6,7 @@ use std::{mem, slice};
 use crate::api;
 
 /// A VST event.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Event<'a> {
     /// A midi event.
     ///
@@ -31,7 +31,7 @@ pub enum Event<'a> {
 ///
 /// These are sent to the plugin before `Plugin::processing()` or `Plugin::processing_f64()` is
 /// called.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct MidiEvent {
     /// The raw midi data associated with this event.
     pub data: [u8; 3],
@@ -65,7 +65,7 @@ pub struct MidiEvent {
 ///
 /// This is just a block of data and it is up to the plugin to interpret this. Generally used
 /// by midi controllers.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SysExEvent<'a> {
     /// The SysEx payload.
     pub payload: &'a [u8],

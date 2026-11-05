@@ -109,6 +109,7 @@ impl JobGate {
     /// # Panics
     ///
     /// If `participants` is zero.
+    #[must_use]
     pub fn new(participants: usize) -> Self {
         Self::with_waits(participants, BlockWaits::DEFAULT)
     }
@@ -121,6 +122,7 @@ impl JobGate {
     /// # Panics
     ///
     /// If `participants` is zero.
+    #[must_use]
     pub fn with_waits(participants: usize, waits: BlockWaits) -> Self {
         assert!(participants > 0, "a job needs its caller");
         Self {
@@ -209,6 +211,10 @@ impl JobGate {
     /// helper has not served: run the job with a participant index, then
     /// leave. `served` is this helper's own record of the last generation it
     /// served (start it at 0). Returns whether it ran the job.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "the caller stores the job before the Release store that opens the gate"
+    )]
     pub fn help(&self, served: &mut u64) -> bool {
         let s = self.state.load(Ordering::Acquire);
         if s & 1 == 0 || s >> 1 == *served {
@@ -233,7 +239,11 @@ impl JobGate {
         // the caller wrote the cell before opening and will not write it again
         // or return until this helper leaves.
         let job = self.job.with(|p| unsafe { *p });
-        let job = job.expect("an open gate holds its job");
+        // A silent `false` here would drop this participant's share of the
+        // job, so a broken gate protocol stops loudly instead.
+        let Some(job) = job else {
+            unreachable!("an open gate holds its job");
+        };
         // SAFETY: as above: the job's borrow outlives this call.
         unsafe { (*job)(idx as usize) };
         true

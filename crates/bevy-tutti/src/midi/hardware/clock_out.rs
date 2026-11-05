@@ -34,7 +34,7 @@ use crate::graph::AudioGraphRes;
 /// master lets the UI toggle enable / MTC / frame-rate. The hardware-out
 /// node's ring it ticks into is the session's (`Session::midi_nodes`),
 /// drained by its `Phase::MidiOut`, the one reader.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct ClockMasterRes {
     /// The generator itself, shared with the clock node that ticks it. Use it
     /// to toggle enable / MTC / frame rate; it starts disabled, so nothing
@@ -74,6 +74,7 @@ pub fn pump_clock_out_system(
 /// inserted by [`build_into`](crate::engine::build_into); this plugin only
 /// schedules the drain. Part of
 /// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin).
+#[derive(Debug)]
 pub struct ClockOutPlugin;
 
 impl Plugin for ClockOutPlugin {

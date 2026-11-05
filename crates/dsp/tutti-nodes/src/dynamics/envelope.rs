@@ -14,7 +14,7 @@ const EPSILON: f32 = 0.00001;
 ///
 /// Encapsulates the stateful envelope tracking that all dynamics processors share:
 /// attack/release coefficients, lazy recalculation, and one-pole IIR smoothing.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct EnvelopeFollower {
     value: f32,
     attack_coeff: f32,
@@ -122,7 +122,7 @@ impl EnvelopeFollower {
 ///
 /// Extends `EnvelopeFollower` with a hold counter that keeps the gate open
 /// for a specified duration after the signal drops below threshold.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct GateEnvelopeFollower {
     inner: EnvelopeFollower,
     hold_counter: usize,

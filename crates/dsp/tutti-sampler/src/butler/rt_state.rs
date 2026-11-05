@@ -31,6 +31,7 @@ use crate::voice::types::Direction;
 /// Cache-line aligned so butler writes here do not false-share with
 /// [`BufferHealth`], which the audio thread writes on the same block.
 #[repr(align(64))]
+#[derive(Debug)]
 pub struct PlaybackParams {
     speed: AtomicF32,
     /// 0 = forward, 1 = reverse.
@@ -74,6 +75,7 @@ impl Default for PlaybackParams {
 /// `underrun_count` every block, and that must not evict [`PlaybackParams`]
 /// out from under the butler.
 #[repr(align(64))]
+#[derive(Debug)]
 pub struct BufferHealth {
     /// Underruns since the last [`RtState::take_underruns`]. Audio thread
     /// increments, butler drains.
@@ -100,6 +102,7 @@ impl Default for BufferHealth {
 ///
 /// Outlives any single stream — `stop_streaming` resets the fields but keeps the
 /// `Arc` alive, because the audio thread may still hold its clone.
+#[derive(Debug)]
 pub struct RtState {
     /// Varispeed, direction, conversion ratio, stretch and gain.
     pub playback: PlaybackParams,

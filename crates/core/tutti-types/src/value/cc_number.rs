@@ -144,6 +144,7 @@ impl CCNumber {
     /// assert_eq!(CCNumber::new(128).get(), 0); // masked, like the wire
     /// ```
     #[inline]
+    #[must_use]
     pub const fn new(raw: u8) -> CCNumber {
         CCNumber(raw & 0x7F)
     }
@@ -151,6 +152,7 @@ impl CCNumber {
     /// Returns the raw 0-based controller number, for a UMP constructor or a
     /// wire byte.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u8 {
         self.0
     }

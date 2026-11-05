@@ -31,6 +31,7 @@ pub struct PointBuf {
 impl PointBuf {
     /// An empty buffer with room for exactly `capacity` points. Allocates;
     /// call it off the audio thread.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             slots: vec![ParameterPoint::default(); capacity].into_boxed_slice(),
@@ -41,6 +42,7 @@ impl PointBuf {
     /// A full buffer of exactly `points`: its capacity is their count. For
     /// a builder sized by its data off the audio thread (the wire's decode,
     /// a test); may reallocate to drop `points`' spare capacity.
+    #[must_use]
     pub fn from_points(points: Vec<ParameterPoint>) -> Self {
         let len = points.len();
         Self {
@@ -55,11 +57,16 @@ impl PointBuf {
     }
 
     /// Whether one more point fits.
+    #[must_use]
     pub fn has_room(&self) -> bool {
         self.len < self.slots.len()
     }
 
     /// Appends `point`, or hands it back when the buffer is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns `point` unchanged if the buffer is full.
     pub fn try_push(&mut self, point: ParameterPoint) -> Result<(), ParameterPoint> {
         match self.slots.get_mut(self.len) {
             Some(slot) => {
@@ -73,6 +80,10 @@ impl PointBuf {
 
     /// Puts `point` ahead of every point, or hands it back when the buffer
     /// is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns `point` unchanged if the buffer is full.
     pub fn try_push_front(&mut self, point: ParameterPoint) -> Result<(), ParameterPoint> {
         if !self.has_room() {
             return Err(point);
@@ -219,6 +230,7 @@ pub struct PointPool {
 impl PointPool {
     /// A pool of `blocks` blocks of `room` points each, for holders
     /// `0..holders`. Allocates; call it off the audio thread.
+    #[must_use]
     pub fn new(blocks: usize, room: usize, holders: usize) -> Self {
         Self {
             free: (0..blocks).map(|_| PointBuf::with_capacity(room)).collect(),

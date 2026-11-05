@@ -47,6 +47,17 @@ pub struct RenderScratch {
     pub(crate) output_ptrs_f64: Vec<*mut f64>,
 }
 
+impl std::fmt::Debug for RenderScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderScratch")
+            .field("input_ptrs", &self.input_ptrs)
+            .field("output_ptrs", &self.output_ptrs)
+            .field("input_ptrs_f64", &self.input_ptrs_f64)
+            .field("output_ptrs_f64", &self.output_ptrs_f64)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the raw pointers point into the owned `Vec<Vec<_>>` fields
 // within the same struct. They are never read concurrently — callers
 // ensure exclusive access (subprocess server holds a single instance;
@@ -62,6 +73,7 @@ impl RenderScratch {
     /// Call once at load time, never on the audio thread: this is the only
     /// allocation on the render path. `block_size` is the maximum block in
     /// frames; a process call may render fewer, never more.
+    #[must_use]
     pub fn new(num_inputs: ChannelLayout, num_outputs: ChannelLayout, block_size: usize) -> Self {
         let inputs: Vec<Vec<f32>> = (0..num_inputs.count())
             .map(|_| vec![0.0f32; block_size])

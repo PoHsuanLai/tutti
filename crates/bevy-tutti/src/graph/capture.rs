@@ -52,7 +52,7 @@ use tutti_core::{AudioNode, NodeKey};
 ///
 /// Empty for every node but a hosted plugin.
 #[must_use = "captured controls do nothing until they are bound to the entity"]
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct CapturedControls {
     #[cfg(feature = "plugin")]
     plugin: Option<tutti_plugin::handles::PluginControls>,

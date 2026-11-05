@@ -16,7 +16,7 @@ use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Ta
 use crate::ramp::{LastGood, block_driven};
 
 /// Shared compressor state used by the per-sample gain computation.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct CompressorCore {
     pub threshold: ThresholdParams,
     pub ratio: Param<CompressionRatio>,
@@ -236,6 +236,15 @@ pub struct CompressorNode {
     gains: Vec<f32>,
 }
 
+impl std::fmt::Debug for CompressorNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompressorNode")
+            .field("core", &self.core)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The params a [`CompressorNode`] lets the graph modulate, in port order:
 /// every param in its set. The threshold is read per sample; the ratio,
 /// the times and the makeup are block-rate in the node (read once per
@@ -314,6 +323,7 @@ impl CompressorNode {
     /// gradual instead of grabbing. `0.0` is a hard knee — the default. Typical
     /// musical values are 6–12 dB; the band straddles the threshold, so half
     /// sits below it.
+    #[must_use]
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
         self.core = self.core.with_soft_knee(knee_db);
         self
@@ -324,6 +334,7 @@ impl CompressorNode {
     /// Compression lowers the peaks, so makeup restores the perceived level —
     /// it is what makes a compressed signal comparable to the uncompressed one.
     /// Applied unconditionally, including when nothing is being reduced.
+    #[must_use]
     pub fn with_makeup(mut self, makeup_db: impl Into<Db>) -> Self {
         self.core = self.core.with_makeup(makeup_db);
         self

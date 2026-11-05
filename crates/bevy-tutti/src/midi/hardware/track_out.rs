@@ -161,6 +161,7 @@ pub fn pump_midi_out_system(
 /// The pump runs *after* [`pump_clock_out_system`](super::clock_out::pump_clock_out_system)
 /// so a shared native-UMP source's per-frame stamp origin advances clock-first
 /// then track — a deterministic order, not a race.
+#[derive(Debug)]
 pub struct MidiOutPlugin;
 
 impl Plugin for MidiOutPlugin {

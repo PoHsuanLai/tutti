@@ -243,6 +243,17 @@ pub struct IrSpectra {
     output_ring: usize,
 }
 
+impl std::fmt::Debug for IrSpectra {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IrSpectra")
+            .field("block_size", &self.block_size)
+            .field("ir_len", &self.ir_len)
+            .field("input_ring", &self.input_ring)
+            .field("output_ring", &self.output_ring)
+            .finish_non_exhaustive()
+    }
+}
+
 impl IrSpectra {
     /// Partition and transform `ir` at `block_size`, which must be a power
     /// of two. Allocates; control thread.
@@ -391,6 +402,21 @@ struct LevelState {
     seeded: bool,
     /// A step of a forward transform ran in the current call.
     crossed: bool,
+}
+
+impl std::fmt::Debug for LevelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelState")
+            .field("current", &self.current)
+            .field("accumulated", &self.accumulated)
+            .field("begun", &self.begun)
+            .field("base", &self.base)
+            .field("step", &self.step)
+            .field("spread_from", &self.spread_from)
+            .field("seeded", &self.seeded)
+            .field("crossed", &self.crossed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LevelState {
@@ -570,11 +596,22 @@ pub struct Convolver {
     pushed: u64,
 }
 
+impl std::fmt::Debug for Convolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Convolver")
+            .field("spectra", &self.spectra)
+            .field("levels", &self.levels)
+            .field("pushed", &self.pushed)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Convolver {
     /// Creates a new convolver from an impulse response.
     ///
     /// `block_size` is rounded up to the next power of two; it is the head
     /// partition and the latency.
+    #[must_use]
     pub fn new(ir: &[f32], block_size: usize) -> Self {
         let block_size = block_size.next_power_of_two().max(2);
         Self::over(Arc::new(IrSpectra::new(ir, block_size)))
@@ -613,6 +650,7 @@ impl Convolver {
     /// A convolver over this one's IR, sharing its spectra, in the state of
     /// a freshly built one: nothing of this one's running state is copied.
     /// Allocates the new state (the spectra are not copied).
+    #[must_use]
     pub fn fresh(&self) -> Self {
         Self::over(Arc::clone(&self.spectra))
     }
@@ -623,6 +661,7 @@ impl Convolver {
     }
 
     /// Creates a convolver with the default block size (`512`).
+    #[must_use]
     pub fn with_ir(ir: &[f32]) -> Self {
         Self::new(ir, DEFAULT_BLOCK_SIZE)
     }

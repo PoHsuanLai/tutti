@@ -42,6 +42,7 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// let clock = editor.insert(NodeKey(1), "clock", ClockNode::new());
 /// clock.set_enabled(true);
 /// ```
+#[derive(Debug)]
 pub struct ClockNode {
     master: Arc<ClockMaster>,
     /// Where a block's events are gathered, to go out in offset order. Capped
@@ -52,6 +53,7 @@ pub struct ClockNode {
 
 impl ClockNode {
     /// A node with a disabled master; `prepare` sets its rate.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             master: Arc::new(ClockMaster::new(SampleRate(0.0))),

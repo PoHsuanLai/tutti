@@ -86,6 +86,15 @@ pub struct PluginHealth {
     pending_snapshot: Option<Task<PluginSnapshotTaken>>,
 }
 
+impl std::fmt::Debug for PluginHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginHealth")
+            .field("status", &self.status)
+            .field("pending_snapshot", &self.pending_snapshot)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PluginHealth {
     /// The last state captured while this plugin was healthy.
     ///
@@ -97,6 +106,7 @@ impl PluginHealth {
     }
 
     /// Whether this plugin has been written off.
+    #[must_use]
     pub fn is_dead(&self) -> bool {
         matches!(self.status, PluginLiveness::Dead { .. })
     }

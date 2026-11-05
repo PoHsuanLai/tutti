@@ -99,6 +99,7 @@ pub struct EventSource {
 
 impl EventSource {
     /// Names `node`'s event output `port`.
+    #[must_use]
     pub const fn new(node: AudioNode, port: u16) -> Self {
         Self { node, port }
     }
@@ -246,6 +247,17 @@ struct Parked {
     curve: CrossfadeCurve,
 }
 
+impl std::fmt::Debug for Parked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parked")
+            .field("id", &self.id)
+            .field("node", &self.node)
+            .field("fade", &self.fade)
+            .field("curve", &self.curve)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What a parked crossfade came to on a retry.
 pub(crate) enum Retried {
     Landed {
@@ -298,6 +310,23 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<AudioNode, crate::HostedPlugin>,
+}
+
+impl std::fmt::Debug for Graph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("Graph");
+        d.field("editor", &self.editor)
+            .field("edited", &self.edited)
+            .field("commits", &self.commits)
+            .field("render_workers", &self.render_workers)
+            .field("feeds", &self.feeds)
+            .field("fed_edges", &self.fed_edges)
+            .field("parked", &self.parked)
+            .field("next_crossfade", &self.next_crossfade);
+        #[cfg(feature = "plugin")]
+        d.field("plugins", &self.plugins);
+        d.finish_non_exhaustive()
+    }
 }
 
 /// What a commit came to.
@@ -617,6 +646,12 @@ impl Graph {
     /// swaps any node: crossfading when the running node's shape fits the
     /// bound plugin's, else a plain swap at the same key. Refused, handing
     /// `client` back unbound, while a re-prepare is between its two commits.
+    ///
+    /// # Errors
+    ///
+    /// As [`replace`](Self::replace): [`ReplaceRefused::Busy`] while the graph
+    /// re-prepares, with `client` handed back unbound;
+    /// [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in it.
     #[cfg(feature = "plugin")]
     pub fn replace_plugin(
         &mut self,
@@ -752,6 +787,12 @@ impl Graph {
     /// record is dropped, so its health, snapshots and render mode stop
     /// (a replacement plugin goes in with
     /// `Graph::replace_plugin`, which carries the record).
+    ///
+    /// # Errors
+    ///
+    /// [`ReplaceRefused::Busy`] while the graph re-prepares, handing `incoming`
+    /// back; [`ReplaceRefused::Failed`] on a poisoned graph or a `node` not in
+    /// it, dropping `incoming`.
     pub fn replace<N: IntoNode>(
         &mut self,
         node: AudioNode,
@@ -1729,6 +1770,16 @@ pub struct AudioSide {
     /// executor sends its boxes back to it. `None` for the live graph's
     /// audio side, whose editor stays in the graph.
     _editor: Option<Editor>,
+}
+
+impl std::fmt::Debug for AudioSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioSide")
+            .field("exec", &self.exec)
+            .field("transport", &self.transport)
+            .field("_editor", &self._editor)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AudioSide {

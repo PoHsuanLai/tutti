@@ -139,6 +139,7 @@ impl<T: NoUninit + AnyBitPattern> SeqWriter<T> {
     /// A cell nothing has been written to, and its writer. Allocates the
     /// shared cell once: one word for the sequence and
     /// `size_of::<T>()` rounded up to whole words for the value.
+    #[must_use]
     pub fn new() -> Self {
         let words = std::mem::size_of::<T>().div_ceil(WORD);
         Self {
@@ -234,6 +235,10 @@ impl<T: NoUninit + AnyBitPattern> SeqReader<T> {
     ///   relaxed stores, so a reader that loses this often was descheduled
     ///   rather than raced; the caller chooses how long that is worth trying
     ///   on its thread. A reader on the writer's own thread never sees it.
+    ///
+    /// # Errors
+    ///
+    /// [`Contended`], as above.
     pub fn read(&self, retries: usize) -> Result<Option<T>, Contended> {
         let (seq, words) = split(&self.cell);
         for _ in 0..=retries {

@@ -8,7 +8,7 @@
 use tutti_core::{Db, Param, Seconds};
 
 /// Envelope-follower attack/release times in seconds.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AttackRelease {
     pub attack: Param<Seconds>,
     pub release: Param<Seconds>,
@@ -39,7 +39,7 @@ impl AttackRelease {
 
 /// Threshold + optional knee width (both in dB). Gates and limiters omit
 /// the knee by constructing with `knee = 0.0`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ThresholdParams {
     pub threshold: Param<Db>,
     pub knee: Param<Db>,

@@ -89,6 +89,7 @@ impl ParamRef {
 
     /// The reconciler's key: the node's key bits and the param. What a
     /// refusal of the session's own declarations names.
+    #[must_use]
     pub fn key(self) -> TargetKey {
         TargetKey {
             node: key(self.node).0,
@@ -97,6 +98,7 @@ impl ParamRef {
     }
 
     /// The `ParamRef` a key of the session's own names.
+    #[must_use]
     pub fn from_key(target: TargetKey) -> Self {
         Self {
             node: AudioNode(NodeKey(target.node)),
@@ -261,6 +263,7 @@ pub struct Take {
 impl Take {
     /// A take recording into `recorder` (a fresh one, or
     /// `Recorder::overdub` over the lane's envelope).
+    #[must_use]
     pub fn new(recorder: Recorder) -> Self {
         Self {
             recorder,
@@ -303,6 +306,7 @@ impl Take {
     }
 
     /// The finished envelope, as the automation curve it becomes.
+    #[must_use]
     pub fn finish(self) -> Arc<dyn Curve> {
         Arc::new(self.recorder.finish())
     }
@@ -311,6 +315,7 @@ impl Take {
 /// The session's modulation as applied: the reconciler, and what its last
 /// apply left unresolved or refused. Read it with
 /// [`Session::mod_state`](crate::Session::mod_state).
+#[derive(Debug)]
 pub struct ModState {
     modulation: tutti_nodes::Modulation,
     refusal: Option<ModRefusal>,
@@ -465,6 +470,7 @@ enum OwnFeed {
     Events(AudioNode, u16),
 }
 
+#[derive(Debug)]
 struct OwnSource {
     source: Source,
     feed: Option<OwnFeed>,
@@ -475,8 +481,16 @@ struct OwnAutomation {
     take: Option<Take>,
 }
 
+impl std::fmt::Debug for OwnAutomation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnAutomation")
+            .field("take", &self.take)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The session's own declarations, made through [`Mods`].
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct OwnMods {
     /// The last key minted, sources and routes alike.
     minted: u64,
@@ -493,6 +507,7 @@ pub(crate) struct OwnMods {
 
 /// The session's own declarations as the reconciler takes them, built
 /// from [`OwnMods`] and kept until they may change.
+#[derive(Debug)]
 pub(crate) struct OwnDeclarations {
     sources: Vec<(SourceKey, Source)>,
     routes: Vec<(RouteKey, RouteDecl)>,
@@ -604,6 +619,7 @@ impl ModKeys for OwnKeys<'_> {
 }
 
 /// The session's modulation: what it applied, and its own declarations.
+#[derive(Debug)]
 pub(crate) struct ModSession {
     pub(crate) state: ModState,
     pub(crate) own: OwnMods,
@@ -711,6 +727,7 @@ impl ModSession {
 /// A session has one declarer: while this holds anything, a host's
 /// [`ModInput`](crate::ModInput) is refused
 /// ([`ModRefusal::TwoDeclarers`]).
+#[derive(Debug)]
 pub struct Mods<'a> {
     pub(crate) own: &'a mut OwnMods,
 }
@@ -848,6 +865,7 @@ impl Mods<'_> {
     }
 
     /// Whether nothing is declared.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.own.is_empty()
     }

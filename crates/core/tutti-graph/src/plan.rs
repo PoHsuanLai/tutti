@@ -275,11 +275,13 @@ impl EventSlotCapacity {
     }
 
     /// Whether this holds everything `need` does, in both currencies.
+    #[must_use]
     pub const fn holds(self, need: Self) -> bool {
         self.declared >= need.declared && self.defaults >= need.defaults
     }
 
     /// Events, with each undeclared port worth `default`.
+    #[must_use]
     pub fn events(self, default: usize) -> usize {
         (self.declared as usize).saturating_add((self.defaults as usize).saturating_mul(default))
     }
@@ -1111,6 +1113,7 @@ pub struct Delta {
 
 impl Delta {
     /// Whether no unit changes.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.insert.is_empty() && self.retire.is_empty() && self.replace.is_empty()
     }

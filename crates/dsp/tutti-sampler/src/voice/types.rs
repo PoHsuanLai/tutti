@@ -36,12 +36,14 @@ pub enum Direction {
 impl Direction {
     /// Returns `true` for [`Reverse`](Self::Reverse).
     #[inline]
+    #[must_use]
     pub fn is_reverse(self) -> bool {
         matches!(self, Self::Reverse)
     }
 
     /// `true` → `Reverse`, `false` → `Forward`.
     #[inline]
+    #[must_use]
     pub fn from_reverse(reverse: bool) -> Self {
         if reverse {
             Self::Reverse

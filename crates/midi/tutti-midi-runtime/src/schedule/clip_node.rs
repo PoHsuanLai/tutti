@@ -190,6 +190,12 @@ pub struct MidiClipControls {
     shared: Arc<Shared>,
 }
 
+impl std::fmt::Debug for MidiClipControls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiClipControls").finish_non_exhaustive()
+    }
+}
+
 impl MidiClipControls {
     /// Play `events` from the next block on. The node ends every note the
     /// previous clip left sounding, on that block's first frame. Events equal
@@ -257,7 +263,18 @@ pub struct MidiClipNode {
     play: Play,
 }
 
+impl std::fmt::Debug for MidiClipNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiClipNode")
+            .field("clip", &self.clip)
+            .field("generation", &self.generation)
+            .field("play", &self.play)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Where playback was, and what it left sounding.
+#[derive(Debug)]
 struct Play {
     walk: Walk,
     held: HeldNotes,
@@ -412,6 +429,15 @@ struct HeldNotes {
     /// A release the port refused part of: the rest goes out at the next
     /// block's first frame, and every block's after, until none is held.
     owed: bool,
+}
+
+impl std::fmt::Debug for HeldNotes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldNotes")
+            .field("count", &self.count)
+            .field("owed", &self.owed)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A MIDI channel-voice note message's `(group, channel, note)` and whether

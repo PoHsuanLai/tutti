@@ -129,6 +129,22 @@ impl<T> Grid<T> {
         Ok(Self { data, frames, bins })
     }
 
+    /// A grid of `data` in this grid's shape. The caller derives `data` from
+    /// this grid's own values, one for one; a length that differs is a bug in
+    /// the caller, caught in debug builds.
+    pub(crate) fn same_shape<U>(&self, data: Vec<U>) -> Grid<U> {
+        debug_assert_eq!(
+            data.len(),
+            self.data.len(),
+            "a derived grid keeps its shape"
+        );
+        Grid {
+            data,
+            frames: self.frames,
+            bins: self.bins,
+        }
+    }
+
     /// Row count — the time axis.
     #[inline]
     pub fn frames(&self) -> FrameCount {
@@ -143,6 +159,7 @@ impl<T> Grid<T> {
 
     /// Whether the backing buffer holds no values at all.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -231,6 +248,7 @@ impl<T> Grid<T> {
     /// straight to the GPU as a texture, and another indexes it flat as
     /// `frame * bins + bin`. Both need this to stay a single slice.
     #[inline]
+    #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.data
     }
@@ -244,6 +262,7 @@ impl<T> Grid<T> {
 
     /// Moves the row-major buffer out, dropping the shape with it.
     #[inline]
+    #[must_use]
     pub fn into_vec(self) -> Vec<T> {
         self.data
     }

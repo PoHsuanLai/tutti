@@ -20,11 +20,18 @@ pub struct MeteringContext {
     right: Box<[f32]>,
 }
 
+impl std::fmt::Debug for MeteringContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeteringContext").finish_non_exhaustive()
+    }
+}
+
 impl MeteringContext {
     /// Allocates both scratch planes at the 8192-frame ceiling.
     ///
     /// Call from the control thread before handing this to the callback — this
     /// is the only allocation on the metering path.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             left: vec![0.0; MAX_FRAMES].into_boxed_slice(),

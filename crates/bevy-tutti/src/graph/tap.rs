@@ -85,7 +85,7 @@ use tutti_core::AudioTap;
 /// assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
 /// # }
 /// ```
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone, Default, Debug)]
 pub struct AudioTapRes(pub AudioTap);
 
 impl std::ops::Deref for AudioTapRes {

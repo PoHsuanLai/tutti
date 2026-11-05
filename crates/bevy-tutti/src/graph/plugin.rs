@@ -35,6 +35,7 @@ use crate::graph::{
 /// the sets to interleave their work; `Compensate` holds only
 /// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s debug
 /// check, if a host adds it (the figures are published in `Commit`).
+#[derive(Debug)]
 pub struct GraphReconcilePlugin;
 
 impl Plugin for GraphReconcilePlugin {

@@ -34,7 +34,7 @@ enum GateEdge {
     Off,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SynthVoice {
     note: u8,
     channel: u8,

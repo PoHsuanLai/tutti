@@ -36,7 +36,7 @@ use crate::graph::latency::{ChannelCompensation, GraphLatency};
 /// [`AudioGraphRes::modulation`]: the lanes, what is unresolved, the
 /// refusal held, in the app's entities. Each read takes the session's lock
 /// for that read alone, and hands back what it read.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ModulationState<'a>(&'a AudioGraphRes);
 
 impl ModulationState<'_> {
@@ -161,7 +161,7 @@ impl std::fmt::Display for ModulationRefused {
 }
 
 /// Everything the adapter reads off the world.
-#[derive(SystemParam)]
+#[derive(SystemParam, Debug)]
 pub struct Declared<'w, 's> {
     sources: Query<'w, 's, (Entity, &'static ModSource)>,
     routes: Query<'w, 's, (Entity, &'static ModRoute)>,
@@ -198,8 +198,14 @@ pub struct DeclChanges<'w, 's> {
     pending: Option<ResMut<'w, Pending>>,
 }
 
+impl std::fmt::Debug for DeclChanges<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeclChanges").finish_non_exhaustive()
+    }
+}
+
 /// A declaration changed since [`reconcile`] last collected.
-#[derive(Resource, Default)]
+#[derive(Resource, Debug, Default)]
 pub(crate) struct Pending(bool);
 
 /// Notes, every frame, whether a declaring component was added, changed or
@@ -230,7 +236,14 @@ pub struct Kept<'w, 's> {
     pending: Option<ResMut<'w, Pending>>,
 }
 
+impl std::fmt::Debug for Kept<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kept").finish_non_exhaustive()
+    }
+}
+
 /// The frame's declarations, owned.
+#[derive(Debug)]
 struct Collected {
     sources: Vec<(SourceKey, Source)>,
     routes: Vec<(RouteKey, RouteDecl)>,
@@ -405,7 +418,9 @@ pub fn reconcile(
     if stale {
         *kept.collected = Some(declared.collect());
     }
-    let collected = kept.collected.as_ref().expect("collected");
+    let Some(collected) = kept.collected.as_ref() else {
+        return;
+    };
     run(
         Phase::Modulation,
         &declared,

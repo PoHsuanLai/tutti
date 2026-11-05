@@ -58,12 +58,22 @@ pub struct DelayLine {
     max_delay_samples: usize,
 }
 
+impl std::fmt::Debug for DelayLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelayLine")
+            .field("write_pos", &self.write_pos)
+            .field("max_delay_samples", &self.max_delay_samples)
+            .finish_non_exhaustive()
+    }
+}
+
 impl DelayLine {
     /// Allocates a line holding up to `max_delay_samples` frames of history.
     ///
     /// The backing buffer is one frame longer than the maximum delay, so that
     /// an interpolating read at exactly `max_delay_samples` still has a second
     /// tap to blend toward. Allocates — build before going live.
+    #[must_use]
     pub fn new(max_delay_samples: usize) -> Self {
         Self {
             buffer: vec![0.0; max_delay_samples + 1],
@@ -179,7 +189,7 @@ fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
 
 /// The block's raw scalar controls — what the next block's ramps start from.
 /// `fb`/`cf` are bounded as a pair per sample, after ramping.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct DelayControls {
     fb: f32,
     cf: f32,
@@ -269,6 +279,26 @@ pub struct DelayLineNode {
     /// into a recirculating line stays there for good.
     good: [LastGood; 3],
     good_delay: Vec<LastGood>,
+}
+
+impl std::fmt::Debug for DelayLineNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DelayLineNode")
+            .field("delays", &self.delays)
+            .field("delay_time", &self.delay_time)
+            .field("feedback", &self.feedback)
+            .field("cross_feedback", &self.cross_feedback)
+            .field("cross_routed", &self.cross_routed)
+            .field("mix", &self.mix)
+            .field("interpolation", &self.interpolation)
+            .field("sample_rate", &self.sample_rate)
+            .field("max_delay", &self.max_delay)
+            .field("last", &self.last)
+            .field("delay_ramps", &self.delay_ramps)
+            .field("good", &self.good)
+            .field("good_delay", &self.good_delay)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The params a [`DelayLineNode`] lets the graph modulate, in port order.
@@ -388,6 +418,7 @@ impl DelayLineNode {
     /// errors, never audio-thread ones. A NaN or infinite weight would survive
     /// the row scaling (`inf / inf` is NaN) and poison the loop it feeds
     /// forever, so it is refused here rather than rendered.
+    #[must_use]
     pub fn with_cross_feedback_matrix(mut self, matrix: &[f32]) -> Self {
         let n = self.width();
         assert_eq!(
@@ -421,6 +452,7 @@ impl DelayLineNode {
     ///
     /// Baked at construction — there is no live setter, because the mode is a
     /// build-time quality choice rather than something to automate.
+    #[must_use]
     pub fn with_interpolation(mut self, mode: InterpolationMode) -> Self {
         self.interpolation = mode;
         self

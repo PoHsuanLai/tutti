@@ -106,6 +106,7 @@ private_intra_doc_links = "deny"
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(docsrs)'] }
 missing_docs = "warn"
+missing_debug_implementations = "warn"
 
 # A system's argument list IS its dependency declaration, and a query filter is
 # the query specification — aliasing either behind a type or a SystemParam bundle
@@ -113,6 +114,8 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
 #

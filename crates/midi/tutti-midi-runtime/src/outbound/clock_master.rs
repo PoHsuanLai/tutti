@@ -45,6 +45,7 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 /// each event to its caller — no allocation, no locks. Shared (`Arc`) between
 /// the [`ClockNode`](crate::ClockNode) that ticks it and the control thread
 /// that configures it.
+#[derive(Debug)]
 pub struct ClockMaster {
     /// The device rate, in Hz: what turns the transport's beats into frame
     /// offsets. An atomic because a device restart moves it

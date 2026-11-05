@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+#[derive(Debug)]
 pub(super) struct Pedal {
     path: PathBuf,
 }

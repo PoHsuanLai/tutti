@@ -113,6 +113,7 @@ pub struct NoteEnvelopeNode {
 
 impl NoteEnvelopeNode {
     /// A note envelope of `adsr`, sending as `source`.
+    #[must_use]
     pub fn new(source: SourceId, adsr: Adsr) -> Self {
         let mut node = Self {
             source: source.0,
@@ -136,6 +137,7 @@ impl NoteEnvelopeNode {
     /// The node `decl` describes (what `tutti_mod::compile` gives each
     /// note envelope): `None` when `decl` is not a note envelope. The rate
     /// comes at `prepare`.
+    #[must_use]
     pub fn from_decl(decl: &SourceNode) -> Option<Self> {
         match decl.kind {
             SignalKind::NoteEnvelope { adsr } => Some(Self::new(decl.id, adsr)),

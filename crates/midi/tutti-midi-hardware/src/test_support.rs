@@ -39,6 +39,7 @@ use tutti_midi_types::ump::MidiEvent;
 /// "reconnecting does not reopen" is asserted at all, since a second driver
 /// connection to one device duplicates every inbound event and is invisible from
 /// the outside.
+#[derive(Debug)]
 pub struct FakeBackend {
     inputs: Vec<EndpointInfo>,
     outputs: Vec<EndpointInfo>,

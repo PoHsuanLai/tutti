@@ -144,7 +144,7 @@ impl Default for PluginRequest {
 /// Private field, no constructor: [`plugin_load_start`] inserts this and
 /// [`plugin_load_promote`] drains it. A host that could build one could hand the
 /// promoter a task belonging to no request.
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct PendingPlugin {
     task: Task<PluginLoaded>,
     /// Hosted in process (VST2): the plugin opens in
@@ -296,6 +296,10 @@ pub fn plugin_load_start(
 /// this system and stalls the frame it lands in; two landing together
 /// would stall it twice over. The second waits, its task unpolled, for the
 /// next frame. Out-of-process loads, opened on the pool, are all promoted.
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "`add_plugin` hosts the node it returns, so looking it up cannot miss"
+)]
 pub fn plugin_load_promote(
     _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,

@@ -19,7 +19,7 @@ use crate::{
 /// plugin advertised
 /// [`Features::SEQUENCER_CONTEXT`](crate::Features::SEQUENCER_CONTEXT). Only the
 /// VST3 loader reads it.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ExpressiveContext<'a> {
     /// Chord events in effect this block. `None` when the host sends no chord
     /// track — not "no chord".
@@ -40,7 +40,7 @@ pub struct ExpressiveContext<'a> {
 /// Each best-effort field is `Some` only when the plugin advertised the
 /// matching bit in [`Features::CONSUMES`](crate::Features) — the host gates the
 /// send on the flag, never on the plugin's format.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProcessContext<'a> {
     /// MIDI for this block, in ascending time order. An empty slice rather than
     /// an `Option` — every format takes MIDI, so there is no "did not send"
@@ -58,11 +58,13 @@ pub struct ProcessContext<'a> {
 
 impl<'a> ProcessContext<'a> {
     /// Builds a context with no MIDI and every best-effort input absent.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Attaches this block's MIDI (builder).
+    #[must_use]
     pub fn midi(mut self, events: &'a [MidiEvent]) -> Self {
         self.midi_events = events;
         self
@@ -70,6 +72,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches parameter automation (builder). Call only when the plugin
     /// advertised [`Features::PARAM_AUTOMATION`](crate::Features).
+    #[must_use]
     pub fn params(mut self, changes: &'a ParameterChanges) -> Self {
         self.param_changes = Some(changes);
         self
@@ -77,6 +80,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches note expression (builder). Call only when the plugin advertised
     /// [`Features::NOTE_EXPRESSION`](crate::Features).
+    #[must_use]
     pub fn note_expression(mut self, changes: &'a NoteExpressionChanges) -> Self {
         self.note_expression = Some(changes);
         self
@@ -84,6 +88,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches transport state (builder). Call only when the plugin advertised
     /// [`Features::TRANSPORT`](crate::Features).
+    #[must_use]
     pub fn transport(mut self, info: &'a TransportInfo) -> Self {
         self.transport = Some(info);
         self
@@ -91,6 +96,7 @@ impl<'a> ProcessContext<'a> {
 
     /// Attaches sequencer context (builder). Call only when the plugin
     /// advertised [`Features::SEQUENCER_CONTEXT`](crate::Features).
+    #[must_use]
     pub fn expressive(mut self, ctx: ExpressiveContext<'a>) -> Self {
         self.expressive = Some(ctx);
         self
@@ -106,7 +112,7 @@ impl<'a> ProcessContext<'a> {
 /// survives from block to block and the realtime path stops allocating once
 /// warm. Reset it with [`clear`](Self::clear), never by assigning a fresh
 /// value — that discards exactly the capacity the reuse exists for.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProcessOutput {
     /// MIDI the plugin emitted this block — a note effect's output, or an
     /// instrument echoing what it consumed.

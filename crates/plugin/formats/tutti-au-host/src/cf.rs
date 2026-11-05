@@ -191,6 +191,10 @@ impl CfPlist {
     }
 
     /// Serializes the property list to binary plist form.
+    ///
+    /// # Errors
+    ///
+    /// [`AuError::InvalidBuffer`] when CoreFoundation cannot serialize it.
     pub fn to_binary(&self) -> Result<Vec<u8>> {
         let data = propertylist::create_data(self.as_raw(), kCFPropertyListBinaryFormat_v1_0)
             .map_err(|_| AuError::InvalidBuffer("CFPropertyListCreateData failed".into()))?;
@@ -198,6 +202,11 @@ impl CfPlist {
     }
 
     /// Parses a binary plist blob back into a property list.
+    ///
+    /// # Errors
+    ///
+    /// [`AuError::InvalidBuffer`] when `bytes` do not decode as a property
+    /// list.
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
         let data = core_foundation::data::CFData::from_buffer(bytes);
         let (plist_ref, _format) =

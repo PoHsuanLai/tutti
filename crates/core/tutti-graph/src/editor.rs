@@ -369,6 +369,27 @@ pub struct Editor {
     revision: u64,
 }
 
+impl std::fmt::Debug for Editor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Editor")
+            .field("out", &self.out)
+            .field("fades_out", &self.fades_out)
+            .field("sent", &self.sent)
+            .field("prepare", &self.prepare)
+            .field("fades", &self.fades)
+            .field("latency_cuts", &self.latency_cuts)
+            .field("next_gen", &self.next_gen)
+            .field("planned", &self.plan.is_some())
+            .field("committed", &self.committed)
+            .field("poisoned", &self.poisoned)
+            .field("limits", &self.limits)
+            .field("event_capacity", &self.event_capacity)
+            .field("param_ranges", &self.param_ranges.len())
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A panic payload as text.
 fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
     p.downcast_ref::<&str>()
@@ -399,6 +420,7 @@ fn refresh(key: NodeKey, shape: Shape, spec: &mut GraphSpec, shapes: &mut Shapes
 impl Editor {
     /// An empty graph, and the executor that will run it, both for
     /// `prepare`. The only way to build an [`Executor`].
+    #[must_use]
     pub fn new(prepare: Prepare) -> (Self, Executor) {
         Self::with_event_capacity(prepare, DEFAULT_EVENT_CAPACITY)
     }
@@ -408,6 +430,7 @@ impl Editor {
     /// ([`Shape::event_capacity`](crate::Shape::event_capacity)) — its
     /// writer's limit, and the rate the delay FIFOs fed by it are sized
     /// from. A declared capacity overrides it for that node's ports.
+    #[must_use]
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
@@ -1357,6 +1380,10 @@ impl Editor {
     /// unit to place), [`CommitError::Backpressure`],
     /// [`CommitError::Repreparing`], [`CommitError::Poisoned`] or a
     /// [`Limits`] refusal ([`CommitError::TooManyOutputs`]).
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "every pending unit the delta needs was checked present just before it is taken"
+    )]
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;

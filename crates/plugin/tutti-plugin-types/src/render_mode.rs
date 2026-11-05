@@ -80,6 +80,7 @@ impl RenderMode {
     /// Named rather than a bare `== Offline` comparison because every format
     /// edge reduces to this one boolean, and each of them spells it
     /// differently.
+    #[must_use]
     pub fn is_offline(self) -> bool {
         matches!(self, RenderMode::Offline)
     }
@@ -89,6 +90,7 @@ impl RenderMode {
     /// The inverse of [`is_offline`](Self::is_offline), for the call sites that
     /// hold a bool — an export driver, or an engine reporting that it is
     /// freewheeling.
+    #[must_use]
     pub fn from_offline(offline: bool) -> Self {
         if offline {
             RenderMode::Offline

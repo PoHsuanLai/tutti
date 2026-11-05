@@ -77,7 +77,7 @@ pub type MidiEventVec = Vec<MidiEvent>;
 ///
 /// [`Vst2Instance::process_f32`]: crate::Vst2Instance::process_f32
 /// [`Vst2Instance::process_f64`]: crate::Vst2Instance::process_f64
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
     /// offset within the block. Empty is normal for an effect.
@@ -97,6 +97,7 @@ impl<'a> Vst2ProcessContext<'a> {
     /// Creates a context with no MIDI and no transport, carrying only
     /// `sample_rate` in Hz. Layer the rest on with [`Self::midi`] and
     /// [`Self::transport`].
+    #[must_use]
     pub fn new(sample_rate: f64) -> Self {
         Self {
             midi: &[],
@@ -106,12 +107,14 @@ impl<'a> Vst2ProcessContext<'a> {
     }
 
     /// Attaches this block's MIDI events, replacing any already set.
+    #[must_use]
     pub fn midi(mut self, midi: &'a [MidiEvent]) -> Self {
         self.midi = midi;
         self
     }
 
     /// Attaches this block's transport state, replacing any already set.
+    #[must_use]
     pub fn transport(mut self, transport: &'a TransportInfo) -> Self {
         self.transport = Some(transport);
         self

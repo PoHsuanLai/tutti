@@ -215,6 +215,7 @@ impl core::fmt::Debug for MotionFsm {
 
 impl MotionFsm {
     /// Creates a stopped machine publishing into `settings`, with an empty queue.
+    #[must_use]
     pub fn new(settings: TransportSettings) -> Self {
         let home = Arc::new(ArrayQueue::new(1));
         // A fresh capacity-one queue has room.
@@ -383,12 +384,14 @@ impl MotionFsm {
 
     /// Whether the published motion is exactly [`MotionState::Rolling`] —
     /// `false` while scrubbing or mid-fade.
+    #[must_use]
     pub fn is_playing(&self) -> bool {
         self.motion() == MotionState::Rolling
     }
 
     /// Whether the published motion is exactly [`MotionState::Stopped`] —
     /// `false` during a fade that has not yet completed.
+    #[must_use]
     pub fn is_stopped(&self) -> bool {
         self.motion() == MotionState::Stopped
     }

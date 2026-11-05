@@ -324,6 +324,7 @@ impl Path {
 
     /// Whether the path needs an event excitation. The audio-impulse rows
     /// run every other one.
+    #[must_use]
     pub const fn needs_events(self) -> bool {
         matches!(
             self,
@@ -370,6 +371,19 @@ pub struct Row {
     output: u16,
     latency: Option<Samples>,
     lead: u64,
+}
+
+impl std::fmt::Debug for Row {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Row")
+            .field("name", &self.name)
+            .field("excite", &self.excite)
+            .field("detect", &self.detect)
+            .field("output", &self.output)
+            .field("latency", &self.latency)
+            .field("lead", &self.lead)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Row {
@@ -1095,6 +1109,7 @@ pub struct ParamEcho {
 
 impl ParamEcho {
     /// An echo of `param`.
+    #[must_use]
     pub fn new(param: UnitParam) -> Self {
         Self { param }
     }
@@ -1157,6 +1172,7 @@ const PULSE_GRID_PHASE: u64 = 3;
 
 impl Pulse {
     /// A pulse delayed by `latency`, declared as its [`Shape::latency`].
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self {
             latency,
@@ -1242,6 +1258,7 @@ pub struct Lookahead {
 
 impl Lookahead {
     /// A delay of `latency`, declared as such.
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self {
             latency,
@@ -1290,6 +1307,7 @@ pub struct Latent {
 
 impl Latent {
     /// A silent node declaring `latency`.
+    #[must_use]
     pub fn new(latency: Latency) -> Self {
         Self { latency }
     }
@@ -1320,6 +1338,7 @@ pub struct Emitter {
 
 impl Emitter {
     /// An emitter armed for `at`.
+    #[must_use]
     pub fn new(at: Frame, kind: EventKind) -> Self {
         Self { at, kind }
     }
@@ -1361,6 +1380,7 @@ pub struct ParamPulse {
 
 impl ParamPulse {
     /// A pulse of `amplitude` on `param` at `at`.
+    #[must_use]
     pub fn new(at: Frame, param: UnitParam, amplitude: f32) -> Self {
         Self {
             at,
@@ -1696,6 +1716,16 @@ pub struct BlockRig {
     outputs: Vec<Vec<f32>>,
 }
 
+impl std::fmt::Debug for BlockRig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockRig")
+            .field("_editor", &self._editor)
+            .field("exec", &self.exec)
+            .field("frames", &self.frames)
+            .finish_non_exhaustive()
+    }
+}
+
 impl BlockRig {
     /// `node`, alone, prepared at `rate` for blocks of `frames`, with
     /// silent inputs. Returns its controls.
@@ -1805,6 +1835,18 @@ pub struct Direct<N> {
     outputs: Vec<Vec<f32>>,
     events_in: Vec<Vec<Event>>,
     events_out: Vec<Vec<Event>>,
+}
+
+impl<N> std::fmt::Debug for Direct<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Direct")
+            .field("rate", &self.rate)
+            .field("frames", &self.frames)
+            .field("len", &self.len)
+            .field("frame", &self.frame)
+            .field("transport", &self.transport)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<N: Node> Direct<N> {

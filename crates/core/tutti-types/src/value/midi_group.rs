@@ -75,12 +75,14 @@ impl MidiGroup {
     /// Rejecting here would make this type stricter than the format it
     /// addresses.
     #[inline]
+    #[must_use]
     pub const fn new(raw: u8) -> MidiGroup {
         MidiGroup(raw & 0x0F)
     }
 
     /// Returns the raw 0-based group number, for a UMP constructor.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u8 {
         self.0
     }

@@ -39,6 +39,7 @@ type Edits = Arc<Mutex<Vec<(u32, f32)>>>;
 /// Ids are the `u32` a `ParamAddr::Id` names: a CLAP, VST3 or AU parameter
 /// id, or a VST2 index. Values are the plugin's own `f32`, untyped because
 /// they cross the plugin boundary as the format gives them.
+#[derive(Debug)]
 pub struct PluginParamValues {
     values: Option<HashMap<u32, f32>>,
     edits: Edits,
@@ -50,6 +51,7 @@ pub struct PluginParamValues {
 /// `Send`, so it runs on any thread. [`run`](Self::run) makes one round trip
 /// per parameter, so a host keeps it off a thread that must not block.
 #[must_use = "a mirror whose read is dropped never becomes ready"]
+#[derive(Debug)]
 pub struct ParamRead {
     handle: PluginHandle,
 }
@@ -58,6 +60,7 @@ impl ParamRead {
     /// Reads every parameter the plugin lists, by id. A parameter whose
     /// address has no `u32` id, or whose value the plugin does not answer, is
     /// left out; a plugin that lists none gives an empty map.
+    #[must_use]
     pub fn run(self) -> HashMap<u32, f32> {
         let params = self.handle.params();
         params
@@ -128,6 +131,7 @@ impl PluginParamValues {
     }
 
     /// Whether the load-time read has landed.
+    #[must_use]
     pub fn is_ready(&self) -> bool {
         self.values.is_some()
     }

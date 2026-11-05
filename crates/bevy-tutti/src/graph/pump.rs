@@ -143,7 +143,7 @@ pub use tutti_io::IDLE_PARK;
 ///
 /// Register the drain for each element type a host uses with
 /// [`add_audio_pump`](AudioPumpAppExt::add_audio_pump).
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct AudioPump<S = f32> {
     take: Take,
     /// `fn() -> S` rather than `S`, so the component is `Send + Sync` whatever
@@ -152,6 +152,7 @@ pub struct AudioPump<S = f32> {
 }
 
 /// What [`AudioPump::start`] got back from [`Recorder`].
+#[derive(Debug)]
 enum Take {
     /// The pump is live (or has ended and awaits collection).
     Running(Recorder),
@@ -233,6 +234,7 @@ impl<S> AudioPump<S> {
     /// [`EndOfStream`](tutti_core::io::OnEmpty::EndOfStream) source that ran out
     /// has exited while this still reads `true`, until the drain observes it. A
     /// pump refused at start was never running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         match &self.take {
             Take::Running(recorder) => recorder.is_running(),

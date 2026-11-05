@@ -241,6 +241,7 @@ impl JrStream {
     }
 
     /// A stream over an existing stamper.
+    #[must_use]
     pub fn with_stamper(stamper: JrStamper) -> Self {
         Self {
             stamper,
@@ -254,6 +255,7 @@ impl JrStream {
     /// Once set, [`stamp_span`](Self::stamp_span) prefixes a clock to each block
     /// where one is due — including blocks with no events at all, which is why
     /// the cadence cannot ride on [`stamp`](Self::stamp) alone.
+    #[must_use]
     pub fn with_clock(mut self, sample_rate: impl Into<SampleRate>) -> Self {
         self.emitter = Some(JrClockEmitter::new(sample_rate));
         self
@@ -265,6 +267,7 @@ impl JrStream {
     ///
     /// Panics if `interval` is above [`JR_CLOCK_MAX_INTERVAL`]; see
     /// [`JrClockEmitter::with_interval`].
+    #[must_use]
     pub fn with_clock_interval(
         mut self,
         sample_rate: impl Into<SampleRate>,
@@ -339,6 +342,7 @@ pub struct JrReceiver {
 
 impl JrReceiver {
     /// A fresh receiver with no history.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

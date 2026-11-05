@@ -125,6 +125,15 @@ pub struct SoundFontUnit {
     midi_buffer: Vec<MidiEvent>,
 }
 
+impl std::fmt::Debug for SoundFontUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SoundFontUnit")
+            .field("synthesizer", &self.synthesizer)
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SoundFontUnit {
     /// Creates a unit over a decoded `SoundFont`.
     ///

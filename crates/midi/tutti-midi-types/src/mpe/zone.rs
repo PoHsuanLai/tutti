@@ -124,12 +124,14 @@ impl MpeZoneConfig {
     }
 
     /// Override the **master** channel's bend range (RPN 0 on the master).
+    #[must_use]
     pub fn with_master_pitch_bend_range(mut self, semitones: u8) -> Self {
         self.master_pitch_bend_range = PitchBendSensitivity::from_semitones(semitones);
         self
     }
 
     /// Override the **member** channels' bend range (RPN 0 on a member).
+    #[must_use]
     pub fn with_member_pitch_bend_range(mut self, semitones: u8) -> Self {
         self.member_pitch_bend_range = PitchBendSensitivity::from_semitones(semitones);
         self
@@ -137,6 +139,7 @@ impl MpeZoneConfig {
 
     /// Reports whether `channel` is this zone's master.
     #[inline]
+    #[must_use]
     pub fn is_master_channel(&self, channel: u8) -> bool {
         channel == self.master_channel
     }
@@ -146,6 +149,7 @@ impl MpeZoneConfig {
     /// False for the master channel and false for every channel of a
     /// [`MpeZone::SingleChannel`] configuration, which has no members at all.
     #[inline]
+    #[must_use]
     pub fn is_member_channel(&self, channel: u8) -> bool {
         match self.zone {
             MpeZone::Lower => {
@@ -192,6 +196,7 @@ impl MpeZoneConfig {
     ///
     /// The 7-bit member count sits in the top 7 bits of the 32-bit data field
     /// (MSB-aligned, the spec's 7→32 convention) so it round-trips exactly.
+    #[must_use]
     pub fn to_mcm(&self) -> crate::ump::MidiEvent {
         crate::ump::MidiEvent::registered_controller(
             MidiGroup::FIRST,
@@ -212,6 +217,7 @@ impl MpeZoneConfig {
     /// Ch1 or Ch16. Clamping would silently reconfigure the zone to something
     /// the sender never asked for; `None` lets the caller ignore the message and
     /// keep the zone it had.
+    #[must_use]
     pub fn from_mcm(event: &crate::ump::MidiEvent) -> Option<(u8, u8)> {
         use midi2::channel_voice2::ChannelVoice2;
         use midi2::{Channeled, UmpMessage};

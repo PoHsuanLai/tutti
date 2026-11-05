@@ -11,6 +11,7 @@ use crate::host::PoolRequest;
 impl ClapLoaded {
     /// Whether the plugin implements `clap.thread-pool` (it has tasks it can
     /// spread over a host's pool).
+    #[must_use]
     pub fn supports_thread_pool(&self) -> bool {
         self.thread_pool_exec().is_some()
     }

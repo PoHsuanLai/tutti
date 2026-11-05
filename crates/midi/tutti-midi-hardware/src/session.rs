@@ -119,6 +119,17 @@ impl OpenInput {
     }
 }
 
+impl Inner {
+    /// The open endpoints. A panic while the lock was held leaves plain maps
+    /// behind, so a poisoned lock is taken as it is rather than panicking
+    /// every later call.
+    fn open(&self) -> std::sync::MutexGuard<'_, Open> {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 struct OpenOutput {
     id: EndpointId,
     name: String,
@@ -127,7 +138,7 @@ struct OpenOutput {
 
 impl core::fmt::Debug for MidiSession {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let open = self.inner.open.lock().unwrap();
+        let open = self.inner.open();
         f.debug_struct("MidiSession")
             .field("inputs", &open.inputs.len())
             .field("output", &open.output.as_ref().map(|o| &o.name))
@@ -204,7 +215,7 @@ impl MidiSession {
     /// stale id takes after a hot-plug. Otherwise whatever the backend raises
     /// while opening the port.
     pub fn connect_input(&self, id: EndpointId) -> Result<()> {
-        let mut open = self.inner.open.lock().unwrap();
+        let mut open = self.inner.open();
         if open.inputs.contains_key(&id) {
             return Ok(());
         }
@@ -268,7 +279,7 @@ impl MidiSession {
     ///
     /// Events still queued in that port are discarded with it.
     pub fn disconnect_input(&self, id: EndpointId) {
-        let mut open = self.inner.open.lock().unwrap();
+        let mut open = self.inner.open();
         if let Some(input) = open.inputs.remove(&id) {
             input.close(&self.inner.ports);
         }
@@ -289,7 +300,7 @@ impl MidiSession {
     pub fn disconnect_input_by_name(&self, name: &str) {
         let needle = name.to_lowercase();
         let id = {
-            let open = self.inner.open.lock().unwrap();
+            let open = self.inner.open();
             open.inputs
                 .iter()
                 .find(|(_, input)| input.name.to_lowercase().contains(&needle))
@@ -302,15 +313,16 @@ impl MidiSession {
 
     /// Closes every open input, retiring each one's port.
     pub fn disconnect_all_inputs(&self) {
-        let mut open = self.inner.open.lock().unwrap();
+        let mut open = self.inner.open();
         for (_, input) in open.inputs.drain() {
             input.close(&self.inner.ports);
         }
     }
 
     /// Whether any input is open.
+    #[must_use]
     pub fn is_any_input_connected(&self) -> bool {
-        !self.inner.open.lock().unwrap().inputs.is_empty()
+        !self.inner.open().inputs.is_empty()
     }
 
     /// The names of every open input.
@@ -324,9 +336,7 @@ impl MidiSession {
     /// satisfy the bound and inference has nothing to go on.
     pub fn connected_input_names(&self) -> Vec<String> {
         self.inner
-            .open
-            .lock()
-            .unwrap()
+            .open()
             .inputs
             .values()
             .map(|input| input.name.clone())
@@ -354,7 +364,7 @@ impl MidiSession {
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI output with id {}", id.raw())))?;
 
         let sink = self.inner.backend.open_output(id)?;
-        let mut open = self.inner.open.lock().unwrap();
+        let mut open = self.inner.open();
         open.output = Some(OpenOutput {
             id,
             name: info.name,
@@ -382,34 +392,23 @@ impl MidiSession {
 
     /// Closes the output endpoint, if one is open.
     pub fn disconnect_output(&self) {
-        self.inner.open.lock().unwrap().output = None;
+        self.inner.open().output = None;
     }
 
     /// Whether an output is open.
+    #[must_use]
     pub fn is_output_connected(&self) -> bool {
-        self.inner.open.lock().unwrap().output.is_some()
+        self.inner.open().output.is_some()
     }
 
     /// The open output's name, if any.
     pub fn output_device_name(&self) -> Option<String> {
-        self.inner
-            .open
-            .lock()
-            .unwrap()
-            .output
-            .as_ref()
-            .map(|o| o.name.clone())
+        self.inner.open().output.as_ref().map(|o| o.name.clone())
     }
 
     /// The open output's endpoint, if any.
     pub fn output_endpoint(&self) -> Option<EndpointId> {
-        self.inner
-            .open
-            .lock()
-            .unwrap()
-            .output
-            .as_ref()
-            .map(|o| o.id)
+        self.inner.open().output.as_ref().map(|o| o.id)
     }
 
     /// Sends events to the open output.
@@ -427,7 +426,7 @@ impl MidiSession {
     /// count names an unbroken **prefix** of `events`. Control-thread only: this
     /// takes a lock and the backends allocate per send.
     pub fn send(&self, events: &[MidiEvent]) -> usize {
-        let open = self.inner.open.lock().unwrap();
+        let open = self.inner.open();
         match open.output.as_ref() {
             Some(out) => out.sink.queue(events),
             None => 0,

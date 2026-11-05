@@ -7,6 +7,7 @@ use std::slice;
 /// `AudioBuffer` contains references to the audio buffers for all input and output channels.
 ///
 /// To create an `AudioBuffer` in a host, use a [`HostBuffer`](../host/struct.HostBuffer.html).
+#[derive(Debug)]
 pub struct AudioBuffer<'a, T: 'a + Float> {
     inputs: &'a [*const T],
     outputs: &'a mut [*mut T],
@@ -96,6 +97,7 @@ impl<'a, T: 'a + Float> AudioBuffer<'a, T> {
 }
 
 /// Iterator over pairs of buffers of input channels and output channels.
+#[derive(Debug)]
 pub struct AudioBufferIterator<'a, 'b, T>
 where
     T: 'a + Float,
@@ -140,7 +142,7 @@ use std::ops::{Index, IndexMut};
 
 /// Wrapper type to access the buffers for the input channels of an `AudioBuffer` in a safe way.
 /// Behaves like a slice.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Inputs<'a, T: 'a> {
     bufs: &'a [*const T],
     samples: usize,
@@ -187,6 +189,7 @@ impl<'a, T> Index<usize> for Inputs<'a, T> {
 }
 
 /// Iterator over buffers for input channels of an `AudioBuffer`.
+#[derive(Debug)]
 pub struct InputIterator<'a, T: 'a> {
     data: Inputs<'a, T>,
     i: usize,
@@ -217,6 +220,7 @@ impl<'a, T: Sized> IntoIterator for Inputs<'a, T> {
 
 /// Wrapper type to access the buffers for the output channels of an `AudioBuffer` in a safe way.
 /// Behaves like a slice.
+#[derive(Debug)]
 pub struct Outputs<'a, T: 'a> {
     bufs: &'a [*mut T],
     samples: usize,
@@ -274,6 +278,7 @@ impl<'a, T> IndexMut<usize> for Outputs<'a, T> {
 }
 
 /// Iterator over buffers for output channels of an `AudioBuffer`.
+#[derive(Debug)]
 pub struct OutputIterator<'a, 'b, T>
 where
     T: 'a,
@@ -396,6 +401,14 @@ use std::mem;
 pub struct SendEventBuffer {
     buf: Vec<u8>,
     api_events: Vec<PlaceholderEvent>, // using SysExEvent to store both because it's larger than MidiEvent
+}
+
+impl std::fmt::Debug for SendEventBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendEventBuffer")
+            .field("api_events", &self.api_events)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for SendEventBuffer {

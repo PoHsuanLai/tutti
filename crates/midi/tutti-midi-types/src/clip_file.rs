@@ -50,6 +50,7 @@ pub struct ClipEvent {
 impl ClipEvent {
     /// A timed event: `delta_ticks` since the previous event, then the event.
     #[inline]
+    #[must_use]
     pub const fn new(delta_ticks: u32, event: MidiEvent) -> Self {
         Self { delta_ticks, event }
     }

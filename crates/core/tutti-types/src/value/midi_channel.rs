@@ -64,12 +64,14 @@ impl MidiChannel {
     /// assert_eq!(MidiChannel::new(9).as_display_number(), 10);
     /// ```
     #[inline]
+    #[must_use]
     pub const fn new(raw: u8) -> MidiChannel {
         MidiChannel(raw & 0x0F)
     }
 
     /// Returns the raw 0-based channel number, for a UMP constructor.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u8 {
         self.0
     }
@@ -80,6 +82,7 @@ impl MidiChannel {
     /// Named because the off-by-one is a display convention, and a bare `+ 1`
     /// at a call site hides that it is one.
     #[inline]
+    #[must_use]
     pub const fn as_display_number(self) -> u8 {
         self.0 + 1
     }

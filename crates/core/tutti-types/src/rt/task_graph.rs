@@ -193,6 +193,7 @@ impl TaskGraph {
     /// If the rows do not match the task count, a successor is out of range,
     /// a task's predecessor count disagrees with the rows naming it, or the
     /// rows have a cycle — each a graph whose blocks could never finish.
+    #[must_use]
     pub fn new(initial: &[u32], offsets: &[u32], targets: &[u32]) -> Self {
         let n = initial.len();
         assert!(n < EMPTY as usize, "too many tasks");
@@ -767,7 +768,7 @@ mod tests {
     #[should_panic(expected = "cycle")]
     fn a_cycle_is_refused() {
         // 0 → 1 → 2 → 1.
-        TaskGraph::new(&[0, 2, 1], &[0, 1, 2, 3], &[1, 2, 1]);
+        let _ = TaskGraph::new(&[0, 2, 1], &[0, 1, 2, 3], &[1, 2, 1]);
     }
 
     /// A graph whose counts disagree with its rows is refused.
@@ -777,6 +778,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "disagree")]
     fn inconsistent_counts_are_refused() {
-        TaskGraph::new(&[0, 2], &[0, 1, 1], &[1]);
+        let _ = TaskGraph::new(&[0, 2], &[0, 1, 1], &[1]);
     }
 }

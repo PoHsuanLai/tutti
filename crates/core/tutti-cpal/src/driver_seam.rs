@@ -60,6 +60,7 @@ pub const PREFERRED_QUANTUM: Samples = Samples(512);
 
 impl OutputSpec {
     /// Creates a spec with no fixed callback size (the backend's default).
+    #[must_use]
     pub fn new(
         sample_rate: SampleRate,
         channels: ChannelLayout,
@@ -165,6 +166,12 @@ pub struct CpalDriver {
     device: cpal::Device,
 }
 
+impl std::fmt::Debug for CpalDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CpalDriver").finish_non_exhaustive()
+    }
+}
+
 impl CpalDriver {
     pub(crate) fn from_device(device: cpal::Device) -> Self {
         Self { device }
@@ -177,6 +184,7 @@ impl CpalDriver {
 /// The `cpal::Stream` is created, played and dropped on a thread of its own
 /// (some backends tie a stream to its creating thread); this handle is `Send`
 /// and dropping it, from any thread, drops the stream there and waits for it.
+#[derive(Debug)]
 pub struct CpalStream(
     #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] Owned,
 );
@@ -303,6 +311,7 @@ impl CpalDriver {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct ManualStreamDriver {
     slot: Arc<Mutex<Option<OutputBlock>>>,
     faults: Arc<Mutex<Option<Arc<StreamFaults>>>>,
@@ -314,6 +323,7 @@ pub struct ManualStreamDriver {
 /// Once the stream is stopped every method returns `None` (or `false`), which
 /// is how a test observes the stop. Each call takes a mutex around the block;
 /// this type is for tests and tools, not the audio thread.
+#[derive(Debug)]
 pub struct ManualStream {
     slot: Arc<Mutex<Option<OutputBlock>>>,
     faults: Arc<Mutex<Option<Arc<StreamFaults>>>>,
@@ -322,6 +332,7 @@ pub struct ManualStream {
 impl ManualStreamDriver {
     /// Creates a driver and the handle that runs its callbacks.
     #[allow(clippy::new_without_default, reason = "returns a pair, not Self")]
+    #[must_use]
     pub fn new() -> (Self, ManualStream) {
         let slot = Arc::new(Mutex::new(None));
         let faults = Arc::new(Mutex::new(None));
@@ -386,6 +397,7 @@ impl ManualStream {
     }
 
     /// Returns whether a stream is currently open on this handle.
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.slot
             .lock()
@@ -396,6 +408,7 @@ impl ManualStream {
 
 /// The running handle of a [`ManualStreamDriver`] stream. Dropping it stops
 /// the stream: every [`ManualStream`] call then returns `None`.
+#[derive(Debug)]
 pub struct ManualRunning {
     slot: Arc<Mutex<Option<OutputBlock>>>,
 }

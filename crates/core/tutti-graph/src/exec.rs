@@ -669,6 +669,24 @@ pub struct Executor {
     pool: Option<Arc<dyn Pool>>,
 }
 
+impl std::fmt::Debug for Executor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Executor")
+            .field("prepare", &self.prepare)
+            .field("event_cap", &self.event_cap)
+            .field("planned", &self.plan.is_some())
+            .field("frame", &self.frame)
+            .field("dropped", &self.dropped)
+            .field("applied", &self.applied)
+            .field("suspended", &self.suspended)
+            .field("next_prepare", &self.next_prepare)
+            .field("reset_time", &self.reset_time)
+            .field("play", &self.play)
+            .field("pool", &self.pool)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The parallel state for `plan` on `pool`, when it would run in
 /// parallel at all: when the cost model ([`Plan::schedule`]) says spreading
 /// pays for some block length on this pool (which needs a pool of more

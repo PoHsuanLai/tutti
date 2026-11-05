@@ -76,6 +76,7 @@ pub struct TransportInfo {
 /// Every format host uses this one gate. This is the finiteness half only. A field with an additional domain rule
 /// (tempo must also be positive) applies that at the call site, since the rule
 /// is per-field rather than per-type.
+#[must_use]
 pub fn is_usable(value: f64) -> bool {
     value.is_finite()
 }
@@ -227,41 +228,48 @@ impl Default for TransportInfo {
 
 impl TransportInfo {
     /// Creates the default transport: stopped, 120 BPM, 4/4.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Sets tempo in BPM (builder). Not validated here — see [`is_usable`].
+    #[must_use]
     pub fn with_tempo(mut self, tempo: f64) -> Self {
         self.timing.tempo = tempo;
         self
     }
 
     /// Sets the playing flag (builder).
+    #[must_use]
     pub fn with_playing(mut self, playing: bool) -> Self {
         self.state.playing = playing;
         self
     }
 
     /// Sets the recording flag (builder). Independent of the playing flag.
+    #[must_use]
     pub fn with_recording(mut self, recording: bool) -> Self {
         self.state.recording = recording;
         self
     }
 
     /// Sets the time signature at the playhead (builder).
+    #[must_use]
     pub fn with_time_signature(mut self, signature: TimeSignature) -> Self {
         self.timing.signature = signature;
         self
     }
 
     /// Sets the render rate in Hz (builder).
+    #[must_use]
     pub fn with_sample_rate(mut self, sample_rate: f64) -> Self {
         self.sample_rate = sample_rate;
         self
     }
 
     /// Sets the CLAP-style position (beats and seconds) (builder).
+    #[must_use]
     pub fn with_position_beats(mut self, beats: f64, seconds: f64) -> Self {
         self.position.beats = beats;
         self.position.seconds = seconds;
@@ -273,6 +281,7 @@ impl TransportInfo {
     /// Does **not** set a sample position: the producer reports that
     /// separately via [`with_position_samples`](Self::with_position_samples),
     /// and one that has none leaves [`TransportPosition::samples`] `None`.
+    #[must_use]
     pub fn with_position_quarters(mut self, quarters: f64) -> Self {
         self.position.quarters = quarters;
         self
@@ -282,6 +291,7 @@ impl TransportInfo {
     /// `projectTimeSamples`), the one that jumps on loop/relocate (builder).
     ///
     /// See [`TransportPosition::samples`] for how the engine derives it.
+    #[must_use]
     pub fn with_position_samples(mut self, samples: i64) -> Self {
         self.position.samples = Some(samples);
         self
@@ -292,6 +302,7 @@ impl TransportInfo {
     /// on loop (builder).
     ///
     /// Left at `0`, consumers fall back to the project-time `samples`.
+    #[must_use]
     pub fn with_continuous_samples(mut self, continuous_samples: i64) -> Self {
         self.position.continuous_samples = continuous_samples;
         self
@@ -299,6 +310,7 @@ impl TransportInfo {
 
     /// Sets the host's monotonic clock reading, in nanoseconds (builder). See
     /// [`TransportInfo::system_time_ns`].
+    #[must_use]
     pub fn with_system_time_ns(mut self, nanoseconds: i64) -> Self {
         self.system_time_ns = Some(nanoseconds);
         self
@@ -395,6 +407,7 @@ impl TransportInfo {
     /// engine measures both in quarter notes — the distinction exists only for
     /// hosts whose CLAP beat axis is notated beats rather than quarters. VST2
     /// and VST3 read `position_quarters`; CLAP reads `start_beats`.
+    #[must_use]
     pub fn with_bar(mut self, start_quarters: f64, number: BarNumber) -> Self {
         self.bar.position_quarters = start_quarters;
         self.bar.start_beats = start_quarters;
@@ -407,6 +420,7 @@ impl TransportInfo {
     /// The `_beats` and `_quarters` pairs take the same value for the same
     /// reason [`with_bar`](Self::with_bar) does. VST2 and VST3 read the
     /// `_quarters` pair; CLAP reads the `_beats` pair.
+    #[must_use]
     pub fn with_loop(mut self, active: bool, start_beats: f64, end_beats: f64) -> Self {
         self.state.cycle_active = active;
         self.loop_region.start_beats = start_beats;
@@ -448,6 +462,7 @@ impl PlayheadWatch {
     const BEAT_TOLERANCE: f64 = 1e-3;
 
     /// A watch that has seen nothing: its first block reports a change.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

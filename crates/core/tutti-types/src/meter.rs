@@ -73,6 +73,7 @@ impl BeatsPerBar {
     /// make [`TimeSignature::bar_length`] zero and every downstream `bar_at`
     /// divide by it.
     #[inline]
+    #[must_use]
     pub const fn new(beats: u32) -> Self {
         Self(if beats == 0 {
             1
@@ -85,6 +86,7 @@ impl BeatsPerBar {
 
     /// Returns the numerator, in `1..=MAX_BEATS_PER_BAR`.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -144,6 +146,7 @@ impl NoteValue {
     /// `NoteValue(0)` would break this type's entire invariant — `bar_length`
     /// becomes infinite and every downstream bar position `NaN`.
     #[inline]
+    #[must_use]
     pub fn new(value: u32) -> Self {
         Self(
             value
@@ -154,6 +157,7 @@ impl NoteValue {
 
     /// Returns the denominator as written — `8` for 7/8. Always a power of two.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -161,6 +165,7 @@ impl NoteValue {
     /// Returns this note value as a Standard MIDI File denominator exponent —
     /// SMF stores `3` to mean an eighth note, not `8`.
     #[inline]
+    #[must_use]
     pub const fn to_smf_exponent(self) -> u8 {
         self.0.trailing_zeros() as u8
     }
@@ -170,6 +175,7 @@ impl NoteValue {
     /// Saturates at [`MAX_NOTE_VALUE`], so a corrupt file cannot shift past the
     /// width of the underlying integer.
     #[inline]
+    #[must_use]
     pub fn from_smf_exponent(exponent: u8) -> Self {
         if exponent >= MAX_NOTE_VALUE.trailing_zeros() as u8 {
             Self(MAX_NOTE_VALUE)
@@ -274,6 +280,7 @@ impl TimeSignature {
     /// Total: both components clamp in their own constructors, so there is no
     /// invalid signature to reject.
     #[inline]
+    #[must_use]
     pub const fn new(beats_per_bar: BeatsPerBar, note_value: NoteValue) -> Self {
         Self {
             beats_per_bar,
@@ -287,6 +294,7 @@ impl TimeSignature {
     /// [`new`](Self::new) in engine code, where the types make transposition a
     /// compile error.
     #[inline]
+    #[must_use]
     pub fn from_parts(beats_per_bar: u32, note_value: u32) -> Self {
         Self::new(BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value))
     }
@@ -294,12 +302,14 @@ impl TimeSignature {
     /// Returns the numerator. **Not** a bar length — see
     /// [`bar_length`](Self::bar_length).
     #[inline]
+    #[must_use]
     pub const fn beats_per_bar(self) -> BeatsPerBar {
         self.beats_per_bar
     }
 
     /// Returns the denominator: which note value gets one notated beat.
     #[inline]
+    #[must_use]
     pub const fn note_value(self) -> NoteValue {
         self.note_value
     }
@@ -309,6 +319,7 @@ impl TimeSignature {
     /// This is the conversion every bar-math site needs, and treating the
     /// numerator as the bar length is the bug this type exists to prevent.
     #[inline]
+    #[must_use]
     pub fn bar_length(self) -> BeatDuration {
         BeatDuration(f64::from(self.beats_per_bar.get()) * 4.0 / f64::from(self.note_value.get()))
     }
@@ -318,6 +329,7 @@ impl TimeSignature {
     /// What the metronome clicks and what the ruler subdivides, as distinct from
     /// [`bar_length`](Self::bar_length), which is what bars are counted in.
     #[inline]
+    #[must_use]
     pub fn beat_length(self) -> BeatDuration {
         BeatDuration(4.0 / f64::from(self.note_value.get()))
     }
@@ -363,6 +375,7 @@ impl BarNumber {
     /// Wraps a **1-based** bar number. For a 0-based index use
     /// [`from_index`](Self::from_index).
     #[inline]
+    #[must_use]
     pub const fn new(n: i64) -> Self {
         Self(n)
     }
@@ -370,6 +383,7 @@ impl BarNumber {
     /// Returns the 1-based bar number as displayed. Signed, so a pickup bar before bar
     /// 1 is representable.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> i64 {
         self.0
     }
@@ -379,6 +393,7 @@ impl BarNumber {
     /// The 1-based/0-based conversion, in one place, so callers indexing from a
     /// bar number do not each re-derive the off-by-one.
     #[inline]
+    #[must_use]
     pub const fn index(self) -> i64 {
         self.0 - 1
     }
@@ -386,6 +401,7 @@ impl BarNumber {
     /// Creates a bar number from a 0-based index, the inverse of
     /// [`index`](Self::index).
     #[inline]
+    #[must_use]
     pub const fn from_index(index: i64) -> Self {
         Self(index + 1)
     }
@@ -394,12 +410,14 @@ impl BarNumber {
 impl BarCount {
     /// Wraps a signed displacement in bars. Negative counts run backwards.
     #[inline]
+    #[must_use]
     pub const fn new(n: i64) -> Self {
         Self(n)
     }
 
     /// Returns the raw displacement in bars.
     #[inline]
+    #[must_use]
     pub const fn get(self) -> i64 {
         self.0
     }
@@ -500,6 +518,7 @@ impl BarPosition {
     /// Returns whether this position sits on a bar's downbeat (within a
     /// thousandth of a quarter note).
     #[inline]
+    #[must_use]
     pub fn is_downbeat(&self) -> bool {
         self.beat == BeatsPerBar::new(1) && self.fraction.get().abs() < DOWNBEAT_EPSILON
     }
@@ -626,6 +645,7 @@ impl MeterChange {
     /// The bar-line alignment is [`MeterMap::new`]'s to enforce, not this
     /// constructor's — a change built here is not yet validated.
     #[inline]
+    #[must_use]
     pub const fn new(beat: Beat, signature: TimeSignature) -> Self {
         Self { beat, signature }
     }

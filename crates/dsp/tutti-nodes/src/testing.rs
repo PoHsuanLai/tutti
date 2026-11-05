@@ -183,6 +183,7 @@ pub struct Osc {
 
 impl Osc {
     /// Creates a mono, unity-amplitude oscillator of `waveform` at `frequency`.
+    #[must_use]
     pub fn new(waveform: Waveform, frequency: Hz) -> Self {
         Self {
             waveform,
@@ -216,6 +217,7 @@ impl Osc {
     }
 
     /// Scales the output by `amplitude`.
+    #[must_use]
     pub fn with_amplitude(mut self, amplitude: Amplitude) -> Self {
         self.amplitude = amplitude;
         self
@@ -229,6 +231,7 @@ impl Osc {
     /// so an unwrapped value is constructible, and the closed forms in
     /// [`Waveform`] assume `0..1` — a saw started at `1.25` would emit `1.5`,
     /// off the end of its range, until the first wrap.
+    #[must_use]
     pub fn with_phase(mut self, phase: Phase) -> Self {
         let wrapped = Phase::wrapped(phase.get());
         // `rem_euclid` in f32 can round a tiny negative up to exactly 1.0,
@@ -243,6 +246,7 @@ impl Osc {
     }
 
     /// Puts the signal on every channel of `layout`.
+    #[must_use]
     pub fn with_layout(mut self, layout: impl Into<ChannelLayout>) -> Self {
         self.layout = layout.into();
         self

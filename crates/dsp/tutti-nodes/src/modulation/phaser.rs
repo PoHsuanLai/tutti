@@ -43,7 +43,7 @@ impl FrequencyRange {
 }
 
 /// The block's depth / feedback / mix — where the next block's ramps start.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct PhaserControls {
     depth: f32,
     fb: f32,
@@ -141,6 +141,23 @@ pub struct PhaserNode {
     last: Option<PhaserControls>,
 }
 
+impl std::fmt::Debug for PhaserNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhaserNode")
+            .field("stages", &self.stages)
+            .field("width", &self.width)
+            .field("phase_offsets", &self.phase_offsets)
+            .field("phases", &self.phases)
+            .field("lfo", &self.lfo)
+            .field("mix", &self.mix)
+            .field("sample_rate", &self.sample_rate)
+            .field("range", &self.range)
+            .field("authored_max_hz", &self.authored_max_hz)
+            .field("last", &self.last)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PhaserNode {
     /// A mono phaser (1 in, 1 out) with `stages` all-pass sections, clamped to
     /// `2..=12`.
@@ -152,6 +169,7 @@ impl PhaserNode {
     ///
     /// The all-pass corner frequencies and the LFO's per-sample phase
     /// increment both take the rate [`Node::prepare`] hands it.
+    #[must_use]
     pub fn new(stages: usize) -> Self {
         Self::with_channels(ChannelLayout::MONO, stages)
     }
@@ -191,6 +209,7 @@ impl PhaserNode {
     /// # Panics
     ///
     /// If `offsets.len()` is not the node's width — a build-time shape error.
+    #[must_use]
     pub fn with_phase_offsets(mut self, offsets: &[PhaseIncrement]) -> Self {
         assert_eq!(offsets.len(), self.width, "one phase offset per channel");
         for (o, &new) in self.phase_offsets.iter_mut().zip(offsets) {

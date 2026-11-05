@@ -96,6 +96,7 @@ impl RealFft {
     ///
     /// # Panics
     /// If `size` is zero.
+    #[must_use]
     pub fn new(size: usize) -> Self {
         assert!(size >= 1, "BUG: an FFT frame has at least one sample");
         let mut planner = FftPlannerScalar::<f32>::new();

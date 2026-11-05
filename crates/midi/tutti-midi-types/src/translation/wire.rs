@@ -43,6 +43,7 @@ impl MidiEvent {
     /// arrived on — information this function does not have and must not
     /// invent. A caller multiplexing several 1.0 ports onto one UMP endpoint
     /// re-stamps the group at the port boundary, where the answer is known.
+    #[must_use]
     pub fn from_midi1_bytes(frame_offset: u32, bytes: &[u8]) -> Option<Self> {
         use midly::live::{LiveEvent, SystemRealtime};
         let ev = LiveEvent::parse(bytes).ok()?;
@@ -169,6 +170,7 @@ impl MidiEvent {
     /// UMP but three MIDI 1.0 messages (CC 0, CC 32, Program Change); this
     /// returns just the Program Change. Use [`to_midi1_messages`](Self::to_midi1_messages)
     /// to keep the bank.
+    #[must_use]
     pub fn to_midi1_bytes(&self) -> Option<([u8; 3], u8)> {
         let type_nibble = ((self.data[0] >> 28) & 0x0F) as u8;
         match type_nibble {
@@ -183,6 +185,7 @@ impl MidiEvent {
     /// 1.0 form, one for almost everything, and three for a Program Change with
     /// a valid bank (CC 0 = bank MSB, CC 32 = bank LSB, then the Program Change,
     /// as M2-104 Appendix D translates it).
+    #[must_use]
     pub fn to_midi1_messages(&self) -> Midi1Messages {
         let mut out = Midi1Messages::default();
         if let Some((channel, bank, program)) = self.program_change_bank() {

@@ -154,6 +154,7 @@ impl PortSources {
     }
 
     /// Port 0 from `entity`'s port 0.
+    #[must_use]
     pub fn from(entity: Entity) -> Self {
         Self(vec![PortSource::node(entity)])
     }
@@ -196,6 +197,7 @@ impl PortSources {
     /// `AudioGraphRes::set_param_mod`), so re-declaring a node's
     /// audio ports cannot disturb its modulation — they are two different
     /// spaces, and neither can clobber the other.
+    #[must_use]
     pub fn with(mut self, port: usize, source: PortSource) -> Self {
         self.set(port, source);
         self
@@ -245,6 +247,7 @@ impl MasterSources {
     /// — it has an `Entity`, not a graph. Guessing wrong leaves a channel
     /// unresolvable, which [`rebuild`] skips, which strands whatever the channel
     /// held before.
+    #[must_use]
     pub fn from(entity: Entity) -> Self {
         Self(vec![
             PortSource::Node { entity, port: 0 },
@@ -280,6 +283,7 @@ impl MasterSources {
     }
 
     /// One channel from one of `entity`'s ports.
+    #[must_use]
     pub fn with(mut self, channel: usize, source: PortSource) -> Self {
         if self.0.len() <= channel {
             self.0.resize(channel + 1, PortSource::Silence);
@@ -524,6 +528,7 @@ pub fn unwire_removed_sources(
 /// the frame's wiring. It edits the graph and never commits —
 /// [`commit_graph`](crate::graph::commit_graph) coalesces.
 /// [`GraphReconcilePlugin`](crate::graph::GraphReconcilePlugin) adds it.
+#[derive(Debug)]
 pub struct GraphWirePlugin;
 
 impl Plugin for GraphWirePlugin {

@@ -93,6 +93,7 @@ impl EditorPresence {
     /// unexamined plugin is not claimed to have an editor. A UI that wants to
     /// distinguish "no GUI" from "not yet known" should match on the variant
     /// instead — that is why this is not a `From` impl.
+    #[must_use]
     pub fn is_present(self) -> bool {
         self == Self::Present
     }
@@ -106,6 +107,7 @@ impl PluginDescriptor {
     /// never asked. A caller that must distinguish "no GUI" from "not yet
     /// examined" — a scanner report, say — matches on
     /// [`editor`](Self::editor) instead.
+    #[must_use]
     pub fn has_editor(&self) -> bool {
         self.editor.is_present()
     }

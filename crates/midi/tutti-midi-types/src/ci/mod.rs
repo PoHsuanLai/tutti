@@ -80,6 +80,7 @@ impl Muid {
     /// engine forbids `rand`/clock access, so randomness is the caller's to
     /// provide (e.g. hash a device name + a session nonce). The broadcast value
     /// is nudged aside so a seed never collides with it.
+    #[must_use]
     pub fn from_seed(seed: u32) -> Self {
         let v = seed & 0x0FFF_FFFF;
         if v == Self::BROADCAST.0 {
@@ -91,6 +92,7 @@ impl Muid {
 
     /// The four little-endian 7-bit wire bytes.
     #[inline]
+    #[must_use]
     pub fn to_bytes(self) -> [u8; 4] {
         [
             (self.0 & 0x7F) as u8,
@@ -102,6 +104,7 @@ impl Muid {
 
     /// Reassembles from four little-endian 7-bit wire bytes.
     #[inline]
+    #[must_use]
     pub fn from_bytes(b: [u8; 4]) -> Self {
         Muid(
             (b[0] as u32 & 0x7F)

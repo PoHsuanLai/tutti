@@ -157,6 +157,7 @@ pub struct Follower {
 impl Follower {
     /// Follows `input` with a 5 ms attack and a 100 ms release
     /// (`tutti_mod::Follower::new`).
+    #[must_use]
     pub const fn new(input: Entity) -> Self {
         Self {
             input,
@@ -165,12 +166,14 @@ impl Follower {
     }
 
     /// Rises with `attack`.
+    #[must_use]
     pub const fn attack(mut self, attack: Seconds) -> Self {
         self.envelope = self.envelope.attack(attack);
         self
     }
 
     /// Falls with `release`.
+    #[must_use]
     pub const fn release(mut self, release: Seconds) -> Self {
         self.envelope = self.envelope.release(release);
         self
@@ -200,6 +203,7 @@ pub struct NoteEnvelope {
 
 impl NoteEnvelope {
     /// `adsr` on `midi`'s event output 0.
+    #[must_use]
     pub const fn new(midi: Entity, adsr: Adsr) -> Self {
         Self {
             midi,
@@ -247,6 +251,7 @@ pub struct ModRoute {
 
 impl ModRoute {
     /// `source` into `target` at full depth, bipolar, linear.
+    #[must_use]
     pub fn new(source: Entity, target: ParamRef) -> Self {
         Self {
             source,
@@ -259,18 +264,21 @@ impl ModRoute {
     }
 
     /// At `depth`.
+    #[must_use]
     pub fn with_depth(mut self, depth: Depth) -> Self {
         self.depth = depth;
         self
     }
 
     /// With `polarity`.
+    #[must_use]
     pub fn with_polarity(mut self, polarity: Polarity) -> Self {
         self.polarity = polarity;
         self
     }
 
     /// With `curve`.
+    #[must_use]
     pub fn with_curve(mut self, curve: CurveType) -> Self {
         self.curve = curve;
         self
@@ -298,6 +306,7 @@ pub struct ModRange {
 
 impl ModRange {
     /// `param` over `min..=max`.
+    #[must_use]
     pub fn new(param: ParamRef, min: f32, max: f32) -> Self {
         Self { param, min, max }
     }
@@ -351,6 +360,7 @@ pub struct AutomationTake(Take);
 impl AutomationTake {
     /// A take recording into `recorder` (a fresh one, or
     /// `Recorder::overdub` over the lane's envelope).
+    #[must_use]
     pub fn new(recorder: Recorder) -> Self {
         Self(Take::new(recorder))
     }
@@ -417,6 +427,12 @@ pub fn close_takes(
 #[derive(SystemParam)]
 pub struct Mods<'w, 's> {
     commands: Commands<'w, 's>,
+}
+
+impl std::fmt::Debug for Mods<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mods").finish_non_exhaustive()
+    }
 }
 
 impl Mods<'_, '_> {

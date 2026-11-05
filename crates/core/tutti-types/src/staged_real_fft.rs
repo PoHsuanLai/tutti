@@ -41,6 +41,14 @@ struct Split {
     combine: Vec<Vec<Complex32>>,
 }
 
+impl std::fmt::Debug for Split {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Split")
+            .field("passes", &self.combine.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Split {
     fn new(size: usize, ways: usize, direction: FftDirection) -> Self {
         let sub = size / 2 / ways;
@@ -71,7 +79,7 @@ impl Split {
 /// Forward and inverse plans for one real frame length, in steps.
 ///
 /// The module docs state the stepping contract.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StagedRealFft {
     fft: RealFft,
     ways: usize,
@@ -85,6 +93,7 @@ impl StagedRealFft {
     /// # Panics
     /// If `size` is zero, `ways` is not a power of two, or `ways` is above
     /// one with a `size` that is not a multiple of `2 * ways`.
+    #[must_use]
     pub fn new(size: usize, ways: usize) -> Self {
         assert!(size > 0, "BUG: a transform has at least one sample");
         assert!(ways.is_power_of_two(), "BUG: ways is a power of two");

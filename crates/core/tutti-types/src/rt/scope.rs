@@ -43,6 +43,7 @@ thread_local! {
 /// }
 /// assert!(!RtScope::is_inside());
 /// ```
+#[derive(Debug)]
 pub struct RtScope;
 
 /// Marks the current thread as running audio until dropped.
@@ -51,6 +52,7 @@ pub struct RtScope;
 /// until the last one drops. `!Send`, so it is dropped on the thread that
 /// made it.
 #[must_use = "the thread is marked only while the guard lives"]
+#[derive(Debug)]
 pub struct RtScopeGuard {
     // `!Send`: the mark is per thread, so the guard must be dropped on the
     // thread that made it.
@@ -70,6 +72,7 @@ impl RtScope {
 
     /// Returns whether the current thread is inside an [`enter`](Self::enter)
     /// scope.
+    #[must_use]
     pub fn is_inside() -> bool {
         DEPTH.with(|d| d.get() > 0)
     }

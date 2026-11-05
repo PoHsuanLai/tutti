@@ -106,12 +106,14 @@ impl MidiRouteRule {
     }
 
     /// Adds a destination.
+    #[must_use]
     pub fn to(mut self, target: Entity) -> Self {
         self.targets.push(target);
         self
     }
 
     /// Declares the rule without arming it.
+    #[must_use]
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
@@ -193,6 +195,7 @@ fn nodes_changed(nodes: &Option<Res<MidiEngineNodes>>) -> bool {
 ///
 /// [`rebuild`] runs before the event wiring, so a routing change reaches the
 /// graph in the frame's commit, with any graph edit that motivated it.
+#[derive(Debug)]
 pub struct MidiRoutePlugin;
 
 impl Plugin for MidiRoutePlugin {

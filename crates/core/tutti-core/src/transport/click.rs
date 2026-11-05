@@ -127,6 +127,7 @@ pub struct ClickSettings {
 
 impl ClickSettings {
     /// Default settings: mode [`MetronomeMode::Off`], half volume, 4/4.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
@@ -186,6 +187,7 @@ impl ClickSettings {
     /// itself is immutable, so the fresh cell holds the same `Arc` rather
     /// than a copy. Control thread: it allocates, and reads the meter from
     /// the control side's mirror, never the node's cell.
+    #[must_use]
     pub fn snapshot(&self) -> ClickSettings {
         let fresh = ClickSettings::new();
         fresh
@@ -265,6 +267,21 @@ pub struct ClickNode {
     ///
     /// Meaningless while `last_click_onset` is `None`, and never read then.
     latched_until: Beat,
+}
+
+impl std::fmt::Debug for ClickNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClickNode")
+            .field("settings", &self.settings)
+            .field("meter", &self.meter)
+            .field("preroll", &self.preroll)
+            .field("sample_rate", &self.sample_rate)
+            .field("click_pos", &self.click_pos)
+            .field("is_accent", &self.is_accent)
+            .field("last_click_onset", &self.last_click_onset)
+            .field("latched_until", &self.latched_until)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClickNode {

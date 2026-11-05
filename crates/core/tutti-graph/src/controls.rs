@@ -107,6 +107,12 @@ pub struct ParamSetBuilder {
     slots: Vec<Slot>,
 }
 
+impl std::fmt::Debug for ParamSetBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParamSetBuilder").finish_non_exhaustive()
+    }
+}
+
 impl ParamSetBuilder {
     /// Address `cell` (a `Param<U>`'s, `Param::as_atomic`) as `param`.
     ///
@@ -124,6 +130,7 @@ impl ParamSetBuilder {
     }
 
     /// The set.
+    #[must_use]
     pub fn build(self) -> ParamSet {
         ParamSet {
             slots: Arc::from(self.slots),
@@ -146,12 +153,14 @@ pub trait ParamNode: Node + Sized {
     /// A copy of this node that shares **nothing** with it — its own
     /// `Param` cells (at the values this node's hold now), its own state —
     /// returned to the state of a freshly prepared node. What a fork runs.
+    #[must_use]
     fn fork_fresh(&self) -> Self;
 }
 
 /// The fork source [`param_parts`] hands the editor: a template of the node
 /// that shares its cells (so a fork reads them as they are when it is
 /// taken), and its [`ParamSet`].
+#[derive(Debug)]
 pub struct ParamFork<N> {
     template: N,
     params: ParamSet,

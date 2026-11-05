@@ -55,6 +55,7 @@ impl SmpteTimecode {
     /// Counts through [`frame_count`](Self::frame_count), so drop-frame labels
     /// are mapped to the frames that elapsed. Non-drop 29.97 labels are counted
     /// at face value, at 30000/1001 frames per second.
+    #[must_use]
     pub fn to_seconds(&self) -> f64 {
         let (num, den) = self.frame_rate.ratio();
         self.frame_count() as f64 * den as f64 / num as f64
@@ -86,6 +87,7 @@ impl SmpteTimecode {
 
     /// The label of frame number `count` since `00:00:00:00` at `frame_rate`;
     /// the inverse of [`frame_count`](Self::frame_count). Hours wrap at 24.
+    #[must_use]
     pub fn from_frame_count(count: u64, frame_rate: SmpteFrameRate) -> Self {
         let per_sec = frame_rate.labels_per_second();
         let labelled = if frame_rate.is_drop_frame() {
@@ -139,6 +141,7 @@ impl MtcDecoder {
     ///
     /// [`timecode`](Self::timecode) stays `None` until eight in-order
     /// quarter-frames have arrived.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nibbles: [0; 8],

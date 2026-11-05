@@ -441,12 +441,14 @@ impl MidiMessage {
 
     /// `true` for a note-on with non-zero velocity.
     #[inline]
+    #[must_use]
     pub fn is_note_on(&self) -> bool {
         matches!(self, Self::NoteOn { velocity, .. } if *velocity > 0)
     }
 
     /// `true` for a note-off (including a folded velocity-0 note-on).
     #[inline]
+    #[must_use]
     pub fn is_note_off(&self) -> bool {
         matches!(self, Self::NoteOff { .. }) || matches!(self, Self::NoteOn { velocity: 0, .. })
     }

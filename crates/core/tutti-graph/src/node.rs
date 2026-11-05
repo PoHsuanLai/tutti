@@ -164,6 +164,7 @@ impl Resolution {
     ///
     /// `Frames(n)` honours `Frames(m)` when `n <= m` — a finer chunk is still
     /// inside the coarser one's promise — but never `Sample` unless `n == 1`.
+    #[must_use]
     pub const fn honours(self, required: Resolution) -> bool {
         match (self, required) {
             (Resolution::Sample, _) | (_, Resolution::Block) => true,
@@ -330,11 +331,13 @@ pub struct MaxBlock(usize);
 
 impl MaxBlock {
     /// The bound, in frames.
+    #[must_use]
     pub const fn get(self) -> usize {
         self.0
     }
 
     /// The bound as a frame count.
+    #[must_use]
     pub const fn samples(self) -> Samples {
         Samples(self.0)
     }
@@ -355,6 +358,7 @@ impl Prepare {
     /// # Panics
     ///
     /// If `max_block` is zero.
+    #[must_use]
     pub fn new(sample_rate: SampleRate, max_block: Samples) -> Self {
         assert!(!max_block.is_zero(), "a block holds at least one frame");
         Self {
@@ -419,6 +423,7 @@ pub struct Scratch {
 
 impl Scratch {
     /// `channels` zeroed channels of `max` frames. Control thread: allocates.
+    #[must_use]
     pub fn new(max: MaxBlock, channels: usize) -> Self {
         Self {
             data: vec![0.0; max.get() * channels],
@@ -603,6 +608,7 @@ enum Position {
 
 impl Transport {
     /// A transport at `beat`, the block's first frame its own origin.
+    #[must_use]
     pub const fn new(playing: bool, tempo: Bpm, beat: Beat, looping: Option<LoopRange>) -> Self {
         Self {
             playing,
@@ -652,6 +658,7 @@ impl Transport {
 
     /// This transport, at `beat` instead (the block's first frame its own
     /// origin): a seek, as a hand-built block states one.
+    #[must_use]
     pub const fn at_beat(self, beat: Beat) -> Self {
         Self {
             position: Position::At(beat),
@@ -833,22 +840,26 @@ impl TransportChanges {
     }
 
     /// The changes, in time order.
+    #[must_use]
     pub fn as_slice(&self) -> &[TransportChange] {
         &self.items[..self.len as usize]
     }
 
     /// Whether the block has no change.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// How many changes the block has.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
     /// Whether a change at a new offset would be refused as
     /// [`Full`](TransportChangeRejected::Full).
+    #[must_use]
     pub fn is_full(&self) -> bool {
         self.len as usize == MAX_TRANSPORT_CHANGES
     }
@@ -1103,6 +1114,14 @@ pub struct NodeParts<C> {
     pub controls: C,
     /// Where a fork of this node comes from; `None` if it cannot be forked.
     pub fork: Option<Box<dyn ForkSource>>,
+}
+
+impl<C> std::fmt::Debug for NodeParts<C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeParts")
+            .field("forkable", &self.fork.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<C> IntoNode for NodeParts<C> {

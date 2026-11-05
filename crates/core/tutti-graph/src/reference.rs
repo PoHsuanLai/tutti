@@ -133,6 +133,7 @@ struct RefRamp {
     started: bool,
 }
 
+#[derive(Debug)]
 struct RefFifo {
     pending: Vec<(u64, Event)>,
     len: u64,
@@ -204,6 +205,33 @@ pub struct Reference {
     play_playing: bool,
 }
 
+impl std::fmt::Debug for Reference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reference")
+            .field("prepare", &self.prepare)
+            .field("graph", &self.graph)
+            .field("arrival", &self.arrival)
+            .field("delays", &self.delays)
+            .field("audio_lines", &self.audio_lines.len())
+            .field("fb_audio", &self.fb_audio.len())
+            .field("fb_event", &self.fb_event.len())
+            .field("inject", &self.inject.len())
+            .field("next_id", &self.next_id)
+            .field("cancelled", &self.cancelled)
+            .field("suspended", &self.suspended)
+            .field("landing", &self.landing.len())
+            .field("late", &self.late)
+            .field("unrouted", &self.unrouted)
+            .field("dropped", &self.dropped)
+            .field("reset_time", &self.reset_time)
+            .field("frame", &self.frame)
+            .field("ranges", &self.ranges)
+            .field("play", &self.play)
+            .field("play_playing", &self.play_playing)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Reference {
     /// This block's play clock, and the reading the next block starts from:
     /// a start at the first frame restarts it in a fresh epoch, each start
@@ -252,6 +280,7 @@ impl Reference {
     }
 
     /// An interpreter with no graph.
+    #[must_use]
     pub fn new(prepare: Prepare) -> Self {
         Self {
             prepare,
@@ -799,6 +828,10 @@ impl Reference {
 
     /// Renders one block with the transport changing inside it. Same contract
     /// as [`Executor::process_with_changes`](crate::Executor::process_with_changes).
+    ///
+    /// # Panics
+    ///
+    /// If the graph has a cycle.
     pub fn process_with_changes(
         &mut self,
         frames: usize,

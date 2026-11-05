@@ -302,6 +302,7 @@ fn steal_score(slot: &VoiceSlot, strategy: AllocationStrategy) -> Option<(u8, u6
     }
 }
 
+#[derive(Debug)]
 pub struct VoiceAllocator {
     config: VoiceAllocatorConfig,
     slots: Vec<VoiceSlot>,

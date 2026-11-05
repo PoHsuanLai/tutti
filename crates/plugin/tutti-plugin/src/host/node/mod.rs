@@ -461,6 +461,7 @@ impl PluginClient<Unbound> {
     /// Install per-block sources before or after — they live on shared cells
     /// ([`controls`](Self::controls)), so an install through a handle reaches
     /// the running node.
+    #[must_use]
     pub fn bind(self) -> PluginClient<Bound> {
         let chunks = self.controls.chunk_counters();
         chunks.attach(self.bridge.audio_buffer());

@@ -53,6 +53,14 @@ pub struct AuLoaded {
     transport: Option<Box<TransportState>>,
 }
 
+impl std::fmt::Debug for AuLoaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuLoaded")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Whether the AU raised `OutputIsSilence` for the block just rendered.
 ///
 /// A bool would do, but the flag's meaning is the opposite of what a bare
@@ -88,6 +96,14 @@ pub struct AuActive {
     callback_installs: std::sync::atomic::AtomicU32,
 }
 
+impl std::fmt::Debug for AuActive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuActive")
+            .field("loaded", &self.loaded)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Public façade wrapping either an [`AuLoaded`] or [`AuActive`] state.
 ///
 /// Most host operations (parameters, state save/load, editor) work regardless
@@ -107,6 +123,14 @@ pub struct AuInstance {
     /// takes `&self`; it is not re-entered (`MusicDeviceSysEx` does not call
     /// back into the host) and the instance is not `Sync`.
     sysex: std::cell::RefCell<SysExAssembler>,
+}
+
+impl std::fmt::Debug for AuInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuInstance")
+            .field("editor_open", &self.editor.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 enum State {
@@ -1300,7 +1324,7 @@ impl AuInstance {
                 &info,
             )?;
         }
-        Ok(loaded.transport.as_deref().expect("just inserted above"))
+        Ok(&**state)
     }
 
     /// Borrows the installed transport, or `None` if
@@ -1715,6 +1739,11 @@ impl AuInstance {
 
     /// Serializes the AU's current state (all parameters + internal state) to
     /// a binary plist blob suitable for persistence.
+    ///
+    /// # Errors
+    ///
+    /// [`AuError::OsStatus`] if the AU refuses to give up its `ClassInfo`, and
+    /// [`AuError::InvalidBuffer`] if that property list cannot be serialized.
     ///
     /// # Panics
     ///

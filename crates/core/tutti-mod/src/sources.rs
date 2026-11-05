@@ -35,6 +35,7 @@ pub struct Lfo {
 
 impl Lfo {
     /// `shape` at one cycle per second.
+    #[must_use]
     pub const fn new(shape: LfoShape) -> Self {
         Self {
             shape,
@@ -65,24 +66,28 @@ impl Lfo {
     }
 
     /// One cycle per `per_cycle` beats.
+    #[must_use]
     pub const fn rate(mut self, per_cycle: BeatDuration) -> Self {
         self.rate = LfoRate::Beats(per_cycle);
         self
     }
 
     /// `rate` cycles per second.
+    #[must_use]
     pub const fn hz(mut self, rate: Hz) -> Self {
         self.rate = LfoRate::Hz(rate);
         self
     }
 
     /// Starting `phase` cycles in.
+    #[must_use]
     pub const fn phase(mut self, phase: PhaseIncrement) -> Self {
         self.phase = phase;
         self
     }
 
     /// The random shapes' seed.
+    #[must_use]
     pub const fn seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         self
@@ -137,6 +142,7 @@ pub struct Follower {
 
 impl Follower {
     /// A 5 ms attack and a 100 ms release.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             attack: Seconds(0.005),
@@ -145,12 +151,14 @@ impl Follower {
     }
 
     /// Rises with `attack`.
+    #[must_use]
     pub const fn attack(mut self, attack: Seconds) -> Self {
         self.attack = attack;
         self
     }
 
     /// Falls with `release`.
+    #[must_use]
     pub const fn release(mut self, release: Seconds) -> Self {
         self.release = release;
         self
@@ -184,6 +192,7 @@ pub struct NoteEnvelope {
 
 impl NoteEnvelope {
     /// An envelope of `adsr`.
+    #[must_use]
     pub const fn new(adsr: Adsr) -> Self {
         Self { adsr }
     }

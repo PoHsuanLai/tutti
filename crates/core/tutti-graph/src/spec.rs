@@ -82,6 +82,7 @@ pub enum EventEdge {
 
 impl EventEdge {
     /// The port the events leave from.
+    #[must_use]
     pub const fn from(self) -> EventOut {
         match self {
             Self::Direct(p) | Self::Feedback { from: p, .. } => p,
@@ -141,6 +142,7 @@ pub struct GraphSpec {
 impl GraphSpec {
     /// A spec over `topology` with no event edges and every node at
     /// generation 0.
+    #[must_use]
     pub fn new(topology: Topology) -> Self {
         Self {
             topology,

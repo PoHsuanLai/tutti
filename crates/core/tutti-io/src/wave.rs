@@ -36,6 +36,15 @@ pub struct Wave {
     len: usize,
 }
 
+impl std::fmt::Debug for Wave {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Wave")
+            .field("sample_rate", &self.sample_rate)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Wave {
     /// Creates an empty wave with `channels` channels.
     pub fn new(channels: usize, sample_rate: impl Into<tutti_core::SampleRate>) -> Self {
@@ -145,12 +154,14 @@ impl Wave {
 
     /// Returns the length in frames.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns whether the wave holds no frames.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

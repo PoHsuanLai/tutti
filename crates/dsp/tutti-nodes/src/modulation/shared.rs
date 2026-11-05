@@ -10,7 +10,7 @@ use crate::ramp::{LastGood, clamp_finite};
 /// through [`fill_block`](Self::fill_block): the phases for the whole block
 /// are computed into a buffer every channel then reads. Per-channel phase
 /// offsets live on the node, not here — they are a property of the width.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LfoDrive {
     pub rate: Param<Hz>,
     pub phase: Phase,
@@ -108,7 +108,7 @@ impl LfoDrive {
 ///
 /// Phaser uses `depth` as a unitless scalar that modulates the amplitude of
 /// the LFO sweep over its all-pass frequency range.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinearModMix {
     pub depth: Param<Depth>,
     pub feedback: Param<Feedback>,
@@ -182,7 +182,7 @@ impl LinearModMix {
 ///
 /// Chorus and flanger consume `depth` as the amplitude of LFO time-modulation
 /// around their base delay: `delay = base + lfo * depth * sample_rate`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TimeModMix {
     pub depth: Param<Seconds>,
     pub feedback: Param<Feedback>,

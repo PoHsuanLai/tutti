@@ -80,6 +80,7 @@ pub struct ClaimTable {
 
 impl ClaimTable {
     /// A table for `len` elements or chunks. Allocates.
+    #[must_use]
     pub fn new(len: usize) -> Self {
         Self {
             words: (0..len).map(|_| AtomicU32::new(0)).collect(),
@@ -87,11 +88,13 @@ impl ClaimTable {
     }
 
     /// How many words it holds.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.words.len()
     }
 
     /// Whether it holds none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.words.is_empty()
     }
@@ -158,6 +161,7 @@ fn release_exclusive(word: &AtomicU32) {
 /// A slice whose elements can be claimed one at a time, exclusively, from
 /// any thread holding a `&SplitMut`. See the module docs
 /// (`src/rt/split.rs`).
+#[derive(Debug)]
 pub struct SplitMut<'a, T> {
     base: *mut T,
     len: usize,
@@ -190,11 +194,13 @@ impl<'a, T> SplitMut<'a, T> {
     }
 
     /// Elements.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether there are none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -211,6 +217,10 @@ impl<'a, T> SplitMut<'a, T> {
     }
 
     /// Element `i`, exclusively, or [`ClaimConflict`] if claimed elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// [`ClaimConflict`] if element `i` is claimed elsewhere.
     ///
     /// # Panics
     ///
@@ -264,9 +274,16 @@ impl<'a, T> SplitMut<'a, T> {
 }
 
 /// One element of a [`SplitMut`], claimed exclusively.
+#[must_use = "the claim is released when it drops"]
 pub struct Claimed<'s, T> {
     elem: &'s mut T,
     word: &'s AtomicU32,
+}
+
+impl<T> std::fmt::Debug for Claimed<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Claimed").finish_non_exhaustive()
+    }
 }
 
 impl<T> Deref for Claimed<'_, T> {
@@ -289,9 +306,18 @@ impl<T> Drop for Claimed<'_, T> {
 }
 
 /// A contiguous run of a [`SplitMut`], every element claimed exclusively.
+#[must_use = "the claims are released when it drops"]
 pub struct ClaimedRun<'s, T> {
     run: &'s mut [T],
     words: &'s [AtomicU32],
+}
+
+impl<T> std::fmt::Debug for ClaimedRun<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaimedRun")
+            .field("len", &self.run.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T> Deref for ClaimedRun<'_, T> {
@@ -318,6 +344,7 @@ impl<T> Drop for ClaimedRun<'_, T> {
 /// A slice cut into chunks of `stride` elements, each of which can be read
 /// by several threads at once or written by one, through an [`RwView`]. See
 /// the module docs (`src/rt/split.rs`).
+#[derive(Debug)]
 pub struct SplitRw<'a, T> {
     base: *mut T,
     chunks: usize,
@@ -366,6 +393,10 @@ impl<'a, T> SplitRw<'a, T> {
 
     /// A view that records the claims it takes in `held` and releases them
     /// all when it drops. One thread's; see [`RwView`].
+    ///
+    /// # Panics
+    ///
+    /// If `held` is already in use by another live view.
     pub fn view<'v>(&'v self, held: &'v Held) -> RwView<'v, T> {
         // Two live views on one list would each find the other's claims and
         // hand out a second reference to a chunk the first holds.
@@ -400,6 +431,7 @@ pub struct Held {
 
 impl Held {
     /// Room for `capacity` claims at once. Allocates.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: (0..capacity).map(|_| Cell::new(0)).collect(),
@@ -430,6 +462,8 @@ impl std::fmt::Debug for Held {
 /// view drops. A chunk the view already holds is not claimed again.
 ///
 /// `!Send` and `!Sync` (it holds `&Held`, whose cells are one thread's).
+#[derive(Debug)]
+#[must_use = "its claims are released when it drops"]
 pub struct RwView<'v, T> {
     split: &'v SplitRw<'v, T>,
     held: &'v Held,
@@ -494,6 +528,10 @@ impl<'v, T> RwView<'v, T> {
     /// Chunk `i`, shared, or [`ClaimConflict`] if another view holds it
     /// exclusively.
     ///
+    /// # Errors
+    ///
+    /// [`ClaimConflict`] if another view holds chunk `i` exclusively.
+    ///
     /// # Panics
     ///
     /// If `i` is out of range, or the view already holds as many claims as
@@ -521,6 +559,10 @@ impl<'v, T> RwView<'v, T> {
 
     /// Chunk `i`, exclusively, or [`ClaimConflict`] if another view holds
     /// any claim on it.
+    ///
+    /// # Errors
+    ///
+    /// [`ClaimConflict`] if another view holds any claim on chunk `i`.
     ///
     /// # Panics
     ///

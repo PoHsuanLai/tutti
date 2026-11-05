@@ -186,7 +186,7 @@ pub struct Applied {
 }
 
 /// A target resolved and checked: what its lane is built from.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Bind {
     Native {
         at: ParamIn,
@@ -250,6 +250,7 @@ impl Bind {
 }
 
 /// A target's lane as built.
+#[derive(Debug)]
 struct Lane {
     key: NodeKey,
     /// The lane node's generation at its insert: another means a host
@@ -264,6 +265,7 @@ struct Lane {
 }
 
 /// A signal source's node as built.
+#[derive(Debug)]
 struct SignalNode {
     key: NodeKey,
     /// As [`Lane::generation`].
@@ -411,7 +413,7 @@ struct SourcePlan {
 /// assert!(!applied.commit);
 /// assert_eq!(applied.republished, vec![cutoff]);
 /// ```
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Modulation {
     prev: Option<Compiled>,
     lanes: BTreeMap<TargetKey, Lane>,
@@ -469,6 +471,7 @@ pub struct Modulation {
 ///
 /// Not kept while a target or a source is unresolved: those resolve on a
 /// later commit, and a host re-applies to find out (and times how long).
+#[derive(Debug)]
 struct Memo {
     sources: Vec<(SourceKey, ModSource)>,
     routes: Vec<(RouteKey, RouteDecl)>,
@@ -480,7 +483,7 @@ struct Memo {
 }
 
 /// A host's [`Target`], as far as a lane built on it depends on it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Resolved {
     None,
     Native {
@@ -563,6 +566,7 @@ impl Memo {
 
 impl Modulation {
     /// Nothing applied yet.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -626,6 +630,10 @@ impl Modulation {
     /// # Errors
     ///
     /// Each [`ReconcileError`]; nothing changes on any of them.
+    #[allow(
+        clippy::missing_panics_doc,
+        reason = "the expects run after validation: every key they look up was listed by this call, and a declaration that compiled builds its node"
+    )]
     pub fn apply(
         &mut self,
         decl: &Declarations<'_>,

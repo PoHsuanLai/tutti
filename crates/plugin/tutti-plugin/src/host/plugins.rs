@@ -96,6 +96,15 @@ pub struct Plugins {
     audio: AudioConfig,
 }
 
+impl std::fmt::Debug for Plugins {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Plugins")
+            .field("config", &self.config)
+            .field("audio", &self.audio)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Plugins {
     /// Creates a catalog backed by any [`PluginCatalog`] implementation.
     ///
@@ -103,6 +112,7 @@ impl Plugins {
     ///
     /// Audio settings default ([`AudioConfig::default`]); override with
     /// [`Plugins::with_audio_config`].
+    #[must_use]
     pub fn with_catalog(catalog: Box<dyn PluginCatalog>, config: CatalogConfig) -> Self {
         Self {
             catalog,
@@ -116,6 +126,7 @@ impl Plugins {
     /// See [`JsonCatalog::load`](crate::catalog::JsonCatalog::load) for how a
     /// missing or corrupt file is handled. Requires the `json` feature.
     #[cfg(feature = "json")]
+    #[must_use]
     pub fn with_json_catalog(config: CatalogConfig) -> Self {
         let catalog = JsonCatalog::load(config.db_path.clone());
         Self::with_catalog(Box::new(catalog), config)
@@ -132,6 +143,7 @@ impl Plugins {
     }
 
     /// Sets the audio settings applied to every plugin this catalog opens.
+    #[must_use]
     pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
         self.audio = audio;
         self
@@ -152,6 +164,7 @@ impl Plugins {
     /// Runs a blocking scan and returns `self`, for use in a builder chain.
     ///
     /// Discards the [`ScanResult`]; use [`Plugins::rescan`] if you need it.
+    #[must_use]
     pub fn with_fresh_scan(mut self) -> Self {
         let _ = self.rescan();
         self
@@ -279,6 +292,7 @@ impl Plugins {
     ///
     /// [`CatalogExt::is_blacklisted`]: crate::catalog::CatalogExt::is_blacklisted
     /// [`CatalogExt::is_blacklisted_and_unchanged`]: crate::catalog::CatalogExt::is_blacklisted_and_unchanged
+    #[must_use]
     pub fn is_blacklisted(&self, path: &Path) -> bool {
         self.catalog.is_blacklisted_and_unchanged(path)
     }
@@ -438,6 +452,7 @@ impl Plugins {
 ///
 /// Holding a ticket does not block; [`join`](Self::join) waits for the scan and
 /// [`try_join`](Self::try_join) polls.
+#[derive(Debug)]
 pub struct ScanTicket {
     catalog_rx: crossbeam_channel::Receiver<Box<dyn PluginCatalog>>,
     config: CatalogConfig,

@@ -107,6 +107,7 @@ fn bump(counter: &'static std::thread::LocalKey<Cell<u64>>) {
 /// It counts what goes through Rust's global allocator. Allocations a C
 /// library makes for itself (glibc's bookkeeping for a thread-local
 /// destructor, for example) do not pass through it and are not seen.
+#[derive(Debug)]
 pub struct CountingAlloc;
 
 // SAFETY: every method forwards to `System` with the same arguments, and the
@@ -224,6 +225,10 @@ pub fn live_payloads() -> i64 {
 /// Made before a thread starts measuring: recording into it never allocates,
 /// and a value past the top is clamped (`saturating_record`), never resized.
 #[must_use]
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "the bounds are constants the histogram accepts"
+)]
 pub fn new_histogram() -> Histogram<u64> {
     Histogram::new_with_bounds(1, 100_000_000_000, 3).expect("valid histogram bounds")
 }

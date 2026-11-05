@@ -111,7 +111,7 @@ use tutti_core::{PrerollTable, Samples};
 /// `.0` taken before that keeps reading the old table. Clone it again when
 /// the resource changes (`Res::is_changed`), or compare it with `.0`
 /// (`Arc::ptr_eq`).
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone, Default, Debug)]
 pub struct ChannelCompensation(pub Arc<PrerollTable>);
 
 impl ChannelCompensation {
@@ -121,6 +121,7 @@ impl ChannelCompensation {
     }
 
     /// The whole table, copied.
+    #[must_use]
     pub fn to_vec(&self) -> Vec<Samples> {
         self.0.to_vec()
     }
@@ -140,6 +141,7 @@ pub struct GraphLatency(pub Samples);
 
 impl GraphLatency {
     /// Whether any path in the graph needs compensation at all.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0 == Samples(0)
     }
@@ -186,6 +188,7 @@ pub(crate) fn mirror_world(world: &mut World) {
 /// Optional: [`TuttiPlugin`](crate::TuttiPlugin) does not add it, and the
 /// compensation figures are published without it. See the
 /// [module docs](self).
+#[derive(Debug)]
 pub struct LatencyCompensationPlugin;
 
 impl Plugin for LatencyCompensationPlugin {

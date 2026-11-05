@@ -108,6 +108,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// let out = render_to_buffers(graph, &config, &FrozenClock).expect("renders");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```
+#[derive(Debug)]
 pub struct RenderGraph {
     /// The control side. Drained after every block, so what the executor
     /// retires is freed on the render thread.

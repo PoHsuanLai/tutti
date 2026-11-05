@@ -53,6 +53,7 @@ pub struct ProcessOutputRef<'a> {
 
 impl<'a> ProcessOutputRef<'a> {
     /// Snapshots into an owned [`ProcessOutput`]. Allocates; off-RT only.
+    #[must_use]
     pub fn to_owned(self) -> ProcessOutput {
         ProcessOutput {
             midi_events: self.midi_events.to_vec(),

@@ -115,6 +115,7 @@ impl ParameterQueue {
     /// Builds an empty queue addressed to `param_id` with room for exactly
     /// `points` points. Allocates (unless `points` is 0); call it off the
     /// audio thread.
+    #[must_use]
     pub fn with_capacity(param_id: ParamAddress, points: usize) -> Self {
         Self {
             param_id,
@@ -125,6 +126,7 @@ impl ParameterQueue {
     /// Builds a queue addressed to `param_id` holding exactly `points`, its
     /// capacity their count: for a builder sized by its data, off the audio
     /// thread.
+    #[must_use]
     pub fn from_points(param_id: ParamAddress, points: Vec<ParameterPoint>) -> Self {
         Self {
             param_id,
@@ -158,11 +160,13 @@ impl ParameterQueue {
     }
 
     /// Returns `true` when no point has been appended for this block.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
     /// Returns the number of automation points in this block.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.points.len()
     }
@@ -383,6 +387,7 @@ impl ParameterChanges {
     /// allocate, and [`add_change`](Self::add_change) on it stores nothing
     /// (counted). What a block with no changes carries; a producer builds
     /// [`reserved`](Self::reserved).
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -528,6 +533,7 @@ impl ParameterChanges {
     }
 
     /// Whether one more queue fits in the reserved capacity.
+    #[must_use]
     pub fn has_room(&self) -> bool {
         self.queues.len() < self.queues.capacity()
     }
@@ -582,12 +588,14 @@ impl ParameterChanges {
 
     /// Returns `true` when no queue holds a point — including the case where
     /// queues exist but are all empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queues.is_empty() || self.queues.iter().all(|q| q.is_empty())
     }
 
     /// Returns the number of queues, which is the number of distinct parameter
     /// addresses touched — not the total point count.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.queues.len()
     }

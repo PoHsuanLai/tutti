@@ -149,6 +149,7 @@ impl CosineWindow {
     /// If `terms` is empty — a window with no terms is the zero function, which
     /// silences the signal rather than tapering it. `const`, so a bad constant
     /// fails the build rather than the audio.
+    #[must_use]
     pub const fn new(terms: &'static [f32]) -> Self {
         assert!(
             !terms.is_empty(),
@@ -189,6 +190,7 @@ impl CosineWindow {
 
     /// How many cosine terms — the number both derived facts turn on.
     #[inline]
+    #[must_use]
     pub const fn terms(self) -> usize {
         self.terms.len()
     }

@@ -79,11 +79,13 @@ impl Offset {
     }
 
     /// The offset as a count of frames from the block's start.
+    #[must_use]
     pub const fn get(self) -> u32 {
         self.0
     }
 
     /// The offset as a slice index into the block's buffers.
+    #[must_use]
     pub const fn index(self) -> usize {
         self.0 as usize
     }
@@ -169,6 +171,7 @@ const STILL: f64 = 1e-9;
 
 impl Playhead {
     /// A playhead with no history.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

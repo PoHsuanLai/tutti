@@ -27,6 +27,7 @@ impl BandState {
     /// Returns whether the band is [`Active`](Self::Active) — i.e. whether it
     /// filters rather than passing through.
     #[inline]
+    #[must_use]
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
     }
@@ -34,6 +35,7 @@ impl BandState {
     /// Maps a plain `enabled` flag onto the two states: `true` is
     /// [`Active`](Self::Active), `false` [`Bypassed`](Self::Bypassed).
     #[inline]
+    #[must_use]
     pub fn from_enabled(enabled: bool) -> Self {
         if enabled {
             Self::Active
@@ -63,6 +65,7 @@ impl From<bool> for BandState {
 /// `match` per block and passes samples through bit-exactly.
 ///
 /// `F` is the internal state precision; defaults to `f64`.
+#[derive(Debug)]
 pub struct EqBandNode<F: Real = f64> {
     svf: SvfFilterNode<F>,
     state: BandState,

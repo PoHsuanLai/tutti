@@ -1478,8 +1478,7 @@ mod tests {
         assert!(source.fork(ForkMode::Offline).is_ok());
         let refused = source
             .fork(ForkMode::Live)
-            .err()
-            .expect("a live fork is refused");
+            .expect_err("a live fork is refused");
         assert!(refused.downcast_ref::<LiveDiskFork>().is_some());
     }
 

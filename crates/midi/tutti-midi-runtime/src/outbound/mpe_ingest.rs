@@ -177,6 +177,7 @@ fn zone_default_runs(config: &MpeZoneConfig) -> [RpnRun; 2] {
 ///
 /// Construct with the app-configured [`MpeMode`]; feed every inbound (already
 /// MIDI-2-normalized) event through [`translate`](Self::translate).
+#[derive(Debug)]
 pub struct MpeIngest {
     mode: MpeMode,
     lower_zone_map: Option<MpeChannelVoiceMap>,

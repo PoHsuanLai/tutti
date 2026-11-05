@@ -333,6 +333,16 @@ struct Waiting {
     bind: Bind,
 }
 
+impl std::fmt::Debug for Waiting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Waiting")
+            .field("entity", &self.entity)
+            .field("id", &self.id)
+            .field("captured", &self.captured)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Crossfades that [`crossfade_audio_node`] could not land yet, because the
 /// graph was re-preparing (a sample-rate or block-size change between its two
 /// commits). The session holds each node and retries it in its `Collect`
@@ -343,16 +353,18 @@ struct Waiting {
 ///
 /// A resource rather than a component: the entity may be despawned while the
 /// crossfade waits, and the binding then has nothing to bind to.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct PendingCrossfades(Vec<Waiting>);
 
 impl PendingCrossfades {
     /// Returns how many crossfades are waiting.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns whether no crossfade is waiting.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

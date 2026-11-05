@@ -54,6 +54,7 @@ use std::sync::Arc;
 /// `host_data` slot, so [`ClapHost`] must not be moved independently of
 /// its [`HostState`]; in practice it lives boxed inside a
 /// [`ClapLoaded`](crate::ClapLoaded).
+#[derive(Debug)]
 pub struct ClapHost {
     inner: ClapHostVtable,
     state: Arc<HostState>,
@@ -85,6 +86,7 @@ impl ClapHost {
 
     /// Raw pointer suitable for passing to the plugin's `create_plugin`.
     /// Valid as long as `self` is not moved or dropped.
+    #[must_use]
     pub fn as_raw(&self) -> *const ClapHostVtable {
         &self.inner
     }

@@ -34,6 +34,7 @@ pub struct FftScratch {
 impl FftScratch {
     /// An empty working set. The plan and buffers are built lazily on the
     /// first transform and reused while the size stays the same.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             plan: None,

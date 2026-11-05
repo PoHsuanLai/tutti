@@ -375,6 +375,7 @@ impl Drop for Queue {
 /// # }
 /// # }
 /// ```
+#[must_use = "dropping it stops the listener"]
 pub struct AuParameterListener {
     listener: AUEventListenerRef,
     /// The AU whose events this listens to. Held so `watch_*` can build the
@@ -390,6 +391,13 @@ pub struct AuParameterListener {
     /// back, so the Rust side must not free the closure early — dropping this
     /// before `AUListenerDispose` would be a use-after-free on the next event.
     _block: RcBlock<AuEventListenerBlock>,
+}
+
+impl std::fmt::Debug for AuParameterListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuParameterListener")
+            .finish_non_exhaustive()
+    }
 }
 
 // SAFETY: the fields are an opaque AudioToolbox handle, an opaque AudioUnit, a

@@ -9,7 +9,7 @@ fn word_and_bit(index: usize) -> (usize, usize) {
 /// A set of parameters that can be shared between threads.
 ///
 /// Supports efficient iteration over parameters that changed since last iteration.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ParameterTransfer {
     values: Vec<AtomicU32>,
     changed: Vec<AtomicUsize>,
@@ -67,6 +67,7 @@ impl ParameterTransfer {
 
 /// An iterator over changed parameters.
 /// Returned by [`iterate`](struct.ParameterTransfer.html#method.iterate).
+#[derive(Debug)]
 pub struct ParameterTransferIterator<'pt> {
     pt: &'pt ParameterTransfer,
     word: usize,

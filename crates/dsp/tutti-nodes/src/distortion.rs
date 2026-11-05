@@ -64,6 +64,7 @@ impl ShapeKind {
     /// Memoryless and total: every curve maps every finite `x` to a finite
     /// output, and none keeps state between calls.
     #[inline]
+    #[must_use]
     pub fn apply(self, x: f32, drive: Drive) -> f32 {
         Shaper::build(self, drive.get().max(0.0)).shape(x)
     }
@@ -140,7 +141,7 @@ fn smooth9(x: f32) -> f32 {
 /// A curve at a fixed hardness: the kind plus its drive, already floored the
 /// way the kind needs. Rebuilt only when drive moves, which is a field swap —
 /// the curves carry no state.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Shaper {
     kind: ShapeKind,
     hardness: f32,
@@ -166,6 +167,7 @@ impl Shaper {
 /// `drive` is live-modulatable via the [`Param`] atomic (UI handle) and, in a
 /// graph, the [`ParamSet`] it is inserted with (`UnitParam::Drive`); the
 /// waveshape `kind` is set at construction.
+#[derive(Debug)]
 pub struct DistortionNode {
     kind: ShapeKind,
     drive: Param<Drive>,

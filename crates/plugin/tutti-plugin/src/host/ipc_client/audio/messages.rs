@@ -416,6 +416,7 @@ impl ResyncKind {
     /// Maps this signal to its host-facing consequence: a cosmetic
     /// [`PluginRefresh`] (re-read a cached view, no graph edit) or a structural
     /// [`PluginInvalidation`] (rewire and re-plan latency compensation).
+    #[must_use]
     pub fn classify(self) -> ResyncClass {
         match self {
             ResyncKind::ParamValues => ResyncClass::Refresh(PluginRefresh::ParamValues),

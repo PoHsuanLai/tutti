@@ -20,6 +20,14 @@ pub struct AuHandle {
     au_type: AuType,
 }
 
+impl std::fmt::Debug for AuHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuHandle")
+            .field("au_type", &self.au_type)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: AudioComponentInstance is a plain pointer; AudioToolbox tolerates
 // use from any thread as long as access is externally synchronized.
 unsafe impl Send for AuHandle {}

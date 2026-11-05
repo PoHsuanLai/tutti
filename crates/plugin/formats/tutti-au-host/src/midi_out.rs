@@ -138,6 +138,7 @@ struct MidiOutState {
 /// callback from the AU **before** the state the AU points at is freed — see
 /// [`Drop for AuMidiOutput`](AuMidiOutput::drop) for why that order is the whole
 /// point of the type existing rather than `install` returning `()`.
+#[must_use = "dropping it uninstalls the output"]
 pub struct AuMidiOutput {
     unit: AudioUnit,
     /// Heap-pinned so its address is stable: the AU retains a `userData` derived
@@ -151,6 +152,14 @@ pub struct AuMidiOutput {
     state: Option<Box<MidiOutState>>,
     /// Shared with `state`, so it can be read while the AU holds the state.
     sysex_dropped: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for AuMidiOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuMidiOutput")
+            .field("sysex_dropped", &self.sysex_dropped.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the AU says about its MIDI output streams.

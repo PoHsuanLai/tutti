@@ -113,6 +113,7 @@ pub struct ExportRequest {
 
 impl ExportRequest {
     /// A request with no edit and the configured latency and tail.
+    #[must_use]
     pub fn new(
         source: ExportSource,
         target: ExportTarget,
@@ -144,6 +145,7 @@ impl ExportRequest {
     }
 
     /// Renders against `timeline`: [`ExportClock::timeline`].
+    #[must_use]
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
         T: RenderClock + tutti_core::transport::OfflineClock + 'static,
@@ -153,6 +155,7 @@ impl ExportRequest {
     }
 
     /// Edits the forked graph before it renders: see [`PrepareEdit`].
+    #[must_use]
     pub fn with_edit(mut self, edit: PrepareEdit) -> Self {
         self.edit = Some(edit);
         self
@@ -163,6 +166,7 @@ impl ExportRequest {
     /// hosted plugin's) in place of `config.render.latency`. Asked of the
     /// graph that renders, after the edit (`RenderGraph::reported_latency`,
     /// at the render's rate): only then is it built.
+    #[must_use]
     pub fn trim_reported_latency(mut self) -> Self {
         self.latency_from_graph = true;
         self
@@ -182,6 +186,7 @@ impl ExportRequest {
     /// latency plus the tail long, and keeps the programme's last frames;
     /// with [`trim_reported_latency`](Self::trim_reported_latency) it is
     /// `duration_seconds` plus the tail.
+    #[must_use]
     pub fn with_reported_tail(mut self, cap: Samples) -> Self {
         self.tail_from_graph = Some(cap);
         self
@@ -306,6 +311,7 @@ impl tutti_core::Timeline for Stopped {
 /// job commits whatever the edit leaves, and a commit the fork refuses
 /// fails the export with the reason. A fork's units are on its executor by
 /// now, so a unit already in it cannot be refilled: insert a new one.
+#[derive(Debug)]
 pub struct PreparedGraph<'a> {
     /// The graph about to be rendered.
     pub graph: &'a mut RenderGraph,
@@ -343,6 +349,7 @@ pub const EXPORT_STALL_WARNING: Duration = Duration::from_secs(60 * 60);
 
 /// The session's export state: the token every export holds a clone of,
 /// the channel leftovers come back on, and the stall watch.
+#[derive(Debug)]
 pub(crate) struct ExportState {
     token: Arc<()>,
     send: Sender<Box<dyn Send>>,
@@ -494,6 +501,20 @@ pub struct ExportJob {
     token: Arc<()>,
 }
 
+impl std::fmt::Debug for ExportJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportJob")
+            .field("ctx", &self.ctx)
+            .field("target", &self.target)
+            .field("config", &self.config)
+            .field("latency_from_graph", &self.latency_from_graph)
+            .field("tail_from_graph", &self.tail_from_graph)
+            .field("drops", &self.drops)
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExportJob {
     /// Builds the fork, runs the edit, commits it, and renders. Any thread;
     /// it blocks for the whole render.
@@ -594,6 +615,22 @@ pub struct ExportRendered {
     result: tutti_export::Result<ExportOutput>,
     graph: Option<ToMain<RenderGraph>>,
     _token: Arc<()>,
+}
+
+impl std::fmt::Debug for ExportRendered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportRendered")
+            .field(
+                "result",
+                &match &self.result {
+                    Ok(ExportOutput::File(w)) => format!("Ok(File({}))", w.path.display()),
+                    Ok(ExportOutput::Buffers(_)) => "Ok(Buffers)".to_string(),
+                    Err(_) => "Err".to_string(),
+                },
+            )
+            .field("_token", &self._token)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Why an export found nothing to render: its node has no audio outputs.

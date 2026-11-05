@@ -21,6 +21,7 @@ impl TimedMidiEvent {
     /// A timed event at `beat`. Field-order-independent, so callers never have
     /// to remember whether `beat` or `event` comes first.
     #[inline]
+    #[must_use]
     pub const fn new(beat: Beat, event: MidiEvent) -> Self {
         Self { event, beat }
     }

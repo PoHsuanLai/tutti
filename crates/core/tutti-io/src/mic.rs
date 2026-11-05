@@ -470,8 +470,7 @@ mod tests {
             .collect();
         let err = editor
             .fork(ForkTarget::Master, ForkMode::Live, prepare)
-            .err()
-            .expect("a fork through the live mic is refused");
+            .expect_err("a fork through the live mic is refused");
         assert_eq!(err, ForkError::NotForkable { key: NodeKey(7) });
     }
 }

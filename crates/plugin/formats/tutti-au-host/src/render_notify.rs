@@ -526,12 +526,19 @@ struct NotifyState {
 /// # }
 /// # }
 /// ```
+#[must_use = "dropping it unregisters the callback"]
 pub struct RenderNotify {
     unit: AudioUnit,
     /// The `ref_con` the AU holds. An [`Arc`] rather than a [`Box`] so the
     /// address is stable and the test-visible counter can be read through the
     /// same allocation the callback writes to.
     state: Arc<NotifyState>,
+}
+
+impl std::fmt::Debug for RenderNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderNotify").finish_non_exhaustive()
+    }
 }
 
 // SAFETY: the fields are an opaque AudioUnit handle and an `Arc` whose payload

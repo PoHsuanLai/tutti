@@ -38,6 +38,8 @@ pub enum ScanPhase {
 }
 
 /// Channels for monitoring a scan started by [`PluginScanner::spawn_scan`].
+#[derive(Debug)]
+#[must_use]
 pub struct ScanHandle {
     /// Per-plugin progress, emitted as the scan advances.
     pub progress_rx: Receiver<ScanProgress>,
@@ -81,6 +83,14 @@ pub struct PluginScanner {
     pedal: Pedal,
 }
 
+impl std::fmt::Debug for PluginScanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginScanner")
+            .field("pedal", &self.pedal)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PluginScanner {
     /// Creates a scanner around `catalog`.
     ///
@@ -99,6 +109,7 @@ impl PluginScanner {
     }
 
     /// Consumes the scanner and returns the inner catalog.
+    #[must_use]
     pub fn into_catalog(self) -> Box<dyn PluginCatalog> {
         self.catalog
     }

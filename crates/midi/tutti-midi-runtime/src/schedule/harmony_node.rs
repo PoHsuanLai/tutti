@@ -51,6 +51,7 @@ pub struct TimedHarmony {
 
 impl TimedHarmony {
     /// `harmony` from `beat`.
+    #[must_use]
     pub const fn new(beat: Beat, harmony: Harmony) -> Self {
         Self { beat, harmony }
     }
@@ -137,6 +138,17 @@ pub struct HarmonyNode {
     sent: Sent,
 }
 
+impl std::fmt::Debug for HarmonyNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HarmonyNode")
+            .field("lanes", &self.lanes)
+            .field("generation", &self.generation)
+            .field("walk", &self.walk)
+            .field("sent", &self.sent)
+            .finish_non_exhaustive()
+    }
+}
+
 impl HarmonyNode {
     /// A node sending `changes` (in any order: they are sorted by beat).
     pub fn new(changes: impl IntoIterator<Item = TimedHarmony>) -> Self {
@@ -162,6 +174,12 @@ impl HarmonyNode {
 #[derive(Clone)]
 pub struct HarmonyControls {
     shared: Arc<Shared>,
+}
+
+impl std::fmt::Debug for HarmonyControls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HarmonyControls").finish_non_exhaustive()
+    }
 }
 
 impl HarmonyControls {
@@ -202,11 +220,13 @@ impl HarmonyControls {
     }
 
     /// How many changes the lanes hold.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.shared.current().changes.len()
     }
 
     /// Whether the lanes hold no change.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

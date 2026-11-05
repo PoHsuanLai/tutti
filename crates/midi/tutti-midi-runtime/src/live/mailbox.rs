@@ -38,6 +38,7 @@ impl MidiMailbox {
 
     /// A ring of `capacity` events (at least one), as a sender and a
     /// receiver.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> (MidiSender, MidiReceiver) {
         let slot = Arc::new(Self {
             events: ArrayQueue::new(capacity.max(1)),
@@ -131,6 +132,7 @@ impl MidiReceiver {
     }
 
     /// Whether anything is waiting.
+    #[must_use]
     pub fn has_events(&self) -> bool {
         !self.slot.events.is_empty()
     }

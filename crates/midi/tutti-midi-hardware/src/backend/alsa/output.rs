@@ -2,11 +2,11 @@
 
 use std::sync::Mutex;
 
-use super::client::SeqClient;
+use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
-use super::sys;
 use crate::capability::EndpointId;
 use crate::error::Result;
+use tutti_alsa_ump_sys as sys;
 use tutti_midi_types::MidiOut;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -83,9 +83,9 @@ impl AlsaOutput {
         ev.ump[..n].copy_from_slice(&words[..n]);
 
         // SAFETY: `seq` is open for the life of `inner`; `ev` is a fully
-        // initialised, correctly laid out event (see `sys::layout`) that
+        // initialised, correctly laid out event (see the sys crate's layout tests) that
         // alsa-lib reads and does not retain.
-        sys::check(
+        check(
             unsafe { sys::snd_seq_ump_event_output_direct(inner.seq.raw(), &mut ev) },
             "snd_seq_ump_event_output_direct",
         )?;
@@ -133,7 +133,7 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     let own_client = seq.id()?;
 
     // SAFETY: `seq` is open; the address came from enumeration.
-    sys::check(
+    check(
         unsafe { sys::snd_seq_connect_to(seq.raw(), port, dest_client, dest_port) },
         "snd_seq_connect_to",
     )?;

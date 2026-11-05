@@ -3,8 +3,8 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
-use super::sys;
 use crate::error::Result;
+use tutti_alsa_ump_sys as sys;
 
 /// An open sequencer client that speaks UMP.
 ///
@@ -52,7 +52,7 @@ impl SeqClient {
         let mode = if nonblock { sys::SND_SEQ_NONBLOCK } else { 0 };
 
         // SAFETY: `seq` is a valid out-pointer; `device` outlives the call.
-        sys::check(
+        check(
             unsafe { sys::snd_seq_open(&mut seq, device.as_ptr(), sys::SND_SEQ_OPEN_DUPLEX, mode) },
             "snd_seq_open",
         )?;
@@ -63,14 +63,14 @@ impl SeqClient {
         unsafe { sys::snd_seq_set_client_name(client.seq, cname.as_ptr()) };
 
         // SAFETY: same.
-        sys::check(
+        check(
             unsafe {
                 sys::snd_seq_set_client_midi_version(client.seq, sys::SND_SEQ_CLIENT_UMP_MIDI_2_0)
             },
             "snd_seq_set_client_midi_version",
         )?;
         // SAFETY: same.
-        sys::check(
+        check(
             unsafe { sys::snd_seq_set_client_ump_conversion(client.seq, 1) },
             "snd_seq_set_client_ump_conversion",
         )?;
@@ -89,7 +89,7 @@ impl SeqClient {
     /// This client's sequencer id, for addressing events back to it.
     pub fn id(&self) -> Result<c_int> {
         // SAFETY: `self.seq` is open for the life of `self`.
-        sys::check(
+        check(
             unsafe { sys::snd_seq_client_id(self.seq) },
             "snd_seq_client_id",
         )
@@ -99,7 +99,7 @@ impl SeqClient {
     pub fn create_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
         // SAFETY: `self.seq` is open; `cname` outlives the call.
-        sys::check(
+        check(
             unsafe { sys::snd_seq_create_simple_port(self.seq, cname.as_ptr(), caps, kind) },
             "snd_seq_create_simple_port",
         )
@@ -142,4 +142,15 @@ pub(super) fn cstr(ptr: *const std::os::raw::c_char) -> Option<String> {
 pub(super) fn strerror(code: c_int) -> String {
     // SAFETY: `snd_strerror` returns a static NUL-terminated string for any int.
     cstr(unsafe { sys::snd_strerror(code) }).unwrap_or_else(|| format!("error {code}"))
+}
+/// Turn an ALSA return code into this crate's error.
+///
+/// ALSA reports failure as a negative `errno`, so the sign carries the meaning
+/// and the magnitude is the code. Centralised so no call site re-derives it.
+pub(super) fn check(code: c_int, operation: &'static str) -> crate::error::Result<c_int> {
+    if code < 0 {
+        Err(crate::error::Error::Alsa { operation, code })
+    } else {
+        Ok(code)
+    }
 }

@@ -1,7 +1,7 @@
 //! The backend seam: enumerate and open this OS's MIDI endpoints.
 //!
 //! One implementation per platform — CoreMIDI, ALSA seq-UMP, and a stub where
-//! neither exists. [`active`](super::backend::active) picks one, and that is the
+//! neither exists. [`MidiSession::new`](crate::MidiSession::new) picks one, and that is the
 //! **only** place in the crate a `#[cfg(target_os)]` decides anything.
 //!
 //! # Why this trait, and why it stops here

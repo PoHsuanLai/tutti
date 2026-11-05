@@ -8,6 +8,7 @@ mod error;
 mod faults;
 mod host;
 mod output;
+mod owner;
 
 #[cfg(feature = "capture")]
 mod mic;

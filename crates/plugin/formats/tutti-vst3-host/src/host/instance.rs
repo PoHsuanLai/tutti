@@ -618,6 +618,9 @@ impl<T: Vst3Sample> Vst3Active<T> {
         // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
         // pointer arrays (length = buffer.inputs/outputs.len()), valid until the
         // `processor.process` call below; the scratch tables are pre-sized.
+        // The input table is cast `*const` to `*mut` because `AudioBusBuffers`
+        // types its channels `**mut`; VST3 defines input buffers as read-only
+        // to the plugin, so nothing writes through them.
         let inputs_ptr = unsafe {
             self.audio.input.buses.prepare(
                 input_ptrs as *const *mut std::ffi::c_void,

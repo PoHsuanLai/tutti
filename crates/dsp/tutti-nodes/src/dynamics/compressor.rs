@@ -13,7 +13,7 @@ use super::utils::{
 };
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::{LastGood, block_driven, clamp_finite};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone, Debug)]
@@ -105,6 +105,16 @@ impl CompressorCore {
         Db(self.follower.value())
     }
 
+    /// Detaches every control cell (see [`Param::detach`]): the `fork_fresh`
+    /// half of the core, keeping the current values. A cell added to the core
+    /// is detached here, once, for every node that forks it.
+    pub fn detach(&mut self) {
+        self.threshold.detach();
+        self.ratio.detach();
+        self.timing.detach();
+        self.makeup_db.detach();
+    }
+
     /// The sidechain peak the detector last saw. An `Amplitude`, not a
     /// unitless envelope — `GateCore::gate_level` has the same shape and name
     /// but is a 0..1 open-fraction, and the types are what stop the two being
@@ -151,14 +161,19 @@ impl CompressorCore {
     }
 
     /// Reads every block-rate control once, and moves the makeup ramp's start
-    /// to this block's end. `driven` is the block's ratio and makeup from
-    /// the node's param ports where a lane drives them (a driven ratio
-    /// clamped as the setter clamps); `None` reads the cell.
+    /// to this block's end. `driven` is the block's knee, ratio and makeup
+    /// from the node's param ports where a lane drives them; `None` reads the
+    /// cell. Knee and ratio are clamped as the setters clamp (a knee floored
+    /// at 0, a ratio at 1), a cell written raw as well as a driven value.
     #[inline]
-    pub fn begin_block(&mut self, [ratio, makeup]: [Option<f32>; 2]) -> CompressorBlock {
-        let (threshold, knee) = self.threshold.load();
+    pub fn begin_block(&mut self, [knee, ratio, makeup]: [Option<f32>; 3]) -> CompressorBlock {
+        let (threshold, knee_cell) = self.threshold.load();
         let threshold = Db(self.good[0].read(threshold.get()));
-        let knee = Db(self.good[1].read(knee.get()));
+        let knee = Db(
+            self.good[1].read(clamp_finite(knee.unwrap_or(knee_cell.get()), |k| {
+                k.max(0.0)
+            })),
+        );
         let makeup_to =
             Db(self.good[3].read(makeup.unwrap_or_else(|| self.makeup_db.load().get())));
         let makeup_from = self.last_makeup.unwrap_or(makeup_to);
@@ -166,8 +181,8 @@ impl CompressorCore {
         CompressorBlock {
             threshold,
             knee,
-            ratio: CompressionRatio(self.good[2].read(ratio.map_or_else(
-                || self.ratio.load().get(),
+            ratio: CompressionRatio(self.good[2].read(clamp_finite(
+                ratio.unwrap_or_else(|| self.ratio.load().get()),
                 |r| CompressionRatio::new_clamped(r).get(),
             ))),
             makeup_from,
@@ -367,8 +382,8 @@ impl CompressorNode {
     /// The shared [`CompressionRatio`] cell: dB in per dB out above the
     /// threshold.
     ///
-    /// Writing the raw cell bypasses [`set_ratio`](Self::set_ratio)'s clamp to
-    /// at least `1.0`; below that a compressor would expand.
+    /// A raw write below `1.0` reads as `1.0`, as [`set_ratio`](Self::set_ratio)
+    /// clamps: a compressor does not expand.
     pub fn ratio(&self) -> Arc<AtomicF32> {
         self.core.ratio.as_atomic()
     }
@@ -486,7 +501,7 @@ impl Node for CompressorNode {
             .update_coefficients([block_driven(&io, 2), block_driven(&io, 3)]);
         let block = self
             .core
-            .begin_block([block_driven(&io, 1), block_driven(&io, 4)]);
+            .begin_block([None, block_driven(&io, 1), block_driven(&io, 4)]);
         let ch = self.channels.count() as usize;
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.
@@ -541,10 +556,7 @@ impl ParamNode for CompressorNode {
     /// address but is read per block), its envelope cleared.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.core.threshold.detach();
-        fork.core.ratio.detach();
-        fork.core.timing.detach();
-        fork.core.makeup_db.detach();
+        fork.core.detach();
         Node::reset(&mut fork);
         fork
     }
@@ -587,6 +599,22 @@ mod tests {
     #[test]
     fn a_fork_shares_no_cell() {
         assert_param_fork(CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1).with_makeup(3.0));
+    }
+
+    /// The block reads a raw ratio cell below 1 as 1 and a knee below 0 as 0,
+    /// as the setters clamp.
+    ///
+    /// Mutation (run): drop the `CompressionRatio::new_clamped` in
+    /// `begin_block` → the ratio reads 0.25 → fails; drop the `k.max(0.0)` →
+    /// the knee reads -6 → fails.
+    #[test]
+    fn begin_block_clamps_a_raw_ratio_and_knee() {
+        let mut core = CompressorCore::new(-20.0, 4.0, 0.001, 0.1);
+        core.ratio.store(CompressionRatio(0.25));
+        core.threshold.knee.store(Db(-6.0));
+        let block = core.begin_block([None, None, None]);
+        assert_eq!(block.ratio, CompressionRatio(1.0));
+        assert_eq!(block.knee, Db(0.0));
     }
 
     /// A block longer than 64 frames renders whole: the

@@ -21,11 +21,13 @@
 //!   `f32`/`f64` state type.
 //! - Crossover: [`Crossover`], a 2 to 6 band Linkwitz-Riley 4th-order split
 //!   (a plain struct, `f64` state, ramped frequency changes), and
-//!   [`CrossoverNode`] over it, with [`CrossoverControls`] and
-//!   [`CrossoverError`].
+//!   [`CrossoverNode`] over it, each crossover frequency an indexed
+//!   [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with [`CrossoverError`].
 //! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
-//!   [`BrickwallLimiterNode`].
+//!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
+//!   bands over a [`Crossover`], every setting an indexed param: see
+//!   [`BAND_PARAMS`]) with its [`MultibandControls`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
@@ -41,14 +43,12 @@
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
-// The one fallible construction is a crossover's (`CrossoverError`); the rest
-// of this crate has no `Error` type.
+// The fallible constructions are the crossover's (`Crossover::new`,
+// `CrossoverNode::new`, `MultibandCompressorNode::new`), all `CrossoverError`;
+// the rest of this crate has no `Error` type.
 
 // Per-block control reads and the ramps that keep them from stepping.
 mod ramp;
-
-// The fork of a node whose controls are shared cells.
-mod fresh;
 
 // Rendering helpers for the width-generic nodes' unit tests.
 #[cfg(test)]
@@ -87,15 +87,14 @@ pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
 
 mod filter;
 pub use filter::{
-    BandState, Crossover, CrossoverControls, CrossoverError, CrossoverNode, EqBandNode,
-    LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType, Real, SVF_PARAMS, SvfCoeffs,
-    SvfFilterNode, SvfType,
+    BandState, Crossover, CrossoverError, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderCoeffs,
+    LadderFilterNode, LadderType, Real, SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType,
 };
 
 mod dynamics;
 pub use dynamics::{
-    BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode, GATE_PARAMS,
-    GateNode, LIMITER_PARAMS, LimiterNode,
+    BAND_PARAMS, BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode,
+    GATE_PARAMS, GateNode, LIMITER_PARAMS, LimiterNode, MultibandCompressorNode, MultibandControls,
 };
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one

@@ -100,7 +100,16 @@ param_session_node!(
     tutti_nodes::BrickwallLimiterNode,
     tutti_nodes::DistortionNode,
     tutti_nodes::BusStripNode,
+    tutti_nodes::CrossoverNode,
 );
+
+/// The multiband compressor: its params by address, its band meters beside
+/// them in its controls.
+impl SessionNode for tutti_nodes::MultibandCompressorNode {
+    fn params(controls: &tutti_nodes::MultibandControls) -> Option<ParamSet> {
+        Some(controls.params().clone())
+    }
+}
 
 /// The width adapters: no controls, forked by clone.
 impl SessionNode for tutti_nodes::DownmixNode {}

@@ -12,7 +12,7 @@
 //!   clean up a track.
 //! - Onsets: [`detect_onsets`] with an [`OnsetConfig`] and a
 //!   [`DetectionFunction`], or incrementally with [`step_onset`] and
-//!   [`finish_onset`].
+//!   [`finish_onset`]; [`OnsetState::novelty`] reads the raw detection curve.
 //! - Waveform blocks: [`summarize`] with a [`PeakConfig`] into [`PeakBlocks`],
 //!   or incrementally with [`step_peaks`] and [`finish_peaks`].
 //! - Loudness: [`measure_loudness`] with a [`LoudnessConfig`] into
@@ -20,10 +20,22 @@
 //!   [`finish_loudness`].
 //! - Stereo: [`correlate`] into a [`StereoReading`], smoothed for a meter by
 //!   [`step_ballistics`].
+//! - Spectral shape: [`spectral_centroid`], [`spectral_flatness`] and
+//!   [`spectral_rolloff`] over one magnitude spectrum, or [`spectral_features`]
+//!   over every frame of a [`StftMagnitude`], into [`SpectralFeatures`].
+//! - Strip silence: [`strip_silence`] with a [`SilenceConfig`] into
+//!   [`Region`]s, or incrementally with [`step_silence`] and
+//!   [`finish_silence`], which reads the config the scan used.
+//! - Vectorscope: [`vectorscope_points`] turns a stereo pair into
+//!   [`ScopePoint`]s (side, mid), or block by block with [`step_vectorscope`]
+//!   and a [`VectorscopeState`].
+//! - Cross-correlation: [`cross_correlate`] into a [`CrossCorrelation`], read
+//!   at a lag or for its [`CorrelationPeak`].
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod error;
+mod features;
 mod fft;
 mod geometry;
 mod grid;
@@ -33,14 +45,20 @@ mod peaks;
 // No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
 // The module header carries the description.
 mod pitch;
+mod silence;
 mod stereo;
 mod transform;
+mod vectorscope;
 mod window;
+mod xcorr;
 mod yin;
 
 pub use tutti_types::ChannelLayout;
 
 pub use error::{Error, Result};
+pub use features::{
+    SpectralFeatures, spectral_centroid, spectral_features, spectral_flatness, spectral_rolloff,
+};
 pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
@@ -60,6 +78,9 @@ pub use peaks::{
     PeakAccum, PeakBlock, PeakBlocks, PeakConfig, PeakState, finish as finish_peaks, step_peaks,
     summarize, summarize_block,
 };
+pub use silence::{
+    Region, SilenceConfig, SilenceState, finish as finish_silence, step_silence, strip_silence,
+};
 pub use stereo::{
     Ballistics, BallisticsState, StereoLevels, StereoReading, correlate, step_ballistics,
 };
@@ -67,7 +88,9 @@ pub use transform::{
     HopPolicy, NormalizedMagnitudes, RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar,
     StftRequest, istft as istft_transform, stft, stft_magnitude, stft_polar,
 };
+pub use vectorscope::{ScopePoint, VectorscopeState, step_vectorscope, vectorscope_points};
 pub use window::{CosineWindow, Window};
+pub use xcorr::{CorrelationPeak, CrossCorrelation, cross_correlate};
 pub use yin::{Pitch, PitchEstimate, YinConfig, median_filter, penalize_jumps, yin, yin_track};
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a

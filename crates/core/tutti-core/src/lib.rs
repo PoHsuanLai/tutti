@@ -37,8 +37,8 @@ pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError, MAX_ROOT_CHAN
 
 pub mod transport;
 pub use transport::{
-    ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange, MeterSlot,
-    MeterSlotCell, MeterSlotReader, MetronomeMode, MotionEvent, MotionFsm, MotionState,
+    ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopEdit, LoopRange, LoopRegion,
+    MeterSlot, MeterSlotCell, MeterSlotReader, MetronomeMode, MotionEvent, MotionFsm, MotionState,
     OfflineTimeline, OfflineTimelineConfig, ProjectMeter, QueueFull, RenderClock,
     SCHEDULE_CAPACITY, ScheduleFull, Then, Timeline, Transport, TransportClock, TransportCommand,
     TransportSettings, TransportState,

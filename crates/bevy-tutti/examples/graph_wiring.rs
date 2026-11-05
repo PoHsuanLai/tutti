@@ -20,7 +20,7 @@ use bevy_tutti::prelude::*;
 // `SessionNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
 use tutti_core::transport::Transport;
-use tutti_core::{Hz, Q};
+use tutti_core::{At, Hz, LoopEdit, LoopRange, Q};
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
 
@@ -62,8 +62,12 @@ fn set_up_transport(transport: Res<TransportRes>) {
     transport.settings.set_tempo(128.0);
 
     // Loop bars 2–4, in beats.
-    transport.settings.loop_span.set_range(4.0, 8.0);
-    transport.settings.loop_span.set_enabled(true);
+    // The engine owns the region: the edit lands at the next block.
+    let bars = LoopRange::new(4.0, 8.0).expect("ordered");
+    transport
+        .motion
+        .schedule(At::NextBlock, LoopEdit::over(bars))
+        .expect("room");
 
     // Transitions are *queued*, not applied: `motion` is a lock-free ring the
     // audio thread drains at the top of each block. `is_playing()` still reads
@@ -128,10 +132,11 @@ fn report(
 ) {
     println!("transport:");
     println!("  tempo    {:?}", transport.settings.tempo());
+    let region = transport.motion.loop_region();
     println!(
-        "  loop     {:?} enabled={}",
-        transport.settings.loop_span.bounds(),
-        transport.settings.loop_span.is_enabled()
+        "  loop     {:?} armed={} (as the engine last applied it)",
+        region.bounds(),
+        region.is_armed()
     );
     println!(
         "  playing  {} (Play is queued; the audio thread drains it)",

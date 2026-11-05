@@ -292,7 +292,7 @@ pub mod prelude {
     pub use tutti_graph::{ForkByClone, Unforkable};
 
     pub use tutti_core::transport::{
-        FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState, Then,
+        FadeOut, LoopEdit, LoopRange, LoopRegion, MetronomeMode, MotionEvent, MotionState, Then,
     };
 }
 

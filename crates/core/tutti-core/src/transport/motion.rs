@@ -15,9 +15,12 @@
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
 //! | `declick` ([`Declick`]) | `Engine` | read every buffer to shape gain |
 //!
-//! The settings half — tempo, loop region, recording — lives in
+//! The settings half — tempo, recording — lives in
 //! [`TransportSettings`] and is not routed through
-//! this queue: nothing decides those, they are just values.
+//! this queue: nothing decides those, they are just values. The loop region
+//! is the engine's: an edit is a scheduled
+//! [`TransportCommand::Loop`](super::TransportCommand::Loop), and
+//! [`MotionFsm::loop_region`] reads what the engine published.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,6 +28,7 @@ use std::sync::atomic::Ordering;
 use crossbeam_queue::ArrayQueue;
 
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
+use super::loop_region::{LoopOwner, LoopReader, LoopRegion};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
 use super::timed::{Schedule, ScheduleFull, TransportCommand};
@@ -195,10 +199,19 @@ pub struct MotionFsm {
     /// Timestamped commands, applied by the engine on their frame. See
     /// [`schedule`](Self::schedule).
     timed: Schedule,
-    /// The one FSM, while no [`MotionAudio`] holds it. A capacity-one
-    /// queue: [`audio`](Self::audio) pops it, the audio half's drop pushes
-    /// it back, so its state outlives the engine that ran it.
-    home: Arc<ArrayQueue<TransportFsm>>,
+    /// The one FSM and loop region, while no [`MotionAudio`] holds them. A
+    /// capacity-one queue: [`audio`](Self::audio) pops it, the audio half's
+    /// drop pushes it back, so their state outlives the engine that ran
+    /// them.
+    home: Arc<ArrayQueue<Home>>,
+    /// The read side of the loop region the engine publishes.
+    loop_region: LoopReader,
+}
+
+/// What outlives an engine: the FSM and the loop region.
+struct Home {
+    fsm: TransportFsm,
+    owner: LoopOwner,
 }
 
 /// Reports the *published* state only. The FSM is the engine's.
@@ -218,8 +231,12 @@ impl MotionFsm {
     #[must_use]
     pub fn new(settings: TransportSettings) -> Self {
         let home = Arc::new(ArrayQueue::new(1));
+        let (owner, loop_region) = LoopOwner::new();
         // A fresh capacity-one queue has room.
-        let _ = home.push(TransportFsm::new());
+        let _ = home.push(Home {
+            fsm: TransportFsm::new(),
+            owner,
+        });
         Self {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
             motion: Arc::new(AtomicU8::new(MotionState::Stopped.into())),
@@ -228,16 +245,31 @@ impl MotionFsm {
             settings,
             timed: Schedule::new(),
             home,
+            loop_region,
         }
+    }
+
+    /// The loop region the engine holds, as of its last edit: the bounds
+    /// (kept while disarmed) and whether looping is armed. A copy of one
+    /// write, never the start of one edit and the end of another. Any
+    /// thread; wait-free but for a retry while a write is in flight.
+    ///
+    /// An edit ([`schedule`](Self::schedule) a
+    /// [`LoopEdit`](super::LoopEdit)) shows here once the engine has applied
+    /// it, so a read right after the call can still see the old region.
+    #[must_use]
+    pub fn loop_region(&self) -> LoopRegion {
+        self.loop_region.read()
     }
 
     /// The audio half: the FSM, taken out of this handle until the
     /// returned value is dropped. `None` while another holds it (on this
     /// handle or a clone), so there is one FSM per transport.
     pub(crate) fn audio(&self) -> Option<MotionAudio> {
-        let fsm = self.home.pop()?;
+        let Home { fsm, owner } = self.home.pop()?;
         Some(MotionAudio {
             fsm,
+            owner: Some(owner),
             queue: Arc::clone(&self.queue),
             motion: Arc::clone(&self.motion),
             seek: self.seek.clone(),
@@ -406,13 +438,15 @@ impl MotionFsm {
 /// later over the same transport resumes the same machine.
 pub(crate) struct MotionAudio {
     fsm: TransportFsm,
+    /// The loop region. `None` only once handed back.
+    owner: Option<LoopOwner>,
     queue: Arc<ArrayQueue<MotionEvent>>,
     motion: Arc<AtomicU8>,
     seek: SeekSlot,
     declick: Declick,
     settings: TransportSettings,
     /// Where the FSM goes back to; `None` once it has.
-    home: Option<Arc<ArrayQueue<TransportFsm>>>,
+    home: Option<Arc<ArrayQueue<Home>>>,
 }
 
 impl Drop for MotionAudio {
@@ -427,10 +461,11 @@ impl MotionAudio {
     /// before something else it owns is released (the engine, before its
     /// clock's playhead claim). Idempotent.
     pub(crate) fn hand_back(&mut self) {
-        if let Some(home) = self.home.take() {
+        if let (Some(home), Some(owner)) = (self.home.take(), self.owner.take()) {
             // Lock-free, so a drop on the audio thread is safe. Never full:
             // the FSM was popped from it, and only this value puts one back.
-            let _ = home.push(std::mem::take(&mut self.fsm));
+            let fsm = std::mem::take(&mut self.fsm);
+            let _ = home.push(Home { fsm, owner });
         }
     }
 
@@ -445,14 +480,19 @@ impl MotionAudio {
         match command {
             TransportCommand::Motion(event) => self.step(event),
             TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
-            TransportCommand::Loop(Some(range)) => {
-                self.settings
-                    .loop_span
-                    .set_range(range.start(), range.end());
-                self.settings.loop_span.set_enabled(true);
+            TransportCommand::Loop(edit) => {
+                if let Some(owner) = self.owner.as_mut() {
+                    owner.apply(edit);
+                }
             }
-            TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
         }
+    }
+
+    /// The loop region the engine renders under.
+    pub(crate) fn loop_region(&self) -> LoopRegion {
+        self.owner
+            .as_ref()
+            .map_or_else(LoopRegion::default, LoopOwner::region)
     }
 
     /// Drains the queue into the FSM and publishes the results.

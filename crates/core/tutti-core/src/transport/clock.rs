@@ -6,9 +6,8 @@
 //! crate-private `begin`, `advance` and `publish_position`); a node reads the
 //! transport from its block's `Env`.
 
+use super::loop_region::LoopRegion;
 use super::state::ClockLinks;
-#[cfg(test)]
-use super::state::LoopSpan;
 use crate::Ordering;
 use crate::{Beat, Bpm, Samples};
 use tutti_types::FrameClock;
@@ -40,7 +39,9 @@ pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
 pub(crate) struct Control {
     pub(crate) tempo: Bpm,
     pub(crate) paused: bool,
-    pub(crate) looping: Option<super::LoopRange>,
+    /// The engine's loop region. Not read off the settings: the engine owns
+    /// it, and an edit reaches it as a command.
+    pub(crate) loop_region: LoopRegion,
     /// Whether the session is recording, for the graph's
     /// [`Transport::recording`](tutti_graph::Transport::recording). Read once
     /// per block, like the rest; no command moves it mid-block.
@@ -48,18 +49,19 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    /// Read the live inputs.
-    pub(crate) fn read(settings: &super::TransportSettings) -> Self {
+    /// Read the live inputs, and take the loop region from the engine.
+    pub(crate) fn read(settings: &super::TransportSettings, loop_region: LoopRegion) -> Self {
         Self {
             tempo: settings.tempo(),
             paused: settings.is_paused(),
-            looping: settings.loop_span.range(),
+            loop_region,
             recording: settings.is_recording(),
         }
     }
 
     /// Carry `command`'s effect, and nothing else. A motion change's effect
-    /// is pausedness, which only the motion machine writes, on this thread.
+    /// is pausedness, which only the motion machine writes, on this thread. A
+    /// loop edit is replayed on this copy of the region.
     pub(crate) fn apply(
         &mut self,
         command: &super::TransportCommand,
@@ -67,7 +69,7 @@ impl Control {
     ) {
         match *command {
             super::TransportCommand::Tempo(bpm) => self.tempo = bpm,
-            super::TransportCommand::Loop(range) => self.looping = range,
+            super::TransportCommand::Loop(edit) => self.loop_region = self.loop_region.with(edit),
             super::TransportCommand::Motion(_) => self.paused = settings.is_paused(),
         }
     }
@@ -246,10 +248,13 @@ impl TransportClock {
             !control.paused,
             self.clock.tempo(),
             self.clock.origin(),
-            control.looping.map(|r| tutti_graph::LoopRange {
-                start: r.start(),
-                end: r.end(),
-            }),
+            control
+                .loop_region
+                .active()
+                .map(|r| tutti_graph::LoopRange {
+                    start: r.start(),
+                    end: r.end(),
+                }),
         )
         .with_recording(control.recording)
     }
@@ -340,14 +345,21 @@ impl TransportClock {
 
     /// Step `frames` as the engine steps a block, under the transport's live
     /// inputs read off this clock's links (what `Control::read` reads off the
-    /// settings): take a pending seek and the tempo, advance, publish. The
-    /// beat of the block's first frame. For tests that drive a bare clock.
+    /// settings) and a disarmed loop: take a pending seek and the tempo,
+    /// advance, publish. The beat of the block's first frame. For tests that
+    /// drive a bare clock.
     #[cfg(test)]
     pub(crate) fn step(&mut self, frames: usize) -> Beat {
+        self.step_in(frames, LoopRegion::default())
+    }
+
+    /// [`step`](Self::step) under `loop_region`.
+    #[cfg(test)]
+    pub(crate) fn step_in(&mut self, frames: usize, loop_region: LoopRegion) -> Beat {
         let control = Control {
             tempo: Bpm(self.links.tempo.load(Ordering::Acquire)),
             paused: self.links.paused.load(Ordering::Acquire),
-            looping: self.links.loop_span.as_ref().and_then(LoopSpan::range),
+            loop_region,
             recording: false,
         };
         let t = self.begin(&control, true);
@@ -362,35 +374,13 @@ impl TransportClock {
 mod tests {
     use super::super::state::SeekSlot;
     use super::*;
-    use crate::{AtomicBool, AtomicF64};
+    use crate::{AtomicBool, AtomicF64, LoopRange};
     use std::sync::Arc;
 
     fn create_test_atomics() -> (Arc<AtomicF64>, Arc<AtomicBool>) {
         (
             Arc::new(AtomicF64::new(120.0)),  // 120 BPM
             Arc::new(AtomicBool::new(false)), // Not paused
-        )
-    }
-
-    /// A clock wired to a loop span, via the one real constructor.
-    fn clock_with_loop(
-        tempo: Arc<AtomicF64>,
-        paused: Arc<AtomicBool>,
-        loop_span: LoopSpan,
-    ) -> TransportClock {
-        TransportClock::new(
-            ClockLinks {
-                tempo,
-                paused,
-                seek: SeekSlot::new(),
-                loop_span: Some(loop_span),
-                position_writeback: None,
-                segment_generation: None,
-                steady_time: None,
-                tempo_in_force: None,
-                claim: None,
-            },
-            44100.0,
         )
     }
 
@@ -405,7 +395,6 @@ mod tests {
                 tempo,
                 paused,
                 seek: seek.clone(),
-                loop_span: Some(LoopSpan::default()),
                 position_writeback: None,
                 segment_generation: None,
                 steady_time: None,
@@ -421,6 +410,12 @@ mod tests {
     /// carries (what `tick` emitted on its ports).
     fn tick(clock: &mut TransportClock) -> f64 {
         clock.step(1).get()
+    }
+
+    /// `tick` under an armed loop over `start..end`.
+    fn tick_looping(clock: &mut TransportClock, start: f64, end: f64) -> f64 {
+        let region = LoopRegion::new(LoopRange::new(start, end).expect("ordered"), true);
+        clock.step_in(1, region).get()
     }
 
     #[test]
@@ -486,20 +481,16 @@ mod tests {
         let mut links = ClockLinks::bare(Arc::clone(&tempo), Arc::clone(&paused));
         links.steady_time = Some(Arc::clone(&steady));
         // A two-beat loop, so the playhead wraps repeatedly over the run.
-        links.loop_span = Some({
-            let s = LoopSpan::new(0.0, 2.0);
-            s.set_enabled(true);
-            s
-        });
+        let looping = LoopRegion::new(LoopRange::new(0.0, 2.0).expect("ordered"), true);
         let mut clock = TransportClock::new(links, 44100.0);
 
-        clock.step(64);
+        clock.step_in(64, looping);
         assert_eq!(steady.load(Ordering::Relaxed), 64);
 
         // Paused: musical time stops, sample time does not.
         paused.store(true, Ordering::Release);
         let beat_while_paused = clock.current_beat();
-        clock.step(64);
+        clock.step_in(64, looping);
         assert_eq!(
             steady.load(Ordering::Relaxed),
             128,
@@ -514,7 +505,7 @@ mod tests {
         // Rolling again across many loop wraps: still strictly monotonic.
         paused.store(false, Ordering::Release);
         for _ in 0..100 {
-            clock.step(64);
+            clock.step_in(64, looping);
         }
         assert_eq!(
             steady.load(Ordering::Relaxed),
@@ -602,14 +593,12 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_disabled() {
         let (tempo, paused) = create_test_atomics();
-        let loop_span = LoopSpan::new(0.0, 4.0);
-        loop_span.set_enabled(false);
-
-        let mut clock = clock_with_loop(tempo, paused, loop_span);
+        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let disarmed = LoopRegion::new(LoopRange::new(0.0, 4.0).expect("ordered"), false);
 
         let mut beat = 0.0;
         for _ in 0..90000 {
-            beat = tick(&mut clock);
+            beat = clock.step_in(1, disarmed).get();
         }
 
         assert!(
@@ -622,29 +611,15 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_overshoot_precision() {
         let (tempo, paused) = create_test_atomics();
-        let loop_span = LoopSpan::new(0.0, 1.0);
-        loop_span.set_enabled(true);
-
         let seek = SeekSlot::new();
-        let mut clock = TransportClock::new(
-            ClockLinks {
-                tempo,
-                paused,
-                seek: seek.clone(),
-                loop_span: Some(loop_span),
-                position_writeback: None,
-                segment_generation: None,
-                steady_time: None,
-                tempo_in_force: None,
-                claim: None,
-            },
-            44100.0,
-        );
+        let mut links = ClockLinks::bare(tempo, paused);
+        links.seek = seek.clone();
+        let mut clock = TransportClock::new(links, 44100.0);
 
         seek.request(0.99999);
-        tick(&mut clock);
+        tick_looping(&mut clock, 0.0, 1.0);
 
-        let beat = tick(&mut clock);
+        let beat = tick_looping(&mut clock, 0.0, 1.0);
         assert!(beat >= 0.0, "Beat should be >= 0 after wrap");
         assert!(
             beat < 0.01,
@@ -737,25 +712,12 @@ mod tests {
     }
 
     #[test]
-    fn derived_stream_ignores_live_seek_and_loop() {
+    fn derived_stream_ignores_live_seek() {
         let (tempo, paused) = create_test_atomics();
         let seek = SeekSlot::new();
-        let loop_span = LoopSpan::new(0.0, 4.0);
-        loop_span.set_enabled(true);
-        let live = TransportClock::new(
-            ClockLinks {
-                tempo,
-                paused,
-                seek: seek.clone(),
-                loop_span: Some(loop_span.clone()),
-                position_writeback: None,
-                segment_generation: None,
-                steady_time: None,
-                tempo_in_force: None,
-                claim: None,
-            },
-            44100.0,
-        );
+        let mut links = ClockLinks::bare(tempo, paused);
+        links.seek = seek.clone();
+        let live = TransportClock::new(links, 44100.0);
 
         let mut derived = live.starting_at(20.0);
 

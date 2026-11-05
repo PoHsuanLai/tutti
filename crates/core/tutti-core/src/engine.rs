@@ -417,7 +417,7 @@ impl Engine {
             let (bound, rate) = g.settle(&self.timed);
             let len = (frames - done).min(bound);
             budget += Samples(len).to_seconds(rate);
-            let control = Control::read(&self.settings);
+            let control = Control::read(&self.settings, g.motion.loop_region());
             let t = g.clock.begin(&control, true);
             // Kept current, so a later `process` tells a late beat from one
             // jumped over across this block too.
@@ -480,7 +480,7 @@ impl Engine {
             let mut pieces = GraphPieces {
                 clock: &mut g.clock,
                 settings: &self.settings,
-                control: Control::read(&self.settings),
+                control: Control::read(&self.settings, g.motion.loop_region()),
                 changes: TransportChanges::NONE,
             };
             let aim = self.fader.borrow().aim;
@@ -1043,6 +1043,7 @@ impl GraphRender {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::LoopRegion;
     use crate::{Bpm, MotionEvent, Transport};
     use tutti_graph::Prepare;
 
@@ -1102,7 +1103,7 @@ mod tests {
             inner: GraphPieces {
                 clock: &mut clock,
                 settings,
-                control: Control::read(settings),
+                control: Control::read(settings, LoopRegion::default()),
                 changes: TransportChanges::NONE,
             },
             settings,
@@ -1126,7 +1127,10 @@ mod tests {
         assert!(change.to.playing, "the command's effect");
         assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
         // The next block reads it.
-        assert_eq!(Control::read(settings).tempo, Bpm(200.0));
+        assert_eq!(
+            Control::read(settings, LoopRegion::default()).tempo,
+            Bpm(200.0)
+        );
     }
 
     /// The audio thread is never the side that panics: a block that meets
@@ -1240,7 +1244,7 @@ mod tests {
         let mut pieces = GraphPieces {
             clock: &mut clock,
             settings,
-            control: Control::read(settings),
+            control: Control::read(settings, LoopRegion::default()),
             changes: TransportChanges::NONE,
         };
         let mut playhead = Playhead::new();

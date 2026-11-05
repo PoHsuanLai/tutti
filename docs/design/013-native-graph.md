@@ -430,6 +430,14 @@ means:
   frame. **Transport commands take the same `At`**:
   `MotionFsm::schedule(At, TransportCommand)` for play, stop, seek, tempo
   and loop (see point 3).
+  **The loop region is the engine's.** `TransportCommand::Loop(LoopEdit)`
+  moves its bounds, arms it, or both, and the engine is the only writer: it
+  keeps the region as plain fields (a block reads them, so a block sees one
+  whole region) and publishes a `LoopRegion` snapshot through a `SeqWriter`
+  after each edit, which `MotionFsm::loop_region` reads on any thread. This
+  replaced `LoopSpan`, whose three public atomics let a block read a new start
+  beside an old end. A brace mid-drag is the caller's state: the engine holds
+  only a valid `LoopRange`.
 - **Feedback edges** delay by the delay their edge declares, which must be at
   least one `MaxBlock`, as in every DAW. Sample-level feedback belongs inside
   a node.

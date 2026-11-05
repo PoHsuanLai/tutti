@@ -4,7 +4,7 @@
 //! The transport is *state* — a handful of atomics shared between the UI
 //! thread and the audio thread — plus the commands that mutate it. These
 //! types name the groups that always travel together, so consumers ask for
-//! a concept (`LoopSpan`) instead of assembling one from loose atomics.
+//! a concept (`Declick`) instead of assembling one from loose atomics.
 //!
 //! Grouping is by **data-flow direction**:
 //!
@@ -96,82 +96,6 @@ impl Default for SeekSlot {
 // here so its engine paths stay.
 pub use tutti_types::LoopRange;
 
-/// The loop region, and whether looping is armed.
-///
-/// `start`/`end` retain their values while disabled, so toggling the loop
-/// off and on again restores the same region.
-#[derive(Clone, Debug)]
-pub struct LoopSpan {
-    /// Whether looping is armed. The bounds are kept either way.
-    pub enabled: Arc<AtomicBool>,
-    /// Region start, in beats. Unvalidated — may exceed `end` mid-drag.
-    pub start: Arc<AtomicF64>,
-    /// Region end, in beats. Unvalidated — may precede `start` mid-drag.
-    pub end: Arc<AtomicF64>,
-}
-
-impl LoopSpan {
-    /// A disarmed span over `start..end`. The bounds are stored as given and
-    /// are not validated here; [`range`](Self::range) is where validity lives.
-    pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Self {
-        Self {
-            enabled: Arc::new(AtomicBool::new(false)),
-            start: Arc::new(AtomicF64::new(start.into().get())),
-            end: Arc::new(AtomicF64::new(end.into().get())),
-        }
-    }
-
-    /// Whether looping is armed. Says nothing about whether the bounds are
-    /// usable — [`range`](Self::range) answers both at once.
-    #[must_use]
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
-    }
-
-    /// Arms or disarm looping, leaving the bounds intact.
-    pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Release);
-    }
-
-    /// The active region: `None` when looping is disarmed *or* when the stored
-    /// bounds are not a usable range. A consumer gets a validated region or
-    /// nothing, so it never re-checks `end > start` itself.
-    pub fn range(&self) -> Option<LoopRange> {
-        if !self.is_enabled() {
-            return None;
-        }
-        let (start, end) = self.bounds();
-        LoopRange::new(start, end)
-    }
-
-    /// The raw stored bounds, regardless of arming or validity. For UI that
-    /// must render a brace the user is mid-drag on.
-    ///
-    /// Deliberately still two positions rather than a start-plus-length: an
-    /// inverted pair is a legitimate mid-drag state, and a `BeatDuration` cannot
-    /// express one. Typing both as `Beat` is a vocabulary fix, not a fix for
-    /// transposing them — [`range`](Self::range) is still where validity lives.
-    pub fn bounds(&self) -> (Beat, Beat) {
-        (
-            Beat(self.start.load(Ordering::Acquire)),
-            Beat(self.end.load(Ordering::Acquire)),
-        )
-    }
-
-    /// Stores new bounds. Not validated and not ordered — an inverted pair is
-    /// accepted, and simply yields no [`range`](Self::range).
-    pub fn set_range(&self, start: impl Into<Beat>, end: impl Into<Beat>) {
-        self.start.store(start.into().get(), Ordering::Release);
-        self.end.store(end.into().get(), Ordering::Release);
-    }
-}
-
-impl Default for LoopSpan {
-    fn default() -> Self {
-        Self::new(0.0, 16.0)
-    }
-}
-
 /// Declick fade contract between the transport FSM and `Engine`.
 ///
 /// The FSM arms a fade; the processor reads `remaining` every buffer to shape
@@ -262,8 +186,8 @@ impl Default for Declick {
 /// sample rate, cached increment — are deliberately *not* here; that is the
 /// whole distinction the type draws.
 ///
-/// Three are read to advance time (`tempo`, `paused`, `loop_span`) and are
-/// public. The rest are the writer half, written every buffer: the seek it
+/// Two are read to advance time (`tempo`, `paused`) and are public. The loop
+/// region is the engine's, not a link (`LoopRegion`). The rest are the writer half, written every buffer: the seek it
 /// consumes, and the playhead, segment generation, steady time and tempo in
 /// force it publishes. Both directions travel together because a clock given
 /// only the inputs advances a playhead nothing can read.
@@ -288,7 +212,6 @@ impl Default for Declick {
 /// let forged = ClockLinks {
 ///     tempo: Arc::new(AtomicF64::new(120.0)),
 ///     paused: Arc::new(AtomicBool::new(false)),
-///     loop_span: None,
 ///     seek: t.motion.seek.clone(),
 ///     position_writeback: Some(Arc::new(AtomicF64::new(0.0))),
 ///     segment_generation: None,
@@ -306,8 +229,6 @@ pub struct ClockLinks {
     pub tempo: Arc<AtomicF64>,
     /// Whether to hold position. Written by the motion FSM, never set directly.
     pub paused: Arc<AtomicBool>,
-    /// `None` = this clock ignores looping entirely (offline renders).
-    pub loop_span: Option<LoopSpan>,
     /// Pending absolute jump, consumed once per buffer. Writer half: the
     /// clock that consumes the live seek is the one that moves the playhead.
     pub(super) seek: SeekSlot,
@@ -384,7 +305,6 @@ impl ClockLinks {
             tempo,
             paused,
             seek: SeekSlot::new(),
-            loop_span: None,
             position_writeback: None,
             segment_generation: None,
             steady_time: None,
@@ -442,7 +362,6 @@ impl ClockLinks {
             tempo,
             paused: _,
             seek: _,
-            loop_span: _,
             position_writeback: _,
             segment_generation: _,
             steady_time: _,
@@ -454,7 +373,6 @@ impl ClockLinks {
             tempo: Arc::new(AtomicF64::new(tempo.load(Ordering::Acquire))),
             paused: Arc::new(AtomicBool::new(false)),
             seek: SeekSlot::new(),
-            loop_span: None,
             position_writeback: None,
             segment_generation: None,
             steady_time: None,
@@ -479,21 +397,6 @@ mod tests {
         // Consumed — a second take sees nothing.
         assert_eq!(seek.take(), None);
         assert!(!seek.is_pending());
-    }
-
-    #[test]
-    fn loop_span_retains_bounds_while_disabled() {
-        let span = LoopSpan::new(0.0, 16.0);
-        span.set_range(2.0, 6.0);
-        assert_eq!(span.range(), None, "disabled span yields no range");
-        assert_eq!(
-            span.bounds(),
-            (Beat(2.0), Beat(6.0)),
-            "bounds survive disarming"
-        );
-
-        span.set_enabled(true);
-        assert_eq!(span.range(), LoopRange::new(2.0, 6.0));
     }
 
     /// `start` must stamp BOTH halves, and `clear` must retain `total`.
@@ -522,21 +425,5 @@ mod tests {
         assert!(!declick.is_active());
         // Total is retained so a fade's length stays inspectable.
         assert_eq!(declick.total.load(Ordering::Acquire), 480);
-    }
-
-    #[test]
-    fn loop_span_range_is_none_when_bounds_are_unusable() {
-        let span = LoopSpan::new(0.0, 0.0);
-        span.set_enabled(true);
-        assert!(
-            span.range().is_none(),
-            "armed but empty must not yield a region"
-        );
-
-        span.set_range(8.0, 4.0);
-        assert!(span.range().is_none(), "armed but inverted likewise");
-
-        span.set_range(0.0, 4.0);
-        assert_eq!(span.range(), LoopRange::new(0.0, 4.0));
     }
 }

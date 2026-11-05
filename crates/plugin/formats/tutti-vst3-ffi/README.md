@@ -29,12 +29,25 @@ answers an error code instead of unwinding into the plugin.
 ## How the thread rules are in the types
 
 A `[UI-thread]` entry is a method of `Plugin`, which is `Send` but not `Sync`;
-`process` is a method of `AudioSide`, which names no main-thread entry. The
-`AudioSide` and the plugin's `Drop` take one claim, so teardown waits out a
-block in flight and a later block answers `NotInitialized` without reaching the
-plugin. A `BoundBuses` borrows both the scratch and the channel slices its
-pointers came from, so a `process` call without a fresh binding cannot be
-written, and a block longer than a bound channel (or the aux block) is refused.
+`process` is a method of `AudioSide`, which names no main-thread entry.
+
+`Plugin::audio_side` hands the audio half out once, and only for a plugin that is
+set up (`setup_processing`) and active (`set_active`). While it exists, the
+plugin's state changes (`set_active`, `set_processing`, `setup_processing`,
+`set_bus_arrangements`, `activate_bus`) answer `Vst3Error::Busy`, so the
+transitions the SDK reserves for the non-processing states cannot run beside a
+block. `process` refuses a block whose width is not the setup's
+`symbolicSampleSize` or that is longer than its `maxSamplesPerBlock`, a bound
+channel or the aux block.
+
+The audio half holds no reference to the plugin, only a pointer it may use under
+the instance's claim, which the audio thread only ever `try_lock`s. The plugin's
+`Drop` retires the claim first, so a later block answers `NotInitialized`
+without waiting, and the plugin and its module are destroyed on the thread that
+drops the `Plugin`, never on the audio thread that drops an `AudioSide`.
+
+A `BoundBuses` borrows both the scratch and the channel slices its pointers came
+from, so a `process` call without a fresh binding cannot be written.
 
 ## What the embedder owes
 

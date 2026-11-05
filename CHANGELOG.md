@@ -88,7 +88,9 @@ does the plumbing that told a plugin node which model it addressed
 addresses nothing" refusals are gone with the mismatch they refused, and so are
 their tests (`clap_refuses_a_vst2_index`, `add_param_changes_refuses_a_vst2_index`,
 and the half of `the_addressing_model_survives_the_wire` that told two models
-apart; the half that a high id survives the wire stays).
+apart; the half that a high id survives the wire stays). The pinned `ProcessAudio` encoding
+(`a_block_encodes_as_before_smallvec_was_removed`) is re-recorded for it: the
+recorded bytes with each queue's four-byte variant tag cut out.
 `ParameterInfo::new` takes a `ParamId`. `tutti_au_host::parameters::ParamAddress`
 (a scope and element) is a different type and stays.
 

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the VST3 host is a `Loaded`, a `Processor` and a `Controller`
+
+`Vst3Loaded` implements `Loaded` and `Control`; activating it gives a
+`Vst3ProcessorAny` (the realtime half, or `Vst3Processor<T>` through
+`activate_typed::<T>`) and a `Vst3Controller` (the main-thread half, which derefs
+to `Vst3Loaded`). `Vst3Active<T>` is gone, with `Vst3Active::load`, `load_with_mode`,
+`load_class`, `activate_with_mode`, `set_sample_rate` and
+`restart_bus_configuration`: a rate or mode change is a deactivate and an
+activate, and `Vst3Loaded::load(path, LoadOptions)` takes the class (and no rate
+or block size, which are the activation's). A refused activation hands the plugin
+back in `Refused`, where it used to consume it. A parameter written to the
+controller is applied to the edit controller and queued in an edit ring that the
+Processor drains at the head of its next block, ahead of the block's automation;
+the writes a rejoin finds undelivered are carried into the next activation. The
+plugin's `restartComponent` flags are also `RequestWord` bits, taken with
+`Vst3Loaded::take_requests` and fed to `Lifecycle::drive`; `take_restart` and
+`RestartOutcome` stay for a plugin held without a `Lifecycle`. The `IMidiMapping`
+table is published to the Processor, so a rebuilt mapping reaches a live plugin.
+A block the plugin fails is an error (`PluginError::Block`), where it was an
+empty output.
+
+Renames (design 016 §2.5): `info` is `plugin_info`, `read_latency_samples` and
+`read_tail_samples` are `latency_samples` and `tail_samples`, `get_parameter`,
+`set_parameter`, `parameter_string_by_value` and `parameter_value_by_string` are
+`Control::parameter`, `set_parameter`, `parameter_text` and
+`parameter_value_from_text`, `get_parameter_list` is `parameter_list`,
+`get_state` and `set_state` are `Control::save_state` and `load_state`,
+`set_automation_state(i32)` is `apply_automation_state`, `get_factory_info` and
+`get_class_info` are `factory_info` and `class_info`, and path arguments are
+`impl AsRef<Path>`.
+
+New: `Vst3Loaded::take_requests`, `is_active`, `program_change_parameter`,
+`descriptor_of`, `LoadOptions`, `ProcessFailed`, `Vst3Processor::take_edits`.
+
+`tutti-plugin-server`'s `Vst3Instance` drives a `Lifecycle<Vst3Loaded>`:
+`Lifecycle::drive` replaces `poll_restart`, `RestartChanges`, `reload` and
+`pending_latency`; a refused rate or render mode is rolled back by the bridge to
+the previous configuration, and a render-mode change is a restart (VST3 delivers
+the mode in `setupProcessing`) that keeps the instance. The sequencer-context
+converters and the program-list code moved into `tutti-vst3-host`.
+
 ### Changed — the CLAP host is a `Loaded`, a `Processor` and a `Controller`
 
 `ClapLoaded` implements `Loaded` and `Control`; activating it gives a

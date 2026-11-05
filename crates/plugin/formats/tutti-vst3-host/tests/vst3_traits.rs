@@ -135,7 +135,6 @@ fn render(
                 out: &mut out,
             };
             processor.process(&mut io)?;
-            drop(io);
             Ok(f64::from(o[0][0]))
         }
         _ => {
@@ -150,7 +149,6 @@ fn render(
                 out: &mut out,
             };
             processor.process(&mut io)?;
-            drop(io);
             Ok(o[0][0])
         }
     }

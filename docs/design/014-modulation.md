@@ -1244,7 +1244,7 @@ site counts it with its own counter. `add_change` counts in
 `points_overflowed` (an address past every queue is dropped and counted
 there too); the IPC node's delivery in `points_merged`; the CLAP output
 grouping in `output_param_points_dropped`; the VST3 host's input queues in
-`Vst3Active::param_points_dropped` (with the `IMidiMapping` route's merge
+`Vst3Processor::param_points_dropped` (with the `IMidiMapping` route's merge
 of host automation and mapped controllers), and its output queues, where
 the plugin's `addPoint` past a queue's room returns `kResultOk` with the
 index of the point it replaced, or `kResultFalse` when it was earlier than
@@ -1277,7 +1277,7 @@ it, which only a set nothing bounded reaches, the CLAP list keeps a
 parameter's latest value in place of its previous event once the room is
 spent, but a parameter with no event in the list yet when the room runs out
 loses its points; the VST3 list keeps each queue's latest value. Both are
-counted (`param_points_dropped`, `Vst3Active::param_points_dropped`). These
+counted (`param_points_dropped`, `Vst3Processor::param_points_dropped`). These
 counters are read on the format host's instance; the plugin-server does not
 report them. The server's own copy of the plugin's parameter output
 (`ProcessOutput::reserve_params`) is reserved at load, `reserved` for the

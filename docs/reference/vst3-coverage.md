@@ -250,7 +250,7 @@ spec interpretation being right.
 | ~~`IParameterChanges` merge uses an unstable sort.~~ **FIXED** — see above. | `host/midi_mapping.rs:241` | **[verified]** |
 | ~~Keyboard, wheel and focus are never delivered to plugin editors.~~ **FIXED (host layer)** — `send_key_down`/`send_key_up`/`send_wheel`/`set_editor_focus` on `Vst3Loaded`, returning *consumed* so the plugin arbitrates. The Bevy-side `KeyCode` → `VirtualKeyCodes` table is not written; nothing calls these yet. | `host/loaded.rs` | **[verified]** |
 | ~~`IUnitInfo` is never called.~~ **FIXED** — `units()` / `program_lists()` / `program_name()` / `selected_unit()` / `select_unit()` / `unit_by_bus()` bind the interface. Returned flat, in the plugin's order, each unit naming its parent; assembling a tree is the caller's job. Measured: host-checker 54 units, 48 nested. | `types/info.rs`, `host/loaded.rs` | **[verified]** |
-| ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — `Vst3Instance::restart_bus_configuration` owns the cycle; `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
+| ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — the core plans the cycle (`Lifecycle`, `HostOp::Reconfigure`); `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
 | ~~`kCycleValid` is set under the wrong requirement gate.~~ **FIXED** — gated on `NEED_CYCLE_MUSIC` + finiteness, paired with the fields it advertises. | `types/transport.rs` | **[verified]** |
 
 ### Medium

@@ -1369,7 +1369,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
-    let loaded = Vst3Loaded::load(&probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
 
     let want = tutti_vst3_host::process_context_flags::NEED_TEMPO;
     assert_eq!(

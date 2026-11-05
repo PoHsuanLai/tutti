@@ -120,6 +120,9 @@ impl<T: Vst3Sample> Staged<T> {
     /// The plugin comes back with the reason, inactive: the f64 width the
     /// plugin does not process, a refused `setupProcessing` or a refused
     /// `setActive(1)`.
+    // The `Err` variant hands the whole plugin back, which is the point of it;
+    // boxing it would add an allocation to a path that must return the plugin.
+    #[allow(clippy::result_large_err)]
     pub(super) fn stage(
         loaded: Vst3Loaded,
         sample_rate: f64,

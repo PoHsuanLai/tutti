@@ -143,7 +143,7 @@ impl Node for Feed {
 fn cutoff(node: u64) -> ParamIn {
     ParamIn {
         node: NodeKey(node),
-        param: UnitParam::Cutoff,
+        param: UnitParam::Cutoff.into(),
     }
 }
 

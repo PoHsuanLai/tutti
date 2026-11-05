@@ -21,7 +21,7 @@ use std::num::NonZeroU32;
 
 use tutti_types::{
     Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, SampleRate, Samples, SegmentOrigin, Tail,
-    UnitParam,
+    UnitAddr, UnitParam,
 };
 
 use crate::cost::Cost;
@@ -317,6 +317,22 @@ impl Shape {
     #[must_use]
     pub const fn with_params(mut self, params: &[UnitParam]) -> Self {
         self.params = ParamPorts::new(params);
+        self
+    }
+
+    /// [`with_params`](Self::with_params) for a node with several params of
+    /// one kind: each [`UnitAddr`] is a kind and an index (a threshold per
+    /// band is `UnitAddr::new(UnitParam::Threshold, band)`), in this port
+    /// order.
+    ///
+    /// # Panics
+    ///
+    /// If `params` holds more than [`MAX_PARAM_PORTS`](crate::MAX_PARAM_PORTS),
+    /// or one address (kind and index) twice (in a `const` context, at
+    /// compile time).
+    #[must_use]
+    pub const fn with_param_addrs(mut self, params: &[UnitAddr]) -> Self {
+        self.params = ParamPorts::of(params);
         self
     }
 }

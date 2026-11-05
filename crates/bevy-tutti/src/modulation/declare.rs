@@ -16,11 +16,12 @@ use bevy_ecs::system::SystemParam;
 use tutti_mod::{Adsr, Curve, CurveType, Lfo, Macro, Polarity, Source};
 use tutti_nodes::automation::{RecordMode, Recorder};
 use tutti_session::Take;
-use tutti_types::{Depth, ParamAddr, Seconds, UnitParam};
+use tutti_types::{Depth, ParamAddr, Seconds, UnitAddr, UnitParam};
 
 /// One modulatable parameter: an entity and the param's address on its
-/// node. A native param is a [`UnitParam`]; a hosted plugin's is its own
-/// numeric id ([`plugin`](Self::plugin)).
+/// node. A native param is a [`UnitParam`] (or a [`UnitAddr`], for the second
+/// param of a kind on a node: [`unit_at`](Self::unit_at)); a hosted plugin's
+/// is its own numeric id ([`plugin`](Self::plugin)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ParamRef {
     /// The entity whose [`AudioNode`](tutti_core::AudioNode) has the param.
@@ -38,11 +39,21 @@ impl ParamRef {
         }
     }
 
-    /// A native param of `entity`'s node.
+    /// A native param of `entity`'s node, at index 0.
     pub const fn unit(entity: Entity, param: UnitParam) -> Self {
         Self {
             entity,
             param: ParamAddr::Unit(param),
+        }
+    }
+
+    /// A native param of `entity`'s node at `index` among the node's params
+    /// of that kind (a multiband compressor's threshold of band `index`).
+    /// [`unit`](Self::unit) is index 0.
+    pub const fn unit_at(entity: Entity, param: UnitParam, index: u8) -> Self {
+        Self {
+            entity,
+            param: ParamAddr::unit(UnitAddr::new(param, index)),
         }
     }
 

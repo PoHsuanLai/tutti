@@ -12,7 +12,7 @@ use tutti_session::{
     AudioSide, Crossfade, CrossfadeRefused, EventSource, GraphSource, Phase, PhaseCx,
     ReplaceRefused, Session, SessionEvent, SessionNode,
 };
-use tutti_types::{ChannelLayout, SampleRate, UnitParam};
+use tutti_types::{ChannelLayout, SampleRate, UnitAddr};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -450,8 +450,10 @@ impl AudioGraphRes {
     /// [`set_node_params`](Self::set_node_params)): the cell it reads at the
     /// start of its next block — on every graph, including a
     /// [`headless`](Self::headless) one — and the value a fork starts from.
-    /// A node without the param takes nothing.
-    pub fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
+    /// A node without the param takes nothing. `param` is a [`UnitAddr`] (a
+    /// kind and an index among the node's params of that kind); a bare
+    /// `UnitParam` is index 0.
+    pub fn set_param(&mut self, node: AudioNode, param: impl Into<UnitAddr>, value: f32) {
         self.write().graph().set_param(node, param, value);
     }
 
@@ -476,7 +478,7 @@ impl AudioGraphRes {
 
     /// Returns whether `node` declares `param` modulatable by the graph: its
     /// shape lists it among its params. False for a node not in the graph.
-    pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
+    pub fn declares_param(&self, node: AudioNode, param: impl Into<UnitAddr>) -> bool {
         self.read().graph_ref().declares_param(node, param)
     }
 
@@ -509,7 +511,7 @@ impl AudioGraphRes {
     pub fn set_param_mod(
         &mut self,
         node: AudioNode,
-        param: UnitParam,
+        param: impl Into<UnitAddr>,
         source: Option<AudioNode>,
         range: tutti_graph::ParamRange,
     ) -> Result<(), tutti_graph::GraphInvalid> {
@@ -520,13 +522,17 @@ impl AudioGraphRes {
 
     /// Stops modulating `node`'s `param`: it reads its own control again,
     /// declicked.
-    pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
+    pub fn clear_param_mod(&mut self, node: AudioNode, param: impl Into<UnitAddr>) {
         self.write().graph().clear_param_mod(node, param);
     }
 
     /// How `node`'s `param` is modulated, as the graph value holds it:
     /// `None` when nothing modulates it.
-    pub fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<tutti_graph::ParamMod> {
+    pub fn param_mod(
+        &self,
+        node: AudioNode,
+        param: impl Into<UnitAddr>,
+    ) -> Option<tutti_graph::ParamMod> {
         self.read().graph_ref().param_mod(node, param)
     }
 

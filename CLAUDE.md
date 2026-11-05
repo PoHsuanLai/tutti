@@ -363,8 +363,14 @@ Scalars use `Param<U>`.
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
-  `App::add_audio_param::<U, P>()`. They reach a node through its
-  `ParamSet` (`SessionNode::params`): a node without the param takes nothing.
+  `App::add_audio_param::<U, P>()`. `P` is a packed `UnitAddr` (a
+  `UnitParam` kind in the low byte, an index among the node's params of
+  that kind in the high byte; index 0 is the plain `UnitParam as u16`, so
+  `{ UnitParam::Cutoff as u16 }` still names a node's only cutoff). They reach
+  a node through its `ParamSet` (`SessionNode::params`): a node without the
+  param takes nothing. A node with several params of a kind adds each with
+  `ParamSetBuilder::param` and declares each modulatable with
+  `Shape::with_param_addrs`; a route names one with `ParamRef::unit_at`.
   Modulation is declared too (`Mods`, `ModRoute`, `ModRange` naming a
   `ParamRef`): each modulated param gets a control lane on its port, whose
   knob is the node's own cell (a plugin parameter's lane, its own knob on

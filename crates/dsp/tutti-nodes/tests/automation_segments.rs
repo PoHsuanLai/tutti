@@ -88,7 +88,7 @@ fn graph(lane: ControlLaneNode) -> (Editor, Executor) {
     s.connect_param(
         ParamIn {
             node: NodeKey(2),
-            param: UnitParam::Cutoff,
+            param: UnitParam::Cutoff.into(),
         },
         EventOut {
             node: NodeKey(1),

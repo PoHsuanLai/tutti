@@ -20,7 +20,7 @@
 
 use std::cell::Cell;
 
-use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitParam};
+use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitAddr};
 
 use crate::time::Offset;
 
@@ -54,7 +54,7 @@ pub struct Ump(pub [u32; 4]);
 ///
 /// - **Built-in params** are built from a typed [`ParamKey<U>`] and a `U`,
 ///   and read back the same way, so the unit is checked at both ends. In
-///   between the value travels type-erased (the stable [`UnitParam`] id and
+///   between the value travels type-erased (the stable [`UnitAddr`] id and
 ///   the raw `f32`), because one event port carries ramps for parameters of
 ///   different units and an `Event` has to be one `Copy` type. The raw value
 ///   is private: nothing reads a built-in ramp without naming its key.
@@ -91,7 +91,7 @@ impl ParamRamp {
     /// Ramp built-in parameter `key` linearly to `target` over `duration`
     /// (zero is a step).
     pub fn new<U: Unit<Raw = f32>>(key: ParamKey<U>, target: U, duration: Samples) -> Self {
-        Self::packed(ParamAddr::Unit(key.id()), target.to_raw(), duration)
+        Self::packed(ParamAddr::unit(key.addr()), target.to_raw(), duration)
     }
 
     /// Ramp a foreign unit's parameter `id` linearly to the raw `target`
@@ -140,7 +140,7 @@ impl ParamRamp {
 
     /// The target, in `key`'s unit, if this ramp is for `key`.
     pub fn target<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
-        (self.addr == ParamAddr::Unit(key.id())).then(|| U::from_raw(self.target))
+        (self.addr == ParamAddr::unit(key.addr())).then(|| U::from_raw(self.target))
     }
 
     /// The raw target, if this ramp is for foreign parameter `id`.
@@ -389,7 +389,8 @@ pub(crate) enum ShapeTag {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamSegment {
     // The address, packed (a `ParamAddr` takes 8 bytes and would push an
-    // `Event` past 32): a built-in param's `UnitParam` discriminant, or the
+    // `Event` past 32): a built-in param's packed `UnitAddr` (index in the
+    // high byte of its `u16`, the `UnitParam` discriminant in the low), or the
     // foreign id, told apart by `foreign`.
     id: u32,
     from: f32,
@@ -417,24 +418,25 @@ impl ParamSegment {
         duration: Samples,
         shape: SegmentShape,
     ) -> Self {
-        Self::unit(key.id(), from.to_raw(), to.to_raw(), duration, shape)
+        Self::unit(key.addr(), from.to_raw(), to.to_raw(), duration, shape)
     }
 
-    /// A segment of built-in parameter `param` in its raw `f32` domain, as
+    /// A segment of built-in parameter `param` (a [`UnitParam`](tutti_types::UnitParam),
+    /// which is its index-0 address, or a [`UnitAddr`]) in its raw `f32` domain, as
     /// [`new`](Self::new) otherwise: for a producer that is erased over the
     /// unit (a control lane built from a `ParamAddr`, doc 014 §4.1), and for
     /// a param with no [`ParamKey`] yet. The raw value is exactly what
     /// [`new`](Self::new) sends for a key with this id: a unit's raw value is
     /// its bits.
     pub fn unit(
-        param: UnitParam,
+        param: impl Into<UnitAddr>,
         from: f32,
         to: f32,
         duration: Samples,
         shape: SegmentShape,
     ) -> Self {
         Self::packed(
-            u32::from(u16::from(param)),
+            u32::from(param.into().to_u16()),
             false,
             from,
             to,
@@ -488,32 +490,32 @@ impl ParamSegment {
         if self.foreign {
             return ParamAddr::Id(self.id);
         }
-        // Built from a `UnitParam` by `new`, so it converts back.
+        // Built from a `UnitAddr` by `new`, so it converts back.
         u16::try_from(self.id)
             .ok()
-            .and_then(|id| UnitParam::try_from(id).ok())
-            .map_or(ParamAddr::Id(self.id), ParamAddr::Unit)
+            .and_then(|id| UnitAddr::try_from(id).ok())
+            .map_or(ParamAddr::Id(self.id), ParamAddr::unit)
     }
 
     /// Whether this segment is for `addr`. No conversion: what the param
     /// port asks of every event, per event.
     #[inline]
     pub(crate) fn is_for(&self, addr: ParamAddr) -> bool {
-        match addr {
-            ParamAddr::Unit(p) => !self.foreign && self.id == u32::from(u16::from(p)),
-            ParamAddr::Id(id) => self.foreign && self.id == id,
+        match addr.as_unit() {
+            Some(a) => !self.foreign && self.id == u32::from(a.to_u16()),
+            None => matches!(addr, ParamAddr::Id(id) if self.foreign && self.id == id),
         }
     }
 
     /// The end value, in `key`'s unit, if this segment is for `key`.
     pub fn target<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
-        self.is_for(ParamAddr::Unit(key.id()))
+        self.is_for(ParamAddr::unit(key.addr()))
             .then(|| U::from_raw(self.to))
     }
 
     /// The start value, in `key`'s unit, if this segment is for `key`.
     pub fn start<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
-        self.is_for(ParamAddr::Unit(key.id()))
+        self.is_for(ParamAddr::unit(key.addr()))
             .then(|| U::from_raw(self.from))
     }
 
@@ -1336,7 +1338,7 @@ mod tests {
     fn foreign_and_builtin_ramps_are_distinct_addresses() {
         use tutti_types::{Hz, ParamKey};
         let foreign = ParamRamp::foreign(
-            u16::from(ParamKey::<Hz>::CUTOFF.id()) as u32,
+            ParamKey::<Hz>::CUTOFF.addr().to_u16() as u32,
             0.5,
             Samples(0),
         );
@@ -1447,7 +1449,7 @@ mod tests {
     fn a_segment_reads_back_as_built() {
         use tutti_types::{Hz, ParamKey};
         let key = ParamKey::<Hz>::CUTOFF;
-        let id = u32::from(u16::from(key.id()));
+        let id = u32::from(key.addr().to_u16());
         let foreign = ParamSegment::foreign(id, 0.25, 0.75, Samples(8), SegmentShape::Exp(2.0));
         assert_eq!(foreign.target(key), None);
         assert_eq!(foreign.foreign_target(id), Some(0.75));
@@ -1461,7 +1463,7 @@ mod tests {
             SegmentShape::PowerOut(3.0),
         )
         .resumed(SamplePosition(2.5), SamplePosition(10.0));
-        assert_eq!(s.addr(), ParamAddr::Unit(key.id()));
+        assert_eq!(s.addr(), ParamAddr::unit(key.addr()));
         assert_eq!(s.foreign_target(id), None);
         assert_eq!(s.start(key), Some(Hz(1.0)));
         assert_eq!(s.shape(), SegmentShape::PowerOut(3.0));

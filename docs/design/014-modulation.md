@@ -438,7 +438,7 @@ the 32-byte event are unchanged.
 |---|---|
 | Audio | none |
 | Event inputs | 1: signal sources' raw values by `SourceId`; other events ignored |
-| Event outputs | 1: `ParamSegment`s to `ParamAddr::Unit(param)` (`ControlLaneNode::for_param`) or `ParamAddr::Id(id)` in normalised 0..1 (`for_foreign`) |
+| Event outputs | 1: `ParamSegment`s to `ParamAddr::Unit(param)` or `ParamAddr::Indexed(param, index)` (`ControlLaneNode::for_param`, `for_unit`) or `ParamAddr::Id(id)` in normalised 0..1 (`for_foreign`) |
 | Event capacity | `LANE_EVENT_CAPACITY` = **256** (today 128) |
 | Tail | `Tail::Unbounded` |
 | Latency | none; modulation lag is musical delay (§6) |
@@ -948,7 +948,12 @@ A route needs a `ModRange` on its target. The example is
   `ModRange` and an `Automation`.
 - **A `ParamRef` is `{ entity, param: ParamAddr }`**:
   `ParamRef::unit(entity, UnitParam)` names a native param,
-  `ParamRef::plugin(entity, id)` a plugin parameter.
+  `ParamRef::unit_at(entity, UnitParam, index)` the `index`th param of
+  that kind on a node with several (a threshold per band; `unit` is
+  index 0), `ParamRef::plugin(entity, id)` a plugin parameter. A native
+  target's address is a `UnitAddr` (013, "Param addresses"): the lane's port is
+  the node's declared param of that address, and its knob the node's
+  `ParamSet` cell of it.
 - **Components:** `ModSource { kind }`; `ModRoute { source, target:
   ParamRef, depth, polarity, curve, enabled }`; `ModRange { param, min, max }`
   (no `base`); `Automation { target: ParamRef, curve: Arc<dyn Curve> }`.
@@ -1831,7 +1836,7 @@ that need an app or a plugin.
   exhaustive match on `EventKind` names it (param ports, the plugin
   nodes, the reference). The note envelope answers it
   (§6); `EnvelopeFollowerNode::replacing` covers a rebuilt follower.
-- `ParamSegment::unit(UnitParam, …)` and `ControlLaneNode::for_unit`:
+- `ParamSegment::unit(impl Into<UnitAddr>, …)` and `ControlLaneNode::for_unit`:
   the erased constructors a reconcile holding a `ParamAddr` needs, which
   also reach params with no `ParamKey` (`Pan`, `RoomSize`, …).
   `for_param::<U>` is a thin wrapper over `for_unit`, so there is one

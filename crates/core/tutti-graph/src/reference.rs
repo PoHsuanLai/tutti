@@ -1326,7 +1326,7 @@ impl Reference {
                     continue;
                 }
                 let now = start + i as u64;
-                let want = tutti_types::ParamAddr::Unit(param);
+                let want = tutti_types::ParamAddr::unit(param);
                 while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                     match e.kind {
                         EventKind::Ramp(r) if r.addr() == want => {

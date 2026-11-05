@@ -1,7 +1,8 @@
 //! Compiler-owned parameter ports.
 //!
 //! A node declares the params a graph may drive
-//! ([`Shape::params`](crate::Shape::params), by [`UnitParam`] id). A
+//! ([`Shape::params`](crate::Shape::params), by [`UnitAddr`]: a [`UnitParam`]
+//! kind and an index among the node's params of that kind). A
 //! [`GraphSpec`](crate::GraphSpec) can then drive any of them from another
 //! node's event output ([`GraphSpec::connect_param`](crate::GraphSpec::connect_param)),
 //! and the compiler turns each driven param into one fused step of the
@@ -29,13 +30,21 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use tutti_types::{NodeKey, PackedAtomic, ParamAddr, RtScope, Samples, UnitParam};
+use tutti_types::{NodeKey, PackedAtomic, ParamAddr, RtScope, Samples, UnitAddr, UnitParam};
 
 use crate::event::{Event, EventKind, SegmentShape, segment_progress};
 use crate::spec::EventOut;
 
-/// Most params one node can declare modulatable.
-pub const MAX_PARAM_PORTS: usize = 8;
+/// Most params one node can declare modulatable: 32 addresses.
+///
+/// Sized for a multiband dynamics node: four bands of six params (threshold,
+/// knee, ratio, attack, release, make-up) and three crossover frequencies is
+/// 27. Everything sized from it is stack or plan data of a fixed few words per
+/// port: the [`ParamPorts`] list (two bytes an entry, so [`Shape`](crate::Shape)
+/// stays `Copy`), the per-block input array, and the executor's view-holding
+/// bound (`par.rs`). 32 is also the most `[bool; N]: Default` allows, which
+/// `ParamState` derives.
+pub const MAX_PARAM_PORTS: usize = 32;
 
 /// How long a param port crossfades when its source changes: from where it
 /// was to where the new source puts it (see
@@ -47,20 +56,24 @@ pub const PARAM_DECLICK: Samples = Samples(256);
 /// The params a node lets the graph modulate, in **port order** — the index
 /// [`Io::param`](crate::Io::param) and [`Node::param_base`](crate::Node::param_base)
 /// take. A fixed-capacity list, so [`Shape`](crate::Shape) stays `Copy`.
+///
+/// Each is a [`UnitAddr`], so a node with several params of one kind (a
+/// threshold per band) declares each at its own index. Two bytes per entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ParamPorts {
     len: u8,
-    ids: [UnitParam; MAX_PARAM_PORTS],
+    ids: [UnitAddr; MAX_PARAM_PORTS],
 }
 
 impl ParamPorts {
     /// No modulatable params.
     pub const NONE: Self = Self {
         len: 0,
-        ids: [UnitParam::Cutoff; MAX_PARAM_PORTS],
+        ids: [UnitAddr::first(UnitParam::Cutoff); MAX_PARAM_PORTS],
     };
 
-    /// `ids`, in this order.
+    /// `ids`, each at index 0, in this order. A node with several params of a
+    /// kind lists them with [`of`](Self::of).
     ///
     /// # Panics
     ///
@@ -68,7 +81,21 @@ impl ParamPorts {
     /// context, at compile time — where a node's list usually is).
     #[must_use]
     pub const fn new(ids: &[UnitParam]) -> Self {
-        match Self::try_new(ids) {
+        Self::unwrap(Self::try_new(ids))
+    }
+
+    /// `addrs`, in this order: [`new`](Self::new) for params at any index.
+    ///
+    /// # Panics
+    ///
+    /// Where [`try_of`](Self::try_of) returns an error.
+    #[must_use]
+    pub const fn of(addrs: &[UnitAddr]) -> Self {
+        Self::unwrap(Self::try_of(addrs))
+    }
+
+    const fn unwrap(r: Result<Self, ParamPortsError>) -> Self {
+        match r {
             Ok(p) => p,
             Err(ParamPortsError::TooMany { .. }) => {
                 panic!("more modulatable params than MAX_PARAM_PORTS")
@@ -77,7 +104,9 @@ impl ParamPorts {
         }
     }
 
-    /// [`new`](Self::new), without the panic.
+    /// [`new`](Self::new), without the panic. Widens each kind to its index-0
+    /// address and calls [`try_of`](Self::try_of) (a `const fn` cannot map a
+    /// slice).
     ///
     /// # Errors
     ///
@@ -88,26 +117,48 @@ impl ParamPorts {
         if ids.len() > MAX_PARAM_PORTS {
             return Err(ParamPortsError::TooMany { count: ids.len() });
         }
-        let mut out = Self::NONE;
+        let mut addrs = Self::NONE.ids;
         let mut i = 0;
         while i < ids.len() {
+            addrs[i] = UnitAddr::first(ids[i]);
+            i += 1;
+        }
+        let (head, _) = addrs.split_at(ids.len());
+        Self::try_of(head)
+    }
+
+    /// [`of`](Self::of), without the panic.
+    ///
+    /// # Errors
+    ///
+    /// [`ParamPortsError::TooMany`] for a list of more than
+    /// [`MAX_PARAM_PORTS`], [`ParamPortsError::Duplicate`] for one naming an
+    /// address (kind **and** index) twice: the same kind at another index is
+    /// another param.
+    pub const fn try_of(addrs: &[UnitAddr]) -> Result<Self, ParamPortsError> {
+        if addrs.len() > MAX_PARAM_PORTS {
+            return Err(ParamPortsError::TooMany { count: addrs.len() });
+        }
+        let mut out = Self::NONE;
+        let mut i = 0;
+        while i < addrs.len() {
             let mut j = 0;
             while j < i {
-                if ids[j] as u16 == ids[i] as u16 {
-                    return Err(ParamPortsError::Duplicate(ids[i]));
+                if addrs[j].to_u16() == addrs[i].to_u16() {
+                    return Err(ParamPortsError::Duplicate(addrs[i]));
                 }
                 j += 1;
             }
-            out.ids[i] = ids[i];
+            out.ids[i] = addrs[i];
             i += 1;
         }
-        out.len = ids.len() as u8;
+        out.len = addrs.len() as u8;
         Ok(out)
     }
 
     /// The params, in port order.
     #[must_use]
-    pub fn as_slice(&self) -> &[UnitParam] {
+    pub fn as_slice(&self) -> &[UnitAddr] {
         &self.ids[..self.len as usize]
     }
 
@@ -123,8 +174,10 @@ impl ParamPorts {
         self.len == 0
     }
 
-    /// The port index of `param`, if it is declared.
-    pub fn index_of(&self, param: UnitParam) -> Option<usize> {
+    /// The port index of `param`, if it is declared. A bare [`UnitParam`] is
+    /// its index-0 address.
+    pub fn index_of(&self, param: impl Into<UnitAddr>) -> Option<usize> {
+        let param = param.into();
         self.as_slice().iter().position(|&p| p == param)
     }
 }
@@ -138,8 +191,8 @@ pub enum ParamPortsError {
         /// How many were listed.
         count: usize,
     },
-    /// A param listed twice.
-    Duplicate(UnitParam),
+    /// An address (kind and index) listed twice.
+    Duplicate(UnitAddr),
 }
 
 impl std::fmt::Display for ParamPortsError {
@@ -167,8 +220,9 @@ impl Default for ParamPorts {
 pub struct ParamIn {
     /// The node.
     pub node: NodeKey,
-    /// Which of its declared params.
-    pub param: UnitParam,
+    /// Which of its declared params: a bare [`UnitParam`] converts to its
+    /// index-0 address (`param.into()`).
+    pub param: UnitAddr,
 }
 
 /// The range a modulated param is clamped to, in the param's own units.
@@ -373,11 +427,11 @@ impl Ramp {
 pub(crate) fn render_ramps(
     ramp: &mut Ramp,
     events: &[Event],
-    param: UnitParam,
+    param: UnitAddr,
     out: &mut [f32],
     base: impl Fn(usize) -> f32,
 ) {
-    let want = ParamAddr::Unit(param);
+    let want = ParamAddr::unit(param);
     let mut next = events.iter().peekable();
     for (i, o) in out.iter_mut().enumerate() {
         while let Some(e) = next.next_if(|e| e.offset.index() <= i) {
@@ -464,7 +518,7 @@ impl ParamRanges {
 
     /// A read-only view of `param`'s cell, if it is one of these ports.
     /// Control side.
-    pub(crate) fn reader(&self, param: UnitParam) -> Option<ParamRangeReader> {
+    pub(crate) fn reader(&self, param: UnitAddr) -> Option<ParamRangeReader> {
         self.cells
             .get(self.declared.index_of(param)?)
             .map(|c| ParamRangeReader(Arc::clone(c)))
@@ -472,7 +526,7 @@ impl ParamRanges {
 
     /// Set `param`'s range; `false` if it is not one of these ports.
     /// Control side.
-    pub(crate) fn store(&self, param: UnitParam, range: ParamRange) -> bool {
+    pub(crate) fn store(&self, param: UnitAddr, range: ParamRange) -> bool {
         let Some(cell) = self
             .declared
             .index_of(param)
@@ -637,7 +691,7 @@ impl ParamState {
     pub(crate) fn port(
         &mut self,
         k: usize,
-        param: UnitParam,
+        param: UnitAddr,
         frames: usize,
         m: Option<(EventOut, &[Event])>,
         base: Option<f32>,
@@ -759,7 +813,7 @@ mod tests {
         let events = [ev(4, 100.0, 4), ev(12, -5.0, 0)];
         let mut r = Ramp::default();
         let mut out = [0.0f32; 16];
-        render_ramps(&mut r, &events, UnitParam::Cutoff, &mut out, |_| 0.0);
+        render_ramps(&mut r, &events, UnitParam::Cutoff.into(), &mut out, |_| 0.0);
         assert_eq!(&out[..4], &[0.0; 4], "nothing before the event");
         assert_eq!(out[4], 25.0);
         assert_eq!(out[7], 100.0, "on target at the ramp's last frame");
@@ -767,7 +821,7 @@ mod tests {
         assert_eq!(out[12], -5.0, "a step lands on its frame");
         // Another param's ramp is not this port's.
         let mut r = Ramp::default();
-        render_ramps(&mut r, &events, UnitParam::Q, &mut out, |_| 0.0);
+        render_ramps(&mut r, &events, UnitParam::Q.into(), &mut out, |_| 0.0);
         assert!(out.iter().all(|&x| x == 0.0));
     }
 
@@ -796,7 +850,7 @@ mod tests {
         render_ramps(
             &mut Ramp::default(),
             &events,
-            UnitParam::Cutoff,
+            UnitParam::Cutoff.into(),
             &mut after_segment,
             base,
         );
@@ -805,7 +859,7 @@ mod tests {
         render_ramps(
             &mut Ramp::default(),
             &events,
-            UnitParam::Cutoff,
+            UnitParam::Cutoff.into(),
             &mut alone,
             base,
         );
@@ -831,7 +885,9 @@ mod tests {
                 )];
                 let mut r = Ramp::default();
                 let mut out = vec![0.0f32; frames];
-                render_ramps(&mut r, &events, UnitParam::Cutoff, &mut out, |_| from);
+                render_ramps(&mut r, &events, UnitParam::Cutoff.into(), &mut out, |_| {
+                    from
+                });
                 for (j, &v) in out[1..].iter().enumerate() {
                     let done = j + 1;
                     let want = if done >= len {
@@ -852,21 +908,23 @@ mod tests {
     #[test]
     fn an_undeclarable_list_is_a_named_error() {
         use UnitParam::*;
-        let full = [Cutoff, Q, Drive, Wet, Threshold, Ratio, Attack, Release];
-        assert_eq!(
-            ParamPorts::try_new(&full).map(|p| p.len()),
-            Ok(MAX_PARAM_PORTS)
-        );
-        let over = [
+        let kinds = [
             Cutoff, Q, Drive, Wet, Threshold, Ratio, Attack, Release, Volume,
         ];
         assert_eq!(
+            ParamPorts::try_new(&kinds).map(|p| p.len()),
+            Ok(kinds.len())
+        );
+        let over = [Cutoff; MAX_PARAM_PORTS + 1];
+        assert_eq!(
             ParamPorts::try_new(&over),
-            Err(ParamPortsError::TooMany { count: 9 })
+            Err(ParamPortsError::TooMany {
+                count: MAX_PARAM_PORTS + 1
+            })
         );
         assert_eq!(
             ParamPorts::try_new(&[Q, Cutoff, Q]),
-            Err(ParamPortsError::Duplicate(Q))
+            Err(ParamPortsError::Duplicate(Q.into()))
         );
     }
 }

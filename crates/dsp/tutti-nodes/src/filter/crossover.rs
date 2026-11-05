@@ -524,8 +524,8 @@ impl CrossoverControls {
     }
 }
 
-/// The checks on moving crossover `i` to `hz`: finite, above 0, between the
-/// neighbours `at(i - 1)` and `at(i + 1)`.
+/// [`CrossoverControls::set_frequency`]'s checks, shared with the multiband
+/// node's: finite, above 0, between the neighbours `at(i - 1)` and `at(i + 1)`.
 pub(crate) fn check_neighbours(
     i: usize,
     hz: Hz,

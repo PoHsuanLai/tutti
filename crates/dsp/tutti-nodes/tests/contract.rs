@@ -13,8 +13,9 @@
 //! - **ConvolverNode** — one FFT block of latency for the *whole* output: at
 //!   mix 0 the output is all dry, so a dry half that is not delayed leaves
 //!   `latency` frames early.
-//! - **CrossoverNode** — an IIR split with no latency: an impulse leaves its
-//!   low band on its own frame, on the right channel.
+//! - **CrossoverNode** and **MultibandCompressorNode** — IIR splits with no
+//!   latency: an impulse leaves its first band on its own frame, on the right
+//!   channel.
 //! - **DelayLineNode** — a musical delay is not latency: it declares
 //!   none, and the dry half of its blend leaves on the excitation's frame.
 //!
@@ -29,15 +30,15 @@
 //!   → `convolver_dry` and `convolver_half` fail every path.
 //! - Declare the echo time as latency in `DelayLineNode::shape` →
 //!   `delay_line` fails every path.
-//! - Declare one frame of latency in `CrossoverNode::shape` → its row fails
-//!   every path.
+//! - Declare one frame of latency in `CrossoverNode::shape` or
+//!   `MultibandCompressorNode::shape` → their rows fail every path.
 //!
 //! Every row is a graph node (`Row::new`).
 
 use tutti_core::{ChannelLayout, Db, Hz, Samples};
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
-use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode};
+use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode, MultibandCompressorNode};
 
 fn impulse(port: u16) -> Excite {
     Excite::Impulse {
@@ -106,8 +107,21 @@ fn crossover_row() -> Row {
     .with_expected_latency(Samples(0))
 }
 
+/// The summed output of a stereo multiband compressor, impulse on the right.
+fn multiband_row() -> Row {
+    Row::new(
+        "MultibandCompressorNode (stereo, 3 bands, right channel)",
+        || Box::new(MultibandCompressorNode::new(ChannelLayout::STEREO, 3).unwrap()),
+        impulse(1),
+        Detect::Threshold(0.0),
+    )
+    .output(1)
+    .with_expected_latency(Samples(0))
+}
+
 contract_tests!(audio limiter => limiter_row());
 contract_tests!(audio crossover => crossover_row());
+contract_tests!(audio multiband => multiband_row());
 contract_tests!(audio stereo_limiter => stereo_limiter_row());
 contract_tests!(audio delay_line => delay_line_row());
 

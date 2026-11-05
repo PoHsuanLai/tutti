@@ -24,7 +24,9 @@
 //!   [`CrossoverError`].
 //! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
-//!   [`BrickwallLimiterNode`].
+//!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
+//!   bands over a [`Crossover`]) with its [`MultibandControls`] and
+//!   [`BandControls`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
@@ -93,8 +95,8 @@ pub use filter::{
 
 mod dynamics;
 pub use dynamics::{
-    BRICKWALL_PARAMS, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode, GATE_PARAMS,
-    GateNode, LIMITER_PARAMS, LimiterNode,
+    BRICKWALL_PARAMS, BandControls, BrickwallLimiterNode, COMPRESSOR_PARAMS, CompressorNode,
+    GATE_PARAMS, GateNode, LIMITER_PARAMS, LimiterNode, MultibandCompressorNode, MultibandControls,
 };
 
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one

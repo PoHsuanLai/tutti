@@ -192,3 +192,8 @@ pub(crate) fn render_chunked(
     }
     out
 }
+
+/// The mean of `x`.
+pub(crate) fn mean(x: &[f32]) -> f64 {
+    x.iter().map(|&v| f64::from(v)).sum::<f64>() / x.len() as f64
+}

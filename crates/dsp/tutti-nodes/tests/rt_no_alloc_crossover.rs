@@ -1,20 +1,21 @@
-//! Regression gate: the crossover must not allocate per block, including
-//! while a crossover frequency moves.
+//! Regression gate: the crossover and the multiband compressor must not
+//! allocate per block, including while a crossover frequency, a threshold or a
+//! solo moves.
 //!
-//! The node runs alone in a graph through `tutti_graph::contract::BlockRig`.
-//! The moving-control gate takes the ramped path (a coefficient solve every
-//! few samples).
+//! Each node runs alone in a graph through `tutti_graph::contract::BlockRig`.
+//! The moving-control gates take the ramped path (a coefficient solve every
+//! few samples), a solo's mute ramp and a bypass.
 //!
-//! Mutation (run): build the node's `scratch` in `process` rather than
-//! `prepare` (`self.scratch = vec![0.0; ..]` at its top) → both gates fail
-//! on the first measured block; a `Vec` built in `split_block`'s ramp → the
-//! moving gate fails.
+//! Mutation (run): size the multiband node's `split` scratch in `process`
+//! rather than `prepare` (`self.split = vec![0.0; ..]` at its top) → every
+//! gate on it fails on the first measured block; build the crossover's
+//! `scratch` in `process` → the crossover gates fail.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{ChannelLayout, Hz, SampleRate};
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
-use tutti_nodes::CrossoverNode;
+use tutti_nodes::{CrossoverNode, MultibandCompressorNode};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -62,5 +63,36 @@ fn crossover_node_with_a_moving_frequency_is_allocation_free() {
     gate(node, move |controls, _| {
         hz = if hz > 2_000.0 { 200.0 } else { hz + 3.0 };
         controls.set_frequency(0, Hz(hz)).unwrap();
+    });
+}
+
+#[test]
+fn multiband_compressor_process_is_allocation_free() {
+    for bands in 2..=4 {
+        let node = MultibandCompressorNode::new(ChannelLayout::STEREO, bands).unwrap();
+        let c = node.controls();
+        for b in 0..bands {
+            let band = c.band(b).unwrap();
+            band.set_threshold(-24.0);
+            band.set_ratio(4.0);
+            band.set_makeup(3.0);
+        }
+        gate(node, |_, _| {});
+    }
+}
+
+#[test]
+fn multiband_compressor_with_moving_controls_is_allocation_free() {
+    let node = MultibandCompressorNode::new(ChannelLayout::from_count(6), 4).unwrap();
+    let mut hz = 120.0f32;
+    gate(node, move |controls, i| {
+        hz = if hz > 400.0 { 120.0 } else { hz + 1.0 };
+        controls.set_crossover(0, Hz(hz)).unwrap();
+        let band = controls.band(i % 4).unwrap();
+        band.set_threshold(-30.0 + (i % 11) as f32);
+        band.set_makeup((i % 5) as f32);
+        band.set_bypass(i % 7 == 0);
+        band.set_solo(i % 13 == 0);
+        controls.band((i + 1) % 4).unwrap().set_solo(false);
     });
 }

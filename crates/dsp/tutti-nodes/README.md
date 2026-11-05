@@ -17,7 +17,9 @@ change the running node without a lock.
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
   matrix), over the inner `DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
-  `LimiterNode`.
+  `LimiterNode`, and `MultibandCompressorNode` (2 to 4 bands, a linked
+  compressor per band of a `Crossover`, with per-band bypass, solo and gain
+  reduction meters).
 - **Modulation effects** — `ModDelayNode` (chorus and flanger are its two
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.

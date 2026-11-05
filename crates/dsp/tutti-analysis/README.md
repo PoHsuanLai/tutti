@@ -23,6 +23,7 @@ where the results go:
 - `vectorscope_points` (`step_vectorscope` for blocks) — a stereo pair as
   (side, mid) points for a goniometer.
 - `cross_correlate` — FFT cross-correlation of two buffers at every lag.
+- `align` — GCC-PHAT delay between two takes: lag, sub-sample offset, confidence.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 

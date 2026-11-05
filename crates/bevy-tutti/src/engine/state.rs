@@ -62,6 +62,7 @@ pub enum AudioEngineState {
 
 impl AudioEngineState {
     /// Whether the callback is live.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }

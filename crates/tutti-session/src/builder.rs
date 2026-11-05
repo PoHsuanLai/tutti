@@ -73,6 +73,7 @@ struct Parts {
 
 impl SessionBuilder {
     /// Global graph inputs (hardware or host input channels). Default 0.
+    #[must_use]
     pub fn inputs(mut self, inputs: usize) -> Self {
         self.inputs = inputs;
         self
@@ -80,6 +81,7 @@ impl SessionBuilder {
 
     /// The project's output width: the graph root is at least this wide, and
     /// at least the device's ([`root_width`]). Default 2.
+    #[must_use]
     pub fn outputs_floor(mut self, outputs: usize) -> Self {
         self.outputs_floor = outputs;
         self
@@ -88,6 +90,7 @@ impl SessionBuilder {
     /// Threads per block, the callback included: `0` for one per core,
     /// `1` (the default) to render on the callback alone. Each export gets
     /// its own pool of the same size.
+    #[must_use]
     pub fn render_workers(mut self, workers: usize) -> Self {
         self.render_workers = workers;
         self
@@ -96,6 +99,7 @@ impl SessionBuilder {
     /// Open the OS MIDI layer ([`Session::midi_io`]) and feed the engine's
     /// MIDI input node from its ports. Default off.
     #[cfg(feature = "midi-hardware")]
+    #[must_use]
     pub fn midi_hardware(mut self, open: bool) -> Self {
         self.midi_hardware = open;
         self
@@ -103,6 +107,7 @@ impl SessionBuilder {
 
     /// The MPE mode the engine's MIDI input ingests in. Default `Disabled`.
     #[cfg(feature = "midi")]
+    #[must_use]
     pub fn mpe_mode(mut self, mode: tutti_midi_types::MpeMode) -> Self {
         self.mpe_mode = mode;
         self
@@ -113,6 +118,7 @@ impl SessionBuilder {
     /// reported ([`SessionEvent::ModulationUnresolved`](crate::SessionEvent::ModulationUnresolved)).
     /// Default [`UNRESOLVED_WARNING`](crate::UNRESOLVED_WARNING), 4 s.
     #[cfg(feature = "modulation")]
+    #[must_use]
     pub fn unresolved_warning(mut self, after: std::time::Duration) -> Self {
         self.unresolved_warning = after;
         self
@@ -123,6 +129,7 @@ impl SessionBuilder {
     /// ([`SessionEvent::PluginSnapshotDue`](crate::SessionEvent::PluginSnapshotDue)).
     /// Default [`SNAPSHOT_INTERVAL`](crate::SNAPSHOT_INTERVAL), 8 s.
     #[cfg(feature = "plugin")]
+    #[must_use]
     pub fn snapshot_interval(mut self, every: std::time::Duration) -> Self {
         self.snapshot_interval = every;
         self

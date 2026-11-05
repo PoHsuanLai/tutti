@@ -437,6 +437,7 @@ impl VoicePool {
     /// [`with_butler`](Self::with_butler); for one at a non-stereo width,
     /// [`with_channels`](Self::with_channels). Its controls come with it into
     /// the graph ([`IntoNode`]).
+    #[must_use]
     pub fn new() -> Self {
         Self::from_parts(None, ChannelLayout::STEREO)
     }
@@ -448,6 +449,7 @@ impl VoicePool {
     /// without it a disk-backed voice still plays, but its loops are dropped
     /// and counted, because the loop-start fadein head lives on the butler
     /// side and the reader cannot reach it.
+    #[must_use]
     pub fn with_butler(butler: Commands) -> Self {
         Self::from_parts(Some(butler), ChannelLayout::STEREO)
     }
@@ -486,6 +488,7 @@ impl VoicePool {
     /// loop set: its `On` is counted ([`PoolDrops::loops_no_butler`]), and
     /// a loop sent for it through the handle reaches the drain unforwarded
     /// ([`PoolDrops::loops_not_forwarded`]). Add voices through the handle.
+    #[must_use]
     pub fn with_handle(mut self) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);

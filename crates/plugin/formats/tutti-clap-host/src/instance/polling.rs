@@ -358,6 +358,7 @@ impl ClapLoaded {
     /// `create` then fails still reports `true` here; that surfaces as
     /// [`open_editor`](Self::open_editor)'s error. An absent `is_api_supported`
     /// is not a refusal — the same reading `embed_editor_sequence` uses.
+    #[must_use]
     pub fn has_editor(&self) -> bool {
         if self.extensions.gui.gui.is_null() {
             return false;
@@ -500,6 +501,7 @@ impl ClapLoaded {
     ///
     /// Side-effect-free, like its embedded sibling: `is_api_supported` is a
     /// predicate, `create` is what allocates.
+    #[must_use]
     pub fn has_floating_editor(&self) -> bool {
         if self.extensions.gui.gui.is_null() {
             return false;

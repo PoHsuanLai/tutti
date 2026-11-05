@@ -56,6 +56,7 @@ pub struct SeekSlot {
 
 impl SeekSlot {
     /// An empty slot with no seek pending.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             target: Arc::new(AtomicF64::new(0.0)),
@@ -78,6 +79,7 @@ impl SeekSlot {
 
     /// Whether a jump is waiting for the clock. Advisory — the clock may
     /// consume it between this read and any action taken on the answer.
+    #[must_use]
     pub fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)
     }
@@ -121,6 +123,7 @@ impl LoopSpan {
 
     /// Whether looping is armed. Says nothing about whether the bounds are
     /// usable — [`range`](Self::range) answers both at once.
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
@@ -192,6 +195,7 @@ pub struct Declick {
 
 impl Declick {
     /// An idle contract: no fade armed, no length stamped.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             remaining: Arc::new(AtomicU32::new(0)),
@@ -228,6 +232,7 @@ impl Declick {
     }
 
     /// Whether a fade is still ramping.
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.remaining.load(Ordering::Acquire) > 0
     }
@@ -431,6 +436,7 @@ impl ClockLinks {
     /// The destructure is exhaustive on purpose: adding another shared field
     /// becomes a compile error here rather than a field silently left shared,
     /// which is the bug class this cut exists to prevent.
+    #[must_use]
     pub fn severed(&self) -> Self {
         let Self {
             tempo,

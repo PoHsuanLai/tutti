@@ -89,6 +89,7 @@ impl Midi1ToMidi2Translator {
     /// The state is per channel and persists across events, so one translator
     /// must serve one MIDI stream for its whole life — sharing it between two
     /// sources interleaves their Data Entry runs and mixes their parameters.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

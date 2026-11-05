@@ -52,6 +52,7 @@ pub struct StableOrder {
 impl StableOrder {
     /// Scratch for sorting up to `items` items. Allocates; call it off the
     /// audio thread.
+    #[must_use]
     pub fn with_capacity(items: usize) -> Self {
         Self {
             keys: Vec::with_capacity(items),

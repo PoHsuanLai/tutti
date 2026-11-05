@@ -65,18 +65,21 @@ impl Latency {
     /// Deliberately the only constructor, and deliberately not a `From`: the
     /// point of the type is that becoming a latency is a visible decision.
     #[inline]
+    #[must_use]
     pub const fn new(frames: Samples) -> Self {
         Self(frames)
     }
 
     /// Returns the latency as a frame count.
     #[inline]
+    #[must_use]
     pub const fn samples(self) -> Samples {
         self.0
     }
 
     /// Returns whether there is no latency.
     #[inline]
+    #[must_use]
     pub const fn is_zero(self) -> bool {
         self.0.is_zero()
     }
@@ -86,6 +89,7 @@ impl Latency {
     ///
     /// Zero when `self` is already the later.
     #[inline]
+    #[must_use]
     pub const fn gap_to(self, later: Latency) -> Samples {
         self.0.align_to(later.0)
     }

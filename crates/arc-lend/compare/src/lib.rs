@@ -224,6 +224,10 @@ pub fn live_payloads() -> i64 {
 /// Made before a thread starts measuring: recording into it never allocates,
 /// and a value past the top is clamped (`saturating_record`), never resized.
 #[must_use]
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "the bounds are constants the histogram accepts"
+)]
 pub fn new_histogram() -> Histogram<u64> {
     Histogram::new_with_bounds(1, 100_000_000_000, 3).expect("valid histogram bounds")
 }

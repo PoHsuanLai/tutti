@@ -124,6 +124,7 @@ impl ParamSetBuilder {
     }
 
     /// The set.
+    #[must_use]
     pub fn build(self) -> ParamSet {
         ParamSet {
             slots: Arc::from(self.slots),
@@ -146,6 +147,7 @@ pub trait ParamNode: Node + Sized {
     /// A copy of this node that shares **nothing** with it — its own
     /// `Param` cells (at the values this node's hold now), its own state —
     /// returned to the state of a freshly prepared node. What a fork runs.
+    #[must_use]
     fn fork_fresh(&self) -> Self;
 }
 

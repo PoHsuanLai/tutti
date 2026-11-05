@@ -1300,7 +1300,7 @@ impl AuInstance {
                 &info,
             )?;
         }
-        Ok(loaded.transport.as_deref().expect("just inserted above"))
+        Ok(&**state)
     }
 
     /// Borrows the installed transport, or `None` if
@@ -1715,6 +1715,11 @@ impl AuInstance {
 
     /// Serializes the AU's current state (all parameters + internal state) to
     /// a binary plist blob suitable for persistence.
+    ///
+    /// # Errors
+    ///
+    /// [`AuError::OsStatus`] if the AU refuses to give up its `ClassInfo`, and
+    /// [`AuError::InvalidBuffer`] if that property list cannot be serialized.
     ///
     /// # Panics
     ///

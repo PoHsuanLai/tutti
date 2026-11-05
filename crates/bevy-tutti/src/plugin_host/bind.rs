@@ -71,6 +71,7 @@ pub struct PluginShadow {
 impl PluginShadow {
     /// The controls captured from the out-of-process plugin node that became
     /// `node`.
+    #[must_use]
     pub fn new(node: NodeKey, controls: PluginControls) -> Self {
         let meter = controls.meter();
         Self {

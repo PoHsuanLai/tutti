@@ -73,11 +73,13 @@ pub struct InFlightProbes {
 
 impl InFlightProbes {
     /// How many probes are running. Diagnostics only.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.tasks.len()
     }
 
     /// Whether no probe is running.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
     }

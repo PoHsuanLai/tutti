@@ -97,6 +97,7 @@ impl<'a> Vst2ProcessContext<'a> {
     /// Creates a context with no MIDI and no transport, carrying only
     /// `sample_rate` in Hz. Layer the rest on with [`Self::midi`] and
     /// [`Self::transport`].
+    #[must_use]
     pub fn new(sample_rate: f64) -> Self {
         Self {
             midi: &[],
@@ -106,12 +107,14 @@ impl<'a> Vst2ProcessContext<'a> {
     }
 
     /// Attaches this block's MIDI events, replacing any already set.
+    #[must_use]
     pub fn midi(mut self, midi: &'a [MidiEvent]) -> Self {
         self.midi = midi;
         self
     }
 
     /// Attaches this block's transport state, replacing any already set.
+    #[must_use]
     pub fn transport(mut self, transport: &'a TransportInfo) -> Self {
         self.transport = Some(transport);
         self

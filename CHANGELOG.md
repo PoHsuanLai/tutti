@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `# Errors` and `# Panics` on the public API, and `#[must_use]`
+
+`clippy::missing_errors_doc` and `clippy::missing_panics_doc` are `warn` in
+`[workspace.lints.clippy]`, and every public `Result`-returning or panicking
+function now says when. Where a panic was an internal invariant, the code no
+longer has it: `MidiSession` takes a poisoned lock as it is, the analysis
+`Grid` derives same-shape grids without a fallible constructor, and
+`MicIn::open_with_monitor` builds its monitor ring itself. Builders (`with_*`,
+`self -> Self`), constructors, conversions, predicates, by-value `self` getters
+and the guard types (`Loan`, `Claimed`, `RwView`, `RenderNotify` and similar)
+are `#[must_use]`; a caller that drops one now gets a warning.
+
 ### Fixed — `Send` impls that rested on a promise
 
 `tutti-cpal` no longer has `unsafe impl Send` for `CpalStream` or the mic's

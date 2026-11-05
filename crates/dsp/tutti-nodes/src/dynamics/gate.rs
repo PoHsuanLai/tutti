@@ -294,6 +294,7 @@ impl GateNode {
     /// silent, while a gentler `-12.0` ducks the signal without removing it,
     /// which sounds more natural on drums and room mics. `0.0` disables the
     /// gate's effect entirely.
+    #[must_use]
     pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
         self.core = self.core.with_range(range_db);
         self
@@ -360,6 +361,7 @@ impl GateNode {
     ///
     /// A threshold over [`gate_level`](Self::gate_level), so it flips partway
     /// through the attack and release rather than at their edges.
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.core.is_open()
     }

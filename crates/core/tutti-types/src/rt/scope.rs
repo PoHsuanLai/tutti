@@ -70,6 +70,7 @@ impl RtScope {
 
     /// Returns whether the current thread is inside an [`enter`](Self::enter)
     /// scope.
+    #[must_use]
     pub fn is_inside() -> bool {
         DEPTH.with(|d| d.get() > 0)
     }

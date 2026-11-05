@@ -109,6 +109,7 @@ impl JobGate {
     /// # Panics
     ///
     /// If `participants` is zero.
+    #[must_use]
     pub fn new(participants: usize) -> Self {
         Self::with_waits(participants, BlockWaits::DEFAULT)
     }
@@ -121,6 +122,7 @@ impl JobGate {
     /// # Panics
     ///
     /// If `participants` is zero.
+    #[must_use]
     pub fn with_waits(participants: usize, waits: BlockWaits) -> Self {
         assert!(participants > 0, "a job needs its caller");
         Self {
@@ -233,7 +235,10 @@ impl JobGate {
         // the caller wrote the cell before opening and will not write it again
         // or return until this helper leaves.
         let job = self.job.with(|p| unsafe { *p });
-        let job = job.expect("an open gate holds its job");
+        let Some(job) = job else {
+            debug_assert!(false, "an open gate holds its job");
+            return false;
+        };
         // SAFETY: as above: the job's borrow outlives this call.
         unsafe { (*job)(idx as usize) };
         true

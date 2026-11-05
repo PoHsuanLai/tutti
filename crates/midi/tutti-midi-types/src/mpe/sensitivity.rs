@@ -25,24 +25,28 @@ impl PitchBendSensitivity {
 
     /// Whole-semitone sensitivity (the common MPE case, e.g. 48).
     #[inline]
+    #[must_use]
     pub const fn from_semitones(semitones: u8) -> Self {
         Self((semitones as u32) << Self::FRAC_BITS)
     }
 
     /// The raw 32-bit RPN data field.
     #[inline]
+    #[must_use]
     pub const fn to_rpn_bits(self) -> u32 {
         self.0
     }
 
     /// From the raw 32-bit RPN data field.
     #[inline]
+    #[must_use]
     pub const fn from_rpn_bits(bits: u32) -> Self {
         Self(bits)
     }
 
     /// Sensitivity in semitones as a float (integer + fractional parts).
     #[inline]
+    #[must_use]
     pub fn as_semitones_f32(self) -> f32 {
         crate::q7_25_to_f32(self.0)
     }

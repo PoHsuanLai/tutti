@@ -45,6 +45,7 @@ impl MidiClockDecoder {
     ///
     /// [`tempo_bpm`](Self::tempo_bpm) stays `None` until two timing clocks have
     /// arrived to measure an interval between.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tick_count: 0,

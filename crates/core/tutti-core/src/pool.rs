@@ -181,6 +181,7 @@ pub struct WorkerPoolBuilder {
 impl WorkerPoolBuilder {
     /// Between jobs, how long a helper spins after its last job before it
     /// starts yielding. Default 50 µs.
+    #[must_use]
     pub fn spin(mut self, d: Duration) -> Self {
         self.spin = d;
         self
@@ -188,6 +189,7 @@ impl WorkerPoolBuilder {
 
     /// Between jobs, how long a helper then yields its core before it
     /// parks. Default 500 µs.
+    #[must_use]
     pub fn idle(mut self, d: Duration) -> Self {
         self.idle = d;
         self
@@ -201,6 +203,7 @@ impl WorkerPoolBuilder {
     /// it back with most of a 64-frame block left
     /// ([`BlockWaits::caller_yield_after`]). Zero yields after about 128
     /// waits without progress, the granularity of the clock it is timed by.
+    #[must_use]
     pub fn caller_yield_after(mut self, d: Duration) -> Self {
         self.waits.caller_yield_after = d;
         self
@@ -211,6 +214,7 @@ impl WorkerPoolBuilder {
     /// successors of a task another participant is finishing
     /// ([`BlockWaits::helper_leave_after`]). Zero leaves after about 128
     /// idle waits, the granularity of the clock it is timed by.
+    #[must_use]
     pub fn helper_leave_after(mut self, d: Duration) -> Self {
         self.waits.helper_leave_after = d;
         self
@@ -221,6 +225,7 @@ impl WorkerPoolBuilder {
     /// audio callback's or joins its audio workgroup. Under a real-time
     /// callback the helpers must run at its priority (see the module docs,
     /// "Priority").
+    #[must_use]
     pub fn on_start(mut self, hook: OnStart) -> Self {
         self.on_start = Some(hook);
         self
@@ -228,6 +233,7 @@ impl WorkerPoolBuilder {
 
     /// The helpers' thread name prefix (`"<name>-<index>"`). Default
     /// `"tutti-worker"`.
+    #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -238,6 +244,7 @@ impl WorkerPoolBuilder {
     /// # Panics
     ///
     /// If a thread cannot be spawned.
+    #[must_use]
     pub fn build(self) -> WorkerPool {
         let helpers = self.participants - 1;
         let shared = Arc::new(Shared {
@@ -291,6 +298,7 @@ impl WorkerPool {
     /// # Panics
     ///
     /// If `participants` is zero.
+    #[must_use]
     pub fn new(participants: usize) -> Self {
         Self::builder(participants).build()
     }

@@ -68,6 +68,7 @@ impl PeakBlock {
     /// not. Nothing draws `rms`; it is there for meters, which read whole
     /// blocks.
     #[inline]
+    #[must_use]
     pub fn merge(self, other: Self) -> Self {
         Self {
             min: self.min.min(other.min),
@@ -118,6 +119,11 @@ impl PeakBlocks {
     /// the caller's own bookkeeping disagrees with itself, so this **panics**
     /// rather than truncating — a silently short channel would draw as a clip
     /// that ends early.
+    ///
+    /// # Panics
+    ///
+    /// If `blocks.len()` is not `layout.count() * per_channel`.
+    #[must_use]
     pub fn from_channel_major(
         blocks: Vec<PeakBlock>,
         layout: ChannelLayout,
@@ -153,6 +159,7 @@ impl PeakBlocks {
 
     /// Whether there is not a single block.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.per_channel == 0
     }
@@ -175,6 +182,7 @@ impl PeakBlocks {
     ///
     /// The upload path: one slice, no re-packing.
     #[inline]
+    #[must_use]
     pub fn as_flat(&self) -> &[PeakBlock] {
         &self.blocks
     }
@@ -193,6 +201,7 @@ impl PeakBlocks {
     /// [`Interleaved::fold_to_mono_into`] and blocks that instead.
     ///
     /// `rms` merges quadratically; see [`PeakBlock::merge`].
+    #[must_use]
     pub fn to_mono(&self) -> Vec<PeakBlock> {
         let channels = self.layout.count() as usize;
         if channels == 0 || self.per_channel == 0 {
@@ -296,6 +305,7 @@ pub struct PeakState {
 
 impl PeakState {
     /// An empty carry: no partial frame, no pending block, nothing consumed.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -451,6 +461,7 @@ impl PeakAccum {
     ///
     /// Until then it is [`ChannelLayout::EMPTY`], matching the zero channel
     /// runs it holds.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             channels: Vec::new(),

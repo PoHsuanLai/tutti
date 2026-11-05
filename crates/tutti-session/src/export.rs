@@ -113,6 +113,7 @@ pub struct ExportRequest {
 
 impl ExportRequest {
     /// A request with no edit and the configured latency and tail.
+    #[must_use]
     pub fn new(
         source: ExportSource,
         target: ExportTarget,
@@ -144,6 +145,7 @@ impl ExportRequest {
     }
 
     /// Renders against `timeline`: [`ExportClock::timeline`].
+    #[must_use]
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
         T: RenderClock + tutti_core::transport::OfflineClock + 'static,
@@ -153,6 +155,7 @@ impl ExportRequest {
     }
 
     /// Edits the forked graph before it renders: see [`PrepareEdit`].
+    #[must_use]
     pub fn with_edit(mut self, edit: PrepareEdit) -> Self {
         self.edit = Some(edit);
         self
@@ -163,6 +166,7 @@ impl ExportRequest {
     /// hosted plugin's) in place of `config.render.latency`. Asked of the
     /// graph that renders, after the edit (`RenderGraph::reported_latency`,
     /// at the render's rate): only then is it built.
+    #[must_use]
     pub fn trim_reported_latency(mut self) -> Self {
         self.latency_from_graph = true;
         self
@@ -182,6 +186,7 @@ impl ExportRequest {
     /// latency plus the tail long, and keeps the programme's last frames;
     /// with [`trim_reported_latency`](Self::trim_reported_latency) it is
     /// `duration_seconds` plus the tail.
+    #[must_use]
     pub fn with_reported_tail(mut self, cap: Samples) -> Self {
         self.tail_from_graph = Some(cap);
         self

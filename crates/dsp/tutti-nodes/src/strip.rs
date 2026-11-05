@@ -125,6 +125,7 @@ impl StripGains {
 
 impl BusStripNode {
     /// A stereo strip at unity volume, centred, unmuted.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_channels(ChannelLayout::STEREO)
     }
@@ -216,6 +217,7 @@ impl BusStripNode {
     }
 
     /// Whether the strip is currently muted and emitting silence.
+    #[must_use]
     pub fn is_muted(&self) -> bool {
         Self::is_mute(self.muted.load(Ordering::Acquire))
     }

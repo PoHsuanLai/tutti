@@ -307,6 +307,7 @@ impl ClapLoaded {
 
     /// Whether the plugin requires a hard real-time environment (e.g. it
     /// talks to hardware). Hosts should avoid running such plugins offline.
+    #[must_use]
     pub fn has_hard_realtime_requirement(&self) -> bool {
         if self.extensions.system.render.is_null() {
             return false;
@@ -507,6 +508,7 @@ impl ClapLoaded {
 
     /// Asks whether the plugin can process the given ambisonic ordering +
     /// normalization. Returns false when `CLAP_EXT_AMBISONIC` is unsupported.
+    #[must_use]
     pub fn is_ambisonic_config_supported(&self, config: &AmbisonicConfig) -> bool {
         if self.extensions.audio.ambisonic.is_null() {
             return false;
@@ -562,6 +564,7 @@ impl ClapLoaded {
 
     /// Asks whether the plugin can process the given
     /// [`SurroundChannel`]-bit channel mask (`CLAP_EXT_SURROUND`).
+    #[must_use]
     pub fn is_surround_channel_mask_supported(&self, channel_mask: u64) -> bool {
         if self.extensions.audio.surround.is_null() {
             return false;

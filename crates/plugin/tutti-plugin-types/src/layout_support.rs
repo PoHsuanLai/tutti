@@ -65,6 +65,7 @@ impl LayoutSupport {
     /// placement for each channel — a downmix that must find the LFE, say. False
     /// for [`Partial`](Self::Partial): a per-bus caller reads the buses
     /// individually instead.
+    #[must_use]
     pub fn is_complete(self) -> bool {
         matches!(self, Self::Full)
     }
@@ -72,6 +73,7 @@ impl LayoutSupport {
     /// Returns whether any bus reported a placement at all.
     ///
     /// What a UI checks before offering speaker names anywhere.
+    #[must_use]
     pub fn has_any(self) -> bool {
         matches!(self, Self::Full | Self::Partial)
     }

@@ -111,6 +111,7 @@ pub struct OfflineTimeline {
 impl OfflineTimeline {
     /// Creates a timeline seated at `config.start_beat`, precomputing the
     /// per-sample beat increment from its tempo and sample rate.
+    #[must_use]
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
             current_beat: AtomicF64::new(config.start_beat.get()),

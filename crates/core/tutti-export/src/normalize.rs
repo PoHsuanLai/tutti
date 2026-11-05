@@ -162,6 +162,13 @@ impl Normalize {
 /// standard channel map marks the extra channels unweighted, so a 7.1 or 7.1.4
 /// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
 /// true peak folds over every channel.
+///
+/// # Errors
+///
+/// Everything [`render_to_buffers`](crate::render_to_buffers) and
+/// [`write_buffers`] return, plus [`Error::Unmeasurable`](crate::Error::Unmeasurable) when the loudness
+/// cannot be measured, and [`Error::Resample`](crate::Error::Resample) if the sample-rate conversion
+/// fails.
 pub fn render_normalized_to_file(
     graph: impl std::borrow::BorrowMut<crate::RenderGraph>,
     config: &ExportConfig,

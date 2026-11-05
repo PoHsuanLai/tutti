@@ -67,6 +67,7 @@ pub struct Sysex7ByteAssembler {
 
 impl Sysex7ByteAssembler {
     /// A fresh assembler with nothing in flight.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

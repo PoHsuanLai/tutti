@@ -34,6 +34,11 @@ pub enum AudioFormat {
 impl AudioFormat {
     /// Detect format from a file path's extension, with that format's defaults.
     /// `.aif` aliases `.aiff`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedFormat`] if the extension is not `wav`, `flac`,
+    /// `aiff`, `aif` or `ogg`, or is missing.
     pub fn from_path(path: &Path) -> Result<Self> {
         let ext = path
             .extension()

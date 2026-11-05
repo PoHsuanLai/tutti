@@ -210,6 +210,7 @@ impl Tuning {
     /// The scale repeats every octave (1200 cents), and its *length* — not 12 —
     /// is the number of note numbers one repeat spans. Pinned at
     /// A4 = 440 [`Hz`]. An empty slice falls back to 12-tone equal temperament.
+    #[must_use]
     pub fn from_cents(cents: &[f32]) -> Self {
         let degrees: Vec<ScaleDegree> = cents.iter().map(|c| ScaleDegree::from_cents(*c)).collect();
 
@@ -227,6 +228,7 @@ impl Tuning {
     /// `[1.0, 9.0/8.0, 3.0/2.0]`. Each is converted to [`Cents`], so this is
     /// [`from_cents`](Self::from_cents) with the multiplication spelled the way
     /// historical tunings are written. Same octave-repeat and reference rules.
+    #[must_use]
     pub fn from_ratios(ratios: &[f32]) -> Self {
         let degrees: Vec<ScaleDegree> =
             ratios.iter().map(|r| ScaleDegree::from_ratio(*r)).collect();

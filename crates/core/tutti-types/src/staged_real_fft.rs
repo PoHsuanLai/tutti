@@ -85,6 +85,7 @@ impl StagedRealFft {
     /// # Panics
     /// If `size` is zero, `ways` is not a power of two, or `ways` is above
     /// one with a `size` that is not a multiple of `2 * ways`.
+    #[must_use]
     pub fn new(size: usize, ways: usize) -> Self {
         assert!(size > 0, "BUG: a transform has at least one sample");
         assert!(ways.is_power_of_two(), "BUG: ways is a power of two");

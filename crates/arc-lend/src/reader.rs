@@ -206,6 +206,7 @@ impl<T> std::fmt::Debug for Reader<T> {
 ///     s.spawn(move || *loan); // `Loan` is not `Send`
 /// });
 /// ```
+#[must_use = "the loan pins its value only while held"]
 pub struct Loan<'a, T> {
     /// Slot of the reader that lent, which announces `value`.
     slot: &'a Slot,

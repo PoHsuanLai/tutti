@@ -35,6 +35,13 @@ impl YinConfig {
     /// Refusing here matters: accepting `(sample_rate, 2000.0, 50.0)` would
     /// invert the period bounds and report "unvoiced" forever. Two adjacent
     /// frequency parameters make the transposition easy to write.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NonPositiveSampleRate`] for a rate that is zero, negative or
+    /// NaN; [`Error::EmptyFrequencyRange`] when a bound is not positive or
+    /// `min_freq` is not below `max_freq`; [`Error::AboveNyquist`] when
+    /// `max_freq` exceeds half the sample rate.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         min_freq: impl Into<Hz>,
@@ -74,12 +81,18 @@ impl YinConfig {
     }
 
     /// The standard 50–2000 Hz vocal/instrument range.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new): [`Error::NonPositiveSampleRate`], or
+    /// [`Error::AboveNyquist`] at a rate below 4 kHz.
     pub fn standard(sample_rate: impl Into<SampleRate>) -> Result<Self> {
         Self::new(sample_rate, Hz(50.0), Hz(2000.0))
     }
 
     /// YIN's absolute threshold on the cumulative mean difference. The paper's
     /// default is 0.1; lower finds fewer pitches and fewer errors.
+    #[must_use]
     pub fn with_threshold(mut self, threshold: impl Into<Confidence>) -> Self {
         self.threshold = Confidence::new_clamped(threshold.into().get().clamp(0.01, 0.5));
         self
@@ -173,6 +186,7 @@ pub struct Pitch {
 impl PitchEstimate {
     /// Whether a pitch was found at all.
     #[inline]
+    #[must_use]
     pub fn is_voiced(&self) -> bool {
         matches!(self, Self::Voiced(_))
     }
@@ -236,6 +250,11 @@ pub fn yin(cfg: &YinConfig, samples: &[f32]) -> Result<PitchEstimate> {
 }
 
 /// Estimates the pitch at `hop` intervals across a buffer.
+///
+/// # Errors
+///
+/// [`Error::ZeroHop`] if `hop` is zero, and [`Error::InsufficientInput`] if
+/// `samples` is shorter than [`YinConfig::buffer_size`].
 pub fn yin_track(
     cfg: &YinConfig,
     samples: &[f32],

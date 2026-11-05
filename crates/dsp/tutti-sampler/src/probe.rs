@@ -71,6 +71,7 @@ impl SampleFacts {
     /// **not** hide the `None`: a caller deciding residency must distinguish
     /// "empty" from "unmeasurable", so this is for display and rough sizing
     /// rather than for policy. Policy reads [`frames`](Self::frames).
+    #[must_use]
     pub fn frames_or_zero(self) -> Samples {
         self.frames.unwrap_or(Samples(0))
     }

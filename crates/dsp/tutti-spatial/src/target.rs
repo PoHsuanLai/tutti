@@ -29,6 +29,7 @@ pub struct SpatialTarget {
 impl SpatialTarget {
     /// Creates a target aimed straight ahead at ear level
     /// ([`Azimuth::FRONT`] / [`Elevation::LEVEL`]).
+    #[must_use]
     pub fn new() -> Self {
         Self {
             azimuth: Param::new(Azimuth::FRONT),

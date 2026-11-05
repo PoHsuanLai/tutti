@@ -91,6 +91,7 @@ pub struct ProgressDescription(ArrayString<PROGRESS_DESCRIPTION_CAPACITY>);
 
 impl ProgressDescription {
     /// The description as text.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -214,6 +215,7 @@ pub struct RestartFlags {
 
 impl RestartFlags {
     /// Decodes the raw `i32` bitmask passed to `restartComponent`.
+    #[must_use]
     pub fn from_bits(flags: i32) -> Self {
         let has = |bit: i32| (flags & bit) != 0;
         Self {

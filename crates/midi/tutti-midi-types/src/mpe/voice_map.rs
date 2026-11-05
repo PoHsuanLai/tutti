@@ -47,6 +47,7 @@ impl Default for NoteRotationAllocator {
 impl NoteRotationAllocator {
     /// Builds an allocator with no live notes, minting ids from 1.
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self {
             active: [None; 128],
@@ -129,6 +130,7 @@ impl MpeChannelVoiceMap {
     ///
     /// The zone is fixed for the map's lifetime — a reconfigured zone needs a new
     /// map, since the old one's bindings name channels the new zone may not own.
+    #[must_use]
     pub fn new(zone_config: MpeZoneConfig) -> Self {
         Self {
             channel_to_note: [None; 16],
@@ -163,8 +165,7 @@ impl MpeChannelVoiceMap {
             // longest ago (smallest stamp).
             None => member_range
                 .clone()
-                .min_by_key(|&ch| self.assigned_at[ch as usize])
-                .expect("MPE zone always has at least one member channel"),
+                .min_by_key(|&ch| self.assigned_at[ch as usize])?,
         };
 
         if let Some(old_note) = self.channel_to_note[channel as usize] {

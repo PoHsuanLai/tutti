@@ -81,6 +81,7 @@ impl CrossfadeCurve {
     // Everything around it — which frame is which `k`, when a fade starts and
     // ends, what runs — each derives on its own.
     #[inline]
+    #[must_use]
     pub fn gains(self, k: usize, len: usize) -> (f32, f32) {
         debug_assert!(k < len, "frame {k} of a {len}-frame fade");
         let x = (k + 1) as f32 / (len + 1) as f32;
@@ -113,6 +114,7 @@ pub struct Fade {
 
 impl Fade {
     /// A fade of `duration` frames.
+    #[must_use]
     pub const fn new(duration: Samples, curve: CrossfadeCurve) -> Self {
         Self { duration, curve }
     }

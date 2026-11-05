@@ -82,6 +82,7 @@ impl EndpointNegotiator {
     /// Function Blocks, advertising MIDI-2 + MIDI-1 protocol support (no JR
     /// timestamps). The endpoint name and product-instance id default to empty
     /// (their notifications are then omitted). Adjust with the `with_*` setters.
+    #[must_use]
     pub fn new(identity: DeviceIdentity, function_blocks: Vec<FunctionBlock>) -> Self {
         Self {
             ump_version: UmpVersion::V1_1,
@@ -97,12 +98,14 @@ impl EndpointNegotiator {
     }
 
     /// Override the advertised capabilities (protocol + JR support).
+    #[must_use]
     pub fn with_capabilities(mut self, capabilities: EndpointCapabilities) -> Self {
         self.capabilities = capabilities;
         self
     }
 
     /// Override the currently-configured protocol + active JR-timestamp directions.
+    #[must_use]
     pub fn with_stream_config(mut self, protocol: Protocol, jr: JrTimestamps) -> Self {
         self.protocol = protocol;
         self.jr = jr;
@@ -111,6 +114,7 @@ impl EndpointNegotiator {
 
     /// Sets the human-readable endpoint name and product-instance id reported in
     /// their respective notifications. Empty strings omit those replies.
+    #[must_use]
     pub fn with_names(
         mut self,
         name: impl Into<String>,
@@ -310,6 +314,7 @@ pub struct EndpointInquiry {
 
 impl EndpointInquiry {
     /// A fresh inquiry with no accumulated state.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

@@ -99,6 +99,7 @@ impl MidiEvent {
 
     /// Whether this packet aborts its SysEx8 message: an End UMP whose
     /// `# of bytes` field is [`SYSEX8_BYTES_ABORT`] (M2-104 §7.8.1).
+    #[must_use]
     pub fn is_sysex8_abort(&self) -> bool {
         matches!(
             self.sysex8_header(),

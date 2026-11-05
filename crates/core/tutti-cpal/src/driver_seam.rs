@@ -60,6 +60,7 @@ pub const PREFERRED_QUANTUM: Samples = Samples(512);
 
 impl OutputSpec {
     /// Creates a spec with no fixed callback size (the backend's default).
+    #[must_use]
     pub fn new(
         sample_rate: SampleRate,
         channels: ChannelLayout,
@@ -322,6 +323,7 @@ pub struct ManualStream {
 impl ManualStreamDriver {
     /// Creates a driver and the handle that runs its callbacks.
     #[allow(clippy::new_without_default, reason = "returns a pair, not Self")]
+    #[must_use]
     pub fn new() -> (Self, ManualStream) {
         let slot = Arc::new(Mutex::new(None));
         let faults = Arc::new(Mutex::new(None));
@@ -386,6 +388,7 @@ impl ManualStream {
     }
 
     /// Returns whether a stream is currently open on this handle.
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.slot
             .lock()

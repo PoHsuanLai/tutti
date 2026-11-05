@@ -59,6 +59,7 @@ impl<'a> Interleaved<'a> {
     /// If `layout` has no channels: a zero width makes the frame count
     /// undefined rather than merely empty.
     #[inline]
+    #[must_use]
     pub fn new(data: &'a [f32], layout: ChannelLayout) -> Self {
         assert!(
             layout.count() > 0,
@@ -84,12 +85,14 @@ impl<'a> Interleaved<'a> {
     ///
     /// A trailing partial frame is not counted; see [`new`](Self::new).
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len() / self.stride()
     }
 
     /// Returns whether there is not even one whole frame.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -109,6 +112,7 @@ impl<'a> Interleaved<'a> {
     ///
     /// If the range is out of bounds, like slice indexing.
     #[inline]
+    #[must_use]
     pub fn window(&self, frames: Range<usize>) -> Interleaved<'a> {
         let ch = self.stride();
         Interleaved {
@@ -235,12 +239,14 @@ impl<'a> InterleavedMut<'a> {
 
     /// Returns the frame count, **not** the sample count.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len() / self.stride()
     }
 
     /// Returns whether there is not even one whole frame.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -253,6 +259,7 @@ impl<'a> InterleavedMut<'a> {
 
     /// Reborrows as a read-only view.
     #[inline]
+    #[must_use]
     pub fn as_ref(&self) -> Interleaved<'_> {
         Interleaved {
             data: self.data,
@@ -345,6 +352,7 @@ impl<'a> StereoPlanes<'a> {
     /// unwind: a caller that cannot form the pair should skip the measurement,
     /// not abort the callback.
     #[inline]
+    #[must_use]
     pub fn new(left: &'a [f32], right: &'a [f32]) -> Option<Self> {
         (left.len() == right.len()).then_some(Self { left, right })
     }
@@ -358,6 +366,7 @@ impl<'a> StereoPlanes<'a> {
 
     /// Returns whether the planes are empty.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.left.is_empty()
     }

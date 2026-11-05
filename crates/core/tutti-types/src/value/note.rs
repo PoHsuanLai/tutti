@@ -67,18 +67,21 @@ impl PitchClass {
 
     /// Returns the semitones above C, in `0..12`.
     #[inline]
+    #[must_use]
     pub const fn semitones_above_c(self) -> u8 {
         self as u8
     }
 
     /// Returns the class `semitones` above C, wrapping every 12.
     #[inline]
+    #[must_use]
     pub const fn from_semitones_above_c(semitones: u8) -> Self {
         Self::ALL[(semitones % 12) as usize]
     }
 
     /// Returns the sharp spelling: `C`, `C#`, `D`, …
     #[inline]
+    #[must_use]
     pub const fn sharp_name(self) -> &'static str {
         match self {
             Self::C => "C",
@@ -99,6 +102,7 @@ impl PitchClass {
     /// Returns the flat spelling: `C`, `Db`, `D`, … The same twelve pitches,
     /// respelled.
     #[inline]
+    #[must_use]
     pub const fn flat_name(self) -> &'static str {
         match self {
             Self::C => "C",
@@ -118,6 +122,7 @@ impl PitchClass {
 
     /// Returns whether this class is spelled with an accidental.
     #[inline]
+    #[must_use]
     pub const fn is_accidental(self) -> bool {
         matches!(
             self,
@@ -199,18 +204,21 @@ impl Note {
     /// Any `i8` octave is accepted, including ones outside MIDI's `0..=127` —
     /// that range is a property of the encoding, not of the note.
     #[inline]
+    #[must_use]
     pub const fn new(class: PitchClass, octave: i8) -> Self {
         Self { class, octave }
     }
 
     /// Returns the pitch class, discarding the octave.
     #[inline]
+    #[must_use]
     pub const fn class(self) -> PitchClass {
         self.class
     }
 
     /// Returns the octave in scientific pitch notation, where middle C is 4.
     #[inline]
+    #[must_use]
     pub const fn octave(self) -> i8 {
         self.octave
     }
@@ -218,12 +226,14 @@ impl Note {
     /// Returns the semitones from C0, which may be negative for sub-zero
     /// octaves.
     #[inline]
+    #[must_use]
     pub const fn semitones_from_c0(self) -> i32 {
         self.octave as i32 * 12 + self.class.semitones_above_c() as i32
     }
 
     /// Returns the note `semitones` above C0 (below it when negative).
     #[inline]
+    #[must_use]
     pub fn from_semitones_from_c0(semitones: i32) -> Self {
         // `rem_euclid`, not `%`: a negative index must wrap into the octave
         // below rather than reflecting to a negative pitch class.
@@ -236,6 +246,7 @@ impl Note {
     /// Returns the interval from `self` up to `other` (negative when `other`
     /// is lower).
     #[inline]
+    #[must_use]
     pub fn interval_to(self, other: Note) -> Semitones {
         Semitones((other.semitones_from_c0() - self.semitones_from_c0()) as f32)
     }
@@ -245,6 +256,7 @@ impl Note {
     /// a note is a discrete pitch, so use [`frequency`](Self::frequency) and
     /// detune from there when you want the space between two notes.
     #[inline]
+    #[must_use]
     pub fn transpose(self, by: Semitones) -> Self {
         Self::from_semitones_from_c0(self.semitones_from_c0() + by.get() as i32)
     }
@@ -255,6 +267,7 @@ impl Note {
     /// Pythagorean, meantone — are a tuning table's job, not a note's; see
     /// `tutti_polysynth::tuning`.
     #[inline]
+    #[must_use]
     pub fn frequency(self) -> Hz {
         let steps = (self.semitones_from_c0() - Self::A4.semitones_from_c0()) as f32;
         Self::A4_HZ * Semitones(steps).to_pitch_ratio()
@@ -279,11 +292,13 @@ impl Note {
     }
 
     /// Returns the sharp spelling with octave: `A4`, `C#5`. Same as `Display`.
+    #[must_use]
     pub fn sharp_name(self) -> String {
         format!("{}{}", self.class.sharp_name(), self.octave)
     }
 
     /// Returns the flat spelling with octave: `A4`, `Db5`.
+    #[must_use]
     pub fn flat_name(self) -> String {
         format!("{}{}", self.class.flat_name(), self.octave)
     }

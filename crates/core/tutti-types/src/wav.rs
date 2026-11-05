@@ -74,6 +74,7 @@ pub fn channel_mask(topology: &ChannelTopology) -> u32 {
 
 /// [`channel_mask`] of the engine's own order for a bare width
 /// ([`ChannelTopology::smpte`]), `0` for a width that has none.
+#[must_use]
 pub fn default_channel_mask(layout: ChannelLayout) -> u32 {
     ChannelTopology::smpte(layout).map_or(0, |t| channel_mask(&t))
 }

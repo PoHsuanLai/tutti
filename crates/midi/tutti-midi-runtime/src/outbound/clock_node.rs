@@ -52,6 +52,7 @@ pub struct ClockNode {
 
 impl ClockNode {
     /// A node with a disabled master; `prepare` sets its rate.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             master: Arc::new(ClockMaster::new(SampleRate(0.0))),

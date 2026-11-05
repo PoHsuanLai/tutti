@@ -216,6 +216,7 @@ impl<U> ParamKey<U> {
 
     /// Returns the untyped id, for a channel that carries it type-erased.
     #[inline]
+    #[must_use]
     pub const fn id(self) -> UnitParam {
         self.id
     }

@@ -161,6 +161,7 @@ impl TransportClock {
     /// seconds while the live engine plays **writes** `position_writeback`
     /// and consumes `seek` every block: a shared clone stomps the live
     /// playhead and swallows live seeks.
+    #[must_use]
     pub fn starting_at(&self, beat: impl Into<Beat>) -> Self {
         let mut derived = self.severed();
         derived.clock.seat(beat.into());
@@ -169,6 +170,7 @@ impl TransportClock {
 
     /// Derive an independent stream running at a fixed `bpm` (severed, as
     /// [`starting_at`](Self::starting_at) is).
+    #[must_use]
     pub fn at_tempo(&self, bpm: impl Into<crate::Bpm>) -> Self {
         let mut derived = self.severed();
         derived.set_tempo(bpm);

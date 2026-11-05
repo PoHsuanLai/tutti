@@ -69,11 +69,13 @@ impl Liveness {
     pub const DEFAULT_WINDOW: Duration = Duration::from_millis(50);
 
     /// A plugin believed healthy, debounced over [`DEFAULT_WINDOW`](Self::DEFAULT_WINDOW).
+    #[must_use]
     pub const fn new() -> Self {
         Self::with_window(Self::DEFAULT_WINDOW)
     }
 
     /// A plugin believed healthy, debounced over `window`.
+    #[must_use]
     pub const fn with_window(window: Duration) -> Self {
         Self {
             window,

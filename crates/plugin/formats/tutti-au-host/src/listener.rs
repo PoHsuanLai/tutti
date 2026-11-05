@@ -375,6 +375,7 @@ impl Drop for Queue {
 /// # }
 /// # }
 /// ```
+#[must_use = "dropping it stops the listener"]
 pub struct AuParameterListener {
     listener: AUEventListenerRef,
     /// The AU whose events this listens to. Held so `watch_*` can build the

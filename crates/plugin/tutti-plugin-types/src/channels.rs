@@ -112,6 +112,7 @@ impl<T> BufferPtrs<T> {
     /// Allocates null-filled pointer arrays for the given channel counts.
     ///
     /// Allocating: call at instance setup, never on the audio thread.
+    #[must_use]
     pub fn new(num_inputs: usize, num_outputs: usize) -> Self {
         Self {
             input: vec![std::ptr::null(); num_inputs],

@@ -40,6 +40,7 @@ impl AudioNode {
 
     /// Returns the graph key this handle names.
     #[inline]
+    #[must_use]
     pub fn key(self) -> NodeKey {
         self.0
     }

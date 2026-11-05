@@ -153,6 +153,7 @@ impl std::fmt::Debug for AudioTap {
 impl AudioTap {
     /// Creates a **closed** tap. No ring is allocated until [`open`](Self::open), and
     /// [`push`](Self::push) is one atomic load until then.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -213,6 +214,7 @@ impl AudioTap {
     /// [`open`](Self::open), another thread may have opened it — which is why
     /// `open` decides under the lock and reports [`TapBusy`] rather than
     /// trusting a prior check.
+    #[must_use]
     pub fn is_open(&self) -> bool {
         self.on.load(Ordering::Acquire)
     }

@@ -93,6 +93,7 @@ pub enum PluginStatus {
 
 impl PluginStatus {
     /// `true` for [`Dead`](Self::Dead), for a call site that wants the bool.
+    #[must_use]
     pub fn is_dead(&self) -> bool {
         matches!(self, Self::Dead { .. })
     }
@@ -433,6 +434,7 @@ impl PluginHandle {
     ///
     /// Cheap enough to call per frame when deciding whether to offer a
     /// window.
+    #[must_use]
     pub fn has_editor(&self) -> bool {
         self.editor.is_some()
     }
@@ -514,6 +516,7 @@ impl PluginHandle {
 
     /// Returns `true` if the plugin has died. See [`status`](Self::status) for
     /// the reason and [`PluginStatus::Dead`] for what is recoverable.
+    #[must_use]
     pub fn is_crashed(&self) -> bool {
         self.params.is_crashed()
     }

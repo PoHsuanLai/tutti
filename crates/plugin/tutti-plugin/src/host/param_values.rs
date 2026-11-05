@@ -58,6 +58,7 @@ impl ParamRead {
     /// Reads every parameter the plugin lists, by id. A parameter whose
     /// address has no `u32` id, or whose value the plugin does not answer, is
     /// left out; a plugin that lists none gives an empty map.
+    #[must_use]
     pub fn run(self) -> HashMap<u32, f32> {
         let params = self.handle.params();
         params
@@ -128,6 +129,7 @@ impl PluginParamValues {
     }
 
     /// Whether the load-time read has landed.
+    #[must_use]
     pub fn is_ready(&self) -> bool {
         self.values.is_some()
     }

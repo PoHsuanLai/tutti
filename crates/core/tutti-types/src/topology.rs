@@ -112,6 +112,7 @@ impl Speaker {
     /// is the one position with different *handling* rather than a different
     /// place: it is excluded from a consumer downmix (see [`crate::fold_frame`]), and
     /// it is not a VBAP-panned speaker.
+    #[must_use]
     pub const fn is_lfe(self) -> bool {
         matches!(self, Self::LowFrequency)
     }
@@ -213,6 +214,7 @@ impl ChannelTopology {
     /// A caller that intends to *route* by speaker needs this: an
     /// [`Unknown`](Speaker::Unknown) channel keeps its slot, but nothing can be
     /// said about where it should go.
+    #[must_use]
     pub fn is_fully_named(&self) -> bool {
         !self
             .positions

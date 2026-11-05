@@ -263,6 +263,7 @@ impl HardwareMidiInputs {
     /// `fifo_size` is per port, in events: a driver pushing past it drops the
     /// overflow (`push` returns `false`) rather than blocking its callback.
     /// [`Default`] uses 2048.
+    #[must_use]
     pub fn new(fifo_size: usize) -> Self {
         Self {
             input_ports: Arc::new(ArcLend::new(PortSlots::new())),

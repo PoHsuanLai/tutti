@@ -348,11 +348,13 @@ pub struct PendingCrossfades(Vec<Waiting>);
 
 impl PendingCrossfades {
     /// Returns how many crossfades are waiting.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns whether no crossfade is waiting.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

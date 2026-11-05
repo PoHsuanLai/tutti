@@ -225,6 +225,7 @@ impl SegmentShape {
     /// `g(t)`, `t` clamped to `[0, 1]` (a NaN `t` is 0). Allocation-free:
     /// what a param port calls once per frame.
     #[inline]
+    #[must_use]
     pub fn eval(self, t: f32) -> f32 {
         let t = if t >= 0.0 { t.min(1.0) } else { 0.0 };
         match self {
@@ -475,6 +476,7 @@ impl ParamSegment {
     /// re-send). Both are fractional; see the type docs for the value each
     /// frame gets. A length that is not finite and above zero is a step to
     /// `to`; a negative position holds `from` until it reaches 0.
+    #[must_use]
     pub fn resumed(mut self, position: SamplePosition, length: SamplePosition) -> Self {
         self.position = position.get() as f32;
         self.length = length.get() as f32;
@@ -756,6 +758,7 @@ impl Event {
     /// note-on at velocity 0 (the MIDI 1.0 spelling of the same thing), or a
     /// MIDI 2.0 channel-voice note-off. The one event the graph refuses to
     /// lose — see the delay FIFO's overflow policy.
+    #[must_use]
     pub fn is_note_off(&self) -> bool {
         let EventKind::Midi(Ump(w)) = self.kind else {
             return false;
@@ -876,16 +879,19 @@ impl<'a> SortedEvents<'a> {
     }
 
     /// The events.
+    #[must_use]
     pub fn as_slice(&self) -> &'a [Event] {
         self.events
     }
 
     /// Number of events.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.events.len()
     }
 
     /// Whether there are none.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
@@ -1065,11 +1071,13 @@ impl<'a> EventWriter<'a> {
     }
 
     /// How many events this port has accepted so far this block.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buf.as_ref().map_or(0, |b| b.len())
     }
 
     /// Whether nothing has been written yet this block.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

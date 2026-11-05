@@ -14,13 +14,17 @@ node without a lock.
   coefficient solve shared across the channels) and `EqBandNode`.
 - **Crossover** — `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split
   (the bands sum to flat magnitude; IIR, so not linear-phase and no latency),
-  and `CrossoverNode`, which makes `bands × channels` outputs from it.
+  and `CrossoverNode`, which makes `bands × channels` outputs from it. Each
+  crossover is an indexed `Cutoff` param (`UnitAddr::new(UnitParam::Cutoff, i)`).
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
   matrix), over the inner `DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
   `LimiterNode`, and `MultibandCompressorNode` (2 to 4 bands, a linked
-  compressor per band of a `Crossover`, with per-band bypass, solo and gain
-  reduction meters).
+  compressor per band of a `Crossover`). Every setting is an indexed param: a
+  threshold, knee, ratio, attack, release and make-up (`GainDb`) per band, a
+  `Cutoff` per crossover (27 ports at 4 bands), and a `Bypass` and `Solo`
+  toggle per band (`>= 0.5` is on, as `Mute`; cells without a port). The
+  per-band gain reduction meters are readings on `MultibandControls`.
 - **Modulation effects** — `ModDelayNode` (chorus and flanger are its two
   `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.

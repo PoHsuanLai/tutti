@@ -13,7 +13,7 @@ use super::utils::{
 };
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
-use crate::ramp::{LastGood, block_driven};
+use crate::ramp::{LastGood, block_driven, clamp_finite};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone, Debug)]
@@ -161,14 +161,19 @@ impl CompressorCore {
     }
 
     /// Reads every block-rate control once, and moves the makeup ramp's start
-    /// to this block's end. `driven` is the block's ratio and makeup from
-    /// the node's param ports where a lane drives them (a driven ratio
-    /// clamped as the setter clamps); `None` reads the cell.
+    /// to this block's end. `driven` is the block's knee, ratio and makeup
+    /// from the node's param ports where a lane drives them; `None` reads the
+    /// cell. Knee and ratio are clamped as the setters clamp (a knee floored
+    /// at 0, a ratio at 1), a cell written raw as well as a driven value.
     #[inline]
-    pub fn begin_block(&mut self, [ratio, makeup]: [Option<f32>; 2]) -> CompressorBlock {
-        let (threshold, knee) = self.threshold.load();
+    pub fn begin_block(&mut self, [knee, ratio, makeup]: [Option<f32>; 3]) -> CompressorBlock {
+        let (threshold, knee_cell) = self.threshold.load();
         let threshold = Db(self.good[0].read(threshold.get()));
-        let knee = Db(self.good[1].read(knee.get()));
+        let knee = Db(
+            self.good[1].read(clamp_finite(knee.unwrap_or(knee_cell.get()), |k| {
+                k.max(0.0)
+            })),
+        );
         let makeup_to =
             Db(self.good[3].read(makeup.unwrap_or_else(|| self.makeup_db.load().get())));
         let makeup_from = self.last_makeup.unwrap_or(makeup_to);
@@ -176,8 +181,8 @@ impl CompressorCore {
         CompressorBlock {
             threshold,
             knee,
-            ratio: CompressionRatio(self.good[2].read(ratio.map_or_else(
-                || self.ratio.load().get(),
+            ratio: CompressionRatio(self.good[2].read(clamp_finite(
+                ratio.unwrap_or_else(|| self.ratio.load().get()),
                 |r| CompressionRatio::new_clamped(r).get(),
             ))),
             makeup_from,
@@ -377,8 +382,8 @@ impl CompressorNode {
     /// The shared [`CompressionRatio`] cell: dB in per dB out above the
     /// threshold.
     ///
-    /// Writing the raw cell bypasses [`set_ratio`](Self::set_ratio)'s clamp to
-    /// at least `1.0`; below that a compressor would expand.
+    /// A raw write below `1.0` reads as `1.0`, as [`set_ratio`](Self::set_ratio)
+    /// clamps: a compressor does not expand.
     pub fn ratio(&self) -> Arc<AtomicF32> {
         self.core.ratio.as_atomic()
     }
@@ -496,7 +501,7 @@ impl Node for CompressorNode {
             .update_coefficients([block_driven(&io, 2), block_driven(&io, 3)]);
         let block = self
             .core
-            .begin_block([block_driven(&io, 1), block_driven(&io, 4)]);
+            .begin_block([None, block_driven(&io, 1), block_driven(&io, 4)]);
         let ch = self.channels.count() as usize;
         // A modulated threshold overrides the cell per sample; the cell is
         // the base the graph's modulation rides on.

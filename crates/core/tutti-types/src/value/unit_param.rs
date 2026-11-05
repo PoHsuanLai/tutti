@@ -92,6 +92,15 @@ pub enum UnitParam {
     /// lives in each node that reads the cell, and a node that picked `!= 0.0`
     /// instead would mute on a denormal.
     Mute = 21,
+    /// Compressor knee width (dB, `>= 0`): the span about the threshold over
+    /// which the ratio eases in. `0` is a hard knee.
+    Knee = 22,
+    /// Bypass toggle: **`>= 0.5` is bypassed**, below is processing. Encoded
+    /// as [`Mute`](Self::Mute) is.
+    Bypass = 23,
+    /// Solo toggle: **`>= 0.5` is soloed**, below is not. Encoded as
+    /// [`Mute`](Self::Mute) is.
+    Solo = 24,
 }
 
 /// The error converting a `u16` that is not a known [`UnitParam`]
@@ -145,6 +154,9 @@ impl TryFrom<u16> for UnitParam {
             19 => StereoSpread,
             20 => Pan,
             21 => Mute,
+            22 => Knee,
+            23 => Bypass,
+            24 => Solo,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -582,7 +594,7 @@ mod tests {
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=21u16 {
+        for id in 0..=24u16 {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
@@ -608,7 +620,7 @@ mod tests {
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 22] = [
+    const PINNED: [(UnitParam, u16); 25] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -631,6 +643,9 @@ mod tests {
         (UnitParam::StereoSpread, 19),
         (UnitParam::Pan, 20),
         (UnitParam::Mute, 21),
+        (UnitParam::Knee, 22),
+        (UnitParam::Bypass, 23),
+        (UnitParam::Solo, 24),
     ];
 
     /// **Index 0 is bit-identical to the id before indices existed**, for
@@ -677,7 +692,7 @@ mod tests {
     /// in `TryFrom<u16> for UnitAddr` → `0x010A` decodes the wrong param → fails.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
-        assert_eq!(UnitAddr::try_from(0x0116), Err(UnitParamOutOfRange(0x0116)));
+        assert_eq!(UnitAddr::try_from(0x0119), Err(UnitParamOutOfRange(0x0119)));
         assert_eq!(UnitAddr::try_from(0x00FF), Err(UnitParamOutOfRange(0x00FF)));
         // 9_999 is 0x270F: kind 15 at index 39, which is a known kind.
         assert_eq!(
@@ -696,8 +711,8 @@ mod tests {
     /// Mutation (run): drop the low byte from the `Display` text → fails.
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
-        let e = UnitAddr::try_from(0x0116).unwrap_err();
-        assert_eq!(e.to_string(), "unknown UnitParam id: 278 (low byte 22)");
+        let e = UnitAddr::try_from(0x0119).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 281 (low byte 25)");
     }
 
     /// An address is equal to a bare param only at index 0, in both

@@ -23,12 +23,13 @@
 use core::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::fmt;
 
-use tutti_core::{Hz, Param, SampleRate};
-use tutti_graph::{Cost, Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::{ChannelLayout, Tail};
+use tutti_core::{Arc, AtomicF32, Hz, Param, SampleRate};
+use tutti_graph::{
+    Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+};
+use tutti_types::{ChannelLayout, Tail, UnitAddr, UnitParam};
 
-use crate::fresh::{Fresh, fresh_parts};
-use crate::ramp::{COEFF_INTERVAL, LastGood};
+use crate::ramp::{COEFF_INTERVAL, LastGood, block_driven};
 
 /// Most splits a [`Crossover`] holds: one fewer than [`Crossover::MAX_BANDS`].
 const MAX_SPLITS: usize = 5;
@@ -489,64 +490,12 @@ fn check_one(i: usize, hz: Hz, targets: &[f64], rate: SampleRate) -> Result<(), 
     Ok(())
 }
 
-/// The handles on a [`CrossoverNode`]'s frequencies. Clones share the cells.
-#[derive(Clone, Debug)]
-pub struct CrossoverControls {
-    frequencies: Vec<Param<Hz>>,
-}
-
-impl CrossoverControls {
-    /// How many crossover frequencies there are (`bands - 1`).
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.frequencies.len()
-    }
-
-    /// Whether there are none. Never true: a crossover has at least one.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.frequencies.is_empty()
-    }
-
-    /// Crossover `i`'s frequency, or `None` past the last.
-    #[must_use]
-    pub fn frequency(&self, i: usize) -> Option<Hz> {
-        self.frequencies.get(i).map(Param::load)
-    }
-
-    /// Moves crossover `i` to `hz`; the node ramps to it across its next block.
-    ///
-    /// Checked against the neighbours' values now, and against Nyquist by the
-    /// node (a value it cannot use reads as unchanged).
-    ///
-    /// # Errors
-    ///
-    /// [`CrossoverError::Index`] past the last crossover,
-    /// [`CrossoverError::Frequency`] if `hz` is not finite and above 0,
-    /// [`CrossoverError::Order`] if it is not between its neighbours. Nothing
-    /// is written then.
-    pub fn set_frequency(&self, i: usize, hz: Hz) -> Result<(), CrossoverError> {
-        let cell = self.frequencies.get(i).ok_or(CrossoverError::Index {
-            index: i,
-            len: self.frequencies.len(),
-        })?;
-        check_neighbours(
-            i,
-            hz,
-            |k| self.frequencies[k].load(),
-            self.frequencies.len(),
-        )?;
-        cell.store(hz);
-        Ok(())
-    }
-}
-
 /// Clamps each of `frequencies` under what the coefficients can be solved at
 /// for `rate`, keeping them strictly increasing: index `i` of `n` is capped at
 /// `SOLVE_CEILING * rate * (1 - 0.01 * (n - 1 - i))`, a strictly increasing
 /// cap, so the minimum of it and a strictly increasing set still is. A
 /// frequency out of range costs only itself, not the whole set.
-pub(crate) fn fit_to_rate(frequencies: &mut [Hz], rate: SampleRate) {
+fn fit_to_rate(frequencies: &mut [Hz], rate: SampleRate) {
     let n = frequencies.len();
     for (i, f) in frequencies.iter_mut().enumerate() {
         let cap = SOLVE_CEILING * rate.get() * (1.0 - 0.01 * (n - 1 - i) as f64);
@@ -554,9 +503,8 @@ pub(crate) fn fit_to_rate(frequencies: &mut [Hz], rate: SampleRate) {
     }
 }
 
-/// [`CrossoverControls::set_frequency`]'s checks, shared with the multiband
-/// node's: finite, above 0, between the neighbours `at(i - 1)` and `at(i + 1)`.
-pub(crate) fn check_neighbours(
+/// Finite, above 0, and between the neighbours `at(i - 1)` and `at(i + 1)`.
+fn check_neighbours(
     i: usize,
     hz: Hz,
     at: impl Fn(usize) -> Hz,
@@ -574,6 +522,62 @@ pub(crate) fn check_neighbours(
     Ok(())
 }
 
+/// The crossover frequency cells of a node, and the last finite value each
+/// held. Shared by [`CrossoverNode`] and the multiband compressor.
+#[derive(Clone, Debug)]
+pub(crate) struct Splits {
+    cells: Vec<Param<Hz>>,
+    good: Vec<LastGood>,
+}
+
+impl Splits {
+    pub(crate) fn new(frequencies: &[Hz]) -> Self {
+        Self {
+            cells: frequencies.iter().map(|&f| Param::new(f)).collect(),
+            good: frequencies.iter().map(|f| LastGood::new(f.get())).collect(),
+        }
+    }
+
+    /// The address of crossover `i`: a cutoff, indexed.
+    pub(crate) fn addr(i: usize) -> UnitAddr {
+        UnitAddr::new(UnitParam::Cutoff, i as u8)
+    }
+
+    /// Crossover `i`'s cell, for the node's [`ParamSet`].
+    pub(crate) fn cell(&self, i: usize) -> Arc<AtomicF32> {
+        self.cells[i].as_atomic()
+    }
+
+    /// Crossover `i`'s value, or `None` past the last.
+    pub(crate) fn base(&self, i: usize) -> Option<f32> {
+        self.cells.get(i).map(|c| c.load().get())
+    }
+
+    /// Stops sharing every cell, keeping the values.
+    pub(crate) fn detach(&mut self) {
+        for c in &mut self.cells {
+            c.detach();
+        }
+    }
+
+    /// Every frequency once: the block's driven value where `driven(i)` has
+    /// one, else the cell's. Held to the last finite value and fitted to
+    /// `rate`.
+    pub(crate) fn read(
+        &mut self,
+        rate: SampleRate,
+        driven: impl Fn(usize) -> Option<f32>,
+    ) -> [Hz; MAX_SPLITS] {
+        let mut targets = [Hz(0.0); MAX_SPLITS];
+        let n = self.cells.len();
+        for (i, (t, good)) in targets.iter_mut().zip(&mut self.good).enumerate() {
+            *t = Hz(good.read(driven(i).unwrap_or_else(|| self.cells[i].load().get())));
+        }
+        fit_to_rate(&mut targets[..n], rate);
+        targets
+    }
+}
+
 /// A graph node splitting its input into bands with a [`Crossover`] per
 /// channel.
 ///
@@ -585,15 +589,20 @@ pub(crate) fn check_neighbours(
 /// crossovers' all-pass (see [`Crossover`] for why, and for what
 /// "not linear-phase" means for the bands).
 ///
-/// Its controls ([`CrossoverControls`]) move the crossover frequencies, read
-/// once per block and ramped across it. A frequency at or above what the rate
+/// # Params
+///
+/// Crossover `i` (between band `i` and band `i + 1`) is
+/// `UnitAddr::new(UnitParam::Cutoff, i)` in [`Hz`], on the node's
+/// [`ParamSet`] and a param port the graph can modulate. Each is read once
+/// per block and ramped across it. A frequency at or above what the rate
 /// allows is held just under it (about 0.499 of the rate) without disturbing
-/// the others; a set out of order after a write race reads as unchanged.
+/// the others; a non-finite one reads as unchanged. A set that is not
+/// strictly increasing and above 0 is refused as a whole, so every channel
+/// keeps the last good set until the writes are consistent again.
 pub struct CrossoverNode {
     layout: ChannelLayout,
     bands: usize,
-    frequencies: Vec<Param<Hz>>,
-    good: Vec<LastGood>,
+    splits: Splits,
     filters: Vec<Crossover>,
     /// One channel's bands, as [`Crossover::split_block`] writes them.
     scratch: Vec<f32>,
@@ -625,35 +634,10 @@ impl CrossoverNode {
         Ok(Self {
             layout,
             bands: proto.bands(),
-            frequencies: frequencies.iter().map(|&f| Param::new(f)).collect(),
-            good: frequencies.iter().map(|f| LastGood::new(f.get())).collect(),
+            splits: Splits::new(frequencies),
             filters: vec![proto; channels],
             scratch: Vec::new(),
         })
-    }
-
-    /// The frequency cells read once, held to the last finite value and
-    /// fitted to `rate` ([`fit_to_rate`]).
-    fn read_targets(&mut self, rate: SampleRate) -> [Hz; MAX_SPLITS] {
-        let mut targets = [Hz(0.0); MAX_SPLITS];
-        let n = self.bands - 1;
-        for ((t, cell), good) in targets
-            .iter_mut()
-            .zip(&self.frequencies)
-            .zip(&mut self.good)
-        {
-            *t = Hz(good.read(cell.load().get()));
-        }
-        fit_to_rate(&mut targets[..n], rate);
-        targets
-    }
-
-    /// The handles on the frequencies.
-    #[must_use]
-    pub fn controls(&self) -> CrossoverControls {
-        CrossoverControls {
-            frequencies: self.frequencies.clone(),
-        }
     }
 
     /// How many bands it makes.
@@ -670,22 +654,27 @@ impl CrossoverNode {
 }
 
 impl Node for CrossoverNode {
-    /// `channels` in, `bands * channels` out.
+    /// `channels` in, `bands * channels` out, a param port per crossover.
     ///
     /// Zero latency. The tail is [`Tail::Unknown`], as the other IIR filters'
     /// is: the sections ring after the input stops.
     fn shape(&self) -> Shape {
         let ch = self.layout.count();
+        let mut addrs = [Splits::addr(0); MAX_SPLITS];
+        for (i, a) in addrs.iter_mut().enumerate() {
+            *a = Splits::addr(i);
+        }
         Shape::audio(
             self.layout,
             ChannelLayout::from_count(ch * self.bands as u16),
         )
         .with_cost(Cost::Moderate)
         .with_tail(Tail::Unknown)
+        .with_param_addrs(&addrs[..self.bands - 1])
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        let targets = self.read_targets(p.sample_rate());
+        let targets = self.splits.read(p.sample_rate(), |_| None);
         for f in &mut self.filters {
             f.set_sample_rate(p.sample_rate());
             // Taken whole by the `reset`, so the first block does not ramp
@@ -700,12 +689,14 @@ impl Node for CrossoverNode {
         let n = io.frames();
         let ch = usize::from(self.layout.count());
         let splits = self.bands - 1;
-        let targets = self.read_targets(self.filters[0].sample_rate());
+        let targets = self
+            .splits
+            .read(self.filters[0].sample_rate(), |i| block_driven(&io, i));
         let (inputs, mut outputs) = io.split();
         for (c, filter) in self.filters.iter_mut().enumerate() {
-            // `read_targets` fitted every entry to the rate, so only a set
-            // out of order (a write race between two cells) is refused, and
-            // it keeps the last one.
+            // `read` fitted every entry to the rate, so only a set that is
+            // out of order or not above 0 is refused, and it keeps the last
+            // good one.
             let _ = filter.set_frequencies(&targets[..splits]);
             let out = &mut self.scratch[..self.bands * n];
             filter.split_block(&inputs.get(c)[..n], out);
@@ -721,42 +712,53 @@ impl Node for CrossoverNode {
             f.reset();
         }
     }
+
+    fn param_base(&self, port: usize) -> Option<f32> {
+        self.splits.base(port)
+    }
 }
 
+/// Shares the frequency cells (the template a fork is taken from); the
+/// filter state is copied.
 impl Clone for CrossoverNode {
-    /// Shares the frequency cells (the template a fork is taken from); the
-    /// filter state is copied.
     fn clone(&self) -> Self {
         Self {
             layout: self.layout,
             bands: self.bands,
-            frequencies: self.frequencies.clone(),
-            good: self.good.clone(),
+            splits: self.splits.clone(),
             filters: self.filters.clone(),
             scratch: self.scratch.clone(),
         }
     }
 }
 
-impl Fresh for CrossoverNode {
-    fn fresh(&self) -> Self {
+impl ParamNode for CrossoverNode {
+    /// Crossover `i` as `UnitAddr::new(UnitParam::Cutoff, i)`.
+    fn param_set(&self) -> ParamSet {
+        (0..self.bands - 1)
+            .fold(ParamSet::builder(), |set, i| {
+                set.param(Splits::addr(i), self.splits.cell(i))
+            })
+            .build()
+    }
+
+    /// A clone with its own frequency cells, at the values held now, and its
+    /// filters cleared.
+    fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        for f in &mut fork.frequencies {
-            f.detach();
-        }
+        fork.splits.detach();
         Node::reset(&mut fork);
         fork
     }
 }
 
-/// Inserted with its [`CrossoverControls`] as its handles; a fork starts from
-/// the frequencies last set.
+/// Inserted with its [`ParamSet`] as its controls, and a fork from the
+/// frequencies last set through it.
 impl IntoNode for CrossoverNode {
-    type Controls = CrossoverControls;
+    type Controls = ParamSet;
 
-    fn into_parts(self) -> NodeParts<CrossoverControls> {
-        let controls = self.controls();
-        fresh_parts(self, controls)
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -1135,52 +1137,121 @@ mod tests {
         assert!(out[1].iter().chain(&out[3]).all(|&s| s == 0.0));
     }
 
-    /// Moving a frequency through the controls reaches the node; one it cannot
-    /// use (out of order) is refused at the handle.
+    /// A param write moves the split the node runs: crossover 0 at 2 kHz
+    /// leaves a 2 kHz tone at half amplitude in the low band (each branch is
+    /// -6.02 dB there), where the 500 Hz split passes almost none of it.
     ///
-    /// Mutation (run): `process` never reading the cell → the band keeps its
-    /// 1 kHz split → fails.
+    /// Mutation (run): `process` never reading the cell (`|_| None` and a
+    /// constant) → the band keeps its 500 Hz split → fails.
     #[test]
-    fn the_controls_move_the_node_and_refuse_a_bad_order() {
+    fn a_param_write_moves_the_split() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(4_000.0)]).unwrap();
-        let controls = node.controls();
+        let set = node.param_set();
         let mut node = prepared(node);
-        assert_eq!(controls.len(), 2);
-        assert_eq!(
-            controls.set_frequency(0, Hz(5_000.0)),
-            Err(CrossoverError::Order { index: 1 })
-        );
-        assert_eq!(
-            controls.set_frequency(2, Hz(5_000.0)),
-            Err(CrossoverError::Index { index: 2, len: 2 })
-        );
-        assert!(controls.set_frequency(0, Hz(f32::NAN)).is_err());
-        assert_eq!(controls.frequency(0), Some(Hz(500.0)));
-        controls.set_frequency(0, Hz(2_000.0)).unwrap();
+        assert!(set.set(Splits::addr(0), 2_000.0));
         let x = sine(2_000.0, RATE, SETTLE + WINDOW);
         let out = render(&mut node, &[x]);
-        // At the new split the low band is half amplitude.
         let low = amplitude_at(&out[0][SETTLE..], 2_000.0, RATE);
         assert!((low - 0.5).abs() < TOL, "{low}");
     }
 
-    /// A fork starts from the frequencies set and shares no cell with the
-    /// live node.
+    /// A set the crossover cannot use is refused as a whole: the node keeps
+    /// the last good set until the writes are consistent again, then takes
+    /// them. Crossovers `[500, 4000]` written `[5000, 4000]` (out of order),
+    /// then `[-1, ..]`, then NaN, hold the 500 Hz split; `[5000, 8000]`
+    /// lands.
     ///
-    /// Mutation (run): drop `f.detach()` in `Fresh::fresh` → a write to the
-    /// live node reaches the fork → fails.
+    /// Mutation (run): drop the `Order` check in `validate` → `[5000, 4000]`
+    /// is taken and the 500 Hz tone no longer sits at the split → fails;
+    /// drop the `hz.get() > 0.0` test → the `-1` set is taken → fails.
+    #[test]
+    fn a_set_out_of_order_is_held_until_consistent() {
+        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(4_000.0)]).unwrap();
+        let set = node.param_set();
+        let mut node = prepared(node);
+        let (c0, c1) = (Splits::addr(0), Splits::addr(1));
+        let silence = vec![0.0f32; 64];
+        let held = |node: &mut CrossoverNode| {
+            render(node, std::slice::from_ref(&silence));
+            let f = &node.filters[0];
+            (f.frequency(0), f.frequency(1))
+        };
+        for bad in [5_000.0, -1.0, 0.0, f32::NAN, f32::INFINITY] {
+            set.set(c0, bad);
+            assert_eq!(
+                held(&mut node),
+                (Some(Hz(500.0)), Some(Hz(4_000.0))),
+                "{bad}"
+            );
+        }
+        set.set(c1, 8_000.0);
+        set.set(c0, 5_000.0);
+        assert_eq!(held(&mut node), (Some(Hz(5_000.0)), Some(Hz(8_000.0))));
+    }
+
+    /// A fork starts from the frequencies set and shares no cell with the
+    /// live node, whatever the index.
+    ///
+    /// Mutation (run): drop `splits.detach()` in `fork_fresh` → a write to
+    /// the live node reaches the fork → fails.
     #[test]
     fn a_fork_shares_no_cell() {
-        let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();
-        let live = node.controls();
-        live.set_frequency(0, Hz(700.0)).unwrap();
-        let fork = node.fresh();
-        let theirs = fork.controls();
-        assert_eq!(theirs.frequency(0), Some(Hz(700.0)));
-        live.set_frequency(0, Hz(900.0)).unwrap();
-        assert_eq!(theirs.frequency(0), Some(Hz(700.0)));
-        theirs.set_frequency(0, Hz(300.0)).unwrap();
-        assert_eq!(live.frequency(0), Some(Hz(900.0)));
+        tutti_graph::contract::assert_param_fork(
+            CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(900.0), Hz(3_000.0)]).unwrap(),
+        );
+    }
+
+    /// The shape declares one cutoff port per crossover, indexed, and each
+    /// port's base is its cell.
+    ///
+    /// Mutation (run): declare the ports with `UnitAddr::first` (every
+    /// index 0) → the shape refuses the duplicate → fails; `param_base`
+    /// answering port 0 for every port → fails.
+    #[test]
+    fn the_ports_are_the_indexed_cutoffs() {
+        let node = CrossoverNode::new(
+            ChannelLayout::STEREO,
+            &[Hz(200.0), Hz(2_000.0), Hz(9_000.0)],
+        )
+        .unwrap();
+        let want: Vec<UnitAddr> = (0..3)
+            .map(|i| UnitAddr::new(UnitParam::Cutoff, i))
+            .collect();
+        assert_eq!(node.shape().params.as_slice(), &want[..]);
+        let set = node.param_set();
+        assert_eq!(set.params().collect::<Vec<_>>(), want);
+        for (i, hz) in [200.0, 2_000.0, 9_000.0].into_iter().enumerate() {
+            assert_eq!(node.param_base(i), Some(hz));
+            assert_eq!(set.get(want[i]), Some(hz));
+        }
+        assert_eq!(node.param_base(3), None);
+    }
+
+    /// A driven port moves its own crossover: port 0 at 2 kHz leaves a 2 kHz
+    /// tone at half amplitude in the low band, and the cell (500 Hz) is only
+    /// the base.
+    ///
+    /// Mutation (run): read the driven value of port 1 for crossover 0
+    /// (`block_driven(&io, i + 1)`) → the split stays at 500 Hz → fails.
+    #[test]
+    fn a_driven_port_moves_its_crossover() {
+        use tutti_graph::contract::drive;
+        let mut node =
+            prepared(CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0), Hz(4_000.0)]).unwrap());
+        let x = sine(2_000.0, RATE, SETTLE + WINDOW);
+        let lane = [2_000.0f32; 512];
+        let mut low = Vec::new();
+        for chunk in x.chunks(512) {
+            let out = drive(
+                &mut node,
+                crate::test_support::RATE,
+                &[chunk],
+                &[Some(&lane[..chunk.len()])],
+            );
+            low.extend_from_slice(&out[0]);
+        }
+        let amp = amplitude_at(&low[SETTLE..], 2_000.0, RATE);
+        assert!((amp - 0.5).abs() < TOL, "{amp}");
     }
 
     /// The node refuses a layout it has no ports for, and bad frequencies.
@@ -1273,16 +1344,16 @@ mod tests {
     /// others: the out-of-range one is held under the rate, not the whole set
     /// frozen.
     ///
-    /// Mutation (run): drop the `fit_to_rate` call in `read_targets` →
+    /// Mutation (run): drop the `fit_to_rate` call in `Splits::read` →
     /// `set_frequencies` refuses the set at the rate, every crossover stays
     /// where it was → the 300 Hz split never lands → fails.
     #[test]
     fn a_frequency_above_the_rate_does_not_freeze_the_others() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(200.0), Hz(15_000.0)]).unwrap();
-        let controls = node.controls();
+        let set = node.param_set();
         let rate = 22_050.0;
         let mut node = tutti_graph::contract::prepared(node, SampleRate(rate), 1024);
-        controls.set_frequency(0, Hz(300.0)).unwrap();
+        set.set(Splits::addr(0), 300.0);
         // 9 555 frames are 130 whole periods of 300 Hz at 22.05 kHz.
         let len = 9_555 + 12_000;
         let out = render(&mut node, &[sine(300.0, rate, len)]);
@@ -1303,7 +1374,7 @@ mod tests {
     #[test]
     fn prepare_reads_the_cells() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();
-        node.controls().set_frequency(0, Hz(2_000.0)).unwrap();
+        node.param_set().set(Splits::addr(0), 2_000.0);
         let node = prepared(node);
         assert_eq!(node.filters[0].current[0], 2_000.0);
         assert_eq!(node.filters[0].target[0], 2_000.0);

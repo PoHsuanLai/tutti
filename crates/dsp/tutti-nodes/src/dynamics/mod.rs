@@ -25,4 +25,4 @@ mod params;
 pub use compressor::{COMPRESSOR_PARAMS, CompressorNode};
 pub use gate::{GATE_PARAMS, GateNode};
 pub use limiter::{BRICKWALL_PARAMS, BrickwallLimiterNode, LIMITER_PARAMS, LimiterNode};
-pub use multiband::{BandControls, MultibandCompressorNode, MultibandControls};
+pub use multiband::{BAND_PARAMS, MultibandCompressorNode, MultibandControls};

@@ -7220,6 +7220,19 @@ passes a value, so a bare `UnitParam` is index 0):
   insert addresses by key (`SessionNode::params`). `assert_param_fork` covers
   every address a set lists.
 
+**The multiband compressor and the crossover use them.** `CrossoverNode` addresses
+crossover `i` as `Cutoff` at index `i`. `MultibandCompressorNode` addresses a band's
+`Threshold`, `Knee`, `Ratio`, `Attack`, `Release` and make-up (`GainDb`, the compressor's
+address) at the band's index, and its crossovers as `Cutoff`: 27 ports at four bands,
+band by band and then the crossovers. `Knee`, `Bypass` and `Solo` are `UnitParam`
+kinds appended for it. The toggles are cells with no port, encoded `>= 0.5` is on as
+`Mute` is: a block-rate on/off a lane would only flap, and eight more ports would pass
+the cap. A `ParamSet` write cannot be refused, so the node validates on read: a
+crossover set that is not strictly increasing and above 0 is refused as a whole and
+the last good set stands, a ratio under 1 reads as 1, a time or a knee under 0 as 0,
+a non-finite value as unchanged. The band meters are readings, not controls: they
+sit beside the `ParamSet` in `MultibandControls`, not in it.
+
 **Decision: `MAX_PARAM_PORTS` is 32.** It counts addresses, not kinds. A
 multiband dynamics node is four bands of six params (threshold, knee, ratio,
 attack, release, make-up) and three crossover frequencies, 27 in all. A cap of 8

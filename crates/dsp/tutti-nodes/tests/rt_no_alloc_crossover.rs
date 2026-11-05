@@ -1,10 +1,11 @@
 //! Regression gate: the crossover and the multiband compressor must not
-//! allocate per block, including while a crossover frequency, a threshold or a
-//! solo moves.
+//! allocate per block, including while every param moves each block.
 //!
 //! Each node runs alone in a graph through `tutti_graph::contract::BlockRig`.
-//! The moving-control gates take the ramped path (a coefficient solve every
-//! few samples), a solo's mute ramp and a bypass.
+//! The moving-param gates write every band's threshold, knee, ratio, attack,
+//! release and make-up, every crossover and both toggles through the node's
+//! `ParamSet` before each block, so they take the ramped path (a coefficient
+//! solve every few samples), a solo's mute ramp and a bypass.
 //!
 //! Mutation (run): size the multiband node's `split` scratch in `process`
 //! rather than `prepare` (`self.split = vec![0.0; ..]` at its top) → every
@@ -13,9 +14,10 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{ChannelLayout, Hz, SampleRate};
-use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
-use tutti_nodes::{CrossoverNode, MultibandCompressorNode};
+use tutti_graph::{IntoNode, ParamNode};
+use tutti_nodes::{BAND_PARAMS, CrossoverNode, MultibandCompressorNode};
+use tutti_types::{UnitAddr, UnitParam};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -62,7 +64,8 @@ fn crossover_node_with_a_moving_frequency_is_allocation_free() {
     let mut hz = 200.0f32;
     gate(node, move |controls, _| {
         hz = if hz > 2_000.0 { 200.0 } else { hz + 3.0 };
-        controls.set_frequency(0, Hz(hz)).unwrap();
+        assert!(controls.set(UnitAddr::new(UnitParam::Cutoff, 0), hz));
+        assert!(controls.set(UnitAddr::new(UnitParam::Cutoff, 1), 3_000.0 + hz));
     });
 }
 
@@ -70,29 +73,43 @@ fn crossover_node_with_a_moving_frequency_is_allocation_free() {
 fn multiband_compressor_process_is_allocation_free() {
     for bands in 2..=4 {
         let node = MultibandCompressorNode::new(ChannelLayout::STEREO, bands).unwrap();
-        let c = node.controls();
-        for b in 0..bands {
-            let band = c.band(b).unwrap();
-            band.set_threshold(-24.0);
-            band.set_ratio(4.0);
-            band.set_makeup(3.0);
+        let set = node.param_set();
+        for b in 0..bands as u8 {
+            assert!(set.set(UnitAddr::new(UnitParam::Threshold, b), -24.0));
+            assert!(set.set(UnitAddr::new(UnitParam::Ratio, b), 4.0));
+            assert!(set.set(UnitAddr::new(UnitParam::GainDb, b), 3.0));
         }
         gate(node, |_, _| {});
     }
 }
 
 #[test]
-fn multiband_compressor_with_moving_controls_is_allocation_free() {
+fn multiband_compressor_with_moving_params_is_allocation_free() {
+    // Four bands: every band param, every crossover and both toggles are
+    // written each block (27 ports and 8 toggle cells).
     let node = MultibandCompressorNode::new(ChannelLayout::from_count(6), 4).unwrap();
     let mut hz = 120.0f32;
     gate(node, move |controls, i| {
+        let set = controls.params();
         hz = if hz > 400.0 { 120.0 } else { hz + 1.0 };
-        controls.set_crossover(0, Hz(hz)).unwrap();
-        let band = controls.band(i % 4).unwrap();
-        band.set_threshold(-30.0 + (i % 11) as f32);
-        band.set_makeup((i % 5) as f32);
-        band.set_bypass(i % 7 == 0);
-        band.set_solo(i % 13 == 0);
-        controls.band((i + 1) % 4).unwrap().set_solo(false);
+        for (c, scale) in [1.0, 4.0, 40.0].into_iter().enumerate() {
+            assert!(set.set(UnitAddr::new(UnitParam::Cutoff, c as u8), hz * scale));
+        }
+        for b in 0..4u8 {
+            let k = i + usize::from(b);
+            let values = [
+                -30.0 + (k % 11) as f32,
+                (k % 9) as f32,
+                1.0 + (k % 6) as f32,
+                0.001 + (k % 5) as f32 * 0.002,
+                0.01 + (k % 7) as f32 * 0.01,
+                (k % 5) as f32,
+            ];
+            for (kind, v) in BAND_PARAMS.into_iter().zip(values) {
+                assert!(set.set(UnitAddr::new(kind, b), v));
+            }
+            assert!(set.set(UnitAddr::new(UnitParam::Bypass, b), f32::from(k % 7 == 0)));
+            assert!(set.set(UnitAddr::new(UnitParam::Solo, b), f32::from(k % 13 == 0)));
+        }
     });
 }

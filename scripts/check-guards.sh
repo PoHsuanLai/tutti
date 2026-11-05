@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 #
 # Every host callback a plugin can call into must run its body in the panic
-# guard (`guard(..)` or, for `request_exec`, `or_abort(..)`), because a panic
+# guard (`guard(..)`, its `guarded(..)` wrapper around a `HostCallbacks`
+# call, or, for `request_exec`, `or_abort(..)`), because a panic
 # out of an `extern "C"` / COM method aborts the process:
 #
-# - tutti-clap-host: each `unsafe extern "C" fn NAME(` defined outside test
-#   code (text from the first `#[cfg(test)] mod` of a file on is skipped).
+# - tutti-clap-ffi: each `extern "C" fn NAME(` defined outside test code (text
+#   from the first `#[cfg(test)] mod` of a file on is skipped). The host
+#   callbacks, the stream, event-list and context-menu callbacks all live
+#   there; `tutti-clap-host` has none.
 # - tutti-vst3-host: each `unsafe fn` in an `impl ...Trait for ...` block
 #   under `src/com`.
 #
 # The functions in ALLOW only return a constant or have an empty body, so
 # there is nothing to guard. A new entry needs that argument.
 #
-# Mutation (run): delete the `guard(false, || {` wrapper (and its closer) of
-# `host_request_restart` in clap-host, or of `getEventCount` in vst3-host ->
-# this script exits 1 naming the function.
+# Mutation (run): replace the `guarded(host, (), |cb| cb.request_restart())`
+# body of `host_request_restart` in clap-ffi with `()`, or delete the wrapper
+# of `getEventCount` in vst3-host -> this script exits 1 naming the function.
 #
 # No build needed (python3 only), so CI runs it in the static `paths` job.
 set -euo pipefail
@@ -24,7 +27,7 @@ python3 - <<'PY'
 import glob, re, sys
 
 ALLOW = {
-    # clap-host: constant answers or empty bodies
+    # clap-ffi: constant answers or empty bodies
     "host_params_clear", "host_gui_request_show", "host_gui_request_hide",
     "host_note_ports_supported_dialects", "host_preset_load_on_error",
     "host_context_menu_populate", "host_context_menu_perform",
@@ -78,15 +81,15 @@ def body_of(s, name_end):
 
 
 def guarded(body):
-    return re.search(r"\b(guard|or_abort)\(", body) is not None
+    return re.search(r"\b(guard|guarded|or_abort)\(", body) is not None
 
 
 bad, seen = [], 0
-for path in glob.glob("crates/plugin/formats/tutti-clap-host/src/**/*.rs", recursive=True):
+for path in glob.glob("crates/plugin/formats/tutti-clap-ffi/src/**/*.rs", recursive=True):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s
-    for m in re.finditer(r'unsafe extern "C" fn (\w+)\(', s):
+    for m in re.finditer(r'(?:unsafe )?extern "C" fn (\w+)\(', s):
         seen += 1
         if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
             bad.append((path, m.group(1)))

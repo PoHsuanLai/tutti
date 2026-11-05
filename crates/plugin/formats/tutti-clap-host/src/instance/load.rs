@@ -1,36 +1,24 @@
-//! Construction of [`ClapLoaded`]: probe, load, and the editor-only entry
-//! point, plus the port-layout / f64-support helpers they read off the freshly
-//! instantiated plugin.
+//! Construction of [`ClapLoaded`]: probe, load, and the port-layout /
+//! f64-support helpers they read off the freshly instantiated plugin.
 
 use super::ClapLoaded;
 use super::config::{AudioConfig, LifecycleFlags, PortLayout};
-use super::descriptor::{self, load_descriptor};
-use super::ext;
-use super::extensions::ExtensionCache;
-use super::plugin_ptr::PluginPtr;
-use super::ports::layout_from_clap_port;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
 use crate::types::PluginInfo;
-use clap_sys::ext::audio_ports::{
-    CLAP_AUDIO_PORT_SUPPORTS_64BITS, clap_audio_port_info, clap_plugin_audio_ports,
-};
-use clap_sys::plugin::clap_plugin;
+use clap_sys::ext::audio_ports::CLAP_AUDIO_PORT_SUPPORTS_64BITS;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tutti_plugin_types::BusChannels;
-// The tests below name the type directly to assert on canonicalized widths.
-#[cfg(test)]
-use tutti_plugin_types::ChannelLayout;
+use tutti_clap_ffi::{AudioPortInfo, Bundle, DescriptorInfo, LoadError, PortKind, Stage};
+use tutti_plugin_types::{BusChannels, ChannelLayout};
 
-/// The rate a plugin that has not been activated reports.
+/// A placeholder rate for the plugin until its first activation, whose
+/// `Prepare` carries the real one.
 const PLACEHOLDER_SAMPLE_RATE: f64 = 44_100.0;
-/// The block size a plugin that has not been activated reports.
+/// A placeholder block size, for the same reason.
 const PLACEHOLDER_MAX_FRAMES: u32 = 512;
 
-/// How to load a plugin from a bundle.
-///
-/// The default loads the bundle's first plugin from the bundle itself.
+/// What to load: which library of a bundle and which plugin of the library.
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
     library: Option<PathBuf>,
@@ -38,23 +26,20 @@ pub struct LoadOptions {
 }
 
 impl LoadOptions {
-    /// The default: the first plugin, opened from the bundle path.
+    /// Defaults: the bundle path itself, and the library's first plugin.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Opens `path` as the binary when it differs from the bundle path (a macOS
-    /// `.clap` bundle's `Contents/MacOS/...`). The bundle path is still what
-    /// `init()` is given.
+    /// Loads this library file rather than the bundle path.
     #[must_use]
     pub fn library(mut self, path: impl Into<PathBuf>) -> Self {
         self.library = Some(path.into());
         self
     }
 
-    /// Loads the plugin with this id from a bundle that ships more than one
-    /// (an id from [`ClapLoaded::probe_all`]). Without it the first plugin loads.
+    /// Loads the plugin with this id from the bundle rather than its first.
     #[must_use]
     pub fn plugin_id(mut self, id: impl Into<String>) -> Self {
         self.plugin_id = Some(id.into());
@@ -62,19 +47,42 @@ impl LoadOptions {
     }
 }
 
+fn stage_of(stage: Stage) -> LoadStage {
+    match stage {
+        Stage::Opening => LoadStage::Opening,
+        Stage::Factory => LoadStage::Factory,
+        Stage::Instantiation => LoadStage::Instantiation,
+        Stage::Initialization => LoadStage::Initialization,
+    }
+}
+
+fn load_failed(bundle_path: &Path, error: LoadError) -> ClapError {
+    ClapError::LoadFailed {
+        path: bundle_path.to_path_buf(),
+        stage: stage_of(error.stage),
+        reason: error.reason,
+    }
+}
+
+fn info_of(d: &DescriptorInfo) -> PluginInfo {
+    PluginInfo::new(d.id.clone(), d.name.clone())
+        .vendor(d.vendor.clone())
+        .version(d.version.clone())
+        .url(d.url.clone())
+        .description(d.description.clone())
+        .features(d.features.clone())
+}
+
+fn open(bundle_path: &Path, library_path: Option<&Path>) -> Result<Bundle> {
+    Bundle::open(bundle_path, library_path).map_err(|e| load_failed(bundle_path, e))
+}
+
 impl ClapLoaded {
-    /// Re-reads the plugin's audio ports: the port layout, the channel totals
-    /// in [`info`](Self::info) and [`supports_f64`](Self::supports_f64), which
-    /// were read at load and which the plugin can change (a `clap.audio-ports`
-    /// rescan, which arrives as a [`Request::IoChanged`](tutti_plugin_types::Request::IoChanged)).
-    /// [`activate_typed`](Self::activate_typed) calls it, so a plugin brought back
-    /// by an activation is read afresh without asking. A host calls it directly to
-    /// see the new layout while deactivated, before choosing what to activate
-    /// it as.
+    /// Re-reads the plugin's audio ports and their 64-bit support. Only while
+    /// the plugin is deactivated: the spec makes the ports `[!active]`.
     ///
     /// # Errors
-    /// [`ClapError::NotSupported`] while the plugin is active: CLAP lets it
-    /// change its ports only while deactivated.
+    /// [`ClapError::NotSupported`] while the plugin is active.
     pub fn rescan_audio_ports(&mut self) -> Result<()> {
         self.assert_main_thread();
         if self.flags.active {
@@ -82,188 +90,62 @@ impl ClapLoaded {
                 "audio ports can be re-read only while the plugin is deactivated".to_string(),
             ));
         }
-        let (ports, supports_f64) =
-            read_audio_ports(&mut self.info, self.plugin.as_ptr(), &self.extensions);
+        let (ports, supports_f64) = read_audio_ports(&mut self.info, &self.plugin);
         self.ports = ports;
         self.audio.supports_f64 = supports_f64;
         Ok(())
     }
 
-    /// Reads the descriptor of the bundle's first plugin without creating an
-    /// instance.
-    ///
-    /// `library_path` is the binary to open when it differs from
-    /// `bundle_path`; `None` opens `bundle_path` itself.
+    /// Reads a bundle's first plugin's descriptor without instantiating it.
     ///
     /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
-    /// no compatible `clap_entry` or plugin factory.
+    /// The library cannot be opened, or has no readable factory or descriptor.
     pub fn probe(bundle_path: impl AsRef<Path>, library_path: Option<&Path>) -> Result<PluginInfo> {
         let bundle_path = bundle_path.as_ref();
-        let load_path = library_path.unwrap_or(bundle_path);
-
-        let library = unsafe {
-            libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("Failed to load library: {e}"),
-            })?
-        };
-
-        let loaded = load_descriptor(&library, bundle_path, None)?;
-        let info = loaded.info;
-        drop(loaded.entry_guard); // drop order: guard before library
-        drop(library);
-        Ok(info)
+        let bundle = open(bundle_path, library_path)?;
+        let index = bundle
+            .select(None)
+            .map_err(|e| load_failed(bundle_path, e))?;
+        Ok(info_of(&bundle.descriptors()[index]))
     }
 
-    /// Returns the descriptor of every plugin a `.clap` bundle advertises.
-    ///
-    /// A bundle is a factory: `get_plugin_count` exists because one file may
-    /// ship a synth plus companion effects. [`probe`](Self::probe) answers for
-    /// the default (first) plugin, which is the whole answer for most bundles;
-    /// this is how a caller finds the rest, and the ids it returns are what
-    /// [`LoadOptions::plugin_id`] accepts.
+    /// Reads every plugin a bundle's factory advertises.
     ///
     /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened or has
-    /// no compatible `clap_entry` or plugin factory.
+    /// As [`probe`](Self::probe).
     pub fn probe_all(
         bundle_path: impl AsRef<Path>,
         library_path: Option<&Path>,
     ) -> Result<Vec<PluginInfo>> {
         let bundle_path = bundle_path.as_ref();
-        let load_path = library_path.unwrap_or(bundle_path);
-
-        let library = unsafe {
-            libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("Failed to load library: {e}"),
-            })?
-        };
-
-        let loaded = load_descriptor(&library, bundle_path, None)?;
-        let siblings = loaded.siblings;
-        drop(loaded.entry_guard); // drop order: guard before library
-        drop(library);
-        Ok(siblings)
+        let bundle = open(bundle_path, library_path)?;
+        bundle
+            .select(None)
+            .map_err(|e| load_failed(bundle_path, e))?;
+        Ok(bundle.descriptors().iter().map(info_of).collect())
     }
 
-    /// Loads and initializes a plugin from a `.clap` bundle: the first one, or
-    /// the one `options` names.
-    ///
-    /// The rate and the block size are not load parameters: they arrive in the
-    /// [`Prepare`](tutti_plugin_types::Prepare) of an activation. A plugin
-    /// loaded for its editor, parameters and state alone is never activated.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tutti_clap_host::{ClapLoaded, LoadOptions};
-    ///
-    /// let plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
-    /// println!("{} {}", plugin.info().name, plugin.info().version);
-    /// # Ok::<(), tutti_clap_host::ClapError>(())
-    /// ```
+    /// Loads and instantiates a plugin, not yet activated. Rate and block
+    /// size are the activation's ([`Loaded::activate`](tutti_plugin_types::Loaded::activate)).
     ///
     /// # Errors
-    ///
-    /// Returns [`ClapError::LoadFailed`] if the library cannot be opened, has no
-    /// compatible `clap_entry` or plugin factory, or the plugin cannot be
-    /// created or initialized; `stage` says which step failed.
+    /// The bundle cannot be opened, the plugin id is not in it, or the plugin
+    /// refuses to be created or initialised.
     pub fn load(bundle_path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
         let bundle_path = bundle_path.as_ref();
-        let library_path = options.library.as_deref();
-        let plugin_id = options.plugin_id.as_deref();
-
-        let load_path = library_path.unwrap_or(bundle_path);
-
-        let library = unsafe {
-            libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("Failed to load library: {e}"),
-            })?
-        };
-
-        let descriptor::LoadedDescriptor {
-            entry_guard,
-            factory_ptr,
-            factory,
-            info: mut plugin_info,
-            // The load path needs the selected plugin, not the bundle's roster;
-            // `probe_all` is where a caller reads that.
-            siblings: _,
-        } = load_descriptor(&library, bundle_path, plugin_id)?;
+        let bundle = open(bundle_path, options.library.as_deref())?;
+        let index = bundle
+            .select(options.plugin_id.as_deref())
+            .map_err(|e| load_failed(bundle_path, e))?;
+        let mut plugin_info = info_of(&bundle.descriptors()[index]);
 
         let host_state = Arc::new(HostState::new());
-        let host = Box::new(ClapHost::new(host_state.clone()));
+        let host = ClapHost::new(host_state.clone()).into_inner();
+        let plugin = bundle
+            .instantiate(index, host, host_state.roles.clone())
+            .map_err(|e| load_failed(bundle_path, e))?;
 
-        let plugin_id_cstr =
-            std::ffi::CString::new(plugin_info.id.as_str()).map_err(|e| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Instantiation,
-                reason: format!("Invalid plugin ID: {e}"),
-            })?;
-
-        let create_fn = factory.create_plugin.ok_or_else(|| ClapError::LoadFailed {
-            path: bundle_path.to_path_buf(),
-            stage: LoadStage::Instantiation,
-            reason: "No create_plugin function".to_string(),
-        })?;
-
-        let plugin_ptr = unsafe {
-            create_fn(
-                factory_ptr as *const _,
-                host.as_raw(),
-                plugin_id_cstr.as_ptr(),
-            )
-        };
-
-        if plugin_ptr.is_null() {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Instantiation,
-                reason: "Failed to create plugin instance".to_string(),
-            });
-        }
-
-        // Bind the raw pointer into its owning handle BEFORE the init
-        // checks. `create_plugin` has already handed us ownership, so every
-        // exit from here on must `destroy()` it — CLAP's spec is explicit: "If
-        // init returns false, the host must destroy the plugin instance."
-        // Both early returns below (missing `init`, `init` false) would
-        // otherwise drop the raw pointer on the floor and then `dlclose` the
-        // library out from under a live instance; `PluginPtr::drop` covers both.
-        let plugin = PluginPtr::new(plugin_ptr);
-
-        let plugin_init_fn =
-            unsafe { plugin.as_ref() }
-                .init
-                .ok_or_else(|| ClapError::LoadFailed {
-                    path: bundle_path.to_path_buf(),
-                    stage: LoadStage::Initialization,
-                    reason: "No plugin init function".to_string(),
-                })?;
-
-        if !unsafe { plugin_init_fn(plugin.as_ptr()) } {
-            return Err(ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Initialization,
-                reason: "Plugin init failed".to_string(),
-            });
-        }
-
-        let extensions = ExtensionCache::query(plugin.as_ptr());
-
-        let (ports, supports_f64) =
-            read_audio_ports(&mut plugin_info, plugin.as_ptr(), &extensions);
-
-        // Placeholders until the first activation, which carries the real rate
-        // and block size in its `Prepare`.
+        let (ports, supports_f64) = read_audio_ports(&mut plugin_info, &plugin);
         let audio = AudioConfig {
             sample_rate: PLACEHOLDER_SAMPLE_RATE,
             max_frames: PLACEHOLDER_MAX_FRAMES,
@@ -271,13 +153,9 @@ impl ClapLoaded {
             f64_active: false,
         };
 
-        let loaded = Self {
+        Ok(Self {
             plugin,
-            _entry_guard: entry_guard,
-            _library: library,
-            _host: host,
             host_state,
-            extensions,
             descriptor: std::cell::OnceCell::new(),
             info: plugin_info,
             audio,
@@ -285,120 +163,80 @@ impl ClapLoaded {
             flags: LifecycleFlags::default(),
             work: Default::default(),
             thread_pool: None,
-        };
-        Ok(loaded)
+        })
     }
 }
 
-/// Per-port channel counts for one side, read off `clap.audio-ports`.
-///
-/// A `get(i)` failure at `i < count` is malformed — CLAP has no sparse index
-/// space — and **truncates** rather than skipping. The returned list is
-/// positional: [`refill_port_buffers`](super::audio) walks it in order,
-/// advancing its offset by each entry's channel count. A `filter_map` would
-/// close the gap, so every later port would silently move down one index and
-/// get handed its neighbour's channels. Truncating keeps the list a
-/// true prefix, which CLAP tolerates — `process` carries explicit
-/// `audio_inputs_count` / `audio_outputs_count`.
-fn port_channels(
-    plugin: *const clap_plugin,
-    audio_ports: *const clap_plugin_audio_ports,
-    is_input: bool,
-) -> BusChannels {
-    let Some(ext) = (unsafe { ext::opt(audio_ports) }) else {
-        return BusChannels::new();
-    };
-    let (count_fn, get_fn) = match (ext.count, ext.get) {
-        (Some(c), Some(g)) => (c, g),
-        _ => return BusChannels::new(),
-    };
-    let count = unsafe { count_fn(plugin, is_input) };
+/// What the loader reads audio ports from: the plugin, or a stand-in.
+pub(crate) trait AudioPortSource {
+    /// `audio-ports.count`.
+    fn port_count(&self, is_input: bool) -> u32;
+    /// `audio-ports.get`.
+    fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo>;
+}
+
+impl AudioPortSource for tutti_clap_ffi::Plugin {
+    fn port_count(&self, is_input: bool) -> u32 {
+        self.audio_port_count(is_input)
+    }
+
+    fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
+        self.audio_port_info(index, is_input)
+    }
+}
+
+/// The channel layout a port's type and count name: mono and stereo by their
+/// type tag, anything else by count.
+pub(super) fn layout_of_port(port: &AudioPortInfo) -> ChannelLayout {
+    match port.port_type {
+        PortKind::Mono => ChannelLayout::MONO,
+        PortKind::Stereo => ChannelLayout::STEREO,
+        _ => ChannelLayout::from(port.channel_count),
+    }
+}
+
+fn port_channels(source: &impl AudioPortSource, is_input: bool) -> BusChannels {
+    let count = source.port_count(is_input);
     let mut channels = BusChannels::with_capacity(count as usize);
     for i in 0..count {
-        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(plugin, i, is_input, &mut info) } {
-            // Stop, don't skip: every later port's index would shift.
+        let Some(port) = source.port_info(i, is_input) else {
             break;
-        }
-        // Same FFI-inbound conversion `audio_port_info` uses, so a port's
-        // stored layout and its reported layout cannot disagree. The
-        // `port_type` tag is what makes `Mono`/`Stereo` named rather than
-        // inferred from the width.
-        channels.push(layout_from_clap_port(info.port_type, info.channel_count));
+        };
+        channels.push(layout_of_port(&port));
     }
     channels
 }
 
-/// Reads the plugin's declared audio ports: the layout `process` hands it,
-/// whether it can be activated for 64-bit audio, and (into `info`) the totals
-/// the host reports. Everything a `clap.audio-ports` rescan can change, in one
-/// place, so a load and a rescan cannot disagree about what they read.
-fn read_audio_ports(
-    info: &mut PluginInfo,
-    plugin: *const clap_plugin,
-    extensions: &ExtensionCache,
-) -> (PortLayout, bool) {
-    // The declared layout, empty sides included: `process` hands the
-    // plugin exactly these buffers, as CLAP requires (`audio_inputs_count`
-    // equals the plugin's own port count on that side).
+/// Reads the plugin's port layout into `info` and returns it with whether
+/// every presented port takes 64-bit audio.
+fn read_audio_ports(info: &mut PluginInfo, source: &impl AudioPortSource) -> (PortLayout, bool) {
     let ports = PortLayout {
-        inputs: port_channels(plugin, extensions.audio.ports, true),
-        outputs: port_channels(plugin, extensions.audio.ports, false),
+        inputs: port_channels(source, true),
+        outputs: port_channels(source, false),
     };
-
-    // The reported totals state an empty side as one stereo bus (the
-    // graph-facing shape). Default a copy's bus lists, then derive the
-    // totals from it, so the two cannot disagree; see
-    // `PortLayout::default_empty_buses`.
     let mut reported = ports.clone();
     reported.default_empty_buses();
     info.audio_inputs = reported.input_channel_total();
     info.audio_outputs = reported.output_channel_total();
-
-    (ports, check_f64_support(plugin, extensions.audio.ports))
+    (ports, check_f64_support(source))
 }
 
-/// Whether the plugin can be activated for 64-bit audio: every port on both
-/// sides advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, and there is at least
-/// one port.
+/// Whether the plugin processes in 64-bit: every presented port (inputs and
+/// outputs) advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, and at least one is
+/// presented. A plugin with no ports is f32, the width every CLAP plugin must
+/// accept, not the vacuous `true`.
 ///
-/// Every port, inputs included, is this host's conservative rule, not a CLAP
-/// requirement: CLAP flags 64-bit per port, and a host may hand each port
-/// its own width. This host activates in one sample width and hands it for
-/// every buffer (`data64` with `data32` null), so it picks 64-bit only when
-/// no port would be handed a table it never claimed to read.
-///
-/// A plugin with no ports at all (or no `audio-ports` extension) is `false`:
-/// it has no buffer to gain precision on, and f32 is the width every CLAP
-/// plugin must accept. A side with no ports does not veto a side that has
-/// them all flagged (an instrument with only 64-bit outputs is `true`): the
-/// host hands no buffer on a side the plugin declared empty.
-///
-/// Stops at a `get` failure for the same index as [`port_channels`]: ports
-/// past the hole are absent from the presented layout, so they neither count
-/// nor veto.
-fn check_f64_support(
-    plugin: *const clap_plugin,
-    audio_ports: *const clap_plugin_audio_ports,
-) -> bool {
-    let Some(ext) = (unsafe { ext::opt(audio_ports) }) else {
-        return false;
-    };
-    let (count_fn, get_fn) = match (ext.count, ext.get) {
-        (Some(c), Some(g)) => (c, g),
-        _ => return false,
-    };
+/// Stops at the first port that fails to enumerate, as the layout does, so a
+/// port past a hole (absent from the layout) does not decide the format.
+fn check_f64_support(source: &impl AudioPortSource) -> bool {
     let mut presented = 0u32;
     for is_input in [true, false] {
-        let count = unsafe { count_fn(plugin, is_input) };
+        let count = source.port_count(is_input);
         for i in 0..count {
-            let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-            if !unsafe { get_fn(plugin, i, is_input, &mut info) } {
-                // Past this index `port_channels` presents no ports, so no
-                // port past it may vote on the sample format.
+            let Some(port) = source.port_info(i, is_input) else {
                 break;
-            }
-            if (info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) == 0 {
+            };
+            if port.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS == 0 {
                 return false;
             }
             presented += 1;
@@ -410,54 +248,11 @@ fn check_f64_support(
 #[cfg(test)]
 mod enumeration_hole_tests {
     use super::*;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
-    // The stub's configuration. Global because the stub is a bare
-    // `extern "C"` fn with no state parameter.
-    /// Index at which the stub's `get` reports failure, on either side.
-    static HOLE: AtomicU32 = AtomicU32::new(u32::MAX);
-    /// Number of input / output ports the stub's `count` reports.
-    static COUNT_IN: AtomicU32 = AtomicU32::new(0);
-    static COUNT_OUT: AtomicU32 = AtomicU32::new(0);
-    /// Bit `i` set: input / output port `i` advertises 64-bit support.
-    static F64_IN: AtomicU32 = AtomicU32::new(0);
-    static F64_OUT: AtomicU32 = AtomicU32::new(0);
-    /// Serializes [`with_stub`]. The globals above are process-wide, every
-    /// test configures them differently, and cargo runs the tests on parallel
-    /// threads: unserialized, one test's `store` lands inside another's `f` and
-    /// the suite fails on roughly 45% of runs.
-    static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Port `i` has `i + 1` channels, so an index shift is visible.
-    unsafe extern "C" fn stub_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
-        if is_input { &COUNT_IN } else { &COUNT_OUT }.load(Ordering::SeqCst)
-    }
-
-    unsafe extern "C" fn stub_get(
-        _plugin: *const clap_plugin,
-        index: u32,
-        is_input: bool,
-        info: *mut clap_audio_port_info,
-    ) -> bool {
-        if index == HOLE.load(Ordering::SeqCst) {
-            return false;
-        }
-        let flagged = if is_input { &F64_IN } else { &F64_OUT }.load(Ordering::SeqCst);
-        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
-        unsafe { (*info).channel_count = index + 1 };
-        unsafe {
-            (*info).flags = if flagged & (1 << index) != 0 {
-                CLAP_AUDIO_PORT_SUPPORTS_64BITS
-            } else {
-                0
-            }
-        };
-        true
-    }
-
-    /// One stub configuration: port counts, the hole, and which ports carry
-    /// the 64-bit flag (bit `i` = port `i`).
+    /// A plugin's audio-port enumeration, as configured data: `inputs` and
+    /// `outputs` ports, port `index` answering `false` at `hole`, port `i`
+    /// `i + 1` channels wide and 64-bit when bit `i` of `f64_in` / `f64_out`
+    /// is set.
     #[derive(Clone, Copy)]
     struct Stub {
         inputs: u32,
@@ -467,56 +262,54 @@ mod enumeration_hole_tests {
         f64_out: u32,
     }
 
-    /// Every port of an `n`-port side flagged.
+    impl AudioPortSource for Stub {
+        fn port_count(&self, is_input: bool) -> u32 {
+            if is_input { self.inputs } else { self.outputs }
+        }
+
+        fn port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
+            if index == self.hole {
+                return None;
+            }
+            let flagged = if is_input { self.f64_in } else { self.f64_out };
+            Some(AudioPortInfo {
+                id: index,
+                name: String::new(),
+                flags: if flagged & (1 << index) != 0 {
+                    CLAP_AUDIO_PORT_SUPPORTS_64BITS
+                } else {
+                    0
+                },
+                channel_count: index + 1,
+                port_type: PortKind::Unspecified,
+                in_place_pair: u32::MAX,
+            })
+        }
+    }
+
     const fn all(n: u32) -> u32 {
         (1 << n) - 1
     }
 
-    /// Configures the stub and runs `f` under [`LAYOUT_LOCK`], so the store and
-    /// the read that follows it cannot interleave with another test's.
-    ///
-    /// The lock is taken poison-tolerant: a failing assertion inside `f` panics
-    /// with the guard held, and propagating that as a `PoisonError` would turn
-    /// one real failure into misleading ones in the other tests.
-    fn with_stub<R>(stub: Stub, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
-        let _guard = LAYOUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        COUNT_IN.store(stub.inputs, Ordering::SeqCst);
-        COUNT_OUT.store(stub.outputs, Ordering::SeqCst);
-        HOLE.store(stub.hole, Ordering::SeqCst);
-        F64_IN.store(stub.f64_in, Ordering::SeqCst);
-        F64_OUT.store(stub.f64_out, Ordering::SeqCst);
-        let ext = clap_plugin_audio_ports {
-            count: Some(stub_count),
-            get: Some(stub_get),
-        };
-        f(&ext)
-    }
-
-    /// `count` ports on each side, a hole at `hole`, no 64-bit flags.
-    fn with_layout<R>(count: u32, hole: u32, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
-        with_stub(
-            Stub {
-                inputs: count,
-                outputs: count,
-                hole,
-                f64_in: 0,
-                f64_out: 0,
-            },
-            f,
-        )
+    fn with_layout(count: u32, hole: u32) -> Stub {
+        Stub {
+            inputs: count,
+            outputs: count,
+            hole,
+            f64_in: 0,
+            f64_out: 0,
+        }
     }
 
     fn f64_support(stub: Stub) -> bool {
-        with_stub(stub, |ext| check_f64_support(std::ptr::null(), ext))
+        check_f64_support(&stub)
     }
 
     /// Baseline — without it, dropping all ports unconditionally would satisfy
     /// the truncation assertions below.
     #[test]
     fn no_hole_reports_every_port() {
-        let channels = with_layout(4, u32::MAX, |ext| {
-            port_channels(std::ptr::null(), ext, false)
-        });
+        let channels = port_channels(&with_layout(4, u32::MAX), false);
         // The stub leaves `port_type` null, so each layout is built from the
         // reported width alone — 1..=4 in port order.
         assert_eq!(
@@ -534,7 +327,7 @@ mod enumeration_hole_tests {
     /// `[1, 2, 4]` — port 3's width at index 2.
     #[test]
     fn hole_truncates_the_port_list() {
-        let channels = with_layout(4, 2, |ext| port_channels(std::ptr::null(), ext, false));
+        let channels = port_channels(&with_layout(4, 2), false);
         assert_eq!(
             channels.as_slice(),
             [ChannelLayout::MONO, ChannelLayout::STEREO],
@@ -547,7 +340,7 @@ mod enumeration_hole_tests {
     /// A hole at index 0 leaves nothing describable.
     #[test]
     fn hole_at_zero_yields_no_ports() {
-        let channels = with_layout(4, 0, |ext| port_channels(std::ptr::null(), ext, false));
+        let channels = port_channels(&with_layout(4, 0), false);
         assert!(channels.is_empty());
     }
 

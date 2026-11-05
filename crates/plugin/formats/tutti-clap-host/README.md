@@ -20,7 +20,8 @@ into a [`ClapProcessor<T>`][`ClapProcessor`], the realtime half, where
 [`process`][`ClapProcessor::process`] lives, and a [`ClapController`], the
 main-thread half, which derefs to [`ClapLoaded`] so the whole control surface
 stays reachable while audio runs. Both halves hold one plugin instance; the
-reasoning for that is on the crate's private shell. They implement the shared
+reasoning for that is on `tutti_clap_ffi::Plugin`, which owns the instance and
+hands the Processor its audio-thread half. They implement the shared
 `Loaded`, `Processor` and `Controller` traits of `tutti-plugin-types`, which is
 what `Lifecycle` drives.
 
@@ -207,12 +208,13 @@ reads it under that claim.
 ### Why the halves may share one instance
 
 The Processor calls only the audio-side entries (`start_processing`, `process`,
-`stop_processing`, `reset`), through its own copy of the plugin pointer, under the
+`stop_processing`, `reset`), through its own audio-thread handle (`tutti_clap_ffi::AudioSide`), under the
 `[audio-thread]` claim; the Controller calls only the main-thread set, through
 the `ClapLoaded` it holds. CLAP annotates every entry with its thread, and the
 two sets are the ones a host calls concurrently. The plugin is destroyed on the
 main thread only, by the Controller's drop, which retires the activation first.
-The argument, clause by clause, is on the private `Shell`.
+The argument, clause by clause, is on `tutti_clap_ffi::Plugin`; this crate
+holds no `unsafe` of its own (`#![forbid(unsafe_code)]`).
 
 A parameter written to a [`ClapController`] does not call across: it is queued
 in an edit ring, and the Processor drains it at the head of its next block into

@@ -1,6 +1,4 @@
-//! The panic guard the `extern "C"` host callbacks run their bodies in
-//! (all but the ones that only return a constant; `check-guards.sh` lists
-//! them).
+//! The panic guard every `extern "C"` host callback runs its body in.
 //!
 //! A panic unwinding out of an `extern "C"` function aborts the process, which
 //! takes the host (in-process) or the plugin server with it. A callback
@@ -31,7 +29,7 @@ pub(crate) fn guard<R>(fallback: R, f: impl FnOnce() -> R) -> R {
             if !REPORTED.swap(true, Ordering::Relaxed) {
                 let _ = writeln!(
                     std::io::stderr(),
-                    "[tutti-clap-host] a host callback panicked; answered 'not handled'"
+                    "[tutti-clap-ffi] a host callback panicked; answered 'not handled'"
                 );
             }
             fallback
@@ -45,8 +43,7 @@ pub(crate) fn guard<R>(fallback: R, f: impl FnOnce() -> R) -> R {
 /// to run all its tasks itself, but a panic can come after some already ran
 /// (or while a pool participant is still inside the job), which would run a
 /// task twice or leave one racing. Nothing before the pool runs can panic;
-/// a panic after it is not recoverable, so it aborts, as it did before the
-/// guards.
+/// a panic after it is not recoverable, so it aborts.
 pub(crate) fn or_abort<R>(f: impl FnOnce() -> R) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(r) => r,
@@ -54,13 +51,12 @@ pub(crate) fn or_abort<R>(f: impl FnOnce() -> R) -> R {
             std::mem::forget(payload);
             let _ = writeln!(
                 std::io::stderr(),
-                "[tutti-clap-host] a panic inside clap.thread-pool request_exec; aborting"
+                "[tutti-clap-ffi] a panic inside clap.thread-pool request_exec; aborting"
             );
             std::process::abort()
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::guard;

@@ -1,14 +1,10 @@
 //! The audio path of a [`ClapProcessor`]: one block through the plugin.
 
 use super::ClapProcessor;
-use super::config::{AudioScratch, PortLayout, ProcessScratch};
+use super::config::AudioScratch;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::host::AudioThreadClaim;
-use crate::types::{
-    AudioBuffer, ChannelLayout, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo,
-};
-use clap_sys::audio_buffer::clap_audio_buffer;
+use crate::types::{AudioBuffer, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
     CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO,
@@ -16,13 +12,9 @@ use clap_sys::events::{
     CLAP_TRANSPORT_IS_RECORDING, clap_event_header, clap_event_transport,
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
-use clap_sys::process::{
-    CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process,
-    clap_process_status,
-};
-use std::ptr;
-use std::sync::Arc;
+use clap_sys::process::{CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL, clap_process_status};
 use std::sync::atomic::Ordering;
+use tutti_clap_ffi::{ProcessCall, ProcessError};
 use tutti_plugin_types::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
@@ -98,159 +90,25 @@ pub struct ClapProcessContext<'a> {
     pub transport: Option<&'a TransportInfo>,
 }
 
-/// Trait abstracting over f32/f64 for CLAP audio buffer construction.
+/// The two sample widths a CLAP activation runs at, `f32` and `f64`.
 ///
-/// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields.
-/// Each implementation populates the correct field and nulls the other.
-pub trait ClapSample: tutti_plugin_types::Sample {
-    /// Whether this sample type needs the plugin to advertise 64-bit support.
-    /// `activate` refuses when it does and the plugin does not.
+/// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields; the
+/// FFI crate fills the right one ([`tutti_clap_ffi::Sample`]), and this trait
+/// only names which width needs the plugin's 64-bit support.
+pub trait ClapSample: tutti_plugin_types::Sample + tutti_clap_ffi::Sample {
+    /// Whether this width needs every port to advertise 64-bit support.
     fn requires_f64() -> bool;
-
-    /// Constructs a `clap_audio_buffer` from a base pointer into a channel-
-    /// pointer array (`data32` / `data64` selected per sample type).
-    fn make_port_buffer(ptrs_base: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
-
-    /// The channel-pointer array (`data32` / `data64`) matching this sample
-    /// type, or null if the buffer carries the other precision.
-    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut Self;
 }
 
 impl ClapSample for f32 {
     fn requires_f64() -> bool {
         false
     }
-
-    fn make_port_buffer(ptrs_base: *mut *mut f32, channel_count: u32) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: ptrs_base,
-            data64: ptr::null_mut(),
-            channel_count,
-            latency: 0,
-            constant_mask: 0,
-        }
-    }
-
-    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut f32 {
-        buf.data32
-    }
 }
 
 impl ClapSample for f64 {
     fn requires_f64() -> bool {
         true
-    }
-
-    fn make_port_buffer(ptrs_base: *mut *mut f64, channel_count: u32) -> clap_audio_buffer {
-        clap_audio_buffer {
-            data32: ptr::null_mut(),
-            data64: ptrs_base,
-            channel_count,
-            latency: 0,
-            constant_mask: 0,
-        }
-    }
-
-    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut f64 {
-        buf.data64
-    }
-}
-
-/// Zeros the first `num_samples` of every channel of a CLAP output buffer.
-/// Used on `CLAP_PROCESS_ERROR` so undefined plugin output never leaks out.
-///
-/// SAFETY: the channel pointers were populated in `refill_port_buffers` from
-/// the caller's output slices (or scratch pads), each valid for at least
-/// `num_samples` frames (the block-size guard rejects oversized blocks).
-fn zero_clap_output<T: ClapSample>(buf: &clap_audio_buffer, num_samples: u32) {
-    let ptrs_base = T::channel_ptrs(buf);
-    if ptrs_base.is_null() {
-        return;
-    }
-    for ch in 0..buf.channel_count as usize {
-        unsafe {
-            let ch_ptr = *ptrs_base.add(ch);
-            if !ch_ptr.is_null() {
-                ptr::write_bytes(ch_ptr, 0, num_samples as usize);
-            }
-        }
-    }
-}
-
-/// Populate a [`ProcessScratch`]'s `input_ptrs` / `output_ptrs` / `*_bufs`
-/// for the current process call. Every vector was sized in `activate()` so
-/// this reuses capacity without allocating — `clear` + `push` only.
-///
-/// Channel pool layout: `channels[0..input_channels_total]` serves the
-/// input side; `channels[input_channels_total..]` serves outputs.
-fn refill_port_buffers<T: ClapSample>(
-    scratch: &mut ProcessScratch<T>,
-    caller_input_ptrs: &[*mut T],
-    caller_output_ptrs: &[*mut T],
-    input_ports: &[ChannelLayout],
-    output_ports: &[ChannelLayout],
-) {
-    let wanted_in: usize = input_ports.iter().map(|c| c.count() as usize).sum();
-    let wanted_out: usize = output_ports.iter().map(|c| c.count() as usize).sum();
-
-    scratch.input_ptrs.clear();
-    scratch.output_ptrs.clear();
-    scratch.input_bufs.clear();
-    scratch.output_bufs.clear();
-
-    // Inputs: caller's channel pointers first, then zero-filled pad from
-    // the input half of the channel pool.
-    let caller_in_used = caller_input_ptrs.len().min(wanted_in);
-    scratch
-        .input_ptrs
-        .extend_from_slice(&caller_input_ptrs[..caller_in_used]);
-    let mut pool_idx = caller_in_used;
-    while scratch.input_ptrs.len() < wanted_in {
-        // Pool index stays within the input half (0..wanted_in).
-        let ch = &mut scratch.channels[pool_idx];
-        ch.fill(T::default());
-        scratch.input_ptrs.push(ch.as_mut_ptr());
-        pool_idx += 1;
-    }
-
-    // Outputs: caller's pointers + pad from the output half of the pool.
-    let caller_out_used = caller_output_ptrs.len().min(wanted_out);
-    scratch
-        .output_ptrs
-        .extend_from_slice(&caller_output_ptrs[..caller_out_used]);
-    let output_pool_base = wanted_in;
-    let mut pool_idx = output_pool_base + caller_out_used;
-    while scratch.output_ptrs.len() < wanted_out {
-        let ch = &mut scratch.channels[pool_idx];
-        ch.fill(T::default());
-        scratch.output_ptrs.push(ch.as_mut_ptr());
-        pool_idx += 1;
-    }
-
-    // Build per-port clap_audio_buffer descriptors as slices into the
-    // ptr arrays. The slice pointers remain valid because `input_ptrs` /
-    // `output_ptrs` have frozen capacity (set in `activate()`).
-    // `make_port_buffer` writes `clap_audio_buffer::channel_count`, a C ABI
-    // field, so the layout degrades back to a raw `u32` here and nowhere
-    // earlier.
-    let input_ptrs_base = scratch.input_ptrs.as_mut_ptr();
-    let mut offset = 0usize;
-    for port in input_ports {
-        let ch_count = u32::from(port.count());
-        let base = unsafe { input_ptrs_base.add(offset) };
-        scratch.input_bufs.push(T::make_port_buffer(base, ch_count));
-        offset += ch_count as usize;
-    }
-
-    let output_ptrs_base = scratch.output_ptrs.as_mut_ptr();
-    let mut offset = 0usize;
-    for port in output_ports {
-        let ch_count = u32::from(port.count());
-        let base = unsafe { output_ptrs_base.add(offset) };
-        scratch
-            .output_bufs
-            .push(T::make_port_buffer(base, ch_count));
-        offset += ch_count as usize;
     }
 }
 
@@ -406,25 +264,13 @@ impl<T: ClapSample> ClapProcessor<T> {
         note_expressions: &[ClapNoteExpression],
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // CLAP allows `process` only while active, and the Controller's drop
-        // ends that. Refuse the block before anything else touches the plugin or
-        // the scratch: one flag read, no FFI, no allocation.
-        if self.shell.retired.load(Ordering::Acquire) {
+        // Cheap early out; `AudioSide::process` checks again under the claim.
+        if self.audio_side.is_retired() {
             return Err(ClapError::NotActive);
         }
 
         let num_samples = buffer.num_samples as u32;
 
-        // The scratch channel buffers were sized to `max_frames` in
-        // `activate()`; `do_process` passes `num_samples` as `frames_count`.
-        // A block larger than `max_frames` would make the plugin read/write
-        // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
-        // just a compare). Callers that legitimately need a bigger block must
-        // activate again for a larger block off the audio thread.
-        // The error carries its two numbers as fields rather than `format!`ing
-        // a `String`: a host driving a too-large block drives it again next
-        // block, so the allocation would repeat. `Display` renders the sentence
-        // off-thread.
         if num_samples > self.max_frames {
             return Err(ClapError::BlockTooLarge {
                 requested: num_samples,
@@ -432,32 +278,26 @@ impl<T: ClapSample> ClapProcessor<T> {
             });
         }
 
-        // Refill the pooled input event list in place. `clear()` keeps the
-        // heap capacity reserved in `activate()`; the subsequent `add_*`
-        // calls push into that capacity without touching the allocator
-        // (steady state — first call past the reserve cap will allocate).
         self.scratch.input_events.clear();
         if !midi_events.is_empty() {
             self.scratch.input_events.add_midi_events(midi_events);
         }
+        // The Controller's parameter edits go in first, at time 0, so where an
+        // edit and the block's automation set one parameter at one time the
+        // automation has the last word. The range table is lent once for the
+        // block (never parked), and the edits are denormalized against it.
         {
-            // Lent once per block and let go before the plugin is called, so it
-            // pins nothing across blocks. The MIDI is staged above; then the
-            // edits, at the head of the block, and the automation after them.
-            // The list is sorted by time with a stable order, so where an edit
-            // and the automation set one parameter at one time the automation
-            // has the last word.
             let table = self.ranges.lend();
             let input_events = &mut self.scratch.input_events;
-            // Where the edits start: a reset takes back the ones before it.
             let edits_from = input_events.events.len();
             self.drain.drain(|edit| match edit {
                 tutti_plugin_types::Edit::Param { id, value } => {
                     input_events.add_param_edit(id.get(), value.get(), &table.ranges, table.claims);
                 }
+                // The Controller reset the stream (a state or preset load): the
+                // edits queued before it, which this block already took, are not
+                // to be sent.
                 tutti_plugin_types::Edit::Reset => input_events.events.truncate(edits_from),
-                // An edit this host does not know is dropped; the drain counts
-                // what cannot decode, and a new variant is a new host's to add.
                 _ => {}
             });
             if !param_changes.is_empty() {
@@ -469,199 +309,79 @@ impl<T: ClapSample> ClapProcessor<T> {
                 .input_events
                 .add_note_expressions(note_expressions);
         }
-        // Bound every event time to this block before handing the list to
-        // the plugin — `time` is a sample index the plugin will use to split
-        // the buffer, so an out-of-range value is an OOB access inside the
-        // plugin. Clamp before sorting so the ordering reflects the times the
-        // plugin actually sees.
+        // A host-supplied offset past the block is clamped to its last sample,
+        // and the list is put in time order: CLAP requires both.
         self.scratch.input_events.clamp_times(num_samples);
         self.scratch.input_events.sort_by_time();
 
-        // Output list starts empty each block; the plugin's `try_push`
-        // callback fills it during `process_fn`.
         self.scratch.output_events.clear();
 
-        // Populate the pre-allocated scratch in place. We need to read
-        // `self.ports` while mutating `self.scratch.process`; the two
-        // fields are disjoint, so we split the borrow through a raw pointer.
-        //
-        // SAFETY: `ports_ptr` and the `process` scratch borrow come from
-        // disjoint fields of `*self`. We don't mutate `ports` and we don't
-        // reborrow `self` for the duration of the scratch mutation.
-        let ports_ptr: *const PortLayout = &self.ports;
-        let scratch = &mut self.scratch.process;
-
-        // Pooled vectors rather than per-block small-vector locals (16 pointers
-        // inline, then the heap), which spilled to the heap every block at 17+ channels a side. `clear`
-        // keeps the capacity `activate()` reserved.
-        scratch.caller_input_ptrs.clear();
-        scratch
-            .caller_input_ptrs
-            .extend(buffer.inputs.iter().map(|s| s.as_ptr() as *mut T));
-        scratch.caller_output_ptrs.clear();
-        scratch
-            .caller_output_ptrs
-            .extend(buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()));
-
-        // `refill_port_buffers` takes the caller arrays by shared slice while
-        // mutating the rest of the scratch, so hand it raw slices over the two
-        // pooled vectors.
-        //
-        // SAFETY: the pools are disjoint fields of `*scratch` from everything
-        // `refill_port_buffers` writes (`input_ptrs`, `output_ptrs`,
-        // `input_bufs`, `output_bufs`, `channels`), and nothing on that path
-        // touches them — so the slices stay valid and unaliased for the call.
-        let caller_in_ptr: *const [*mut T] = scratch.caller_input_ptrs.as_slice();
-        let caller_out_ptr: *const [*mut T] = scratch.caller_output_ptrs.as_slice();
-        unsafe {
-            refill_port_buffers(
-                scratch,
-                &*caller_in_ptr,
-                &*caller_out_ptr,
-                &(*ports_ptr).inputs,
-                &(*ports_ptr).outputs,
-            );
-        }
-
-        // Grab raw slice pointers into the scratch bufs; the vectors have
-        // frozen capacity so the pointers stay valid through `do_process`.
-        let audio_inputs_ptr: *mut [clap_audio_buffer] = scratch.input_bufs.as_mut_slice();
-        let audio_outputs_ptr: *mut [clap_audio_buffer] = scratch.output_bufs.as_mut_slice();
-
-        // SAFETY: `scratch.input_bufs` / `output_bufs` capacities were frozen
-        // in `activate()`; nothing on the do_process path resizes them, so
-        // the raw slices remain valid for the call's duration.
-        unsafe {
-            self.do_process(
-                &mut *audio_inputs_ptr,
-                &mut *audio_outputs_ptr,
-                num_samples,
-                transport,
-            )
-        }
+        self.do_process(buffer, num_samples, transport)
     }
 
+    /// Hands the block to the plugin through the FFI crate, which binds the
+    /// channel tables, takes the audio claim, starts processing if need be,
+    /// serves a `clap.thread-pool` request for exactly the span of the call and
+    /// zeroes the outputs on `CLAP_PROCESS_ERROR`.
     fn do_process(
         &mut self,
-        audio_inputs: &mut [clap_audio_buffer],
-        audio_outputs: &mut [clap_audio_buffer],
+        buffer: &mut AudioBuffer<T>,
         num_samples: u32,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // Take the `[audio-thread]` role for this whole block. The claim
-        // (a) publishes THIS OS thread as the audio thread — correct even when
-        // a host thread pool runs successive blocks on different threads —
-        // (b) makes `is_main_thread()` answer false here, so the two symbolic
-        // roles stay mutually exclusive, and (c) is the real serialization the
-        // spec's "must not be called concurrently to process()" demands: an
-        // active `flush_params`, `start_processing` or `stop_processing` on any
-        // other thread blocks until this block returns.
-        //
-        // Steady state is an uncontended lock/unlock and an Arc clone (a
-        // relaxed increment, no allocation) per block. `start_processing` runs
-        // under the same claim rather than taking its own.
-        // Clone the Arc into a local so the claim borrows the local, not
-        // `self` (the rest of this function needs `&mut self`). An Arc clone is
-        // a relaxed atomic increment — no allocation, RT-safe.
-        let host_state = Arc::clone(&self.host_state);
-        let claim = host_state.claim_audio_thread();
-        // The Controller sets `retired` before it takes the claim to destroy the
-        // plugin, so a Processor that holds the claim and still finds it clear
-        // has the plugin to itself until it lets go.
-        if self.shell.retired.load(Ordering::Acquire) {
-            return Err(ClapError::NotActive);
-        }
-        self.ensure_processing(&claim)?;
-
         let clap_transport = transport.map(build_clap_transport);
-        let transport_ptr = clap_transport
-            .as_ref()
-            .map(|t| t as *const _)
-            .unwrap_or(ptr::null());
-
-        // `steady_time` is a monotonic sample counter, not derived from
-        // transport seconds. Pass the current value, then advance by the block
-        // size. It resets to 0 on stop_processing/reactivate.
         let steady_time = self.scratch.steady_time;
 
-        // Build FFI pointers into the pooled event lists. The plugin's
-        // `process` runs synchronously and must not retain either pointer
-        // past return, so reading `&self.scratch.input_events` and
-        // `&mut self.scratch.output_events` through their raw forms here is sound.
-        let in_events = self.scratch.input_events.as_raw();
-        let out_events = self.scratch.output_events.as_raw_mut();
-
-        let process_data = clap_process {
-            steady_time,
-            frames_count: num_samples,
-            transport: transport_ptr,
-            audio_inputs: audio_inputs.as_mut_ptr(),
-            audio_outputs: audio_outputs.as_mut_ptr(),
-            audio_inputs_count: audio_inputs.len() as u32,
-            audio_outputs_count: audio_outputs.len() as u32,
-            in_events,
-            out_events,
-        };
-
-        // What the plugin's `clap.thread-pool` requests run on, for exactly
-        // the span of its `process` call (`host/thread_pool.rs`). On this
-        // stack, so serving it allocates nothing.
-        // Lent for this block only, so a pool the Controller replaces is seen at
-        // the next one and the old pool is let go on the control side.
         let pool = self.pool.lend();
-        let pool_request = pool.request(&self.host_state, self.plugin.as_ptr());
-        // SAFETY: the plugin is alive (`retired` was clear when the claim was
-        // taken, and the Controller retires it only after recalling this
-        // Processor) and the claim holds the `[audio-thread]` role.
-        let plugin_ref = unsafe { &*self.plugin.as_ptr() };
-        let status = if let Some(process_fn) = plugin_ref.process {
-            let plugin = self.plugin.as_ptr();
-            // SAFETY: the plugin's own `process`, with a `clap_process` that
-            // outlives the call.
-            let call = || unsafe { process_fn(plugin, &process_data) };
-            match &pool_request {
-                Some(request) => request.serve(call),
-                None => call(),
-            }
-        } else {
-            CLAP_PROCESS_CONTINUE
-        };
+        let handle = pool.0.as_ref().map(|snapshot| &snapshot.handle);
+        let AudioScratch {
+            process,
+            input_events,
+            output_events,
+            ..
+        } = &mut self.scratch;
+        let outcome = self.audio_side.process(ProcessCall {
+            scratch: process,
+            inputs: buffer.inputs,
+            outputs: &mut *buffer.outputs,
+            input_ports: &self.input_ports,
+            output_ports: &self.output_ports,
+            frames: num_samples,
+            steady_time,
+            transport: clap_transport.as_ref(),
+            in_events: &*input_events,
+            out_events: output_events,
+            pool: handle,
+        });
         drop(pool);
 
-        // Advance the monotonic counter now that this block was processed.
-        // `saturating_add` keeps it monotone even across a very long session.
-        self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
+        let status = match outcome {
+            Ok(status) => status,
+            Err(ProcessError::Retired) => return Err(ClapError::NotActive),
+            Err(ProcessError::StartFailed) => return Err(ClapError::StartProcessingFailed),
+            Err(ProcessError::BufferTooShort) => return Err(ClapError::BufferTooShort),
+            Err(ProcessError::LayoutMismatch) => return Err(ClapError::LayoutMismatch),
+            Err(ProcessError::BlockTooLarge) => {
+                return Err(ClapError::BlockTooLarge {
+                    requested: num_samples,
+                    max_frames: self.max_frames,
+                });
+            }
+            Err(ProcessError::PluginReturnedError) => {
+                self.scratch.steady_time =
+                    self.scratch.steady_time.saturating_add(num_samples as i64);
+                self.scratch
+                    .last_process_status
+                    .store(clap_sys::process::CLAP_PROCESS_ERROR, Ordering::Relaxed);
+                return Err(ClapError::PluginReturnedError);
+            }
+        };
 
-        // Record the full status (not just ERROR) for
-        // `ClapProcessor::last_process_status` instead of printing it: printing
-        // takes a stderr lock (and formats on the heap) on the audio thread,
-        // and a transition-only guard would not make that rare — a plugin
-        // alternating between two statuses transitions every block, which is
-        // what a reverb tail decaying below the noise floor and being
-        // re-excited does. `Relaxed` suffices —
-        // nothing is ordered against it and the reader wants only the latest
-        // value.
+        self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
         self.scratch
             .last_process_status
             .store(status, Ordering::Relaxed);
 
-        if status == CLAP_PROCESS_ERROR {
-            // On error the plugin's output is undefined — zero the caller's
-            // output channels so no garbage/uninitialised audio leaks out.
-            for buf in audio_outputs.iter() {
-                zero_clap_output::<T>(buf, num_samples);
-            }
-            // Fieldless variant, not `ProcessError(String)`: a plugin returning
-            // ERROR usually returns it every block, so the owned message was a
-            // per-block allocation on the audio thread.
-            return Err(ClapError::PluginReturnedError);
-        }
-
-        // Drain the plugin's output events into the pooled return buffers.
-        // Each `fill_*` clears its destination first. The `RtVec`s have fixed
-        // inline capacity; `out_param_changes` keeps the queues reserved in
-        // `activate()` and is filled within them, never grown. Destructure the
-        // scratch so `output_events` and each return pool are disjoint borrows.
         let AudioScratch {
             output_events,
             out_midi,
@@ -679,42 +399,6 @@ impl<T: ClapSample> ClapProcessor<T> {
             param_changes: &self.scratch.out_param_changes,
             note_expressions: &self.scratch.out_note_expressions,
         })
-    }
-}
-
-impl<T: ClapSample> ClapProcessor<T> {
-    /// Ensures the plugin's `start_processing` has run. Called at the top of
-    /// `process` (and is a no-op once started), so a processor self-starts on
-    /// first use and again after a [`stop`](Self::stop).
-    ///
-    /// # Threading
-    /// CLAP marks `start_processing` `[audio-thread & active & !processing]`.
-    /// The audio-thread is symbolic: any OS thread may take the role provided
-    /// only one holds it at a time, so this runs under an
-    /// [`AudioThreadClaim`]. Under the claim `is_audio_thread()` is `true` and
-    /// `is_main_thread()` is `false` on this thread — no dual identity — and no
-    /// other thread can be inside a `[audio-thread]` plugin call.
-    ///
-    /// `claim` is threaded in by the caller so the RT `do_process` path takes
-    /// the lock **once** per block and covers both `start_processing` and
-    /// `process` with a single claim.
-    pub(crate) fn ensure_processing(&mut self, _claim: &AudioThreadClaim<'_>) -> Result<()> {
-        if self.shell.processing.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
-        // SAFETY: the plugin is alive and the caller holds the claim.
-        let plugin_ref = unsafe { &*self.plugin.as_ptr() };
-        if let Some(start_fn) = plugin_ref.start_processing
-            && !unsafe { start_fn(self.plugin.as_ptr()) }
-        {
-            // Allocation-free: this runs on the audio thread, and a plugin
-            // that refuses to start typically refuses on every block.
-            return Err(ClapError::StartProcessingFailed);
-        }
-
-        self.shell.processing.store(true, Ordering::Relaxed);
-        Ok(())
     }
 }
 
@@ -841,100 +525,5 @@ mod tests {
             build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TIME_SIGNATURE,
             0
         );
-    }
-
-    fn new_scratch<T: Copy + Default>(
-        input_ports: &[ChannelLayout],
-        output_ports: &[ChannelLayout],
-        max_frames: usize,
-    ) -> ProcessScratch<T> {
-        let input_total: usize = input_ports.iter().map(|c| c.count() as usize).sum();
-        let output_total: usize = output_ports.iter().map(|c| c.count() as usize).sum();
-        let mut scratch = ProcessScratch::<T>::new();
-        scratch.resize_for(
-            input_total,
-            output_total,
-            max_frames,
-            input_ports.len(),
-            output_ports.len(),
-        );
-        scratch
-    }
-
-    /// RT regression: once the scratch has been sized in activate(),
-    /// `refill_port_buffers` must only reuse capacity — no heap grow.
-    #[test]
-    fn refill_port_buffers_is_allocation_free() {
-        // main + sidechain stereo
-        let input_ports = [ChannelLayout::STEREO, ChannelLayout::STEREO];
-        let output_ports = [ChannelLayout::STEREO];
-        let max_frames = 512usize;
-        let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
-
-        // Pretend the caller provides 2 input channels and 2 outputs.
-        let mut in_ch_a = [0.0f32; 512];
-        let mut in_ch_b = [0.0f32; 512];
-        let mut out_ch_a = [0.0f32; 512];
-        let mut out_ch_b = [0.0f32; 512];
-        let caller_inputs = [in_ch_a.as_mut_ptr(), in_ch_b.as_mut_ptr()];
-        let caller_outputs = [out_ch_a.as_mut_ptr(), out_ch_b.as_mut_ptr()];
-
-        // Warm up — first call primes the ptr/buf vectors.
-        refill_port_buffers(
-            &mut scratch,
-            &caller_inputs,
-            &caller_outputs,
-            &input_ports,
-            &output_ports,
-        );
-
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..10_000 {
-                refill_port_buffers(
-                    &mut scratch,
-                    &caller_inputs,
-                    &caller_outputs,
-                    &input_ports,
-                    &output_ports,
-                );
-            }
-        });
-    }
-
-    /// Caller supplies fewer channels than the plugin expects (e.g.
-    /// a mono caller on a stereo input): the padded channels are
-    /// taken from the pre-allocated scratch pool, so no alloc either.
-    #[test]
-    fn refill_with_pad_is_allocation_free() {
-        let input_ports = [ChannelLayout::QUAD];
-        let output_ports = [ChannelLayout::STEREO];
-        let max_frames = 256usize;
-        let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
-
-        // Caller only provides 1 input channel and 1 output channel.
-        let mut in_ch = [0.0f32; 256];
-        let mut out_ch = [0.0f32; 256];
-        let caller_inputs = [in_ch.as_mut_ptr()];
-        let caller_outputs = [out_ch.as_mut_ptr()];
-
-        refill_port_buffers(
-            &mut scratch,
-            &caller_inputs,
-            &caller_outputs,
-            &input_ports,
-            &output_ports,
-        );
-
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..1_000 {
-                refill_port_buffers(
-                    &mut scratch,
-                    &caller_inputs,
-                    &caller_outputs,
-                    &input_ports,
-                    &output_ports,
-                );
-            }
-        });
     }
 }

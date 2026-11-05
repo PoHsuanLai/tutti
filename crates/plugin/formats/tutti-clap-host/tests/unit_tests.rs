@@ -15,6 +15,10 @@ use tutti_clap_host::{
 };
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
 
+mod support;
+#[allow(unused_imports)]
+use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
+
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──
 //
 // clap-host's `ClapEvent::{from,to}_midi_event` bridge between VST3/CLAP's

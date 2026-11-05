@@ -8,35 +8,31 @@
 //! consumes it and returns a processor and a controller that share one plugin
 //! instance. The processor only renders; the controller derefs to
 //! `ClapLoaded`, so every parameter, editor and state call stays reachable
-//! while audio runs. The soundness argument for sharing the instance is on
-//! the private `Shell`.
+//! while audio runs. The soundness argument for sharing the instance is the
+//! FFI crate's (`tutti_clap_ffi::Plugin`): its main-thread half is the
+//! `ClapLoaded`'s, its audio half is the processor's, and neither can name an
+//! entry of the other.
 
-// Internal layout: `entry` (once-per-library `clap_entry` init registry),
-// `load` (construction), `lifecycle` (metadata, activation), `shell` (the
-// shared instance), `audio` (the processor's process path), `processor` and
-// `controller` (the two halves and their trait impls), `control` (the control
-// surface both implement), and per-extension `impl ClapLoaded` blocks
-// (`params`, `ports`, `state`, `polling`, `undo`, `resources`).
+// Internal layout: `load` (construction), `lifecycle` (metadata, activation),
+// `audio` (the processor's process path), `processor` and `controller` (the
+// two halves and their trait impls), `control` (the control surface both
+// implement), and per-extension `impl ClapLoaded` blocks (`params`, `ports`,
+// `state`, `polling`, `undo`, `resources`). Every call into the plugin is a
+// method of `tutti_clap_ffi`; this crate holds none of the `unsafe`.
 
 mod audio;
 mod config;
 mod control;
 mod controller;
-mod descriptor;
-mod entry;
-mod ext;
-mod extensions;
 mod lifecycle;
 mod load;
 mod params;
-mod plugin_ptr;
 mod polling;
 mod ports;
 mod processor;
 // Plugin resource-directory extension — speculative, gated behind `clap-extras`.
 #[cfg(feature = "clap-extras")]
 mod resources;
-mod shell;
 mod state;
 mod thread_pool;
 // Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
@@ -51,13 +47,11 @@ pub use load::LoadOptions;
 pub use params::ParamMapping;
 pub use processor::{ClapProcessor, ClapProcessorAny};
 
-use crate::host::{ClapHost, HostState};
+use crate::host::HostState;
 use crate::types::PluginInfo;
 use config::{AudioConfig, LifecycleFlags, PortLayout};
-use entry::EntryGuard;
-use extensions::ExtensionCache;
-use plugin_ptr::PluginPtr;
 use std::sync::Arc;
+use tutti_clap_ffi::Plugin;
 use tutti_plugin_types::PluginDescriptor;
 
 /// A loaded, initialized CLAP plugin that is **not** processing audio.
@@ -69,16 +63,11 @@ use tutti_plugin_types::PluginDescriptor;
 /// get a [`ClapProcessor`] that can render; `process` does not exist here, and
 /// the type system enforces that you activate first.
 pub struct ClapLoaded {
-    // IMPORTANT: Drop order matters! Fields drop top-to-bottom.
-    // `plugin` drops first so the plugin can still access the host while
-    // destroy() runs; `_entry_guard` drops before `_library` so deinit()
-    // runs while the library is still mapped.
-    pub(crate) plugin: PluginPtr,
-    pub(crate) _entry_guard: EntryGuard,
-    pub(crate) _library: libloading::Library,
-    pub(crate) _host: Box<ClapHost>,
+    /// The main-thread half of the instance. Dropping it deactivates and
+    /// destroys the plugin, then drops the host vtable and unloads the
+    /// library, in that order.
+    pub(crate) plugin: Plugin,
     pub(crate) host_state: Arc<HostState>,
-    pub(crate) extensions: ExtensionCache,
     pub(crate) info: PluginInfo,
     /// The plugin's identity in the shared vocabulary, with whether it has an
     /// editor measured, which is done on first use and not at load: the
@@ -97,8 +86,7 @@ pub struct ClapLoaded {
 impl std::fmt::Debug for ClapLoaded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClapLoaded")
-            .field("_library", &self._library)
-            .field("_host", &self._host)
+            .field("plugin", &self.plugin)
             .field("host_state", &self.host_state)
             .field("info", &self.info)
             .field("audio", &self.audio)
@@ -106,157 +94,5 @@ impl std::fmt::Debug for ClapLoaded {
             .field("flags", &self.flags)
             .field("thread_pool", &self.thread_pool)
             .finish_non_exhaustive()
-    }
-}
-
-// SAFETY: a CLAP plugin is called from one thread at a time through `&mut`, and
-// the only state shared with the audio side is the host's atomics.
-unsafe impl Send for ClapLoaded {}
-
-#[cfg(all(test, feature = "clap-extras"))]
-mod tests {
-    use super::polling::{context_menu_builder_add_item, context_menu_builder_supports};
-    use crate::types::ContextMenuItem;
-    use clap_sys::ext::context_menu::{
-        CLAP_CONTEXT_MENU_ITEM_ENTRY, CLAP_CONTEXT_MENU_ITEM_SEPARATOR, clap_context_menu_builder,
-        clap_context_menu_entry,
-    };
-    use std::ffi::c_void;
-
-    #[test]
-    fn test_context_menu_builder_null_builder() {
-        unsafe {
-            let result = context_menu_builder_add_item(
-                std::ptr::null(),
-                CLAP_CONTEXT_MENU_ITEM_SEPARATOR,
-                std::ptr::null(),
-            );
-            assert!(!result);
-        }
-    }
-
-    #[test]
-    fn test_context_menu_builder_null_ctx() {
-        let builder = clap_context_menu_builder {
-            ctx: std::ptr::null_mut(),
-            add_item: Some(context_menu_builder_add_item),
-            supports: Some(context_menu_builder_supports),
-        };
-        unsafe {
-            let result = context_menu_builder_add_item(
-                &builder,
-                CLAP_CONTEXT_MENU_ITEM_SEPARATOR,
-                std::ptr::null(),
-            );
-            assert!(!result);
-        }
-    }
-
-    #[test]
-    fn test_context_menu_builder_separator() {
-        let mut items: Vec<ContextMenuItem> = Vec::new();
-        let builder = clap_context_menu_builder {
-            ctx: &mut items as *mut Vec<ContextMenuItem> as *mut c_void,
-            add_item: Some(context_menu_builder_add_item),
-            supports: Some(context_menu_builder_supports),
-        };
-        unsafe {
-            let result = context_menu_builder_add_item(
-                &builder,
-                CLAP_CONTEXT_MENU_ITEM_SEPARATOR,
-                std::ptr::null(),
-            );
-            assert!(result);
-        }
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], ContextMenuItem::Separator));
-    }
-
-    #[test]
-    fn test_context_menu_builder_entry_null_data() {
-        let mut items: Vec<ContextMenuItem> = Vec::new();
-        let builder = clap_context_menu_builder {
-            ctx: &mut items as *mut Vec<ContextMenuItem> as *mut c_void,
-            add_item: Some(context_menu_builder_add_item),
-            supports: Some(context_menu_builder_supports),
-        };
-        unsafe {
-            let result = context_menu_builder_add_item(
-                &builder,
-                CLAP_CONTEXT_MENU_ITEM_ENTRY,
-                std::ptr::null(),
-            );
-            assert!(!result);
-        }
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_context_menu_builder_entry_with_data() {
-        let mut items: Vec<ContextMenuItem> = Vec::new();
-        let builder = clap_context_menu_builder {
-            ctx: &mut items as *mut Vec<ContextMenuItem> as *mut c_void,
-            add_item: Some(context_menu_builder_add_item),
-            supports: Some(context_menu_builder_supports),
-        };
-
-        let label = std::ffi::CString::new("Test Entry").unwrap();
-        let entry = clap_context_menu_entry {
-            label: label.as_ptr(),
-            is_enabled: true,
-            action_id: 42,
-        };
-
-        unsafe {
-            let result = context_menu_builder_add_item(
-                &builder,
-                CLAP_CONTEXT_MENU_ITEM_ENTRY,
-                &entry as *const clap_context_menu_entry as *const c_void,
-            );
-            assert!(result);
-        }
-        assert_eq!(items.len(), 1);
-        match &items[0] {
-            ContextMenuItem::Entry {
-                label,
-                is_enabled,
-                action_id,
-            } => {
-                assert_eq!(label, "Test Entry");
-                assert!(*is_enabled);
-                assert_eq!(*action_id, 42);
-            }
-            _ => panic!("Expected Entry"),
-        }
-    }
-
-    #[test]
-    fn test_context_menu_builder_unknown_type() {
-        let mut items: Vec<ContextMenuItem> = Vec::new();
-        let builder = clap_context_menu_builder {
-            ctx: &mut items as *mut Vec<ContextMenuItem> as *mut c_void,
-            add_item: Some(context_menu_builder_add_item),
-            supports: Some(context_menu_builder_supports),
-        };
-        unsafe {
-            let result = context_menu_builder_add_item(&builder, 9999, std::ptr::null());
-            assert!(!result);
-        }
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn test_context_menu_builder_supports() {
-        unsafe {
-            assert!(context_menu_builder_supports(
-                std::ptr::null(),
-                CLAP_CONTEXT_MENU_ITEM_ENTRY
-            ));
-            assert!(context_menu_builder_supports(
-                std::ptr::null(),
-                CLAP_CONTEXT_MENU_ITEM_SEPARATOR
-            ));
-            assert!(!context_menu_builder_supports(std::ptr::null(), 9999));
-        }
     }
 }

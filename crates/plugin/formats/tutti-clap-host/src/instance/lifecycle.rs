@@ -13,12 +13,12 @@ use super::ClapLoaded;
 use super::config::{AudioScratch, RangeTable};
 use super::controller::ClapController;
 use super::processor::{ClapProcessor, ProcessorParts};
-use super::shell::{RawPlugin, Shell};
 use super::thread_pool::PoolCell;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_clap_ffi::ActivateError;
 use tutti_plugin_types::{PluginError, Prepare, Refused, Request, taken};
 use tutti_types::ArcLend;
 
@@ -167,12 +167,13 @@ impl ClapLoaded {
         let table = self.read_param_ranges();
         let max_frames = self.audio.max_frames as usize;
         let mut scratch = AudioScratch::<T>::new();
+        let port_channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
+            ports.iter().map(|c| u32::from(c.count())).collect()
+        };
         scratch.process.resize_for(
-            self.ports.input_channel_total(),
-            self.ports.output_channel_total(),
+            &port_channels(&self.ports.inputs),
+            &port_channels(&self.ports.outputs),
             max_frames,
-            self.ports.inputs.len(),
-            self.ports.outputs.len(),
         );
 
         // Pre-allocate the growable event scratch so steady-state `process`
@@ -206,24 +207,28 @@ impl ClapLoaded {
             .reserve_exact(super::config::INPUT_NOTE_EXPRESSIONS);
 
         let ranges = Arc::new(ArcLend::new(table));
-        let plugin = RawPlugin::new(self.plugin.as_ptr());
-        let host_state = self.host_state.clone();
         let pools = Arc::new(ArcLend::new(PoolCell(self.pool_snapshot())));
-        let ports = self.ports.clone();
-        let shell = Arc::new(Shell::new(self));
+        let channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
+            ports.iter().map(|c| u32::from(c.count())).collect()
+        };
+        let input_ports = channels(&self.ports.inputs);
+        let output_ports = channels(&self.ports.outputs);
+        let audio_side = self
+            .plugin
+            .audio_side()
+            .expect("an activated plugin has an audio half");
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
         let processor = ClapProcessor::new(ProcessorParts {
-            shell: shell.clone(),
-            plugin,
-            host_state,
+            audio_side,
             pool: pools.reader(),
-            ports,
+            input_ports,
+            output_ports,
             max_frames: max_frames as u32,
             scratch,
             ranges: ranges.reader(),
             drain,
         });
-        let controller = ClapController::new(shell, sink, ranges, pools);
+        let controller = ClapController::new(self, sink, ranges, pools);
         Ok((processor, controller))
     }
 
@@ -258,25 +263,21 @@ impl ClapLoaded {
     /// Calls the plugin's `activate` FFI. Shared by `activate_typed` and the
     /// transitions built on it.
     pub(crate) fn activate_plugin(&mut self) -> Result<()> {
-        let plugin_ref = unsafe { self.plugin.as_ref() };
-        let activate_fn = plugin_ref.activate.ok_or(ClapError::NotActive)?;
-        if !unsafe {
-            activate_fn(
-                self.plugin.as_ptr(),
-                self.audio.sample_rate,
-                1,
-                self.audio.max_frames,
-            )
-        } {
+        if let Err(e) = self
+            .plugin
+            .activate(self.audio.sample_rate, 1, self.audio.max_frames)
+        {
             return Err(ClapError::LoadFailed {
                 path: PathBuf::new(),
                 stage: LoadStage::Activation,
-                reason: "Activate failed".to_string(),
+                reason: match e {
+                    ActivateError::ProcessorStillAlive => {
+                        "the audio half of the previous activation is still alive".to_string()
+                    }
+                    ActivateError::Refused => "Activate failed".to_string(),
+                },
             });
         }
-        // The plugin now considers itself active, which changes the thread
-        // contract of every `[active ? audio-thread : main-thread]` method — see
-        // `LifecycleFlags::active`.
         self.flags.active = true;
         // `clap.latency` and `clap.tail` let a plugin call `changed()` from
         // inside `activate`. The figures are read right after every
@@ -303,10 +304,7 @@ impl ClapLoaded {
         if !self.flags.active {
             return;
         }
-        let plugin_ref = unsafe { self.plugin.as_ref() };
-        if let Some(deactivate_fn) = plugin_ref.deactivate {
-            unsafe { deactivate_fn(self.plugin.as_ptr()) };
-        }
+        self.plugin.deactivate();
         self.flags.active = false;
         self.audio.f64_active = false;
     }
@@ -380,8 +378,8 @@ impl Drop for ClapLoaded {
         // go of it), so there is no stop/deactivate to do here.
         self.close_editor();
 
-        // PluginPtr::Drop calls destroy(); EntryGuard::Drop is a no-op;
-        // library unloads last.
+        // The FFI `Plugin`'s drop destroys the instance, then drops the host
+        // vtable; the library unloads last.
     }
 }
 

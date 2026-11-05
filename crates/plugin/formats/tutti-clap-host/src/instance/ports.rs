@@ -2,10 +2,10 @@
 //! surround / ambisonic extensions.
 
 use super::ClapLoaded;
+use super::load::layout_of_port;
 use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortFlags,
-    AudioPortInfo, ChannelLayout, NoteDialect, NoteDialects, NoteName, NotePortInfo,
-    SurroundChannel, VoiceInfo,
+    AudioPortInfo, NoteDialect, NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
 };
 use tutti_types::ChannelTopology;
 // Audio-port *reconfiguration* is speculative (gated); the type it consumes.
@@ -17,22 +17,14 @@ use clap_sys::ext::ambisonic::{
     CLAP_AMBISONIC_NORMALIZATION_SN3D, CLAP_AMBISONIC_ORDERING_ACN, CLAP_AMBISONIC_ORDERING_FUMA,
     clap_ambisonic_config,
 };
-use clap_sys::ext::audio_ports::{CLAP_PORT_MONO, CLAP_PORT_STEREO, clap_audio_port_info};
-use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
-#[cfg(feature = "clap-extras")]
-use clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request;
-use clap_sys::ext::note_name::clap_note_name;
 use clap_sys::ext::note_ports::{
     CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI_MPE,
-    CLAP_NOTE_DIALECT_MIDI2, clap_note_port_info,
+    CLAP_NOTE_DIALECT_MIDI2,
 };
-use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
-use clap_sys::ext::voice_info::{CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES, clap_voice_info};
-use std::ffi::CStr;
+use clap_sys::ext::voice_info::CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
 #[cfg(feature = "clap-extras")]
-use std::ptr;
-
-use crate::cstr_to_string;
+use tutti_clap_ffi::PortConfigRequest;
+use tutti_clap_ffi::chars_to_string;
 
 impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
@@ -43,31 +35,15 @@ impl ClapLoaded {
     /// matched pair of conversions that buys nothing and leaves one concept
     /// with two spellings in one file.
     pub fn audio_port_count(&self, is_input: bool) -> u32 {
-        if self.extensions.audio.ports.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports };
-        match ext.count {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input) },
-            None => 0,
-        }
+        self.plugin.audio_port_count(is_input)
     }
 
     /// Metadata for the audio port at `index`, or `None` if the index is
     /// invalid or the plugin does not implement the extension.
     pub fn audio_port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
-        if self.extensions.audio.ports.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports };
-        let get_fn = ext.get?;
-
-        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index, is_input, &mut info) } {
-            return None;
-        }
-
-        Some(audio_port_info_from_clap(&info))
+        self.plugin
+            .audio_port_info(index, is_input)
+            .map(|info| audio_port_info_from_ffi(&info))
     }
 
     /// Total channel count summed across one side's audio ports.
@@ -101,14 +77,7 @@ impl ClapLoaded {
 
     /// Number of input or output note (MIDI) ports.
     pub fn note_port_count(&self, is_input: bool) -> u32 {
-        if self.extensions.notes.ports.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.notes.ports };
-        match ext.count {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input) },
-            None => 0,
-        }
+        self.plugin.note_port_count(is_input)
     }
 
     /// Whether notes to the first input note port go out as `clap_event_midi`:
@@ -124,22 +93,8 @@ impl ClapLoaded {
 
     /// Metadata for the note port at `index`, including supported dialects.
     pub fn note_port_info(&self, index: u32, is_input: bool) -> Option<NotePortInfo> {
-        if self.extensions.notes.ports.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.notes.ports };
-        let get_fn = ext.get?;
+        let info = self.plugin.note_port_info(index, is_input)?;
 
-        let mut info: clap_note_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index, is_input, &mut info) } {
-            return None;
-        }
-
-        // `ext/note-ports.h:35` types this field as "one value of
-        // clap_note_dialect", so it is matched whole rather than by priority
-        // over a bitfield. Anything else — 0 for a plugin that stated no
-        // preference, or a dialect added after this match — is `None`, not a
-        // dialect this host picked on the plugin's behalf.
         let preferred_dialect = match info.preferred_dialect {
             CLAP_NOTE_DIALECT_CLAP => Some(NoteDialect::Clap),
             CLAP_NOTE_DIALECT_MIDI => Some(NoteDialect::Midi),
@@ -150,7 +105,7 @@ impl ClapLoaded {
 
         Some(NotePortInfo {
             id: info.id,
-            name: unsafe { cstr_to_string(info.name.as_ptr()) },
+            name: chars_to_string(&info.name),
             supported_dialects: NoteDialects::from_bits_truncate(info.supported_dialects),
             preferred_dialect,
         })
@@ -159,32 +114,16 @@ impl ClapLoaded {
     /// Number of predefined port configurations
     /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`) the plugin offers.
     pub fn audio_port_config_count(&self) -> u32 {
-        if self.extensions.audio.ports_config.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_config };
-        match ext.count {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => 0,
-        }
+        self.plugin.audio_ports_config_count()
     }
 
     /// Describes the audio port configuration at `index`.
     pub fn audio_port_config(&self, index: u32) -> Option<AudioPortConfig> {
-        if self.extensions.audio.ports_config.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_config };
-        let get_fn = ext.get?;
-
-        let mut config: clap_audio_ports_config = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index, &mut config) } {
-            return None;
-        }
+        let config = self.plugin.audio_ports_config(index)?;
 
         Some(AudioPortConfig {
             id: config.id,
-            name: unsafe { cstr_to_string(config.name.as_ptr()) },
+            name: chars_to_string(&config.name),
             input_port_count: config.input_port_count,
             output_port_count: config.output_port_count,
             has_main_input: config.has_main_input,
@@ -197,14 +136,9 @@ impl ClapLoaded {
     /// Asks the plugin to switch to a previously reported port configuration.
     /// Returns whether the plugin accepted the request.
     pub fn select_audio_port_config(&mut self, config_id: u32) -> bool {
-        if self.extensions.audio.ports_config.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_config };
-        match ext.select {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), config_id) },
-            None => false,
-        }
+        self.plugin
+            .select_audio_ports_config(config_id)
+            .unwrap_or(false)
     }
 
     /// The `id` of the audio-ports configuration currently active
@@ -217,12 +151,7 @@ impl ClapLoaded {
     /// read its full per-port info via
     /// [`audio_port_config_port_info`](Self::audio_port_config_port_info).
     pub fn current_audio_port_config(&self) -> Option<u32> {
-        if self.extensions.audio.ports_config_info.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_config_info };
-        let current_fn = ext.current_config?;
-        Some(unsafe { current_fn(self.plugin.as_ptr()) })
+        self.plugin.current_audio_ports_config()
     }
 
     /// Full [`AudioPortInfo`] for a single port *within a specific config*
@@ -238,37 +167,14 @@ impl ClapLoaded {
         port_index: u32,
         is_input: bool,
     ) -> Option<AudioPortInfo> {
-        if self.extensions.audio.ports_config_info.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_config_info };
-        let get_fn = ext.get?;
-
-        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe {
-            get_fn(
-                self.plugin.as_ptr(),
-                config_id,
-                port_index,
-                is_input,
-                &mut info,
-            )
-        } {
-            return None;
-        }
-        Some(audio_port_info_from_clap(&info))
+        self.plugin
+            .audio_ports_config_port_info(config_id, port_index, is_input)
+            .map(|info| audio_port_info_from_ffi(&info))
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
     pub fn latency_samples(&self) -> u32 {
-        if self.extensions.system.latency.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.system.latency };
-        match ext.get {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => 0,
-        }
+        self.plugin.latency()
     }
 
     /// Plugin-reported tail length in samples (audio continues after input
@@ -278,94 +184,44 @@ impl ClapLoaded {
     /// above `INT32_MAX` means an infinite tail (`clap/ext/tail.h`), which
     /// `Tail::from_clap_samples` decodes.
     pub fn tail_samples(&self) -> Option<u32> {
-        if self.extensions.system.tail.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.system.tail };
-        ext.get.map(|f| unsafe { f(self.plugin.as_ptr()) })
+        self.plugin.tail()
     }
 
     /// Switches between real-time (`false`) and offline (`true`) rendering
     /// modes per `CLAP_EXT_RENDER`. Returns whether the plugin accepted.
     pub fn set_render_mode(&mut self, offline: bool) -> bool {
-        if self.extensions.system.render.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.system.render };
-        match ext.set {
-            Some(f) => {
-                let mode = if offline {
-                    CLAP_RENDER_OFFLINE
-                } else {
-                    CLAP_RENDER_REALTIME
-                };
-                unsafe { f(self.plugin.as_ptr(), mode) }
-            }
-            None => false,
-        }
+        self.plugin.set_render_offline(offline)
     }
 
     /// Whether the plugin requires a hard real-time environment (e.g. it
     /// talks to hardware). Hosts should avoid running such plugins offline.
     #[must_use]
     pub fn has_hard_realtime_requirement(&self) -> bool {
-        if self.extensions.system.render.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.system.render };
-        match ext.has_hard_realtime_requirement {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => false,
-        }
+        self.plugin.has_hard_realtime_requirement()
     }
 
     /// Voice-allocation information from `CLAP_EXT_VOICE_INFO`.
     pub fn voice_info(&self) -> Option<VoiceInfo> {
-        if self.extensions.system.voice_info.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.system.voice_info };
-        let get_fn = ext.get?;
-        let mut info: clap_voice_info = unsafe { std::mem::zeroed() };
-        if unsafe { get_fn(self.plugin.as_ptr(), &mut info) } {
-            Some(VoiceInfo {
-                voice_count: info.voice_count,
-                voice_capacity: info.voice_capacity,
-                supports_overlapping_notes: (info.flags
-                    & CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES)
-                    != 0,
-            })
-        } else {
-            None
-        }
+        let info = self.plugin.voice_info()?;
+        Some(VoiceInfo {
+            voice_count: info.voice_count,
+            voice_capacity: info.voice_capacity,
+            supports_overlapping_notes: (info.flags & CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES)
+                != 0,
+        })
     }
 
     /// Number of custom note names (e.g. drum-kit labels) the plugin
     /// exposes via `CLAP_EXT_NOTE_NAME`.
     pub fn note_name_count(&self) -> u32 {
-        if self.extensions.notes.name.is_null() {
-            return 0;
-        }
-        let ext = unsafe { &*self.extensions.notes.name };
-        match ext.count {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => 0,
-        }
+        self.plugin.note_name_count()
     }
 
     /// Retrieves a single custom note name.
     pub fn note_name(&self, index: u32) -> Option<NoteName> {
-        if self.extensions.notes.name.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.notes.name };
-        let get_fn = ext.get?;
-        let mut info: clap_note_name = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index, &mut info) } {
-            return None;
-        }
+        let info = self.plugin.note_name(index)?;
         Some(NoteName {
-            name: unsafe { cstr_to_string(info.name.as_ptr()) },
+            name: chars_to_string(&info.name),
             port: info.port,
             channel: info.channel,
             key: info.key,
@@ -376,58 +232,25 @@ impl ClapLoaded {
     /// requests without actually applying them. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn can_apply_audio_port_configuration(&self, requests: &[AudioPortConfigRequest]) -> bool {
-        if self.extensions.audio.configurable_ports.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.configurable_ports };
-        let can_apply_fn = match ext.can_apply_configuration {
-            Some(f) => f,
-            None => return false,
-        };
-        let clap_requests = build_port_config_requests(requests);
-        unsafe {
-            can_apply_fn(
-                self.plugin.as_ptr(),
-                clap_requests.as_ptr(),
-                clap_requests.len() as u32,
-            )
-        }
+        self.plugin
+            .can_apply_audio_port_configuration(&port_config_requests(requests))
+            .unwrap_or(false)
     }
 
     /// Applies a set of port-configuration requests via
     /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn apply_audio_port_configuration(&mut self, requests: &[AudioPortConfigRequest]) -> bool {
-        if self.extensions.audio.configurable_ports.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.configurable_ports };
-        let apply_fn = match ext.apply_configuration {
-            Some(f) => f,
-            None => return false,
-        };
-        let clap_requests = build_port_config_requests(requests);
-        unsafe {
-            apply_fn(
-                self.plugin.as_ptr(),
-                clap_requests.as_ptr(),
-                clap_requests.len() as u32,
-            )
-        }
+        self.plugin
+            .apply_audio_port_configuration(&port_config_requests(requests))
+            .unwrap_or(false)
     }
 
     /// Whether the plugin supports activating/deactivating ports while
     /// processing is running. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn can_activate_audio_port_while_processing(&self) -> bool {
-        if self.extensions.audio.ports_activation.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_activation };
-        match ext.can_activate_while_processing {
-            Some(f) => unsafe { f(self.plugin.as_ptr()) },
-            None => false,
-        }
+        self.plugin.can_activate_audio_port_while_processing()
     }
 
     /// Activates or deactivates a single audio port.
@@ -440,22 +263,9 @@ impl ClapLoaded {
         is_active: bool,
         sample_size: u32,
     ) -> bool {
-        if self.extensions.audio.ports_activation.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.ports_activation };
-        match ext.set_active {
-            Some(f) => unsafe {
-                f(
-                    self.plugin.as_ptr(),
-                    is_input,
-                    port_index,
-                    is_active,
-                    sample_size,
-                )
-            },
-            None => false,
-        }
+        self.plugin
+            .set_audio_port_active(is_input, port_index, is_active, sample_size)
+            .unwrap_or(false)
     }
 
     /// Asks the plugin to add a new port via the draft
@@ -468,56 +278,24 @@ impl ClapLoaded {
         channel_count: u32,
         port_type: Option<&str>,
     ) -> bool {
-        if self.extensions.audio.extensible_ports.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.extensible_ports };
-        let add_fn = match ext.add_port {
-            Some(f) => f,
-            None => return false,
-        };
-        let type_cstr = port_type.and_then(|s| std::ffi::CString::new(s).ok());
-        let type_ptr = type_cstr
-            .as_ref()
-            .map(|c| c.as_ptr())
-            .unwrap_or(ptr::null());
-        unsafe {
-            add_fn(
-                self.plugin.as_ptr(),
-                is_input,
-                channel_count,
-                type_ptr,
-                ptr::null(),
-            )
-        }
+        self.plugin
+            .add_audio_port(is_input, channel_count, port_type)
+            .unwrap_or(false)
     }
 
     /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
     /// removed the port. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
-        if self.extensions.audio.extensible_ports.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.extensible_ports };
-        match ext.remove_port {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input, index) },
-            None => false,
-        }
+        self.plugin
+            .remove_audio_port(is_input, index)
+            .unwrap_or(false)
     }
 
     /// Asks whether the plugin can process the given ambisonic ordering +
     /// normalization. Returns false when `CLAP_EXT_AMBISONIC` is unsupported.
     #[must_use]
     pub fn is_ambisonic_config_supported(&self, config: &AmbisonicConfig) -> bool {
-        if self.extensions.audio.ambisonic.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.ambisonic };
-        let f = match ext.is_config_supported {
-            Some(f) => f,
-            None => return false,
-        };
         let clap_config = clap_ambisonic_config {
             ordering: match config.ordering {
                 AmbisonicOrdering::Fuma => CLAP_AMBISONIC_ORDERING_FUMA,
@@ -531,20 +309,12 @@ impl ClapLoaded {
                 AmbisonicNormalization::N2d => CLAP_AMBISONIC_NORMALIZATION_N2D,
             },
         };
-        unsafe { f(self.plugin.as_ptr(), &clap_config) }
+        self.plugin.is_ambisonic_config_supported(&clap_config)
     }
 
     /// Retrieves the ambisonic config currently used on a given port.
     pub fn ambisonic_config(&self, is_input: bool, port_index: u32) -> Option<AmbisonicConfig> {
-        if self.extensions.audio.ambisonic.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.ambisonic };
-        let get_fn = ext.get_config?;
-        let mut config: clap_ambisonic_config = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), is_input, port_index, &mut config) } {
-            return None;
-        }
+        let config = self.plugin.ambisonic_config(is_input, port_index)?;
         let ordering = match config.ordering {
             CLAP_AMBISONIC_ORDERING_FUMA => AmbisonicOrdering::Fuma,
             _ => AmbisonicOrdering::Acn,
@@ -566,14 +336,7 @@ impl ClapLoaded {
     /// [`SurroundChannel`]-bit channel mask (`CLAP_EXT_SURROUND`).
     #[must_use]
     pub fn is_surround_channel_mask_supported(&self, channel_mask: u64) -> bool {
-        if self.extensions.audio.surround.is_null() {
-            return false;
-        }
-        let ext = unsafe { &*self.extensions.audio.surround };
-        match ext.is_channel_mask_supported {
-            Some(f) => unsafe { f(self.plugin.as_ptr(), channel_mask) },
-            None => false,
-        }
+        self.plugin.is_surround_channel_mask_supported(channel_mask)
     }
 
     /// Retrieves the channel-to-speaker mapping the plugin uses on a port.
@@ -594,21 +357,7 @@ impl ClapLoaded {
         is_input: bool,
         port_index: u32,
     ) -> Option<Vec<SurroundChannel>> {
-        if self.extensions.audio.surround.is_null() {
-            return None;
-        }
-        let ext = unsafe { &*self.extensions.audio.surround };
-        let get_fn = ext.get_channel_map?;
-        let mut map = [0u8; 64];
-        let count = unsafe {
-            get_fn(
-                self.plugin.as_ptr(),
-                is_input,
-                port_index,
-                map.as_mut_ptr(),
-                64,
-            )
-        } as usize;
+        let (map, count) = self.plugin.surround_channel_map(is_input, port_index)?;
         decode_surround_channel_map(&map, count)
     }
 
@@ -653,59 +402,24 @@ fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundC
     )
 }
 
-/// Converts a raw `clap_audio_port_info` into the safe [`AudioPortInfo`].
-/// Shared by [`ClapLoaded::audio_port_info`] and
-/// [`ClapLoaded::audio_port_config_port_info`].
-fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
+fn audio_port_info_from_ffi(info: &tutti_clap_ffi::AudioPortInfo) -> AudioPortInfo {
     AudioPortInfo {
         id: info.id,
-        name: unsafe { cstr_to_string(info.name.as_ptr()) },
-        layout: layout_from_clap_port(info.port_type, info.channel_count),
+        name: info.name.clone(),
+        layout: layout_of_port(info),
         flags: AudioPortFlags::from_bits_truncate(info.flags),
         in_place_pair_id: info.in_place_pair,
     }
 }
 
-/// Lossy FFI-inbound conversion of a CLAP port's `port_type` tag + reported
-/// `channel_count` into a [`ChannelLayout`].
-///
-/// Kept a named boundary fn rather than a `From` impl: it needs the
-/// `channel_count` fallback for tags this host does not recognize (the tag string itself
-/// is dropped — nothing downstream reads it), and it borrows a raw FFI pointer.
-/// `CLAP_PORT_MONO`/`CLAP_PORT_STEREO` map to the named variants; any other tag
-/// (surround, ambisonic, vendor-specific) becomes `Multi(channel_count)`.
-///
-/// Shared with `load::port_channels`, so the layout `PortLayout`
-/// stores is the same one `audio_port_info` reports — one conversion, one
-/// answer.
-pub(super) fn layout_from_clap_port(
-    port_type: *const std::os::raw::c_char,
-    channel_count: u32,
-) -> ChannelLayout {
-    if !port_type.is_null() {
-        let tag = unsafe { CStr::from_ptr(port_type) };
-        if tag == CLAP_PORT_MONO {
-            return ChannelLayout::MONO;
-        }
-        if tag == CLAP_PORT_STEREO {
-            return ChannelLayout::STEREO;
-        }
-    }
-    ChannelLayout::from(channel_count)
-}
-
 #[cfg(feature = "clap-extras")]
-fn build_port_config_requests(
-    requests: &[AudioPortConfigRequest],
-) -> Vec<clap_audio_port_configuration_request> {
+fn port_config_requests(requests: &[AudioPortConfigRequest]) -> Vec<PortConfigRequest> {
     requests
         .iter()
-        .map(|r| clap_audio_port_configuration_request {
+        .map(|r| PortConfigRequest {
             is_input: r.is_input,
             port_index: r.port_index,
             channel_count: r.channel_count,
-            port_type: ptr::null(),
-            port_details: ptr::null(),
         })
         .collect()
 }

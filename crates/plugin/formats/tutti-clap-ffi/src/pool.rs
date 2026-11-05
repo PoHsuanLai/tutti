@@ -1,62 +1,115 @@
 //! Serving `clap.thread-pool`: a plugin's `request_exec(host, n)` from inside
-//! its `process` runs `exec(plugin, 0..n)` on the [`Pool`] the instance was
-//! given (`ClapLoaded::set_thread_pool`), and returns once every task has run.
+//! its `process` runs `exec(plugin, 0..n)` on the [`TaskPool`] the plugin was
+//! given, and returns once every task has run.
 //!
 //! # Which calls are served
 //!
 //! `ext/thread-pool.h` allows the call only from the audio thread, inside
 //! `process`, and never from the pool; the host "should check that the
 //! plugin is within the process call, and if not, reject". The check is a
-//! thread-local: `do_process` serves a [`PoolRequest`] on its own thread
-//! for exactly the span of the plugin's `process` call, and `request_exec`
-//! serves a call only on the thread serving one, for the same instance. Every other call — outside `process`, on another thread (the
-//! pool's or the plugin's own), from another instance, or from inside a task
-//! (the request is taken while it runs) — is refused with `false`, and the
-//! plugin runs its tasks itself, as the header tells it to.
+//! thread-local: `process` serves a [`PoolRequest`] on its own thread for
+//! exactly the span of the plugin's `process` call, and `request_exec` serves
+//! a call only on the thread serving one, for the same instance. Every other
+//! call (outside `process`, on another thread, from another instance, or
+//! from inside a task, since the request is taken while it runs) is refused
+//! with `false`, and the plugin runs its tasks itself, as the header tells it
+//! to.
 //!
 //! # Running the tasks
 //!
 //! The pool runs one job; each participant claims task indices from a shared
 //! counter until none is left, so every index runs exactly once whatever
-//! the number of participants, one included. [`Pool::run`] returns only
-//! once no participant is inside the job, so `request_exec` returns after
-//! the last task, and every task's writes happen-before the plugin reads
-//! them (the pool's contract).
+//! the number of participants, one included. [`TaskPool::try_run`] returns
+//! only once no participant is inside the job, so `request_exec` returns
+//! after the last task, and every task's writes happen-before the plugin
+//! reads them (the pool's contract).
 //!
-//! The pool may be busy: in process, the caller can itself be a participant
-//! of a graph block running on the same pool. The request is then refused
-//! ([`Pool::try_run`]), as with no pool: the plugin's own fallback is never
-//! worse than running the tasks alone on the caller, and the request never
-//! waits on the job it was made from.
+//! The pool may be busy: the caller can itself be a participant of a graph
+//! block running on the same pool. The request is then refused
+//! (`try_run` returns `false`), as with no pool: the plugin's own fallback is
+//! never worse than running the tasks alone on the caller, and the request
+//! never waits on the job it was made from.
 //!
-//! A served task runs on the plugin's behalf for the audio thread, which
-//! waits for it, so callbacks that hold back work on the audio thread
-//! (`clap.log`) hold it back in a served task too ([`in_served_task`]), on
-//! whichever thread runs it.
-//!
-//! Nothing here allocates, locks or frees: the request lives on
-//! `do_process`'s stack, the counter on `request_exec`'s.
+//! Nothing here allocates, locks or frees: the request lives on `process`'s
+//! stack, the counter on `request_exec`'s.
 
 use std::cell::Cell;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap_sys::plugin::clap_plugin;
-use tutti_graph::Pool;
-use tutti_types::ScopedNoDenormals;
 
-use super::HostState;
+/// A pool of threads a job can be spread over.
+///
+/// The implementor owes the contract below, which this crate cannot check: a
+/// `try_run` that returns `true` has no participant left inside `job`, since
+/// `job` borrows the caller's stack. (The same contract `tutti_graph::Pool`
+/// states for its own jobs.)
+///
+/// The contract `clap.thread-pool` needs, and no more: the caller joins the
+/// job, `try_run` returns after every participant has left it, and a busy pool
+/// refuses rather than waits.
+pub trait TaskPool: Send + Sync + 'static {
+    /// Participants a job can have, the caller included. At least 1.
+    fn participants(&self) -> usize;
+
+    /// Run `job` on up to `wake` participants (the caller included) and
+    /// return `true` once all have left it, or, when the pool is busy, run
+    /// nothing and return `false`. Every participant runs `job` with its own
+    /// index; the participants' writes happen-before this call returns.
+    ///
+    /// A participant runs the job under the audio thread's float mode: an
+    /// implementation that moves it to a helper thread sets that thread's
+    /// denormal mode first.
+    fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool;
+}
 
 /// The plugin's `clap_plugin_thread_pool::exec`.
-pub(crate) type ExecFn = unsafe extern "C" fn(plugin: *const clap_plugin, task_index: u32);
+type ExecFn = unsafe extern "C" fn(plugin: *const clap_plugin, task_index: u32);
+
+/// A pool paired with the `exec` entry of the plugin it serves.
+///
+/// Built by [`Plugin::pool_handle`](crate::Plugin::pool_handle) and handed to
+/// [`AudioSide::process`](crate::AudioSide::process), which serves it for the
+/// span of one `process` call.
+///
+/// The handle names the instance whose vtable `exec` came from (a `Weak`
+/// of its private core, which also keeps the address from being reused), and
+/// `process` serves it only for that instance: a handle given to another
+/// instance's `process` is ignored, as if there were no pool, so `exec` is
+/// never called with a `clap_plugin` it does not belong to, and never after
+/// its library is gone (a live instance's core is only reachable while its
+/// `Plugin`, and so its library, is).
+#[derive(Clone)]
+pub struct PoolHandle {
+    pub(crate) pool: Arc<dyn TaskPool>,
+    pub(crate) exec: ExecFn,
+    pub(crate) owner: std::sync::Weak<crate::plugin::Core>,
+}
+
+impl PoolHandle {
+    /// Whether this handle was made for the instance `core` belongs to.
+    pub(crate) fn is_for(&self, core: &Arc<crate::plugin::Core>) -> bool {
+        std::ptr::eq(self.owner.as_ptr(), Arc::as_ptr(core))
+    }
+}
+
+impl std::fmt::Debug for PoolHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolHandle")
+            .field("participants", &self.pool.participants())
+            .finish_non_exhaustive()
+    }
+}
 
 /// What one `process` call lends its `request_exec` calls: the instance's
 /// pool, plugin and `exec`.
-pub(crate) struct PoolRequest {
-    /// The instance's host state, which `request_exec` matches against the
+pub(crate) struct PoolRequest<'a> {
+    /// The instance's host, which `request_exec` matches against the
     /// `host_data` it is called with.
-    host: *const HostState,
-    pool: *const dyn Pool,
+    host: usize,
+    pool: &'a dyn TaskPool,
     plugin: *const clap_plugin,
     exec: ExecFn,
 }
@@ -65,7 +118,7 @@ thread_local! {
     /// The request this thread's current `process` call serves, or null.
     /// `const`-initialised with no destructor, so reading it allocates
     /// nothing.
-    static CURRENT: Cell<*const PoolRequest> = const { Cell::new(ptr::null()) };
+    static CURRENT: Cell<*const PoolRequest<'static>> = const { Cell::new(ptr::null()) };
     /// Whether this thread is running a served task.
     static IN_TASK: Cell<bool> = const { Cell::new(false) };
 }
@@ -77,21 +130,16 @@ pub(crate) fn in_served_task() -> bool {
     IN_TASK.with(Cell::get)
 }
 
-impl PoolRequest {
-    /// A request for `plugin`'s `exec` on `pool`, for the instance whose
-    /// host state is `host`. Every pointer must stay valid while the
-    /// request is served.
-    pub(crate) fn new(
-        host: &HostState,
-        pool: &dyn Pool,
-        plugin: *const clap_plugin,
-        exec: ExecFn,
-    ) -> Self {
+impl<'a> PoolRequest<'a> {
+    /// A request for `plugin`'s `exec` on `handle`'s pool, for the instance
+    /// whose host is `host`. `plugin` must stay valid while the request is
+    /// served; the caller (`process`) holds the plugin's audio claim for it.
+    pub(crate) fn new(host: usize, handle: &'a PoolHandle, plugin: *const clap_plugin) -> Self {
         Self {
             host,
-            pool,
+            pool: &*handle.pool,
             plugin,
-            exec,
+            exec: handle.exec,
         }
     }
 
@@ -99,7 +147,7 @@ impl PoolRequest {
     /// `request_exec` serves on this thread, and stop serving it when
     /// `process` returns or unwinds.
     pub(crate) fn serve<R>(&self, process: impl FnOnce() -> R) -> R {
-        let _served = Swap::new(self);
+        let _served = Swap::new(ptr::from_ref(self).cast::<PoolRequest<'static>>());
         process()
     }
 
@@ -116,15 +164,8 @@ impl PoolRequest {
             plugin: self.plugin,
             exec: self.exec,
         };
-        // SAFETY: the pool outlives `serve` (the instance owns it and is
-        // borrowed for the whole `process` call), and `run` is reached only
-        // through a request being served (`request_exec`).
-        let pool = unsafe { &*self.pool };
-        let wake = (num_tasks as usize).min(pool.participants());
-        pool.try_run(wake, &|_| {
-            // The audio thread's float mode, and its rules for callbacks, on
-            // every participant: helpers run the plugin's DSP on its behalf.
-            let _ftz = ScopedNoDenormals::new();
+        let wake = (num_tasks as usize).min(self.pool.participants());
+        self.pool.try_run(wake, &|_| {
             let _task = InTask::enter();
             tasks.drain();
         })
@@ -147,14 +188,15 @@ impl Drop for InTask {
 }
 
 /// Sets this thread's served request, restoring the previous one on drop
-/// (return or unwind). Private and never forgotten: only [`PoolRequest::serve`]
-/// and [`request_exec`] make one, each on its own stack for one call.
+/// (return or unwind). Private and never forgotten: only
+/// [`PoolRequest::serve`] and [`request_exec`] make one, each on its own
+/// stack for one call.
 struct Swap {
-    prev: *const PoolRequest,
+    prev: *const PoolRequest<'static>,
 }
 
 impl Swap {
-    fn new(to: *const PoolRequest) -> Self {
+    fn new(to: *const PoolRequest<'static>) -> Self {
         Self {
             prev: CURRENT.with(|c| c.replace(to)),
         }
@@ -179,7 +221,9 @@ struct Tasks {
 
 // SAFETY: `exec` is the entry point CLAP defines for the host's pool threads
 // to call, concurrently, during the plugin's `process` (`ext/thread-pool.h`);
-// `plugin` is valid for that whole call, which `request_exec` is inside. The
+// `plugin` is valid for that whole call, which `request_exec` is inside (the
+// request is served only for the span of `process`, under the audio claim,
+// and `try_run` returns after every participant has left the job). The
 // counter is an atomic.
 unsafe impl Sync for Tasks {}
 
@@ -199,9 +243,9 @@ impl Tasks {
     }
 }
 
-/// `clap_host_thread_pool::request_exec` for the instance whose host state
-/// is `host`: whether every task ran (module docs).
-pub(crate) fn request_exec(host: *const HostState, num_tasks: u32) -> bool {
+/// `clap_host_thread_pool::request_exec` for the instance whose host is
+/// `host`: whether every task ran (module docs).
+pub(crate) fn request_exec(host: usize, num_tasks: u32) -> bool {
     let current = CURRENT.with(Cell::get);
     if current.is_null() {
         return false;
@@ -212,19 +256,18 @@ pub(crate) fn request_exec(host: *const HostState, num_tasks: u32) -> bool {
     // when `serve` returns or unwinds, on this same thread. So a non-null
     // value is a request still being served.
     let request = unsafe { &*current };
-    if !ptr::eq(request.host, host) {
+    if request.host != host {
         return false;
     }
     // Taken while the tasks run, so a call from inside one is refused.
     let _taken = Swap::new(ptr::null());
     request.run(num_tasks)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn current() -> *const PoolRequest {
+    fn current() -> *const PoolRequest<'static> {
         CURRENT.with(Cell::get)
     }
 
@@ -238,7 +281,8 @@ mod tests {
     /// null where the outer request should be back → fails.
     #[test]
     fn a_swap_restores_the_previous_request_on_return_and_unwind() {
-        let fake = std::ptr::NonNull::<PoolRequest>::dangling().as_ptr() as *const PoolRequest;
+        let fake = std::ptr::NonNull::<PoolRequest<'static>>::dangling().as_ptr()
+            as *const PoolRequest<'static>;
         {
             let _s = Swap::new(fake);
             assert_eq!(current(), fake);

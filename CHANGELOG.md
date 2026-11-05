@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the pure plugin-host core in tutti-plugin-types
+
+`step(State, Event) -> (State, Effects)` decides activation, restart, rescan and
+the latency, tail and layout re-reads for every plugin format, with no FFI and no
+plugin (design 016 §2.1). New in `tutti-plugin-types`: `Event`, `HostOp`,
+`Request`, `RescanScope`, `Effect`, `Reply`, `Notice`, `Stage`, `State`,
+`Prepare`, `RestartRules`, `TimerId`, `FdId`, `Effects`, `EFFECT_CAPACITY`,
+`MAX_STEP_EFFECTS`, `TIMERS_PER_TICK`, `FDS_PER_TICK`, `step`; `SampleRate` is re-exported beside `Samples`. Nothing calls it yet.
+`proptest` joins the crate's dev-dependencies.
+
+### Changed — SampleFormat and Layout move to tutti-plugin-types
+
+`SampleFormat` is defined in `tutti-plugin-types` (`tutti_plugin::protocol` still
+re-exports it). The CLAP loader's private `BusLayout` is
+`tutti_plugin_types::Layout`, with public fields.
+
+
 ### Changed — std-idiomatic names in io, mod, export, dsp and midi
 
 No aliases are left behind.

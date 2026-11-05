@@ -9,7 +9,6 @@ pub mod audio;
 pub mod envelope;
 pub mod midi;
 pub mod process;
-pub mod sample;
 pub mod shm;
 
 /// Wire protocol version, exchanged in the [`BridgeMessage::Ready`] handshake.
@@ -117,8 +116,8 @@ pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
 pub use envelope::{BridgeMessage, HostMessage};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MIDI_STACK_CAPACITY, MidiEventVec, midi_from_wire};
 pub use process::ProcessAudioData;
-pub use sample::SampleFormat;
 pub use shm::SlabLayout;
+pub use tutti_plugin_types::SampleFormat;
 
 pub use tutti_midi_types::ump::MidiEvent;
 

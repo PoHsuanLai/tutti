@@ -32,6 +32,23 @@ pub type BusChannels = Vec<ChannelLayout>;
 /// never asked reports.
 pub type BusTopologies = Vec<Option<ChannelTopology>>;
 
+/// What a plugin declares on its audio ports: the buses and their speaker
+/// placement, per direction.
+///
+/// Two layouts are equal when every bus and every topology agrees, which is
+/// how a re-read after a restart decides the host must be told.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Layout {
+    /// Per-bus input channel counts, main bus first.
+    pub inputs: BusChannels,
+    /// Per-bus output channel counts, main bus first.
+    pub outputs: BusChannels,
+    /// Per-bus input channel topology; see [`BusTopologies`].
+    pub input_topology: BusTopologies,
+    /// Per-bus output channel topology; see [`BusTopologies`].
+    pub output_topology: BusTopologies,
+}
+
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
 /// An alias of the engine-wide [`Tail`](tutti_types::Tail), so a hosted

@@ -12,6 +12,7 @@ mod error;
 pub mod features;
 mod format_host;
 mod harmony;
+mod lifecycle;
 mod load_stage;
 mod main_thread;
 mod metadata;
@@ -25,6 +26,7 @@ mod points;
 mod presets;
 mod process;
 mod render_mode;
+mod sample_format;
 mod sysex;
 mod transport;
 
@@ -34,11 +36,11 @@ mod transport;
 #[global_allocator]
 static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
 /// above is here for the same reason.
-pub use tutti_types::Samples;
-pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
+pub use tutti_types::{SampleRate, Samples};
 
 mod layout_support;
 pub use layout_support::LayoutSupport;
@@ -72,9 +74,14 @@ pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
+pub use lifecycle::{
+    EFFECT_CAPACITY, Effect, Effects, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice,
+    Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId,
+    step,
+};
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
-pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
+pub use metadata::{BusChannels, BusTopologies, Layout, LoadedPlugin, PluginTail};
 pub use midi::{MIDI_STACK_CAPACITY, MidiEventVec, RT_MIDI_CAPACITY, RtMidiEvents};
 pub use midi1_decoder::{
     Midi1Decoder, Midi1Message, Midi1Splitter, SYSEX_OUT_CAPACITY, note_on_velocity_midi1,
@@ -91,6 +98,7 @@ pub use parameters::{
 pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
+pub use sample_format::SampleFormat;
 pub use sysex::{
     SYSEX_MESSAGE_CAPACITY, SysExAssembler, SysExRef, SysExStep, is_framed, push_sysex,
     push_sysex_stack, unframed,

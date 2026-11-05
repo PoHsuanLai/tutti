@@ -4554,6 +4554,7 @@ dependencies = [
  "assert_no_alloc",
  "bincode",
  "bitflags 2.13.2",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",

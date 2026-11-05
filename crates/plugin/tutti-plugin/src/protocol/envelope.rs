@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use super::ContentScale;
 use super::Normalized;
 use super::ParamAddress;
+use super::SampleFormat;
 use super::Samples;
 use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
-use super::sample::SampleFormat;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
 

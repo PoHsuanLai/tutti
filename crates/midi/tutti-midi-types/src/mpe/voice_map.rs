@@ -142,7 +142,8 @@ impl MpeChannelVoiceMap {
     }
 
     /// Allocates a member channel for `note`, stealing the oldest sounding
-    /// voice when all member channels are occupied.
+    /// voice when all member channels are occupied. `None` when `note` is not
+    /// a MIDI note (128 or above) or the zone has no member channels.
     pub fn assign_note(&mut self, note: u8) -> Option<u8> {
         if note >= 128 {
             return None;

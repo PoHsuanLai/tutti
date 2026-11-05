@@ -300,7 +300,7 @@ impl SessionBuilder {
     ///
     /// # Errors
     ///
-    /// None today; `Result` for the build paths' common shape.
+    /// Never; `Result` for the build paths' common shape.
     pub fn build_detached(self, rate: SampleRate) -> Result<Session> {
         let mut graph = Graph::new(self.inputs, self.outputs_floor, rate, LIVE_MAX_BLOCK, None);
         graph.set_render_workers(self.render_workers);

@@ -330,7 +330,7 @@ pub fn finish(cfg: &OnsetConfig, state: &OnsetState) -> Vec<Onset> {
 ///
 /// # Errors
 ///
-/// None today; the `Result` keeps the signature of the other whole-buffer
+/// Never; the `Result` keeps the signature of the other whole-buffer
 /// analyses. A buffer shorter than one window yields no onsets.
 pub fn detect_onsets(
     cfg: &OnsetConfig,

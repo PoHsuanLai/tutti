@@ -14,7 +14,7 @@
 //! Ubuntu 22.04 ships alsa-lib 1.2.6.1, and CI installs whatever
 //! `libasound2-dev` the runner has. A `panic!` here would break the build for
 //! every such machine over a feature they may not use, so an old (or absent)
-//! alsa-lib emits a `cargo:warning` and emits no metadata, and the dependent compiles the
+//! alsa-lib emits a `cargo::warning` and emits no metadata, and the dependent compiles the
 //! same empty stub Windows gets: zero endpoints, and `Error::Unsupported` naming the reason.
 //!
 //! Deliberately **not** `dlopen` + weak symbols. That would turn a build-time
@@ -23,44 +23,55 @@
 use std::process::Command;
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    println!("cargo::rerun-if-changed=build.rs");
+    for var in [
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_SYSROOT_DIR",
+        "PKG_CONFIG_LIBDIR",
+        "PKG_CONFIG_ALLOW_CROSS",
+    ] {
+        println!("cargo::rerun-if-env-changed={var}");
+    }
+    // This crate's own gate: the externs exist only when the probe succeeded,
+    // so a missing alsa-lib means absent symbols, not a link error.
+    println!("cargo::rustc-check-cfg=cfg(alsa_ump)");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return;
     }
     let Some(version) = alsa_version() else {
         println!(
-            "cargo:warning=alsa-lib not found via pkg-config; building without the Linux \
+            "cargo::warning=alsa-lib not found via pkg-config; building without the Linux \
              MIDI backend. Install libasound2-dev >= 1.2.10 for native UMP."
         );
         return;
     };
 
     let Some((major, minor, patch)) = parse_version(&version) else {
-        println!("cargo:warning=could not parse alsa-lib version {version:?}; assuming too old");
+        println!("cargo::warning=could not parse alsa-lib version {version:?}; assuming too old");
         return;
     };
 
     if (major, minor, patch) < (1, 2, 10) {
         println!(
-            "cargo:warning=alsa-lib {version} is older than 1.2.10, which is where the UMP \
+            "cargo::warning=alsa-lib {version} is older than 1.2.10, which is where the UMP \
              sequencer API landed; building without the Linux MIDI backend. MIDI files and \
              the software MIDI bus are unaffected."
         );
         return;
     }
 
-    println!("cargo:rustc-link-lib=asound");
+    println!("cargo::rustc-cfg=alsa_ump");
+    println!("cargo::rustc-link-lib=asound");
     if let Some(dir) = pkg_config_var("libdir") {
-        println!("cargo:rustc-link-search=native={dir}");
+        println!("cargo::rustc-link-search=native={dir}");
     }
-    println!("cargo:alsa_ump=1");
+    println!("cargo::metadata=alsa_ump=1");
 
     if (major, minor, patch) >= (1, 2, 13) {
-        println!("cargo:alsa_ump_create=1");
+        println!("cargo::metadata=alsa_ump_create=1");
     } else {
         println!(
-            "cargo:warning=alsa-lib {version} has the UMP sequencer API but not \
+            "cargo::warning=alsa-lib {version} has the UMP sequencer API but not \
              snd_seq_create_ump_endpoint (1.2.13+); tutti can use MIDI endpoints but not \
              publish its own."
         );

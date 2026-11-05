@@ -14,6 +14,7 @@ categories = ["external-ffi-bindings", "multimedia::audio"]
 # it. The key is what carries this crate's probe result (`DEP_ASOUND_*`) to the
 # crates that depend on it.
 links = "asound"
+publish = false
 
 [lints]
 workspace = true

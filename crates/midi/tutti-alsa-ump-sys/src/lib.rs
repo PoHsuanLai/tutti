@@ -11,7 +11,7 @@
 //! [`snd_seq_ump_event_t`] mirrors a C struct whose last member is a union. A
 //! wrong layout is not a compile error, it is silent memory corruption. Every
 //! offset was read off the real header with `offsetof` on the target
-//! (alsa-lib 1.2.14, x86_64), and the `layout` tests re-check them.
+//! (alsa-lib 1.2.14, x86_64), and compile-time asserts below re-check them.
 //!
 //! # Version floors
 //!
@@ -144,6 +144,9 @@ pub const SND_UMP_DIR_BIDIRECTION: c_uint = 3;
 
 // --- Functions -------------------------------------------------------------
 
+// Only declared when `build.rs` found alsa-lib >= 1.2.10 (`cfg(alsa_ump)`); the
+// types and constants above stay unconditional.
+#[cfg(alsa_ump)]
 unsafe extern "C" {
     // Client lifecycle.
     /// Open a sequencer client handle; `streams` and `mode` are alsa-lib's `SND_SEQ_OPEN_*` / `SND_SEQ_NONBLOCK` flags.
@@ -285,27 +288,27 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+/// The measured `snd_seq_ump_event_t` size, alignment and field offsets, checked
+/// at compile time (they need no libasound). Mutation, done: changing the
+/// expected `dest` offset 14 -> 15 made `cargo check` fail; restored.
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<snd_seq_ump_event_t>() == 32);
+    assert!(align_of::<snd_seq_ump_event_t>() == 4);
+    assert!(size_of::<snd_seq_addr_t>() == 2);
+    assert!(offset_of!(snd_seq_ump_event_t, type_) == 0);
+    assert!(offset_of!(snd_seq_ump_event_t, flags) == 1);
+    assert!(offset_of!(snd_seq_ump_event_t, tag) == 2);
+    assert!(offset_of!(snd_seq_ump_event_t, queue) == 3);
+    assert!(offset_of!(snd_seq_ump_event_t, time) == 4);
+    assert!(offset_of!(snd_seq_ump_event_t, source) == 12);
+    assert!(offset_of!(snd_seq_ump_event_t, dest) == 14);
+    assert!(offset_of!(snd_seq_ump_event_t, ump) == 16);
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::{align_of, offset_of, size_of};
-
-    /// The measured `snd_seq_ump_event_t` size, alignment and field offsets.
-    /// Mutation: change any `ump_event_t` field type or order; this fails.
-    #[test]
-    fn layout_matches_the_c_header() {
-        assert_eq!(size_of::<snd_seq_ump_event_t>(), 32);
-        assert_eq!(align_of::<snd_seq_ump_event_t>(), 4);
-        assert_eq!(size_of::<snd_seq_addr_t>(), 2);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, type_), 0);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, flags), 1);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, tag), 2);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, queue), 3);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, time), 4);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, source), 12);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, dest), 14);
-        assert_eq!(offset_of!(snd_seq_ump_event_t, ump), 16);
-    }
 
     /// A zeroed event is the "nothing set" starting point the send path fills
     /// in; if `Default` ever stopped being all-zero, a stale `dest` would send

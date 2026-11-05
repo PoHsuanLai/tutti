@@ -83,7 +83,7 @@ impl AlsaOutput {
         ev.ump[..n].copy_from_slice(&words[..n]);
 
         // SAFETY: `seq` is open for the life of `inner`; `ev` is a fully
-        // initialised, correctly laid out event (see the sys crate's layout tests) that
+        // initialised, correctly laid out event (see the sys crate's compile-time layout asserts) that
         // alsa-lib reads and does not retain.
         check(
             unsafe { sys::snd_seq_ump_event_output_direct(inner.seq.raw(), &mut ev) },

@@ -673,6 +673,8 @@ fn legacy_cc(control: u8, channel: i8, value: i8, value2: i8) -> LegacyCcOut {
     })
 }
 
+/// Mutation (run): `decode_int` reading `e.value.cast_signed().abs()` → -1234
+/// comes back 1234 → fails.
 #[test]
 fn note_expression_int_round_trips_with_its_sign() {
     let value = NoteExpressionIntValue {
@@ -695,6 +697,9 @@ fn note_expression_int_round_trips_with_its_sign() {
 
 /// A chord, scale and text value stage into a list, intern their text, and read
 /// back from the event and the arena.
+///
+/// Mutation (run): `Utf16Chord::to_event` staging `bass_note` as the root →
+/// the chord comes back with root 48 → fails.
 #[test]
 fn harmony_values_round_trip_through_a_list() {
     let utf16 = |s: &str| s.encode_utf16().collect::<Vec<u16>>();

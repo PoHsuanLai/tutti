@@ -4,15 +4,17 @@
 #![forbid(unsafe_code)]
 
 mod error;
-pub mod events;
+mod events;
 pub(crate) mod helpers;
 pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
 pub use events::{
-    EventExt, MidiEncoder, Stager, ToEvent, Utf16Chord, Utf16Scale, Utf16Text, Vst3InputEvents,
-    drain_midi,
+    Chord, Data, Event, EventExt, EventHeader, EventKind, ExpressionInt, ExpressionText,
+    ExpressionValue, K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, MidiEncoder, NoteOff, NoteOn, Payload,
+    PolyPressure, Scale, Stager, TextRef, ToEvent, Utf16Chord, Utf16Scale, Utf16Text,
+    Vst3InputEvents, drain_midi, expression_type_from_id, expression_type_id,
 };
 pub use host::{
     FactoryInfo, LoadOptions, ProcessFailed, RestartOutcome, Vst3Controller, Vst3Library,

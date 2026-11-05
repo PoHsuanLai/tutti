@@ -1,11 +1,14 @@
 //! The sequencer context of a block (chords, scales and per-note texts) in the
 //! form VST3's event list takes.
 //!
-//! The Processor converts a block's [`ExpressiveContext`](tutti_plugin_types::ExpressiveContext) into these buffers
+//! The Processor converts a block's [`ExpressiveContext`] into these buffers
 //! and stages them as [`Vst3InputEvents`](crate::Vst3InputEvents).
 
 use crate::events::{Utf16Chord, Utf16Scale, Utf16Text};
-use tutti_plugin_types::{ChordChanges, NoteExpressionTextChanges, ScaleChanges};
+use tutti_plugin_types::{
+    ChordChanges, ExpressiveContext, NoteExpressionIntValue, NoteExpressionTextChanges,
+    ScaleChanges,
+};
 
 /// Reusable buffers for the sequencer-context conversion in `Vst3Processor::process_shared`.
 ///
@@ -37,7 +40,7 @@ pub(super) struct SeqScratch {
 /// re-grow it, which is the per-event allocation this exists to remove.
 ///
 /// The same three-part shape appears in the two siblings below; the types have
-/// no common trait to hoist it onto, and a macro would hide four short bodies
+/// no common trait to hoist it onto, and a macro would hide three short bodies
 /// behind an indirection worth less than it costs.
 pub(super) fn convert_chords_into(chords: &ChordChanges, out: &mut Vec<Utf16Chord>) {
     let src = &chords.changes;
@@ -106,6 +109,17 @@ pub(super) fn convert_expr_texts_into(texts: &NoteExpressionTextChanges, out: &m
             text: t.text.encode_utf16().collect(),
         });
     }
+}
+
+/// The block's integer note expressions, borrowed as they are: the shared and
+/// the VST3 value are one type, so nothing is converted.
+pub(super) fn expr_ints_of<'a>(
+    expressive: Option<&ExpressiveContext<'a>>,
+) -> &'a [NoteExpressionIntValue] {
+    expressive
+        .and_then(|e| e.expr_ints)
+        .map(|i| i.changes.as_slice())
+        .unwrap_or_default()
 }
 
 /// Sequencer-context conversion, exercised without a plugin binary: the
@@ -198,5 +212,48 @@ mod seq_scratch_tests {
 
         convert_chords_into(&changes(&[]), &mut out);
         assert!(out.is_empty(), "no chords this block means none are staged");
+    }
+
+    /// The block's integer expressions reach the plugin's event list: the
+    /// context's slice is what `process_shared` hands the stager.
+    ///
+    /// Mutation (run): `expr_ints_of` returning an empty slice → no event
+    /// is staged → fails.
+    #[test]
+    fn int_expressions_reach_the_event_list() {
+        use crate::events::{Payload, Stager, Vst3InputEvents};
+        use tutti_plugin_types::NoteExpressionIntChanges;
+        use tutti_vst3_ffi::EventList;
+
+        let mut ints = NoteExpressionIntChanges::new();
+        assert!(ints.add_change(NoteExpressionIntValue {
+            sample_offset: 4,
+            note_id: 7,
+            type_id: 2,
+            value: 41,
+        }));
+        let expressive = ExpressiveContext {
+            expr_ints: Some(&ints),
+            ..Default::default()
+        };
+        let events = Vst3InputEvents {
+            expr_ints: expr_ints_of(Some(&expressive)),
+            ..Default::default()
+        };
+        let list = EventList::input();
+        Stager::default().stage(&list, &events);
+        list.with_events(|staged| match staged.events {
+            [e] => match e.payload {
+                Payload::ExpressionInt(x) => {
+                    assert_eq!(
+                        (x.typeId, x.noteId, x.value, e.sample_offset()),
+                        (2, 7, 41, 4)
+                    );
+                }
+                other => panic!("expected an int expression, got {other:?}"),
+            },
+            other => panic!("expected one event, got {other:?}"),
+        });
+        assert!(expr_ints_of(None).is_empty());
     }
 }

@@ -328,6 +328,9 @@ fn fetch_all(list: &ComWrapper<EventList>) -> Vec<CEvent> {
 /// each returned `Event` (and its borrowed `bytes` pointer) live for the rest of
 /// `process`. Staged well past any small inline scratch, every pointer must
 /// still read its own event's bytes after the whole batch has been fetched.
+///
+/// Mutation (run): `getEvent` ignoring the index (`events.get(i * 0)`) → every
+/// event reads event 0's bytes → fails (as does the text test below).
 #[test]
 fn data_event_bytes_stay_valid_after_fetching_every_event() {
     const N: u8 = 32;
@@ -377,6 +380,9 @@ fn chord_event(staging: &mut Staging<'_>, root: i16, name: &[u16]) -> Event {
 /// The same hazard on the text side: chord / scale / text events hand out a
 /// `text` pointer into the arena. Fetching every event first and reading
 /// after must still resolve each name correctly.
+///
+/// Mutation (run): `getEvent` ignoring the index (`events.get(i * 0)`) → every
+/// chord reads the first root and name → fails.
 #[test]
 fn text_pointers_stay_valid_after_fetching_every_event() {
     let names: Vec<Vec<u16>> = (0..16).map(|i| utf16(&format!("Chord{i}"))).collect();
@@ -469,6 +475,9 @@ fn get_event_rejects_bad_indices() {
 }
 
 /// Staging and `clear` run every block; they reuse the reserved capacity.
+///
+/// Mutation (run): a `Vec::with_capacity(8)` in `Staging::push` → `assert_no_alloc`
+/// aborts.
 #[test]
 fn staging_is_allocation_free_after_warmup() {
     let list = EventList::input();
@@ -489,6 +498,7 @@ fn staging_is_allocation_free_after_warmup() {
     });
 }
 
+/// Mutation (run): `Inner::clear` not clearing `events` → the count stays 2 → fails.
 #[test]
 fn clear_empties_a_staged_block() {
     let list = EventList::input();
@@ -611,6 +621,9 @@ fn add_event_refuses_past_the_room() {
 
 /// A text event the plugin adds is copied into the arena, whatever the
 /// pointer's lifetime.
+///
+/// Mutation (run): `from_c` interning nothing (an empty `TextRef`) → the text
+/// reads back empty → fails.
 #[test]
 fn a_plugin_text_is_copied_into_the_arena() {
     let list = EventList::output();

@@ -5,7 +5,7 @@
 //! Here, not in the host's `src/`, because the plugin's side of these calls is
 //! `unsafe` COM and the host crate forbids `unsafe`.
 
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep};
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
@@ -227,134 +227,6 @@ fn the_plugin_sysex_path_is_allocation_free() {
     assert!(refused, "the arena refused one inside the gate");
     assert!(!pool.is_empty());
     assert!(list.dropped() > 0);
-}
-
-/// Regression for the dangling `DataEvent.bytes` bug.
-///
-/// A plugin's normal pattern is `getEventCount()` then `getEvent(i)` for
-/// every `i`, keeping each returned `Event` (and therefore each borrowed
-/// `bytes` pointer) live for the rest of `process`. Copying each event's
-/// bytes into an inline-then-heap scratch of 8 cleared once per *block*
-/// breaks that: the 9th push spills the inline storage to the heap and moves
-/// it, dangling every pointer already handed out. This test stages well past
-/// the 8-element inline capacity and reads every pointer only *after* the
-/// whole batch has been fetched — the exact order that reads freed memory.
-///
-/// Every channel-voice non-note MIDI message becomes a `Data` event, so 32
-/// CCs is not a contrived input.
-#[test]
-fn data_event_bytes_stay_valid_after_fetching_every_event() {
-    use tutti_midi_types::convert::midi1_cc_to_midi2;
-
-    const N: usize = 32;
-    let midi: Vec<MidiEvent> = (0..N)
-        .map(|i| {
-            MidiEvent::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::BRIGHTNESS,
-                midi1_cc_to_midi2(i as u8),
-            )
-            .with_frame_offset(i as u32)
-        })
-        .collect();
-
-    let list = EventList::input();
-    let mut stager = Stager::default();
-    stager.stage(&list, &midi_only(&midi));
-
-    let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
-    // the call.
-    let count = unsafe { ptr.getEventCount() };
-    assert_eq!(count as usize, N, "every CC should stage as a Data event");
-
-    // First fetch them all, holding every Event (and its `bytes`
-    // pointer) live — as a plugin does.
-    let mut fetched: Vec<Event> = Vec::with_capacity(N);
-    for i in 0..count {
-        // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
-        let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
-        // for the call.
-        assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
-        fetched.push(out);
-    }
-
-    // Then dereference. Each event must still see its own
-    // 3-byte MIDI-1 CC frame, not another event's bytes or freed memory.
-    for (i, ev) in fetched.iter().enumerate() {
-        // SAFETY: the test wrote this union member itself, with the tag that names it.
-        let data = unsafe { ev.__field0.data };
-        assert_eq!(data.size, 3, "event {i}");
-        assert!(!data.bytes.is_null(), "event {i}");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
-        // for the call.
-        let bytes = unsafe { std::slice::from_raw_parts(data.bytes, 3) };
-        assert_eq!(bytes[0], 0xB0, "event {i} status");
-        assert_eq!(bytes[1], 74, "event {i} controller");
-        assert_eq!(
-            bytes[2], i as u8,
-            "event {i} value — pointer aliased or stale"
-        );
-    }
-}
-
-/// The same hazard on the text side: chord / scale / text events hand out a
-/// `text` pointer into the arena. Fetching every event first and reading
-/// after must still resolve each name correctly.
-#[test]
-fn text_pointers_stay_valid_after_fetching_every_event() {
-    let names: Vec<Vec<u16>> = (0..16)
-        .map(|i| format!("Chord{i}").encode_utf16().collect())
-        .collect();
-    let chords: Vec<Utf16Chord> = names
-        .iter()
-        .enumerate()
-        .map(|(i, text)| Utf16Chord {
-            sample_offset: i as i32,
-            root: 60 + i as i16,
-            bass_note: 48,
-            mask: 0,
-            text: text.clone(),
-        })
-        .collect();
-
-    let list = EventList::input();
-    let mut stager = Stager::default();
-    stager.stage(
-        &list,
-        &Vst3InputEvents {
-            chords: &chords,
-            ..Default::default()
-        },
-    );
-
-    let ptr = list.to_com_ptr::<IEventList>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
-    // the call.
-    let count = unsafe { ptr.getEventCount() };
-    assert_eq!(count as usize, names.len());
-
-    let mut fetched: Vec<Event> = Vec::with_capacity(names.len());
-    for i in 0..count {
-        // SAFETY: all-zero bytes is a valid value of this plain-data SDK struct.
-        let mut out: Event = unsafe { std::mem::zeroed() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
-        // for the call.
-        assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
-        fetched.push(out);
-    }
-
-    for (i, ev) in fetched.iter().enumerate() {
-        // SAFETY: the test wrote this union member itself, with the tag that names it.
-        let chord = unsafe { ev.__field0.chord };
-        assert_eq!(chord.root, 60 + i as i16, "event {i}");
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
-        // for the call.
-        let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
-        assert_eq!(text, names[i].as_slice(), "event {i} text");
-    }
 }
 
 /// **The text arena never grows, so a text pointer already handed out

@@ -219,6 +219,7 @@ impl EventList {
         let inner = self.inner.borrow();
         read(&Staged {
             events: &inner.events,
+            capacity: inner.events.capacity(),
             sysex: inner.sysex_bytes(),
             text: &inner.text_arena,
         })
@@ -292,6 +293,8 @@ impl EventList {
 pub struct Staged<'a> {
     /// The events, in staging order.
     pub events: &'a [Event],
+    /// The capacity of the event storage, which staging never exceeds.
+    pub capacity: usize,
     /// The bytes [`Payload::SysEx`] events index.
     pub sysex: &'a [u8],
     /// The UTF-16 arena [`TextRef`]s index.
@@ -300,6 +303,7 @@ pub struct Staged<'a> {
 
 /// A block being staged into an input [`EventList`]; the list is borrowed
 /// until [`finish`](Self::finish) or drop.
+#[must_use = "the block stays unsorted until `finish`"]
 pub struct Staging<'a>(BorrowGuard<'a, Inner>);
 
 impl Staging<'_> {

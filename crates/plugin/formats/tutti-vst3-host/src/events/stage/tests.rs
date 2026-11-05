@@ -145,7 +145,7 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
 }
 
 #[test]
-fn test_update_from_midi_counts_correctly() {
+fn one_midi_event_stages_one_event() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let midi_events = [
@@ -156,7 +156,7 @@ fn test_update_from_midi_counts_correctly() {
 }
 
 #[test]
-fn test_clear_after_update_from_midi() {
+fn clear_empties_a_staged_block() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let midi_events = [
@@ -168,10 +168,10 @@ fn test_clear_after_update_from_midi() {
     assert_eq!(len(&list), 0);
 }
 
-/// RT regression: `update_from_midi` / `clear` run every buffer;
+/// RT regression: staging MIDI and `clear` run every block;
 /// they must reuse the pre-reserved Vec capacity without heap grow.
 #[test]
-fn update_from_midi_is_allocation_free_after_warmup() {
+fn midi_staging_is_allocation_free_after_warmup() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let events = [
@@ -198,7 +198,7 @@ fn update_from_midi_is_allocation_free_after_warmup() {
 /// source (including arena-interned chord/scale/text) must stay
 /// allocation-free once the events Vec and the text arena have warmed up.
 #[test]
-fn update_from_sources_is_allocation_free_after_warmup() {
+fn staging_every_source_is_allocation_free_after_warmup() {
     let list = EventList::input();
     let mut stager = Stager::default();
     let midi = [
@@ -500,11 +500,11 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
 
     let list = EventList::input();
     let mut stager = Stager::default();
-    let storage = list.with_events(|staged| staged.events.as_ptr());
+    let (storage, capacity) = list.with_events(|staged| (staged.events.as_ptr(), staged.capacity));
     assert_no_alloc::assert_no_alloc(|| stager.stage(&list, &src));
     assert_eq!(
-        list.with_events(|staged| staged.events.as_ptr()),
-        storage,
+        list.with_events(|staged| (staged.events.as_ptr(), staged.capacity)),
+        (storage, capacity),
         "the list never grew"
     );
     assert_eq!(len(&list), EVENT_CAPACITY);

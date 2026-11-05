@@ -28,8 +28,7 @@ pub use note_expression::{expression_type_from_id, expression_type_id};
 pub use stage::{Stager, Vst3InputEvents, drain_midi};
 pub use tutti_vst3_ffi::{
     Chord, Data, Event, EventHeader, EventKind, ExpressionInt, ExpressionText, ExpressionValue,
-    K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, NoteOff, NoteOn, Payload, PolyPressure, Scale, TextArena,
-    TextRef,
+    K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, NoteOff, NoteOn, Payload, PolyPressure, Scale, TextRef,
 };
 
 use crate::types::{MidiEvent, NoteExpressionIntValue};

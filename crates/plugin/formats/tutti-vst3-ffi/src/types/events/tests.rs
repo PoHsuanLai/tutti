@@ -68,6 +68,7 @@ fn the_wire_tag_is_derived_from_the_payload() {
     assert_eq!(EventKind::try_from(c.r#type), Ok(EventKind::Data));
 }
 
+/// Mutation (run): `TryFrom<u16>` answering `Ok(Data)` for an unknown tag → fails.
 #[test]
 fn an_undefined_tag_is_refused() {
     assert_eq!(EventKind::try_from(0x1234), Err(UnknownEventKind(0x1234)));
@@ -161,6 +162,9 @@ fn note_expression_int_round_trips() {
 }
 
 /// Data past the inline room is cut to it, and a null or empty payload decodes to zeros.
+///
+/// Mutation (run): `from_c` copying `min(size, 8)` bytes instead of `min(size, 16)`
+/// → the payload is cut → fails.
 #[test]
 fn data_event_with_a_bad_size_decodes_within_its_inline_bytes() {
     let bytes = [7u8; 40];
@@ -191,6 +195,8 @@ fn data_event_with_a_bad_size_decodes_within_its_inline_bytes() {
     assert_eq!(d.payload(), &[0u8; 16]);
 }
 
+/// Mutation (run): `to_c` answering the arena's pointer for an out-of-range ref
+/// → the pointer is non-null → fails.
 #[test]
 fn a_text_ref_outside_the_arena_is_a_null_pointer() {
     let event = Event::at(
@@ -208,4 +214,37 @@ fn a_text_ref_outside_the_arena_is_a_null_pointer() {
         assert!(c.__field0.chord.text.is_null());
         assert_eq!(c.__field0.chord.textLen, 0);
     }
+}
+
+/// Each kind's tag is the SDK's own ordinal, asserted constant by constant: a
+/// table that paired two names with each other's ordinals would still round-trip.
+///
+/// Mutation (run): swapping the `NoteOn` and `NoteOff` ordinals in `event_kinds!`
+/// → both assertions fail.
+#[test]
+fn each_kind_is_the_sdk_ordinal() {
+    use vst3::Steinberg::Vst::Event_::EventTypes_ as T;
+    let tag = |sdk| u16::try_from(sdk).expect("an SDK tag fits u16");
+    assert_eq!(EventKind::NoteOn as u16, tag(T::kNoteOnEvent));
+    assert_eq!(EventKind::NoteOff as u16, tag(T::kNoteOffEvent));
+    assert_eq!(EventKind::Data as u16, tag(T::kDataEvent));
+    assert_eq!(EventKind::PolyPressure as u16, tag(T::kPolyPressureEvent));
+    assert_eq!(
+        EventKind::NoteExpressionValue as u16,
+        tag(T::kNoteExpressionValueEvent)
+    );
+    assert_eq!(
+        EventKind::NoteExpressionText as u16,
+        tag(T::kNoteExpressionTextEvent)
+    );
+    assert_eq!(EventKind::Chord as u16, tag(T::kChordEvent));
+    assert_eq!(EventKind::Scale as u16, tag(T::kScaleEvent));
+    assert_eq!(
+        EventKind::NoteExpressionIntValue as u16,
+        tag(T::kNoteExpressionIntValueEvent)
+    );
+    assert_eq!(
+        EventKind::LegacyMidiCcOut as u16,
+        tag(T::kLegacyMIDICCOutEvent)
+    );
 }

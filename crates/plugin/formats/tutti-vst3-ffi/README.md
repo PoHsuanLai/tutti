@@ -6,8 +6,8 @@ bindings; the host crate above it is
 `#![forbid(unsafe_code)]` and holds the logic (the lifecycle, the shell, the
 MIDI mapping, the edit ring).
 
-This crate names nothing of tutti's except the value crates `tutti-types`,
-`tutti-plugin-types` and `tutti-midi-types`.
+This crate names nothing of tutti's except the value crates `tutti-types`
+and `tutti-plugin-types`.
 
 ## What is here
 

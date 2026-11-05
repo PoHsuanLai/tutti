@@ -95,9 +95,11 @@ impl std::fmt::Debug for Module {
     }
 }
 
-// SAFETY: `ComPtr` is a raw pointer, so neither trait is inferred. The factory
-// is stateless towards the host (`setHostContext`, its one mutating call, runs
-// once in `open`, before the `Arc` exists), and the other fields never move
+// SAFETY: `ComPtr` is a raw pointer, so neither trait is inferred. One module
+// backs several `Plugin`s, and `countClasses`, `getClassInfo` and
+// `createInstance` may be called concurrently (the SDK's own hosts scan from
+// worker threads). The factory is stateless towards the host (`setHostContext`,
+// its one mutating call, runs once in `open`, before the `Arc` exists), and the other fields never move
 // under a shared reference: `_library` unloads only in `Drop`, which `Arc`
 // serialises, and `run_loop` is `Mutex`-guarded (see `com/run_loop.rs`).
 unsafe impl Send for Module {}

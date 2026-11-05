@@ -22,7 +22,7 @@ use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, Pro
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, midi_to_mapped_controller, stage_input_events};
 use super::sequencer::{
-    SeqScratch, convert_chords_into, convert_expr_texts_into, convert_scales_into,
+    SeqScratch, convert_chords_into, convert_expr_texts_into, convert_scales_into, expr_ints_of,
 };
 use super::shell::{Hold, Shell};
 
@@ -677,10 +677,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             chords: &seq.chords,
             scales: &seq.scales,
             expr_texts: &seq.expr_texts,
-            expr_ints: expressive
-                .and_then(|e| e.expr_ints)
-                .map(|i| i.changes.as_slice())
-                .unwrap_or_default(),
+            expr_ints: expr_ints_of(expressive),
         };
         let result = match self.process(buffer, &events, ctx.param_changes, &transport) {
             Ok(output) => {

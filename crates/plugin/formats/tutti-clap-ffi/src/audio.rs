@@ -49,7 +49,7 @@ pub enum ProcessError {
 /// start of every block from that block's slices and read only inside the same
 /// `process` call, so none outlives the borrow it came from.
 #[derive(Debug)]
-struct Typed<T: Copy + Default + Send + 'static> {
+struct Typed<T: Width> {
     pad: Vec<Vec<T>>,
     input_ptrs: Vec<*mut T>,
     output_ptrs: Vec<*mut T>,
@@ -57,9 +57,6 @@ struct Typed<T: Copy + Default + Send + 'static> {
     output_bufs: Vec<clap_audio_buffer>,
     /// What `resize_for` sized the tables for: channels and ports per side.
     sized: Capacity,
-    /// Wraps a port's channel pointers as the C struct's `data32` or `data64`.
-    /// The one place the width reaches the C layout.
-    port: fn(*mut *mut T, u32) -> clap_audio_buffer,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -73,36 +70,43 @@ struct Capacity {
 // SAFETY: the raw pointers are scratch rewritten and read inside one `process`
 // call and never dereferenced across calls or threads; the rest is `Vec`s of
 // `T: Send`.
-unsafe impl<T: Copy + Default + Send + 'static> Send for Typed<T> {}
+unsafe impl<T: Width> Send for Typed<T> {}
 
-impl Typed<f32> {
-    /// An empty 32-bit scratch; `resize_for` before use.
-    fn new() -> Self {
-        Self::with_port(|ptrs, channel_count| clap_audio_buffer {
+/// A sample width CLAP carries: `f32` through `data32`, `f64` through
+/// `data64`. A fixed fact of each type; the width a scratch holds is the
+/// runtime [`SampleFormat`] in its [`Pool`].
+trait Width: Copy + Default + Send + 'static {
+    /// A port buffer over `channel_count` channel pointers at `ptrs`.
+    fn port_buffer(ptrs: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
+}
+
+impl Width for f32 {
+    fn port_buffer(ptrs: *mut *mut f32, channel_count: u32) -> clap_audio_buffer {
+        clap_audio_buffer {
             data32: ptrs,
             data64: ptr::null_mut(),
             channel_count,
             latency: 0,
             constant_mask: 0,
-        })
+        }
     }
 }
 
-impl Typed<f64> {
-    /// An empty 64-bit scratch; `resize_for` before use.
-    fn new() -> Self {
-        Self::with_port(|ptrs, channel_count| clap_audio_buffer {
+impl Width for f64 {
+    fn port_buffer(ptrs: *mut *mut f64, channel_count: u32) -> clap_audio_buffer {
+        clap_audio_buffer {
             data32: ptr::null_mut(),
             data64: ptrs,
             channel_count,
             latency: 0,
             constant_mask: 0,
-        })
+        }
     }
 }
 
-impl<T: Copy + Default + Send + 'static> Typed<T> {
-    fn with_port(port: fn(*mut *mut T, u32) -> clap_audio_buffer) -> Self {
+impl<T: Width> Typed<T> {
+    /// An empty scratch; `resize_for` before use.
+    fn new() -> Self {
         Self {
             pad: Vec::new(),
             input_ptrs: Vec::new(),
@@ -110,7 +114,6 @@ impl<T: Copy + Default + Send + 'static> Typed<T> {
             input_bufs: Vec::new(),
             output_bufs: Vec::new(),
             sized: Capacity::default(),
-            port,
         }
     }
 
@@ -209,13 +212,13 @@ impl<T: Copy + Default + Send + 'static> Typed<T> {
         let mut offset = 0usize;
         for &channels in input_ports {
             let base = self.input_ptrs.as_mut_ptr().wrapping_add(offset);
-            self.input_bufs.push((self.port)(base, channels));
+            self.input_bufs.push(T::port_buffer(base, channels));
             offset += channels as usize;
         }
         let mut offset = 0usize;
         for &channels in output_ports {
             let base = self.output_ptrs.as_mut_ptr().wrapping_add(offset);
-            self.output_bufs.push((self.port)(base, channels));
+            self.output_bufs.push(T::port_buffer(base, channels));
             offset += channels as usize;
         }
         Ok(())
@@ -296,9 +299,16 @@ pub enum Planar<'a, 'b> {
 }
 
 impl Planar<'_, '_> {
+    fn format(&self) -> SampleFormat {
+        match self {
+            Self::F32 { .. } => SampleFormat::Float32,
+            Self::F64 { .. } => SampleFormat::Float64,
+        }
+    }
+
     /// Silences the first `frames` of every output channel.
     fn silence_outputs(&mut self, frames: usize) {
-        fn zero<T: Copy + Default>(outputs: &mut [&mut [T]], frames: usize) {
+        fn zero<T: Width>(outputs: &mut [&mut [T]], frames: usize) {
             for channel in outputs {
                 let n = channel.len().min(frames);
                 channel[..n].fill(T::default());
@@ -445,6 +455,11 @@ impl AudioSide {
             out_events,
             pool,
         } = call;
+        // A block of the wrong width is refused before anything else, so the
+        // answer does not depend on the instance's state.
+        if scratch.format() != audio.format() {
+            return Err(ProcessError::FormatMismatch);
+        }
         let _claim = self.core.roles.claim();
         if self.is_retired() {
             return Err(ProcessError::Retired);
@@ -464,6 +479,7 @@ impl AudioSide {
                 typed.bind(inputs, outputs, input_ports, output_ports, frames as usize)?;
                 typed.tables()
             }
+            // Unreachable: the widths were compared above.
             _ => return Err(ProcessError::FormatMismatch),
         };
         self.ensure_processing()?;

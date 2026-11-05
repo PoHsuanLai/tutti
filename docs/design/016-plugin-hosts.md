@@ -1081,7 +1081,8 @@ parameter.
   `clap_audio_buffer` tables (`data32` or `data64`, the only per-width code,
   with zeroing the outputs on `CLAP_PROCESS_ERROR`), and the rest (claim,
   checks, `ensure_processing`, event lists, the plugin call, pool serving) runs
-  once for both widths. A buffer of the other width is
+  once for both widths. A buffer of the other width is refused first, before
+  the audio claim and the retired check, as
   `ProcessError::FormatMismatch` (`ClapError::FormatMismatch` in the host); it
   is not converted.
 - `activate` refuses a 64-bit request on a plugin without 64-bit ports.

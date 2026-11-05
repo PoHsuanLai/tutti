@@ -409,6 +409,46 @@ fn a_retired_audio_half_calls_nothing() {
     side.stop();
 }
 
+/// A block of the wrong width is refused as a format mismatch even on a
+/// retired instance: the width is checked before the claim and the retired
+/// check, so the answer does not depend on the instance's state.
+///
+/// Mutation (run): move the width comparison in `AudioSide::process` after the
+/// `is_retired` check: the block answers `Retired` and the assertion fails.
+#[test]
+fn a_mismatched_block_is_refused_before_the_retired_check() {
+    let _g = lock();
+    let mut plugin = load(Arc::default());
+    plugin.activate(48_000.0, 1, 512).expect("activates");
+    let mut side = plugin.audio_side().unwrap();
+    drop(plugin);
+    assert!(side.is_retired());
+    let mut scratch = PortScratch::new(SampleFormat::Float32);
+    scratch.resize_for(&[2], &[2], 512);
+    let mut left = vec![0.0f64; FRAMES];
+    let mut right = vec![0.0f64; FRAMES];
+    let mut outputs: Vec<&mut [f64]> = vec![&mut left, &mut right];
+    let mut sink = Count::default();
+    assert_eq!(
+        side.process(ProcessCall {
+            scratch: &mut scratch,
+            audio: Planar::F64 {
+                inputs: &[],
+                outputs: &mut outputs,
+            },
+            input_ports: &[2],
+            output_ports: &[2],
+            frames: FRAMES as u32,
+            steady_time: 0,
+            transport: None,
+            in_events: &NoEvents,
+            out_events: &mut sink,
+            pool: None,
+        }),
+        Err(ProcessError::FormatMismatch)
+    );
+}
+
 /// A deactivated plugin's audio half is retired too: a block after a rejoin
 /// must not start processing on an inactive plugin.
 ///

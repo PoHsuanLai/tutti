@@ -238,30 +238,25 @@ fn the_timeline_handle_tracks_the_live_transport() {
     assert_eq!(timeline.tempo().get(), 140.0);
 }
 
-/// The loop region a host arms, and the validated form it reads back.
+/// The loop region a host edits, and the form it reads back.
 ///
-/// `set_range` stores raw bounds — an inverted pair is a legitimate transient
-/// while a user drags a brace — and `range()` is where validation happens,
-/// returning `None` for disabled, empty or inverted. Both types have to be
-/// nameable for that round trip to be writable.
+/// An edit is a scheduled `LoopEdit`; the region is the engine's, so a read
+/// shows an edit only once a block has applied it. `LoopRange::new` is where
+/// an inverted brace is refused, so every type in the round trip has to be
+/// nameable from the prelude.
 #[test]
 fn the_loop_region_round_trips_through_the_prelude() {
-    let span = LoopSpan::new(4.0, 8.0);
-    span.set_enabled(true);
-
-    let armed: Option<LoopRange> = span.range();
-    let armed = armed.expect("4..8 is a usable region");
-    assert_eq!(armed.start().get(), 4.0);
-    assert_eq!(armed.end().get(), 8.0);
-
-    // Inverted: stored happily, reported as no region.
-    span.set_range(8.0, 4.0);
-    assert_eq!(
-        span.bounds(),
-        (Beat(8.0), Beat(4.0)),
-        "raw bounds are what a drag shows"
+    let range: LoopRange = LoopRange::new(4.0, 8.0).expect("4..8 is a usable region");
+    assert_eq!(range.start().get(), 4.0);
+    assert_eq!(range.end().get(), 8.0);
+    assert!(
+        LoopRange::new(8.0, 4.0).is_none(),
+        "an inverted brace is not a loop"
     );
-    assert!(span.range().is_none(), "but it is not a loop");
+
+    let region = LoopRegion::default().with(LoopEdit::over(range));
+    assert_eq!(region.active(), Some(range));
+    assert_eq!(region.with(LoopEdit::armed(false)).bounds(), range);
 }
 
 /// The engine's measurement vocabulary arrives whole, not as a hand-picked subset.

@@ -27,8 +27,8 @@ mod support;
 
 use support::{Change, Segment, model_beats};
 use tutti_core::{
-    At, Beat, Bpm, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopRange, MotionEvent,
-    SampleRate, Samples, Tail, Then, Transport, TransportCommand,
+    At, Beat, Bpm, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopEdit, LoopRange,
+    MotionEvent, SampleRate, Samples, Tail, Then, Transport, TransportCommand,
 };
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
@@ -657,7 +657,7 @@ fn tempo_and_loop_change_on_their_frames() {
         .expect("room");
     m.schedule(
         At::Frame(Frame(2_000)),
-        TransportCommand::Loop(LoopRange::new(0.0, 0.2)),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 0.2).expect("ordered"))),
     )
     .expect("room");
     render(&engine, ChannelLayout::MONO, &[512; 8]);
@@ -671,7 +671,7 @@ fn tempo_and_loop_change_on_their_frames() {
     // Within a frame of rounding either way, as the beat accumulates.
     assert!(beat(2_998) > 0.199);
     assert!(beat(3_002) < 0.001);
-    assert!(transport.settings.loop_span.range().is_some());
+    assert!(transport.motion.loop_region().active().is_some());
 }
 
 /// The first engine-level case of the sample-accuracy contract: the transport
@@ -741,11 +741,14 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     // disarmed before the next.
     m.schedule(
         At::Frame(Frame(1_700)),
-        TransportCommand::Loop(LoopRange::new(0.02, 0.08)),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.02, 0.08).expect("ordered"))),
     )
     .expect("room");
-    m.schedule(At::Frame(Frame(2_900)), TransportCommand::Loop(None))
-        .expect("room");
+    m.schedule(
+        At::Frame(Frame(2_900)),
+        TransportCommand::Loop(LoopEdit::armed(false)),
+    )
+    .expect("room");
     m.schedule(
         At::Frame(Frame(3_100)),
         MotionEvent::Locate {
@@ -841,7 +844,7 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
     // Armed at beat ~3.04, behind the playhead.
     m.schedule(
         At::Frame(Frame(1_000)),
-        TransportCommand::Loop(LoopRange::new(1.0, 2.0)),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(1.0, 2.0).expect("ordered"))),
     )
     .expect("room");
     // Into the loop, just before its end: a wrap 2 400 frames later.
@@ -1160,7 +1163,9 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
         .motion
         .schedule(
             At::Frame(Frame(LOOP_AT)),
-            TransportCommand::Loop(LoopRange::new(loop_start, loop_end)),
+            TransportCommand::Loop(LoopEdit::over(
+                LoopRange::new(loop_start, loop_end).expect("ordered"),
+            )),
         )
         .expect("room");
 

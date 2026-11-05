@@ -400,8 +400,13 @@ mod tests {
         let (transport, state) = build_callback_state(sample_rate);
 
         transport.settings.set_tempo(120.0);
-        transport.settings.loop_span.set_range(0.0, 4.0);
-        transport.settings.loop_span.set_enabled(true);
+        transport
+            .motion
+            .schedule(
+                tutti_core::At::NextBlock,
+                tutti_core::LoopEdit::over(tutti_core::LoopRange::new(0.0, 4.0).expect("ordered")),
+            )
+            .expect("room");
         let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.seek.request(3.99);
 

@@ -12,7 +12,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::state::LoopSpan;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU64};
 use crate::{Beat, Bpm};
 
@@ -51,8 +50,6 @@ pub struct TransportSettings {
     /// t.settings.segment_generation.store(0, std::sync::atomic::Ordering::Release);
     /// ```
     pub(crate) segment_generation: Arc<AtomicU64>,
-    /// Loop region and whether looping is armed.
-    pub loop_span: LoopSpan,
     /// Whether the transport is armed and capturing. Read by the metronome's
     /// `RecordingOnly` mode and by hosted plugins' transport snapshot.
     pub recording: Arc<AtomicBool>,
@@ -82,14 +79,13 @@ pub struct TransportSettings {
 }
 
 impl TransportSettings {
-    /// Fresh settings: 120 BPM, beat 0, paused, not recording, loop disarmed.
+    /// Fresh settings: 120 BPM, beat 0, paused, not recording.
     #[must_use]
     pub fn new() -> Self {
         Self {
             tempo: Arc::new(AtomicF64::new(120.0)),
             beat: Arc::new(AtomicF64::new(0.0)),
             segment_generation: Arc::new(AtomicU64::new(0)),
-            loop_span: LoopSpan::default(),
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
@@ -173,7 +169,6 @@ impl Default for TransportSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::LoopRange;
     use super::*;
 
     #[test]
@@ -183,9 +178,5 @@ mod tests {
 
         a.set_tempo(140.0);
         assert_eq!(b.tempo().get(), 140.0, "clones must share, not copy");
-
-        b.loop_span.set_range(2.0, 6.0);
-        b.loop_span.set_enabled(true);
-        assert_eq!(a.loop_span.range(), LoopRange::new(2.0, 6.0));
     }
 }

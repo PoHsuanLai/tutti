@@ -25,15 +25,16 @@ use tutti_core::transport::{ClickState, Timeline, Transport};
 ///   `is_playing()` does not flip until something renders.
 /// - **`.settings`** — values. `set_tempo`, `set_beat`, `set_recording`, and the
 ///   reads beside them.
-/// - **`.settings.loop_span`** — the loop region. `set_range(start, end)` and
-///   `set_enabled(..)` to arm it; [`range()`](tutti_core::transport::LoopSpan::range)
-///   to read it back as a validated [`LoopRange`](tutti_core::transport::LoopRange),
-///   or `None` if it is disabled, empty or inverted. `bounds()` gives the raw
-///   pair instead, which is what a UI drawing a brace mid-drag wants — an
-///   inverted pair is a legitimate transient there, which is why the setter does
-///   not validate and the reader does.
+/// - **the loop region** — the engine's. Edit it by scheduling a
+///   [`LoopEdit`](tutti_core::transport::LoopEdit) with `motion.schedule(At::NextBlock, ..)`;
+///   it changes whole, at a block boundary or the frame named.
+///   `motion.loop_region()` reads what the engine last applied, as a
+///   [`LoopRegion`](tutti_core::transport::LoopRegion): the bounds (kept while
+///   disarmed) and whether looping is armed. A brace mid-drag is the UI's own
+///   state: [`LoopRange::new`](tutti_core::transport::LoopRange::new) refuses
+///   an inverted pair, so the engine only ever holds a valid one.
 ///
-/// Everything takes `&self` (the state is atomics), so `Res` suffices. That also
+/// Everything takes `&self` (the state is atomics and queues), so `Res` suffices. That also
 /// means **`Res<TransportRes>` never triggers change detection** — a host that
 /// wants "did the tempo change this frame" diffs the value itself.
 #[derive(Resource, Clone, Debug)]

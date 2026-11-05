@@ -16,6 +16,7 @@ mod click;
 mod clock;
 pub(crate) mod fsm;
 mod handle;
+mod loop_region;
 mod motion;
 mod offline;
 mod project_meter;
@@ -28,14 +29,13 @@ pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub(crate) use clock::Control;
 pub use clock::TransportClock;
 pub use handle::Transport;
+pub use loop_region::{LoopEdit, LoopRegion};
 pub(crate) use motion::MotionAudio;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
-pub use state::{
-    ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed, SeekSlot, beats_per_sample,
-};
+pub use state::{ClockLinks, Declick, LoopRange, PlayheadClaimed, SeekSlot, beats_per_sample};
 pub use timed::{SCHEDULE_CAPACITY, ScheduleFull, TransportCommand};
 pub(crate) use timed::{Schedule, Scheduled};
 

@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
-    At, Beat, Cents, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, MotionEvent, NodeKey,
-    SampleRate, Samples, Then, Timeline, Transport,
+    At, Beat, Cents, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopEdit, LoopRange,
+    MotionEvent, NodeKey, SampleRate, Samples, Then, Timeline, Transport,
 };
 use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare};
 use tutti_io::Wave;
@@ -305,8 +305,12 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
     let t = Transport::new(SR);
-    t.settings.loop_span.set_range(1.0, 1.51);
-    t.settings.loop_span.set_enabled(true);
+    t.motion
+        .schedule(
+            At::NextBlock,
+            LoopEdit::over(LoopRange::new(1.0, 1.51).expect("ordered")),
+        )
+        .expect("room");
     let (graph, _ed) = graph_engine(&t, vec![pool(0.0)]);
     let b = play(&graph, &t, 512, blocks, |_| {});
 

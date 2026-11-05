@@ -27,8 +27,8 @@ mod support;
 use support::{Change, model_beats};
 use tutti_core::{
     At, Beat, Bpm, ChannelLayout, ClickNode, ClickSettings, Engine, FadeOut, Frame, InterleavedMut,
-    LoopRange, MetronomeMode, MotionEvent, OfflineTimeline, OfflineTimelineConfig, SampleRate,
-    Samples, Tail, Then, Transport, TransportCommand,
+    LoopEdit, LoopRange, MetronomeMode, MotionEvent, OfflineTimeline, OfflineTimelineConfig,
+    SampleRate, Samples, Tail, Then, Transport, TransportCommand,
 };
 use tutti_graph::{
     Cx, Editor, Env, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Unforkable,
@@ -195,15 +195,18 @@ fn the_env_walk_is_the_env_beat() {
     // Armed with the playhead inside it (~0.03): wraps from ~1 600.
     m.schedule(
         at(1_000),
-        TransportCommand::Loop(LoopRange::new(0.02, 0.06)),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.02, 0.06).expect("ordered"))),
     )
     .expect("room");
-    m.schedule(at(2_900), TransportCommand::Loop(None))
+    m.schedule(at(2_900), TransportCommand::Loop(LoopEdit::armed(false)))
         .expect("room");
     m.schedule(at(3_100), locate(3.25)).expect("room");
     // Armed behind the playhead (~3.28): no jump.
-    m.schedule(at(4_000), TransportCommand::Loop(LoopRange::new(1.0, 2.0)))
-        .expect("room");
+    m.schedule(
+        at(4_000),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(1.0, 2.0).expect("ordered"))),
+    )
+    .expect("room");
     // Into it, just before its end: wraps ~300 frames on.
     m.schedule(at(6_000), locate(1.99)).expect("room");
     m.schedule(at(8_000), MotionEvent::stop_unfaded())
@@ -212,7 +215,7 @@ fn the_env_walk_is_the_env_beat() {
     // A beat-timed tempo step, mid-block.
     m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm(140.0)))
         .expect("room");
-    m.schedule(at(30_000), TransportCommand::Loop(None))
+    m.schedule(at(30_000), TransportCommand::Loop(LoopEdit::armed(false)))
         .expect("room");
     let blocks = blocks(40_000);
     let mut starts = Vec::new();
@@ -345,7 +348,7 @@ fn click_clicks_on_the_model_beats() {
     .expect("room");
     m.schedule(
         At::Frame(Frame(30_001)),
-        TransportCommand::Loop(LoopRange::new(6.5, 8.25)),
+        TransportCommand::Loop(LoopEdit::over(LoopRange::new(6.5, 8.25).expect("ordered"))),
     )
     .expect("room");
     let mut out = Vec::new();
@@ -436,8 +439,13 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
     live_t.settings.set_tempo(Bpm(100.0));
-    live_t.settings.loop_span.set_range(6.0, 7.0);
-    live_t.settings.loop_span.set_enabled(true);
+    live_t
+        .motion
+        .schedule(
+            At::NextBlock,
+            LoopEdit::over(LoopRange::new(6.0, 7.0).expect("ordered")),
+        )
+        .expect("room");
     live_t
         .motion
         .try_send(MotionEvent::play_from(Beat(BAR_2)))

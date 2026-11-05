@@ -36,8 +36,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crossbeam_queue::ArrayQueue;
 use tutti_types::At;
 
+use super::loop_region::LoopEdit;
 use super::motion::MotionEvent;
-use super::state::LoopRange;
 use crate::{AudioThreadCell, Bpm};
 
 /// Scheduled transport commands that may be in flight at once: sent and not
@@ -53,10 +53,16 @@ pub enum TransportCommand {
     Motion(MotionEvent),
     /// Set the tempo.
     Tempo(Bpm),
-    /// Set and arm the loop region, or disarm looping with `None` (the
-    /// stored bounds are kept, as [`LoopSpan::set_enabled`](super::LoopSpan)
-    /// keeps them).
-    Loop(Option<LoopRange>),
+    /// Edit the loop region: move its bounds, or arm or disarm it
+    /// ([`LoopEdit`]). The engine owns the region, so this is the only way
+    /// to change it.
+    Loop(LoopEdit),
+}
+
+impl From<LoopEdit> for TransportCommand {
+    fn from(edit: LoopEdit) -> Self {
+        Self::Loop(edit)
+    }
 }
 
 impl From<MotionEvent> for TransportCommand {

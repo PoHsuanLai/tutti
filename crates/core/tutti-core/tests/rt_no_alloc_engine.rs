@@ -28,10 +28,10 @@ mod support;
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;
-use tutti_core::Engine;
 use tutti_core::{
     ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate, Transport,
 };
+use tutti_core::{Engine, LoopEdit, LoopRange};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -78,7 +78,8 @@ impl tutti_graph::Node for TransportTone {
 /// so the split into graph blocks runs too.
 ///
 /// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → the gate
-/// panics → fails.
+/// panics → fails; box a value in `LoopOwner::apply` (the loop edits publish
+/// a snapshot) → fails.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
@@ -135,14 +136,25 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
             .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 2100)),
-                TransportCommand::Loop(tutti_core::LoopRange::new(0.0, 4.0)),
+                TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 4.0).expect("ordered"))),
             )
             .expect("room");
             m.schedule(At::Beat(Beat(0.5)), MotionEvent::locate(Beat(0.0)))
                 .expect("room");
             m.schedule(At::Frame(Frame(base + 6000)), MotionEvent::stop())
                 .expect("room");
-            m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
+            m.schedule(
+                At::Frame(Frame(base + 7000)),
+                TransportCommand::Loop(LoopEdit::armed(false)),
+            )
+            .expect("room");
+            // The snapshot publish: a bounds edit and a re-arm.
+            m.schedule(
+                At::Frame(Frame(base + 7500)),
+                LoopEdit::bounds(LoopRange::new(1.0, 3.0).expect("ordered")),
+            )
+            .expect("room");
+            m.schedule(At::Frame(Frame(base + 7600)), LoopEdit::armed(true))
                 .expect("room");
             for _ in 0..8 {
                 engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
@@ -236,13 +248,16 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             .expect("room");
             m.schedule(
                 At::Frame(Frame(base + 1500)),
-                TransportCommand::Loop(tutti_core::LoopRange::new(0.0, 2.0)),
+                TransportCommand::Loop(LoopEdit::over(LoopRange::new(0.0, 2.0).expect("ordered"))),
             )
             .expect("room");
             m.schedule(At::Beat(Beat(1.75)), MotionEvent::locate(Beat(0.9)))
                 .expect("room");
-            m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
-                .expect("room");
+            m.schedule(
+                At::Frame(Frame(base + 7000)),
+                TransportCommand::Loop(LoopEdit::armed(false)),
+            )
+            .expect("room");
             for _ in 0..8 {
                 engine.process(&mut InterleavedMut::new(&mut output, four));
                 // Channel 0 of each frame: the click's left.

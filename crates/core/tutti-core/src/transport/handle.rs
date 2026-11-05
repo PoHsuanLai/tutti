@@ -14,18 +14,22 @@ use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 /// There is no facade here — the fields are public and carry their own APIs:
 ///
 /// ```
-/// # use tutti_core::{Bpm, MotionEvent, Transport};
+/// # use tutti_core::{At, Bpm, LoopEdit, MotionEvent, Transport};
 /// # let transport = Transport::new(48_000.0);
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
 /// transport.settings.set_tempo(Bpm(140.0));      // a value; cannot fail
-/// transport.settings.loop_span.set_range(0.0, 4.0);
-/// # Ok::<_, tutti_core::QueueFull>(())
+/// // Loop beats 0 to 4 from the next block; the engine owns the region.
+/// let range = tutti_core::LoopRange::new(0.0, 4.0).expect("ordered");
+/// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;
+/// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
 ///
 /// The split is by *who decides*. A motion change goes through a state
 /// machine on the audio thread, which may reject or defer it. A setting is
-/// just a store. Fusing the two is what grows a transport into a wall of
-/// atomic getters with no rule for which of them can fail.
+/// just a store. The loop region is neither: the engine owns it, an edit is a
+/// scheduled command, and [`MotionFsm::loop_region`] reads what it holds.
+/// Fusing the two is what grows a transport into a wall of atomic getters
+/// with no rule for which of them can fail.
 ///
 /// This type exists because [`Timeline`](super::Timeline) spans both halves — a
 /// reader needs the beat (settings) *and* whether it is rolling (motion) — and
@@ -35,7 +39,7 @@ use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 pub struct Transport {
     /// The state machine: play, stop, locate, scrub. Requests may be refused.
     pub motion: MotionFsm,
-    /// The plain shared values: tempo, playhead, loop region, record arm.
+    /// The plain shared values: tempo, playhead, record arm.
     pub settings: TransportSettings,
     /// Shared by every clone, so a device restart at a new rate
     /// ([`set_sample_rate`](Self::set_sample_rate)) reaches each holder —
@@ -83,7 +87,6 @@ impl Transport {
             tempo: Arc::clone(&self.settings.tempo),
             paused: Arc::clone(&self.settings.paused),
             seek: self.motion.seek.clone(),
-            loop_span: Some(self.settings.loop_span.clone()),
             position_writeback: Some(Arc::clone(&self.settings.beat)),
             segment_generation: Some(Arc::clone(&self.settings.segment_generation)),
             steady_time: Some(Arc::clone(&self.settings.steady_time)),
@@ -163,7 +166,7 @@ impl super::TransportState for Transport {
     }
 
     fn loop_range(&self) -> Option<LoopRange> {
-        self.settings.loop_span.range()
+        self.motion.loop_region().active()
     }
 
     fn steady_time(&self) -> i64 {

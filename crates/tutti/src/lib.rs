@@ -151,8 +151,8 @@ pub mod prelude {
     pub use tutti_core::CrossfadeCurve;
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
-        ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
-        OfflineTimeline, OfflineTimelineConfig, Then,
+        ClickState, FadeOut, LoopEdit, LoopRange, LoopRegion, MetronomeMode, MotionEvent,
+        MotionState, OfflineTimeline, OfflineTimelineConfig, Then,
     };
 
     // The device handle and its enumeration record.

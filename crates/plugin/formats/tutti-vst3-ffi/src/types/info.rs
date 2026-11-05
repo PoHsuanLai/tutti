@@ -26,9 +26,7 @@ impl std::fmt::Debug for BusInfo {
 impl Default for BusInfo {
     fn default() -> Self {
         Self {
-            // SAFETY: `BusInfo` is plain data (integers, a `String128` array and
-            // enums-as-integers); all-zero bytes is a valid value of each field.
-            inner: unsafe { std::mem::zeroed() },
+            inner: crate::sdk::zeroed(),
         }
     }
 }
@@ -65,7 +63,7 @@ impl BusInfo {
     }
 
     /// The raw record, for the plugin to fill in.
-    pub fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
+    pub(crate) fn as_mut_inner(&mut self) -> &mut vst3::Steinberg::Vst::BusInfo {
         &mut self.inner
     }
 }
@@ -166,7 +164,7 @@ impl Vst3ParameterInfo {
     }
 
     /// Reads the plugin's `ParameterInfo` record.
-    pub fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ParameterInfo) -> Self {
         Self {
             id: c.id,
             title: c.title,
@@ -366,7 +364,7 @@ impl Vst3NoteExpressionInfo {
     }
 
     /// Reads the plugin's `NoteExpressionTypeInfo` record.
-    pub fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -459,7 +457,7 @@ impl Vst3KeyswitchInfo {
     }
 
     /// Reads the plugin's `KeyswitchInfo` record.
-    pub fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
         Self {
             type_id: c.typeId,
             title: c.title,
@@ -522,7 +520,7 @@ impl Vst3UnitInfo {
     /// the raw id is a real one); [`resolve_program_list`](Self::resolve_program_list)
     /// finishes the job once the list ids are known.
     /// Reads the plugin's `UnitInfo` record.
-    pub fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
         Self {
             id: c.id,
             parent: (c.parentUnitId != unit_ids::NO_PARENT).then_some(c.parentUnitId),
@@ -536,7 +534,7 @@ impl Vst3UnitInfo {
     /// it. Split from `from_c` because resolving needs every list id, which is
     /// a second call the accessor makes once for the whole enumeration rather
     /// than once per unit.
-    pub fn resolve_program_list(&mut self, known: &[i32]) {
+    pub(crate) fn resolve_program_list(&mut self, known: &[i32]) {
         self.program_list = (self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
             && known.contains(&self.program_list_id_raw))
         .then_some(self.program_list_id_raw);
@@ -559,7 +557,7 @@ pub struct Vst3ProgramListInfo {
 
 impl Vst3ProgramListInfo {
     /// Reads the plugin's `ProgramListInfo` record.
-    pub fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
         Self {
             id: c.id,
             name: utf16_to_string(&c.name),

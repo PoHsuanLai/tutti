@@ -82,7 +82,7 @@ unsafe impl Send for State {}
 /// owning objects can be, and `run_iteration` must be called on the UI thread
 /// that registers (the host asserts this before it calls).
 #[derive(Default)]
-pub struct RunLoop {
+pub(crate) struct RunLoop {
     state: Mutex<State>,
 }
 
@@ -101,7 +101,7 @@ enum Due {
 impl RunLoop {
     /// A loop with nothing registered.
     #[must_use]
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
@@ -127,7 +127,17 @@ impl RunLoop {
     /// The lock is not held while a handler runs, so a handler may register or
     /// unregister handlers (itself included) from inside its callback. A handler
     /// unregistered by an earlier callback of the same iteration is not called.
-    pub fn run_iteration(&self) {
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if the main thread was marked
+    /// ([`tutti_plugin_types::mark_main_thread`]) and this is another thread:
+    /// the handlers are the plugin's UI-thread objects. Checked here, rather
+    /// than by making this `unsafe`, so the host crate (which forbids `unsafe`)
+    /// calls it as it calls every other main-thread entry, behind the same
+    /// assertion.
+    pub(crate) fn run_iteration(&self) {
+        tutti_plugin_types::assert_main_thread();
         let mut due: Vec<Due> = Vec::new();
         let mut fds: Vec<libc::pollfd> = Vec::new();
         {
@@ -197,7 +207,7 @@ impl RunLoop {
     /// Snapshot of what is registered and what this loop has dispatched.
     #[cfg(feature = "conformance")]
     #[must_use]
-    pub fn activity(&self) -> super::RunLoopActivity {
+    pub(crate) fn activity(&self) -> super::RunLoopActivity {
         let state = self.state();
         super::RunLoopActivity {
             timers_registered: state.timers.len(),
@@ -296,8 +306,8 @@ mod tests {
     impl ITimerHandlerTrait for SelfUnregistering {
         unsafe fn onTimer(&self) {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            // Re-enters the loop from the callback: takes the same lock
-            // `run_iteration` used to hold across this call.
+            // Re-enters the loop from the callback: takes the state lock,
+            // which `run_iteration` must not hold across this call.
             self.run_loop
                 .unregister_timer(self.me.load(Ordering::SeqCst));
         }
@@ -307,7 +317,7 @@ mod tests {
     /// and is not called again.
     ///
     /// Mutation: hold the state lock across the handler calls in
-    /// `run_iteration` (as before) and the callback's `unregister_timer` locks
+    /// `run_iteration` and the callback's `unregister_timer` locks
     /// the same mutex on the same thread: the test hangs instead of passing.
     #[test]
     fn a_timer_may_unregister_itself_from_its_callback() {

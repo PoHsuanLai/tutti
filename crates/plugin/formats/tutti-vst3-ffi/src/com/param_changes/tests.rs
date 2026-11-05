@@ -5,7 +5,7 @@ use super::super::MIN_POINT_ROOM;
 /// **A queued write that has no room is counted, not grown into**, and
 /// reported with the other input-list drops
 /// ([`points_dropped`](ParameterChangesImpl::points_dropped), which
-/// `Vst3Processor::param_points_dropped` adds in): the queue of its
+/// the host processor's dropped-point total adds in): the queue of its
 /// parameter is full, or the list has no queue left for a parameter the
 /// block's automation does not name. One with room lands ahead of the
 /// automation.
@@ -85,9 +85,11 @@ fn concurrent_reads_of_the_list_both_succeed() {
         });
         taken.wait();
         let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let count = unsafe { ptr.getParameterCount() };
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let queue = unsafe { ptr.getParameterData(1) };
         done.wait();
         assert_eq!(count, 2, "a second reader must see the list");
@@ -108,16 +110,21 @@ fn a_read_during_a_write_fails_at_the_com_level() {
     let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
     {
         let _adding = list.live.borrow_mut();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getParameterCount() }, 0);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert!(unsafe { ptr.getParameterData(0) }.is_null());
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert!(unsafe { ptr.addParameterData(&7, &mut 0) }.is_null());
     }
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert_eq!(unsafe { ptr.getParameterCount() }, 1);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     assert!(!unsafe { ptr.getParameterData(0) }.is_null());
     assert_eq!(list.points_dropped(), 1, "the refused add is counted");
 }
@@ -158,9 +165,9 @@ fn refill_from_changes_steady_state_is_allocation_free() {
 /// plugin sees exactly this block's queues.
 ///
 /// Mutation (run): trimming the list to each block's count
-/// (`queues.truncate(changes.queues.len())` in the refill, as before
-/// the list was presized) → the block that has more queues again finds
-/// them gone (it once grew them, inside the gate) → fails.
+/// (`queues.truncate(changes.queues.len())` in the refill) → the block that
+/// has more queues finds them gone and has to grow them, inside the gate →
+/// fails.
 #[test]
 fn a_varying_queue_count_never_touches_the_allocator() {
     use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
@@ -178,13 +185,15 @@ fn a_varying_queue_count_never_touches_the_allocator() {
                 } else {
                     wrapper.refill_from_changes(changes);
                 }
-                // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+                // SAFETY: the test calls a COM method on a live object it owns, with arguments
+                // valid for the call.
                 assert_eq!(unsafe { ptr.getParameterCount() }, n as i32);
             }
         }
     });
     assert_eq!(wrapper.pooled(), 200);
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     // A queue past the live count is not reachable by the plugin.
     assert!(unsafe { ptr.getParameterData(17) }.is_null());
 }
@@ -192,7 +201,7 @@ fn a_varying_queue_count_never_touches_the_allocator() {
 /// **A list presized for the chunk's points refills without allocating
 /// on first use**: every queue already has the room, so the first block
 /// that carries 140 points on each of 50 parameters reserves nothing
-/// (it used to grow each queue past its 16 points on the audio thread).
+/// (growing each queue past its 16 points would happen on the audio thread).
 ///
 /// Mutation (run): `with_queues` ignoring `floor` (a room of
 /// `MIN_POINT_ROOM`) → each queue keeps its latest value past that
@@ -221,7 +230,8 @@ fn add_parameter_data_reuses_pooled_queues() {
 
     let changes = unpooled(4, MIN_POINT_ROOM);
     let ptr = changes.to_com_ptr::<IParameterChanges>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let block = |id: u32| unsafe {
         changes.clear_in_place();
         let mut index = -1;
@@ -275,7 +285,8 @@ fn add_parameter_data_hands_the_plugin_a_live_queue_and_its_index() {
     let changes = unpooled(1, MIN_POINT_ROOM);
     let ptr = changes.to_com_ptr::<IParameterChanges>().unwrap();
 
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     unsafe {
         assert_eq!(ptr.getParameterCount(), 0);
 
@@ -324,7 +335,8 @@ fn emitted_changes_drain_into_the_reserved_set_without_allocating() {
         ParameterChanges::point_layout(PARAMS as usize, room).1 > 0,
         "pooled"
     );
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let emit = |moving: core::ops::Range<u32>, third: Option<u32>| unsafe {
         list.clear_in_place();
         for id in 0..PARAMS {
@@ -396,10 +408,12 @@ fn pooled_chunk(params: u32, room: usize, first: u32) -> ParameterChanges {
 fn plugin_view(list: &ComWrapper<ParameterChangesImpl>) -> Vec<(u32, Vec<(i32, f64)>)> {
     use vst3::Steinberg::Vst::{IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait};
     let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let n = unsafe { ptr.getParameterCount() };
     (0..n)
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         .map(|i| unsafe {
             let q = vst3::ComRef::from_raw(ptr.getParameterData(i)).unwrap();
             let points = (0..q.getPointCount())
@@ -613,7 +627,8 @@ fn add_parameter_data_past_the_lists_queues_is_null_counted() {
     use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
     let list = unpooled(2, MIN_POINT_ROOM);
     let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
-    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+    // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for
+    // the call.
     let add = |id: u32| unsafe {
         let mut index = -1;
         let q = ptr.addParameterData(&id, &mut index);

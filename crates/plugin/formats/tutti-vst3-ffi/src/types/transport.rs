@@ -168,9 +168,7 @@ pub fn to_process_context(
         state
     };
 
-    // SAFETY: `ProcessContext` is plain data (integers and floats); all-zero
-    // bytes is a valid value, and the fields the requirements name are set below.
-    let mut ctx: vst3::Steinberg::Vst::ProcessContext = unsafe { std::mem::zeroed() };
+    let mut ctx: vst3::Steinberg::Vst::ProcessContext = crate::sdk::zeroed();
     ctx.state = state;
     // Always-on: not gated by any requirement flag in the spec.
     ctx.sampleRate = if t.sample_rate > 0.0 {

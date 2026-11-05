@@ -20,7 +20,9 @@ pub fn c_str_to_string(bytes: &[i8]) -> String {
     String::from_utf8_lossy(&u8s).into_owned()
 }
 
-/// Formats a 16-byte class ID as a `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` hex string.
+/// Formats a 16-byte class ID as four dash-separated groups of four bytes
+/// (`XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX`), upper-case hex. The catalog ids
+/// (`vst3.<id>`) are persisted in this shape.
 #[must_use]
 pub fn cid_to_string(cid: &[u8; 16]) -> String {
     format!(
@@ -75,4 +77,101 @@ pub type SdkEnum = vst3::Steinberg::Vst::MediaTypes;
 #[must_use]
 pub const fn sdk_enum_i32(v: SdkEnum) -> i32 {
     v as i32
+}
+
+/// An SDK struct for which the all-zero bit pattern is a valid value: plain
+/// integers, floats, arrays of them, raw pointers and unions of those.
+///
+/// Sealed: only the structs this crate lists below implement it. They are the
+/// out-parameter and event records of the SDK, which a plugin fills in or the
+/// host fills field by field.
+pub trait Zeroable: private::Sealed + Sized {}
+
+mod private {
+    pub trait Sealed {}
+}
+
+macro_rules! zeroable {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl private::Sealed for $ty {}
+        impl Zeroable for $ty {}
+    )+};
+}
+
+zeroable!(
+    vst3::Steinberg::PFactoryInfo,
+    vst3::Steinberg::PClassInfo,
+    vst3::Steinberg::PClassInfoW,
+    vst3::Steinberg::Vst::ParameterInfo,
+    vst3::Steinberg::Vst::NoteExpressionTypeInfo,
+    vst3::Steinberg::Vst::KeyswitchInfo,
+    vst3::Steinberg::Vst::ProgramListInfo,
+    vst3::Steinberg::Vst::UnitInfo,
+    vst3::Steinberg::Vst::BusInfo,
+    vst3::Steinberg::Vst::RepresentationInfo,
+    vst3::Steinberg::Vst::Event,
+    vst3::Steinberg::Vst::ProcessContext,
+    vst3::Steinberg::Vst::AudioBusBuffers,
+);
+
+/// The all-zero value of an SDK struct.
+///
+/// What a C host writes as `ParameterInfo info = {};` before handing it to a
+/// plugin to fill in.
+#[must_use]
+pub fn zeroed<T: Zeroable>() -> T {
+    // SAFETY: `Zeroable` is implemented only for the SDK structs listed above,
+    // each made of integers, floats, arrays of them, raw pointers and unions of
+    // those, for which all-zero bytes is a valid value (null pointers, `0`,
+    // `0.0`).
+    unsafe { std::mem::zeroed() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `String128` is read up to its first NUL, whatever follows it; a
+    /// buffer with no NUL is read whole; an unpaired surrogate becomes U+FFFD
+    /// instead of failing.
+    ///
+    /// Mutation: drop the `position(..)` and read the whole buffer: the first
+    /// assert sees the bytes after the NUL and fails.
+    #[test]
+    fn a_string128_is_read_to_its_nul_and_decoded_lossily() {
+        let mut buf = [0u16; 128];
+        for (slot, c) in buf.iter_mut().zip("Väst".encode_utf16()) {
+            *slot = c;
+        }
+        buf[10] = u16::from(b'x'); // after the NUL: must not appear
+        assert_eq!(utf16_to_string(&buf), "Väst");
+
+        let full: Vec<u16> = "音源".encode_utf16().collect();
+        assert_eq!(utf16_to_string(&full), "音源");
+        assert_eq!(utf16_to_string(&[0xD800, 0]), "\u{FFFD}");
+        assert_eq!(utf16_to_string(&[]), "");
+    }
+
+    /// A `char8` buffer is read to its first NUL as UTF-8, lossily, with the
+    /// high bit kept (`i8` bytes above 127 are negative).
+    ///
+    /// Mutation: map bytes with `b as u8 & 0x7F` and the accented case fails.
+    #[test]
+    fn a_char8_buffer_is_read_to_its_nul_as_utf8() {
+        let mut buf = [0i8; 16];
+        for (slot, b) in buf.iter_mut().zip("Éclat".bytes()) {
+            *slot = b as i8;
+        }
+        assert_eq!(c_str_to_string(&buf), "Éclat");
+        assert_eq!(c_str_to_string(&[0x61, -1, 0]), "a\u{FFFD}");
+    }
+
+    /// A class id formats as four dashed groups of four bytes, upper-case hex.
+    ///
+    /// Mutation: lower-case the format string and the assert fails.
+    #[test]
+    fn a_class_id_formats_as_dashed_upper_case_hex() {
+        let cid: [u8; 16] = std::array::from_fn(|i| (i as u8) * 17);
+        assert_eq!(cid_to_string(&cid), "00112233-44556677-8899AABB-CCDDEEFF");
+    }
 }

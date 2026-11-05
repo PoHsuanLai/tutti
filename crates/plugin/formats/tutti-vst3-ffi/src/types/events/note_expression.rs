@@ -1,4 +1,4 @@
-//! note expression: part of the VST3 event vocabulary.
+//! Note-expression events, their type-id mapping and the host-side values.
 
 use super::*;
 

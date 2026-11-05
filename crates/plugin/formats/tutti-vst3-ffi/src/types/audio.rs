@@ -83,41 +83,44 @@ impl ProcessMode {
     }
 }
 
-/// Adds the VST3 format-specific FFI details on top of the shared
-/// [`tutti_plugin_types::Sample`] trait: the `symbolicSampleSize` tag and the
-/// matching `AudioBusBuffers` union member. Generic process code uses
-/// `<T: Vst3Sample>` to get both without branching on the format.
-pub trait Vst3Sample: tutti_plugin_types::Sample {
-    /// The `kSample32` or `kSample64` constant the plugin expects in
-    /// `ProcessData::symbolicSampleSize`.
-    const VST3_SYMBOLIC_SIZE: i32;
-
-    /// Stores a channel-pointer table into `bus`'s buffer union via the member
-    /// that matches this format.
-    ///
-    /// `channelBuffers32`/`channelBuffers64` overlay the same machine pointer (a
-    /// pointer's width is independent of its pointee's), so either member writes
-    /// the same bytes; the plugin reads whichever [`VST3_SYMBOLIC_SIZE`] names.
-    /// Each impl writes only its own member, so the f32 path never mentions an
-    /// f64 cast and vice versa.
-    ///
-    /// [`VST3_SYMBOLIC_SIZE`]: Self::VST3_SYMBOLIC_SIZE
-    fn set_channel_buffers(bus: &mut AudioBusBuffers, channel_ptrs: *mut *mut std::ffi::c_void);
+/// The sample width a plugin is activated with: which `AudioBusBuffers` union
+/// member carries the channel pointers, and which `symbolicSampleSize` the
+/// `ProcessData` names.
+///
+/// This is the whole width-specific surface of the process path; everything
+/// else (events, parameter changes, the `ProcessData` build, the call) is the
+/// same for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleWidth {
+    /// 32-bit floats (`kSample32`).
+    F32,
+    /// 64-bit floats (`kSample64`).
+    F64,
 }
 
-impl Vst3Sample for f32 {
-    const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_32_INT;
-
-    fn set_channel_buffers(bus: &mut AudioBusBuffers, channel_ptrs: *mut *mut std::ffi::c_void) {
-        bus.__field0.channelBuffers32 = channel_ptrs as *mut *mut f32;
+impl SampleWidth {
+    /// The `symbolicSampleSize` of this width.
+    #[must_use]
+    pub const fn symbolic_size(self) -> i32 {
+        match self {
+            Self::F32 => K_SAMPLE_32_INT,
+            Self::F64 => K_SAMPLE_64_INT,
+        }
     }
-}
 
-impl Vst3Sample for f64 {
-    const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_64_INT;
-
-    fn set_channel_buffers(bus: &mut AudioBusBuffers, channel_ptrs: *mut *mut std::ffi::c_void) {
-        bus.__field0.channelBuffers64 = channel_ptrs as *mut *mut f64;
+    /// Points `bus` at `channel_ptrs` through the union member this width
+    /// names. `channelBuffers32`/`channelBuffers64` overlay the same machine
+    /// pointer, and the plugin reads whichever [`symbolic_size`](Self::symbolic_size)
+    /// names, so each arm writes only its own member.
+    pub(crate) fn set_channel_buffers(
+        self,
+        bus: &mut AudioBusBuffers,
+        channel_ptrs: *mut *mut std::ffi::c_void,
+    ) {
+        match self {
+            Self::F32 => bus.__field0.channelBuffers32 = channel_ptrs as *mut *mut f32,
+            Self::F64 => bus.__field0.channelBuffers64 = channel_ptrs as *mut *mut f64,
+        }
     }
 }
 

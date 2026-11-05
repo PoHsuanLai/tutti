@@ -42,7 +42,7 @@ use super::run_loop::RunLoop;
 
 /// The host's `IPlugFrame` (and, on Linux, `IRunLoop`): what the plugin's view is
 /// given, and where its `resizeView` requests land until the host takes them.
-pub struct HostPlugFrame {
+pub(crate) struct HostPlugFrame {
     /// The latest `resizeView` request not yet taken.
     resize_request: Mutex<Option<EditorSize>>,
     /// Shared with `HostApplication` — see `run_loop.rs`.
@@ -64,7 +64,7 @@ impl Class for HostPlugFrame {
 
 impl HostPlugFrame {
     /// A frame with no pending request and, on Linux, the shared `run_loop`.
-    pub fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
@@ -73,7 +73,7 @@ impl HostPlugFrame {
     }
 
     /// The latest size the plugin asked for since the last take, if any.
-    pub fn take_resize_request(&self) -> Option<EditorSize> {
+    pub(crate) fn take_resize_request(&self) -> Option<EditorSize> {
         self.resize_request.lock().take()
     }
 }
@@ -183,7 +183,8 @@ mod tests {
         let frame = frame();
         let ptr = frame.to_com_ptr::<IPlugFrame>().unwrap();
 
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         unsafe {
             for (w, h) in [(300, 200), (640, 480), (800, 600)] {
                 let mut r = rect(w, h);
@@ -200,7 +201,8 @@ mod tests {
         );
         assert_eq!(frame.take_resize_request(), None);
 
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         // A null rect is ignored rather than clearing or corrupting the cell.
         unsafe {
             let mut r = rect(320, 240);

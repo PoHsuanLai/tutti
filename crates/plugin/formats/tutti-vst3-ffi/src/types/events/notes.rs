@@ -1,4 +1,4 @@
-//! notes: part of the VST3 event vocabulary.
+//! Note on, note off and polyphonic pressure events.
 
 use super::*;
 

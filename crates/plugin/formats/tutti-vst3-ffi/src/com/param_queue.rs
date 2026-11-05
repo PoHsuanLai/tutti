@@ -248,7 +248,8 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
                 }
             };
             match at {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3
                 // ABI.
                 Some(i) if !index.is_null() => unsafe { *index = i as i32 },
                 Some(_) => {}
@@ -283,9 +284,11 @@ mod tests {
             taken.wait();
             let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
             let (mut offset, mut value) = (0, 0.0);
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let count = unsafe { ptr.getPointCount() };
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let got = unsafe { ptr.getPoint(1, &mut offset, &mut value) };
             done.wait();
             assert_eq!(count, 2, "a second reader must see the queue");
@@ -308,19 +311,24 @@ mod tests {
         {
             let _writing = queue.points.borrow_mut();
             let _renaming = queue.param_id.borrow_mut();
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.getPointCount() }, 0);
             // SAFETY: both out-parameters are valid locals.
             let rc = unsafe { ptr.getPoint(0, &mut offset, &mut value) };
             assert_eq!(rc, kResultFalse);
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.getParameterId() }, kNoParamId);
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.addPoint(5, 0.5, &mut 0) }, kResultFalse);
         }
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getPointCount() }, 2);
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         assert_eq!(unsafe { ptr.getParameterId() }, 42);
         assert_eq!(queue.points_dropped(), 1, "the refused point is counted");
     }
@@ -449,10 +457,7 @@ mod tests {
     /// **A queue holds the room it was built with and never grows**: one
     /// built for 32 points takes 32 without allocating, block after block,
     /// and a 33rd keeps the queue's latest value, the point left out
-    /// returned for counting, still without allocating. (Reworded with
-    /// `PointBuf`, and renamed from
-    /// `refill_from_queue_steady_state_is_allocation_free_after_grow`: a
-    /// queue past `MIN_POINT_ROOM` used to grow once on the audio thread.)
+    /// returned for counting, still without allocating.
     ///
     /// Mutation (run): `refill_from_queue` with `try_push` (dropping past
     /// the room) rather than `push_or_replace_last` → the queue ends on
@@ -493,7 +498,8 @@ mod tests {
         use vst3::Steinberg::Vst::IParamValueQueueTrait;
         let queue = ParamValueQueueImpl::with_room(3, MIN_POINT_ROOM);
         let ptr = queue.to_com_ptr::<IParamValueQueue>().unwrap();
-        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+        // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
+        // for the call.
         let (fitted, replaced, dropped) = assert_no_alloc::assert_no_alloc(|| unsafe {
             let mut at = -1;
             let fitted = (0..MIN_POINT_ROOM as i32)

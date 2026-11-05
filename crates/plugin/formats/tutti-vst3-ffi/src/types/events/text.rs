@@ -1,4 +1,4 @@
-//! text: part of the VST3 event vocabulary.
+//! The arena that holds event text on the audio thread, and `TextRef`, the handle into it.
 
 use super::*;
 

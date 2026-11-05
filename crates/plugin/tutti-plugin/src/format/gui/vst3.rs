@@ -34,14 +34,13 @@ impl Vst3GuiInstance {
 impl PluginEditor for Vst3GuiInstance {
     fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
         tracing::info!(
-            "[vst3-gui] open_editor: creating vst3 handle from ptr {:?}",
+            "[vst3-gui] open_editor: parent handle {:?}",
             parent.as_ptr()
         );
-        let vst3_handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
         tracing::info!("[vst3-gui] open_editor: calling inner.open_editor");
         let size = self
             .inner
-            .open_editor(vst3_handle, scale)
+            .open_editor(parent, scale)
             .map_err(|e| BridgeError::ProtocolError(format!("VST3 open_editor failed: {e}")))?;
         tracing::info!(
             "[vst3-gui] open_editor: success {}x{}",

@@ -1,4 +1,4 @@
-//! data: part of the VST3 event vocabulary.
+//! `DataEvent` and `SysExEvent`: raw MIDI bytes and SysEx payloads.
 
 use super::*;
 

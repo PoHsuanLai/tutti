@@ -3,7 +3,7 @@
 # Plugin FFI `unsafe` lives only in the per-format `-ffi` crates; the host
 # crates and the code that drives them forbid it (design 016 §2.9).
 #
-# This gate fails if, for each format below (`<fmt>`):
+# This gate fails if, for CLAP and VST3 (`<fmt>` below is each):
 #
 # - any `unsafe` token appears in `tutti-<fmt>-host` (the whole of `src/`,
 #   tests inside it included: the crate is `#![forbid(unsafe_code)]`);
@@ -19,7 +19,8 @@
 #
 # Comments and string literals are not code: prose that says "unsafe" is fine.
 #
-# Mutation (run): add `unsafe { }` to any fn of a host crate with the forbid, or delete its forbid attribute, or add an `unsafe` block above the
+# Mutation (run): add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
+# or `tutti-vst3-host/src/lib.rs`'s crate, or delete its forbid attribute, or add an `unsafe` block above the
 # test module of `loaders/clap.rs`, even after an earlier `#[cfg(test)] use`
 # -> this script exits 1 naming the file.
 #
@@ -30,15 +31,13 @@ cd "$(dirname "$0")/.."
 python3 - <<'PY'
 import glob, re, sys
 
-# (name, host crate, FFI crate, whether the host is already `forbid(unsafe_code)`,
-# files the host's code drives the FFI from: no `unsafe` before their first
-# `#[cfg(test)]` item).
+# (format name, host crate, FFI crate, files the host's code drives the FFI from:
+# no `unsafe` before their first `#[cfg(test)]` item).
 FORMATS = [
     (
         "CLAP",
         "crates/plugin/formats/tutti-clap-host",
         "crates/plugin/formats/tutti-clap-ffi",
-        True,
         [
             "crates/plugin/tutti-plugin-server/src/loaders/clap.rs",
             "crates/plugin/tutti-plugin/src/format/gui/clap.rs",
@@ -48,7 +47,6 @@ FORMATS = [
         "VST3",
         "crates/plugin/formats/tutti-vst3-host",
         "crates/plugin/formats/tutti-vst3-ffi",
-        False,
         [
             "crates/plugin/tutti-plugin-server/src/loaders/vst3.rs",
             "crates/plugin/tutti-plugin/src/format/gui/vst3.rs",
@@ -117,34 +115,31 @@ def attrs(path):
 
 
 bad, scanned = [], 0
-for name, HOST, FFI, host_done, OUTSIDE in FORMATS:
-    if host_done:
-        for path in sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True)):
-            scanned += 1
-            line = first_unsafe(path, False)
-            if line:
-                bad.append(f"{path}:{line}: `unsafe` in {HOST} (it forbids unsafe_code)")
-        for path in OUTSIDE:
-            scanned += 1
-            line = first_unsafe(path, True)
-            if line:
-                bad.append(
-                    f"{path}:{line}: `unsafe` outside the test module "
-                    f"({name} unsafe lives in {FFI})"
-                )
-        if not re.search(r"#!\[forbid\(unsafe_code\)\]", attrs(f"{HOST}/src/lib.rs")):
-            bad.append(f"{HOST}/src/lib.rs: missing #![forbid(unsafe_code)]")
+for name, HOST, FFI, OUTSIDE in FORMATS:
+    for path in sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True)):
+        scanned += 1
+        line = first_unsafe(path, False)
+        if line:
+            bad.append(f"{path}:{line}: `unsafe` in {HOST} (it forbids unsafe_code)")
+    for path in OUTSIDE:
+        scanned += 1
+        line = first_unsafe(path, True)
+        if line:
+            bad.append(
+                f"{path}:{line}: `unsafe` outside the test module ({name} unsafe lives in {FFI})"
+            )
+    if not re.search(r"#!\[forbid\(unsafe_code\)\]", attrs(f"{HOST}/src/lib.rs")):
+        bad.append(f"{HOST}/src/lib.rs: missing #![forbid(unsafe_code)]")
     ffi_lib = attrs(f"{FFI}/src/lib.rs")
-    scanned += 1
     for lint in ("undocumented_unsafe_blocks", "missing_safety_doc"):
         if not re.search(r"#!\[deny\([^\]]*" + lint, ffi_lib):
             bad.append(f"{FFI}/src/lib.rs: missing #![deny(clippy::{lint})]")
 
-if scanned < 20:
+if scanned < 40:
     sys.exit(f"check-plugin-ffi: only {scanned} files scanned; the scan is broken")
 for b in bad:
     print(b, file=sys.stderr)
 if bad:
     sys.exit(1)
-print(f"check-plugin-ffi: {scanned} files checked")
+print(f"check-plugin-ffi: {scanned} files, no CLAP or VST3 unsafe outside the -ffi crates")
 PY

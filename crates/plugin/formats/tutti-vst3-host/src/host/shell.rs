@@ -2,127 +2,134 @@
 //!
 //! [`Vst3Processor`](super::Vst3Processor) and
 //! [`Vst3Controller`](super::Vst3Controller) each hold an `Arc` of one
-//! [`Shell`]. The shell owns the [`Vst3Loaded`], and so the plugin instance,
-//! and nothing else.
+//! [`Shell`]. The Controller owns the [`Vst3Loaded`], and so the plugin
+//! instance; the Processor owns only the plugin's audio half. The shell holds
+//! no plugin access at all: it is the identity of the pair, and the hand-off
+//! point for the plugin when the Controller is dropped while the Processor
+//! still renders.
+//!
+//! # Why two threads can reach one plugin
+//!
+//! 1. *One pair.* `activate_typed` makes one `Arc<Shell>`, one Processor and one
+//!    Controller. Neither half is `Clone`. `deactivate` consumes both and
+//!    checks they hold the same shell and no third handle exists.
+//! 2. *Disjoint entries, by type.* The Processor owns an
+//!    [`AudioSide`](tutti_vst3_ffi::AudioSide), which names only
+//!    `IAudioProcessor::process` and `setProcessing`. The Controller owns the
+//!    [`Plugin`](tutti_vst3_ffi::Plugin), which names every main-thread entry
+//!    (the `IEditController` interface, `IComponent` state, `IUnitInfo`,
+//!    `IConnectionPoint` and the editor) and is neither `Sync` nor shared, so
+//!    each side runs on one thread at a time and neither can make the other's
+//!    calls.
+//! 3. *The calls that run on the Controller while the Processor renders are
+//!    the ones the SDK lets run in the `Processing` state.* The Processor's
+//!    two entries are `IAudioProcessor::process`, `[processing-thread &
+//!    Processing]`, and `setProcessing`. Beside them, through the `Vst3Loaded`
+//!    the Controller derefs to, the main thread runs: the `IEditController`
+//!    interface (`[UI-thread]`: parameters, text conversion, units, program
+//!    lists, the editor); `IComponent::getState` and `setState` (any state,
+//!    `Processing` included); and the reads the core makes after an
+//!    activation and on a request, `getLatencySamples`, `getTailSamples`,
+//!    `getBusArrangement` and `getBusCount`/`getBusInfo`, which the SDK
+//!    annotates `[UI-thread & Setup Done]`. That annotation names the state
+//!    that must have been reached, and `Processing` is reached after it, so
+//!    the SDK permits them there (its own wrapper reads latency while the audio
+//!    thread renders). What the SDK does not leave to a plugin, and this host
+//!    never does beside `process`, are the transitions: `setActive`,
+//!    `setupProcessing`, `setBusArrangements` and `activateBus` run only in the
+//!    activation (before the Processor exists) and in the rejoin (after it is
+//!    gone). A plugin that races one of the permitted getters against its own
+//!    `process` breaks the SDK's contract, not this host's, and is exactly as
+//!    exposed in any other host. A parameter edit never crosses the pair as a
+//!    call: it reaches the Processor as a point in `inputParameterChanges`, from
+//!    the edit ring.
+//! 4. *The plugin is destroyed on the control side.* `Lifecycle` rejoins the
+//!    halves before it drops either, and the rejoin, or the Controller dropping
+//!    last, destroys the plugin on the thread that holds the Controller. A
+//!    Controller dropped while its Processor still renders hands the plugin to
+//!    the shell instead of destroying it; the Processor, dropping last, does
+//!    not destroy it on the thread it renders on either: it hands it to a
+//!    bounded retirement queue ([`retire`]) that a control-side call empties
+//!    ([`reap_retired`](super::Vst3Loaded::reap_retired): `load`, `activate` and
+//!    every `flush_edits` tick). Until it is reaped the plugin stays active,
+//!    unreferenced and idle. Only when the queue is full (64 plugins retired
+//!    and never reaped) does the Processor's drop destroy the plugin in place.
+//! 5. *Callbacks touch atomics and queues only.* A plugin calling the host from
+//!    either thread reaches the `ComponentHandler`'s word and queue, never the
+//!    `Vst3Loaded`.
 
-use std::cell::UnsafeCell;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use super::loaded::Vst3Loaded;
 
-/// The plugin of one activation, shared by its two halves.
-///
-/// # Safety argument
-///
-/// `unsafe impl Sync`: two threads reach one plugin instance, which is sound
-/// because of the following, each clause a rule the code keeps.
-///
-/// 1. *One pair.* `activate_typed` makes one `Arc<Shell>`, one Processor and one
-///    Controller. Neither half is `Clone`. `deactivate` consumes both and
-///    checks they hold the same shell and no third handle exists.
-/// 2. *Disjoint entries.* The Processor calls only `IAudioProcessor::process`
-///    and `setProcessing`, through its own `ComPtr` to the processor interface,
-///    and never reaches the `Vst3Loaded` in this cell, so the Controller's
-///    `&mut Vst3Loaded` has no Rust-level alias. The Controller calls the
-///    `IEditController`, `IComponent` state, `IUnitInfo` and
-///    `IConnectionPoint` entries and the editor, through the `Vst3Loaded` it
-///    reaches here. Every method of either half takes `&mut self`, or a shared
-///    reference of a type that is not `Sync`, so each side runs on one thread
-///    at a time.
-/// 3. *The calls that run on the Controller while the Processor renders are
-///    the ones the SDK lets run in the `Processing` state.* The Processor's
-///    two entries are `IAudioProcessor::process`, `[processing-thread &
-///    Processing]`, and `setProcessing`. Beside them, through the `Vst3Loaded`
-///    the Controller derefs to, the main thread runs: the `IEditController`
-///    interface (`[UI-thread]`: parameters, text conversion, units, program
-///    lists, the editor); `IComponent::getState` and `setState` (any state,
-///    `Processing` included); and the reads the core makes after an
-///    activation and on a request, `getLatencySamples`, `getTailSamples`,
-///    `getBusArrangement` and `getBusCount`/`getBusInfo`, which the SDK
-///    annotates `[UI-thread & Setup Done]`. That annotation names the state
-///    that must have been reached, and `Processing` is reached after it, so
-///    the SDK permits them there (its own wrapper reads latency while the audio
-///    thread renders). What the SDK does not leave to a plugin, and this host
-///    never does beside `process`, are the transitions: `setActive`,
-///    `setupProcessing`, `setBusArrangements` and `activateBus` run only in the
-///    activation (before the Processor exists) and in the rejoin (after it is
-///    gone). A plugin that races one of the permitted getters against its own
-///    `process` breaks the SDK's contract, not this host's, and is exactly as
-///    exposed in any other host. A parameter edit never crosses the pair as a
-///    call: it reaches the Processor as a point in `inputParameterChanges`, from
-///    the edit ring.
-/// 4. *The plugin is destroyed on the control side.* Both halves hold an
-///    `Arc`; `Lifecycle` rejoins them before it drops either, and the Controller
-///    dropping last or the rejoin destroys the plugin on the thread that holds
-///    the Controller. A Processor that finds itself the last holder (its
-///    Controller was dropped first) does not destroy the plugin on the thread it
-///    renders on: it hands the shell to a bounded retirement queue
-///    ([`retire`]) that a control-side call empties
-///    ([`reap_retired`](super::Vst3Loaded::reap_retired): `load`, `activate`
-///    and every `flush_edits` tick). Until it is reaped the plugin stays
-///    active, unreferenced and idle. Only when the queue is full (64 plugins
-///    retired and never reaped) does the Processor's drop destroy the plugin in
-///    place.
-/// 5. *Callbacks touch atomics and queues only.* A plugin calling the host from
-///    either thread reaches the `ComponentHandler`'s word and queue, never the
-///    `Vst3Loaded` in this cell.
-///
-/// The cell is read and written by the Controller alone, and by whichever
-/// thread drops the last handle, when no other handle exists.
-pub(super) struct Shell {
-    loaded: UnsafeCell<Option<Vst3Loaded>>,
+/// Who of a pair is alive, and the plugin when its Controller went first.
+struct State {
+    controller_alive: bool,
+    processor_alive: bool,
+    /// The plugin, parked by a Controller that was dropped while the
+    /// Processor still held its share.
+    parked: Option<Vst3Loaded>,
 }
 
-// SAFETY: see the invariant on `Shell`.
-unsafe impl Sync for Shell {}
+/// The identity of an activation's pair, and the hand-off between its halves
+/// when they are dropped apart.
+pub(super) struct Shell {
+    state: Mutex<State>,
+}
 
 impl Shell {
-    pub(super) fn new(loaded: Vst3Loaded) -> Self {
+    /// A shell for a fresh pair, both halves alive.
+    pub(super) fn new() -> Self {
         Self {
-            loaded: UnsafeCell::new(Some(loaded)),
+            state: Mutex::new(State {
+                controller_alive: true,
+                processor_alive: true,
+                parked: None,
+            }),
         }
     }
 
-    /// The plugin, shared, for the Controller's `&self` methods.
-    ///
-    /// # Safety
-    ///
-    /// Main thread, by the Controller only (clause 2), and not while a
-    /// reference from [`loaded_mut`](Self::loaded_mut) is live, which the
-    /// Controller's `&self`/`&mut self` split guarantees.
-    pub(super) unsafe fn loaded(&self) -> &Option<Vst3Loaded> {
-        // SAFETY: the caller's contract.
-        unsafe { &*self.loaded.get() }
+    /// The Controller is dropped holding `loaded`: parks it if the Processor
+    /// still renders, else returns it to be destroyed by the caller's thread
+    /// (the control side).
+    pub(super) fn controller_gone(&self, loaded: Vst3Loaded) -> Option<Vst3Loaded> {
+        let mut state = self.state.lock();
+        state.controller_alive = false;
+        if state.processor_alive {
+            state.parked = Some(loaded);
+            None
+        } else {
+            Some(loaded)
+        }
     }
 
-    /// The plugin, exclusively, for the Controller's `&mut self` methods.
-    ///
-    /// # Safety
-    ///
-    /// As [`loaded`](Self::loaded); the Controller holds `&mut self`, so no
-    /// other reference to the cell's content exists.
-    #[allow(clippy::mut_from_ref)]
-    pub(super) unsafe fn loaded_mut(&self) -> &mut Option<Vst3Loaded> {
-        // SAFETY: the caller's contract.
-        unsafe { &mut *self.loaded.get() }
+    /// The Controller took its plugin back (a rejoin): it no longer counts
+    /// among the living, and there is nothing to park.
+    pub(super) fn controller_rejoined(&self) {
+        self.state.lock().controller_alive = false;
     }
 
-    /// The plugin, once the shell is the last handle.
-    pub(super) fn into_loaded(self) -> Option<Vst3Loaded> {
-        self.loaded.into_inner()
+    /// The Processor is dropped: the plugin a Controller parked, if it did.
+    fn processor_gone(&self) -> Option<Vst3Loaded> {
+        let mut state = self.state.lock();
+        state.processor_alive = false;
+        state.parked.take()
     }
 }
 
-/// Shells whose last holder was a Processor, waiting to be destroyed on the
+/// Plugins whose last holder was a Processor, waiting to be destroyed on the
 /// control side. Bounded so that pushing never allocates; built by
 /// [`warm_retirement`] before any Processor exists.
-static RETIRED: std::sync::OnceLock<crossbeam_queue::ArrayQueue<Shell>> =
+static RETIRED: std::sync::OnceLock<crossbeam_queue::ArrayQueue<Vst3Loaded>> =
     std::sync::OnceLock::new();
 
-/// How many retired shells wait: more plugins than this retired by Processors
+/// How many retired plugins wait: more plugins than this retired by Processors
 /// dropped on their own, and never reaped, are destroyed in place.
 const RETIRED_CAPACITY: usize = 64;
 
-fn retired() -> &'static crossbeam_queue::ArrayQueue<Shell> {
+fn retired() -> &'static crossbeam_queue::ArrayQueue<Vst3Loaded> {
     RETIRED.get_or_init(|| crossbeam_queue::ArrayQueue::new(RETIRED_CAPACITY))
 }
 
@@ -131,45 +138,45 @@ pub(super) fn warm_retirement() {
     let _ = retired();
 }
 
-/// Takes a shell no Controller holds off the realtime thread: queued for the
+/// Takes a plugin no Controller holds off the realtime thread: queued for the
 /// control side, or destroyed in place when the queue is full.
-fn retire(shell: Shell) {
+fn retire(loaded: Vst3Loaded) {
     if let Some(queue) = RETIRED.get() {
-        if let Err(shell) = queue.push(shell) {
-            drop(shell);
+        if let Err(loaded) = queue.push(loaded) {
+            drop(loaded);
         }
     } else {
-        drop(shell);
+        drop(loaded);
     }
 }
 
-/// Destroys the shells retirement has queued, on the calling thread, and says
+/// Destroys the plugins retirement has queued, on the calling thread, and says
 /// how many.
 pub(super) fn reap() -> usize {
     let Some(queue) = RETIRED.get() else {
         return 0;
     };
     let mut reaped = 0;
-    while let Some(shell) = queue.pop() {
-        drop(shell);
+    while let Some(loaded) = queue.pop() {
+        drop(loaded);
         reaped += 1;
     }
     reaped
 }
 
-/// A Processor's share of its shell, which hands the shell to retirement
-/// instead of destroying the plugin when it is the last.
+/// A Processor's share of its shell, which hands the plugin to retirement
+/// instead of destroying it when the Controller went first.
 ///
 /// The last field of the Processor, so the scratch and the plugin references
 /// above it are released first.
-pub(super) struct Hold(Option<std::sync::Arc<Shell>>);
+pub(super) struct Hold(Option<Arc<Shell>>);
 
 impl Hold {
-    pub(super) fn new(shell: std::sync::Arc<Shell>) -> Self {
+    pub(super) fn new(shell: Arc<Shell>) -> Self {
         Self(Some(shell))
     }
 
-    pub(super) fn shell(&self) -> &std::sync::Arc<Shell> {
+    pub(super) fn shell(&self) -> &Arc<Shell> {
         self.0
             .as_ref()
             .expect("a Hold holds its shell until it drops")
@@ -178,10 +185,10 @@ impl Hold {
 
 impl Drop for Hold {
     fn drop(&mut self) {
-        if let Some(arc) = self.0.take()
-            && let Some(shell) = std::sync::Arc::into_inner(arc)
+        if let Some(shell) = self.0.take()
+            && let Some(loaded) = shell.processor_gone()
         {
-            retire(shell);
+            retire(loaded);
         }
     }
 }

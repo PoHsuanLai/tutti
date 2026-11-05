@@ -1,4 +1,4 @@
-//! legacy cc: part of the VST3 event vocabulary.
+//! The legacy MIDI CC output event and its conversion to a `MidiEvent`.
 
 use super::*;
 

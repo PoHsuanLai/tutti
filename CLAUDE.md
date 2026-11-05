@@ -87,7 +87,7 @@ scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no be
 scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # CLAP: no unsafe outside tutti-clap-ffi (VST3: the FFI lints)
+scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
 ```
 
 `just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
@@ -95,9 +95,9 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 `--cfg loom`.
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
-  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`, and
-  `tutti-vst3-ffi`, which is taking over the VST3 host's); host crates forbid
-  `unsafe` (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
+  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi` and
+  `tutti-vst3-ffi`); host crates forbid `unsafe`
+  (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
   `rust-toolchain.toml`, run `just ci`, and fix the new lints in the same PR.
@@ -224,7 +224,7 @@ crates/
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
                  formats/{vst2,vst3,clap,au}-host, formats/clap-ffi (all CLAP
-                 unsafe), formats/vst3-ffi (the VST3 host's COM objects),
+                 unsafe), formats/vst3-ffi (all VST3 unsafe),
                  vendor/{vst-tutti,vst3-sdk}
   vendor/        rustysynth-tutti, tutti-clap-test-plugin
 ```

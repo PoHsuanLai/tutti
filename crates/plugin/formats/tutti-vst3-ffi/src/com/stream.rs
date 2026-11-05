@@ -20,7 +20,7 @@ use crate::sdk::sdk_enum_i32;
 /// [`ComWrapper`] is the owned reference (it holds the object's initial +1
 /// refcount) and can be converted to a raw `FUnknown`-compatible pointer
 /// via `ComWrapper::as_com_ref`.
-pub struct BStream {
+pub(crate) struct BStream {
     cursor: Mutex<Cursor<Vec<u8>>>,
 }
 
@@ -30,21 +30,21 @@ impl Class for BStream {
 
 impl BStream {
     /// An empty stream.
-    pub fn new() -> ComWrapper<Self> {
+    pub(crate) fn new() -> ComWrapper<Self> {
         ComWrapper::new(Self {
             cursor: Mutex::new(Cursor::new(Vec::new())),
         })
     }
 
     /// A stream positioned at the start of `data`.
-    pub fn from_data(data: Vec<u8>) -> ComWrapper<Self> {
+    pub(crate) fn from_data(data: Vec<u8>) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             cursor: Mutex::new(Cursor::new(data)),
         })
     }
 
     /// A copy of everything in the stream, whatever the position.
-    pub fn data(&self) -> Vec<u8> {
+    pub(crate) fn data(&self) -> Vec<u8> {
         self.cursor.lock().get_ref().clone()
     }
 }
@@ -72,19 +72,25 @@ impl IBStreamTrait for BStream {
             }
             if num_bytes < 0 || buffer.is_null() {
                 if !num_bytes_read.is_null() {
-                    // SAFETY: the ABI passes this out-pointer valid for writes for the duration of the call, and `num_bytes_read`/`num_bytes_written` is checked non-null before this write.
+                    // SAFETY: `num_bytes_read` is non-null (checked just above) and the ABI
+                    // passes it valid for
+                    // writes for the duration of the call.
                     unsafe { *num_bytes_read = 0 };
                 }
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
-            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the ABI makes `buffer` valid for `num_bytes` writable bytes for the call, and the plugin does not alias it while this method runs.
+            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
+            // ABI makes `buffer` valid for `num_bytes` writable bytes for the call, and the
+            // plugin does not alias it while this method runs.
             let buf =
                 unsafe { std::slice::from_raw_parts_mut(buffer as *mut u8, num_bytes as usize) };
             match cursor.read(buf) {
                 Ok(n) => {
                     if !num_bytes_read.is_null() {
-                        // SAFETY: the ABI passes this out-pointer valid for writes for the duration of the call, and `num_bytes_read`/`num_bytes_written` is checked non-null before this write.
+                        // SAFETY: `num_bytes_read` is non-null (checked just above) and the ABI
+                        // passes it valid for
+                        // writes for the duration of the call.
                         unsafe { *num_bytes_read = n as i32 };
                     }
                     kResultOk
@@ -116,19 +122,24 @@ impl IBStreamTrait for BStream {
             }
             if num_bytes < 0 || buffer.is_null() {
                 if !num_bytes_written.is_null() {
-                    // SAFETY: the ABI passes this out-pointer valid for writes for the duration of the call, and `num_bytes_read`/`num_bytes_written` is checked non-null before this write.
+                    // SAFETY: `num_bytes_written` is non-null (checked just above) and the ABI
+                    // passes it valid for
+                    // writes for the duration of the call.
                     unsafe { *num_bytes_written = 0 };
                 }
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
-            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the ABI makes `buffer` valid for `num_bytes` readable bytes for the call.
+            // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
+            // ABI makes `buffer` valid for `num_bytes` readable bytes for the call.
             let buf =
                 unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) };
             match cursor.write(buf) {
                 Ok(n) => {
                     if !num_bytes_written.is_null() {
-                        // SAFETY: the ABI passes this out-pointer valid for writes for the duration of the call, and `num_bytes_read`/`num_bytes_written` is checked non-null before this write.
+                        // SAFETY: `num_bytes_written` is non-null (checked just above) and the
+                        // ABI passes it valid for
+                        // writes for the duration of the call.
                         unsafe { *num_bytes_written = n as i32 };
                     }
                     kResultOk
@@ -143,8 +154,8 @@ impl IBStreamTrait for BStream {
             let seek_from = match mode {
                 m if m == sdk_enum_i32(kIBSeekSet) => match u64::try_from(pos) {
                     Ok(start) => SeekFrom::Start(start),
-                    // A negative absolute position is not a position (it used to
-                    // wrap to about 2^64 and answer `kResultOk`).
+                    // A negative absolute position is not a position (cast to
+                    // `u64` it would wrap to about 2^64 and answer `kResultOk`).
                     Err(_) => return kInvalidArgument,
                 },
                 m if m == sdk_enum_i32(kIBSeekCur) => SeekFrom::Current(pos),
@@ -155,7 +166,8 @@ impl IBStreamTrait for BStream {
             match cursor.seek(seek_from) {
                 Ok(new_pos) => {
                     if !result.is_null() {
-                        // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                        // SAFETY: a COM method: the plugin passes pointers valid for this call,
+                        // per the
                         // VST3 ABI.
                         unsafe { *result = new_pos as i64 };
                     }
@@ -170,7 +182,8 @@ impl IBStreamTrait for BStream {
         guard(vst3::Steinberg::kInternalError, || {
             let cursor = self.cursor.lock();
             if !pos.is_null() {
-                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3
+                // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+                // VST3
                 // ABI.
                 unsafe { *pos = cursor.position() as i64 };
             }
@@ -200,7 +213,8 @@ mod tests {
         let data = b"Hello, VST3!";
         with_ptr(&stream, |ptr| {
             let mut written = 0i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe {
                 ptr.write(
                     data.as_ptr() as *mut c_void,
@@ -217,13 +231,15 @@ mod tests {
             // corrupts every multi-chunk save. Nothing else in the crate
             // calls it, so this is its only cover.
             let mut pos = -1i64;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.tell(&mut pos) };
             assert_eq!(result, kResultOk);
             assert_eq!(pos, data.len() as i64, "tell must follow the write");
 
             let mut new_pos = 0i64;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.seek(0, sdk_enum_i32(kIBSeekSet), &mut new_pos) };
             assert_eq!(result, kResultOk);
             assert_eq!(new_pos, 0);
@@ -231,13 +247,15 @@ mod tests {
             // ...and follow a seek back to the start, so a `tell` that merely
             // returned the stream length would fail here.
             let mut pos = -1i64;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.tell(&mut pos) }, kResultOk);
             assert_eq!(pos, 0, "tell must follow the seek");
 
             let mut buffer = [0u8; 32];
             let mut bytes_read = 0i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe {
                 ptr.read(
                     buffer.as_mut_ptr() as *mut c_void,
@@ -252,7 +270,8 @@ mod tests {
             // The read advanced the cursor to the end, not past it: the buffer
             // was 32 bytes and only 12 were there to read.
             let mut pos = -1i64;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             assert_eq!(unsafe { ptr.tell(&mut pos) }, kResultOk);
             assert_eq!(pos, data.len() as i64, "tell must follow the read");
         });
@@ -290,7 +309,8 @@ mod tests {
         with_ptr(&stream, |ptr| {
             let mut buf = [0u8; 8];
             let mut bytes_read = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.read(buf.as_mut_ptr() as *mut c_void, -1, &mut bytes_read) };
             assert_ne!(result, kResultOk);
             assert_eq!(bytes_read, 0);
@@ -303,7 +323,8 @@ mod tests {
         with_ptr(&stream, |ptr| {
             let mut buf = [0u8; 8];
             let mut bytes_read = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.read(buf.as_mut_ptr() as *mut c_void, 0, &mut bytes_read) };
             assert_eq!(result, kResultOk);
             assert_eq!(bytes_read, 0);
@@ -315,7 +336,8 @@ mod tests {
         let stream = BStream::from_data(vec![1, 2, 3]);
         with_ptr(&stream, |ptr| {
             let mut bytes_read = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.read(std::ptr::null_mut(), 10, &mut bytes_read) };
             assert_ne!(result, kResultOk);
             assert_eq!(bytes_read, 0);
@@ -328,7 +350,8 @@ mod tests {
         let data = [1u8, 2, 3];
         with_ptr(&stream, |ptr| {
             let mut bytes_written = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.write(data.as_ptr() as *mut c_void, -5, &mut bytes_written) };
             assert_ne!(result, kResultOk);
             assert_eq!(bytes_written, 0);
@@ -342,7 +365,8 @@ mod tests {
         let data = [1u8, 2, 3];
         with_ptr(&stream, |ptr| {
             let mut bytes_written = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.write(data.as_ptr() as *mut c_void, 0, &mut bytes_written) };
             assert_eq!(result, kResultOk);
             assert_eq!(bytes_written, 0);
@@ -354,7 +378,8 @@ mod tests {
         let stream = BStream::new();
         with_ptr(&stream, |ptr| {
             let mut bytes_written = 99i32;
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result = unsafe { ptr.write(std::ptr::null_mut(), 10, &mut bytes_written) };
             assert_ne!(result, kResultOk);
             assert_eq!(bytes_written, 0);
@@ -366,7 +391,8 @@ mod tests {
         let stream = BStream::from_data(vec![1, 2, 3]);
         with_ptr(&stream, |ptr| {
             let mut buf = [0u8; 8];
-            // SAFETY: the test calls a COM method on a live object it owns, with arguments valid for the call.
+            // SAFETY: the test calls a COM method on a live object it owns, with arguments
+            // valid for the call.
             let result =
                 unsafe { ptr.read(buf.as_mut_ptr() as *mut c_void, 3, std::ptr::null_mut()) };
             assert_eq!(result, kResultOk);

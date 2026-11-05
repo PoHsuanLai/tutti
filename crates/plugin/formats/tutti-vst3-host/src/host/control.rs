@@ -2,8 +2,6 @@
 //! by [`Vst3Loaded`] and, with parameter writes redirected, by
 //! [`Vst3Controller`](super::Vst3Controller).
 
-use vst3::Steinberg::{Vst::IEditControllerTrait, kResultOk};
-
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, Control, EditorPresence, Features, LoadedPlugin,
@@ -12,7 +10,6 @@ use tutti_plugin_types::{
 };
 
 use crate::error::Vst3Error;
-use crate::helpers::utf16_to_string;
 use crate::types::PluginInfo;
 
 use super::loaded::Vst3Loaded;
@@ -184,11 +181,7 @@ impl Vst3Loaded {
     /// the Controller's immediate half alike. `false` when the plugin has no
     /// controller.
     pub(super) fn write_normalized(&self, id: ParamId, value: Normalized) -> bool {
-        let Some(controller) = self.interfaces.controller.as_ref() else {
-            return false;
-        };
-        unsafe { controller.setParamNormalized(id.get(), value.get()) };
-        true
+        self.plugin.set_parameter_normalized(id, value.get())
     }
 }
 
@@ -226,10 +219,7 @@ impl Control for Vst3Loaded {
     /// Normalized `0..=1`, VST3's own domain. `None` for a plugin with no edit
     /// controller.
     fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        let controller = self.interfaces.controller.as_ref()?;
-        Some(Normalized::new(unsafe {
-            controller.getParamNormalized(id.get())
-        }))
+        self.plugin.parameter_normalized(id).map(Normalized::new)
     }
 
     /// Applied now, as `setParamNormalized` on the edit controller. A plugin
@@ -247,11 +237,7 @@ impl Control for Vst3Loaded {
     /// lane drawing labels along a curve needs.
     fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
-        let controller = self.interfaces.controller.as_ref()?;
-        let mut string: vst3::Steinberg::Vst::String128 = [0; 128];
-        let result =
-            unsafe { controller.getParamStringByValue(id.get(), value.get(), &mut string) };
-        (result == kResultOk).then(|| utf16_to_string(&string))
+        self.plugin.parameter_text(id, value.get())
     }
 
     /// The inverse. A caller must leave its field unchanged on `None` rather
@@ -263,21 +249,9 @@ impl Control for Vst3Loaded {
     /// direction uses.
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         tutti_plugin_types::assert_main_thread();
-        let controller = self.interfaces.controller.as_ref()?;
-        let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
-        buf.push(0);
-        let mut value: vst3::Steinberg::Vst::ParamValue = 0.0;
-        let result = unsafe {
-            controller.getParamValueByString(
-                id.get(),
-                buf.as_mut_ptr() as *mut vst3::Steinberg::Vst::TChar,
-                &mut value,
-            )
-        };
-        // A plugin may answer `kResultOk` without touching `value`; a non-finite
-        // result would reach `Normalized::new`, which maps NaN to 0.0 and would
-        // commit that to the parameter as if the user had typed it.
-        (result == kResultOk && value.is_finite()).then(|| Normalized::new(value))
+        self.plugin
+            .parameter_from_text(id, text)
+            .map(Normalized::new)
     }
 
     fn save_state(&mut self) -> PluginResult<Vec<u8>> {

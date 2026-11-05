@@ -6,8 +6,6 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
-use vst3::Steinberg::Vst::IComponentTrait;
-
 use tutti_plugin_types::{
     AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
     ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset,
@@ -31,8 +29,11 @@ use super::shell::Shell;
 /// share of the activation; the plugin is destroyed when the Processor's goes
 /// too (see the invariant on the shell).
 pub struct Vst3Controller {
-    /// `None` only once `deactivate` has taken the shell.
-    shell: Option<Arc<Shell>>,
+    /// The plugin of the activation. `None` only once `deactivate` has taken it,
+    /// or the drop has handed it on.
+    loaded: Option<Vst3Loaded>,
+    /// The identity of the pair, and the hand-off to the Processor.
+    shell: Arc<Shell>,
     edits: EditSink,
     /// Writes a full ring refused, latest value per parameter, retried on the
     /// next tick ([`flush_edits`](Control::flush_edits)).
@@ -51,15 +52,11 @@ impl std::fmt::Debug for Vst3Controller {
     }
 }
 
-// SAFETY: the Controller runs on one thread at a time (every method takes
-// `&mut self` or a shared reference of a type that is not `Sync`), and clause 2
-// of the invariant on `Shell` keeps its calls to the main-thread set.
-unsafe impl Send for Vst3Controller {}
-
 impl Vst3Controller {
-    fn new(shell: Arc<Shell>, edits: EditSink) -> Self {
+    fn new(loaded: Vst3Loaded, shell: Arc<Shell>, edits: EditSink) -> Self {
         Self {
-            shell: Some(shell),
+            loaded: Some(loaded),
+            shell,
             edits,
             unsent: Vec::new(),
             reset_pending: false,
@@ -68,16 +65,13 @@ impl Vst3Controller {
     }
 
     fn shell(&self) -> &Arc<Shell> {
-        self.shell
-            .as_ref()
-            .expect("a Controller holds its shell until it is consumed")
+        &self.shell
     }
 
     fn loaded(&self) -> &Vst3Loaded {
-        // SAFETY: main thread, shared; see `Shell::loaded`.
-        unsafe { self.shell().loaded() }
+        self.loaded
             .as_ref()
-            .expect("a live Controller's shell holds its plugin")
+            .expect("a live Controller holds its plugin")
     }
 
     /// Edits the ring refused for want of room, cumulatively. Each was kept and
@@ -125,6 +119,17 @@ impl Vst3Controller {
     }
 }
 
+impl Drop for Vst3Controller {
+    fn drop(&mut self) {
+        // Dropped without a rejoin: the plugin is destroyed here, on the
+        // control side, unless the Processor still renders, in which case it is
+        // parked on the shell for the Processor's drop to retire.
+        if let Some(loaded) = self.loaded.take() {
+            drop(self.shell.controller_gone(loaded));
+        }
+    }
+}
+
 impl Deref for Vst3Controller {
     type Target = Vst3Loaded;
 
@@ -135,11 +140,9 @@ impl Deref for Vst3Controller {
 
 impl DerefMut for Vst3Controller {
     fn deref_mut(&mut self) -> &mut Vst3Loaded {
-        let shell = self.shell();
-        // SAFETY: main thread, exclusive; see `Shell::loaded_mut`.
-        unsafe { shell.loaded_mut() }
+        self.loaded
             .as_mut()
-            .expect("a live Controller's shell holds its plugin")
+            .expect("a live Controller holds its plugin")
     }
 }
 
@@ -307,34 +310,42 @@ impl Vst3Loaded {
                 });
             }
         };
-        let Staged { loaded, audio } = staged;
+        let Staged { loaded, audio, .. } = staged;
         // The plugin may announce its latency from inside `setActive`; the
         // figure is read right after every activation, so the announcement is
         // answered. Everything else raised meanwhile is kept.
-        for request in tutti_plugin_types::taken(loaded.host.handler.requests()) {
+        for request in tutti_plugin_types::taken(loaded.plugin.handler().requests()) {
             if request != Request::LatencyChanged {
-                let _ = request.raise(loaded.host.handler.requests());
+                let _ = request.raise(loaded.plugin.handler().requests());
             }
         }
-        let processor = loaded.interfaces.processor.clone();
-        let context_requirements = loaded.interfaces.process_context_requirements;
-        let shell = Arc::new(Shell::new(loaded));
+        let Some(audio_side) = loaded.plugin.audio_side() else {
+            return Err(Refused {
+                plugin: Some(loaded),
+                reason: PluginError::Other(
+                    "the plugin is not set up and active, or its audio half is out".into(),
+                ),
+            });
+        };
+        let context_requirements = loaded.plugin.process_context_requirements();
+        let shell = Arc::new(Shell::new());
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
         let processor = Vst3Processor::new(ProcessorParts {
             shell: shell.clone(),
             audio,
-            processor,
+            audio_side,
             context_requirements,
             drain,
             carried: carried.into_iter().map(|(id, v)| (id.get(), v)).collect(),
         });
-        Ok((processor, Vst3Controller::new(shell, sink)))
+        Ok((processor, Vst3Controller::new(loaded, shell, sink)))
     }
 
     /// Rejoins the halves of one activation of any sample type: checks they are
     /// a pair, stops the Processor, drops it, and hands back the plugin
     /// deactivated, with the writes no block took waiting for the next
     /// activation.
+    #[allow(clippy::result_large_err)]
     fn rejoin<P>(
         mut processor: P,
         mut controller: Vst3Controller,
@@ -364,15 +375,11 @@ impl Vst3Loaded {
         take_edits(&mut processor, &mut pending);
         pending.append(&mut std::mem::take(&mut controller.unsent));
         drop(processor);
-        let shell = controller
-            .shell
+        let mut loaded = controller
+            .loaded
             .take()
-            .expect("a Controller holds its shell until it is consumed");
-        let shell = Arc::try_unwrap(shell)
-            .unwrap_or_else(|_| unreachable!("the pair was the only two handles"));
-        let mut loaded = shell
-            .into_loaded()
-            .expect("the plugin stays in the shell until the last half drops");
+            .expect("a Controller holds its plugin until it is consumed");
+        controller.shell.controller_rejoined();
         loaded.deactivate_plugin();
         loaded.carried = latest_per_parameter(pending);
         Ok(loaded)
@@ -409,9 +416,7 @@ impl Vst3Loaded {
         // the interfaces are still valid and every loaded-state method is still
         // legal. (The asymmetry with `setActive(1)`, where a refusal is a
         // failure.)
-        unsafe {
-            let _ = self.interfaces.component.setActive(0);
-        }
+        let _ = self.plugin.set_active(false);
         self.active = Activation::default();
     }
 }

@@ -111,7 +111,8 @@ struct Inner {
     sysex: SysExAssembler,
     /// The bytes of the SysEx messages a plugin `addEvent`ed to an output
     /// list, which a [`Vst3Event::SysEx`] there indexes. The plugin's pointer
-    /// is valid only for the call, and [`DataEvent`](crate::types::DataEvent)'s inline bytes hold 16,
+    /// is valid only for the call, and [`DataEvent`](crate::types::DataEvent)'s inline bytes
+    /// hold 16,
     /// so the message is copied here. Reserved on the output list only,
     /// never grown, and cleared with `events`.
     sysex_out: Vec<u8>,
@@ -385,6 +386,23 @@ impl EventList {
         inner.sort();
     }
 
+    /// The SysEx messages staged for the plugin, each as the bytes `getEvent`
+    /// would hand it. Allocates: for tests and diagnostics, not the audio
+    /// path.
+    #[must_use]
+    pub fn staged_sysex(&self) -> Vec<Vec<u8>> {
+        let inner = self.inner.borrow();
+        let bytes = inner.sysex_bytes();
+        inner
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                Vst3Event::SysEx(e) => Some(bytes[e.bytes.range()].to_vec()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Empties the list, ready for the next block.
     pub fn clear(&self) {
         self.inner.borrow_mut().clear();
@@ -504,7 +522,8 @@ impl IEventListTrait for EventList {
             let Some(event) = inner.events.get(index) else {
                 return kInvalidArgument;
             };
-            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the VST3 ABI.
+            // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
+            // VST3 ABI.
             unsafe { *e = to_c_event(event, &inner.text_arena, inner.sysex_bytes()) };
             kResultOk
         })

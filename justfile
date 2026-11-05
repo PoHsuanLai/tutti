@@ -322,10 +322,10 @@ check-adapter:
 check-guards:
     scripts/check-guards.sh
 
-# FFI `unsafe` lives only in the `-ffi` crates (`tutti-clap-ffi`,
-# `tutti-vst3-ffi`): the CLAP host crate and the
-# server and GUI code that drive it carry none, and the forbid attribute is
-# there (design 016 §2.9). No build.
+# CLAP and VST3 FFI `unsafe` lives only in `tutti-clap-ffi` and
+# `tutti-vst3-ffi`: the host crates and the server and GUI code that drive
+# them carry none, and the forbid attribute is there (design 016 §2.9).
+# No build.
 check-plugin-ffi:
     scripts/check-plugin-ffi.sh
 

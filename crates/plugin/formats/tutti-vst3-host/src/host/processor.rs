@@ -4,11 +4,7 @@
 
 use std::sync::Arc;
 
-use vst3::ComPtr;
-use vst3::Steinberg::{
-    Vst::{IAudioProcessor, IAudioProcessorTrait, ProcessSetup},
-    kResultOk,
-};
+use vst3::Steinberg::Vst::ProcessSetup;
 
 use tutti_plugin_types::{
     AudioBufferMut, Edit, EditDrain, Normalized, ParamId, PluginError, PluginIo, PluginResult,
@@ -17,12 +13,11 @@ use tutti_plugin_types::{
 use tutti_types::ChannelLayout;
 
 use crate::types::{
-    AudioBuffer, BufferPtrs, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef,
-    TransportInfo, Vst3InputEvents, Vst3Sample, to_process_context,
+    AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef, TransportInfo,
+    Vst3InputEvents, Vst3Sample, to_process_context,
 };
-use tutti_vst3_ffi::{EventList, ParameterChangesImpl, event_list_ptr, param_changes_ptr};
+use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
 
-use super::bus_buffers::{BusBuffers, live_len};
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, midi_to_mapped_controller, stage_input_events};
 use super::sequencer::{
@@ -71,10 +66,10 @@ pub(super) struct ProcessConfig {
 /// The input half of `ProcessData`: per-bus audio scratch plus the COM-wrapped
 /// event and parameter-change lists the host stages for the plugin to read.
 /// All three are reused in place each block to keep the RT path allocation-free.
-pub(super) struct InputStaging<T: Vst3Sample> {
+pub(super) struct InputStaging {
     /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
     /// buffer; extra input buses receive silence.
-    pub(super) buses: BusBuffers<T>,
+    pub(super) buses: BusBuffers,
     pub(super) events: vst3::ComWrapper<EventList>,
     pub(super) param_changes: vst3::ComWrapper<ParameterChangesImpl>,
 }
@@ -82,10 +77,10 @@ pub(super) struct InputStaging<T: Vst3Sample> {
 /// The output half of `ProcessData`: per-bus audio scratch, the COM-wrapped
 /// lists the plugin writes into, plus the pooled buffers `process` drains those
 /// emitted events into so it can return a borrowed [`ProcessOutputRef`].
-pub(super) struct OutputStaging<T: Vst3Sample> {
+pub(super) struct OutputStaging {
     /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
     /// buffer; extra output buses get a discard sink.
-    pub(super) buses: BusBuffers<T>,
+    pub(super) buses: BusBuffers,
     pub(super) events: vst3::ComWrapper<EventList>,
     pub(super) param_changes: vst3::ComWrapper<ParameterChangesImpl>,
     /// Pooled return-value buffers. `process` drains the plugin's emitted
@@ -97,7 +92,7 @@ pub(super) struct OutputStaging<T: Vst3Sample> {
     pub(super) emitted_param_changes: ParameterChanges,
 }
 
-impl<T: Vst3Sample> OutputStaging<T> {
+impl OutputStaging {
     /// Resets the emitted-event return pools so a borrow into them reads empty.
     /// Called at the top of every `process` block: the bail-out paths return
     /// `emitted_ref()` directly, and the steady-state path then drains the
@@ -132,13 +127,12 @@ impl<T: Vst3Sample> OutputStaging<T> {
 ///
 /// `ptrs` is shared: its flat per-channel pointers feed both `input.buses` and
 /// `output.buses` each block.
-pub(super) struct AudioIO<T: Vst3Sample> {
+pub(super) struct AudioIO {
     pub(super) config: ProcessConfig,
     /// Typed flat pointer tables for the single committed sample format `T`.
     /// Sized to the per-direction channel total (main + sidechain/aux buses).
-    pub(super) ptrs: BufferPtrs<T>,
-    pub(super) input: InputStaging<T>,
-    pub(super) output: OutputStaging<T>,
+    pub(super) input: InputStaging,
+    pub(super) output: OutputStaging,
     pub(super) cc: CcRoute,
     /// RT-side MIDI-learn CC capture, paired with the
     /// [`Vst3Loaded`](super::Vst3Loaded)'s consumer. Inert (a single
@@ -175,10 +169,11 @@ impl ProcessConfig {
 /// [`Vst3Loaded::reap_retired`](super::Vst3Loaded::reap_retired) empties, so
 /// dropping it on the realtime thread does not tear a plugin down there.
 pub struct Vst3Processor<T: Vst3Sample> {
+    _format: std::marker::PhantomData<fn() -> T>,
     // The scratch is listed first so it drops before the rest.
-    pub(super) audio: AudioIO<T>,
+    pub(super) audio: AudioIO,
     seq: SeqScratch,
-    processor: ComPtr<IAudioProcessor>,
+    audio_side: AudioSide,
     /// What `getProcessContextRequirements` answered at activation.
     context_requirements: u32,
     drain: EditDrain,
@@ -204,37 +199,32 @@ impl<T: Vst3Sample> std::fmt::Debug for Vst3Processor<T> {
     }
 }
 
-// SAFETY: clause 2 of the invariant on `Shell`. The `ComPtr` and the COM
-// wrappers in the scratch are reached from one thread at a time (every method
-// takes `&mut self`), and the plugin takes the processing-thread calls from
-// whichever thread holds the Processor.
-unsafe impl<T: Vst3Sample> Send for Vst3Processor<T> {}
-
 /// Everything a Processor is built from.
-pub(super) struct ProcessorParts<T: Vst3Sample> {
+pub(super) struct ProcessorParts {
     pub shell: Arc<Shell>,
-    pub audio: AudioIO<T>,
-    pub processor: ComPtr<IAudioProcessor>,
+    pub audio: AudioIO,
+    pub audio_side: AudioSide,
     pub context_requirements: u32,
     pub drain: EditDrain,
     pub carried: Vec<(u32, Normalized)>,
 }
 
 impl<T: Vst3Sample> Vst3Processor<T> {
-    pub(super) fn new(parts: ProcessorParts<T>) -> Self {
+    pub(super) fn new(parts: ProcessorParts) -> Self {
         let ProcessorParts {
             shell,
             audio,
-            processor,
+            audio_side,
             context_requirements,
             drain,
             mut carried,
         } = parts;
         carried.reserve(EDIT_CAPACITY);
         Self {
+            _format: std::marker::PhantomData,
             audio,
             seq: SeqScratch::default(),
-            processor,
+            audio_side,
             context_requirements,
             drain,
             pending: carried,
@@ -259,8 +249,8 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     /// [`process`](Self::process) starts it again.
     pub fn stop(&mut self) {
         if std::mem::take(&mut self.processing) {
-            // SAFETY: the plugin is alive while this Processor holds the shell.
-            unsafe { self.processor.setProcessing(0) };
+            // A refusal (the plugin is gone or deactivated) leaves nothing to stop.
+            let _ = self.audio_side.set_processing(false);
             // The plugin forgets its input across the stop: a SysEx open in the
             // input list must not complete on the far side of it.
             self.audio.input.events.reset_sysex();
@@ -349,43 +339,9 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         }
         // Processing resumes lazily after a `stop`. (Activation starts it.)
         if !self.processing {
-            unsafe { self.processor.setProcessing(1) };
+            let _ = self.audio_side.set_processing(true);
             self.processing = true;
         }
-        let processor = self.processor.clone();
-
-        // Fill bus-0 channel pointers from the (flat) caller buffer, then build
-        // the per-bus `AudioBusBuffers` arrays: bus 0 maps onto the live
-        // channels, extra input buses get silence, extra output buses a sink.
-        let (input_ptrs, output_ptrs) = self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
-        // `prepare` drops channels beyond its slot count, so only that many
-        // slots are filled; nothing upstream checks the caller's width here.
-        let live_inputs = live_len(buffer.inputs.len(), self.audio.ptrs.input_len());
-        let live_outputs = live_len(buffer.outputs.len(), self.audio.ptrs.output_len());
-        let num_input_buses = self.audio.input.buses.num_buses();
-        let num_output_buses = self.audio.output.buses.num_buses();
-        // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
-        // pointer arrays; `live_inputs`/`live_outputs` are clamped to the tables'
-        // slot counts, so `fill_bus` never reads an unfilled slot. Valid until the
-        // `processor.process` call below; the scratch tables are pre-sized.
-        // The input table is cast `*const` to `*mut` because `AudioBusBuffers`
-        // types its channels `**mut`; VST3 defines input buffers as read-only
-        // to the plugin, so nothing writes through them.
-        let inputs_ptr = unsafe {
-            self.audio.input.buses.prepare(
-                input_ptrs as *const *mut std::ffi::c_void,
-                live_inputs,
-                true,
-            )
-        };
-        let outputs_ptr = unsafe {
-            self.audio.output.buses.prepare(
-                output_ptrs as *const *mut std::ffi::c_void,
-                live_outputs,
-                false,
-            )
-        };
-
         // The Controller's writes since the last block, put ahead of this
         // block's automation below, so where both set one parameter the
         // automation has the last word.
@@ -407,8 +363,6 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             param_changes,
         );
         self.audio.output.events.clear();
-        let input_events_ptr = event_list_ptr(&self.audio.input.events);
-        let output_events_ptr = event_list_ptr(&self.audio.output.events);
 
         // Refill the pooled input/output ParameterChanges wrappers in
         // place instead of building fresh ComWrappers every block.
@@ -429,41 +383,41 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         let mut process_context = to_process_context(transport, self.context_requirements);
         process_context.sampleRate = buffer.sample_rate;
 
-        let mut process_data = vst3::Steinberg::Vst::ProcessData {
-            processMode: self.audio.config.block_mode.to_vst3(),
-            symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
-            numSamples: buffer.num_samples as i32,
-            numInputs: num_input_buses as i32,
-            numOutputs: num_output_buses as i32,
-            inputs: inputs_ptr,
-            outputs: outputs_ptr,
-            inputParameterChanges: if have_input_params {
-                param_changes_ptr(&self.audio.input.param_changes)
-            } else {
-                std::ptr::null_mut()
-            },
-            outputParameterChanges: param_changes_ptr(&self.audio.output.param_changes),
-            inputEvents: input_events_ptr,
-            outputEvents: output_events_ptr,
-            processContext: &mut process_context,
+        // The setup comes from `process_setup()`, the same accessor
+        // `apply_process_setup` hands the plugin, so a conformance observer
+        // comparing the two sees the real negotiated value.
+        let setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
+
+        // Bind each direction to this block's channel slices: bus 0 maps onto
+        // the live channels, extra input buses get silence, extra output buses
+        // a sink. Channels beyond the scratch's flat width are dropped.
+        let bound = T::bind_inputs(&mut self.audio.input.buses, buffer.inputs).and_then(|inputs| {
+            T::bind_outputs(&mut self.audio.output.buses, buffer.outputs)
+                .map(|outputs| (inputs, outputs))
+        });
+        let (inputs, outputs) = match bound {
+            Ok(buses) => buses,
+            Err(error) => {
+                buffer.clear_outputs();
+                return Err(ProcessFailed { code: error.code() });
+            }
         };
+        let result = self.audio_side.process(ProcessIo {
+            mode: self.audio.config.block_mode,
+            num_samples: buffer.num_samples,
+            inputs,
+            outputs,
+            input_events: &self.audio.input.events,
+            output_events: &self.audio.output.events,
+            input_params: have_input_params.then_some(&self.audio.input.param_changes),
+            output_params: &self.audio.output.param_changes,
+            context: &mut process_context,
+            setup: &setup,
+        });
 
-        // Test-only seam: hand the fully-built ProcessData to an installed
-        // observer before the plugin sees it. Compiled out by default. The
-        // setup comes from `process_setup()`, the same accessor
-        // `apply_process_setup` hands the plugin, so an observer comparing the
-        // two sees the real negotiated value.
-        #[cfg(feature = "conformance")]
-        {
-            let setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
-            super::conformance::observe(&process_data, &setup);
-        }
-
-        let result = unsafe { processor.process(&mut process_data) };
-
-        if result != kResultOk {
+        if let Err(error) = result {
             buffer.clear_outputs();
-            return Err(ProcessFailed { code: result });
+            return Err(ProcessFailed { code: error.code() });
         }
 
         self.audio.output.drain_emitted();

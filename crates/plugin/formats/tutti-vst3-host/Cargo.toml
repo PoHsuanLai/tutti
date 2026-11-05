@@ -35,8 +35,8 @@ default = []
 conformance = ["tutti-vst3-ffi/conformance"]
 
 [dependencies]
-libloading = "0.9"
 thiserror = "2"
+parking_lot = "0.12"
 crossbeam-channel = "0.5"
 crossbeam-queue = "0.3"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
@@ -44,11 +44,6 @@ tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
 vst3 = "0.3"
 tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
-
-# The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
-# CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation-sys = "0.8"
 
 [build-dependencies]
 cc = "1"
@@ -88,8 +83,24 @@ name = "vst3_com_dispatch"
 path = "tests/vst3_com_dispatch.rs"
 
 [[test]]
-name = "vst3_conformance"
-path = "tests/vst3_conformance.rs"
+name = "vst3_conformance_blocks"
+path = "tests/vst3_conformance_blocks.rs"
+
+[[test]]
+name = "vst3_conformance_controller"
+path = "tests/vst3_conformance_controller.rs"
+
+[[test]]
+name = "vst3_conformance_interfaces"
+path = "tests/vst3_conformance_interfaces.rs"
+
+[[test]]
+name = "vst3_conformance_modes"
+path = "tests/vst3_conformance_modes.rs"
+
+[[test]]
+name = "vst3_ffi_plugin"
+path = "tests/vst3_ffi_plugin.rs"
 
 [[test]]
 name = "vst3_gui_lifecycle"

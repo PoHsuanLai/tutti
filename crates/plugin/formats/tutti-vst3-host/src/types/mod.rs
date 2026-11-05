@@ -5,6 +5,8 @@
 //! info with VST3 flags, `BusInfo`, `PluginInfo`).
 
 pub(crate) use tutti_vst3_ffi::K_SAMPLE_64_INT;
+use tutti_vst3_ffi::Vst3Error as FfiError;
+use tutti_vst3_ffi::{BoundBuses, BusBuffers, K_SAMPLE_32_INT, SampleWidth};
 pub use tutti_vst3_ffi::{
     BusInfo, ChordEvent, ChordValue, DataEvent, EventHeader, K_CHORD_EVENT, K_DATA_EVENT,
     K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT, K_NOTE_EXPRESSION_TEXT_EVENT,
@@ -13,10 +15,10 @@ pub use tutti_vst3_ffi::{
     NoteExpressionText, NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent,
     NoteOnEvent, PolyPressureEvent, ProcessMode, ScaleEvent, ScaleValue, SysExEvent, TextRef,
     Vst3Event, Vst3InputEvents, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo, automation_state, keyswitch_type,
-    note_expression_flags, note_expression_to_vst3, note_expression_type_from_id,
-    note_expression_type_to_id, parameter_flags, physical_ui_type, prefetchable_support,
-    process_context_flags, to_process_context, unit_ids, vst3_to_chord, vst3_to_note_expression,
+    Vst3ProgramListInfo, Vst3UnitInfo, automation_state, keyswitch_type, note_expression_flags,
+    note_expression_to_vst3, note_expression_type_from_id, note_expression_type_to_id,
+    parameter_flags, physical_ui_type, prefetchable_support, process_context_flags,
+    to_process_context, unit_ids, vst3_to_chord, vst3_to_note_expression,
     vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale,
 };
 
@@ -219,6 +221,71 @@ impl PluginInfo {
     pub fn f64_support(mut self, supports: bool) -> Self {
         self.supports_f64 = supports;
         self
+    }
+}
+
+/// A sample type the VST3 host renders: it names the width the plugin is
+/// activated with and binds a block's channel slices of that type to the
+/// process buffers.
+///
+/// This is the host's own seam: the FFI crate's process path is not generic
+/// over the sample type.
+pub trait Vst3Sample: tutti_plugin_types::Sample {
+    /// The width of this sample type.
+    const WIDTH: SampleWidth;
+    /// The `symbolicSampleSize` the plugin is told: `kSample32` or `kSample64`.
+    const VST3_SYMBOLIC_SIZE: i32;
+
+    /// Binds the input channels of a block.
+    #[doc(hidden)]
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [Self]],
+    ) -> Result<BoundBuses<'a>, FfiError>;
+
+    /// Binds the output channels of a block.
+    #[doc(hidden)]
+    fn bind_outputs<'a, 'b: 'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a mut [&'b mut [Self]],
+    ) -> Result<BoundBuses<'a>, FfiError>;
+}
+
+impl Vst3Sample for f32 {
+    const WIDTH: SampleWidth = SampleWidth::F32;
+    const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_32_INT;
+
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [f32]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
+        buses.bind_inputs_f32(channels)
+    }
+
+    fn bind_outputs<'a, 'b: 'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a mut [&'b mut [f32]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
+        buses.bind_outputs_f32(channels)
+    }
+}
+
+impl Vst3Sample for f64 {
+    const WIDTH: SampleWidth = SampleWidth::F64;
+    const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_64_INT;
+
+    fn bind_inputs<'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a [&'a [f64]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
+        buses.bind_inputs_f64(channels)
+    }
+
+    fn bind_outputs<'a, 'b: 'a>(
+        buses: &'a mut BusBuffers,
+        channels: &'a mut [&'b mut [f64]],
+    ) -> Result<BoundBuses<'a>, FfiError> {
+        buses.bind_outputs_f64(channels)
     }
 }
 

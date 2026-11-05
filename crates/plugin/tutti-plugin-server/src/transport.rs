@@ -81,7 +81,9 @@ impl Transport for SocketTransport {
         // would let it turn a corrupted write into a 4 GiB allocation, or park
         // the session thread in `read_exact` forever.
         if len > MAX_FRAME_BYTES {
-            return Err(BridgeError::ProcessCrashed);
+            return Err(BridgeError::ConnectionFailed(format!(
+                "incoming frame is {len} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit"
+            )));
         }
         let mut data = vec![0u8; len];
         self.stream.read_exact(&mut data)?;
@@ -481,6 +483,34 @@ fn parent_is_alive() -> bool {
         // SAFETY: closing a handle opened above and not yet closed.
         unsafe { CloseHandle(snapshot) };
         found
+    }
+}
+
+#[cfg(all(test, unix))]
+mod recv_tests {
+    use super::*;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+
+    /// A length prefix over the cap is a framing violation by the host, not
+    /// this process crashing: the error names the frame and the limit, and is
+    /// refused before any allocation (no body is ever sent).
+    ///
+    /// Mutation (run): restoring `BridgeError::ProcessCrashed` in `recv` fails
+    /// the `ConnectionFailed` match; changing `>` to `>=` passes this test,
+    /// which pins one past the cap only.
+    #[test]
+    fn an_oversize_inbound_frame_is_a_protocol_error_not_a_crash() {
+        let (mut host, server) = UnixStream::pair().expect("socket pair");
+        let mut transport = SocketTransport::new(PlatformStream::from(OwnedFd::from(server)));
+        let len = u32::try_from(MAX_FRAME_BYTES + 1).expect("the cap fits a u32 prefix");
+        host.write_all(&len.to_be_bytes()).expect("write prefix");
+        match transport.recv() {
+            Err(BridgeError::ConnectionFailed(msg)) => {
+                assert!(msg.contains(&(MAX_FRAME_BYTES + 1).to_string()), "{msg}");
+            }
+            other => panic!("expected ConnectionFailed, got {other:?}"),
+        }
     }
 }
 

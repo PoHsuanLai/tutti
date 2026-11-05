@@ -9,6 +9,7 @@
 //! notifies the host from inside its own `process` from re-entering itself.
 
 use std::ffi::{CStr, c_char, c_void};
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, CLAP_PORT_AMBISONIC, clap_host_ambisonic};
@@ -197,10 +198,22 @@ pub enum TransportCommand {
 /// What a plugin's calls into the host reach.
 ///
 /// Implemented by the embedding crate and shared (`Arc`) with the plugin's
-/// host vtable. Every method runs on a thread the plugin chose, the audio
-/// thread included, so each must be wait-free where the CLAP spec marks the
-/// callback `[thread-safe]` (set a flag, push onto a queue) and none may call
-/// back into the plugin. The defaults answer "not handled".
+/// host vtable. Every method runs synchronously inside whatever plugin entry
+/// made the call, on the thread that entry runs on (the audio thread
+/// included), so:
+///
+/// * a method that CLAP marks `[thread-safe]` must not block, allocate or take
+///   a lock a main-thread caller can hold across a plugin call (set a flag,
+///   push onto a queue);
+/// * no method may call any entry of the plugin that made the call (an
+///   extension, `activate`, `process`, ...), directly or by waiting for
+///   another thread that would: the plugin is mid-call and CLAP entries are
+///   not re-entrant. Record the request and act on it later, from the thread
+///   that owns the plugin;
+/// * a method may be called while this crate holds the instance's audio
+///   claim, so it must not try to take the claim itself.
+///
+/// The defaults answer "not handled".
 pub trait HostCallbacks: Send + Sync + 'static {
     /// `clap.thread-check`: whether the calling thread is the main thread.
     fn is_main_thread(&self) -> bool;
@@ -358,12 +371,22 @@ unsafe impl Sync for HostInner {}
 /// The `clap_host` a plugin is created with, dispatching into one
 /// [`HostCallbacks`].
 ///
-/// Boxed so the pointer the plugin keeps (`host_data` names the box) stays
-/// valid wherever the `Host` moves. The plugin must be destroyed before the
-/// host drops; [`Plugin`](crate::Plugin) owns both and does so.
+/// Heap-allocated and owned through a raw pointer, so the address the plugin
+/// keeps (`host_data`) stays valid wherever the `Host` moves, and no later
+/// `&mut`/`Box` retag of the allocation can invalidate the pointers derived
+/// from it (a `Box` field would be retagged unique on every move). The
+/// plugin must be destroyed before the host drops; [`Plugin`](crate::Plugin)
+/// owns both and does so.
 pub struct Host {
-    inner: Box<HostInner>,
+    inner: NonNull<HostInner>,
 }
+
+// SAFETY: `Host` owns its `HostInner`, which is `Send + Sync` (above); the
+// pointer is not shared except through the `host_data` the plugin holds, and
+// that is only read.
+unsafe impl Send for Host {}
+// SAFETY: see `Send` above; `&Host` exposes only reads of the vtable.
+unsafe impl Sync for Host {}
 
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -371,11 +394,19 @@ impl std::fmt::Debug for Host {
     }
 }
 
+impl Drop for Host {
+    fn drop(&mut self) {
+        // SAFETY: `inner` came from `Box::into_raw` in `new` and is freed
+        // once, here.
+        drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
+    }
+}
+
 impl Host {
     /// A host whose plugin calls reach `callbacks`.
     #[must_use]
     pub fn new(callbacks: Arc<dyn HostCallbacks>) -> Self {
-        let mut inner = Box::new(HostInner {
+        let inner = NonNull::from(Box::leak(Box::new(HostInner {
             vtable: clap_host {
                 clap_version: CLAP_VERSION,
                 host_data: std::ptr::null_mut(),
@@ -389,23 +420,26 @@ impl Host {
                 request_callback: Some(host_request_callback),
             },
             callbacks,
-        });
-        let me: *mut HostInner = &mut *inner;
-        inner.vtable.host_data = me.cast::<c_void>();
+        })));
+        // SAFETY: just allocated, uniquely owned here; `host_data` is derived
+        // from the same raw pointer every later access goes through.
+        unsafe { (*inner.as_ptr()).vtable.host_data = inner.as_ptr().cast::<c_void>() };
         Self { inner }
     }
 
     /// The vtable pointer for `create_plugin`. Valid while `self` lives.
     pub(crate) fn as_raw(&self) -> *const clap_host {
-        &self.inner.vtable
+        // SAFETY: `inner` is live (`self` owns it); only an address is taken.
+        unsafe { std::ptr::addr_of!((*self.inner.as_ptr()).vtable) }
     }
 
     /// An identity for this host: the address `request_exec` matches.
     pub(crate) fn id(&self) -> usize {
-        std::ptr::from_ref::<HostInner>(&self.inner) as usize
+        self.inner.as_ptr() as usize
     }
 
     /// The raw vtable, for a test that drives the callbacks itself.
+    #[cfg(feature = "test-support")]
     #[doc(hidden)]
     #[must_use]
     pub fn raw_for_test(&self) -> *const clap_host {
@@ -1129,6 +1163,54 @@ extern "C" fn host_posix_fd_unregister(host: *const clap_host, fd: i32) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[derive(Default)]
+    struct Count(AtomicU32);
+
+    impl HostCallbacks for Count {
+        fn is_main_thread(&self) -> bool {
+            true
+        }
+
+        fn is_audio_thread(&self) -> bool {
+            false
+        }
+
+        fn request_restart(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The vtable a plugin keeps reaches the embedder's callbacks after the
+    /// `Host` has moved (the plugin holds the address, not the `Host`), and
+    /// its thread-check answers come from the callbacks.
+    ///
+    /// Mutation: have `host_request_restart` ignore the callbacks: the count
+    /// stays 0 and the first assertion fails.
+    #[test]
+    fn a_hosts_vtable_reaches_its_callbacks_after_the_host_moves() {
+        let counter = Arc::new(Count::default());
+        let host = Host::new(counter.clone());
+        let raw = host.as_raw();
+        let moved = Box::new(host);
+        assert_eq!(
+            moved.as_raw(),
+            raw,
+            "the vtable does not move with the host"
+        );
+        // SAFETY: `raw` is the live vtable `Host::new` built, kept alive by
+        // `moved`.
+        unsafe {
+            ((*raw).request_restart.unwrap())(raw);
+            assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+            let get_ext = (*raw).get_extension.unwrap();
+            let tc = get_ext(raw, CLAP_EXT_THREAD_CHECK.as_ptr()).cast::<clap_host_thread_check>();
+            assert!(!tc.is_null());
+            assert!(((*tc).is_main_thread.unwrap())(raw));
+            assert!(!((*tc).is_audio_thread.unwrap())(raw));
+        }
+    }
 
     /// `is_rescan_flag_supported` answers for the flags this host decodes, and
     /// declines the rest.

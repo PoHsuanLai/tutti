@@ -42,6 +42,11 @@ use clap_sys::plugin::clap_plugin;
 
 /// A pool of threads a job can be spread over.
 ///
+/// The implementor owes the contract below, which this crate cannot check: a
+/// `try_run` that returns `true` has no participant left inside `job`, since
+/// `job` borrows the caller's stack. (The same contract `tutti_graph::Pool`
+/// states for its own jobs.)
+///
 /// The contract `clap.thread-pool` needs, and no more: the caller joins the
 /// job, `try_run` returns after every participant has left it, and a busy pool
 /// refuses rather than waits.
@@ -68,10 +73,26 @@ type ExecFn = unsafe extern "C" fn(plugin: *const clap_plugin, task_index: u32);
 /// Built by [`Plugin::pool_handle`](crate::Plugin::pool_handle) and handed to
 /// [`AudioSide::process`](crate::AudioSide::process), which serves it for the
 /// span of one `process` call.
+///
+/// The handle names the instance whose vtable `exec` came from (a `Weak`
+/// of its private core, which also keeps the address from being reused), and
+/// `process` serves it only for that instance: a handle given to another
+/// instance's `process` is ignored, as if there were no pool, so `exec` is
+/// never called with a `clap_plugin` it does not belong to, and never after
+/// its library is gone (a live instance's core is only reachable while its
+/// `Plugin`, and so its library, is).
 #[derive(Clone)]
 pub struct PoolHandle {
     pub(crate) pool: Arc<dyn TaskPool>,
     pub(crate) exec: ExecFn,
+    pub(crate) owner: std::sync::Weak<crate::plugin::Core>,
+}
+
+impl PoolHandle {
+    /// Whether this handle was made for the instance `core` belongs to.
+    pub(crate) fn is_for(&self, core: &Arc<crate::plugin::Core>) -> bool {
+        std::ptr::eq(self.owner.as_ptr(), Arc::as_ptr(core))
+    }
 }
 
 impl std::fmt::Debug for PoolHandle {

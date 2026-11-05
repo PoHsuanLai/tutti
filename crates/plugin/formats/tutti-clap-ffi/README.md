@@ -20,7 +20,7 @@ value whose unsafe constructor carries a claim this crate relies on
 | `EventSource`, `EventSink` | the host's input and output event lists as safe traits; the raw `clap_input_events` and `clap_output_events` exist only on the stack of the call that needs them |
 | `PortScratch`, `ProcessCall` | the channel-pointer tables and the one call that binds a block's buffers and runs the plugin |
 | `InputStream`, `OutputStream` | `clap_istream` and `clap_ostream` over byte buffers |
-| `TaskPool`, `PoolHandle` | `clap.thread-pool`: a plugin's `request_exec` served on a pool for the span of its `process` call |
+| `TaskPool`, `PoolHandle` | `clap.thread-pool`: a plugin's `request_exec` served on a pool for the span of its `process` call; a handle is bound to the instance it was made for and ignored by any other |
 | `ThreadRoles`, `AudioClaim` | which thread is the `[main-thread]` and `[audio-thread]`, and the lock that keeps audio-side entries from overlapping |
 
 ## How the thread rules are in the types
@@ -55,6 +55,8 @@ The wrappers are tested against the reference plugin (`tutti-clap-test-plugin`)
 in `tests/plugin_handle.rs`, and against stub vtables in the unit tests beside
 the code they cover. A test that needs a raw list or vtable (a null pointer, an
 undersized header, a misaligned event) uses the `*_raw_for_test` hooks, which
-are `#[doc(hidden)]` and leak a few bytes on purpose.
+are `#[doc(hidden)]`, behind the `test-support` feature (off in a production
+build; the host crate's dev-dependency turns it on) and leak a few bytes on
+purpose.
 
 [`clap-sys`]: https://docs.rs/clap-sys

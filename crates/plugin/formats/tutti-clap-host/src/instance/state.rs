@@ -29,7 +29,9 @@ impl ClapLoaded {
             Err(CallError::NoFunction) => {
                 Err(ClapError::StateError("No save function".to_string()))
             }
-            Err(CallError::Failed) => Err(ClapError::StateError("Save failed".to_string())),
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Save failed".to_string()))
+            }
         }
     }
 
@@ -58,7 +60,9 @@ impl ClapLoaded {
             Err(CallError::NoFunction) => {
                 Err(ClapError::StateError("No load function".to_string()))
             }
-            Err(CallError::Failed) => Err(ClapError::StateError("Load failed".to_string())),
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Load failed".to_string()))
+            }
         }
     }
 
@@ -94,7 +98,7 @@ impl ClapLoaded {
             .state_save_with_context(&mut stream, context.into())
         {
             Ok(()) => Ok(stream.into_data()),
-            Err(CallError::Failed) => Err(ClapError::StateError(format!(
+            Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
                 "Context-aware save failed for {context:?}"
             ))),
             // A plugin without the context extension, or without its `save`,
@@ -134,7 +138,7 @@ impl ClapLoaded {
             .state_load_with_context(&mut stream, context.into())
         {
             Ok(()) => Ok(()),
-            Err(CallError::Failed) => Err(ClapError::StateError(format!(
+            Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
                 "Context-aware load failed for {context:?}"
             ))),
             Err(CallError::NoExtension | CallError::NoFunction) => self.write_state(data),
@@ -180,7 +184,9 @@ impl ClapLoaded {
             Err(CallError::NoFunction) => Err(ClapError::StateError(
                 "No from_location function".to_string(),
             )),
-            Err(CallError::Failed) => Err(ClapError::StateError("Preset load failed".to_string())),
+            Err(CallError::Failed | CallError::WrongState) => {
+                Err(ClapError::StateError("Preset load failed".to_string()))
+            }
         }
     }
 }

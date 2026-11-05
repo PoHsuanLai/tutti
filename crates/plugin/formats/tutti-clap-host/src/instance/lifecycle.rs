@@ -18,6 +18,7 @@ use crate::error::{ClapError, LoadStage, Result};
 use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tutti_clap_ffi::ActivateError;
 use tutti_plugin_types::{PluginError, Prepare, Refused, Request, taken};
 use tutti_types::ArcLend;
 
@@ -262,14 +263,19 @@ impl ClapLoaded {
     /// Calls the plugin's `activate` FFI. Shared by `activate_typed` and the
     /// transitions built on it.
     pub(crate) fn activate_plugin(&mut self) -> Result<()> {
-        if !self
+        if let Err(e) = self
             .plugin
             .activate(self.audio.sample_rate, 1, self.audio.max_frames)
         {
             return Err(ClapError::LoadFailed {
                 path: PathBuf::new(),
                 stage: LoadStage::Activation,
-                reason: "Activate failed".to_string(),
+                reason: match e {
+                    ActivateError::ProcessorStillAlive => {
+                        "the audio half of the previous activation is still alive".to_string()
+                    }
+                    ActivateError::Refused => "Activate failed".to_string(),
+                },
             });
         }
         self.flags.active = true;

@@ -136,7 +136,9 @@ impl ClapLoaded {
     /// Asks the plugin to switch to a previously reported port configuration.
     /// Returns whether the plugin accepted the request.
     pub fn select_audio_port_config(&mut self, config_id: u32) -> bool {
-        self.plugin.select_audio_ports_config(config_id)
+        self.plugin
+            .select_audio_ports_config(config_id)
+            .unwrap_or(false)
     }
 
     /// The `id` of the audio-ports configuration currently active
@@ -232,6 +234,7 @@ impl ClapLoaded {
     pub fn can_apply_audio_port_configuration(&self, requests: &[AudioPortConfigRequest]) -> bool {
         self.plugin
             .can_apply_audio_port_configuration(&port_config_requests(requests))
+            .unwrap_or(false)
     }
 
     /// Applies a set of port-configuration requests via
@@ -240,6 +243,7 @@ impl ClapLoaded {
     pub fn apply_audio_port_configuration(&mut self, requests: &[AudioPortConfigRequest]) -> bool {
         self.plugin
             .apply_audio_port_configuration(&port_config_requests(requests))
+            .unwrap_or(false)
     }
 
     /// Whether the plugin supports activating/deactivating ports while
@@ -261,6 +265,7 @@ impl ClapLoaded {
     ) -> bool {
         self.plugin
             .set_audio_port_active(is_input, port_index, is_active, sample_size)
+            .unwrap_or(false)
     }
 
     /// Asks the plugin to add a new port via the draft
@@ -275,13 +280,16 @@ impl ClapLoaded {
     ) -> bool {
         self.plugin
             .add_audio_port(is_input, channel_count, port_type)
+            .unwrap_or(false)
     }
 
     /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
     /// removed the port. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
-        self.plugin.remove_audio_port(is_input, index)
+        self.plugin
+            .remove_audio_port(is_input, index)
+            .unwrap_or(false)
     }
 
     /// Asks whether the plugin can process the given ambisonic ordering +

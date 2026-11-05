@@ -14,6 +14,12 @@ categories = ["multimedia::audio"]
 [lints]
 workspace = true
 
+[features]
+# The hooks a test uses to drive the raw C vtables the safe API hides (raw
+# lists, streams and host vtables, a context-menu builder). Off in a
+# production build; the host crate's tests turn it on.
+test-support = []
+
 [dependencies]
 clap-sys = "0.5"
 libloading = "0.8"

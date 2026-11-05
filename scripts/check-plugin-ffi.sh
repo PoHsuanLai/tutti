@@ -12,7 +12,7 @@
 #   `tutti-plugin/src/format/gui/clap.rs` before their `#[cfg(test)]` module.
 #   Their test modules may call into the reference plugin's cdylib through
 #   `libloading`, which is `unsafe` and cannot go through the FFI crate, so the
-#   scan stops where the test module starts.
+#   scan stops where the test module (`#[cfg(test)]` then `mod`) starts.
 # - `tutti-clap-ffi`'s `lib.rs` lacks the lints that make every `unsafe` block
 #   carry a `// SAFETY:` comment (`undocumented_unsafe_blocks`) and every
 #   `unsafe fn` a `# Safety` section (`missing_safety_doc`).
@@ -21,7 +21,8 @@
 #
 # Mutation (run): add `unsafe { }` to any fn of `tutti-clap-host/src/lib.rs`'s
 # crate, or delete its forbid attribute, or add an `unsafe` block above the
-# test module of `loaders/clap.rs` -> this script exits 1 naming the file.
+# test module of `loaders/clap.rs`, even after an earlier `#[cfg(test)] use`
+# -> this script exits 1 naming the file.
 #
 # No build needed (python3 only), so CI runs it in the static `paths` job.
 set -euo pipefail
@@ -84,7 +85,9 @@ def code_only(s):
 def first_unsafe(path, stop_at_tests):
     s = open(path).read()
     if stop_at_tests:
-        t = re.search(r"^\s*#\[cfg\(test\)\]", s, re.M)
+        # The test *module*: a `#[cfg(test)] use` or fn above production code
+        # does not end the scan.
+        t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n(\s*#\[[^\n]*\]\s*\n)*\s*(pub )?mod \w+", s, re.M)
         s = s[: t.start()] if t else s
     code = code_only(s)
     m = re.search(r"\bunsafe\b", code)

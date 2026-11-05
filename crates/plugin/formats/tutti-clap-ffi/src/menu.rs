@@ -198,6 +198,7 @@ extern "C" fn supports(_builder: *const clap_context_menu_builder, item_kind: u3
 
 /// Runs `f` with a builder whose `ctx` is `items`, for a caller that drives
 /// the builder callbacks itself (a test).
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub fn builder_for_test<R>(
     items: Option<&mut Vec<MenuItem>>,

@@ -223,6 +223,7 @@ pub(crate) fn with_output<R>(
 /// # Safety
 /// `source` must stay alive and unmoved for as long as the returned list is
 /// used.
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 #[must_use]
 pub unsafe fn input_raw_for_test(source: *const dyn EventSource) -> *const clap_input_events {
@@ -241,6 +242,7 @@ pub unsafe fn input_raw_for_test(source: *const dyn EventSource) -> *const clap_
 /// # Safety
 /// `sink` must stay alive and unmoved for as long as the returned list is
 /// used, and nothing else may use it meanwhile.
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 #[must_use]
 pub unsafe fn output_raw_for_test(sink: *mut dyn EventSink) -> *const clap_output_events {
@@ -543,10 +545,12 @@ mod tests {
         let mut claimed = *body;
         claimed.header = header;
         with_output(&mut log, |raw| {
-            // SAFETY: `raw` is the live list `with_output` built; the event is a
-            // whole `clap_event_note`, at least as large as any size below it
-            // claims to be read.
-            let _ = unsafe { ((*raw).try_push.unwrap())(raw, &claimed.header) };
+            // Provenance over the whole struct, not just its header field.
+            let whole = ptr::from_ref(&claimed).cast::<clap_event_header>();
+            // SAFETY: `raw` is the live list `with_output` built; `whole` points
+            // at the whole `clap_event_note`, at least as large as any size
+            // below it claims to be read.
+            let _ = unsafe { ((*raw).try_push.unwrap())(raw, whole) };
         });
         (log.pushed, log.malformed)
     }

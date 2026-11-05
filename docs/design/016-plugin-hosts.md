@@ -1034,6 +1034,14 @@ and from CLAP and VST3:
   `plugin.audio_sides() == 1` where it compared `Arc` pointers and counts. An
   `AudioSide` is retired once its instance is destroyed *or deactivated*, so a
   block after a rejoin cannot start processing on an inactive plugin.
+  `activate` returns `ActivateError::ProcessorStillAlive` while an earlier
+  `AudioSide` lives. The entries CLAP gives `[!active]` return
+  `CallError::WrongState` while the plugin is active, `set_active` takes the
+  claim then, and `Plugin` tracks `gui.create`/`destroy` so a resize or a
+  second destroy is refused. A `PoolHandle` names the instance it was built
+  for and any other instance's `process` ignores it; `process` also refuses a
+  block past the activated `max_frames` and a port layout past what the scratch
+  was sized for, so neither allocates.
 - **The audio claim moved with it.** `HostState::claim_audio_thread` and
   `is_audio_thread` delegate to the FFI crate's `ThreadRoles`, which `Plugin`
   and `AudioSide` share, so the mutex that serialises audio-side entries and
@@ -1057,7 +1065,7 @@ and from CLAP and VST3:
 - **Tests.** The unit tests that used stub vtables moved with the code they
   cover. The ones that drove the raw lists now sit in `tests/clap_event_lists.rs`
   (the host crate forbids `unsafe`, a test may use it) over the FFI crate's
-  `#[doc(hidden)]` `*_raw_for_test` hooks, and the suites that call the callbacks
+  `#[doc(hidden)]` `*_raw_for_test` hooks (feature `test-support`), and the suites that call the callbacks
   through `ClapHost`'s vtable get it from `tests/support/raw.rs`.
 
 #### The split reaches one instance: why that is sound

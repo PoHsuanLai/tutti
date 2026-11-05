@@ -18,9 +18,9 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, clap_event_header, clap_event_param_value,
 };
 use tutti_clap_ffi::{
-    Bundle, CallError, EventRef, EventSink, EventSource, Extension, Host, HostCallbacks,
-    InputStream, OutputStream, Plugin, PluginEvent, PortScratch, ProcessCall, ProcessError,
-    ThreadRoles, header_size,
+    ActivateError, Bundle, CallError, EventRef, EventSink, EventSource, Extension, Host,
+    HostCallbacks, InputStream, OutputStream, Plugin, PluginEvent, PortScratch, ProcessCall,
+    ProcessError, TaskPool, ThreadRoles, header_size,
 };
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
 
@@ -231,19 +231,21 @@ fn the_main_thread_half_reads_the_plugins_extensions() {
 /// activated again, and the half belongs to the plugin that made it.
 ///
 /// Mutation: drop the `audio_sides() != 0` refusal in `activate`: the second
-/// `activate` returns true and the assertion fails.
+/// `activate` succeeds and the assertion fails; return `Refused` for it: the
+/// error assertion fails.
 #[test]
 fn activation_hands_out_one_audio_half_and_refuses_a_second_activation() {
     let _g = lock();
     let mut plugin = load(Arc::default());
     assert!(plugin.audio_side().is_none(), "inactive: no audio half");
-    assert!(plugin.activate(48_000.0, 1, 512));
+    plugin.activate(48_000.0, 1, 512).expect("activates");
     let side = plugin.audio_side().expect("active: an audio half");
     assert_eq!(plugin.audio_sides(), 1);
     assert!(plugin.owns(&side));
-    assert!(
-        !plugin.activate(48_000.0, 1, 512),
-        "the half is still alive"
+    assert_eq!(
+        plugin.activate(48_000.0, 1, 512),
+        Err(ActivateError::ProcessorStillAlive),
+        "the half is still alive: its own error, not a refusal"
     );
 
     drop(side);
@@ -262,7 +264,7 @@ fn a_block_runs_the_plugin_through_the_bound_channels() {
     let _g = lock();
     set_render_mode(RENDER_TAG_ONLY);
     let mut plugin = load(Arc::default());
-    assert!(plugin.activate(48_000.0, 1, 512));
+    plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
     let mut scratch = PortScratch::<f32>::new();
     scratch.resize_for(&[2], &[2], 512);
@@ -286,7 +288,7 @@ fn a_block_runs_the_plugin_through_the_bound_channels() {
 fn a_short_channel_is_refused_without_calling_the_plugin() {
     let _g = lock();
     let mut plugin = load(Arc::default());
-    assert!(plugin.activate(48_000.0, 1, 512));
+    plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
     let mut scratch = PortScratch::<f32>::new();
     scratch.resize_for(&[2], &[2], 512);
@@ -384,7 +386,7 @@ fn a_plugin_callback_reaches_the_embedder() {
 fn a_retired_audio_half_calls_nothing() {
     let _g = lock();
     let mut plugin = load(Arc::default());
-    assert!(plugin.activate(48_000.0, 1, 512));
+    plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
     let mut scratch = PortScratch::<f32>::new();
     scratch.resize_for(&[2], &[2], 512);
@@ -413,7 +415,7 @@ fn a_retired_audio_half_calls_nothing() {
 fn a_deactivated_plugins_audio_half_is_retired() {
     let _g = lock();
     let mut plugin = load(Arc::default());
-    assert!(plugin.activate(48_000.0, 1, 512));
+    plugin.activate(48_000.0, 1, 512).expect("activates");
     let mut side = plugin.audio_side().unwrap();
     plugin.deactivate();
     let mut scratch = PortScratch::<f32>::new();
@@ -439,7 +441,7 @@ fn deactivating_a_processing_plugin_stops_it_and_a_drop_tears_it_down() {
     let _g = lock();
     {
         let mut plugin = load(Arc::default());
-        assert!(plugin.activate(48_000.0, 1, 512));
+        plugin.activate(48_000.0, 1, 512).expect("activates");
         let mut side = plugin.audio_side().unwrap();
         let mut scratch = PortScratch::<f32>::new();
         scratch.resize_for(&[2], &[2], 512);
@@ -450,13 +452,267 @@ fn deactivating_a_processing_plugin_stops_it_and_a_drop_tears_it_down() {
         assert!(side.is_processing());
         plugin.deactivate();
         assert!(!side.is_processing(), "deactivate stops processing first");
-        assert!(!plugin.activate(48_000.0, 1, 512), "the half is alive");
+        assert_eq!(
+            plugin.activate(48_000.0, 1, 512),
+            Err(ActivateError::ProcessorStillAlive)
+        );
         drop(side);
         assert!(
-            plugin.activate(48_000.0, 1, 512),
+            plugin.activate(48_000.0, 1, 512).is_ok(),
             "and activates again once gone"
         );
     }
     let plugin = load(Arc::default());
     assert_eq!(plugin.latency(), REPORTED_LATENCY_SAMPLES);
+}
+
+/// Calls an exported `extern "C" fn(u32)` switch of the reference plugin.
+fn switch_u32(symbol: &[u8], value: u32) {
+    // SAFETY: the reference cdylib's exported switch, documented signature.
+    unsafe {
+        let f: libloading::Symbol<unsafe extern "C" fn(u32)> =
+            library().get(symbol).expect("switch symbol");
+        f(value);
+    }
+}
+
+/// A pool that counts the jobs it is given and runs them on the caller.
+#[derive(Default)]
+struct CountingPool {
+    runs: AtomicU32,
+}
+
+impl TaskPool for CountingPool {
+    fn participants(&self) -> usize {
+        2
+    }
+
+    fn try_run(&self, _wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        job(0);
+        true
+    }
+}
+
+/// Activates `plugin` and returns its audio half and a scratch for it.
+fn start(plugin: &mut Plugin, max_frames: u32) -> (tutti_clap_ffi::AudioSide, PortScratch<f32>) {
+    plugin.activate(48_000.0, 1, max_frames).expect("activates");
+    let mut scratch = PortScratch::<f32>::new();
+    scratch.resize_for(&[2], &[2], max_frames as usize);
+    (plugin.audio_side().unwrap(), scratch)
+}
+
+/// A block through `side` with `pool`, four tasks requested by the plugin.
+fn render_with_pool(
+    side: &mut tutti_clap_ffi::AudioSide,
+    scratch: &mut PortScratch<f32>,
+    pool: &tutti_clap_ffi::PoolHandle,
+) {
+    let mut left = vec![0.0f32; FRAMES];
+    let mut right = vec![0.0f32; FRAMES];
+    let mut outputs: Vec<&mut [f32]> = vec![&mut left, &mut right];
+    let mut sink = Count::default();
+    side.process(ProcessCall {
+        scratch,
+        inputs: &[],
+        outputs: &mut outputs,
+        input_ports: &[2],
+        output_ports: &[2],
+        frames: FRAMES as u32,
+        steady_time: 0,
+        transport: None,
+        in_events: &NoEvents,
+        out_events: &mut sink,
+        pool: Some(pool),
+    })
+    .expect("the block runs");
+}
+
+/// A pool handle serves only the instance whose vtable its `exec` came from.
+/// Handed to another instance's `process` it is ignored, so `exec` is never
+/// called with a `clap_plugin` it does not belong to.
+///
+/// Mutation: drop the `handle.is_for(&self.core)` filter in `process`: the
+/// foreign handle is served, the pool runs, and the second assertion fails.
+#[test]
+fn a_pool_handle_serves_only_its_own_instance() {
+    let _g = lock();
+    switch_u32(b"tutti_test_plugin_set_thread_pool_tasks\0", 4);
+    let mut a = load(Arc::default());
+    let mut b = load(Arc::default());
+    let (mut side_a, mut scratch_a) = start(&mut a, 512);
+    let (mut side_b, mut scratch_b) = start(&mut b, 512);
+    let pool = Arc::new(CountingPool::default());
+    let handle_a = a.pool_handle(pool.clone()).expect("the plugin has exec");
+
+    render_with_pool(&mut side_a, &mut scratch_a, &handle_a);
+    let own = pool.runs.load(Ordering::SeqCst);
+    assert!(own > 0, "A's own handle is served on A");
+
+    render_with_pool(&mut side_b, &mut scratch_b, &handle_a);
+    assert_eq!(
+        pool.runs.load(Ordering::SeqCst),
+        own,
+        "A's handle is ignored on B"
+    );
+    switch_u32(b"tutti_test_plugin_set_thread_pool_tasks\0", 0);
+}
+
+/// A block longer than the plugin was activated for is refused before any
+/// call, whoever the caller is.
+///
+/// Mutation: drop the `max_frames` check in `process`: the block runs
+/// (`is_processing` flips) and the error assertion fails.
+#[test]
+fn a_block_past_the_activated_size_is_refused() {
+    let _g = lock();
+    let mut plugin = load(Arc::default());
+    let (mut side, mut scratch) = start(&mut plugin, FRAMES as u32 / 2);
+    scratch.resize_for(&[2], &[2], FRAMES);
+    let mut left = vec![0.0f32; FRAMES];
+    let mut right = vec![0.0f32; FRAMES];
+    let mut outputs: Vec<&mut [f32]> = vec![&mut left, &mut right];
+    assert_eq!(
+        render(&mut side, &mut scratch, &mut outputs, FRAMES as u32),
+        Err(ProcessError::BlockTooLarge)
+    );
+    assert!(!side.is_processing());
+}
+
+/// The entries CLAP gives to `[!active]` are refused while the plugin is
+/// active (nothing is called), and reach the plugin when it is not.
+///
+/// Mutation: drop `require_inactive()` from any one of them: that entry
+/// returns `Ok` while active and its assertion fails.
+#[test]
+fn state_gated_entries_are_refused_while_active() {
+    let _g = lock();
+    let mut plugin = load(Arc::default());
+    let request = [tutti_clap_ffi::PortConfigRequest {
+        is_input: true,
+        port_index: 0,
+        channel_count: 2,
+    }];
+    // Inactive: each reaches the plugin (the reference plugin has none of the
+    // extensions, so the answer is `false`, not a state error).
+    assert_eq!(plugin.select_audio_ports_config(0), Ok(false));
+    assert_eq!(
+        plugin.can_apply_audio_port_configuration(&request),
+        Ok(false)
+    );
+    assert_eq!(plugin.apply_audio_port_configuration(&request), Ok(false));
+    assert_eq!(plugin.add_audio_port(true, 2, None), Ok(false));
+    assert_eq!(plugin.remove_audio_port(true, 0), Ok(false));
+
+    plugin.activate(48_000.0, 1, 512).expect("activates");
+    assert_eq!(
+        plugin.select_audio_ports_config(0),
+        Err(CallError::WrongState)
+    );
+    assert_eq!(
+        plugin.can_apply_audio_port_configuration(&request),
+        Err(CallError::WrongState)
+    );
+    assert_eq!(
+        plugin.apply_audio_port_configuration(&request),
+        Err(CallError::WrongState)
+    );
+    assert_eq!(
+        plugin.add_audio_port(true, 2, None),
+        Err(CallError::WrongState)
+    );
+    assert_eq!(
+        plugin.remove_audio_port(true, 0),
+        Err(CallError::WrongState)
+    );
+}
+
+/// `audio-ports-activation.set_active` on a processing plugin is refused
+/// unless the plugin said it can activate a port while processing.
+///
+/// Mutation: drop the processing check in `set_audio_port_active`: the call
+/// reaches the (absent) extension and answers `Ok(false)`, and the assertion
+/// fails.
+#[test]
+fn a_port_cannot_be_activated_while_processing_unless_the_plugin_allows() {
+    let _g = lock();
+    let mut plugin = load(Arc::default());
+    let (mut side, mut scratch) = start(&mut plugin, 512);
+    assert_eq!(plugin.set_audio_port_active(true, 0, true, 32), Ok(false));
+    let mut left = vec![0.0f32; FRAMES];
+    let mut right = vec![0.0f32; FRAMES];
+    let mut outputs: Vec<&mut [f32]> = vec![&mut left, &mut right];
+    render(&mut side, &mut scratch, &mut outputs, FRAMES as u32).expect("runs");
+    assert!(side.is_processing());
+    assert_eq!(
+        plugin.set_audio_port_active(true, 0, true, 32),
+        Err(CallError::WrongState)
+    );
+}
+
+/// What the reference plugin's gui recorded.
+fn gui_capture() -> tutti_clap_test_plugin::gui::GuiCapture {
+    // SAFETY: the reference cdylib's exported capture reader, which fills a
+    // `GuiCapture` of the layout this crate shares with it.
+    unsafe {
+        let f: libloading::Symbol<
+            unsafe extern "C" fn(*mut tutti_clap_test_plugin::gui::GuiCapture) -> bool,
+        > = library()
+            .get(b"tutti_test_plugin_gui_capture\0")
+            .expect("capture");
+        let mut cap = std::mem::MaybeUninit::zeroed();
+        assert!(f(cap.as_mut_ptr()));
+        cap.assume_init()
+    }
+}
+
+fn gui_reset() {
+    // SAFETY: the reference cdylib's exported reset.
+    unsafe {
+        let f: libloading::Symbol<unsafe extern "C" fn()> = library()
+            .get(b"tutti_test_plugin_gui_reset\0")
+            .expect("reset");
+        f();
+    }
+}
+
+/// `clap.gui` entries follow `create` and precede `destroy`: before `create`
+/// a resize or a close reaches nothing, a second `create` is refused, and
+/// `destroy` runs once however often the editor is closed.
+///
+/// Mutation: drop the `gui_created` test from `close_gui`: the second close
+/// destroys again and the balance reads -1; drop it from `resize_gui`: the
+/// early resize reaches the plugin and `NotCreated` is not returned; drop the
+/// `AlreadyCreated` test: the balance reads 2.
+#[test]
+fn the_editor_is_created_once_and_destroyed_once() {
+    let _g = lock();
+    switch_u32(b"tutti_test_plugin_set_gui_mode\0", 1);
+    gui_reset();
+    let mut plugin = load(Arc::default());
+    let parent = {
+        // SAFETY: the reference plugin never dereferences its parent.
+        unsafe { tutti_plugin_types::WindowHandle::from_raw(std::ptr::null_mut()) }
+    };
+
+    assert_eq!(
+        plugin.resize_gui(10, 10),
+        Err(tutti_clap_ffi::GuiError::NotCreated)
+    );
+    assert!(plugin.gui_hints().is_none(), "no hints before create");
+    plugin.close_gui(false);
+    assert_eq!(gui_capture().call_count, 0, "nothing reached the plugin");
+
+    plugin.open_embedded(&parent, 1.0).expect("opens");
+    assert_eq!(gui_capture().create_balance, 1);
+    assert_eq!(
+        plugin.open_embedded(&parent, 1.0).unwrap_err(),
+        tutti_clap_ffi::GuiError::AlreadyCreated
+    );
+    assert_eq!(gui_capture().create_balance, 1, "no second create");
+
+    plugin.close_gui(false);
+    plugin.close_gui(false);
+    assert_eq!(gui_capture().create_balance, 0, "destroyed exactly once");
+    switch_u32(b"tutti_test_plugin_set_gui_mode\0", 0);
 }

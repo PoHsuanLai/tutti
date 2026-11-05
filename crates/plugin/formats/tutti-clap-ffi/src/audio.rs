@@ -63,8 +63,13 @@ pub enum ProcessError {
     StartFailed,
     /// A channel slice is shorter than the block; nothing was called.
     BufferTooShort,
-    /// The block is longer than the scratch was sized for; nothing was called.
+    /// The block is longer than the plugin was activated for, or than the
+    /// scratch was sized for; nothing was called.
     BlockTooLarge,
+    /// The port layout in the call needs more channel pointers or port
+    /// buffers than the scratch was sized for (`resize_for`); nothing was
+    /// called, and nothing allocated.
+    LayoutMismatch,
     /// The plugin returned `CLAP_PROCESS_ERROR`; its outputs were zeroed.
     PluginReturnedError,
 }
@@ -83,6 +88,16 @@ pub struct PortScratch<T: Sample> {
     output_ptrs: Vec<*mut T>,
     input_bufs: Vec<clap_audio_buffer>,
     output_bufs: Vec<clap_audio_buffer>,
+    /// What `resize_for` sized the tables for: channels and ports per side.
+    sized: Capacity,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Capacity {
+    in_channels: usize,
+    out_channels: usize,
+    in_ports: usize,
+    out_ports: usize,
 }
 
 // SAFETY: the raw pointers are scratch rewritten and read inside one `process`
@@ -106,6 +121,7 @@ impl<T: Sample> PortScratch<T> {
             output_ptrs: Vec::new(),
             input_bufs: Vec::new(),
             output_bufs: Vec::new(),
+            sized: Capacity::default(),
         }
     }
 
@@ -127,6 +143,12 @@ impl<T: Sample> PortScratch<T> {
         self.input_bufs.reserve_exact(inputs.len());
         self.output_bufs.clear();
         self.output_bufs.reserve_exact(outputs.len());
+        self.sized = Capacity {
+            in_channels: in_total,
+            out_channels: out_total,
+            in_ports: inputs.len(),
+            out_ports: outputs.len(),
+        };
     }
 
     /// Points the tables at this block's channels, padding the missing ones
@@ -148,6 +170,14 @@ impl<T: Sample> PortScratch<T> {
             || outputs[..used_out].iter().any(|s| s.len() < frames)
         {
             return Err(ProcessError::BufferTooShort);
+        }
+        let sized = self.sized;
+        if wanted_in > sized.in_channels
+            || wanted_out > sized.out_channels
+            || input_ports.len() > sized.in_ports
+            || output_ports.len() > sized.out_ports
+        {
+            return Err(ProcessError::LayoutMismatch);
         }
         let pad_needed = (wanted_in - used_in) + (wanted_out - used_out);
         if self.pad.len() < wanted_in + wanted_out
@@ -339,6 +369,9 @@ impl AudioSide {
         if self.is_retired() {
             return Err(ProcessError::Retired);
         }
+        if frames > self.core.max_frames.load(Ordering::Acquire) {
+            return Err(ProcessError::BlockTooLarge);
+        }
         scratch.bind(inputs, outputs, input_ports, output_ports, frames as usize)?;
         self.ensure_processing()?;
 
@@ -368,7 +401,8 @@ impl AudioSide {
                     // built here; the transport is borrowed from the caller.
                     // The claim is held, so this is the only audio-side call.
                     let run = || unsafe { process_fn(plugin, &data) };
-                    match pool {
+                    // A handle made for another instance is ignored.
+                    match pool.filter(|handle| handle.is_for(&self.core)) {
                         Some(handle) => {
                             PoolRequest::new(self.core.host_id(), handle, plugin).serve(run)
                         }
@@ -455,6 +489,37 @@ mod tests {
                     )
                     .unwrap();
             }
+        });
+    }
+
+    /// A layout the scratch was not sized for is refused without allocating,
+    /// even when the pad total alone would cover it: five input channels in
+    /// a scratch sized for four would grow the pointer table on the audio
+    /// thread.
+    ///
+    /// Mutation: drop the capacity check in `bind`: the input table grows and
+    /// the allocation gate aborts the test.
+    #[test]
+    fn a_layout_the_scratch_was_not_sized_for_is_refused_without_allocating() {
+        let mut scratch = PortScratch::<f32>::new();
+        scratch.resize_for(&[2, 2], &[2], 512);
+        let in_a = [0.0f32; 512];
+        let in_b = [0.0f32; 512];
+        let mut out_a = [0.0f32; 512];
+        let mut out_b = [0.0f32; 512];
+        let inputs: [&[f32]; 2] = [&in_a, &in_b];
+        let mut outputs: [&mut [f32]; 2] = [&mut out_a, &mut out_b];
+        assert_no_alloc::assert_no_alloc(|| {
+            // 5 + 1 = 6 channels: within the pad total (6), past the input side (4).
+            assert_eq!(
+                scratch.bind(&inputs, &mut outputs, &[5], &[1], 512),
+                Err(ProcessError::LayoutMismatch)
+            );
+            // Three ports where two were sized for.
+            assert_eq!(
+                scratch.bind(&inputs, &mut outputs, &[1, 1, 1], &[2], 512),
+                Err(ProcessError::LayoutMismatch)
+            );
         });
     }
 

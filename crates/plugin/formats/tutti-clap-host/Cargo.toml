@@ -45,6 +45,7 @@ tutti-graph = { path = "../../../core/tutti-graph" }
 tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
 
 [dev-dependencies]
+tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["test-support"] }
 # The integration tests re-open the reference plugin's library themselves (the
 # crate forbids `unsafe`; a test may use it).
 libloading = "0.8"

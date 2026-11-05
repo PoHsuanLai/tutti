@@ -21,6 +21,7 @@ mod stream;
 
 pub use audio::{AudioSide, PortScratch, ProcessCall, ProcessError, Sample};
 pub use events::{EventRef, EventSink, EventSource, PluginEvent, header_size};
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use events::{input_raw_for_test, output_raw_for_test};
 #[cfg(unix)]
@@ -30,10 +31,13 @@ pub use host::{
     Host, HostCallbacks, TrackInfoWriter, TrackPortKind, TransportCommand, TuningInfoWriter,
 };
 pub use library::{Bundle, DescriptorInfo, LoadError, Stage, chars_to_string};
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use menu::builder_for_test;
 pub use menu::{MenuItem, MenuTarget};
-pub use plugin::{AudioPortInfo, CallError, Extension, Plugin, PortConfigRequest, PortKind};
+pub use plugin::{
+    ActivateError, AudioPortInfo, CallError, Extension, Plugin, PortConfigRequest, PortKind,
+};
 pub use pool::{PoolHandle, TaskPool};
 pub use roles::{AudioClaim, ThreadRoles};
 pub use stream::{InputStream, OutputStream};

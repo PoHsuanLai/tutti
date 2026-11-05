@@ -316,6 +316,7 @@ fn block_reason(error: &crate::ClapError) -> &'static str {
         ClapError::StartProcessingFailed => "the plugin refused to start processing",
         ClapError::NotActive => "the plugin is no longer active",
         ClapError::BufferTooShort => "a channel buffer is shorter than the block",
+        ClapError::LayoutMismatch => "the port layout is larger than the activation sized for",
         _ => "the plugin failed the block",
     }
 }

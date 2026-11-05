@@ -48,6 +48,7 @@ impl OutputStream {
     /// A raw `clap_ostream` over this stream, for a caller that drives the
     /// callbacks itself (a test). The pointer's `ctx` addresses `self`, so it
     /// is valid until `self` moves or drops; `raw` is where it is stored.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn raw(&mut self, raw: &mut Option<clap_ostream>) -> *const clap_ostream {
         let stored = raw.insert(clap_ostream {
             ctx: ptr::from_mut(self).cast::<c_void>(),
@@ -61,6 +62,11 @@ extern "C" fn ostream_write(stream: *const clap_ostream, buffer: *const c_void, 
     guard(-1, || {
         if stream.is_null() || (buffer.is_null() && size != 0) {
             return -1;
+        }
+        // An empty write has nothing to read, and a null pointer with a zero
+        // length is not a valid slice.
+        if size == 0 {
+            return 0;
         }
         // SAFETY: `ctx` is the `&mut OutputStream` the stream was built from
         // (`with_raw`/`raw`), which outlives the call it is handed to; the plugin
@@ -110,7 +116,8 @@ impl<'a> InputStream<'a> {
         f(&raw)
     }
 
-    /// As [`OutputStream::raw`], for a read stream.
+    /// As `OutputStream::raw`, for a read stream.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn raw(&mut self, raw: &mut Option<clap_istream>) -> *const clap_istream {
         let stored = raw.insert(clap_istream {
             ctx: ptr::from_mut(self).cast::<c_void>(),
@@ -120,6 +127,7 @@ impl<'a> InputStream<'a> {
     }
 
     /// Test hook: park the cursor, so a callback's bounds check is exercised.
+    #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn set_position_for_test(&mut self, position: usize) {
         self.position = position;
@@ -170,6 +178,22 @@ mod tests {
         // SAFETY: `raw` addresses the live stream above; `out` is 4 writable bytes.
         let got = unsafe { ((*raw).read.unwrap())(raw, out.as_mut_ptr().cast(), 4) };
         assert_eq!(got, -1);
+    }
+
+    /// A zero-length write with a null buffer is a no-op answering 0, not a
+    /// slice built from null.
+    ///
+    /// Mutation: remove the `size == 0` early return: `from_raw_parts(null, 0)`
+    /// trips the debug precondition check and aborts the test process.
+    #[test]
+    fn an_empty_write_with_a_null_buffer_is_a_no_op() {
+        let mut stream = OutputStream::new();
+        stream.with_raw(|raw| {
+            // SAFETY: `raw` is the live stream `with_raw` built.
+            let n = unsafe { ((*raw).write.unwrap())(raw, std::ptr::null(), 0) };
+            assert_eq!(n, 0);
+        });
+        assert!(stream.data().is_empty());
     }
 
     /// The bytes a plugin writes arrive in order.

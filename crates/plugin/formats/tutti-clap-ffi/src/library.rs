@@ -567,6 +567,29 @@ mod select_tests {
         assert!(msg.contains("com.example.fx"), "lists every available id");
     }
 
+    /// A descriptor whose string fields are all null is read as empty
+    /// strings, not dereferenced.
+    ///
+    /// `id` is a raw pointer straight from the plugin; a factory that leaves
+    /// it null must not take the host down mid-selection.
+    ///
+    /// Mutation: have `lossy` call `CStr::from_ptr` without the null test:
+    /// the null read crashes the test.
+    #[test]
+    fn a_null_id_is_skipped_rather_than_dereferenced() {
+        // SAFETY: `clap_plugin_descriptor` is a version struct and pointers;
+        // all-zero is valid (null strings, no features).
+        let d: clap_plugin_descriptor = unsafe { std::mem::zeroed() };
+        // SAFETY: every string field is null, which `describe` accepts.
+        let info = unsafe { describe(&d) };
+        assert!(info.id.is_empty() && info.name.is_empty() && info.features.is_empty());
+        let good = desc_with_id("com.example.fx");
+        assert_eq!(
+            select_index(&[info, good], Some("com.example.fx")).unwrap(),
+            1
+        );
+    }
+
     /// A descriptor with no id is skipped, not matched.
     ///
     /// `id` is a raw string straight from the plugin; a factory that leaves it

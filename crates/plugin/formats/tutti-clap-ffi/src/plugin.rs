@@ -23,7 +23,12 @@
 //!    thread; the main-thread entries it lets run beside `process`
 //!    (`params.get_value`, text conversion, `state.save/load`, `gui`,
 //!    `latency.get`, `tail.get`, `on_main_thread`) are all `Plugin` can call
-//!    while an `AudioSide` exists.
+//!    while an `AudioSide` exists. The `[!active]` entries (port
+//!    configuration, `extensible-audio-ports`) refuse with
+//!    [`CallError::WrongState`] while the plugin is active, and
+//!    `audio-ports-activation.set_active` takes the claim then, as CLAP's
+//!    `[active ? audio-thread : main-thread]` says. The `clap.gui` entries
+//!    follow `create` and precede `destroy`, which `Plugin` tracks.
 //! 2. *Audio entries never overlap.* Every audio-side entry runs under the
 //!    instance's [`AudioClaim`](crate::AudioClaim), so two audio-side calls never overlap even
 //!    from two OS threads. `params.flush` on an active plugin, the one entry
@@ -46,7 +51,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use clap_sys::ext::ambisonic::{
     CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT, clap_plugin_ambisonic,
@@ -224,6 +229,8 @@ pub(crate) struct Core {
     /// Whether `start_processing` has run and `stop_processing` has not.
     /// Written under the audio claim.
     pub(crate) processing: AtomicBool,
+    /// The block size the instance was activated for; `process` refuses more.
+    pub(crate) max_frames: AtomicU32,
 }
 
 // SAFETY: `Core` is shared by `Plugin` and `AudioSide` under the rules in the
@@ -254,6 +261,10 @@ impl Core {
 /// (or, for the ones CLAP also allows elsewhere, noted on the method).
 pub struct Plugin {
     core: Arc<Core>,
+    /// Whether `gui.create` has run and `gui.destroy` has not: the order
+    /// CLAP requires every other `clap.gui` entry to follow, kept here so a
+    /// caller cannot break it.
+    pub(crate) gui_created: bool,
     // Dropped after `Plugin::drop` has destroyed the instance: the host the
     // plugin called, then the library its code lives in.
     _host: Host,
@@ -280,6 +291,20 @@ pub enum CallError {
     NoFunction,
     /// The entry ran and answered `false`.
     Failed,
+    /// The entry is only legal in the other activation state (CLAP's
+    /// `[!active]` and `[active ? audio-thread : main-thread]` annotations):
+    /// nothing was called.
+    WrongState,
+}
+
+/// Why [`Plugin::activate`] did not activate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivateError {
+    /// An [`AudioSide`](crate::AudioSide) of an earlier activation is still
+    /// alive; drop it (rejoin the halves) first. The plugin was not called.
+    ProcessorStillAlive,
+    /// The plugin has no `activate` entry or answered `false`.
+    Refused,
 }
 
 macro_rules! call {
@@ -373,13 +398,25 @@ impl Plugin {
             retired: AtomicBool::new(false),
             active: AtomicBool::new(false),
             processing: AtomicBool::new(false),
+            max_frames: AtomicU32::new(0),
         });
         Ok(Self {
             core,
+            gui_created: false,
             _host: host,
             _bundle: bundle,
             _not_sync: PhantomData,
         })
+    }
+
+    /// `Ok` only while the plugin is not activated: the guard for CLAP's
+    /// `[!active]` entries.
+    fn require_inactive(&self) -> Result<(), CallError> {
+        if self.is_active() {
+            Err(CallError::WrongState)
+        } else {
+            Ok(())
+        }
     }
 
     /// An extension's vtable, borrowed from the plugin that owns it.
@@ -423,25 +460,34 @@ impl Plugin {
 
     // ---- lifecycle -------------------------------------------------------
 
-    /// `plugin.activate`. `false` when the plugin refuses or lacks the entry,
-    /// or while an [`AudioSide`](crate::AudioSide) of an earlier activation is
-    /// still alive.
-    pub fn activate(&mut self, sample_rate: f64, min_frames: u32, max_frames: u32) -> bool {
+    /// `plugin.activate`.
+    ///
+    /// # Errors
+    /// [`ActivateError::ProcessorStillAlive`] while an
+    /// [`AudioSide`](crate::AudioSide) of an earlier activation lives, and
+    /// [`ActivateError::Refused`] when the plugin has no entry or says no.
+    pub fn activate(
+        &mut self,
+        sample_rate: f64,
+        min_frames: u32,
+        max_frames: u32,
+    ) -> Result<(), ActivateError> {
         if self.audio_sides() != 0 {
-            return false;
+            return Err(ActivateError::ProcessorStillAlive);
         }
         // SAFETY: the instance is alive.
         let Some(activate) = (unsafe { (*self.core.raw()).activate }) else {
-            return false;
+            return Err(ActivateError::Refused);
         };
         // SAFETY: `&mut self`: no other main-thread entry runs, and no
         // `AudioSide` exists to be in `process` (checked above), so the
         // instance is inactive and quiescent as `activate` requires.
-        let ok = unsafe { activate(self.core.raw(), sample_rate, min_frames, max_frames) };
-        if ok {
-            self.core.active.store(true, Ordering::Release);
+        if !unsafe { activate(self.core.raw(), sample_rate, min_frames, max_frames) } {
+            return Err(ActivateError::Refused);
         }
-        ok
+        self.core.max_frames.store(max_frames, Ordering::Release);
+        self.core.active.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// `plugin.deactivate` (after `stop_processing` if it was running), if the
@@ -799,9 +845,13 @@ impl Plugin {
         call!(self.audio_ports_config.get(index, &mut config) else false).then_some(config)
     }
 
-    /// `audio-ports-config.select`.
-    pub fn select_audio_ports_config(&mut self, config_id: u32) -> bool {
-        call!(self.audio_ports_config.select(config_id) else false)
+    /// `audio-ports-config.select`, `[main-thread && !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn select_audio_ports_config(&mut self, config_id: u32) -> Result<bool, CallError> {
+        self.require_inactive()?;
+        Ok(call!(self.audio_ports_config.select(config_id) else false))
     }
 
     /// `audio-ports-config-info.current_config`.
@@ -825,17 +875,36 @@ impl Plugin {
             .then(|| AudioPortInfo::from_raw(&info))
     }
 
-    /// `configurable-audio-ports.can_apply_configuration`.
-    #[must_use]
-    pub fn can_apply_audio_port_configuration(&self, requests: &[PortConfigRequest]) -> bool {
+    /// `configurable-audio-ports.can_apply_configuration`, `[main-thread &&
+    /// !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn can_apply_audio_port_configuration(
+        &self,
+        requests: &[PortConfigRequest],
+    ) -> Result<bool, CallError> {
+        self.require_inactive()?;
         let raw = PortConfigRequest::to_raw(requests);
-        call!(self.configurable_ports.can_apply_configuration(raw.as_ptr(), raw.len() as u32) else false)
+        Ok(
+            call!(self.configurable_ports.can_apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
+        )
     }
 
-    /// `configurable-audio-ports.apply_configuration`.
-    pub fn apply_audio_port_configuration(&mut self, requests: &[PortConfigRequest]) -> bool {
+    /// `configurable-audio-ports.apply_configuration`, `[main-thread &&
+    /// !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn apply_audio_port_configuration(
+        &mut self,
+        requests: &[PortConfigRequest],
+    ) -> Result<bool, CallError> {
+        self.require_inactive()?;
         let raw = PortConfigRequest::to_raw(requests);
-        call!(self.configurable_ports.apply_configuration(raw.as_ptr(), raw.len() as u32) else false)
+        Ok(
+            call!(self.configurable_ports.apply_configuration(raw.as_ptr(), raw.len() as u32) else false),
+        )
     }
 
     /// `audio-ports-activation.can_activate_while_processing`.
@@ -844,32 +913,56 @@ impl Plugin {
         call!(self.audio_ports_activation.can_activate_while_processing() else false)
     }
 
-    /// `audio-ports-activation.set_active`.
+    /// `audio-ports-activation.set_active`, `[active ? audio-thread :
+    /// main-thread]`: on an active plugin it takes the audio claim, and while
+    /// the plugin is processing it is refused unless the plugin said it can
+    /// activate a port then.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] for a processing plugin that cannot.
     pub fn set_audio_port_active(
         &mut self,
         is_input: bool,
         port_index: u32,
         is_active: bool,
         sample_size: u32,
-    ) -> bool {
-        call!(self.audio_ports_activation.set_active(is_input, port_index, is_active, sample_size) else false)
+    ) -> Result<bool, CallError> {
+        let _claim = self.is_active().then(|| self.core.roles.claim());
+        if self.core.processing.load(Ordering::Relaxed)
+            && !call!(self.audio_ports_activation.can_activate_while_processing() else false)
+        {
+            return Err(CallError::WrongState);
+        }
+        Ok(
+            call!(self.audio_ports_activation.set_active(is_input, port_index, is_active, sample_size) else false),
+        )
     }
 
-    /// `extensible-audio-ports.add_port`.
+    /// `extensible-audio-ports.add_port`, `[main-thread && !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
     pub fn add_audio_port(
         &mut self,
         is_input: bool,
         channel_count: u32,
         port_type: Option<&str>,
-    ) -> bool {
+    ) -> Result<bool, CallError> {
+        self.require_inactive()?;
         let port_type = port_type.and_then(|s| CString::new(s).ok());
         let type_ptr = port_type.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-        call!(self.extensible_ports.add_port(is_input, channel_count, type_ptr, ptr::null()) else false)
+        Ok(
+            call!(self.extensible_ports.add_port(is_input, channel_count, type_ptr, ptr::null()) else false),
+        )
     }
 
-    /// `extensible-audio-ports.remove_port`.
-    pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
-        call!(self.extensible_ports.remove_port(is_input, index) else false)
+    /// `extensible-audio-ports.remove_port`, `[main-thread && !active]`.
+    ///
+    /// # Errors
+    /// [`CallError::WrongState`] while the plugin is active.
+    pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> Result<bool, CallError> {
+        self.require_inactive()?;
+        Ok(call!(self.extensible_ports.remove_port(is_input, index) else false))
     }
 
     /// `ambisonic.is_config_supported`.
@@ -958,7 +1051,11 @@ impl Plugin {
     #[must_use]
     pub fn pool_handle(&self, pool: Arc<dyn crate::TaskPool>) -> Option<crate::PoolHandle> {
         let exec = self.ext(self.core.exts.thread_pool)?.exec?;
-        Some(crate::PoolHandle { pool, exec })
+        Some(crate::PoolHandle {
+            pool,
+            exec,
+            owner: Arc::downgrade(&self.core),
+        })
     }
 
     /// Whether the plugin has a `thread-pool.exec` entry.
@@ -1345,5 +1442,130 @@ mod param_text_tests {
         let params = stub_params(false);
         assert_eq!(value_to_text(&params, std::ptr::null(), 0, 0.0), None);
         assert_eq!(text_to_value(&params, std::ptr::null(), 0, "x"), None);
+    }
+}
+
+#[cfg(test)]
+mod extension_query_tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    /// Which id the fake plugin is willing to answer, and what it was asked.
+    struct Answers {
+        /// The one id this plugin implements.
+        implements: &'static CStr,
+        /// Every id the host asked for, in order.
+        asked: Vec<String>,
+    }
+
+    impl Plain for clap_plugin {}
+
+    /// A non-null pointer to hand back for a recognised id. Never
+    /// dereferenced: the cache only stores it and checks it against null.
+    const SENTINEL: *const c_void = std::ptr::dangling::<c_void>();
+
+    unsafe extern "C" fn fake_get_extension(
+        plugin: *const clap_plugin,
+        id: *const c_char,
+    ) -> *const c_void {
+        // SAFETY: `plugin` is the fake below, whose `plugin_data` is the live
+        // `Answers` of the test that called `query`.
+        let answers = unsafe { &mut *(*plugin).plugin_data.cast::<Answers>() };
+        // SAFETY: `id` is a nul-terminated constant from `clap-sys`.
+        let asked = unsafe { CStr::from_ptr(id) };
+        answers.asked.push(asked.to_string_lossy().into_owned());
+        if asked == answers.implements {
+            SENTINEL
+        } else {
+            ptr::null()
+        }
+    }
+
+    fn fake_plugin(answers: &mut Answers) -> clap_plugin {
+        let mut plugin: clap_plugin = Plain::zeroed();
+        plugin.plugin_data = ptr::from_mut(answers).cast::<c_void>();
+        plugin.get_extension = Some(fake_get_extension);
+        plugin
+    }
+
+    /// A plugin that answers only the pre-1.2 `.draft` id is still found.
+    ///
+    /// A host asking for `clap.surround/4` alone would miss it: a plugin built
+    /// against a pre-1.2 SDK answers `clap.surround.draft/4` and nothing else,
+    /// so the query would return null and the host would conclude the plugin
+    /// had no surround map at all, identical at every later call site to a
+    /// plugin that genuinely lacks the extension.
+    ///
+    /// Mutation: skip every id longer than 16 bytes in `Exts::query` (the draft
+    /// spelling is the longer one): the pointer is null and the assertion fails.
+    #[test]
+    fn a_plugin_answering_only_the_draft_id_is_still_found() {
+        let mut answers = Answers {
+            implements: CLAP_EXT_SURROUND_COMPAT,
+            asked: Vec::new(),
+        };
+        let plugin = fake_plugin(&mut answers);
+
+        let exts = Exts::query(&plugin);
+
+        assert!(
+            !exts.surround.is_null(),
+            "a plugin implementing clap.surround.draft/4 must be found"
+        );
+    }
+
+    /// The stable id is asked first, so a 1.2+ plugin never sees the draft one.
+    ///
+    /// Order matters beyond tidiness: a plugin implementing *both* must be
+    /// bound to its current interface, and a host that asked draft-first would
+    /// silently prefer the older spelling for the rest of the session.
+    ///
+    /// Mutation: list the draft id before the stable one for surround in
+    /// `extensions!`: the draft id is asked and the second assertion fails.
+    #[test]
+    fn the_stable_id_is_asked_before_the_draft_id() {
+        let mut answers = Answers {
+            implements: CLAP_EXT_SURROUND,
+            asked: Vec::new(),
+        };
+        let plugin = fake_plugin(&mut answers);
+
+        let exts = Exts::query(&plugin);
+        assert!(!exts.surround.is_null(), "stable id must be found");
+
+        let stable = CLAP_EXT_SURROUND.to_string_lossy().into_owned();
+        let draft = CLAP_EXT_SURROUND_COMPAT.to_string_lossy().into_owned();
+        assert!(
+            answers.asked.contains(&stable),
+            "the stable id must be asked for"
+        );
+        assert!(
+            !answers.asked.contains(&draft),
+            "the draft id must not be asked once the stable one answered"
+        );
+    }
+
+    /// A plugin implementing neither spelling still reports absence.
+    ///
+    /// The fallback must not manufacture a pointer: "declined both ids" has to
+    /// stay distinguishable from "implements one of them", or every plugin
+    /// would look like it supports every extension.
+    ///
+    /// Mutation: make `query_one` answer a non-null pointer whatever the plugin
+    /// said: the assertions fail.
+    #[test]
+    fn a_plugin_implementing_neither_id_reports_absence() {
+        let mut answers = Answers {
+            // An id no extension uses, so every query misses.
+            implements: c"clap.nothing-implements-this/0",
+            asked: Vec::new(),
+        };
+        let plugin = fake_plugin(&mut answers);
+
+        let exts = Exts::query(&plugin);
+
+        assert!(exts.surround.is_null(), "surround");
+        assert!(exts.track_info.is_null(), "track_info");
+        assert!(exts.preset_load.is_null(), "preset_load");
     }
 }

@@ -32,6 +32,12 @@ pub enum GuiError {
     SetSizeMissing,
     /// `set_size` answered `false`.
     SetSizeRefused,
+    /// An entry that CLAP orders after `create` was asked for before it (or
+    /// after `destroy`); the plugin was not called.
+    NotCreated,
+    /// `create` while the previous editor is still created; the plugin was not
+    /// called.
+    AlreadyCreated,
 }
 
 impl fmt::Display for GuiError {
@@ -46,6 +52,8 @@ impl fmt::Display for GuiError {
             Self::AdjustRefused => "adjust_size: no usable size fits the request",
             Self::SetSizeMissing => "set_size unsupported",
             Self::SetSizeRefused => "set_size refused",
+            Self::NotCreated => "the editor has not been created",
+            Self::AlreadyCreated => "the editor is already created",
         })
     }
 }
@@ -329,44 +337,66 @@ impl Plugin {
     /// `parent`. `parent`'s validity is what its unsafe constructor claimed.
     ///
     /// # Errors
-    /// The first step the plugin refuses; an editor `create`d before that is
-    /// the caller's to [`close_gui`](Self::close_gui) (the error does not
-    /// say, as the host tracks it).
+    /// [`GuiError::AlreadyCreated`] over a live editor, else the first step
+    /// the plugin refuses. An editor `create`d before a refused `set_parent`
+    /// is destroyed before the error returns.
     pub fn open_embedded(
         &mut self,
         parent: &WindowHandle,
         scale: f64,
     ) -> Result<EmbedOutcome, GuiError> {
         let gui = self.gui()?;
+        if self.gui_created {
+            return Err(GuiError::AlreadyCreated);
+        }
         let (api, handle) = platform_window_handle(parent.as_ptr());
         // SAFETY: `&mut self` is the main-thread half of a live instance, `gui`
         // is its `clap.gui`, and `parent` is a valid window by its constructor.
-        unsafe { embed_editor_sequence(gui, self.raw(), api, handle, scale) }
+        let outcome = unsafe { embed_editor_sequence(gui, self.raw(), api, handle, scale) };
+        match outcome {
+            Ok(done) => self.gui_created = done.did_create,
+            // `create` ran and `set_parent` refused: the editor exists but
+            // will not be shown, so it is destroyed here rather than left for
+            // a caller to know.
+            Err(GuiError::SetParentFailed) => {
+                if let Some(destroy) = gui.destroy {
+                    // SAFETY: the plugin's own `destroy` after its `create`.
+                    unsafe { destroy(self.raw()) };
+                }
+            }
+            Err(_) => {}
+        }
+        outcome
     }
 
     /// Creates a floating editor, hints a transient parent and a title, and
     /// shows it. Returns whether `create` ran.
     ///
     /// # Errors
-    /// The first step the plugin refuses.
+    /// [`GuiError::AlreadyCreated`] over a live editor, else the first step
+    /// the plugin refuses.
     pub fn open_floating(
         &mut self,
         transient: Option<&WindowHandle>,
         title: &CStr,
     ) -> Result<bool, GuiError> {
         let gui = self.gui()?;
+        if self.gui_created {
+            return Err(GuiError::AlreadyCreated);
+        }
         let (api, _) = platform_window_handle(std::ptr::null_mut());
         let transient = transient.map(|w| platform_window_handle(w.as_ptr()).1);
         // SAFETY: as `open_embedded`; `title` is nul-terminated.
-        unsafe { floating_editor_sequence(gui, self.raw(), api, transient, title) }
+        let created = unsafe { floating_editor_sequence(gui, self.raw(), api, transient, title) }?;
+        self.gui_created = created;
+        Ok(created)
     }
 
-    /// `can_resize` and `get_resize_hints`, `None` without a `clap.gui`.
-    /// Ask only for a created editor: CLAP orders every `clap.gui` method
-    /// after `create`.
+    /// `can_resize` and `get_resize_hints`, `None` without a `clap.gui` or
+    /// before `create` (CLAP orders every `clap.gui` method after it).
     #[must_use]
     pub fn gui_hints(&self) -> Option<GuiHints> {
-        let gui = self.gui_ext()?;
+        let gui = self.gui_ext().filter(|_| self.gui_created)?;
         // SAFETY: the instance is live and `gui` is its `clap.gui`; a
         // `[main-thread]` call on the main-thread half.
         Some(unsafe { query_editor_capabilities(gui, self.raw()) })
@@ -376,10 +406,13 @@ impl Plugin {
     /// then sets it. Returns the size set.
     ///
     /// # Errors
-    /// No `clap.gui`, no usable adjusted size, no `set_size`, or a refused
-    /// `set_size`.
+    /// No `clap.gui`, no editor created, no usable adjusted size, no
+    /// `set_size`, or a refused `set_size`.
     pub fn resize_gui(&mut self, width: u32, height: u32) -> Result<(u32, u32), GuiError> {
         let gui = self.gui()?;
+        if !self.gui_created {
+            return Err(GuiError::NotCreated);
+        }
         let plugin = self.raw();
         let (mut w, mut h) = (width, height);
         // SAFETY: the plugin's own entries with writable in/out sizes.
@@ -397,8 +430,13 @@ impl Plugin {
         Ok((w, h))
     }
 
-    /// Hides the editor (unless its window is already gone) and destroys it.
+    /// Hides the editor (unless its window is already gone) and destroys it. A
+    /// no-op before `create` and after `destroy`, so `destroy` runs once.
     pub fn close_gui(&mut self, window_destroyed: bool) {
+        if !self.gui_created {
+            return;
+        }
+        self.gui_created = false;
         let Some(gui) = self.gui_ext() else { return };
         let plugin = self.raw();
         if let (false, Some(hide)) = (window_destroyed, gui.hide) {

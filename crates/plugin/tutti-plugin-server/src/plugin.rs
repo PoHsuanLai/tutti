@@ -316,27 +316,7 @@ impl Plugin {
                 }
             }
             #[cfg(feature = "vst3")]
-            Plugin::Vst3(vst3) => {
-                let changes = vst3.poll_restart();
-                // A reload is a superset resync, so it subsumes the finer-grained
-                // param/io signals — emit just Reloaded (plus latency) in that case.
-                if changes.reloaded {
-                    out.push(AsyncEvent::Reloaded);
-                } else {
-                    if changes.param_values_changed {
-                        out.push(AsyncEvent::ParamValuesChanged);
-                    }
-                    if changes.param_titles_changed {
-                        out.push(AsyncEvent::ParamTitlesChanged);
-                    }
-                    if changes.io_changed {
-                        out.push(AsyncEvent::IoChanged);
-                    }
-                }
-                if let Some(samples) = changes.latency {
-                    out.push(AsyncEvent::LatencyChanged { samples });
-                }
-            }
+            Plugin::Vst3(vst3) => out.extend(vst3.poll()),
             #[cfg(feature = "clap")]
             Plugin::Clap(clap) => out.extend(clap.poll()),
             #[cfg(all(feature = "au", target_os = "macos"))]

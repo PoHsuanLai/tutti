@@ -15,6 +15,7 @@ pub use tutti_plugin_types::LoadStage;
 
 /// An error reported by the VST2 host.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Vst2Error {
     /// The plugin could not be loaded. `stage` says how far the load got, which
     /// separates "the file is not a VST2 binary" from "the plugin loaded and

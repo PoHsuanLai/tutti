@@ -19,6 +19,8 @@
 
 /// What the host is doing with automation, surfaced to the plugin for UI
 /// feedback. Global — applies to the whole plugin.
+///
+/// Exhaustive: the two flags (read, write) make exactly four modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AutomationMode {

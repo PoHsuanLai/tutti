@@ -30,6 +30,7 @@ pub use tutti_plugin_types::PluginError;
 /// socket and the shared-memory slab are all represented, which is what
 /// distinguishes this from the format-agnostic [`PluginError`].
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum BridgeError {
     /// The host could not reach the subprocess over its control socket.
     #[error("Bridge connection failed: {0}")]
@@ -198,6 +199,7 @@ pub type Result<T> = std::result::Result<T, BridgeError>;
 /// so a host can tell "this plugin cannot save its state" (it will never fork)
 /// from "the fresh instance did not start" (it may on a retry).
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum PluginForkError {
     /// The live instance is gone — every node and handle holding it dropped
     /// — so there is no state to fork from. Answered without any IPC.
@@ -244,6 +246,7 @@ pub enum PluginForkError {
 /// a crash or a timeout the fork renders silence; after a latency change it
 /// renders misaligned.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum PluginRenderFault {
     /// The fork's plugin-server died.
     #[error("the forked instance's plugin-server died: {cause}")]
@@ -306,6 +309,7 @@ impl From<PluginError> for BridgeError {
             PluginError::Process(msg) => BridgeError::ProcessError(msg),
             PluginError::Editor(err) => BridgeError::EditorError(err.to_string()),
             PluginError::Other(msg) => BridgeError::ProcessError(msg),
+            other => BridgeError::ProcessError(other.to_string()),
         }
     }
 }

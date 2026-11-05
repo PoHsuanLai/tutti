@@ -124,6 +124,7 @@ static NEXT_PAIR: AtomicU64 = AtomicU64::new(0);
 
 /// Why [`Editor::schedule`](crate::Editor::schedule) refused a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScheduleError {
     /// Nothing has been committed yet, so there is no node to address.
     NoPlan,

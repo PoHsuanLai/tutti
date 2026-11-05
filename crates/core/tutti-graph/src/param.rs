@@ -127,6 +127,7 @@ impl ParamPorts {
 
 /// Why a list cannot be a node's [`ParamPorts`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParamPortsError {
     /// More params than [`MAX_PARAM_PORTS`].
     TooMany {

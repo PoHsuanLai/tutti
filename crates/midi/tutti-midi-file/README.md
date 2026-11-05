@@ -107,7 +107,7 @@ match MidiFileKind::sniff_path("song.mid")? {
         let clip = tutti_midi_file::read_clip_file_from_path("song.mid")?;
         println!("{} events", clip.events.len());
     }
-    None => println!("not a MIDI file"),
+    Some(_) | None => println!("not a MIDI file we read"),
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```

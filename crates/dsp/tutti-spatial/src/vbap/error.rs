@@ -11,6 +11,7 @@ use thiserror::Error;
 /// Both variants are about speaker geometry; the binaural renderer has its own
 /// error type.
 #[derive(Debug, Clone, Error)]
+#[non_exhaustive]
 pub enum VbapError {
     /// The `vbap` crate rejected the speaker geometry — a degenerate preset
     /// whose speaker triplets do not span the sphere.

@@ -423,6 +423,7 @@ pub struct ClipNote {
 /// "this isn't a clip file" from "this clip file is malformed" so a caller can
 /// react differently (e.g. try another importer vs. report corruption).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClipFileError {
     /// Fewer than 8 bytes, or the leading 8 bytes are not [`CLIP_FILE_MAGIC`].
     #[error("not a MIDI Clip File (bad or missing SMF2CLIP magic)")]

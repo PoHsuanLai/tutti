@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// The error returned when a [`PolySynth`](crate::PolySynth) cannot be built.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A [`SynthConfig`](crate::SynthConfig) field is out of range: currently
     /// only a `max_voices` of 0. The message names the offending field.

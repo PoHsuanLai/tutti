@@ -9,6 +9,7 @@ use thiserror::Error;
 /// that is already running do not come back as an `Error`: CPAL delivers them
 /// to [`StreamFaults`](crate::StreamFaults).
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// No default output stream config was available from the host.
     #[error("Audio device not available")]

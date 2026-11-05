@@ -425,6 +425,7 @@ impl GraphSpec {
 
 /// Why a [`GraphSpec`] is malformed.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphInvalid {
     /// The embedded `Topology` is invalid. Only fatal faults are carried; an
     /// unconnected audio input reads silence and is not one.

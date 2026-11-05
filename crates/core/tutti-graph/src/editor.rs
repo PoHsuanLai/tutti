@@ -75,6 +75,7 @@ use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommitError {
     /// The spec is malformed.
     Invalid(Vec<GraphInvalid>),

@@ -91,6 +91,7 @@ pub enum Feed {
 /// Why [`Modulation::apply`] refused. A refusal changes nothing: neither
 /// the editor nor the reconciler's own state.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum ReconcileError {
     /// The declarations do not compile.
     Compile(CompileError),
@@ -864,6 +865,8 @@ impl Modulation {
                         self.resync.insert(source);
                     }
                 }
+                // Every kind `tutti_mod::compile` yields has its node above.
+                _ => unreachable!("a signal kind with no node"),
             }
             wire_feed(editor, plan.key, plan.feed);
             self.sources.insert(
@@ -1027,10 +1030,8 @@ impl Modulation {
                     ScheduleError::Backpressure | ScheduleError::NoPlan => {
                         self.resync.insert(s);
                     }
-                    ScheduleError::NoSuchPort { .. }
-                    | ScheduleError::ResolutionTooCoarse { .. }
-                    | ScheduleError::Poisoned
-                    | ScheduleError::UnknownCommand { .. } => self.resyncs_dropped += 1,
+                    // Any other refusal will not clear by retrying.
+                    _ => self.resyncs_dropped += 1,
                 }
                 if first.is_ok() {
                     first = Err(e);

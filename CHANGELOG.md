@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — error and kind enums are `#[non_exhaustive]`
+
+Every public error enum, and the stage, kind and format enums a new variant is
+plausible for, is `#[non_exhaustive]`, so adding a variant is no longer a
+breaking change: a `match` over one from another crate needs a wildcard arm.
+Core: `tutti_core::Error`, `GraphEngineError`, `MetronomeMode`, `MotionEvent`;
+`tutti_cpal::Error`; `tutti_io::Error`; `tutti_types::Invalid`; tutti-graph's
+`ScheduleError`, `ForkError`, `ForkFaultKind`, `CommitError`, `CompileError`,
+`EventOrderError`, `EventRejected`, `ParamPortsError`, `GraphInvalid`,
+`TransportChangeRejected`; tutti-mod's `CompileError`, `ProgramError`,
+`SignalKind`. DSP and MIDI: tutti-nodes' `ReconcileError`, `SvfType`,
+`LadderType`, `ShapeKind`, `InterpolationMode`; tutti-polysynth's `Error`,
+`OscillatorType`, `FilterType`, `SvfMode`, `VoiceMode`, `AllocationStrategy`,
+`PortamentoMode`, `PortamentoCurve`; `VbapError`, `HrtfBinauralError`, the
+soundfont, analysis, midi-file and midi-hardware `Error`s, `MidiFileKind`,
+`ClipFileError`, `Sysex8Abort`. Plugins: `Vst3Error`, `ClapError`,
+`Vst2Error`, `AuError`, `PluginError`, `StateError`, `EditorError`,
+`LoadStage`, `RenderMode`, `PluginFormat`, `BridgeError`, `PluginForkError`,
+`PluginRenderFault`; bevy-tutti's `SoundFontAssetLoaderError`. Closed domains
+(`Polarity`, `Resolution`, `AutomationMode`, `ModuleKind`, binary enums) stay
+exhaustive.
+
+`tutti_export::Error` lost `Render` and `InvalidData`, which nothing
+constructed, and `UnsupportedFormat` is now
+`UnsupportedFormat { format: String, reason: UnsupportedReason }`
+(`FeatureDisabled`, `UnknownExtension`, `BitDepth`; `#[non_exhaustive]`), so a
+caller can tell a missing codec feature from an unknown extension. The two
+`CompileError`s (tutti-graph's and tutti-mod's) keep their names and each doc
+names the other. tutti-mod's `Declarations`, `RouteDecl` and `TargetDecl` are
+documented as plain data built with struct literals.
+
 ### Fixed — host callbacks no longer abort on a panic
 
 The CLAP host callbacks (62 in a `catch_unwind` guard; `request_exec` aborts

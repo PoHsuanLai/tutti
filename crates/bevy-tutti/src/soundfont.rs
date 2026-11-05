@@ -58,6 +58,7 @@ pub struct SoundFontAssetLoader;
 
 /// Why loading a `.sf2` asset failed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SoundFontAssetLoaderError {
     /// The bytes could not be read from the asset source.
     #[error("IO error: {0}")]

@@ -54,6 +54,7 @@ const ONSET_EPSILON: f64 = 1e-3;
 /// Metronome operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum MetronomeMode {
     /// Metronome is disabled.
     #[default]

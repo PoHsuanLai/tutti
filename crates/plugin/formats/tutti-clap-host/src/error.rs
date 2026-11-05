@@ -15,6 +15,7 @@ pub use tutti_plugin_types::LoadStage;
 
 /// An error reported by the CLAP host.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ClapError {
     /// The plugin could not be loaded. `stage` pinpoints which step failed.
     #[error("Failed to load plugin at {path}: {stage} - {reason}")]

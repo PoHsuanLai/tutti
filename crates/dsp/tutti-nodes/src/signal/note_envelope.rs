@@ -139,7 +139,7 @@ impl NoteEnvelopeNode {
     pub fn from_decl(decl: &SourceNode) -> Option<Self> {
         match decl.kind {
             SignalKind::NoteEnvelope { adsr } => Some(Self::new(decl.id, adsr)),
-            SignalKind::Follower { .. } => None,
+            _ => None,
         }
     }
 

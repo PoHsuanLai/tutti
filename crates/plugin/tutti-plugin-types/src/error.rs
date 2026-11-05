@@ -20,6 +20,7 @@ use crate::load_stage::LoadStage;
 /// `tutti-plugin` host crate widens this into its `BridgeError` (which adds
 /// the IPC/subprocess variants) via `From<PluginError>`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PluginError {
     /// A plugin failed to load at a specific phase. `reason` carries the
     /// format-native error text.
@@ -119,6 +120,7 @@ impl Delivered {
 /// stop using this plugin and [`NoStateRoute`](Self::NoStateRoute) means never
 /// offer the operation again for this backend.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StateError {
     /// The plugin process is gone. Permanent — every later call answers the same.
     #[error("plugin subprocess has crashed")]

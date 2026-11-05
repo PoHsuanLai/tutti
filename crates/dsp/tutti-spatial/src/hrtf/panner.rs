@@ -47,6 +47,7 @@ pub(crate) const LATENCY: usize = STEP;
 /// The error returned when an [`HrtfBinauralNode`](crate::HrtfBinauralNode)
 /// cannot be built from its HRIR data.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HrtfBinauralError {
     /// The bytes do not start with the `HRIR` magic.
     #[error("not an HRIR sphere: the bytes do not start with `HRIR`")]

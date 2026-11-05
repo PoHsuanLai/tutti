@@ -122,12 +122,12 @@ pub(crate) fn encode_to_file(
     config: &ExportConfig,
     path: &Path,
 ) -> Result<Written> {
+    use crate::options::AudioFormat;
     #[allow(
         unused_imports,
         reason = "named only by the `cfg(not(feature))` fallback arms; unused when every format feature is on"
     )]
-    use crate::Error;
-    use crate::options::AudioFormat;
+    use crate::{Error, UnsupportedReason};
 
     match config.encode.format {
         #[cfg(feature = "wav")]
@@ -138,21 +138,36 @@ pub(crate) fn encode_to_file(
             config,
         )?,
         #[cfg(not(feature = "wav"))]
-        AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
+        AudioFormat::Wav => {
+            return Err(Error::UnsupportedFormat {
+                format: "WAV".into(),
+                reason: UnsupportedReason::FeatureDisabled,
+            });
+        }
 
         #[cfg(feature = "flac")]
         AudioFormat::Flac(opts) => {
             flac::FlacEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
         }
         #[cfg(not(feature = "flac"))]
-        AudioFormat::Flac(_) => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
+        AudioFormat::Flac(_) => {
+            return Err(Error::UnsupportedFormat {
+                format: "FLAC".into(),
+                reason: UnsupportedReason::FeatureDisabled,
+            });
+        }
 
         #[cfg(feature = "aiff")]
         AudioFormat::Aiff => {
             aiff::AiffEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
         }
         #[cfg(not(feature = "aiff"))]
-        AudioFormat::Aiff => return Err(Error::UnsupportedFormat("AIFF not enabled".into())),
+        AudioFormat::Aiff => {
+            return Err(Error::UnsupportedFormat {
+                format: "AIFF".into(),
+                reason: UnsupportedReason::FeatureDisabled,
+            });
+        }
 
         #[cfg(feature = "ogg")]
         AudioFormat::OggVorbis(opts) => {
@@ -160,7 +175,10 @@ pub(crate) fn encode_to_file(
         }
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
-            return Err(Error::UnsupportedFormat("OGG not enabled".into()));
+            return Err(Error::UnsupportedFormat {
+                format: "OGG".into(),
+                reason: UnsupportedReason::FeatureDisabled,
+            });
         }
     }
 

@@ -35,6 +35,7 @@ const GAIN_EPS: f32 = 0.01;
 /// [`HighShelf`](Self::HighShelf)) are the only ones that read the gain
 /// parameter; the rest ignore it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SvfType {
     /// Passes below cutoff, attenuates above it at 12 dB/octave. The default.
     #[default]

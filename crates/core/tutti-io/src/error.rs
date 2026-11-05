@@ -15,6 +15,7 @@ use tutti_core::ChannelLayout;
 
 /// An error from starting or finishing a recording.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// The source and sink disagree on channel width.
     ///

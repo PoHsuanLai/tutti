@@ -371,6 +371,7 @@ pub trait ForkHealth: Send + Sync {
 
 /// How a forked unit failed while rendering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ForkFaultKind {
     /// Its process died.
     Crashed,
@@ -494,6 +495,7 @@ pub enum ForkTarget {
 
 /// Why [`Editor::fork`] failed. Nothing was built.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ForkError {
     /// A node the fork needs has no [`ForkSource`] for the unit now at its
     /// key: it was inserted as something that did not hand one over (an

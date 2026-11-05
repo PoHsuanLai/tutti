@@ -23,6 +23,7 @@ const SMF_MAGIC: [u8; 4] = *b"MThd";
 /// Which MIDI file format a byte stream holds, decided by magic rather than by
 /// file extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MidiFileKind {
     /// A Standard MIDI File — leading `MThd`. Parse with [`crate::smf::tracks`].
     StandardMidiFile,

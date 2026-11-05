@@ -188,6 +188,18 @@ impl Onset {
     }
 }
 
+/// How far after the start of its frame the onset a spectral-flux peak marks
+/// sits: `3 * window / 4 - hop / 2`.
+///
+/// Flux is the rise in the Hann-weighted magnitude from one frame to the next.
+/// An onset at `p` into a frame was `p + hop` into the last, so the rise is
+/// `w(p) - w(p + hop)`, about `-hop * w'` at `p + hop / 2`, and `w' = sin(2πp/W)
+/// π/W` falls fastest at `3W/4`. The frame grid then places the peak to within
+/// half a hop. (Not `window / 2`: that is right only when `hop = window / 2`.)
+pub(crate) fn onset_lag(geometry: StftGeometry) -> usize {
+    (geometry.window().get() * 3 / 4).saturating_sub(geometry.hop().get() / 2)
+}
+
 /// What the detector carries between frames.
 ///
 /// Explicit, so a batch run cannot inherit a streaming run's history — the

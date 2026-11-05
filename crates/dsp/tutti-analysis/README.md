@@ -27,6 +27,9 @@ where the results go:
 - `estimate_tempo` / `track_beats` — tempo (BPM, confidence, octave alternatives) by
   autocorrelation under a log-Gaussian prior, and beat positions by dynamic
   programming (Ellis 2007); `_from_novelty` forms take your own detection curve.
+- `transcribe` — monophonic audio to notes: a pitch (`Note` plus a cents bend),
+  a span in samples and a level, split on onsets and pitch changes;
+  `notes_from_track` takes your own pitch track.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 

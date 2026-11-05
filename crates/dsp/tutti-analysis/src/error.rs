@@ -87,6 +87,10 @@ pub enum Error {
     /// A tempo setting that is not finite or not above zero.
     #[error("invalid tempo parameter: {0}")]
     InvalidTempoParameter(&'static str),
+    /// A note-transcription setting or input that is out of range; the text
+    /// names it.
+    #[error("invalid note parameter: {0}")]
+    InvalidNoteParameter(&'static str),
     /// A grid's data length disagrees with `frames * bins`.
     #[error("grid has {len} values but its shape is {rows}x{cols} = {}", rows * cols)]
     GridShapeMismatch {

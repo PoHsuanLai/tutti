@@ -36,6 +36,10 @@
 //! - Tempo: [`estimate_tempo()`] with a [`TempoConfig`] finds a [`Tempo`] (BPM,
 //!   confidence, runner-up octaves); [`track_beats()`] places a [`BeatGrid`] by
 //!   dynamic programming; the `_from_novelty` forms take your own curve.
+//! - Notes: [`transcribe`] with a [`NoteConfig`] turns a mono buffer into
+//!   [`NoteEvent`]s (note, cents bend, span, level); [`notes_from_track`]
+//!   takes your own pitch track, [`frame_levels`] and onsets;
+//!   [`VelocityRange`] maps a level to a MIDI velocity.
 //! - [`FftScratch`], reusable FFT plans and buffers; [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
@@ -47,6 +51,7 @@ mod fft;
 mod geometry;
 mod grid;
 mod loudness;
+mod notes;
 mod onset;
 mod peaks;
 // No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
@@ -78,6 +83,7 @@ pub use loudness::{
 // `finish` is renamed on the way out, matching `finish_peaks` /
 // `finish_loudness` above: three modules each have a `finish`, and the bare name
 // says nothing about which accumulator it drains.
+pub use notes::{NoteConfig, NoteEvent, VelocityRange, frame_levels, notes_from_track, transcribe};
 pub use onset::{
     DetectionFunction, Onset, OnsetConfig, OnsetState, complex_domain_deviation, detect_onsets,
     finish as finish_onset, high_frequency_content, spectral_energy, spectral_flux, step_onset,

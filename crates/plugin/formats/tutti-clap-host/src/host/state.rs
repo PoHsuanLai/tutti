@@ -11,9 +11,10 @@ use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
 #[cfg(unix)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Instant;
+use tutti_clap_ffi::{AudioClaim, ThreadRoles};
 use tutti_plugin_types::RequestWord;
 
 pub(crate) struct TimerEntry {
@@ -500,49 +501,10 @@ pub struct HostState {
     /// construction, so a `HostState` must be built on the thread that will
     /// drive the plugin's main-thread calls.
     pub main_thread_id: ThreadId,
-    /// Current audio-thread identity, as a hash of the claiming [`ThreadId`].
-    /// Zero means no claim is outstanding, so a thread holds the role only
-    /// *during* an `[audio-thread]` call.
-    ///
-    /// Read from the audio thread on every CLAP callback that queries
-    /// `is_audio_thread`, and written on entry to and exit from every
-    /// `[audio-thread]` call — so this is a per-block RT write, not a
-    /// start/stop-of-processing one.
-    ///
-    /// A plain atomic, so claiming and releasing the role never allocates,
-    /// blocks, or frees on the audio thread. `ThreadId` is opaque (`as_u64` is
-    /// unstable), so the hash is the portable way to fit it in an atomic.
-    // An `ArcSwapOption<ThreadId>` would not do: `store` waits for readers and
-    // can run the retired `Arc`'s deallocation on the audio thread, and a
-    // one-slot `Arc` cache is evicted whenever a GUI thread calls `flush_params`
-    // between two blocks.
-    ///
-    ///
-    /// Collisions are possible in principle, and are sound here: the property
-    /// CLAP requires — one OS thread inside an `[audio-thread]` call at a time
-    /// — is enforced by [`audio_thread_lock`](Self::audio_thread_lock), not by
-    /// this value. A collision could mislead a plugin's own thread-check
-    /// assertion, never admit a second thread.
-    pub audio_thread_id: AtomicU64,
-    /// The `[audio-thread]` concurrency guard.
-    ///
-    /// CLAP defines the audio-thread as a *symbolic* thread: "the host may
-    /// mark any OS thread, including the main-thread, as the audio-thread, as
-    /// long as it can guarantee that only one OS thread is the audio-thread at
-    /// a time in a plugin instance. The audio-thread can be seen as a
-    /// concurrency guard for all functions marked with [audio-thread]"
-    /// (`clap/ext/thread-check.h`). This mutex *is* that guard: every
-    /// `[audio-thread]` entry point (`process`, `start_processing`,
-    /// `stop_processing`, an active `params.flush`) holds it for the duration
-    /// of the plugin call, so those calls can never overlap even when driven
-    /// from different OS threads.
-    ///
-    /// It is uncontended in the steady state (one audio thread, no setup
-    /// traffic), so the RT path pays an uncontended lock/unlock and never
-    /// blocks. Setup-time callers (`set_sample_rate`, `set_max_block_size`,
-    /// `deactivate`, `Drop`) block on it, which is exactly the intended
-    /// serialization.
-    pub audio_thread_lock: Mutex<()>,
+    /// Which thread plays which role, and the audio claim: shared with the
+    /// FFI crate's plugin handle, which takes the claim around every
+    /// audio-side entry.
+    pub(crate) roles: Arc<ThreadRoles>,
     /// What the plugin asked of the host, by any callback on any thread: a
     /// restart, a main-thread callback, a latency or tail change, an
     /// audio-ports or parameter rescan. The main thread takes it once per
@@ -574,76 +536,11 @@ pub struct HostState {
     pub resources: ResourceState,
 }
 
-/// Sentinel for "no thread currently holds the `[audio-thread]` role".
-///
-/// Zero because that is what a freshly constructed `AtomicU64` holds, so a
-/// `HostState` starts unclaimed without an explicit initialiser. A real thread
-/// hashing to 0 would be indistinguishable from "unclaimed" — see
-/// [`thread_id_hash`], which folds that case away.
-const NO_AUDIO_THREAD: u64 = 0;
-
-/// A [`ThreadId`] as a `u64`, so the audio-thread identity fits in one atomic.
-///
-/// `ThreadId` is deliberately opaque and its `as_u64` is unstable, so hashing is
-/// the portable route. `DefaultHasher` is not stable across releases, which does
-/// not matter here: the value never leaves the process and is only ever compared
-/// against another hash produced by this same function in this same run.
-///
-/// **On collisions.** Two live threads could in principle hash alike, which
-/// would let a non-claiming thread answer `is_audio_thread() == true`. That is
-/// tolerable because the property CLAP actually requires — that only one OS
-/// thread is inside an `[audio-thread]` call at a time — is enforced by
-/// `audio_thread_lock`, not by this value. The hash answers "who am I?" for
-/// plugin-facing thread-check queries; the mutex answers "may I enter?". A
-/// collision could mislead a plugin's assertion, never admit a second thread.
-/// At 64 bits with a handful of threads, it is also not a practical concern.
-fn thread_id_hash(id: ThreadId) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    id.hash(&mut hasher);
-    // Fold the sentinel away so a real thread can never be read as "unclaimed".
-    match hasher.finish() {
-        NO_AUDIO_THREAD => 1,
-        h => h,
-    }
-}
-
-/// RAII claim on the `[audio-thread]` role for one plugin instance.
-///
-/// While alive it holds [`HostState::audio_thread_lock`] and has published the
-/// claiming OS thread into [`HostState::audio_thread_id`], so:
-/// - `is_audio_thread()` answers `true` on this thread and `false` everywhere else;
-/// - `is_main_thread()` answers `false` on this thread even when it *is* the
-///   OS main thread — the two roles are mutually exclusive, so a plugin
-///   asserting `!is_main_thread()` inside `start_processing` sees the truth;
-/// - no second OS thread can enter any `[audio-thread]` plugin call meanwhile.
-///
-/// On drop the identity is cleared, so outside an `[audio-thread]` call no
-/// thread claims the role — and the OS main thread goes back to answering
-/// `is_main_thread() == true`.
-///
-/// Borrows the [`HostState`], not the instance. Callers that need `&mut self`
-/// while the claim is alive clone the `Arc<HostState>` into a local first and
-/// claim off that local, so the borrow does not reach back into `self`.
-#[derive(Debug)]
-pub struct AudioThreadClaim<'a> {
-    state: &'a HostState,
-    // Held for the claim's lifetime; declared last so it releases only after
-    // `Drop` has cleared the published identity (fields drop in declaration
-    // order, and the `Drop` impl runs before any field drops).
-    _guard: MutexGuard<'a, ()>,
-}
-
-impl Drop for AudioThreadClaim<'_> {
-    fn drop(&mut self) {
-        // One relaxed-ordered store of a `u64`. Nothing to free, so this cannot
-        // deallocate on the audio thread; `Release` pairs with the `Acquire` in
-        // `is_audio_thread`.
-        self.state
-            .audio_thread_id
-            .store(NO_AUDIO_THREAD, Ordering::Release);
-    }
-}
+/// RAII claim on the `[audio-thread]` role for one plugin instance: while it
+/// is alive `is_audio_thread()` answers `true` on the claiming thread and
+/// `false` everywhere else, and `is_main_thread()` answers `false` on it even
+/// when it is the OS main thread. See [`HostState::claim_audio_thread`].
+pub type AudioThreadClaim<'a> = AudioClaim<'a>;
 
 impl HostState {
     /// Builds an unclaimed `HostState`, taking the calling thread as the
@@ -652,8 +549,7 @@ impl HostState {
     pub fn new() -> Self {
         Self {
             main_thread_id: std::thread::current().id(),
-            audio_thread_id: AtomicU64::new(NO_AUDIO_THREAD),
-            audio_thread_lock: Mutex::new(()),
+            roles: Arc::new(ThreadRoles::new()),
             requests: RequestWord::new(),
             lifecycle: LifecycleFlags::new(),
             processing: ProcessingState::new(),
@@ -692,27 +588,12 @@ impl HostState {
     /// thread must be threaded into the inner call, not re-taken. That is why
     /// `ensure_processing` / `stop_processing_claimed` take `&AudioThreadClaim`.
     pub fn claim_audio_thread(&self) -> AudioThreadClaim<'_> {
-        let guard = self
-            .audio_thread_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // RT: a hash and one `Release` store. No allocation, no reader
-        // coordination, and nothing retired that could be freed here — see the
-        // note on `audio_thread_id` for what this replaced and why.
-        self.audio_thread_id.store(
-            thread_id_hash(std::thread::current().id()),
-            Ordering::Release,
-        );
-        AudioThreadClaim {
-            state: self,
-            _guard: guard,
-        }
+        self.roles.claim()
     }
 
     /// Whether the calling thread is currently acting as the audio thread.
     pub fn is_audio_thread(&self) -> bool {
-        let claimed = self.audio_thread_id.load(Ordering::Acquire);
-        claimed != NO_AUDIO_THREAD && claimed == thread_id_hash(std::thread::current().id())
+        self.roles.is_audio_thread()
     }
 
     /// Whether the calling thread is currently acting as the main thread.

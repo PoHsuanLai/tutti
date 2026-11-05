@@ -5,7 +5,6 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tutti_plugin_types::{
     Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
@@ -15,9 +14,9 @@ use tutti_types::ArcLend;
 
 use super::config::RangeTable;
 use super::processor::{ClapProcessor, ClapProcessorAny};
-use super::shell::Shell;
 use super::thread_pool::PoolCell;
 use super::{ClapLoaded, ClapSample};
+use tutti_clap_ffi::AudioSide;
 
 /// The main-thread half of an activation: the whole control surface of a
 /// [`ClapLoaded`], reached through `Deref`, with parameter writes redirected
@@ -25,11 +24,11 @@ use super::{ClapLoaded, ClapSample};
 ///
 /// `Send` so a server can build it on one thread and run it on another, not
 /// `Sync`, and never used from two threads at once. Dropping it ends the
-/// activation: it retires the shell, stops processing, deactivates and destroys
-/// the plugin, so a Processor that outlives it renders nothing.
+/// activation: it stops processing, deactivates and destroys the plugin, so a
+/// Processor that outlives it renders nothing.
 pub struct ClapController {
-    /// `None` only once `deactivate` has taken the shell.
-    shell: Option<Arc<Shell>>,
+    /// The plugin. `None` only once `deactivate` has taken it.
+    loaded: Option<ClapLoaded>,
     pub(crate) edits: EditSink,
     /// Edits a full ring refused, latest value per parameter, retried on the
     /// next tick ([`flush_edits`](tutti_plugin_types::Control::flush_edits)).
@@ -53,20 +52,15 @@ impl std::fmt::Debug for ClapController {
     }
 }
 
-// SAFETY: the Controller runs on one thread at a time (every method takes
-// `&mut self` or a shared reference of a type that is not `Sync`), and clause 2
-// of the invariant on `Shell` keeps its calls to the main-thread set.
-unsafe impl Send for ClapController {}
-
 impl ClapController {
     pub(crate) fn new(
-        shell: Arc<Shell>,
+        loaded: ClapLoaded,
         edits: EditSink,
         ranges: Arc<ArcLend<RangeTable>>,
         pools: Arc<ArcLend<PoolCell>>,
     ) -> Self {
         Self {
-            shell: Some(shell),
+            loaded: Some(loaded),
             edits,
             unsent: Vec::new(),
             reset_pending: false,
@@ -76,10 +70,10 @@ impl ClapController {
         }
     }
 
-    fn shell(&self) -> &Arc<Shell> {
-        self.shell
+    fn loaded(&self) -> &ClapLoaded {
+        self.loaded
             .as_ref()
-            .expect("a Controller holds its shell until it is consumed")
+            .expect("a Controller holds its plugin until it is consumed")
     }
 
     /// Serves the plugin's `clap.thread-pool` requests on `pool` from the next
@@ -113,58 +107,27 @@ impl Deref for ClapController {
     type Target = ClapLoaded;
 
     fn deref(&self) -> &ClapLoaded {
-        // SAFETY: main thread, shared; see `Shell::loaded`.
-        unsafe { self.shell().loaded() }
-            .as_ref()
-            .expect("a live Controller's shell holds its plugin")
+        self.loaded()
     }
 }
 
 impl DerefMut for ClapController {
     fn deref_mut(&mut self) -> &mut ClapLoaded {
-        let shell = self.shell();
-        // SAFETY: main thread, exclusive; see `Shell::loaded_mut`.
-        unsafe { shell.loaded_mut() }
+        self.loaded
             .as_mut()
-            .expect("a live Controller's shell holds its plugin")
+            .expect("a Controller holds its plugin until it is consumed")
     }
 }
 
 impl Drop for ClapController {
     fn drop(&mut self) {
-        let Some(shell) = self.shell.take() else {
-            return;
-        };
-        // Before anything is called: a Processor that has not yet taken the
-        // `[audio-thread]` role finds this set when it does, and renders nothing.
-        shell.retired.store(true, Ordering::Release);
-        // SAFETY: the Controller is the only user of the cell.
-        let Some(mut loaded) = unsafe { shell.loaded_mut() }.take() else {
-            return;
-        };
-        stop_and_deactivate(&shell, &mut loaded);
-        // `loaded` drops here: the editor closes and the plugin is destroyed, on
-        // this (the main) thread.
-    }
-}
-
-/// Ends processing and deactivates, in the order CLAP requires.
-fn stop_and_deactivate(shell: &Shell, loaded: &mut ClapLoaded) {
-    let host_state = loaded.host_state.clone();
-    {
-        // The claim waits for a `process` still in flight on another thread, and
-        // is the `[audio-thread]` role `stop_processing` is annotated with.
-        let _claim = host_state.claim_audio_thread();
-        if shell.processing.swap(false, Ordering::Relaxed) {
-            // SAFETY: the plugin is alive; this thread holds the claim.
-            let plugin = unsafe { loaded.plugin.as_ref() };
-            if let Some(stop) = plugin.stop_processing {
-                unsafe { stop(loaded.plugin.as_ptr()) };
-            }
+        // The FFI plugin stops processing under the audio claim (waiting out a
+        // `process` in flight), deactivates, and destroys on drop, so a
+        // Processor that outlives this renders nothing.
+        if let Some(mut loaded) = self.loaded.take() {
+            loaded.deactivate_plugin();
         }
     }
-    // `deactivate` is `[main-thread]`, so the claim is released first.
-    loaded.deactivate_plugin();
 }
 
 impl Controller for ClapController {
@@ -236,14 +199,16 @@ impl ClapLoaded {
     /// Rejoins the halves of one activation of any sample type: checks they are
     /// a pair, stops the Processor, drops it, and hands back the plugin
     /// deactivated.
+    // The error carries the halves and the whole plugin back, which is the point.
+    #[allow(clippy::result_large_err)]
     fn rejoin<P>(
         mut processor: P,
         mut controller: ClapController,
-        shell_of: impl Fn(&P) -> &Arc<Shell>,
+        side_of: impl Fn(&P) -> &AudioSide,
         stop: impl FnOnce(&mut P),
         take_edits: impl FnOnce(&mut P, &mut Vec<(ParamId, Normalized)>),
     ) -> Result<ClapLoaded, (P, ClapController, PluginError)> {
-        if !Arc::ptr_eq(shell_of(&processor), controller.shell()) {
+        if !controller.loaded().plugin.owns(side_of(&processor)) {
             return Err((
                 processor,
                 controller,
@@ -251,7 +216,7 @@ impl ClapLoaded {
             ));
         }
         // The pair and nothing else: one share each.
-        if Arc::strong_count(controller.shell()) != 2 {
+        if controller.loaded().plugin.audio_sides() != 1 {
             return Err((
                 processor,
                 controller,
@@ -265,15 +230,10 @@ impl ClapLoaded {
         take_edits(&mut processor, &mut pending);
         pending.append(&mut std::mem::take(&mut controller.unsent));
         drop(processor);
-        let shell = controller
-            .shell
+        let mut loaded = controller
+            .loaded
             .take()
-            .expect("a Controller holds its shell until it is consumed");
-        let shell = Arc::try_unwrap(shell)
-            .unwrap_or_else(|_| unreachable!("the pair was the only two handles"));
-        let mut loaded = shell
-            .into_loaded()
-            .expect("the plugin stays in the shell until the Controller drops");
+            .expect("a Controller holds its plugin until it is consumed");
         loaded.deactivate_plugin();
         // An inactive plugin takes a `params.flush` on the main thread, so the
         // writes land now and the next activation starts from them.
@@ -297,7 +257,7 @@ impl ClapLoaded {
         Self::rejoin(
             processor,
             controller,
-            |p| p.shell(),
+            |p| p.audio_side(),
             ClapProcessor::stop,
             ClapProcessor::take_edits,
         )
@@ -332,7 +292,7 @@ impl Loaded for ClapLoaded {
         Self::rejoin(
             processor,
             controller,
-            |p| p.shell(),
+            |p| p.audio_side(),
             Processor::stop,
             ClapProcessorAny::take_edits,
         )

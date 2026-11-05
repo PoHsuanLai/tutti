@@ -1012,6 +1012,54 @@ and from CLAP and VST3:
   `AuLoaded::load_document_state`; `Vst2Loaded::programs`. A user who wants them
   holds the concrete type.
 
+**As built (the CLAP FFI crate).** The first format moved to the rule of §2.9.
+
+- `tutti-clap-ffi` holds all of `tutti-clap-host`'s CLAP `unsafe` (about 550
+  sites before: the host crate had none left, its tests that drove raw vtables
+  moved to `tests/` or to the FFI crate). `tutti-clap-host`, the server's
+  `loaders/clap.rs` (outside its test module) and `tutti-plugin`'s
+  `format/gui/clap.rs` are free of it; the server's `unsafe impl Send for
+  ClapInstance` and the `WindowHandle::from_raw` round trip are gone.
+- **The shell is not in the host crate.** The private `Shell` of the CLAP
+  change (an `Arc` holding the `ClapLoaded` in an `UnsafeCell`, with an
+  `unsafe impl Sync` argued in five clauses) is replaced by the FFI crate's
+  `Plugin` (main-thread half) and `AudioSide` (audio-thread half) over one
+  private `Core`. The clauses carry over as the `Sync` argument in
+  `tutti-clap-ffi/src/plugin.rs`: disjoint entries, audio entries serialised
+  by the claim, `activate` needing no live audio half, destroy on the main
+  thread once and last (`retired`, set before the claim is taken), and
+  callbacks that touch only the embedder's callbacks. The Controller now owns
+  its `ClapLoaded` directly (`Option<ClapLoaded>`, `Deref`), and the Processor
+  owns an `AudioSide`; a rejoin checks `plugin.owns(&side)` and
+  `plugin.audio_sides() == 1` where it compared `Arc` pointers and counts. An
+  `AudioSide` is retired once its instance is destroyed *or deactivated*, so a
+  block after a rejoin cannot start processing on an inactive plugin.
+- **The audio claim moved with it.** `HostState::claim_audio_thread` and
+  `is_audio_thread` delegate to the FFI crate's `ThreadRoles`, which `Plugin`
+  and `AudioSide` share, so the mutex that serialises audio-side entries and
+  the identity `clap.thread-check` reports are one object.
+- **Callbacks are a trait.** Each `extern "C"` host callback decodes its
+  arguments and calls a safe `HostCallbacks` method (`request_restart`,
+  `params_rescan(flags)`, `timer_register`, ...); `HostState` implements it,
+  so the latch and queue logic stayed in the host crate and the guards, the
+  null checks and the C-string and slice reads went down. `scripts/check-guards.sh`
+  scans the FFI crate.
+- **Events are views.** The host keeps its `ClapEvent` enum and its list
+  policy; the FFI crate takes an `EventSource` (a borrowed `EventRef` per
+  event, whose header, type and size it validates before the plugin sees it,
+  replacing a bad one with an inert header; a SysEx's bytes must lie inside the
+  storage it was handed) and an `EventSink` (a decoded `PluginEvent` per
+  push). The raw lists are built on the stack of the call.
+- **Audio buffers.** `PortScratch<T>` and `ProcessCall` bind a block's slices
+  and run `process`. It refuses a channel shorter than the block, which the
+  host crate's pointer tables never checked. `ClapSample` and the typed
+  processors are unchanged by this step.
+- **Tests.** The unit tests that used stub vtables moved with the code they
+  cover. The ones that drove the raw lists now sit in `tests/clap_event_lists.rs`
+  (the host crate forbids `unsafe`, a test may use it) over the FFI crate's
+  `#[doc(hidden)]` `*_raw_for_test` hooks, and the suites that call the callbacks
+  through `ClapHost`'s vtable get it from `tests/support/raw.rs`.
+
 #### The split reaches one instance: why that is sound
 
 Both halves hold an `Arc` of one private shell per activation, and the shell holds
@@ -1467,6 +1515,28 @@ F6).
   `AuActive`, which is the "unit outlives listener" proof their `# Safety` text
   asks for. `raw_unit()` is `pub(crate)`. The remaining `pub unsafe fn` count
   reaches zero.
+- **Format FFI `unsafe` lives in one crate per format.** A format's host crate
+  (`tutti-clap-host`, then `tutti-vst3-host`, `tutti-vst2-host`,
+  `tutti-au-host`) is `#![forbid(unsafe_code)]` and holds the logic: the
+  lifecycle integration, the shell, the request words, the edit ring's use.
+  Everything that touches the format's C ABI is in `tutti-<format>-ffi`, behind
+  safe handles over the format's `-sys` crate: the library and its entry, the
+  plugin handle with one safe method per extension, the host-side callback
+  vtables (each `extern "C"` body under the panic guard, forwarding to a safe
+  trait the host implements), the event lists and the process buffers. The FFI
+  crate names nothing of tutti's except `tutti-plugin-types` where a value it
+  relies on lives there, and carries the `// SAFETY:` argument of every block
+  and every `unsafe impl Send`/`Sync`, per type (`undocumented_unsafe_blocks`
+  and `missing_safety_doc` are denied in it). The thread rules are in the
+  types: a `[main-thread]` entry is a method of the main-thread handle, which
+  is `Send` and not `Sync`, and an `[audio-thread]` entry is a method of the
+  audio-thread handle, which takes the instance's audio claim for the call, so
+  a processor cannot make a main-thread call by construction. The code that
+  drives a host crate (the server's loader, the in-process editor) carries no
+  format `unsafe` either; its test modules may call into the reference
+  plugin's cdylib through `libloading`, which is `unsafe` and cannot go
+  through the FFI crate. `scripts/check-plugin-ffi.sh` fails on any `unsafe`
+  in those files outside their test modules, and on a missing forbid.
 - **Panics do not cross FFI.** Every `extern "C"` and `extern "system"` callback
   body runs under one `guard(|| ..)` per host crate, which returns the format's
   "not handled" value on a panic. With callbacks reduced to `RequestWord::raise`

@@ -59,6 +59,7 @@ members = [
     # tutti-plugin; see its Cargo.toml.
     "crates/plugin/tutti-shm-model",
     "crates/plugin/formats/tutti-vst3-host",
+    "crates/plugin/formats/tutti-clap-ffi",
     "crates/plugin/formats/tutti-clap-host",
     "crates/plugin/formats/tutti-au-host",
     "crates/plugin/formats/tutti-vst2-host",

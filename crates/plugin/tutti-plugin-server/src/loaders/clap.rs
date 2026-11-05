@@ -101,10 +101,6 @@ pub struct ClapInstance {
     refused: bool,
 }
 
-// SAFETY: the host instances are `Send`, and the instance is driven from one
-// thread at a time.
-unsafe impl Send for ClapInstance {}
-
 /// Whether a pending write may be flushed out of band: not when the parameter
 /// requires `process` and the plugin is processing.
 fn flush_out_of_band(requires_process: bool, processing: bool) -> bool {
@@ -586,13 +582,11 @@ impl PluginEditorHost for ClapInstance {
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
-        // Safety: WindowHandle was validated at the IPC boundary in server.rs
-        let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         let loaded = self
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
         loaded
-            .open_editor(handle, scale)
+            .open_editor(parent, scale)
             .map(|s| EditorSize {
                 width: s.width,
                 height: s.height,

@@ -5,7 +5,6 @@
 //! happens on the `process` path, not here.
 
 use super::ClapLoaded;
-use super::ext;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 #[cfg(feature = "clap-extras")]
@@ -16,8 +15,7 @@ use clap_sys::ext::param_indication::{
     CLAP_PARAM_INDICATION_AUTOMATION_PLAYING, CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
     CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
 };
-#[cfg(feature = "clap-extras")]
-use std::ptr;
+use tutti_clap_ffi::chars_to_string;
 
 /// How a host surface control (e.g. a hardware knob) is bound to a plugin
 /// parameter, per `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
@@ -89,23 +87,14 @@ impl ClapLoaded {
     /// Number of parameters the plugin exposes. Returns 0 if the plugin
     /// does not implement `CLAP_EXT_PARAMS`.
     pub fn parameter_count(&self) -> usize {
-        let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
-            return 0;
-        };
-        let Some(count_fn) = ext.count else {
-            return 0;
-        };
-        unsafe { count_fn(self.plugin.as_ptr()) as usize }
+        self.plugin.param_count() as usize
     }
 
     /// Current value of a parameter in its own declared range, or `None` if the
     /// plugin does not support the extension or rejects the ID. The normalized
     /// reading is [`Control::parameter`](tutti_plugin_types::Control::parameter).
     pub fn plain_value(&self, id: u32) -> Option<f64> {
-        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
-        let get_value_fn = ext.get_value?;
-        let mut value: f64 = 0.0;
-        unsafe { get_value_fn(self.plugin.as_ptr(), id, &mut value) }.then_some(value)
+        self.plugin.param_value(id)
     }
 
     /// Full CLAP-native metadata for the parameter at the given `index`
@@ -115,18 +104,11 @@ impl ClapLoaded {
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
     /// [`parameter_list`](Self::parameter_list).
     pub(crate) fn parameter_info(&self, index: u32) -> Option<ClapParamInfo> {
-        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
-        let get_info_fn = ext.get_info?;
-
-        let mut info: clap_sys::ext::params::clap_param_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_info_fn(self.plugin.as_ptr(), index, &mut info) } {
-            return None;
-        }
-
+        let info = self.plugin.param_info(index)?;
         Some(ClapParamInfo {
             id: info.id,
-            name: unsafe { crate::cstr_to_string(info.name.as_ptr()) },
-            module: unsafe { crate::cstr_to_string(info.module.as_ptr()) },
+            name: chars_to_string(&info.name),
+            module: chars_to_string(&info.module),
             min_value: info.min_value,
             max_value: info.max_value,
             default_value: info.default_value,
@@ -208,8 +190,7 @@ impl ClapLoaded {
     /// [`parameter_range`](Self::parameter_range) before calling this, the same
     /// conversion its `set_parameter` applies.
     pub fn value_to_text(&self, param_id: u32, value: f64) -> Option<String> {
-        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
-        unsafe { value_to_text_ffi(ext, self.plugin.as_ptr(), param_id, value) }
+        self.plugin.param_value_to_text(param_id, value)
     }
 
     /// Parses a display `text` back to a parameter value via the plugin's
@@ -220,8 +201,7 @@ impl ClapLoaded {
     /// The answer is **plain**, in the parameter's declared range — see
     /// [`value_to_text`](Self::value_to_text). `Control` re-normalizes it.
     pub fn text_to_value(&self, param_id: u32, text: &str) -> Option<f64> {
-        let ext = unsafe { ext::opt(self.extensions.params.params) }?;
-        unsafe { text_to_value_ffi(ext, self.plugin.as_ptr(), param_id, text) }
+        self.plugin.param_text_to_value(param_id, text)
     }
 
     /// Whether the parameter with `param_id` carries the
@@ -276,32 +256,19 @@ impl ClapLoaded {
     /// On an inactive instance, main thread only: in debug builds, panics if
     /// called from a thread other than the one that loaded the plugin.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
-        // Bind the claim to a local so it lives across the whole flush call and
-        // releases only after the plugin has returned.
-        let _claim = if self.flags.active {
-            Some(self.host_state.claim_audio_thread())
-        } else {
+        // An active plugin takes the `[audio-thread]` claim inside the FFI
+        // call (`flush` is an audio-thread entry then); an inactive one is a
+        // main-thread call.
+        if !self.flags.active {
             self.assert_main_thread();
-            None
-        };
-
-        let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
-            return Vec::new();
-        };
-        let Some(flush_fn) = ext.flush else {
-            return Vec::new();
-        };
+        }
 
         let mut input_list = InputEventList::from_events(input_events);
         input_list.sort_by_time();
         let mut output_list = OutputEventList::new();
 
-        unsafe {
-            flush_fn(
-                self.plugin.as_ptr(),
-                input_list.as_raw() as *const _,
-                output_list.as_raw_mut() as *const _,
-            );
+        if !self.plugin.params_flush(&input_list, &mut output_list) {
+            return Vec::new();
         }
 
         output_list.take_events()
@@ -326,38 +293,13 @@ impl ClapLoaded {
     /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Requires the `clap-extras` feature.
     #[cfg(feature = "clap-extras")]
     pub fn set_param_mapping(&self, mapping: &ParamMapping) {
-        let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
-            return;
-        };
-        let Some(set_mapping) = ext.set_mapping else {
-            return;
-        };
-
-        let clap_color = mapping.color.map(color_to_clap);
-        let color_ptr = clap_color.as_ref().map_or(ptr::null(), |c| c as *const _);
-
-        let label_cstr = mapping
-            .label
-            .as_deref()
-            .and_then(|s| std::ffi::CString::new(s).ok());
-        let label_ptr = label_cstr.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-
-        let desc_cstr = mapping
-            .description
-            .as_deref()
-            .and_then(|s| std::ffi::CString::new(s).ok());
-        let desc_ptr = desc_cstr.as_ref().map_or(ptr::null(), |c| c.as_ptr());
-
-        unsafe {
-            set_mapping(
-                self.plugin.as_ptr(),
-                mapping.param_id,
-                mapping.has_mapping,
-                color_ptr,
-                label_ptr,
-                desc_ptr,
-            );
-        }
+        self.plugin.set_param_mapping(
+            mapping.param_id,
+            mapping.has_mapping,
+            mapping.color.map(color_to_clap),
+            mapping.label.as_deref(),
+            mapping.description.as_deref(),
+        );
     }
 
     /// Informs the plugin of a parameter's automation state so it can update
@@ -370,13 +312,6 @@ impl ClapLoaded {
         state: ParamAutomationState,
         color: Option<Color>,
     ) {
-        let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
-            return;
-        };
-        let Some(set_automation) = ext.set_automation else {
-            return;
-        };
-
         let automation_state = match state {
             ParamAutomationState::None => CLAP_PARAM_INDICATION_AUTOMATION_NONE,
             ParamAutomationState::Present => CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
@@ -384,10 +319,8 @@ impl ClapLoaded {
             ParamAutomationState::Recording => CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
             ParamAutomationState::Overriding => CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
         };
-        let clap_color = color.map(color_to_clap);
-        let color_ptr = clap_color.as_ref().map_or(ptr::null(), |c| c as *const _);
-
-        unsafe { set_automation(self.plugin.as_ptr(), param_id, automation_state, color_ptr) };
+        self.plugin
+            .set_param_automation(param_id, automation_state, color.map(color_to_clap));
     }
 }
 
@@ -481,47 +414,6 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
     }
 }
 
-/// FFI core of [`ClapLoaded::value_to_text`]: call the plugin's
-/// `value_to_text` into a stack buffer and decode the C string.
-///
-/// # Safety
-/// `plugin` must be a valid `clap_plugin` pointer the `params` vtable accepts.
-unsafe fn value_to_text_ffi(
-    params: &clap_sys::ext::params::clap_plugin_params,
-    plugin: *const clap_sys::plugin::clap_plugin,
-    param_id: u32,
-    value: f64,
-) -> Option<String> {
-    let value_to_text_fn = params.value_to_text?;
-    // CLAP fills a caller-provided C buffer; 256 bytes covers any sane
-    // parameter display string (the SDK examples use the same size).
-    let mut buf = [0i8; 256];
-    let ok =
-        unsafe { value_to_text_fn(plugin, param_id, value, buf.as_mut_ptr(), buf.len() as u32) };
-    if !ok {
-        return None;
-    }
-    Some(unsafe { crate::cstr_to_string(buf.as_ptr()) })
-}
-
-/// FFI core of [`ClapLoaded::text_to_value`]: hand the plugin a C string and
-/// read back the parsed value.
-///
-/// # Safety
-/// `plugin` must be a valid `clap_plugin` pointer the `params` vtable accepts.
-unsafe fn text_to_value_ffi(
-    params: &clap_sys::ext::params::clap_plugin_params,
-    plugin: *const clap_sys::plugin::clap_plugin,
-    param_id: u32,
-    text: &str,
-) -> Option<f64> {
-    let text_to_value_fn = params.text_to_value?;
-    let c_text = std::ffi::CString::new(text).ok()?;
-    let mut out: f64 = 0.0;
-    let ok = unsafe { text_to_value_fn(plugin, param_id, c_text.as_ptr(), &mut out) };
-    ok.then_some(out)
-}
-
 #[cfg(test)]
 mod grouping_tests {
     use super::*;
@@ -551,95 +443,5 @@ mod grouping_tests {
         let projected = project_param_info(ClapParamInfo::new(1, "Cutoff"));
         assert!(projected.group.is_empty());
         assert_eq!(projected.qualified_name(), "Cutoff");
-    }
-}
-
-#[cfg(test)]
-mod param_text_tests {
-    use super::*;
-    use clap_sys::ext::params::clap_plugin_params;
-    use clap_sys::plugin::clap_plugin;
-    use std::ffi::{CStr, c_char};
-
-    // value_to_text: writes "42.0 dB" into the caller buffer for any id/value.
-    unsafe extern "C" fn stub_value_to_text(
-        _plugin: *const clap_plugin,
-        _param_id: u32,
-        _value: f64,
-        out_buffer: *mut c_char,
-        out_capacity: u32,
-    ) -> bool {
-        let s = b"42.0 dB\0";
-        let n = (s.len()).min(out_capacity as usize);
-        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
-        unsafe { std::ptr::copy_nonoverlapping(s.as_ptr() as *const c_char, out_buffer, n) };
-        true
-    }
-
-    // text_to_value: parses the leading f64 out of the input string.
-    unsafe extern "C" fn stub_text_to_value(
-        _plugin: *const clap_plugin,
-        _param_id: u32,
-        text: *const c_char,
-        out_value: *mut f64,
-    ) -> bool {
-        // SAFETY: a CLAP plugin entry point: the host passes arguments valid per the CLAP ABI.
-        let s = unsafe { CStr::from_ptr(text) }.to_string_lossy();
-        match s
-            .split_whitespace()
-            .next()
-            .and_then(|t| t.parse::<f64>().ok())
-        {
-            Some(v) => {
-                unsafe { *out_value = v };
-                true
-            }
-            None => false,
-        }
-    }
-
-    fn stub_params(with_fns: bool) -> clap_plugin_params {
-        // SAFETY: all fields are Option<fn ptr>; zeroed = None.
-        let mut p: clap_plugin_params = unsafe { std::mem::zeroed() };
-        if with_fns {
-            p.value_to_text = Some(stub_value_to_text);
-            p.text_to_value = Some(stub_text_to_value);
-        }
-        p
-    }
-
-    #[test]
-    fn value_to_text_decodes_plugin_string() {
-        let params = stub_params(true);
-        let out = unsafe { value_to_text_ffi(&params, std::ptr::null(), 3, -6.0) };
-        assert_eq!(out.as_deref(), Some("42.0 dB"));
-    }
-
-    #[test]
-    fn text_to_value_parses_plugin_value() {
-        let params = stub_params(true);
-        let out = unsafe { text_to_value_ffi(&params, std::ptr::null(), 3, "12.5 dB") };
-        assert_eq!(out, Some(12.5));
-    }
-
-    #[test]
-    fn text_to_value_rejects_interior_nul() {
-        // A NUL inside the string can't be a C string — return None, not panic.
-        let params = stub_params(true);
-        let out = unsafe { text_to_value_ffi(&params, std::ptr::null(), 3, "1\0x") };
-        assert_eq!(out, None);
-    }
-
-    #[test]
-    fn missing_vtable_fns_yield_none() {
-        let params = stub_params(false);
-        assert_eq!(
-            unsafe { value_to_text_ffi(&params, std::ptr::null(), 0, 0.0) },
-            None
-        );
-        assert_eq!(
-            unsafe { text_to_value_ffi(&params, std::ptr::null(), 0, "x") },
-            None
-        );
     }
 }

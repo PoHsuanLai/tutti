@@ -71,6 +71,11 @@ pub enum ClapError {
     #[error("Processing error: plugin refused to start processing")]
     StartProcessingFailed,
 
+    /// A channel slice of the buffer is shorter than the block. The plugin was
+    /// not called.
+    #[error("Processing error: a channel buffer is shorter than the block")]
+    BufferTooShort,
+
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]
     StateError(String),
